@@ -5,13 +5,20 @@ from __future__ import annotations
 
 import asyncio
 import json
-from contextlib import suppress
+import logging
+import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
 from langchain.agents.middleware.human_in_the_loop import (
+    ApproveDecision,
+    EditDecision,
     HITLRequest,
     HITLResponse,
+    RejectDecision,
 )
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.types import Command, Interrupt
@@ -22,16 +29,50 @@ from deepagents_cli.image_utils import create_multimodal_content
 from deepagents_cli.input import ImageTracker, parse_file_mentions
 from deepagents_cli.ui import format_tool_message_content
 from deepagents_cli.widgets.messages import (
+    AppMessage,
     AssistantMessage,
     DiffMessage,
-    SystemMessage,
     ToolCallMessage,
 )
 
-if TYPE_CHECKING:
-    from collections.abc import Callable
+logger = logging.getLogger(__name__)
+
+# Type alias matching HITLResponse["decisions"] element type
+HITLDecision = ApproveDecision | EditDecision | RejectDecision
 
 _HITL_REQUEST_ADAPTER = TypeAdapter(HITLRequest)
+
+
+def _build_stream_config(
+    thread_id: str,
+    assistant_id: str | None,
+) -> dict[str, Any]:
+    """Build the LangGraph stream config dict.
+
+    The `thread_id` in `configurable` is automatically propagated as run
+    metadata by LangGraph, so it can be used for LangSmith filtering without
+    a separate metadata key.
+
+    Args:
+        thread_id: The CLI session thread identifier.
+        assistant_id: The agent/assistant identifier, if any.
+
+    Returns:
+        Config dict with `configurable` and `metadata` keys.
+    """
+    metadata: dict[str, str] = {}
+    if assistant_id:
+        metadata.update(
+            {
+                "assistant_id": assistant_id,
+                "agent_name": assistant_id,
+                "updated_at": datetime.now(UTC).isoformat(),
+            }
+        )
+    return {
+        "configurable": {"thread_id": thread_id},
+        "metadata": metadata,
+    }
 
 
 def _is_summarization_chunk(metadata: dict | None) -> bool:
@@ -51,43 +92,85 @@ def _is_summarization_chunk(metadata: dict | None) -> bool:
 class TextualUIAdapter:
     """Adapter for rendering agent output to Textual widgets.
 
-    This adapter provides an abstraction layer between the agent execution
-    and the Textual UI, allowing streaming output to be rendered as widgets.
+    This adapter provides an abstraction layer between the agent execution and the
+    Textual UI, allowing streaming output to be rendered as widgets.
     """
+
+    _mount_message: Callable[..., Awaitable[None]]
+    """Async callback to mount a message widget to the chat."""
+
+    _update_status: Callable[[str], None]
+    """Callback to update the status bar text."""
+
+    _request_approval: Callable[..., Awaitable[Any]]
+    """Async callback that returns a Future for HITL approval."""
+
+    _on_auto_approve_enabled: Callable[[], None] | None
+    """Callback invoked when auto-approve is enabled via the HITL approval menu.
+
+    Fired when the user selects "Auto-approve all" from an approval dialog,
+    allowing the app to sync its status bar and session state.
+    """
+
+    _scroll_to_bottom: Callable[[], None] | None
+    """Callback to scroll chat to bottom."""
+
+    _set_spinner: Callable[[str | None], Awaitable[None]] | None
+    """Callback to show/hide loading spinner.
+
+    Pass `None` to hide, or a status string to show.
+    """
+
+    _set_active_message: Callable[[str | None], None] | None
+    """Callback to set the active streaming message ID (pass `None` to clear)."""
+
+    _sync_message_content: Callable[[str, str], None] | None
+    """Callback to sync final message content back to the store after streaming."""
+
+    _current_tool_messages: dict[str, ToolCallMessage]
+    """Map of tool call IDs to their message widgets."""
+
+    _token_tracker: Any
+    """Token usage tracker for displaying counts."""
 
     def __init__(
         self,
-        mount_message: Callable,
+        mount_message: Callable[..., Awaitable[None]],
         update_status: Callable[[str], None],
-        request_approval: Callable,  # async callable returning Future
+        request_approval: Callable[..., Awaitable[Any]],
         on_auto_approve_enabled: Callable[[], None] | None = None,
         scroll_to_bottom: Callable[[], None] | None = None,
-        show_thinking: Callable[[], None] | None = None,
-        hide_thinking: Callable[[], None] | None = None,
+        set_spinner: Callable[[str | None], Awaitable[None]] | None = None,
+        set_active_message: Callable[[str | None], None] | None = None,
+        sync_message_content: Callable[[str, str], None] | None = None,
     ) -> None:
         """Initialize the adapter.
 
         Args:
-            mount_message: Async callable to mount a message widget
-            update_status: Callable to update the status bar message
-            request_approval: Callable that returns a Future for HITL approval
-            on_auto_approve_enabled: Callback when auto-approve is enabled
-            scroll_to_bottom: Callback to scroll chat to bottom
-            show_thinking: Callback to show/reposition thinking spinner
-            hide_thinking: Callback to hide thinking spinner
+            mount_message: Async callable to mount a message widget.
+            update_status: Callable to update the status bar message.
+            request_approval: Async callable that returns a Future for HITL approval.
+            on_auto_approve_enabled: Callback fired when the user selects
+                "Auto-approve all" from an approval dialog.
+
+                Used by the app to sync the status bar indicator and session state.
+            scroll_to_bottom: Callback to scroll chat to bottom.
+            set_spinner: Callback to show/hide loading spinner (pass `None` to hide).
+            set_active_message: Callback to set the active streaming message ID.
+            sync_message_content: Callback to sync final content back to the
+                message store after streaming completes.
         """
         self._mount_message = mount_message
         self._update_status = update_status
         self._request_approval = request_approval
         self._on_auto_approve_enabled = on_auto_approve_enabled
         self._scroll_to_bottom = scroll_to_bottom
-        self._show_thinking = show_thinking
-        self._hide_thinking = hide_thinking
+        self._set_spinner = set_spinner
+        self._set_active_message = set_active_message
+        self._sync_message_content = sync_message_content
 
         # State tracking
-        self._current_assistant_message: AssistantMessage | None = None
         self._current_tool_messages: dict[str, ToolCallMessage] = {}
-        self._pending_text = ""
         self._token_tracker: Any = None
 
     def set_token_tracker(self, tracker: Any) -> None:
@@ -113,7 +196,7 @@ def _build_interrupted_ai_message(
 
     # Reconstruct tool_calls from displayed tool messages
     tool_calls = []
-    for tool_id, tool_widget in current_tool_messages.items():
+    for tool_id, tool_widget in list(current_tool_messages.items()):
         tool_calls.append(
             {
                 "id": tool_id,
@@ -202,23 +285,14 @@ async def execute_task_textual(
         message_content = final_input
 
     thread_id = session_state.thread_id
-    config = {
-        "configurable": {"thread_id": thread_id},
-        "metadata": {
-            "assistant_id": assistant_id,
-            "agent_name": assistant_id,
-            "updated_at": datetime.now(UTC).isoformat(),
-        }
-        if assistant_id
-        else {},
-    }
+    config = _build_stream_config(thread_id, assistant_id)
 
     captured_input_tokens = 0
     captured_output_tokens = 0
 
-    # Show thinking spinner
-    if adapter._show_thinking:
-        await adapter._show_thinking()
+    # Show spinner
+    if adapter._set_spinner:
+        await adapter._set_spinner("Thinking")
 
     # Hide token display during streaming (will be shown with accurate count at end)
     if adapter._token_tracker:
@@ -335,9 +409,9 @@ async def execute_task_textual(
                         tool_content = format_tool_message_content(message.content)
                         record = file_op_tracker.complete_with_message(message)
 
-                        # Reshow thinking spinner after tool result
-                        if adapter._show_thinking:
-                            await adapter._show_thinking()
+                        # Reshow spinner after tool result
+                        if adapter._set_spinner:
+                            await adapter._set_spinner("Thinking")
 
                         # Update tool call status with output
                         tool_id = getattr(message, "tool_call_id", None)
@@ -349,7 +423,7 @@ async def execute_task_textual(
                             else:
                                 tool_msg.set_error(output_str or "Error")
                             # Clean up - remove from tracking dict after status update
-                            del adapter._current_tool_messages[tool_id]
+                            adapter._current_tool_messages.pop(tool_id, None)
 
                         # Show file operation results - always show diffs in chat
                         if record:
@@ -408,11 +482,18 @@ async def execute_task_textual(
                                 # Get or create assistant message for this namespace
                                 current_msg = assistant_message_by_namespace.get(ns_key)
                                 if current_msg is None:
-                                    # Hide thinking spinner when assistant starts
-                                    # responding
-                                    if adapter._hide_thinking:
-                                        await adapter._hide_thinking()
-                                    current_msg = AssistantMessage()
+                                    # Hide spinner when assistant starts responding
+                                    if adapter._set_spinner:
+                                        await adapter._set_spinner(None)
+                                    msg_id = f"asst-{uuid.uuid4().hex[:8]}"
+                                    # Mark active BEFORE mounting so pruning
+                                    # (triggered by mount) won't remove it
+                                    # (_mount_message can trigger
+                                    # _prune_old_messages if the window exceeds
+                                    # WINDOW_SIZE.)
+                                    if adapter._set_active_message:
+                                        adapter._set_active_message(msg_id)
+                                    current_msg = AssistantMessage(id=msg_id)
                                     await adapter._mount_message(current_msg)
                                     assistant_message_by_namespace[ns_key] = current_msg
 
@@ -510,9 +591,9 @@ async def execute_task_textual(
                                     buffer_name, parsed_args, buffer_id
                                 )
 
-                                # Hide thinking spinner before showing tool call
-                                if adapter._hide_thinking:
-                                    await adapter._hide_thinking()
+                                # Hide spinner before showing tool call
+                                if adapter._set_spinner:
+                                    await adapter._set_spinner(None)
 
                                 # Mount tool call message
                                 tool_msg = ToolCallMessage(buffer_name, parsed_args)
@@ -550,15 +631,17 @@ async def execute_task_textual(
             if interrupt_occurred:
                 any_rejected = False
 
-                for interrupt_id, hitl_request in pending_interrupts.items():
+                for interrupt_id, hitl_request in list(pending_interrupts.items()):
                     action_requests = hitl_request["action_requests"]
 
                     if session_state.auto_approve:
                         # Auto-approve silently - start running animation
-                        decisions = [{"type": "approve"} for _ in action_requests]
+                        decisions: list[HITLDecision] = [
+                            ApproveDecision(type="approve") for _ in action_requests
+                        ]
                         hitl_response[interrupt_id] = {"decisions": decisions}
                         # Mark all tools as running
-                        for tool_msg in adapter._current_tool_messages.values():
+                        for tool_msg in list(adapter._current_tool_messages.values()):
                             tool_msg.set_running()
                     else:
                         # Batch approval - one dialog for all parallel tool calls
@@ -578,9 +661,13 @@ async def execute_task_textual(
                                     adapter._on_auto_approve_enabled()
                                 # Approve all
                                 decisions = [
-                                    {"type": "approve"} for _ in action_requests
+                                    ApproveDecision(type="approve")
+                                    for _ in action_requests
                                 ]
-                                for tool_msg in adapter._current_tool_messages.values():
+                                tool_msgs = list(
+                                    adapter._current_tool_messages.values()
+                                )
+                                for tool_msg in tool_msgs:
                                     tool_msg.set_running()
                                 # Mark file ops as approved
                                 for action_request in action_requests:
@@ -595,9 +682,13 @@ async def execute_task_textual(
                             elif decision_type == "approve":
                                 # Approve all
                                 decisions = [
-                                    {"type": "approve"} for _ in action_requests
+                                    ApproveDecision(type="approve")
+                                    for _ in action_requests
                                 ]
-                                for tool_msg in adapter._current_tool_messages.values():
+                                tool_msgs = list(
+                                    adapter._current_tool_messages.values()
+                                )
+                                for tool_msg in tool_msgs:
                                     tool_msg.set_running()
                                 # Mark file ops as approved
                                 for action_request in action_requests:
@@ -612,19 +703,44 @@ async def execute_task_textual(
                             elif decision_type == "reject":
                                 # Reject all
                                 decisions = [
-                                    {"type": "reject"} for _ in action_requests
+                                    RejectDecision(type="reject")
+                                    for _ in action_requests
                                 ]
-                                for tool_msg in adapter._current_tool_messages.values():
+                                tool_msgs = list(
+                                    adapter._current_tool_messages.values()
+                                )
+                                for tool_msg in tool_msgs:
                                     tool_msg.set_rejected()
                                 adapter._current_tool_messages.clear()
                                 any_rejected = True
                             else:
+                                logger.warning(
+                                    "Unexpected HITL decision type: %s",
+                                    decision_type,
+                                )
                                 decisions = [
-                                    {"type": "reject"} for _ in action_requests
+                                    RejectDecision(type="reject")
+                                    for _ in action_requests
                                 ]
+                                for tool_msg in list(
+                                    adapter._current_tool_messages.values()
+                                ):
+                                    tool_msg.set_rejected()
+                                adapter._current_tool_messages.clear()
                                 any_rejected = True
                         else:
-                            decisions = [{"type": "reject"} for _ in action_requests]
+                            logger.warning(
+                                "HITL decision was not a dict: %s",
+                                type(decision).__name__,
+                            )
+                            decisions = [
+                                RejectDecision(type="reject") for _ in action_requests
+                            ]
+                            for tool_msg in list(
+                                adapter._current_tool_messages.values()
+                            ):
+                                tool_msg.set_rejected()
+                            adapter._current_tool_messages.clear()
                             any_rejected = True
 
                         hitl_response[interrupt_id] = {"decisions": decisions}
@@ -637,7 +753,7 @@ async def execute_task_textual(
             if interrupt_occurred and hitl_response:
                 if suppress_resumed_output:
                     await adapter._mount_message(
-                        SystemMessage(
+                        AppMessage(
                             "Command rejected. Tell the agent what you'd like instead."
                         )
                     )
@@ -648,11 +764,18 @@ async def execute_task_textual(
                 break
 
     except asyncio.CancelledError:
-        await adapter._mount_message(SystemMessage("Interrupted by user"))
+        # Clear active message immediately so it won't block pruning
+        # If we don't do this, the store still thinks it's actice and protects
+        # from pruning, which breaks get_messages_to_prune(), potentially
+        # blocking all future pruning
+        if adapter._set_active_message:
+            adapter._set_active_message(None)
+
+        await adapter._mount_message(AppMessage("Interrupted by user"))
 
         # Save accumulated state before marking tools as rejected (best-effort)
-        # Suppress all errors: state update failures shouldn't prevent cleanup
-        with suppress(Exception):
+        # State update failures shouldn't prevent cleanup
+        try:
             interrupted_msg = _build_interrupted_ai_message(
                 pending_text_by_namespace,
                 adapter._current_tool_messages,
@@ -665,6 +788,8 @@ async def execute_task_textual(
                 "Previous operation was cancelled."
             )
             await agent.aupdate_state(config, {"messages": [cancellation_msg]})
+        except Exception:
+            logger.debug("Failed to save interrupted state", exc_info=True)
 
         # Mark tools as rejected AFTER saving state
         for tool_msg in list(adapter._current_tool_messages.values()):
@@ -682,11 +807,18 @@ async def execute_task_textual(
         return
 
     except KeyboardInterrupt:
-        await adapter._mount_message(SystemMessage("Interrupted by user"))
+        # Clear active message immediately so it won't block pruning
+        # If we don't do this, the store still thinks it's actice and protects
+        # from pruning, which breaks get_messages_to_prune(), potentially
+        # blocking all future pruning
+        if adapter._set_active_message:
+            adapter._set_active_message(None)
+
+        await adapter._mount_message(AppMessage("Interrupted by user"))
 
         # Save accumulated state before marking tools as rejected (best-effort)
-        # Suppress all errors: state update failures shouldn't prevent cleanup
-        with suppress(Exception):
+        # State update failures shouldn't prevent cleanup
+        try:
             interrupted_msg = _build_interrupted_ai_message(
                 pending_text_by_namespace,
                 adapter._current_tool_messages,
@@ -699,6 +831,8 @@ async def execute_task_textual(
                 "Previous operation was cancelled."
             )
             await agent.aupdate_state(config, {"messages": [cancellation_msg]})
+        except Exception:
+            logger.debug("Failed to save interrupted state", exc_info=True)
 
         # Mark tools as rejected AFTER saving state
         for tool_msg in list(adapter._current_tool_messages.values()):
@@ -737,10 +871,25 @@ async def _flush_assistant_text_ns(
     current_msg = assistant_message_by_namespace.get(ns_key)
     if current_msg is None:
         # No message was created during streaming - create one with full content
-        current_msg = AssistantMessage(text)
+        msg_id = f"asst-{uuid.uuid4().hex[:8]}"
+        current_msg = AssistantMessage(text, id=msg_id)
         await adapter._mount_message(current_msg)
         await current_msg.write_initial_content()
         assistant_message_by_namespace[ns_key] = current_msg
     else:
         # Stop the stream to finalize the content
         await current_msg.stop_stream()
+
+    # When the AssistantMessage was first mounted and recorded in the
+    # MessageStore, it had empty content (streaming hadn't started yet).
+    # Now that streaming is done, the widget holds the full text in
+    # `_content`, but the store's MessageData still has `content=""`.
+    # If the message is later pruned and re-hydrated, `to_widget()` would
+    # recreate it from that stale empty string. This call copies the
+    # widget's final content back into the store so re-hydration works.
+    if adapter._sync_message_content and current_msg.id:
+        adapter._sync_message_content(current_msg.id, current_msg._content)
+
+    # Clear active message since streaming is done
+    if adapter._set_active_message:
+        adapter._set_active_message(None)

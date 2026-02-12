@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -11,6 +12,8 @@ from textual.reactive import reactive
 from textual.widgets import Static
 
 from deepagents_cli.config import settings
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
@@ -122,9 +125,19 @@ class StatusBar(Horizontal):
         )
         yield Static("", classes="status-message", id="status-message")
         yield Static("", classes="status-tokens", id="tokens-display")
-        yield Static(
-            settings.model_name or "", classes="status-model", id="model-display"
-        )
+        model_display = self._format_model_display()
+        yield Static(model_display, classes="status-model", id="model-display")
+
+    def _format_model_display(self) -> str:
+        """Format the model display string.
+
+        Returns:
+            Model display string in `provider:model` format if provider is known,
+                otherwise just the model name.
+        """
+        if settings.model_provider and settings.model_name:
+            return f"{settings.model_provider}:{settings.model_name}"
+        return settings.model_name or ""
 
     def on_mount(self) -> None:
         """Set reactive values after mount to trigger watchers safely."""
@@ -253,3 +266,12 @@ class StatusBar(Horizontal):
     def hide_tokens(self) -> None:
         """Hide the token display (e.g., during streaming)."""
         self.query_one("#tokens-display", Static).update("")
+
+    def set_model(self, model_spec: str) -> None:
+        """Update the model display text.
+
+        Args:
+            model_spec: Model specification to display (e.g.,
+                `'anthropic:claude-sonnet-4-5'`).
+        """
+        self.query_one("#model-display", Static).update(model_spec)

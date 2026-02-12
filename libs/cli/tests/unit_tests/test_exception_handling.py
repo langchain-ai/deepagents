@@ -7,11 +7,28 @@ These tests verify that:
 4. Tavily-specific exceptions are handled in web_search
 """
 
+import ast
 import logging
 import subprocess
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+import requests
+from tavily import BadRequestError, InvalidAPIKeyError, UsageLimitExceededError
+from tavily.errors import TimeoutError as TavilyTimeoutError
+
+from deepagents_cli.clipboard import (
+    copy_selection_to_clipboard,
+    logger as clipboard_logger,
+)
+from deepagents_cli.file_ops import FileOpTracker, _safe_read
+from deepagents_cli.image_utils import (
+    _get_clipboard_via_osascript,
+    _get_macos_clipboard_image,
+    logger as image_utils_logger,
+)
+from deepagents_cli.tools import http_request, web_search
 
 
 class TestToolsExceptionHandling:
@@ -19,8 +36,6 @@ class TestToolsExceptionHandling:
 
     def test_http_request_handles_json_decode_error(self):
         """Test that http_request catches JSONDecodeError properly."""
-        from deepagents_cli.tools import http_request
-
         # Mock a response that returns invalid JSON
         with patch("requests.request") as mock_request:
             mock_response = MagicMock()
@@ -39,10 +54,6 @@ class TestToolsExceptionHandling:
 
     def test_http_request_handles_requests_json_decode_error(self):
         """Test that http_request also catches requests.exceptions.JSONDecodeError."""
-        import requests
-
-        from deepagents_cli.tools import http_request
-
         with patch("requests.request") as mock_request:
             mock_response = MagicMock()
             mock_response.status_code = 200
@@ -61,10 +72,6 @@ class TestToolsExceptionHandling:
 
     def test_web_search_handles_tavily_usage_limit_error(self):
         """Test that web_search catches Tavily UsageLimitExceededError."""
-        from tavily import UsageLimitExceededError
-
-        from deepagents_cli.tools import web_search
-
         with patch("deepagents_cli.tools.tavily_client") as mock_client:
             mock_client.search.side_effect = UsageLimitExceededError("Rate limit")
 
@@ -76,10 +83,6 @@ class TestToolsExceptionHandling:
 
     def test_web_search_handles_tavily_invalid_api_key(self):
         """Test that web_search catches Tavily InvalidAPIKeyError."""
-        from tavily import InvalidAPIKeyError
-
-        from deepagents_cli.tools import web_search
-
         with patch("deepagents_cli.tools.tavily_client") as mock_client:
             mock_client.search.side_effect = InvalidAPIKeyError("Invalid key")
 
@@ -90,10 +93,6 @@ class TestToolsExceptionHandling:
 
     def test_web_search_handles_tavily_bad_request(self):
         """Test that web_search catches Tavily BadRequestError."""
-        from tavily import BadRequestError
-
-        from deepagents_cli.tools import web_search
-
         with patch("deepagents_cli.tools.tavily_client") as mock_client:
             mock_client.search.side_effect = BadRequestError("Bad request")
 
@@ -104,12 +103,8 @@ class TestToolsExceptionHandling:
 
     def test_web_search_handles_tavily_timeout(self):
         """Test that web_search catches Tavily TimeoutError."""
-        from tavily.errors import TimeoutError as TavilyTimeoutError
-
-        from deepagents_cli.tools import web_search
-
         with patch("deepagents_cli.tools.tavily_client") as mock_client:
-            mock_client.search.side_effect = TavilyTimeoutError("Request timed out")
+            mock_client.search.side_effect = TavilyTimeoutError(30.0)
 
             result = web_search("test query")
 
@@ -122,8 +117,6 @@ class TestFileOpsExceptionHandling:
 
     def test_file_op_tracker_handles_backend_failure(self, caplog):
         """Test that FileOpTracker logs backend failures."""
-        from deepagents_cli.file_ops import FileOpTracker
-
         # Create tracker with a mock backend that fails
         mock_backend = MagicMock()
         mock_backend.download_files.side_effect = OSError("Backend error")
@@ -148,8 +141,6 @@ class TestFileOpsExceptionHandling:
 
     def test_file_op_tracker_handles_attribute_error(self, caplog):
         """Test that FileOpTracker handles AttributeError properly."""
-        from deepagents_cli.file_ops import FileOpTracker
-
         # Create tracker with a mock backend that raises AttributeError
         mock_backend = MagicMock()
         mock_backend.download_files.side_effect = AttributeError("Missing attribute")
@@ -174,8 +165,6 @@ class TestFileOpsExceptionHandling:
 
     def test_file_op_tracker_handles_unicode_decode_error(self, caplog):
         """Test that FileOpTracker handles UnicodeDecodeError for binary files."""
-        from deepagents_cli.file_ops import FileOpTracker
-
         # Create tracker with a mock backend that returns binary data
         mock_backend = MagicMock()
         mock_response = MagicMock()
@@ -202,8 +191,6 @@ class TestFileOpsExceptionHandling:
 
     def test_safe_read_logs_on_failure(self, caplog, tmp_path):
         """Test that _safe_read logs when file read fails."""
-        from deepagents_cli.file_ops import _safe_read
-
         # Test with non-existent file
         nonexistent = tmp_path / "does_not_exist.txt"
 
@@ -219,8 +206,6 @@ class TestClipboardExceptionHandling:
 
     def test_copy_handles_widget_selection_failures(self, caplog):
         """Test that copy_selection_to_clipboard handles widget failures gracefully."""
-        from deepagents_cli.clipboard import copy_selection_to_clipboard
-
         # Create a mock app with widgets
         mock_app = MagicMock()
         mock_widget = MagicMock()
@@ -239,10 +224,8 @@ class TestClipboardExceptionHandling:
 
     def test_clipboard_logger_exists(self):
         """Test that clipboard module has proper logging configured."""
-        from deepagents_cli.clipboard import logger
-
-        assert logger is not None
-        assert logger.name == "deepagents_cli.clipboard"
+        assert clipboard_logger is not None
+        assert clipboard_logger.name == "deepagents_cli.clipboard"
 
 
 class TestImageUtilsExceptionHandling:
@@ -250,16 +233,11 @@ class TestImageUtilsExceptionHandling:
 
     def test_image_utils_logger_exists(self):
         """Test that image_utils module has proper logging configured."""
-        from deepagents_cli.image_utils import logger
-
-        assert logger is not None
-        assert logger.name == "deepagents_cli.image_utils"
+        assert image_utils_logger is not None
+        assert image_utils_logger.name == "deepagents_cli.image_utils"
 
     def test_image_utils_exception_types(self):
         """Test that image_utils uses proper exception types."""
-        import ast
-        from pathlib import Path
-
         # Read the source file and check exception handling
         source_path = (
             Path(__file__).parent.parent.parent / "deepagents_cli" / "image_utils.py"
@@ -279,8 +257,6 @@ class TestImageUtilsExceptionHandling:
 
     def test_pngpaste_timeout_logs_and_returns_none(self, caplog):
         """Test that pngpaste timeout is logged and function falls back."""
-        from deepagents_cli.image_utils import _get_macos_clipboard_image
-
         with (
             patch("deepagents_cli.image_utils._get_executable") as mock_exec,
             patch("subprocess.run") as mock_run,
@@ -300,8 +276,6 @@ class TestImageUtilsExceptionHandling:
 
     def test_pngpaste_not_found_logs_and_falls_back(self, caplog):
         """Test that FileNotFoundError for pngpaste is logged."""
-        from deepagents_cli.image_utils import _get_macos_clipboard_image
-
         with (
             patch("deepagents_cli.image_utils._get_executable") as mock_exec,
             patch("subprocess.run") as mock_run,
@@ -321,8 +295,6 @@ class TestImageUtilsExceptionHandling:
 
     def test_osascript_timeout_logs_and_returns_none(self, caplog):
         """Test that osascript timeout is logged."""
-        from deepagents_cli.image_utils import _get_clipboard_via_osascript
-
         with (
             patch("deepagents_cli.image_utils._get_executable") as mock_exec,
             patch("subprocess.run") as mock_run,

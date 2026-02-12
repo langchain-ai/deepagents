@@ -1,16 +1,38 @@
 """Thread management using LangGraph's built-in checkpoint persistence."""
 
+import logging
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
+from typing import NotRequired, TypedDict
 
 import aiosqlite
+from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from rich.table import Table
 
 from deepagents_cli.config import COLORS, console
+
+logger = logging.getLogger(__name__)
+
+
+class ThreadInfo(TypedDict):
+    """Thread metadata returned by `list_threads`."""
+
+    thread_id: str
+    """Unique identifier for the thread."""
+
+    agent_name: str | None
+    """Name of the agent that owns the thread."""
+
+    updated_at: str | None
+    """ISO timestamp of the last update."""
+
+    message_count: NotRequired[int]
+    """Number of messages in the thread."""
+
 
 # Patch aiosqlite.Connection to add is_alive() method required by
 # langgraph-checkpoint>=2.1.0
@@ -25,11 +47,17 @@ if not hasattr(aiosqlite.Connection, "is_alive"):
         """
         return self._connection is not None
 
-    aiosqlite.Connection.is_alive = _is_alive
+    # Dynamically adding a method to aiosqlite.Connection at runtime.
+    # Type checkers can't understand this monkey-patch, so we suppress the
+    # "attr-defined" error that would otherwise be raised.
+    aiosqlite.Connection.is_alive = _is_alive  # type: ignore[attr-defined]
 
 
-def _format_timestamp(iso_timestamp: str | None) -> str:
+def format_timestamp(iso_timestamp: str | None) -> str:
     """Format ISO timestamp for display (e.g., 'Dec 30, 6:10pm').
+
+    Args:
+        iso_timestamp: ISO 8601 timestamp string, or `None`.
 
     Returns:
         Formatted timestamp string or empty string if invalid.
@@ -45,6 +73,11 @@ def _format_timestamp(iso_timestamp: str | None) -> str:
             .replace("pm", "pm")
         )
     except (ValueError, TypeError):
+        logger.debug(
+            "Failed to parse timestamp %r; displaying as blank",
+            iso_timestamp,
+            exc_info=True,
+        )
         return ""
 
 
@@ -82,11 +115,18 @@ async def _table_exists(conn: aiosqlite.Connection, table: str) -> bool:
 async def list_threads(
     agent_name: str | None = None,
     limit: int = 20,
-) -> list[dict]:
+    include_message_count: bool = False,
+) -> list[ThreadInfo]:
     """List threads from checkpoints table.
 
+    Args:
+        agent_name: Optional filter by agent name.
+        limit: Maximum number of threads to return.
+        include_message_count: Whether to include message counts.
+
     Returns:
-        List of thread dicts with thread_id, agent_name, and updated_at.
+        List of `ThreadInfo` dicts with `thread_id`, `agent_name`,
+            `updated_at`, and optionally `message_count`.
     """
     db_path = str(get_db_path())
     async with aiosqlite.connect(db_path, timeout=30.0) as conn:
@@ -120,10 +160,67 @@ async def list_threads(
 
         async with conn.execute(query, params) as cursor:
             rows = await cursor.fetchall()
-            return [
-                {"thread_id": r[0], "agent_name": r[1], "updated_at": r[2]}
+            threads: list[ThreadInfo] = [
+                ThreadInfo(thread_id=r[0], agent_name=r[1], updated_at=r[2])
                 for r in rows
             ]
+
+        # Fetch message counts if requested
+        if include_message_count and threads:
+            serde = JsonPlusSerializer()
+            for thread in threads:
+                thread["message_count"] = await _count_messages_from_checkpoint(
+                    conn, thread["thread_id"], serde
+                )
+
+        return threads
+
+
+async def _count_messages_from_checkpoint(
+    conn: aiosqlite.Connection,
+    thread_id: str,
+    serde: JsonPlusSerializer,
+) -> int:
+    """Count messages from the most recent checkpoint blob.
+
+    With durability="exit", messages are stored in the checkpoint blob,
+    not in the writes table. This function deserializes the checkpoint
+    and counts the messages in channel_values.
+
+    Args:
+        conn: Database connection.
+        thread_id: The thread ID to count messages for.
+        serde: Serializer for decoding checkpoint data.
+
+    Returns:
+        Number of messages in the checkpoint, or 0 if not found.
+    """
+    query = """
+        SELECT type, checkpoint
+        FROM checkpoints
+        WHERE thread_id = ?
+        ORDER BY checkpoint_id DESC
+        LIMIT 1
+    """
+    async with conn.execute(query, (thread_id,)) as cursor:
+        row = await cursor.fetchone()
+        if not row or not row[0] or not row[1]:
+            return 0
+
+        type_str, checkpoint_blob = row
+        try:
+            data = serde.loads_typed((type_str, checkpoint_blob))
+            channel_values = data.get("channel_values", {})
+            messages = channel_values.get("messages", [])
+            return len(messages)
+        except (ValueError, TypeError, KeyError):
+            logger.warning(
+                "Failed to deserialize checkpoint for thread %s; "
+                "message count will show as 0",
+                thread_id,
+                exc_info=True,
+            )
+            return 0
 
 
 async def get_most_recent(agent_name: str | None = None) -> str | None:
@@ -195,6 +292,34 @@ async def thread_exists(thread_id: str) -> bool:
             return row is not None
 
 
+async def find_similar_threads(thread_id: str, limit: int = 3) -> list[str]:
+    """Find threads whose IDs start with the given prefix.
+
+    Args:
+        thread_id: Prefix to match against thread IDs.
+        limit: Maximum number of matching threads to return.
+
+    Returns:
+        List of thread IDs that begin with the given prefix.
+    """
+    db_path = str(get_db_path())
+    async with aiosqlite.connect(db_path, timeout=30.0) as conn:
+        if not await _table_exists(conn, "checkpoints"):
+            return []
+
+        query = """
+            SELECT DISTINCT thread_id
+            FROM checkpoints
+            WHERE thread_id LIKE ?
+            ORDER BY thread_id
+            LIMIT ?
+        """
+        prefix = thread_id + "%"
+        async with conn.execute(query, (prefix, limit)) as cursor:
+            rows = await cursor.fetchall()
+            return [r[0] for r in rows]
+
+
 async def delete_thread(thread_id: str) -> bool:
     """Delete thread checkpoints.
 
@@ -231,8 +356,18 @@ async def list_threads_command(
     agent_name: str | None = None,
     limit: int = 20,
 ) -> None:
-    """CLI handler for: deepagents threads list."""
-    threads = await list_threads(agent_name, limit=limit)
+    """CLI handler for `deepagents threads list`.
+
+    Fetches and displays a table of recent conversation threads, optionally
+    filtered by agent name.
+
+    Args:
+        agent_name: Only show threads belonging to this agent.
+
+            When `None`, threads for all agents are shown.
+        limit: Maximum number of threads to display.
+    """
+    threads = await list_threads(agent_name, limit=limit, include_message_count=True)
 
     if not threads:
         if agent_name:
@@ -244,20 +379,26 @@ async def list_threads_command(
         console.print("[dim]Start a conversation with: deepagents[/dim]")
         return
 
-    title = f"Threads for '{agent_name}'" if agent_name else "All Threads"
+    title = (
+        f"Recent threads for '{agent_name}' (last {limit})"
+        if agent_name
+        else f"Recent Threads (last {limit})"
+    )
 
     table = Table(
         title=title, show_header=True, header_style=f"bold {COLORS['primary']}"
     )
     table.add_column("Thread ID", style="bold")
     table.add_column("Agent")
+    table.add_column("Messages", justify="right")
     table.add_column("Last Used", style="dim")
 
     for t in threads:
         table.add_row(
             t["thread_id"],
             t["agent_name"] or "unknown",
-            _format_timestamp(t.get("updated_at")),
+            str(t.get("message_count", 0)),
+            format_timestamp(t.get("updated_at")),
         )
 
     console.print()

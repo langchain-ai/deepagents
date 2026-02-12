@@ -1,278 +1,206 @@
-"""Deep Agents ACP server implementation."""
-
-from __future__ import annotations
-
-import asyncio
-import uuid
-from typing import Any, Literal
+import json
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any
+from uuid import uuid4
 
 from acp import (
-    PROTOCOL_VERSION,
-    Agent,
-    AgentSideConnection,
-    stdio_streams,
-)
-from acp.schema import (
-    AgentMessageChunk,
-    AgentPlanUpdate,
-    AgentThoughtChunk,
-    AllowedOutcome,
-    CancelNotification,
-    ContentToolCallContent,
-    DeniedOutcome,
-    Implementation,
-    InitializeRequest,
+    Agent as ACPAgent,
     InitializeResponse,
-    LoadSessionRequest,
-    LoadSessionResponse,
-    NewSessionRequest,
     NewSessionResponse,
+    PromptResponse,
+    SetSessionModeResponse,
+    run_agent as run_acp_agent,
+    start_edit_tool_call,
+    start_tool_call,
+    text_block,
+    tool_content,
+    tool_diff_content,
+    update_agent_message,
+    update_tool_call,
+)
+from acp.exceptions import RequestError
+from acp.interfaces import Client
+from acp.schema import (
+    AgentCapabilities,
+    AgentPlanUpdate,
+    AudioContentBlock,
+    ClientCapabilities,
+    EmbeddedResourceContentBlock,
+    HttpMcpServer,
+    ImageContentBlock,
+    Implementation,
+    McpServerStdio,
     PermissionOption,
     PlanEntry,
-    PromptRequest,
-    PromptResponse,
-    RequestPermissionRequest,
-    SessionNotification,
-    SetSessionModelRequest,
-    SetSessionModelResponse,
-    SetSessionModeRequest,
-    SetSessionModeResponse,
+    PromptCapabilities,
+    ResourceContentBlock,
+    SessionModeState,
+    SseMcpServer,
     TextContentBlock,
-    ToolCall as ACPToolCall,
-    ToolCallProgress,
+    ToolCallStart,
+    ToolCallUpdate,
+    ToolKind,
 )
 from deepagents import create_deep_agent
-from langchain_anthropic import ChatAnthropic
-from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
-from langchain_core.messages.content import ToolCall
-from langchain_core.tools import tool
-from langgraph.checkpoint.memory import InMemorySaver
+from deepagents.backends import CompositeBackend, FilesystemBackend, StateBackend
+from deepagents.graph import Checkpointer
+from langchain.tools import ToolRuntime
+from langchain_core.runnables import RunnableConfig
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph.state import CompiledStateGraph
-from langgraph.types import Command, Interrupt
+from langgraph.types import Command, StateSnapshot
+
+from deepagents_acp.utils import (
+    convert_audio_block_to_content_blocks,
+    convert_embedded_resource_block_to_content_blocks,
+    convert_image_block_to_content_blocks,
+    convert_resource_block_to_content_blocks,
+    convert_text_block_to_content_blocks,
+)
 
 
-class DeepagentsACP(Agent):
-    """ACP Agent implementation wrapping deepagents."""
+@dataclass(frozen=True, slots=True)
+class AgentSessionContext:
+    cwd: str
+    mode: str
+
+
+class AgentServerACP(ACPAgent):
+    _conn: Client
 
     def __init__(
         self,
-        connection: AgentSideConnection,
-        agent_graph: CompiledStateGraph,
+        agent: CompiledStateGraph | Callable[[AgentSessionContext], CompiledStateGraph],
+        *,
+        modes: SessionModeState | None = None,
     ) -> None:
-        """Initialize the Deep Agents agent.
+        """Initialize the ACP agent server with the given agent factory or compiled graph."""
+        super().__init__()
+        self._cwd = ""
+        self._agent_factory = agent
+        self._agent: CompiledStateGraph | None = None
 
-        Args:
-            connection: The ACP connection for communicating with the client
-            agent_graph: A compiled LangGraph StateGraph (output of create_deep_agent)
-        """
-        self._connection = connection
-        self._agent_graph = agent_graph
-        self._sessions: dict[str, dict[str, Any]] = {}
-        # Track tool calls by ID for matching with ToolMessages
-        # Maps tool_call_id -> ToolCall TypedDict
-        self._tool_calls: dict[str, ToolCall] = {}
+        if isinstance(agent, CompiledStateGraph):
+            if modes is not None:
+                raise ValueError("modes can only be provided when agent is a factory")
+            self._modes: SessionModeState | None = None
+        else:
+            self._modes = modes
+
+        self._session_modes: dict[str, str] = {}
+        self._session_mode_states: dict[str, SessionModeState] = {}
+        self._cancelled = False
+        self._session_plans: dict[str, list[dict[str, Any]]] = {}
+        self._session_cwds: dict[str, str] = {}
+
+    def on_connect(self, conn: Client) -> None:
+        self._conn = conn
 
     async def initialize(
         self,
-        params: InitializeRequest,
+        protocol_version: int,
+        client_capabilities: ClientCapabilities | None = None,
+        client_info: Implementation | None = None,
+        **kwargs: Any,
     ) -> InitializeResponse:
-        """Initialize the agent and return capabilities."""
         return InitializeResponse(
-            protocolVersion=PROTOCOL_VERSION,
-            agentInfo=Implementation(
-                name="Deep Agents ACP Server",
-                version="0.1.0",
-                title="Deep Agents ACP Server",
+            protocol_version=protocol_version,
+            agent_capabilities=AgentCapabilities(
+                prompt_capabilities=PromptCapabilities(
+                    image=True,
+                    # embedded_context=True,
+                )
             ),
         )
 
-    async def newSession(
+    async def new_session(
         self,
-        params: NewSessionRequest,
+        cwd: str,
+        mcp_servers: list[HttpMcpServer | SseMcpServer | McpServerStdio],
+        **kwargs: Any,
     ) -> NewSessionResponse:
-        """Create a new session with a deepagents instance."""
-        session_id = str(uuid.uuid4())
-        # Store session state with the shared agent graph
-        self._sessions[session_id] = {
-            "agent": self._agent_graph,
-            "thread_id": str(uuid.uuid4()),
-        }
+        session_id = uuid4().hex
+        self._session_cwds[session_id] = cwd
 
-        return NewSessionResponse(sessionId=session_id)
+        if self._modes is not None:
+            self._session_modes[session_id] = self._modes.current_mode_id
+            self._session_mode_states[session_id] = self._modes
+            return NewSessionResponse(session_id=session_id, modes=self._modes)
 
-    async def _handle_ai_message_chunk(
+        if not isinstance(self._agent_factory, CompiledStateGraph):
+            return NewSessionResponse(session_id=session_id)
+
+        return NewSessionResponse(session_id=session_id)
+
+    async def set_session_mode(
         self,
-        params: PromptRequest,
-        message: AIMessageChunk,
-    ) -> None:
-        """Handle an AIMessageChunk and send appropriate notifications.
-
-        Args:
-            params: The prompt request parameters
-            message: An AIMessageChunk from the streaming response
-
-        Note:
-            According to LangChain's content block types, message.content_blocks
-            returns a list of ContentBlock unions. Each block is a TypedDict with
-            a "type" field that discriminates the block type:
-            - TextContentBlock: type="text", has "text" field
-            - ReasoningContentBlock: type="reasoning", has "reasoning" field
-            - ToolCallChunk: type="tool_call_chunk"
-            - And many others (image, audio, video, etc.)
-        """
-        for block in message.content_blocks:
-            # All content blocks have a "type" field for discrimination
-            block_type = block.get("type")
-
-            if block_type == "text":
-                # TextContentBlock has a required "text" field
-                text = block.get("text", "")
-                if not text:  # Only yield non-empty text
-                    continue
-                await self._connection.sessionUpdate(
-                    SessionNotification(
-                        update=AgentMessageChunk(
-                            content=TextContentBlock(text=text, type="text"),
-                            sessionUpdate="agent_message_chunk",
-                        ),
-                        sessionId=params.sessionId,
-                    )
-                )
-            elif block_type == "reasoning":
-                # ReasoningContentBlock has a "reasoning" field (NotRequired)
-                reasoning = block.get("reasoning", "")
-                if not reasoning:
-                    continue
-
-                await self._connection.sessionUpdate(
-                    SessionNotification(
-                        update=AgentThoughtChunk(
-                            content=TextContentBlock(text=reasoning, type="text"),
-                            sessionUpdate="agent_thought_chunk",
-                        ),
-                        sessionId=params.sessionId,
-                    )
-                )
-
-    async def _handle_completed_tool_calls(
-        self,
-        params: PromptRequest,
-        message: AIMessage,
-    ) -> None:
-        """Handle completed tool calls from an AIMessage and send notifications.
-
-        Args:
-            params: The prompt request parameters
-            message: An AIMessage containing tool_calls
-
-        Note:
-            According to LangChain's AIMessage type:
-            - message.tool_calls: list[ToolCall] where ToolCall is a TypedDict with:
-              - name: str (required)
-              - args: dict[str, Any] (required)
-              - id: str | None (required field, but can be None)
-              - type: Literal["tool_call"] (optional, NotRequired)
-        """
-        # Use direct attribute access - tool_calls is a defined field on AIMessage
-        if not message.tool_calls:
-            return
-
-        for tool_call in message.tool_calls:
-            # Access TypedDict fields directly (they're required fields)
-            tool_call_id = tool_call["id"]  # str | None
-            tool_name = tool_call["name"]  # str
-            tool_args = tool_call["args"]  # dict[str, Any]
-
-            # Skip tool calls without an ID (shouldn't happen in practice)
-            if tool_call_id is None:
-                continue
-
-            # Skip todo tool calls as they're handled separately
-            if tool_name == "todo":
-                raise NotImplementedError("TODO tool call handling not implemented yet")
-
-            # Send tool call progress update showing the tool is running
-            await self._connection.sessionUpdate(
-                SessionNotification(
-                    update=ToolCallProgress(
-                        sessionUpdate="tool_call_update",
-                        toolCallId=tool_call_id,
-                        title=tool_name,
-                        rawInput=tool_args,
-                        status="pending",
-                    ),
-                    sessionId=params.sessionId,
-                )
+        mode_id: str,
+        session_id: str,
+        **kwargs: Any,
+    ) -> SetSessionModeResponse:
+        if self._modes is not None and session_id in self._session_mode_states:
+            state = self._session_mode_states[session_id]
+            self._session_modes[session_id] = mode_id
+            self._session_mode_states[session_id] = SessionModeState(
+                available_modes=state.available_modes,
+                current_mode_id=mode_id,
             )
+        self._agent = None
+        return SetSessionModeResponse()
 
-            # Store the tool call for later matching with ToolMessage
-            self._tool_calls[tool_call_id] = tool_call
+    async def cancel(self, session_id: str, **kwargs: Any) -> None:
+        """Cancel the current execution."""
+        self._cancelled = True
 
-    async def _handle_tool_message(
-        self,
-        params: PromptRequest,
-        tool_call: ToolCall,
-        message: ToolMessage,
-    ) -> None:
-        """Handle a ToolMessage and send appropriate notifications.
+    async def _log_text(self, session_id: str, text: str):
+        update = update_agent_message(text_block(text))
+        await self._conn.session_update(session_id=session_id, update=update, source="DeepAgent")
+
+    def _all_tasks_completed(self, plan: list[dict[str, Any]]) -> bool:
+        """Check if all tasks in a plan are completed.
 
         Args:
-            params: The prompt request parameters
-            tool_call: The original ToolCall that this message is responding to
-            message: A ToolMessage containing the tool execution result
+            plan: List of todo dictionaries
 
-        Note:
-            According to LangChain's ToolMessage type (inherits from BaseMessage):
-            - message.content: str | list[str | dict] (from BaseMessage)
-            - message.tool_call_id: str (specific to ToolMessage)
-            - message.status: str | None (e.g., "error" for failed tool calls)
+        Returns:
+            True if all tasks have status 'completed', False otherwise
         """
-        # Determine status based on message status or content
-        status: Literal["completed", "failed"] = "completed"
-        if hasattr(message, "status") and message.status == "error":
-            status = "failed"
+        if not plan:
+            return True
 
-        # Build content blocks if message has content
-        content_blocks = []
-        for content_block in message.content_blocks:
-            if content_block.get("type") == "text":
-                text = content_block.get("text", "")
-                if text:
-                    content_blocks.append(
-                        ContentToolCallContent(
-                            type="content",
-                            content=TextContentBlock(text=text, type="text"),
-                        )
-                    )
-        # Send tool call progress update with the result
-        await self._connection.sessionUpdate(
-            SessionNotification(
-                update=ToolCallProgress(
-                    sessionUpdate="tool_call_update",
-                    toolCallId=message.tool_call_id,
-                    title=tool_call["name"],
-                    content=content_blocks,
-                    rawOutput=message.content,
-                    status=status,
-                ),
-                sessionId=params.sessionId,
-            )
+        return all(todo.get("status") == "completed" for todo in plan)
+
+    async def _clear_plan(self, session_id: str) -> None:
+        """Clear the plan by sending an empty plan update.
+
+        Args:
+            session_id: The session ID
+        """
+        update = AgentPlanUpdate(
+            session_update="plan",
+            entries=[],
         )
+        await self._conn.session_update(
+            session_id=session_id,
+            update=update,
+            source="DeepAgent",
+        )
+        # Clear the stored plan for this session
+        self._session_plans[session_id] = []
 
     async def _handle_todo_update(
         self,
-        params: PromptRequest,
+        session_id: str,
         todos: list[dict[str, Any]],
+        log_plan: bool = True,
     ) -> None:
-        """Handle todo list updates from the tools node.
+        """Handle todo list updates from write_todos tool.
 
         Args:
-            params: The prompt request parameters
+            session_id: The session ID
             todos: List of todo dictionaries with 'content' and 'status' fields
-
-        Note:
-            Todos come from the deepagents graph's write_todos tool and have the structure:
-            [{'content': 'Task description', 'status': 'pending'|'in_progress'|'completed'}, ...]
+            log_plan: Whether to log the plan as a visible text message
         """
         # Convert todos to PlanEntry objects
         entries = []
@@ -294,354 +222,486 @@ class DeepagentsACP(Agent):
             entries.append(entry)
 
         # Send plan update notification
-        await self._connection.sessionUpdate(
-            SessionNotification(
-                update=AgentPlanUpdate(
-                    sessionUpdate="plan",
-                    entries=entries,
-                ),
-                sessionId=params.sessionId,
-            )
+        update = AgentPlanUpdate(
+            session_update="plan",
+            entries=entries,
+        )
+        await self._conn.session_update(
+            session_id=session_id,
+            update=update,
+            source="DeepAgent",
         )
 
-    async def _handle_interrupt(
+        # Optionally send a visible text message showing the plan
+        if log_plan:
+            plan_text = "## Plan\n\n"
+            for i, todo in enumerate(todos, 1):
+                content = todo.get("content", "")
+                plan_text += f"{i}. {content}\n"
+
+            await self._log_text(session_id=session_id, text=plan_text)
+
+    async def _process_tool_call_chunks(
         self,
-        params: PromptRequest,
-        interrupt: Interrupt,
-    ) -> list[dict[str, Any]]:
-        """Handle a LangGraph interrupt and request permission from the client.
+        session_id: str,
+        message_chunk: Any,
+        active_tool_calls: dict,
+        tool_call_accumulator: dict,
+    ) -> None:
+        """Process tool call chunks and start tool calls when complete."""
+        if (
+            not isinstance(message_chunk, str)
+            and hasattr(message_chunk, "tool_call_chunks")
+            and message_chunk.tool_call_chunks
+        ):
+            for chunk in message_chunk.tool_call_chunks:
+                chunk_id = chunk.get("id")
+                chunk_name = chunk.get("name")
+                chunk_args = chunk.get("args", "")
+                chunk_index = chunk.get("index", 0)
 
-        Args:
-            params: The prompt request parameters
-            interrupt: The interrupt from LangGraph containing action_requests and review_configs
+                # Initialize accumulator for this index if we have id and name
+                if chunk_id and chunk_name:
+                    if chunk_index not in tool_call_accumulator:
+                        tool_call_accumulator[chunk_index] = {
+                            "id": chunk_id,
+                            "name": chunk_name,
+                            "args_str": "",
+                        }
+                    elif chunk_id != tool_call_accumulator[chunk_index].get("id"):
+                        tool_call_accumulator[chunk_index] = {
+                            "id": chunk_id,
+                            "name": chunk_name,
+                            "args_str": "",
+                        }
 
-        Returns:
-            List of decisions to pass to Command(resume={...})
+                # Accumulate args string chunks using index
+                if chunk_args and chunk_index in tool_call_accumulator:
+                    tool_call_accumulator[chunk_index]["args_str"] += chunk_args
 
-        Note:
-            The interrupt.value contains:
-            - action_requests: [{'name': str, 'args': dict, 'description': str}, ...]
-            - review_configs: [{'action_name': str, 'allowed_decisions': list[str]}, ...]
-        """
-        interrupt_data = interrupt.value
-        action_requests = interrupt_data.get("action_requests", [])
-        review_configs = interrupt_data.get("review_configs", [])
+            # After processing chunks, try to start any tool calls with complete args
+            for index, acc in list(tool_call_accumulator.items()):
+                tool_id = acc.get("id")
+                tool_name = acc.get("name")
+                args_str = acc.get("args_str", "")
 
-        # Create a mapping of action names to their allowed decisions
-        allowed_decisions_map = {}
-        for review_config in review_configs:
-            action_name = review_config.get("action_name")
-            allowed_decisions = review_config.get("allowed_decisions", [])
-            allowed_decisions_map[action_name] = allowed_decisions
+                # Only start if we haven't started yet and have parseable args
+                if tool_id and tool_id not in active_tool_calls and args_str:
+                    try:
+                        tool_args = json.loads(args_str)
 
-        # Collect decisions for all action requests
-        decisions = []
+                        # Mark as started and store args for later reference
+                        active_tool_calls[tool_id] = {
+                            "name": tool_name,
+                            "args": tool_args,
+                        }
 
-        for action_request in action_requests:
-            tool_name = action_request.get("name")
-            tool_args = action_request.get("args", {})
+                        # Create the appropriate tool call update
+                        update = self._create_tool_call_update(tool_id, tool_name, tool_args)
 
-            # Get allowed decisions for this action
-            allowed_decisions = allowed_decisions_map.get(tool_name, ["approve", "reject"])
+                        await self._conn.session_update(
+                            session_id=session_id,
+                            update=update,
+                            source="DeepAgent",
+                        )
 
-            # Build permission options based on allowed decisions
-            options = []
-            if "approve" in allowed_decisions:
-                options.append(
-                    PermissionOption(
-                        optionId="allow-once",
-                        name="Allow once",
-                        kind="allow_once",
-                    )
+                        # If this is write_todos, send the plan update immediately
+                        if tool_name == "write_todos" and isinstance(tool_args, dict):
+                            todos = tool_args.get("todos", [])
+                            await self._handle_todo_update(session_id, todos, log_plan=False)
+                    except json.JSONDecodeError:
+                        pass
+
+    def _create_tool_call_update(
+        self, tool_id: str, tool_name: str, tool_args: dict[str, Any]
+    ) -> ToolCallStart:
+        """Create a tool call update based on tool type and arguments."""
+        kind_map: dict[str, ToolKind] = {
+            "read_file": "read",
+            "edit_file": "edit",
+            "write_file": "edit",
+            "ls": "search",
+            "glob": "search",
+            "grep": "search",
+        }
+        tool_kind = kind_map.get(tool_name, "other")
+
+        # Determine title and create appropriate update based on tool type
+        if tool_name == "read_file" and isinstance(tool_args, dict):
+            path = tool_args.get("file_path")
+            title = f"Read `{path}`" if path else tool_name
+            return start_tool_call(
+                tool_call_id=tool_id,
+                title=title,
+                kind=tool_kind,
+                status="pending",
+            )
+        elif tool_name == "edit_file" and isinstance(tool_args, dict):
+            path = tool_args.get("file_path", "")
+            old_string = tool_args.get("old_string", "")
+            new_string = tool_args.get("new_string", "")
+            title = f"Edit `{path}`" if path else tool_name
+
+            # Only create diff if we have both old and new strings
+            if path and old_string and new_string:
+                diff_content = tool_diff_content(
+                    path=path,
+                    new_text=new_string,
+                    old_text=old_string,
                 )
-            if "reject" in allowed_decisions:
-                options.append(
-                    PermissionOption(
-                        optionId="reject-once",
-                        name="Reject",
-                        kind="reject_once",
-                    )
+                return start_edit_tool_call(
+                    tool_call_id=tool_id,
+                    title=title,
+                    path=path,
+                    content=diff_content,
+                    # This is silly but for some reason content isn't passed through
+                    extra_options=[diff_content],
                 )
-            # Generate a tool call ID for this permission request
-            # We need to find the corresponding tool call from the stored calls
-            # For now, use a generated ID
-            tool_call_id = f"perm_{uuid.uuid4().hex[:8]}"
-
-            # Create ACP ToolCall object for the permission request
-            acp_tool_call = ACPToolCall(
-                toolCallId=tool_call_id,
-                title=tool_name,
-                rawInput=tool_args,
+            else:
+                # Fallback to generic tool call if data incomplete
+                return start_tool_call(
+                    tool_call_id=tool_id,
+                    title=title,
+                    kind=tool_kind,
+                    status="pending",
+                )
+        elif tool_name == "write_file" and isinstance(tool_args, dict):
+            path = tool_args.get("file_path")
+            title = f"Write `{path}`" if path else tool_name
+            return start_tool_call(
+                tool_call_id=tool_id,
+                title=title,
+                kind=tool_kind,
+                status="pending",
+            )
+        else:
+            title = tool_name
+            return start_tool_call(
+                tool_call_id=tool_id,
+                title=title,
+                kind=tool_kind,
                 status="pending",
             )
 
-            # Send permission request to client
-            response = await self._connection.requestPermission(
-                RequestPermissionRequest(
-                    sessionId=params.sessionId,
-                    toolCall=acp_tool_call,
-                    options=options,
-                )
-            )
-
-            # Convert ACP response to LangGraph decision
-            outcome = response.outcome
-
-            if isinstance(outcome, AllowedOutcome):
-                option_id = outcome.optionId
-                if option_id == "allow-once":
-                    # Check if this was actually an edit option
-                    selected_option = next(
-                        (opt for opt in options if opt.optionId == option_id), None
-                    )
-                    if selected_option and selected_option.field_meta:
-                        # This is an edit - for now, just approve
-                        # TODO: Implement actual edit functionality
-                        decisions.append({"type": "approve"})
-                    else:
-                        decisions.append({"type": "approve"})
-                elif option_id == "edit":
-                    # Edit option - for now, just approve
-                    # TODO: Implement actual edit functionality to collect edited args
-                    decisions.append({"type": "approve"})
-            elif isinstance(outcome, DeniedOutcome):
-                decisions.append(
-                    {
-                        "type": "reject",
-                        "message": "Action rejected by user",
-                    }
-                )
-
-        return decisions
-
-    async def _stream_and_handle_updates(
-        self,
-        params: PromptRequest,
-        agent: Any,
-        stream_input: dict[str, Any] | Command,
-        config: dict[str, Any],
-    ) -> list[Interrupt]:
-        """Stream agent execution and handle updates, returning any interrupts.
-
-        Args:
-            params: The prompt request parameters
-            agent: The agent to stream from
-            stream_input: Input to pass to agent.astream (initial message or Command)
-            config: Configuration with thread_id
-
-        Returns:
-            List of interrupts that occurred during streaming
-        """
-        interrupts = []
-
-        async for stream_mode, data in agent.astream(
-            stream_input,
-            config=config,
-            stream_mode=["messages", "updates"],
-        ):
-            if stream_mode == "messages":
-                # Handle streaming message chunks (AIMessageChunk)
-                message, metadata = data
-                if isinstance(message, AIMessageChunk):
-                    await self._handle_ai_message_chunk(params, message)
-            elif stream_mode == "updates":
-                # Handle completed node updates
-                for node_name, update in data.items():
-                    # Check for interrupts
-                    if node_name == "__interrupt__":
-                        # Extract interrupts from the update
-                        interrupts.extend(update)
-                        continue
-
-                    # Only process model and tools nodes
-                    if node_name not in ("model", "tools"):
-                        continue
-
-                    # Handle todos from tools node
-                    if node_name == "tools" and "todos" in update:
-                        todos = update.get("todos", [])
-                        if todos:
-                            await self._handle_todo_update(params, todos)
-
-                    # Get messages from the update
-                    messages = update.get("messages", [])
-                    if not messages:
-                        continue
-
-                    # Process the last message from this node
-                    last_message = messages[-1]
-
-                    # Handle completed AI messages from model node
-                    if node_name == "model" and isinstance(last_message, AIMessage):
-                        # Check if this AIMessage has tool calls
-                        if last_message.tool_calls:
-                            await self._handle_completed_tool_calls(params, last_message)
-
-                    # Handle tool execution results from tools node
-                    elif node_name == "tools" and isinstance(last_message, ToolMessage):
-                        # Look up the original tool call by ID
-                        tool_call = self._tool_calls.get(last_message.tool_call_id)
-                        if tool_call:
-                            await self._handle_tool_message(params, tool_call, last_message)
-
-        return interrupts
-
     async def prompt(
         self,
-        params: PromptRequest,
-    ) -> PromptResponse:
-        """Handle a user prompt and stream responses."""
-        session_id = params.sessionId
-        session = self._sessions.get(session_id)
-
-        # Extract text from prompt content blocks
-        prompt_text = ""
-        for block in params.prompt:
-            if hasattr(block, "text"):
-                prompt_text += block.text
-            elif isinstance(block, dict) and "text" in block:
-                prompt_text += block["text"]
-
-        # Stream the agent's response
-        agent = session["agent"]
-        thread_id = session["thread_id"]
-        config = {"configurable": {"thread_id": thread_id}}
-
-        # Start with the initial user message
-        stream_input: dict[str, Any] | Command = {
-            "messages": [{"role": "user", "content": prompt_text}]
-        }
-
-        # Loop until there are no more interrupts
-        while True:
-            # Stream and collect any interrupts
-            interrupts = await self._stream_and_handle_updates(params, agent, stream_input, config)
-
-            # If no interrupts, we're done
-            if not interrupts:
-                break
-
-            # Process each interrupt and collect decisions
-            all_decisions = []
-            for interrupt in interrupts:
-                decisions = await self._handle_interrupt(params, interrupt)
-                all_decisions.extend(decisions)
-
-            # Prepare to resume with the collected decisions
-            stream_input = Command(resume={"decisions": all_decisions})
-
-        return PromptResponse(stopReason="end_turn")
-
-    async def authenticate(self, params: Any) -> Any | None:
-        """Authenticate (optional)."""
-        # Authentication not required for now
-        return None
-
-    async def extMethod(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
-        """Handle extension methods (optional)."""
-        raise NotImplementedError(f"Extension method {method} not supported")
-
-    async def extNotification(self, method: str, params: dict[str, Any]) -> None:
-        """Handle extension notifications (optional)."""
-        pass
-
-    async def cancel(self, params: CancelNotification) -> None:
-        """Cancel a running session."""
-        # TODO: Implement cancellation logic
-        pass
-
-    async def loadSession(
-        self,
-        params: LoadSessionRequest,
-    ) -> LoadSessionResponse | None:
-        """Load an existing session (optional)."""
-        # Not implemented yet - would need to serialize/deserialize session state
-        return None
-
-    async def setSessionMode(
-        self,
-        params: SetSessionModeRequest,
-    ) -> SetSessionModeResponse | None:
-        """Set session mode (optional)."""
-        # Could be used to switch between different agent modes
-        return None
-
-    async def setSessionModel(
-        self,
-        params: SetSessionModelRequest,
-    ) -> SetSessionModelResponse | None:
-        """Set session model (optional)."""
-        # Not supported - model is configured at agent graph creation time
-        return None
-
-
-async def main() -> None:
-    """Main entry point for running the ACP server."""
-    # from deepagents_cli.agent import create_agent_with_config
-    # from deepagents_cli.config import create_model
-    # from deepagents_cli.tools import fetch_url, http_request, web_search
-    #
-    # # Create model using CLI configuration
-    # model = create_model()
-    #
-    # # Setup tools - conditionally include web_search if Tavily is available
-    # tools = [http_request, fetch_url]
-    # if os.environ.get("TAVILY_API_KEY"):
-    #     tools.append(web_search)
-    #
-    # # Create CLI agent with shell access and other CLI features
-    # # Using default assistant_id "agent" for ACP server
-    # agent_graph, composite_backend = create_agent_with_config(
-    #     model=model,
-    #     assistant_id="agent",
-    #     tools=tools,
-    #     sandbox=None,  # Local mode
-    #     sandbox_type=None,
-    #     system_prompt=None,  # Use default CLI system prompt
-    #     auto_approve=False,  # Require user approval for destructive operations
-    #     enable_memory=True,  # Enable persistent memory
-    #     enable_skills=True,  # Enable custom skills
-    #     enable_shell=True,  # Enable shell access
-    # )
-    #
-    # Define default tools
-
-    from langchain.agents.middleware import HumanInTheLoopMiddleware
-
-    @tool()
-    def get_weather(location: str) -> str:
-        """Get the weather for a given location."""
-        return f"The weather in {location} is sunny with a high of 75°F."
-
-    # Create the agent graph with default configuration
-    model = ChatAnthropic(
-        model_name="claude-sonnet-4-5-20250929",
-        max_tokens=20000,
-    )
-
-    agent_graph = create_deep_agent(
-        model=model,
-        tools=[get_weather],
-        checkpointer=InMemorySaver(),
-        middleware=[
-            HumanInTheLoopMiddleware(
-                interrupt_on={
-                    "get_weather": True,
-                }
-            )
+        prompt: list[
+            TextContentBlock
+            | ImageContentBlock
+            | AudioContentBlock
+            | ResourceContentBlock
+            | EmbeddedResourceContentBlock
         ],
-    )
+        session_id: str,
+        **kwargs: Any,
+    ) -> PromptResponse:
+        if self._agent is None:
+            cwd = self._session_cwds.get(session_id)
+            if cwd is not None:
+                self._cwd = cwd
+            if isinstance(self._agent_factory, CompiledStateGraph):
+                self._agent = self._agent_factory
+            else:
+                mode = self._session_modes.get(
+                    session_id,
+                    self._modes.current_mode_id if self._modes is not None else "auto",
+                )
+                context = AgentSessionContext(cwd=self._cwd, mode=mode)
+                self._agent = self._agent_factory(context)
 
-    # Start the ACP server
-    reader, writer = await stdio_streams()
-    AgentSideConnection(lambda conn: DeepagentsACP(conn, agent_graph), writer, reader)
-    await asyncio.Event().wait()
+            if getattr(self._agent, "checkpointer", None) is None:
+                self._agent.checkpointer = MemorySaver()
+
+        # Reset cancellation flag for new prompt
+        self._cancelled = False
+
+        # Convert ACP content blocks to LangChain multimodal content format
+        content_blocks = []
+
+        for block in prompt:
+            if isinstance(block, TextContentBlock):
+                content_blocks.extend(convert_text_block_to_content_blocks(block))
+            elif isinstance(block, ImageContentBlock):
+                content_blocks.extend(convert_image_block_to_content_blocks(block))
+            elif isinstance(block, AudioContentBlock):
+                content_blocks.extend(convert_audio_block_to_content_blocks(block))
+            elif isinstance(block, ResourceContentBlock):
+                content_blocks.extend(
+                    convert_resource_block_to_content_blocks(block, root_dir=self._cwd)
+                )
+            elif isinstance(block, EmbeddedResourceContentBlock):
+                content_blocks.extend(convert_embedded_resource_block_to_content_blocks(block))
+        # Stream the deep agent response with multimodal content
+        config: RunnableConfig = {"configurable": {"thread_id": session_id}}
+
+        # Track active tool calls and accumulate chunks by index
+        active_tool_calls = {}
+        tool_call_accumulator = {}  # index -> {id, name, args_str}
+
+        current_state = None
+        user_decisions = []
+
+        while current_state is None or current_state.interrupts:
+            # Check for cancellation
+            if self._cancelled:
+                self._cancelled = False  # Reset for next prompt
+                return PromptResponse(stop_reason="cancelled")
+
+            async for stream_chunk in self._agent.astream(
+                Command(resume={"decisions": user_decisions})
+                if user_decisions
+                else {"messages": [{"role": "user", "content": content_blocks}]},
+                config=config,
+                stream_mode=["messages", "updates"],
+                subgraphs=True,
+            ):
+                if not isinstance(stream_chunk, tuple) or len(stream_chunk) != 3:
+                    continue
+
+                _namespace, stream_mode, data = stream_chunk
+                # Check for cancellation during streaming
+                if self._cancelled:
+                    self._cancelled = False  # Reset for next prompt
+                    return PromptResponse(stop_reason="cancelled")
+
+                if stream_mode == "updates":
+                    updates = data
+                    if isinstance(updates, dict) and "__interrupt__" in updates:
+                        interrupt_objs = updates.get("__interrupt__")
+                        if interrupt_objs:
+                            for interrupt_obj in interrupt_objs:
+                                interrupt_value = interrupt_obj.value
+                                if not isinstance(interrupt_value, dict):
+                                    raise RequestError(
+                                        -32600,
+                                        (
+                                            "ACP limitation: this agent raised a free-form "
+                                            "LangGraph interrupt(), which ACP cannot display.\n\n"
+                                            "ACP only supports human-in-the-loop permission "
+                                            "prompts with a fixed set of decisions "
+                                            "(approve/reject/edit).\n"
+                                            "Spec: https://agentclientprotocol.com/protocol/overview\n\n"
+                                            "Fix: use LangChain HumanInTheLoopMiddleware-style "
+                                            "interrupts (action_requests/review_configs).\n"
+                                            "Docs: https://docs.langchain.com/oss/python/langchain/"
+                                            "human-in-the-loop\n\n"
+                                            "This is a protocol limitation, not a bug in the agent."
+                                        ),
+                                        {"interrupt_value": interrupt_value},
+                                    )
+
+                            current_state = await self._agent.aget_state(config)
+                            user_decisions = await self._handle_interrupts(
+                                current_state=current_state,
+                                session_id=session_id,
+                            )
+                            break
+
+                    for node_name, update in updates.items():
+                        if node_name == "tools" and isinstance(update, dict) and "todos" in update:
+                            todos = update.get("todos", [])
+                            if todos:
+                                await self._handle_todo_update(session_id, todos, log_plan=False)
+
+                    continue
+
+                message_chunk, metadata = data
+
+                # Process tool call chunks
+                await self._process_tool_call_chunks(
+                    session_id,
+                    message_chunk,
+                    active_tool_calls,
+                    tool_call_accumulator,
+                )
+
+                if isinstance(message_chunk, str):
+                    if not _namespace:
+                        await self._log_text(text=message_chunk, session_id=session_id)
+                # Check for tool results (ToolMessage responses)
+                elif hasattr(message_chunk, "type") and message_chunk.type == "tool":
+                    # This is a tool result message
+                    tool_call_id = getattr(message_chunk, "tool_call_id", None)
+                    if tool_call_id and tool_call_id in active_tool_calls:
+                        if active_tool_calls[tool_call_id].get("name") != "edit_file":
+                            # Update the tool call with completion status and result
+                            content = getattr(message_chunk, "content", "")
+                            update = update_tool_call(
+                                tool_call_id=tool_call_id,
+                                status="completed",
+                                content=[tool_content(text_block(str(content)))],
+                            )
+                            await self._conn.session_update(
+                                session_id=session_id, update=update, source="DeepAgent"
+                            )
+
+                elif message_chunk.content:
+                    # content can be a string or a list of content blocks
+                    if isinstance(message_chunk.content, str):
+                        text = message_chunk.content
+                    elif isinstance(message_chunk.content, list):
+                        # Extract text from content blocks
+                        text = ""
+                        for block in message_chunk.content:
+                            if isinstance(block, dict) and block.get("type") == "text":
+                                text += block.get("text", "")
+                            elif isinstance(block, str):
+                                text += block
+                    else:
+                        text = str(message_chunk.content)
+
+                    if text and not _namespace:
+                        await self._log_text(text=text, session_id=session_id)
+
+            # Check if the agent is interrupted (waiting for HITL approval)
+            current_state = await self._agent.aget_state(config)
+            user_decisions = await self._handle_interrupts(
+                current_state=current_state,
+                session_id=session_id,
+            )
+
+        return PromptResponse(stop_reason="end_turn")
+
+    async def _handle_interrupts(self, *, current_state: StateSnapshot, session_id: str):
+        user_decisions = []
+        if current_state.next and current_state.interrupts:
+            # Agent is interrupted, request permission from user
+            for interrupt in current_state.interrupts:
+                # Get the tool call info from the interrupt
+                tool_call_id = interrupt.id
+                interrupt_value = interrupt.value
+
+                # Extract action requests from interrupt_value
+                action_requests = []
+                if isinstance(interrupt_value, dict):
+                    # Deep Agents wraps tool calls in action_requests
+                    action_requests = interrupt_value.get("action_requests", [])
+
+                # Process each action request
+                for action in action_requests:
+                    tool_name = action.get("name", "tool")
+                    tool_args = action.get("args", {})
+
+                    # Check if this is write_todos - auto-approve updates to existing plan
+                    if tool_name == "write_todos" and isinstance(tool_args, dict):
+                        new_todos = tool_args.get("todos", [])
+
+                        # Auto-approve if there's an existing plan that's not fully completed
+                        if session_id in self._session_plans:
+                            existing_plan = self._session_plans[session_id]
+                            all_completed = self._all_tasks_completed(existing_plan)
+
+                            if not all_completed:
+                                # Plan is in progress, auto-approve updates
+                                # Store the updated plan (status and content may have changed)
+                                self._session_plans[session_id] = new_todos
+                                user_decisions.append({"type": "approve"})
+                                continue
+
+                    # Create a title for the permission request
+                    if tool_name == "write_todos":
+                        title = "Review Plan"
+                        # Log the plan text when requesting approval
+                        todos = tool_args.get("todos", [])
+                        plan_text = "## Plan\n\n"
+                        for i, todo in enumerate(todos, 1):
+                            content = todo.get("content", "")
+                            plan_text += f"{i}. {content}\n"
+                        await self._log_text(session_id=session_id, text=plan_text)
+                    elif tool_name == "edit_file" and isinstance(tool_args, dict):
+                        file_path = tool_args.get("file_path", "file")
+                        title = f"Edit `{file_path}`"
+                    elif tool_name == "write_file" and isinstance(tool_args, dict):
+                        file_path = tool_args.get("file_path", "file")
+                        title = f"Write `{file_path}`"
+                    else:
+                        title = tool_name
+
+                    # Create permission options
+                    options = [
+                        PermissionOption(
+                            option_id="approve",
+                            name="Approve",
+                            kind="allow_once",
+                        ),
+                        PermissionOption(
+                            option_id="reject",
+                            name="Reject",
+                            kind="reject_once",
+                        ),
+                    ]
+
+                    # Request permission from the client
+                    tool_call_update = ToolCallUpdate(
+                        tool_call_id=tool_call_id,
+                        title=title,
+                    )
+                    response = await self._conn.request_permission(
+                        session_id=session_id,
+                        tool_call=tool_call_update,
+                        options=options,
+                    )
+                    # Handle the user's decision
+                    if response.outcome.outcome == "selected":
+                        decision_type = response.outcome.option_id
+
+                        # If rejecting a plan, clear it and provide feedback
+                        if tool_name == "write_todos" and decision_type == "reject":
+                            await self._clear_plan(session_id)
+                            user_decisions.append(
+                                {
+                                    "type": decision_type,
+                                    "feedback": (
+                                        "The user rejected the plan. Please ask them for feedback "
+                                        "on how the plan can be improved, then create a new "
+                                        "and improved plan using this same write_todos tool."
+                                    ),
+                                }
+                            )
+                        elif tool_name == "write_todos" and decision_type == "approve":
+                            # Store the approved plan for future comparisons
+                            self._session_plans[session_id] = tool_args.get("todos", [])
+                            user_decisions.append({"type": decision_type})
+                        else:
+                            user_decisions.append({"type": decision_type})
+                    else:
+                        # User cancelled, treat as rejection
+                        user_decisions.append({"type": "reject"})
+
+                        # If cancelling a plan, clear it
+                        if tool_name == "write_todos":
+                            await self._clear_plan(session_id)
+            return user_decisions
 
 
-def cli_main() -> None:
-    """Synchronous CLI entry point for the ACP server."""
-    asyncio.run(main())
+async def _serve_test_agent(root_dir: str) -> None:
+    """Run test agent from the root of the repository with ACP integration."""
+    from dotenv import load_dotenv
 
+    load_dotenv()
 
-if __name__ == "__main__":
-    cli_main()
+    checkpointer: Checkpointer = MemorySaver()
+
+    def build_agent(context: AgentSessionContext) -> CompiledStateGraph:
+        """Agent factory based in the given root directory."""
+
+        _root_dir = context.cwd
+
+        def create_backend(run_time: ToolRuntime) -> CompositeBackend:
+            ephemeral_backend = StateBackend(run_time)
+            return CompositeBackend(
+                default=FilesystemBackend(root_dir=_root_dir, virtual_mode=True),
+                routes={
+                    "/memories/": ephemeral_backend,
+                    "/conversation_history/": ephemeral_backend,
+                },
+            )
+
+        return create_deep_agent(
+            model="openai:gpt-5.2",
+            checkpointer=checkpointer,
+            backend=create_backend,
+        )
+
+    acp_agent = AgentServerACP(agent=build_agent)
+    await run_acp_agent(acp_agent)

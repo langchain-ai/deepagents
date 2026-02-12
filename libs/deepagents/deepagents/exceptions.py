@@ -20,7 +20,4 @@ class EmptyContentError(ValueError):
 
     def __init__(self) -> None:
         """Initialize with standard error message."""
-        super().__init__(
-            "No content found in subagent messages. "
-            "This may indicate the LLM failed to respond properly."
-        )
+        super().__init__("No content found in subagent messages. This may indicate the LLM failed to respond properly.")

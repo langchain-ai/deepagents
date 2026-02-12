@@ -101,8 +101,8 @@ from langchain.agents.middleware.types import PrivateStateAttr
 if TYPE_CHECKING:
     from deepagents.backends.protocol import BACKEND_TYPES, BackendProtocol
 
-from collections.abc import Awaitable, Callable
-from typing import NotRequired, TypedDict
+from collections.abc import Awaitable, Callable, Sequence
+from typing import Any, Literal, NotRequired, TypedDict
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
@@ -110,9 +110,15 @@ from langchain.agents.middleware.types import (
     ModelRequest,
     ModelResponse,
 )
+from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
+from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.prebuilt import ToolRuntime
 from langgraph.runtime import Runtime
+from langgraph.types import Command
+
+from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
 
 from deepagents.middleware._utils import append_to_system_message
 
@@ -186,6 +192,18 @@ class SkillMetadata(TypedDict):
     - Space-delimited list of tool names
     """
 
+    context: Literal["fork"] | None
+    """Execution context. 'fork' spawns an isolated subagent. None (default) injects into current context.
+
+    Use ``context: fork`` for **imperative** skills that perform an action autonomously
+    (e.g., "run a code review", "deploy to staging"). The skill body becomes the subagent's
+    system prompt and ``args`` becomes the human message.
+
+    Skills that are **informational** (e.g., "here are coding guidelines to follow") should
+    use the default (``None``) so their content is injected into the current conversation
+    context for the agent to reference.
+    """
+
 
 class SkillsState(AgentState):
     """State for the skills middleware."""
@@ -193,12 +211,18 @@ class SkillsState(AgentState):
     skills_metadata: NotRequired[Annotated[list[SkillMetadata], PrivateStateAttr]]
     """List of loaded skill metadata from configured sources. Not propagated to parent agents."""
 
+    loaded_skills: NotRequired[Annotated[dict[str, str], PrivateStateAttr]]
+    """Mapping of skill name to loaded SKILL.md body content. Not propagated to parent agents."""
 
-class SkillsStateUpdate(TypedDict):
+
+class SkillsStateUpdate(TypedDict, total=False):
     """State update for the skills middleware."""
 
     skills_metadata: list[SkillMetadata]
     """List of loaded skill metadata to merge into state."""
+
+    loaded_skills: dict[str, str]
+    """Mapping of skill name to loaded SKILL.md body content."""
 
 
 def _validate_skill_name(name: str, directory_name: str) -> tuple[bool, str]:
@@ -336,6 +360,18 @@ def _parse_skill_metadata(
         )
         compatibility_str = compatibility_str[:MAX_SKILL_COMPATIBILITY_LENGTH]
 
+    raw_context = frontmatter_data.get("context")
+    context: Literal["fork"] | None = None
+    if raw_context is not None:
+        if str(raw_context).strip() == "fork":
+            context = "fork"
+        else:
+            logger.warning(
+                "Ignoring unknown context '%s' in %s (only 'fork' is supported)",
+                raw_context,
+                skill_path,
+            )
+
     return SkillMetadata(
         name=str(name),
         description=description_str,
@@ -344,6 +380,7 @@ def _parse_skill_metadata(
         license=str(frontmatter_data.get("license", "")).strip() or None,
         compatibility=compatibility_str,
         allowed_tools=allowed_tools,
+        context=context,
     )
 
 
@@ -373,6 +410,19 @@ def _validate_metadata(
             )
         return {}
     return {str(k): str(v) for k, v in raw.items()}
+
+
+def _extract_skill_body(content: str) -> str:
+    """Strip YAML frontmatter from SKILL.md content and return the body.
+
+    Args:
+        content: Full SKILL.md content with YAML frontmatter.
+
+    Returns:
+        The body content after the frontmatter, stripped of leading whitespace.
+    """
+    frontmatter_pattern = r"^---\s*\n.*?\n---\s*\n"
+    return re.sub(frontmatter_pattern, "", content, count=1, flags=re.DOTALL).strip()
 
 
 def _format_skill_annotations(skill: SkillMetadata) -> str:
@@ -554,6 +604,18 @@ async def _alist_skills(backend: BackendProtocol, source_path: str) -> list[Skil
     return skills
 
 
+SKILL_TOOL_DESCRIPTION = """Invoke a skill by name. Skills provide specialized capabilities and domain knowledge.
+
+How to invoke:
+- Use the `skill` parameter with the skill name (e.g., skill="web-research")
+- Optionally pass `args` with additional context or instructions for the skill
+
+Examples:
+- skill="web-research" — load the web-research skill into the current context
+- skill="code-review", args="Review the authentication module" — invoke the code-review skill with specific instructions
+
+Skills marked with [fork] run in an isolated subagent and return a result. All other skills are loaded into the current conversation context for you to follow."""
+
 SKILLS_SYSTEM_PROMPT = """
 
 ## Skills System
@@ -566,34 +628,23 @@ You have access to a skills library that provides specialized capabilities and d
 
 {skills_list}
 
-**How to Use Skills (Progressive Disclosure):**
+**How to Use Skills:**
 
-Skills follow a **progressive disclosure** pattern - you see their name and description above, but only read full instructions when needed:
+Use the `skill` tool to load or invoke a skill by name.
 
 1. **Recognize when a skill applies**: Check if the user's task matches a skill's description
-2. **Read the skill's full instructions**: Use the path shown in the skill list above
-3. **Follow the skill's instructions**: SKILL.md contains step-by-step workflows, best practices, and examples
+2. **Invoke the skill**: Call the `skill` tool with the skill name (e.g., `skill="web-research"`)
+3. **Follow the skill's instructions**: Once loaded, the skill's full instructions appear in your context
 4. **Access supporting files**: Skills may include helper scripts, configs, or reference docs - use absolute paths
+
+Skills marked with `[fork]` run in an isolated subagent. Pass `args` with instructions for the subagent.
 
 **When to Use Skills:**
 - User's request matches a skill's domain (e.g., "research X" -> web-research skill)
 - You need specialized knowledge or structured workflows
 - A skill provides proven patterns for complex tasks
 
-**Executing Skill Scripts:**
-Skills may contain Python scripts or other executable files. Always use absolute paths from the skill list.
-
-**Example Workflow:**
-
-User: "Can you research the latest developments in quantum computing?"
-
-1. Check available skills -> See "web-research" skill with its path
-2. Read the skill using the path shown
-3. Follow the skill's research workflow (search -> organize -> synthesize)
-4. Use any helper scripts with absolute paths
-
-Remember: Skills make you more capable and consistent. When in doubt, check if a skill exists for the task!
-"""
+{loaded_skills_section}"""
 
 
 class SkillsMiddleware(AgentMiddleware):
@@ -628,7 +679,14 @@ class SkillsMiddleware(AgentMiddleware):
 
     state_schema = SkillsState
 
-    def __init__(self, *, backend: BACKEND_TYPES, sources: list[str]) -> None:
+    def __init__(
+        self,
+        *,
+        backend: BACKEND_TYPES,
+        sources: list[str],
+        model: str | BaseChatModel | None = None,
+        tools: Sequence[BaseTool | Callable | dict[str, Any]] | None = None,
+    ) -> None:
         """Initialize the skills middleware.
 
         Args:
@@ -638,10 +696,18 @@ class SkillsMiddleware(AgentMiddleware):
                 Use a factory for StateBackend: `lambda rt: StateBackend(rt)`
             sources: List of skill source paths (e.g.,
                 `['/skills/user/', '/skills/project/']`).
+            model: Model for fork-context skills. Required only if any skills
+                use `context: fork`.
+            tools: Tools to pass to fork-context skill subagents.
         """
         self._backend = backend
         self.sources = sources
+        self._model = model
+        self._tools = list(tools) if tools else []
         self.system_prompt_template = SKILLS_SYSTEM_PROMPT
+
+        skill_tool = self._create_skill_tool()
+        self.tools = [skill_tool]
 
     def _get_backend(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> BackendProtocol:
         """Resolve backend from instance or factory.
@@ -671,6 +737,202 @@ class SkillsMiddleware(AgentMiddleware):
 
         return self._backend
 
+    def _get_backend_from_tool_runtime(self, runtime: ToolRuntime) -> BackendProtocol:
+        """Resolve backend from tool runtime context.
+
+        Args:
+            runtime: The tool runtime context.
+
+        Returns:
+            Resolved backend instance.
+        """
+        if callable(self._backend):
+            return self._backend(runtime)
+        return self._backend
+
+    def _create_skill_tool(self) -> BaseTool:
+        """Create the `skill` tool for loading/invoking skills.
+
+        Returns:
+            A StructuredTool that loads or invokes skills by name.
+        """
+        middleware = self
+
+        def _find_skill(skill_name: str, runtime: ToolRuntime) -> SkillMetadata | None:
+            """Find a skill by name from the current state."""
+            skills_metadata: list[SkillMetadata] = runtime.state.get("skills_metadata", [])
+            for skill in skills_metadata:
+                if skill["name"] == skill_name:
+                    return skill
+            return None
+
+        def _download_skill_body(skill: SkillMetadata, backend: BackendProtocol) -> str | None:
+            """Download and extract the body from a SKILL.md file."""
+            responses = backend.download_files([skill["path"]])
+            if responses[0].error or responses[0].content is None:
+                return None
+            try:
+                content = responses[0].content.decode("utf-8")
+            except UnicodeDecodeError:
+                return None
+            return _extract_skill_body(content)
+
+        async def _adownload_skill_body(skill: SkillMetadata, backend: BackendProtocol) -> str | None:
+            """Download and extract the body from a SKILL.md file (async)."""
+            responses = await backend.adownload_files([skill["path"]])
+            if responses[0].error or responses[0].content is None:
+                return None
+            try:
+                content = responses[0].content.decode("utf-8")
+            except UnicodeDecodeError:
+                return None
+            return _extract_skill_body(content)
+
+        def _create_fork_subagent(body: str, args: str) -> Command:
+            """Create and invoke a fork subagent synchronously."""
+            from langchain.agents import create_agent
+            from langchain.agents.middleware import TodoListMiddleware
+
+            from deepagents.middleware.filesystem import FilesystemMiddleware
+            from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
+            from deepagents.middleware.summarization import SummarizationMiddleware
+
+            model = middleware._model
+            if model is None:
+                msg = "SkillsMiddleware requires `model` to be set for fork-context skills"
+                raise ValueError(msg)
+            if isinstance(model, str):
+                from langchain.chat_models import init_chat_model
+
+                model = init_chat_model(model)
+
+            fork_middleware: list[AgentMiddleware] = [
+                TodoListMiddleware(),
+                FilesystemMiddleware(backend=middleware._backend),
+                SummarizationMiddleware(model=model, backend=middleware._backend),
+                AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
+                PatchToolCallsMiddleware(),
+            ]
+
+            subagent = create_agent(
+                model,
+                system_prompt=body,
+                tools=middleware._tools,
+                middleware=fork_middleware,
+                name="skill-fork",
+            )
+            result = subagent.invoke({"messages": [HumanMessage(content=args)]})
+            return result["messages"][-1].text.rstrip() if result["messages"][-1].text else ""
+
+        async def _acreate_fork_subagent(body: str, args: str) -> str:
+            """Create and invoke a fork subagent asynchronously."""
+            from langchain.agents import create_agent
+            from langchain.agents.middleware import TodoListMiddleware
+
+            from deepagents.middleware.filesystem import FilesystemMiddleware
+            from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
+            from deepagents.middleware.summarization import SummarizationMiddleware
+
+            model = middleware._model
+            if model is None:
+                msg = "SkillsMiddleware requires `model` to be set for fork-context skills"
+                raise ValueError(msg)
+            if isinstance(model, str):
+                from langchain.chat_models import init_chat_model
+
+                model = init_chat_model(model)
+
+            fork_middleware: list[AgentMiddleware] = [
+                TodoListMiddleware(),
+                FilesystemMiddleware(backend=middleware._backend),
+                SummarizationMiddleware(model=model, backend=middleware._backend),
+                AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
+                PatchToolCallsMiddleware(),
+            ]
+
+            subagent = create_agent(
+                model,
+                system_prompt=body,
+                tools=middleware._tools,
+                middleware=fork_middleware,
+                name="skill-fork",
+            )
+            result = await subagent.ainvoke({"messages": [HumanMessage(content=args)]})
+            return result["messages"][-1].text.rstrip() if result["messages"][-1].text else ""
+
+        def skill_fn(
+            skill: Annotated[str, "The name of the skill to invoke."],
+            runtime: ToolRuntime,
+            args: Annotated[str, "Optional arguments or instructions for the skill."] = "",
+        ) -> str | Command:
+            skill_meta = _find_skill(skill, runtime)
+            if skill_meta is None:
+                available = [s["name"] for s in runtime.state.get("skills_metadata", [])]
+                return f"Skill '{skill}' not found. Available skills: {', '.join(available) or 'none'}"
+
+            backend = middleware._get_backend_from_tool_runtime(runtime)
+            body = _download_skill_body(skill_meta, backend)
+            if body is None:
+                return f"Failed to load skill '{skill}': could not download SKILL.md"
+
+            if skill_meta.get("context") == "fork":
+                fork_result = _create_fork_subagent(body, args or f"Execute the {skill} skill.")
+                return Command(
+                    update={
+                        "messages": [ToolMessage(fork_result, tool_call_id=runtime.tool_call_id)],
+                    }
+                )
+
+            # Inline mode: update loaded_skills state
+            loaded = dict(runtime.state.get("loaded_skills", {}))
+            loaded[skill] = body
+            return Command(
+                update={
+                    "loaded_skills": loaded,
+                    "messages": [ToolMessage(f"Skill '{skill}' loaded. Follow the instructions now in your context.", tool_call_id=runtime.tool_call_id)],
+                }
+            )
+
+        async def askill_fn(
+            skill: Annotated[str, "The name of the skill to invoke."],
+            runtime: ToolRuntime,
+            args: Annotated[str, "Optional arguments or instructions for the skill."] = "",
+        ) -> str | Command:
+            skill_meta = _find_skill(skill, runtime)
+            if skill_meta is None:
+                available = [s["name"] for s in runtime.state.get("skills_metadata", [])]
+                return f"Skill '{skill}' not found. Available skills: {', '.join(available) or 'none'}"
+
+            backend = middleware._get_backend_from_tool_runtime(runtime)
+            body = await _adownload_skill_body(skill_meta, backend)
+            if body is None:
+                return f"Failed to load skill '{skill}': could not download SKILL.md"
+
+            if skill_meta.get("context") == "fork":
+                fork_result = await _acreate_fork_subagent(body, args or f"Execute the {skill} skill.")
+                return Command(
+                    update={
+                        "messages": [ToolMessage(fork_result, tool_call_id=runtime.tool_call_id)],
+                    }
+                )
+
+            # Inline mode: update loaded_skills state
+            loaded = dict(runtime.state.get("loaded_skills", {}))
+            loaded[skill] = body
+            return Command(
+                update={
+                    "loaded_skills": loaded,
+                    "messages": [ToolMessage(f"Skill '{skill}' loaded. Follow the instructions now in your context.", tool_call_id=runtime.tool_call_id)],
+                }
+            )
+
+        return StructuredTool.from_function(
+            name="skill",
+            func=skill_fn,
+            coroutine=askill_fn,
+            description=SKILL_TOOL_DESCRIPTION,
+        )
+
     def _format_skills_locations(self) -> str:
         """Format skills locations for display in system prompt."""
         locations = []
@@ -691,15 +953,32 @@ class SkillsMiddleware(AgentMiddleware):
         lines = []
         for skill in skills:
             annotations = _format_skill_annotations(skill)
-            desc_line = f"- **{skill['name']}**: {skill['description']}"
+            fork_indicator = " [fork]" if skill.get("context") == "fork" else ""
+            desc_line = f"- **{skill['name']}**{fork_indicator}: {skill['description']}"
             if annotations:
                 desc_line += f" ({annotations})"
             lines.append(desc_line)
             if skill["allowed_tools"]:
                 lines.append(f"  -> Allowed tools: {', '.join(skill['allowed_tools'])}")
-            lines.append(f"  -> Read `{skill['path']}` for full instructions")
 
         return "\n".join(lines)
+
+    def _format_loaded_skills_section(self, loaded_skills: dict[str, str]) -> str:
+        """Format loaded skill bodies for injection into system prompt.
+
+        Args:
+            loaded_skills: Mapping of skill name to loaded SKILL.md body content.
+
+        Returns:
+            Formatted string with loaded skill bodies wrapped in XML tags.
+        """
+        if not loaded_skills:
+            return ""
+
+        sections = ["**Active Skills:**\n"]
+        for name, body in loaded_skills.items():
+            sections.append(f'<skill name="{name}">\n{body}\n</skill>')
+        return "\n".join(sections)
 
     def modify_request(self, request: ModelRequest) -> ModelRequest:
         """Inject skills documentation into a model request's system message.
@@ -711,12 +990,15 @@ class SkillsMiddleware(AgentMiddleware):
             New model request with skills documentation injected into system message
         """
         skills_metadata = request.state.get("skills_metadata", [])
+        loaded_skills = request.state.get("loaded_skills", {})
         skills_locations = self._format_skills_locations()
         skills_list = self._format_skills_list(skills_metadata)
+        loaded_skills_section = self._format_loaded_skills_section(loaded_skills)
 
         skills_section = self.system_prompt_template.format(
             skills_locations=skills_locations,
             skills_list=skills_list,
+            loaded_skills_section=loaded_skills_section,
         )
 
         new_system_message = append_to_system_message(request.system_message, skills_section)
@@ -756,7 +1038,7 @@ class SkillsMiddleware(AgentMiddleware):
                 all_skills[skill["name"]] = skill
 
         skills = list(all_skills.values())
-        return SkillsStateUpdate(skills_metadata=skills)
+        return SkillsStateUpdate(skills_metadata=skills, loaded_skills={})
 
     async def abefore_agent(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> SkillsStateUpdate | None:
         """Load skills metadata before agent execution (async).
@@ -791,7 +1073,7 @@ class SkillsMiddleware(AgentMiddleware):
                 all_skills[skill["name"]] = skill
 
         skills = list(all_skills.values())
-        return SkillsStateUpdate(skills_metadata=skills)
+        return SkillsStateUpdate(skills_metadata=skills, loaded_skills={})
 
     def wrap_model_call(
         self,
@@ -828,4 +1110,4 @@ class SkillsMiddleware(AgentMiddleware):
         return await handler(modified_request)
 
 
-__all__ = ["SkillMetadata", "SkillsMiddleware"]
+__all__ = ["SkillMetadata", "SkillsMiddleware", "_extract_skill_body"]

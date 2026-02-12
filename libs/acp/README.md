@@ -2,7 +2,7 @@
 
 This repo contains an [Agent Client Protocol (ACP)](https://agentclientprotocol.com/overview/introduction) connector that allows you to run a Python [DeepAgent](https://docs.langchain.com/oss/python/deepagents/overview) within a text editor that supports ACP such as [Zed](https://zed.dev/).
 
-The Deep Agent lives as code in `deepagents_acp/agent.py`, and can interact with the files of a project you have open in your ACP-compatible editor.
+The Deep Agent lives as code in `deepagents_acp/server.py`, and can interact with the files of a project you have open in your ACP-compatible editor.
 
 ![Deep Agents ACP Demo](./static/img/deepagentsacp.gif)
 
@@ -61,3 +61,49 @@ Now, open Zed's Agents Panel (e.g. with `CMD + Shift + ?`). You should see an op
 ![](./static/img/newdeepagent.png)
 
 And that's it! You can now use the DeepAgent in Zed to interact with your project.
+
+## Launch a custom DeepAgent with ACP
+
+```sh
+uv add deepagents-acp
+```
+
+```python
+import asyncio
+
+from acp import run_agent
+from deepagents import create_deep_agent
+from langgraph.checkpoint.memory import MemorySaver
+
+from deepagents_acp.server import AgentServerACP
+
+
+async def get_weather(city: str) -> str:
+    """Get weather for a given city."""
+    return f"It's always sunny in {city}!"
+
+
+async def main() -> None:
+    agent = create_deep_agent(
+        tools=[get_weather],
+        system_prompt="You are a helpful assistant",
+        checkpointer=MemorySaver(),
+    )
+    server = AgentServerACP(agent)
+    await run_agent(server)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+### Launch with Toad
+
+```sh
+uv tool install -U batrachian-toad --python 3.14
+
+toad acp "python path/to/your_server.py" .
+# or
+toad acp "uv run python path/to/your_server.py" .
+```
+

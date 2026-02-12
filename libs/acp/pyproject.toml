@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "deepagents-acp"
-version = "0.0.1"
+version = "0.0.2"
 description = "Agent Client Protocol integration for Deep Agents"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -43,15 +43,13 @@ test = [
 
 
 
+
 [project.urls]
 Homepage = "https://docs.langchain.com/oss/python/deepagents/overview"
 Documentation = "https://reference.langchain.com/python/deepagents/"
 Repository = "https://github.com/langchain-ai/deepagents"
 Issues = "https://github.com/langchain-ai/deepagents/issues"
 Twitter = "https://x.com/LangChain"
-
-[project.scripts]
-deepagents-acp = "deepagents_acp.__main__:main"
 
 [tool.uv]
 package = true
@@ -70,3 +68,6 @@ known-first-party = ["deepagents_acp"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto" # or "strict"
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"

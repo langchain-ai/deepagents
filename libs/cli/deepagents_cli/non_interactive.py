@@ -38,9 +38,8 @@ from rich.text import Text
 from deepagents_cli.agent import DEFAULT_AGENT_NAME, create_cli_agent
 from deepagents_cli.config import (
     SHELL_TOOL_NAMES,
+    build_langsmith_thread_url,
     create_model,
-    fetch_langsmith_project_url,
-    get_langsmith_project_name,
     is_shell_command_allowed,
     settings,
 )
@@ -508,7 +507,7 @@ def _build_non_interactive_header(assistant_id: str, thread_id: str) -> Text:
     parts.append((" | ", "dim"))
 
     # Attempt to build a clickable thread link via LangSmith
-    thread_url = _get_thread_url(thread_id)
+    thread_url = build_langsmith_thread_url(thread_id)
     if thread_url:
         parts.extend(
             [
@@ -520,32 +519,6 @@ def _build_non_interactive_header(assistant_id: str, thread_id: str) -> Text:
         parts.append((f"Thread: {thread_id}", "dim"))
 
     return Text.assemble(*parts)
-
-
-def _get_thread_url(thread_id: str) -> str | None:
-    """Build a LangSmith thread URL if tracing is configured.
-
-    Delegates to shared helpers in `config` for env-var checks and the
-    LangSmith client call, avoiding duplication with the interactive
-    welcome banner.
-
-    Args:
-        thread_id: Thread identifier to build the URL for.
-
-    Returns:
-        Full thread URL string, or None if LangSmith is not configured.
-    """
-    project_name = get_langsmith_project_name()
-    if not project_name:
-        logger.debug("LangSmith project name not configured, skipping thread URL")
-        return None
-
-    project_url = fetch_langsmith_project_url(project_name)
-    if not project_url:
-        logger.debug("Could not fetch LangSmith project URL for %r", project_name)
-        return None
-
-    return f"{project_url.rstrip('/')}/t/{thread_id}"
 
 
 async def run_non_interactive(

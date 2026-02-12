@@ -1,10 +1,12 @@
 """Thread management using LangGraph's built-in checkpoint persistence."""
 
+import logging
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
+from typing import NotRequired, TypedDict
 
 import aiosqlite
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
@@ -12,6 +14,25 @@ from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from rich.table import Table
 
 from deepagents_cli.config import COLORS, console
+
+logger = logging.getLogger(__name__)
+
+
+class ThreadInfo(TypedDict):
+    """Thread metadata returned by `list_threads`."""
+
+    thread_id: str
+    """Unique identifier for the thread."""
+
+    agent_name: str | None
+    """Name of the agent that owns the thread."""
+
+    updated_at: str | None
+    """ISO timestamp of the last update."""
+
+    message_count: NotRequired[int]
+    """Number of messages in the thread."""
+
 
 # Patch aiosqlite.Connection to add is_alive() method required by
 # langgraph-checkpoint>=2.1.0
@@ -32,8 +53,11 @@ if not hasattr(aiosqlite.Connection, "is_alive"):
     aiosqlite.Connection.is_alive = _is_alive  # type: ignore[attr-defined]
 
 
-def _format_timestamp(iso_timestamp: str | None) -> str:
+def format_timestamp(iso_timestamp: str | None) -> str:
     """Format ISO timestamp for display (e.g., 'Dec 30, 6:10pm').
+
+    Args:
+        iso_timestamp: ISO 8601 timestamp string, or `None`.
 
     Returns:
         Formatted timestamp string or empty string if invalid.
@@ -49,6 +73,11 @@ def _format_timestamp(iso_timestamp: str | None) -> str:
             .replace("pm", "pm")
         )
     except (ValueError, TypeError):
+        logger.debug(
+            "Failed to parse timestamp %r; displaying as blank",
+            iso_timestamp,
+            exc_info=True,
+        )
         return ""
 
 
@@ -87,7 +116,7 @@ async def list_threads(
     agent_name: str | None = None,
     limit: int = 20,
     include_message_count: bool = False,
-) -> list[dict]:
+) -> list[ThreadInfo]:
     """List threads from checkpoints table.
 
     Args:
@@ -96,8 +125,8 @@ async def list_threads(
         include_message_count: Whether to include message counts.
 
     Returns:
-        List of thread dicts with `thread_id`, `agent_name`, `updated_at`,
-            and optionally `message_count`.
+        List of `ThreadInfo` dicts with `thread_id`, `agent_name`,
+            `updated_at`, and optionally `message_count`.
     """
     db_path = str(get_db_path())
     async with aiosqlite.connect(db_path, timeout=30.0) as conn:
@@ -131,8 +160,8 @@ async def list_threads(
 
         async with conn.execute(query, params) as cursor:
             rows = await cursor.fetchall()
-            threads = [
-                {"thread_id": r[0], "agent_name": r[1], "updated_at": r[2]}
+            threads: list[ThreadInfo] = [
+                ThreadInfo(thread_id=r[0], agent_name=r[1], updated_at=r[2])
                 for r in rows
             ]
 
@@ -185,7 +214,12 @@ async def _count_messages_from_checkpoint(
             messages = channel_values.get("messages", [])
             return len(messages)
         except (ValueError, TypeError, KeyError):
-            # If deserialization fails, fall back to 0
+            logger.warning(
+                "Failed to deserialize checkpoint for thread %s; "
+                "message count will show as 0",
+                thread_id,
+                exc_info=True,
+            )
             return 0
 
 
@@ -364,7 +398,7 @@ async def list_threads_command(
             t["thread_id"],
             t["agent_name"] or "unknown",
             str(t.get("message_count", 0)),
-            _format_timestamp(t.get("updated_at")),
+            format_timestamp(t.get("updated_at")),
         )
 
     console.print()

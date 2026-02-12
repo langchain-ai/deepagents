@@ -161,6 +161,9 @@ _glyphs_cache: Glyphs | None = None
 # Module-level cache for editable install detection
 _editable_cache: bool | None = None
 
+# Module-level cache for LangSmith project URL (None means "not yet fetched")
+_langsmith_url_cache: tuple[str, str | None] | None = None
+
 
 def _is_editable_install() -> bool:
     """Check if deepagents-cli is installed in editable mode.
@@ -973,8 +976,11 @@ def get_langsmith_project_name() -> str | None:
 def fetch_langsmith_project_url(project_name: str) -> str | None:
     """Fetch the LangSmith project URL via the LangSmith client.
 
-    This is a blocking network call. In async contexts, run it in a thread
-    (e.g. via `asyncio.to_thread`).
+    Results are cached at module level so repeated calls do not make additional
+    network requests. Failed lookups are also cached to avoid retries.
+
+    This is a blocking network call on the first invocation. In async
+    contexts, run it in a thread (e.g. via `asyncio.to_thread`).
 
     Returns None (with a debug log) on any expected failure: missing
     `langsmith` package, network errors, invalid project names, or client
@@ -986,6 +992,14 @@ def fetch_langsmith_project_url(project_name: str) -> str | None:
     Returns:
         Project URL string if found, None otherwise.
     """
+    global _langsmith_url_cache  # noqa: PLW0603
+
+    if _langsmith_url_cache is not None:
+        cached_name, cached_url = _langsmith_url_cache
+        if cached_name == project_name:
+            return cached_url
+        # Different project name — fall through to fetch.
+
     try:
         from langsmith import Client
 
@@ -996,9 +1010,42 @@ def fetch_langsmith_project_url(project_name: str) -> str | None:
             project_name,
             exc_info=True,
         )
+        _langsmith_url_cache = (project_name, None)
         return None
     else:
-        return project.url or None
+        url = project.url or None
+        _langsmith_url_cache = (project_name, url)
+        return url
+
+
+def build_langsmith_thread_url(thread_id: str) -> str | None:
+    """Build a full LangSmith thread URL if tracing is configured.
+
+    Combines `get_langsmith_project_name` and `fetch_langsmith_project_url`
+    into a single convenience helper.
+
+    Args:
+        thread_id: Thread identifier to build the URL for.
+
+    Returns:
+        Full thread URL string, or `None` if unavailable (LangSmith is not
+            configured or the project URL cannot be resolved.)
+    """
+    project_name = get_langsmith_project_name()
+    if not project_name:
+        return None
+
+    project_url = fetch_langsmith_project_url(project_name)
+    if not project_url:
+        return None
+
+    return f"{project_url.rstrip('/')}/t/{thread_id}"
+
+
+def reset_langsmith_url_cache() -> None:
+    """Reset the LangSmith URL cache (for testing)."""
+    global _langsmith_url_cache  # noqa: PLW0603
+    _langsmith_url_cache = None
 
 
 def get_default_coding_instructions() -> str:

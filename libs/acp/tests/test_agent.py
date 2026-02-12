@@ -45,8 +45,8 @@ class TestRunAgent:
     """Test suite for the serve_acp_stdio entry point function."""
 
     @pytest.mark.asyncio
-    async def test_run_agent_initializes_in_ask_before_edits_mode(self) -> None:
-        """Test that serve_acp_stdio starts with ask_before_edits mode by default."""
+    async def test_run_agent_initializes_in_accept_edits_mode(self) -> None:
+        """Test that serve_acp_stdio starts with accept_edits mode by default."""
         with patch("deepagents_acp.server.run_acp_agent", new_callable=AsyncMock) as mock_run:
             with patch("deepagents_acp.server.ACPAgentServer") as mock_agent_class:
                 mock_agent = MagicMock()
@@ -54,11 +54,11 @@ class TestRunAgent:
 
                 await serve_acp_stdio("/test/root")
 
-                # Verify ACPAgentServer was initialized with ask_before_edits mode
+                # Verify ACPAgentServer was initialized with accept_edits mode
                 mock_agent_class.assert_called_once()
                 call_kwargs = mock_agent_class.call_args[1]
                 assert call_kwargs["root_dir"] == "/test/root"
-                assert call_kwargs["mode"] == "ask_before_edits"
+                assert call_kwargs["mode"] == "accept_edits"
                 # MemorySaver is actually InMemorySaver in langgraph
                 assert "Saver" in call_kwargs["checkpointer"].__class__.__name__
 
@@ -99,15 +99,17 @@ class TestACPAgentServerModes:
             "edit_file": {"allowed_decisions": ["approve", "reject"]},
             "write_file": {"allowed_decisions": ["approve", "reject"]},
             "write_todos": {"allowed_decisions": ["approve", "reject"]},
+            "execute": {"allowed_decisions": ["approve", "reject"]},
         }
 
-    def test_auto_mode_config(self) -> None:
-        """Test interrupt configuration for auto mode."""
-        config = ACPAgentServer._get_interrupt_config("auto")
+    def test_accept_edits_mode_config(self) -> None:
+        """Test interrupt configuration for accept_edits mode."""
+        config = ACPAgentServer._get_interrupt_config("accept_edits")
 
-        # Auto mode only asks for permission on todos, not file operations
+        # accept_edits mode asks for permission on todos and execute, not file operations
         assert config == {
             "write_todos": {"allowed_decisions": ["approve", "reject"]},
+            "execute": {"allowed_decisions": ["approve", "reject"]},
         }
         assert "edit_file" not in config
         assert "write_file" not in config
@@ -140,54 +142,25 @@ class TestACPAgentServerInitialization:
             assert agent._cancelled is False
             assert agent._deepagent is not None
 
-    @pytest.mark.skip(reason="test not working yet.")
-    def test_create_deepagent_uses_filesystem_backend_with_virtual_mode(self) -> None:
-        """Test that _create_deepagent creates a FilesystemBackend with virtual_mode=True."""
-        with patch("deepagents_acp.server.FilesystemBackend") as mock_backend_class:
-            with patch("deepagents_acp.server.create_deep_agent") as mock_create:
-                mock_backend = MagicMock()
-                mock_backend_class.return_value = mock_backend
-                mock_create.return_value = MagicMock()
-                checkpointer = MemorySaver()
-
-                ACPAgentServer(
-                    root_dir="/test/root",
-                    mode="ask_before_edits",
-                    checkpointer=checkpointer,
-                )
-
-                # Verify FilesystemBackend was created with virtual_mode=True
-                mock_backend_class.assert_called_once_with(root_dir="/test/root", virtual_mode=True)
-
-                # Verify create_deep_agent was called with correct args
-                mock_create.assert_called_once()
-                call_kwargs = mock_create.call_args[1]
-                assert call_kwargs["checkpointer"] is checkpointer
-                assert call_kwargs["backend"] is mock_backend
-                assert call_kwargs["interrupt_on"] == {
-                    "edit_file": {"allowed_decisions": ["approve", "reject"]},
-                    "write_file": {"allowed_decisions": ["approve", "reject"]},
-                    "write_todos": {"allowed_decisions": ["approve", "reject"]},
-                }
-
-    def test_initialization_with_auto_mode(self) -> None:
-        """Test that ACPAgentServer can be initialized with auto mode."""
+    def test_initialization_with_accept_edits_mode(self) -> None:
+        """Test that ACPAgentServer can be initialized with accept_edits mode."""
         with patch("deepagents_acp.server.create_deep_agent") as mock_create:
             mock_create.return_value = MagicMock()
             checkpointer = MemorySaver()
 
             agent = ACPAgentServer(
                 root_dir="/test/root",
-                mode="auto",
+                mode="accept_edits",
                 checkpointer=checkpointer,
             )
 
-            assert agent._mode == "auto"
+            assert agent._mode == "accept_edits"
 
-            # Verify create_deep_agent was called with auto mode interrupt config
+            # Verify create_deep_agent was called with accept_edits mode interrupt config
             call_kwargs = mock_create.call_args[1]
             assert call_kwargs["interrupt_on"] == {
                 "write_todos": {"allowed_decisions": ["approve", "reject"]},
+                "execute": {"allowed_decisions": ["approve", "reject"]},
             }
 
     def test_on_connect_sets_connection(self):
@@ -238,13 +211,14 @@ class TestACPAgentServerInitialization:
 
             # Verify modes are returned
             assert response.modes is not None
-            assert len(response.modes.available_modes) == 2
+            assert len(response.modes.available_modes) == 3
             assert response.modes.current_mode_id == "ask_before_edits"
 
             # Verify mode details
             mode_ids = [m.id for m in response.modes.available_modes]
             assert "ask_before_edits" in mode_ids
-            assert "auto" in mode_ids
+            assert "accept_edits" in mode_ids
+            assert "accept_everything" in mode_ids
 
     @pytest.mark.asyncio
     async def test_set_session_mode_changes_mode(self):
@@ -262,10 +236,10 @@ class TestACPAgentServerInitialization:
             assert agent._mode == "ask_before_edits"
 
             # Change mode
-            await agent.set_session_mode(mode_id="auto", session_id="test-session")
+            await agent.set_session_mode(mode_id="accept_edits", session_id="test-session")
 
             # Verify mode changed
-            assert agent._mode == "auto"
+            assert agent._mode == "accept_edits"
 
             # Verify agent was recreated with new mode
             assert mock_create.call_count >= 2  # Once for init, once for mode change
@@ -573,18 +547,18 @@ class TestACPAgentServerEndToEnd:
             assert "write_file" in initial_interrupt_on
             assert "write_todos" in initial_interrupt_on
 
-            # Switch to auto mode
-            await agent.set_session_mode(mode_id="auto", session_id="test-session")
+            # Switch to accept_edits mode
+            await agent.set_session_mode(mode_id="accept_edits", session_id="test-session")
 
             # Verify mode switched
-            assert agent._mode == "auto"
+            assert agent._mode == "accept_edits"
 
             # Verify new agent was created with different interrupt config
             assert mock_create.call_count == initial_calls + 1
             new_interrupt_on = mock_create.call_args[1]["interrupt_on"]
             assert "edit_file" not in new_interrupt_on
             assert "write_file" not in new_interrupt_on
-            assert "write_todos" in new_interrupt_on  # Only todos in auto mode
+            assert "write_todos" in new_interrupt_on  # Only todos in accept_edits mode
 
 
 class TestACPAgentServerPlanApproval:

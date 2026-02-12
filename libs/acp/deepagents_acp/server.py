@@ -1,5 +1,6 @@
 import json
 import os
+import shlex
 from typing import Any
 from uuid import uuid4
 
@@ -61,6 +62,189 @@ from deepagents_acp.utils import (
 load_dotenv()
 
 
+def extract_command_types(command: str) -> list[str]:
+    """Extract all command types from a shell command, handling && separators.
+
+    For security-sensitive commands (python, node, npm, uv, etc.), includes the full
+    signature to avoid over-permissioning. Each sensitive command has a dedicated handler
+    that extracts the appropriate signature.
+
+    Signature extraction strategy:
+    - python/python3: Include module name for -m, just flag for -c
+    - node: Just flag for -e/-p (code execution)
+    - npm/yarn/pnpm: Include subcommand, and script name for "run"
+    - uv: Include subcommand, and tool name for "run"
+    - npx: Include package name
+    - Others: Just the base command
+
+    Args:
+        command: The full shell command string
+
+    Returns:
+        List of command signatures (base command + subcommand/module for sensitive commands)
+
+    Examples:
+        >>> extract_command_types("npm install")
+        ['npm install']
+        >>> extract_command_types("cd /path && python -m pytest tests/")
+        ['cd', 'python -m pytest']
+        >>> extract_command_types("python -m pip install package")
+        ['python -m pip']
+        >>> extract_command_types("python -c 'print(1)'")
+        ['python -c']
+        >>> extract_command_types("node -e 'console.log(1)'")
+        ['node -e']
+        >>> extract_command_types("uv run pytest")
+        ['uv run pytest']
+        >>> extract_command_types("npm run build")
+        ['npm run build']
+        >>> extract_command_types("ls -la | grep foo")
+        ['ls']
+        >>> extract_command_types("cd dir && npm install && npm test")
+        ['cd', 'npm install', 'npm test']
+    """
+    if not command or not command.strip():
+        return []
+
+    def extract_python_signature(tokens: list[str]) -> str:
+        """Extract signature for python/python3 commands."""
+        base_cmd = tokens[0]
+        if len(tokens) < 2:
+            return base_cmd
+
+        # python -m <module> -> "python -m <module>"
+        if tokens[1] == "-m" and len(tokens) > 2:
+            return f"{base_cmd} -m {tokens[2]}"
+        # python -c <code> -> "python -c" (code changes, just track the flag)
+        elif tokens[1] == "-c":
+            return f"{base_cmd} -c"
+        # python script.py -> "python" (just running a script)
+        else:
+            return base_cmd
+
+    def extract_node_signature(tokens: list[str]) -> str:
+        """Extract signature for node commands."""
+        base_cmd = tokens[0]
+        if len(tokens) < 2:
+            return base_cmd
+
+        # node -e <code> -> "node -e" (code changes, just track the flag)
+        if tokens[1] == "-e":
+            return f"{base_cmd} -e"
+        # node -p <code> -> "node -p" (code changes, just track the flag)
+        elif tokens[1] == "-p":
+            return f"{base_cmd} -p"
+        # node script.js -> "node" (just running a script)
+        else:
+            return base_cmd
+
+    def extract_npm_signature(tokens: list[str]) -> str:
+        """Extract signature for npm commands."""
+        base_cmd = tokens[0]
+        if len(tokens) < 2:
+            return base_cmd
+
+        subcommand = tokens[1]
+        # npm run <script> -> "npm run <script>" (include script name)
+        if subcommand == "run" and len(tokens) > 2:
+            return f"{base_cmd} run {tokens[2]}"
+        # npm install/test/etc -> "npm <subcommand>"
+        else:
+            return f"{base_cmd} {subcommand}"
+
+    def extract_uv_signature(tokens: list[str]) -> str:
+        """Extract signature for uv commands."""
+        base_cmd = tokens[0]
+        if len(tokens) < 2:
+            return base_cmd
+
+        subcommand = tokens[1]
+        # uv run <tool> -> "uv run <tool>" (include tool name)
+        if subcommand == "run" and len(tokens) > 2:
+            return f"{base_cmd} run {tokens[2]}"
+        # uv pip/add/sync/etc -> "uv <subcommand>"
+        else:
+            return f"{base_cmd} {subcommand}"
+
+    def extract_npx_signature(tokens: list[str]) -> str:
+        """Extract signature for npx commands."""
+        base_cmd = tokens[0]
+        # npx <package> -> "npx <package>" (always include package name)
+        if len(tokens) > 1:
+            return f"{base_cmd} {tokens[1]}"
+        else:
+            return base_cmd
+
+    def extract_yarn_pnpm_signature(tokens: list[str]) -> str:
+        """Extract signature for yarn/pnpm commands."""
+        base_cmd = tokens[0]
+        if len(tokens) < 2:
+            return base_cmd
+
+        subcommand = tokens[1]
+        # yarn/pnpm run <script> -> "yarn run <script>" (include script name)
+        if subcommand == "run" and len(tokens) > 2:
+            return f"{base_cmd} run {tokens[2]}"
+        # yarn/pnpm install/test/etc -> "yarn <subcommand>"
+        else:
+            return f"{base_cmd} {subcommand}"
+
+    # Command handlers for sensitive commands
+    COMMAND_HANDLERS = {
+        "python": extract_python_signature,
+        "python3": extract_python_signature,
+        "node": extract_node_signature,
+        "npm": extract_npm_signature,
+        "npx": extract_npx_signature,
+        "yarn": extract_yarn_pnpm_signature,
+        "pnpm": extract_yarn_pnpm_signature,
+        "uv": extract_uv_signature,
+    }
+
+    command_types = []
+
+    # Split by && to handle chained commands
+    and_segments = command.split("&&")
+
+    for segment in and_segments:
+        segment = segment.strip()
+        if not segment:
+            continue
+
+        try:
+            # Split by pipes and take the first segment
+            pipe_segments = segment.split("|")
+            first_pipe_segment = pipe_segments[0].strip()
+
+            # Parse the first segment to get the command
+            tokens = shlex.split(first_pipe_segment)
+            if not tokens:
+                continue
+
+            base_cmd = tokens[0]
+
+            # Use specific handler if available, otherwise just use base command
+            if base_cmd in COMMAND_HANDLERS:
+                signature = COMMAND_HANDLERS[base_cmd](tokens)
+                command_types.append(signature)
+            else:
+                # Non-sensitive commands - just use the base command
+                command_types.append(base_cmd)
+
+        except (ValueError, IndexError):
+            # If parsing fails, skip this segment
+            continue
+
+    return command_types
+
+
+def _truncate_execute_command_for_display(command: str) -> str:
+    """Truncate a command string to a maximum length"""
+    if len(command) >= 120:
+        return command[:120] + "..."
+    return command
+
+
 class ACPAgentServer(ACPAgent):
     _conn: Client
 
@@ -77,10 +261,13 @@ class ACPAgentServer(ACPAgent):
                 "edit_file": {"allowed_decisions": ["approve", "reject"]},
                 "write_file": {"allowed_decisions": ["approve", "reject"]},
                 "write_todos": {"allowed_decisions": ["approve", "reject"]},
+                "execute": {"allowed_decisions": ["approve", "reject"]},
             },
-            "auto": {
+            "accept_edits": {
                 "write_todos": {"allowed_decisions": ["approve", "reject"]},
+                "execute": {"allowed_decisions": ["approve", "reject"]},
             },
+            "accept_everything": {},
         }
         return mode_to_interrupt.get(mode_id, {})
 
@@ -129,6 +316,9 @@ class ACPAgentServer(ACPAgent):
         self._deepagent = self._create_deepagent(mode)
         self._cancelled = False
         self._session_plans: dict[str, list[dict[str, Any]]] = {}  # Track current plan per session
+        self._allowed_command_types: dict[
+            str, set[str]
+        ] = {}  # Track allowed command types per session
         super().__init__()
 
     def on_connect(self, conn: Client) -> None:
@@ -162,12 +352,17 @@ class ACPAgentServer(ACPAgent):
             SessionMode(
                 id="ask_before_edits",
                 name="Ask before edits",
-                description="Ask permission before edits and writes",
+                description="Ask permission before edits, writes, shell commands, and plans",
             ),
             SessionMode(
-                id="auto",
+                id="accept_edits",
                 name="Accept edits",
-                description="Auto-accept edit operations",
+                description="Auto-accept edit operations, but ask before shell commands and plans",
+            ),
+            SessionMode(
+                id="accept_everything",
+                name="Accept everything",
+                description="Auto-accept all operations without asking permission",
             ),
         ]
 
@@ -198,6 +393,54 @@ class ACPAgentServer(ACPAgent):
     async def _log_text(self, session_id: str, text: str):
         update = update_agent_message(text_block(text))
         await self._conn.session_update(session_id=session_id, update=update, source="DeepAgent")
+
+    def _format_execute_result(self, command: str, result: str) -> str:
+        """Format execute tool result for better display.
+
+        Args:
+            command: The shell command that was executed
+            result: The raw result string from the execute tool
+
+        Returns:
+            Formatted string with command, output, and exit code
+        """
+        # Parse the result to extract output and exit code
+        lines = result.split("\n")
+        output_lines = []
+        exit_code_line = None
+        truncated_line = None
+
+        for line in lines:
+            if line.startswith("[Command ") and "exit code" in line:
+                exit_code_line = line
+            elif line.startswith("[Output was truncated"):
+                truncated_line = line
+            else:
+                output_lines.append(line)
+
+        # Join output lines and strip trailing whitespace
+        output = "\n".join(output_lines).rstrip()
+
+        # Build formatted result
+        parts = []
+
+        # Add command section
+        parts.append(f"**Command:**\n```bash\n{command}\n```\n")
+
+        # Add output section
+        if output:
+            parts.append(f"**Output:**\n```\n{output}\n```\n")
+        else:
+            parts.append("**Output:** _(empty)_\n")
+
+        # Add status
+        if exit_code_line:
+            parts.append(f"**Status:** {exit_code_line.strip('[]')}")
+
+        if truncated_line:
+            parts.append(f"\n_{truncated_line.strip('[]')}_")
+
+        return "\n".join(parts)
 
     def _all_tasks_completed(self, plan: list[dict[str, Any]]) -> bool:
         """Check if all tasks in a plan are completed.
@@ -362,6 +605,7 @@ class ACPAgentServer(ACPAgent):
             "ls": "search",
             "glob": "search",
             "grep": "search",
+            "execute": "execute",
         }
         tool_kind = kind_map.get(tool_name, "other")
 
@@ -412,6 +656,18 @@ class ACPAgentServer(ACPAgent):
                 title=title,
                 kind=tool_kind,
                 status="pending",
+            )
+        elif tool_name == "execute" and isinstance(tool_args, dict):
+            command = tool_args.get("command", "")
+            # Truncate long commands for display
+            display_command = _truncate_execute_command_for_display(command=command)
+            title = f"Execute: `{display_command}`" if command else "Execute command"
+            return start_tool_call(
+                tool_call_id=tool_id,
+                title=title,
+                kind=tool_kind,
+                status="pending",
+                raw_input=tool_args,
             )
         else:
             title = tool_name
@@ -499,10 +755,23 @@ class ACPAgentServer(ACPAgent):
                         if active_tool_calls[tool_call_id].get("name") != "edit_file":
                             # Update the tool call with completion status and result
                             content = getattr(message_chunk, "content", "")
+                            tool_info = active_tool_calls[tool_call_id]
+                            tool_name = tool_info.get("name")
+
+                            # Format execute tool results specially
+                            if tool_name == "execute":
+                                tool_args = tool_info.get("args", {})
+                                command = tool_args.get("command", "")
+                                formatted_content = self._format_execute_result(
+                                    command, str(content)
+                                )
+                            else:
+                                formatted_content = str(content)
+
                             update = update_tool_call(
                                 tool_call_id=tool_call_id,
                                 status="completed",
-                                content=[tool_content(text_block(str(content)))],
+                                content=[tool_content(text_block(formatted_content))],
                             )
                             await self._conn.session_update(
                                 session_id=session_id, update=update, source="DeepAgent"
@@ -574,6 +843,23 @@ class ACPAgentServer(ACPAgent):
                                 user_decisions.append({"type": "approve"})
                                 continue
 
+                    # Check if this is an execute command with all command types allowed
+                    if tool_name == "execute" and isinstance(tool_args, dict):
+                        command = tool_args.get("command", "")
+                        command_types = extract_command_types(command)
+
+                        if command_types:
+                            # Check if ALL command types are already allowed for this session
+                            if session_id in self._allowed_command_types:
+                                all_allowed = all(
+                                    cmd_type in self._allowed_command_types[session_id]
+                                    for cmd_type in command_types
+                                )
+                                if all_allowed:
+                                    # Auto-approve this command
+                                    user_decisions.append({"type": "approve"})
+                                    continue
+
                     # Create a title for the permission request
                     if tool_name == "write_todos":
                         title = "Review Plan"
@@ -590,6 +876,11 @@ class ACPAgentServer(ACPAgent):
                     elif tool_name == "write_file" and isinstance(tool_args, dict):
                         file_path = tool_args.get("file_path", "file")
                         title = f"Write `{file_path}`"
+                    elif tool_name == "execute" and isinstance(tool_args, dict):
+                        command = tool_args.get("command", "")
+                        # Truncate long commands for display
+                        display_command = _truncate_execute_command_for_display(command=command)
+                        title = f"Execute: `{display_command}`" if command else "Execute command"
                     else:
                         title = tool_name
 
@@ -607,6 +898,29 @@ class ACPAgentServer(ACPAgent):
                         ),
                     ]
 
+                    # Add "Allow this command type" option for execute commands
+                    if tool_name == "execute" and isinstance(tool_args, dict):
+                        command = tool_args.get("command", "")
+                        command_types = extract_command_types(command)
+                        if command_types:
+                            # Create a descriptive name based on the command types
+                            if len(command_types) == 1:
+                                cmd_desc = f"`{command_types[0]}`"
+                            else:
+                                # Show all unique command types
+                                unique_types = list(
+                                    dict.fromkeys(command_types)
+                                )  # Preserve order, remove duplicates
+                                cmd_desc = ", ".join(f"`{ct}`" for ct in unique_types)
+
+                            options.append(
+                                PermissionOption(
+                                    option_id="allow_command_type",
+                                    name=f"Always allow {cmd_desc} commands",
+                                    kind="allow_always",
+                                )
+                            )
+
                     # Request permission from the client
                     tool_call_update = ToolCallUpdate(
                         tool_call_id=tool_call_id,
@@ -621,8 +935,21 @@ class ACPAgentServer(ACPAgent):
                     if response.outcome.outcome == "selected":
                         decision_type = response.outcome.option_id
 
+                        # Handle "allow command type" for execute commands
+                        if tool_name == "execute" and decision_type == "allow_command_type":
+                            command = tool_args.get("command", "")
+                            command_types = extract_command_types(command)
+                            if command_types:
+                                # Initialize the set if needed
+                                if session_id not in self._allowed_command_types:
+                                    self._allowed_command_types[session_id] = set()
+                                # Add all command types to the allowed set
+                                for cmd_type in command_types:
+                                    self._allowed_command_types[session_id].add(cmd_type)
+                            # Approve this command
+                            user_decisions.append({"type": "approve"})
                         # If rejecting a plan, clear it and provide feedback
-                        if tool_name == "write_todos" and decision_type == "reject":
+                        elif tool_name == "write_todos" and decision_type == "reject":
                             await self._clear_plan(session_id)
                             user_decisions.append(
                                 {
@@ -653,8 +980,8 @@ class ACPAgentServer(ACPAgent):
 async def serve_acp_stdio(root_dir: str) -> None:
     checkpointer = MemorySaver()
 
-    # Start with ask_before_edits mode (ask before edits)
-    mode_id = "ask_before_edits"
+    # Start with accept_edits mode (accept edits, ask before shell commands and plans)
+    mode_id = "accept_edits"
 
     acp_agent = ACPAgentServer(
         root_dir=root_dir,

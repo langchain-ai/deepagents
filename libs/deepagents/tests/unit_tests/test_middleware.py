@@ -13,7 +13,11 @@ from langgraph.store.memory import InMemoryStore
 from langgraph.types import Command, Overwrite
 
 from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
-from deepagents.backends.protocol import ExecuteResponse, SandboxBackendProtocol
+from deepagents.backends.protocol import (
+    ExecuteResponse,
+    FileDownloadResponse,
+    SandboxBackendProtocol,
+)
 from deepagents.backends.utils import (
     TRUNCATION_GUIDANCE,
     create_file_data,
@@ -1112,6 +1116,67 @@ class TestFilesystemMiddleware:
         # Should contain both blocks in the stringified output
         assert "'type': 'text'" in file_text
         assert "'type': 'image'" in file_text
+
+    def test_read_file_image_returns_standard_image_content_block(self):
+        """Test image reads return standard image blocks with base64 + mime_type."""
+
+        class ImageBackend(StateBackend):
+            def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
+                return [
+                    FileDownloadResponse(
+                        path=paths[0],
+                        content=b"fake-image-bytes",
+                        error=None,
+                    )
+                ]
+
+        middleware = FilesystemMiddleware(backend=lambda rt: ImageBackend(rt))  # noqa: PLW0108
+        state = FilesystemState(messages=[], files={})
+        runtime = ToolRuntime(
+            state=state,
+            context=None,
+            tool_call_id="img-read-1",
+            store=None,
+            stream_writer=lambda _: None,
+            config={},
+        )
+
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+        result = read_file_tool.invoke({"file_path": "/app/frame_001.jpg", "runtime": runtime})
+
+        assert isinstance(result, ToolMessage)
+        assert result.name == "read_file"
+        assert result.tool_call_id == "img-read-1"
+        assert result.additional_kwargs["read_file_path"] == "/app/frame_001.jpg"
+        assert result.additional_kwargs["read_file_media_type"] == "image/jpeg"
+        assert isinstance(result.content, list)
+        assert result.content[0]["type"] == "image"
+        assert result.content[0]["mime_type"] == "image/jpeg"
+        assert result.content[0]["base64"] == "ZmFrZS1pbWFnZS1ieXRlcw=="
+
+    def test_read_file_image_returns_error_when_download_fails(self):
+        """Image reads should return a clear backend error string."""
+
+        class ImageBackend(StateBackend):
+            def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
+                return [FileDownloadResponse(path=paths[0], content=None, error="file_not_found")]
+
+        middleware = FilesystemMiddleware(backend=lambda rt: ImageBackend(rt))  # noqa: PLW0108
+        state = FilesystemState(messages=[], files={})
+        runtime = ToolRuntime(
+            state=state,
+            context=None,
+            tool_call_id="img-read-err",
+            store=None,
+            stream_writer=lambda _: None,
+            config={},
+        )
+
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+        result = read_file_tool.invoke({"file_path": "/app/missing.png", "runtime": runtime})
+
+        assert isinstance(result, str)
+        assert result == "Error reading image: file_not_found"
 
     def test_execute_tool_returns_error_when_backend_doesnt_support(self):
         """Test that execute tool returns friendly error instead of raising exception."""

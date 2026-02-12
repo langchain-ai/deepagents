@@ -2,6 +2,7 @@
 
 import io
 import os
+import webbrowser
 from typing import ClassVar
 from unittest.mock import MagicMock, patch
 
@@ -18,6 +19,7 @@ from deepagents_cli.app import (
     _ITERM_CURSOR_GUIDE_ON,
     DeepAgentsApp,
     QueuedMessage,
+    TextualSessionState,
     _write_iterm_escape,
 )
 from deepagents_cli.widgets.chat_input import ChatInput
@@ -489,3 +491,126 @@ class TestMessageQueue:
             # message should also have been picked up (mounted as UserMessage)
             user_msgs = app.query(UserMessage)
             assert any(w._content == "hello agent" for w in user_msgs)
+
+
+class TestTraceCommand:
+    """Test /trace slash command."""
+
+    @pytest.mark.asyncio
+    async def test_trace_opens_browser_when_configured(self) -> None:
+        """Should open the LangSmith thread URL in the browser."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_state = TextualSessionState(thread_id="test-thread-123")
+
+            with (
+                patch(
+                    "deepagents_cli.app.build_langsmith_thread_url",
+                    return_value="https://smith.langchain.com/o/org/projects/p/proj/t/test-thread-123",
+                ),
+                patch("deepagents_cli.app.webbrowser.open") as mock_open,
+            ):
+                await app._handle_trace_command("/trace")
+                await pilot.pause()
+
+            mock_open.assert_called_once_with(
+                "https://smith.langchain.com/o/org/projects/p/proj/t/test-thread-123"
+            )
+            app_msgs = app.query(AppMessage)
+            assert any(  # not a URL check—just verifying the link was rendered
+                "https://smith.langchain.com/o/org/projects/p/proj/t/test-thread-123"
+                in str(w._content)
+                for w in app_msgs
+            )
+
+    @pytest.mark.asyncio
+    async def test_trace_shows_error_when_not_configured(self) -> None:
+        """Should show configuration hint when LangSmith is not set up."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_state = TextualSessionState()
+
+            with patch(
+                "deepagents_cli.app.build_langsmith_thread_url",
+                return_value=None,
+            ):
+                await app._handle_trace_command("/trace")
+                await pilot.pause()
+
+            app_msgs = app.query(AppMessage)
+            assert any("LANGSMITH_API_KEY" in str(w._content) for w in app_msgs)
+
+    @pytest.mark.asyncio
+    async def test_trace_shows_error_when_no_session(self) -> None:
+        """Should show error when there is no active session."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_state = None
+
+            await app._handle_trace_command("/trace")
+            await pilot.pause()
+
+            app_msgs = app.query(AppMessage)
+            assert any("No active session" in str(w._content) for w in app_msgs)
+
+    @pytest.mark.asyncio
+    async def test_trace_shows_link_when_browser_fails(self) -> None:
+        """Should still display the URL link even if the browser cannot open."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_state = TextualSessionState(thread_id="test-thread-123")
+
+            with (
+                patch(
+                    "deepagents_cli.app.build_langsmith_thread_url",
+                    return_value="https://smith.langchain.com/t/test-thread-123",
+                ),
+                patch(
+                    "deepagents_cli.app.webbrowser.open",
+                    side_effect=webbrowser.Error("no browser"),
+                ),
+            ):
+                await app._handle_trace_command("/trace")
+                await pilot.pause()
+
+            app_msgs = app.query(AppMessage)
+            assert any(  # not a URL check—just verifying the link was rendered
+                "https://smith.langchain.com/t/test-thread-123" in str(w._content)
+                for w in app_msgs
+            )
+
+    @pytest.mark.asyncio
+    async def test_trace_shows_error_when_url_build_raises(self) -> None:
+        """Should show error message when build_langsmith_thread_url raises."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_state = TextualSessionState(thread_id="test-thread-123")
+
+            with patch(
+                "deepagents_cli.app.build_langsmith_thread_url",
+                side_effect=RuntimeError("SDK error"),
+            ):
+                await app._handle_trace_command("/trace")
+                await pilot.pause()
+
+            app_msgs = app.query(AppMessage)
+            assert any("Failed to resolve" in str(w._content) for w in app_msgs)
+
+    @pytest.mark.asyncio
+    async def test_trace_routed_from_handle_command(self) -> None:
+        """'/trace' should be correctly routed through _handle_command."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_state = None
+
+            await app._handle_command("/trace")
+            await pilot.pause()
+
+            app_msgs = app.query(AppMessage)
+            assert any("No active session" in str(w._content) for w in app_msgs)

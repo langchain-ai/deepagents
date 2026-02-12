@@ -2,6 +2,7 @@
 # ruff: noqa: ERA001
 
 from collections.abc import Callable, Sequence
+from pathlib import Path
 from typing import Any
 
 from langchain.agents import create_agent
@@ -33,7 +34,7 @@ from deepagents.middleware.subagents import (
 )
 from deepagents.middleware.summarization import SummarizationMiddleware, _compute_summarization_defaults
 
-BASE_AGENT_PROMPT = "In order to complete the objective that the user asks of you, you have access to a number of standard tools."
+BASE_AGENT_PROMPT = (Path(__file__).parent / "base_prompt.md").read_text()
 
 
 def get_default_model() -> ChatAnthropic:

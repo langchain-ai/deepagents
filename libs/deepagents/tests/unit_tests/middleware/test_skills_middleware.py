@@ -1671,7 +1671,7 @@ def test_skill_tool_inline_loads_skill(tmp_path: Path) -> None:
     )
 
     # Call the underlying function directly to bypass StructuredTool annotation handling
-    result = skill_tool.func(skill="test-skill", runtime=runtime)
+    result = skill_tool.func(name="test-skill", runtime=runtime)
 
     assert isinstance(result, str)
     assert '<skill name="test-skill">' in result
@@ -1698,7 +1698,7 @@ def test_skill_tool_not_found(tmp_path: Path) -> None:
         config={},
     )
 
-    result = skill_tool.func(skill="nonexistent", runtime=runtime)
+    result = skill_tool.func(name="nonexistent", runtime=runtime)
 
     assert isinstance(result, str)
     assert "not found" in result
@@ -1815,7 +1815,7 @@ description: A large skill with many lines
         config={},
     )
 
-    result = skill_tool.func(skill="large-skill", runtime=runtime)
+    result = skill_tool.func(name="large-skill", runtime=runtime)
 
     assert isinstance(result, str)
     assert '<skill name="large-skill">' in result

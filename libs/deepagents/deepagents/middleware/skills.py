@@ -568,14 +568,14 @@ async def _alist_skills(backend: BackendProtocol, source_path: str) -> list[Skil
     return skills
 
 
-SKILL_TOOL_DESCRIPTION = """Invoke a skill by name. Skills provide specialized capabilities and domain knowledge.
+SKILL_TOOL_DESCRIPTION = """Load a skill by name. Skills provide specialized capabilities and domain knowledge.
 
 How to invoke:
-- Use the `skill` parameter with the skill name (e.g., skill="web-research")
+- Use the `name` parameter with the skill name (e.g., name="web-research")
 
 Examples:
-- skill="web-research" — load the web-research skill into the current context
-- skill="code-review" — invoke the code-review skill
+- name="web-research" — load the web-research skill into the current context
+- name="code-review" — invoke the code-review skill
 
 Skills are loaded into the current conversation context for you to follow."""
 
@@ -591,19 +591,35 @@ You have access to a skills library that provides specialized capabilities and d
 
 {skills_list}
 
-**How to Use Skills:**
+**How to Use Skills (Progressive Disclosure):**
 
-Use the `skill` tool to load or invoke a skill by name.
+Skills follow a **progressive disclosure** pattern - you see their name and description above, but only load full instructions when needed:
 
 1. **Recognize when a skill applies**: Check if the user's task matches a skill's description
-2. **Invoke the skill**: Call the `skill` tool with the skill name (e.g., `skill="web-research"`)
-3. **Follow the skill's instructions**: Once loaded, the skill's full instructions appear in your context
+2. **Load the skill's full instructions**: Call the `skill` tool with the skill name (e.g., `name="web-research"`)
+3. **Follow the skill's instructions**: Once loaded, the skill's full instructions appear in your context with
+step-by-step workflows, best practices, and examples
 4. **Access supporting files**: Skills may include helper scripts, configs, or reference docs - use absolute paths
 
 **When to Use Skills:**
 - User's request matches a skill's domain (e.g., "research X" -> web-research skill)
 - You need specialized knowledge or structured workflows
-- A skill provides proven patterns for complex tasks"""
+- A skill provides proven patterns for complex tasks
+
+**Executing Skill Scripts:**
+Skills may contain Python scripts or other executable files. Always use absolute paths from the skill list.
+
+**Example Workflow:**
+
+User: "Can you research the latest developments in quantum computing?"
+
+1. Check available skills -> See "web-research" skill
+2. Call the `skill` tool with `name="web-research"` to load full instructions
+3. Follow the skill's research workflow (search -> organize -> synthesize)
+4. Use any helper scripts with absolute paths
+
+Remember: Skills make you more capable and consistent. When in doubt, check if a skill exists for the task!
+"""
 
 
 class SkillsMiddleware(AgentMiddleware):
@@ -703,10 +719,10 @@ class SkillsMiddleware(AgentMiddleware):
         return self._backend
 
     def _create_skill_tool(self) -> StructuredTool:
-        """Create the `skill` tool for loading/invoking skills.
+        """Create the `skill` tool for loading skills by name.
 
         Returns:
-            A StructuredTool that loads or invokes skills by name.
+            A StructuredTool that loads skills by name.
         """
         middleware = self
 
@@ -719,46 +735,46 @@ class SkillsMiddleware(AgentMiddleware):
             return None
 
         def skill_fn(
-            skill: Annotated[str, "The name of the skill to invoke."],
+            name: Annotated[str, "The name of the skill to load."],
             runtime: ToolRuntime,
         ) -> str:
-            skill_meta = _find_skill(skill, runtime)
+            skill_meta = _find_skill(name, runtime)
             if skill_meta is None:
                 available = [s["name"] for s in runtime.state.get("skills_metadata", [])]
-                return f"Skill '{skill}' not found. Available skills: {', '.join(available) or 'none'}"
+                return f"Skill '{name}' not found. Available skills: {', '.join(available) or 'none'}"
 
             backend = middleware._get_backend_from_tool_runtime(runtime)
             responses = backend.download_files([skill_meta["path"]])
             if responses[0].error or responses[0].content is None:
-                return f"Failed to load skill '{skill}': could not download SKILL.md"
+                return f"Failed to load skill '{name}': could not download SKILL.md"
             try:
                 content = responses[0].content.decode("utf-8")
             except UnicodeDecodeError:
-                return f"Failed to load skill '{skill}': could not decode SKILL.md"
+                return f"Failed to load skill '{name}': could not decode SKILL.md"
             body = _extract_skill_body(content)
 
-            return f'<skill name="{skill}">\n{body}\n</skill>'
+            return f'<skill name="{name}">\n{body}\n</skill>'
 
         async def askill_fn(
-            skill: Annotated[str, "The name of the skill to invoke."],
+            name: Annotated[str, "The name of the skill to load."],
             runtime: ToolRuntime,
         ) -> str:
-            skill_meta = _find_skill(skill, runtime)
+            skill_meta = _find_skill(name, runtime)
             if skill_meta is None:
                 available = [s["name"] for s in runtime.state.get("skills_metadata", [])]
-                return f"Skill '{skill}' not found. Available skills: {', '.join(available) or 'none'}"
+                return f"Skill '{name}' not found. Available skills: {', '.join(available) or 'none'}"
 
             backend = middleware._get_backend_from_tool_runtime(runtime)
             responses = await backend.adownload_files([skill_meta["path"]])
             if responses[0].error or responses[0].content is None:
-                return f"Failed to load skill '{skill}': could not download SKILL.md"
+                return f"Failed to load skill '{name}': could not download SKILL.md"
             try:
                 content = responses[0].content.decode("utf-8")
             except UnicodeDecodeError:
-                return f"Failed to load skill '{skill}': could not decode SKILL.md"
+                return f"Failed to load skill '{name}': could not decode SKILL.md"
             body = _extract_skill_body(content)
 
-            return f'<skill name="{skill}">\n{body}\n</skill>'
+            return f'<skill name="{name}">\n{body}\n</skill>'
 
         return StructuredTool.from_function(
             name="skill",

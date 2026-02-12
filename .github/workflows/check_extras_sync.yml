@@ -37,4 +37,4 @@ jobs:
           python-version: "3.14"
 
       - name: "🔍 Check extras sync"
-        run: python libs/cli/scripts/check_extras_sync.py libs/cli/pyproject.toml
+        run: python .github/scripts/check_extras_sync.py libs/cli/pyproject.toml

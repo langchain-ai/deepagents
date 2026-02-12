@@ -196,10 +196,10 @@ def get_system_prompt(assistant_id: str, sandbox_type: str | None = None) -> str
             f"- Never use relative paths - always construct full absolute paths\n\n"
         )
 
-    return template.format(
-        model_identity_section=model_identity_section,
-        working_dir_section=working_dir_section,
-        skills_path=skills_path,
+    return (
+        template.replace("{model_identity_section}", model_identity_section)
+        .replace("{working_dir_section}", working_dir_section)
+        .replace("{skills_path}", skills_path)
     )
 
 

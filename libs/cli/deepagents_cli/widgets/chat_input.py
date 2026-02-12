@@ -14,6 +14,7 @@ from textual.widgets.text_area import Selection
 
 from deepagents_cli.config import CharsetMode, _detect_charset_mode, get_glyphs
 from deepagents_cli.widgets.autocomplete import (
+    SLASH_COMMAND_KEYWORDS,
     SLASH_COMMANDS,
     CompletionResult,
     FuzzyFileController,
@@ -476,7 +477,7 @@ class ChatInput(Vertical):
         # different concrete types; the list-item warning is a false positive
         self._completion_manager = MultiCompletionManager(
             [
-                SlashCommandController(SLASH_COMMANDS, self),
+                SlashCommandController(SLASH_COMMANDS, self, SLASH_COMMAND_KEYWORDS),
                 FuzzyFileController(self, cwd=self._cwd),
             ]  # type: ignore[list-item]
         )

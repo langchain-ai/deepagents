@@ -49,6 +49,7 @@ from deepagents_cli.model_config import (
 )
 from deepagents_cli.textual_adapter import TextualUIAdapter, execute_task_textual
 from deepagents_cli.widgets.approval import ApprovalMenu
+from deepagents_cli.widgets.autocomplete import SLASH_COMMAND_KEYWORDS
 from deepagents_cli.widgets.chat_input import ChatInput
 from deepagents_cli.widgets.loading import LoadingWidget
 from deepagents_cli.widgets.message_store import MessageData, MessageStore
@@ -1072,6 +1073,12 @@ class DeepAgentsApp(App):
         link.stylize(f"link {url}", 0)
         await self._mount_message(AppMessage(link))
 
+    # Auto-generated reverse mapping from SLASH_COMMAND_KEYWORDS.
+    # e.g. "/exit" -> "/quit"
+    _KEYWORD_ALIASES: ClassVar[dict[str, str]] = {
+        f"/{kw}": cmd for cmd, kws in SLASH_COMMAND_KEYWORDS.items() for kw in kws
+    }
+
     async def _handle_command(self, command: str) -> None:
         """Handle a slash command.
 
@@ -1079,6 +1086,9 @@ class DeepAgentsApp(App):
             command: The slash command (including /)
         """
         cmd = command.lower().strip()
+
+        # Resolve keyword aliases to canonical commands
+        cmd = self._KEYWORD_ALIASES.get(cmd, cmd)
 
         if cmd in {"/quit", "/q"}:
             self.exit()

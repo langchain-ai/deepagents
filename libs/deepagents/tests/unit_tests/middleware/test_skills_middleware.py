@@ -15,7 +15,6 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.store.memory import InMemoryStore
-from langgraph.types import Command
 
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.state import StateBackend
@@ -1636,7 +1635,7 @@ description: test
 
 
 def test_skill_tool_inline_loads_skill(tmp_path: Path) -> None:
-    """Test skill tool in inline mode: loads skill body into loaded_skills state."""
+    """Test skill tool returns skill body directly as a string."""
     backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
     skills_dir = tmp_path / "skills" / "user"
     skill_path = str(skills_dir / "test-skill" / "SKILL.md")
@@ -1663,7 +1662,7 @@ def test_skill_tool_inline_loads_skill(tmp_path: Path) -> None:
         }
     ]
     runtime = ToolRuntime(
-        state={"messages": [], "skills_metadata": skills_metadata, "loaded_skills": {}},
+        state={"messages": [], "skills_metadata": skills_metadata},
         tool_call_id="test-call-id",
         context=None,
         store=None,
@@ -1674,11 +1673,10 @@ def test_skill_tool_inline_loads_skill(tmp_path: Path) -> None:
     # Call the underlying function directly to bypass StructuredTool annotation handling
     result = skill_tool.func(skill="test-skill", runtime=runtime)
 
-    assert isinstance(result, Command)
-    assert "loaded_skills" in result.update
-    assert "test-skill" in result.update["loaded_skills"]
-    # Body should be the content without frontmatter
-    assert "# Test-Skill Skill" in result.update["loaded_skills"]["test-skill"]
+    assert isinstance(result, str)
+    assert '<skill name="test-skill">' in result
+    assert "# Test-Skill Skill" in result
+    assert "</skill>" in result
 
 
 def test_skill_tool_not_found(tmp_path: Path) -> None:
@@ -1692,7 +1690,7 @@ def test_skill_tool_not_found(tmp_path: Path) -> None:
     skill_tool = middleware.tools[0]
 
     runtime = ToolRuntime(
-        state={"messages": [], "skills_metadata": [], "loaded_skills": {}},
+        state={"messages": [], "skills_metadata": []},
         tool_call_id="test-call-id",
         context=None,
         store=None,
@@ -1706,8 +1704,8 @@ def test_skill_tool_not_found(tmp_path: Path) -> None:
     assert "not found" in result
 
 
-def test_modify_request_injects_loaded_skills() -> None:
-    """Test that modify_request injects loaded skill bodies into the system prompt."""
+def test_modify_request_injects_skills_system_prompt() -> None:
+    """Test that modify_request injects skills system section into the system prompt."""
     middleware = SkillsMiddleware(backend=None, sources=["/skills/"])  # type: ignore
 
     state = {
@@ -1722,7 +1720,6 @@ def test_modify_request_injects_loaded_skills() -> None:
                 "allowed_tools": [],
             }
         ],
-        "loaded_skills": {"test-skill": "# Test Skill\n\nInstructions go here."},
     }
 
     fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="test")]))
@@ -1737,9 +1734,11 @@ def test_modify_request_injects_loaded_skills() -> None:
     modified = middleware.modify_request(request)
 
     system_text = modified.system_message.text
-    assert "Active Skills" in system_text
-    assert '<skill name="test-skill">' in system_text
-    assert "Instructions go here." in system_text
+    assert "Skills System" in system_text
+    assert "test-skill" in system_text
+    assert "A test skill" in system_text
+    # loaded_skills no longer injected into system prompt
+    assert "Active Skills" not in system_text
 
 
 def test_format_skills_list_no_read_file_reference() -> None:
@@ -1762,21 +1761,6 @@ def test_format_skills_list_no_read_file_reference() -> None:
     assert "read_file" not in result.lower()
     assert "Read" not in result
     assert "SKILL.md" not in result
-
-
-def test_before_agent_initializes_loaded_skills(tmp_path: Path) -> None:
-    """Test that before_agent initializes loaded_skills to empty dict."""
-    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
-    skills_dir = tmp_path / "skills" / "user"
-    skills_dir.mkdir(parents=True)
-
-    middleware = SkillsMiddleware(backend=backend, sources=[str(skills_dir)])
-
-    result = middleware.before_agent({}, None, {})  # type: ignore
-
-    assert result is not None
-    assert "loaded_skills" in result
-    assert result["loaded_skills"] == {}
 
 
 def test_skills_middleware_has_skill_tool() -> None:
@@ -1823,7 +1807,7 @@ description: A large skill with many lines
         }
     ]
     runtime = ToolRuntime(
-        state={"messages": [], "skills_metadata": skills_metadata, "loaded_skills": {}},
+        state={"messages": [], "skills_metadata": skills_metadata},
         tool_call_id="test-call-id",
         context=None,
         store=None,
@@ -1833,12 +1817,13 @@ description: A large skill with many lines
 
     result = skill_tool.func(skill="large-skill", runtime=runtime)
 
-    assert isinstance(result, Command)
-    loaded_body = result.update["loaded_skills"]["large-skill"]
+    assert isinstance(result, str)
+    assert '<skill name="large-skill">' in result
+    assert "</skill>" in result
     # Verify the entire body is present — first, last, and a middle line
-    assert "Step 1: Do something important for line 1." in loaded_body
-    assert "Step 100: Do something important for line 100." in loaded_body
-    assert "Step 200: Do something important for line 200." in loaded_body
+    assert "Step 1: Do something important for line 1." in result
+    assert "Step 100: Do something important for line 100." in result
+    assert "Step 200: Do something important for line 200." in result
     # Count the step lines to confirm no truncation
-    step_lines = [line for line in loaded_body.splitlines() if line.startswith("Step ")]
+    step_lines = [line for line in result.splitlines() if line.startswith("Step ")]
     assert len(step_lines) == 200

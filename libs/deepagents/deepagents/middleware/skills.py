@@ -110,12 +110,10 @@ from langchain.agents.middleware.types import (
     ModelRequest,
     ModelResponse,
 )
-from langchain_core.messages import ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import StructuredTool
 from langgraph.prebuilt import ToolRuntime
 from langgraph.runtime import Runtime
-from langgraph.types import Command
 
 from deepagents.middleware._utils import append_to_system_message
 
@@ -196,18 +194,12 @@ class SkillsState(AgentState):
     skills_metadata: NotRequired[Annotated[list[SkillMetadata], PrivateStateAttr]]
     """List of loaded skill metadata from configured sources. Not propagated to parent agents."""
 
-    loaded_skills: NotRequired[Annotated[dict[str, str], PrivateStateAttr]]
-    """Mapping of skill name to loaded SKILL.md body content. Not propagated to parent agents."""
-
 
 class SkillsStateUpdate(TypedDict):
     """State update for the skills middleware."""
 
     skills_metadata: NotRequired[list[SkillMetadata]]
     """List of loaded skill metadata to merge into state."""
-
-    loaded_skills: NotRequired[dict[str, str]]
-    """Mapping of skill name to loaded SKILL.md body content."""
 
 
 def _validate_skill_name(name: str, directory_name: str) -> tuple[bool, str]:
@@ -611,9 +603,7 @@ Use the `skill` tool to load or invoke a skill by name.
 **When to Use Skills:**
 - User's request matches a skill's domain (e.g., "research X" -> web-research skill)
 - You need specialized knowledge or structured workflows
-- A skill provides proven patterns for complex tasks
-
-{loaded_skills_section}"""
+- A skill provides proven patterns for complex tasks"""
 
 
 class SkillsMiddleware(AgentMiddleware):
@@ -728,76 +718,47 @@ class SkillsMiddleware(AgentMiddleware):
                     return skill
             return None
 
-        def _download_skill_body(skill: SkillMetadata, backend: BackendProtocol) -> str | None:
-            """Download and extract the body from a SKILL.md file."""
-            responses = backend.download_files([skill["path"]])
-            if responses[0].error or responses[0].content is None:
-                return None
-            try:
-                content = responses[0].content.decode("utf-8")
-            except UnicodeDecodeError:
-                return None
-            return _extract_skill_body(content)
-
-        async def _adownload_skill_body(skill: SkillMetadata, backend: BackendProtocol) -> str | None:
-            """Download and extract the body from a SKILL.md file (async)."""
-            responses = await backend.adownload_files([skill["path"]])
-            if responses[0].error or responses[0].content is None:
-                return None
-            try:
-                content = responses[0].content.decode("utf-8")
-            except UnicodeDecodeError:
-                return None
-            return _extract_skill_body(content)
-
         def skill_fn(
             skill: Annotated[str, "The name of the skill to invoke."],
             runtime: ToolRuntime,
-        ) -> str | Command:
+        ) -> str:
             skill_meta = _find_skill(skill, runtime)
             if skill_meta is None:
                 available = [s["name"] for s in runtime.state.get("skills_metadata", [])]
                 return f"Skill '{skill}' not found. Available skills: {', '.join(available) or 'none'}"
 
             backend = middleware._get_backend_from_tool_runtime(runtime)
-            body = _download_skill_body(skill_meta, backend)
-            if body is None:
+            responses = backend.download_files([skill_meta["path"]])
+            if responses[0].error or responses[0].content is None:
                 return f"Failed to load skill '{skill}': could not download SKILL.md"
+            try:
+                content = responses[0].content.decode("utf-8")
+            except UnicodeDecodeError:
+                return f"Failed to load skill '{skill}': could not decode SKILL.md"
+            body = _extract_skill_body(content)
 
-            loaded = dict(runtime.state.get("loaded_skills", {}))
-            loaded[skill] = body
-            return Command(
-                update={
-                    "loaded_skills": loaded,
-                    "messages": [
-                        ToolMessage(f"Skill '{skill}' loaded. Follow the instructions now in your context.", tool_call_id=runtime.tool_call_id)
-                    ],
-                }
-            )
+            return f'<skill name="{skill}">\n{body}\n</skill>'
 
         async def askill_fn(
             skill: Annotated[str, "The name of the skill to invoke."],
             runtime: ToolRuntime,
-        ) -> str | Command:
+        ) -> str:
             skill_meta = _find_skill(skill, runtime)
             if skill_meta is None:
                 available = [s["name"] for s in runtime.state.get("skills_metadata", [])]
                 return f"Skill '{skill}' not found. Available skills: {', '.join(available) or 'none'}"
 
             backend = middleware._get_backend_from_tool_runtime(runtime)
-            body = await _adownload_skill_body(skill_meta, backend)
-            if body is None:
+            responses = await backend.adownload_files([skill_meta["path"]])
+            if responses[0].error or responses[0].content is None:
                 return f"Failed to load skill '{skill}': could not download SKILL.md"
-            loaded = dict(runtime.state.get("loaded_skills", {}))
-            loaded[skill] = body
-            return Command(
-                update={
-                    "loaded_skills": loaded,
-                    "messages": [
-                        ToolMessage(f"Skill '{skill}' loaded. Follow the instructions now in your context.", tool_call_id=runtime.tool_call_id)
-                    ],
-                }
-            )
+            try:
+                content = responses[0].content.decode("utf-8")
+            except UnicodeDecodeError:
+                return f"Failed to load skill '{skill}': could not decode SKILL.md"
+            body = _extract_skill_body(content)
+
+            return f'<skill name="{skill}">\n{body}\n</skill>'
 
         return StructuredTool.from_function(
             name="skill",
@@ -835,23 +796,6 @@ class SkillsMiddleware(AgentMiddleware):
 
         return "\n".join(lines)
 
-    def _format_loaded_skills_section(self, loaded_skills: dict[str, str]) -> str:
-        """Format loaded skill bodies for injection into system prompt.
-
-        Args:
-            loaded_skills: Mapping of skill name to loaded SKILL.md body content.
-
-        Returns:
-            Formatted string with loaded skill bodies wrapped in XML tags.
-        """
-        if not loaded_skills:
-            return ""
-
-        sections = ["**Active Skills:**\n"]
-        for name, body in loaded_skills.items():
-            sections.append(f'<skill name="{name}">\n{body}\n</skill>')
-        return "\n".join(sections)
-
     def modify_request(self, request: ModelRequest) -> ModelRequest:
         """Inject skills documentation into a model request's system message.
 
@@ -862,15 +806,12 @@ class SkillsMiddleware(AgentMiddleware):
             New model request with skills documentation injected into system message
         """
         skills_metadata = request.state.get("skills_metadata", [])
-        loaded_skills = request.state.get("loaded_skills", {})
         skills_locations = self._format_skills_locations()
         skills_list = self._format_skills_list(skills_metadata)
-        loaded_skills_section = self._format_loaded_skills_section(loaded_skills)
 
         skills_section = self.system_prompt_template.format(
             skills_locations=skills_locations,
             skills_list=skills_list,
-            loaded_skills_section=loaded_skills_section,
         )
 
         new_system_message = append_to_system_message(request.system_message, skills_section)
@@ -910,7 +851,7 @@ class SkillsMiddleware(AgentMiddleware):
                 all_skills[skill["name"]] = skill
 
         skills = list(all_skills.values())
-        return SkillsStateUpdate(skills_metadata=skills, loaded_skills={})
+        return SkillsStateUpdate(skills_metadata=skills)
 
     async def abefore_agent(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> SkillsStateUpdate | None:
         """Load skills metadata before agent execution (async).
@@ -945,7 +886,7 @@ class SkillsMiddleware(AgentMiddleware):
                 all_skills[skill["name"]] = skill
 
         skills = list(all_skills.values())
-        return SkillsStateUpdate(skills_metadata=skills, loaded_skills={})
+        return SkillsStateUpdate(skills_metadata=skills)
 
     def wrap_model_call(
         self,

@@ -180,7 +180,6 @@ When something isn't working:
 When a task involves visual content (screenshots, diagrams, UI mockups, charts, plots):
 - Use `read_file(file_path)` to view image files directly — do not use offset/limit parameters for images
 - Read images BEFORE making assumptions about visual content
-- When debugging UI issues, take a screenshot and read it to verify
 - For tasks referencing images: always view them, don't guess from filenames
 
 ## Code References

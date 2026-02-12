@@ -184,7 +184,7 @@ def create_deep_agent(
         PatchToolCallsMiddleware(),
     ]
     if skills is not None:
-        gp_middleware.append(SkillsMiddleware(backend=backend, sources=skills, model=model, tools=tools or []))
+        gp_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
     if interrupt_on is not None:
         gp_middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
 
@@ -225,7 +225,7 @@ def create_deep_agent(
             ]
             subagent_skills = spec.get("skills")
             if subagent_skills:
-                subagent_middleware.append(SkillsMiddleware(backend=backend, sources=subagent_skills, model=subagent_model, tools=spec.get("tools", tools or [])))
+                subagent_middleware.append(SkillsMiddleware(backend=backend, sources=subagent_skills))
             subagent_middleware.extend(spec.get("middleware", []))
 
             processed_spec: SubAgent = {
@@ -246,7 +246,7 @@ def create_deep_agent(
     if memory is not None:
         deepagent_middleware.append(MemoryMiddleware(backend=backend, sources=memory))
     if skills is not None:
-        deepagent_middleware.append(SkillsMiddleware(backend=backend, sources=skills, model=model, tools=tools or []))
+        deepagent_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
     deepagent_middleware.extend(
         [
             FilesystemMiddleware(backend=backend),

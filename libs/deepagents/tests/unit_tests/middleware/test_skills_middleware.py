@@ -32,7 +32,6 @@ from deepagents.middleware.skills import (
     _validate_metadata,
     _validate_skill_name,
 )
-from deepagents.middleware.subagents import _EXCLUDED_STATE_KEYS
 from tests.unit_tests.chat_model import GenericFakeChatModel
 
 
@@ -146,7 +145,6 @@ Instructions here.
         "compatibility": "Python 3.8+",
         "metadata": {"author": "Test Author", "version": "1.0.0"},
         "allowed_tools": ["read_file", "write_file"],
-        "context": None,
         "path": "/skills/test-skill/SKILL.md",
     }
 
@@ -170,7 +168,6 @@ description: Minimal skill
         "compatibility": None,
         "metadata": {},
         "allowed_tools": [],
-        "context": None,
         "path": "/skills/minimal-skill/SKILL.md",
     }
 
@@ -367,7 +364,6 @@ def test_format_skill_annotations_both_fields() -> None:
         compatibility="Python 3.10+",
         metadata={},
         allowed_tools=[],
-        context=None,
     )
     assert _format_skill_annotations(skill) == "License: MIT, Compatibility: Python 3.10+"
 
@@ -382,7 +378,6 @@ def test_format_skill_annotations_license_only() -> None:
         compatibility=None,
         metadata={},
         allowed_tools=[],
-        context=None,
     )
     assert _format_skill_annotations(skill) == "License: Apache-2.0"
 
@@ -397,7 +392,6 @@ def test_format_skill_annotations_compatibility_only() -> None:
         compatibility="Requires poppler",
         metadata={},
         allowed_tools=[],
-        context=None,
     )
     assert _format_skill_annotations(skill) == "Compatibility: Requires poppler"
 
@@ -412,7 +406,6 @@ def test_format_skill_annotations_neither_field() -> None:
         compatibility=None,
         metadata={},
         allowed_tools=[],
-        context=None,
     )
     assert _format_skill_annotations(skill) == ""
 
@@ -545,7 +538,6 @@ def test_list_skills_from_backend_single_skill(tmp_path: Path) -> None:
             "license": None,
             "compatibility": None,
             "allowed_tools": [],
-            "context": None,
         }
     ]
 
@@ -635,7 +627,6 @@ def test_list_skills_from_backend_missing_skill_md(tmp_path: Path) -> None:
             "license": None,
             "compatibility": None,
             "allowed_tools": [],
-            "context": None,
         }
     ]
 
@@ -676,7 +667,6 @@ Content
             "license": None,
             "compatibility": None,
             "allowed_tools": [],
-            "context": None,
         }
     ]
 
@@ -712,7 +702,6 @@ def test_list_skills_from_backend_with_helper_files(tmp_path: Path) -> None:
             "license": None,
             "compatibility": None,
             "allowed_tools": [],
-            "context": None,
         }
     ]
 
@@ -785,7 +774,6 @@ def test_format_skills_list_single_skill() -> None:
             "compatibility": None,
             "metadata": {},
             "allowed_tools": [],
-            "context": None,
         }
     ]
 
@@ -814,7 +802,6 @@ def test_format_skills_list_multiple_skills_multiple_registries() -> None:
             "compatibility": None,
             "metadata": {},
             "allowed_tools": [],
-            "context": None,
         },
         {
             "name": "skill-b",
@@ -824,7 +811,6 @@ def test_format_skills_list_multiple_skills_multiple_registries() -> None:
             "compatibility": None,
             "metadata": {},
             "allowed_tools": [],
-            "context": None,
         },
         {
             "name": "skill-c",
@@ -834,7 +820,6 @@ def test_format_skills_list_multiple_skills_multiple_registries() -> None:
             "compatibility": None,
             "metadata": {},
             "allowed_tools": [],
-            "context": None,
         },
     ]
 
@@ -864,7 +849,6 @@ def test_format_skills_list_with_license_and_compatibility() -> None:
             "compatibility": "Requires poppler",
             "metadata": {},
             "allowed_tools": [],
-            "context": None,
         }
     ]
 
@@ -885,7 +869,6 @@ def test_format_skills_list_license_only() -> None:
             "compatibility": None,
             "metadata": {},
             "allowed_tools": [],
-            "context": None,
         }
     ]
 
@@ -907,7 +890,6 @@ def test_format_skills_list_compatibility_only() -> None:
             "compatibility": "Python 3.10+",
             "metadata": {},
             "allowed_tools": [],
-            "context": None,
         }
     ]
 
@@ -929,7 +911,6 @@ def test_format_skills_list_no_optional_fields() -> None:
             "compatibility": None,
             "metadata": {},
             "allowed_tools": [],
-            "context": None,
         }
     ]
 
@@ -1023,7 +1004,6 @@ def test_before_agent_skill_override(tmp_path: Path) -> None:
         "license": None,
         "compatibility": None,
         "allowed_tools": [],
-        "context": None,
     }
 
 
@@ -1117,7 +1097,6 @@ def test_skills_middleware_with_state_backend_factory() -> None:
 
     runtime = ToolRuntime(
         state={"messages": [], "files": {}},
-        context=None,
         tool_call_id="test",
         store=None,
         stream_writer=lambda _: None,
@@ -1149,7 +1128,6 @@ def test_skills_middleware_with_store_backend_factory() -> None:
     store = InMemoryStore()
     runtime = ToolRuntime(
         state={"messages": []},
-        context=None,
         tool_call_id="test",
         store=store,
         stream_writer=lambda _: None,
@@ -1317,7 +1295,6 @@ def test_before_agent_skips_loading_if_metadata_present(tmp_path: Path) -> None:
             "license": None,
             "compatibility": None,
             "allowed_tools": [],
-            "context": None,
         }
     ]
     state_with_metadata = {"skills_metadata": existing_metadata}
@@ -1441,7 +1418,6 @@ def test_create_deep_agent_with_skills_default_backend() -> None:
         {
             "allowed_tools": [],
             "compatibility": None,
-            "context": None,
             "description": "A test skill for default backend",
             "license": None,
             "metadata": {},
@@ -1622,59 +1598,6 @@ async def test_skills_middleware_with_store_backend_assistant_id_async() -> None
 # --- New tests for skill tool refactor ---
 
 
-def test_parse_skill_metadata_context_fork() -> None:
-    """Test _parse_skill_metadata parses context: fork correctly."""
-    content = """---
-name: fork-skill
-description: A skill that runs in a fork
-context: fork
----
-
-# Fork Skill
-
-Instructions here.
-"""
-
-    result = _parse_skill_metadata(content, "/skills/fork-skill/SKILL.md", "fork-skill")
-    assert result is not None
-    assert result["context"] == "fork"
-
-
-def test_parse_skill_metadata_context_unknown() -> None:
-    """Test _parse_skill_metadata ignores unknown context values."""
-    content = """---
-name: test-skill
-description: A test skill
-context: inline
----
-
-# Test Skill
-
-Instructions here.
-"""
-
-    result = _parse_skill_metadata(content, "/skills/test-skill/SKILL.md", "test-skill")
-    assert result is not None
-    assert result["context"] is None
-
-
-def test_parse_skill_metadata_context_absent() -> None:
-    """Test _parse_skill_metadata defaults context to None when absent."""
-    content = """---
-name: test-skill
-description: A test skill
----
-
-# Test Skill
-
-Instructions here.
-"""
-
-    result = _parse_skill_metadata(content, "/skills/test-skill/SKILL.md", "test-skill")
-    assert result is not None
-    assert result["context"] is None
-
-
 def test_extract_skill_body_basic() -> None:
     """Test _extract_skill_body strips frontmatter and returns body."""
     content = """---
@@ -1735,12 +1658,10 @@ def test_skill_tool_inline_loads_skill(tmp_path: Path) -> None:
             "license": None,
             "compatibility": None,
             "allowed_tools": [],
-            "context": None,
         }
     ]
     runtime = ToolRuntime(
         state={"messages": [], "skills_metadata": skills_metadata, "loaded_skills": {}},
-        context=None,
         tool_call_id="test-call-id",
         store=None,
         stream_writer=lambda _: None,
@@ -1769,7 +1690,6 @@ def test_skill_tool_not_found(tmp_path: Path) -> None:
 
     runtime = ToolRuntime(
         state={"messages": [], "skills_metadata": [], "loaded_skills": {}},
-        context=None,
         tool_call_id="test-call-id",
         store=None,
         stream_writer=lambda _: None,
@@ -1780,65 +1700,6 @@ def test_skill_tool_not_found(tmp_path: Path) -> None:
 
     assert isinstance(result, str)
     assert "not found" in result
-
-
-def test_skill_tool_fork_invokes_subagent(tmp_path: Path) -> None:
-    """Test skill tool in fork mode: invokes a subagent and returns result."""
-    from langgraph.types import Command
-
-    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
-    skills_dir = tmp_path / "skills" / "user"
-    skill_path = str(skills_dir / "fork-skill" / "SKILL.md")
-    skill_content = """---
-name: fork-skill
-description: A skill that runs in a fork
-context: fork
----
-
-# Fork Skill
-
-You are a fork skill. Respond with "Fork skill executed."
-"""
-
-    backend.upload_files([(skill_path, skill_content.encode("utf-8"))])
-
-    fake_model = GenericFakeChatModel(
-        messages=iter([AIMessage(content="Fork skill executed.")])
-    )
-
-    middleware = SkillsMiddleware(
-        backend=backend, sources=[str(skills_dir)], model=fake_model, tools=[]
-    )
-
-    skill_tool = middleware.tools[0]
-
-    skills_metadata: list[SkillMetadata] = [
-        {
-            "name": "fork-skill",
-            "description": "A skill that runs in a fork",
-            "path": skill_path,
-            "metadata": {},
-            "license": None,
-            "compatibility": None,
-            "allowed_tools": [],
-            "context": "fork",
-        }
-    ]
-    runtime = ToolRuntime(
-        state={"messages": [], "skills_metadata": skills_metadata, "loaded_skills": {}},
-        context=None,
-        tool_call_id="test-call-id",
-        store=None,
-        stream_writer=lambda _: None,
-        config={},
-    )
-
-    result = skill_tool.func(skill="fork-skill", args="Execute this skill.", runtime=runtime)
-
-    assert isinstance(result, Command)
-    assert "messages" in result.update
-    # The fork subagent should have returned some result
-    assert result.update["messages"][0].content == "Fork skill executed."
 
 
 def test_modify_request_injects_loaded_skills() -> None:
@@ -1858,12 +1719,9 @@ def test_modify_request_injects_loaded_skills() -> None:
                 "license": None,
                 "compatibility": None,
                 "allowed_tools": [],
-                "context": None,
             }
         ],
-        "loaded_skills": {
-            "test-skill": "# Test Skill\n\nInstructions go here."
-        },
+        "loaded_skills": {"test-skill": "# Test Skill\n\nInstructions go here."},
     }
 
     fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="test")]))
@@ -1896,7 +1754,6 @@ def test_format_skills_list_no_read_file_reference() -> None:
             "compatibility": None,
             "metadata": {},
             "allowed_tools": [],
-            "context": None,
         }
     ]
 
@@ -1904,43 +1761,6 @@ def test_format_skills_list_no_read_file_reference() -> None:
     assert "read_file" not in result.lower()
     assert "Read" not in result
     assert "SKILL.md" not in result
-
-
-def test_format_skills_list_fork_indicator() -> None:
-    """Test that _format_skills_list shows [fork] for fork-context skills."""
-    middleware = SkillsMiddleware(backend=None, sources=["/skills/"])  # type: ignore
-
-    skills: list[SkillMetadata] = [
-        {
-            "name": "fork-skill",
-            "description": "A forking skill",
-            "path": "/skills/fork-skill/SKILL.md",
-            "license": None,
-            "compatibility": None,
-            "metadata": {},
-            "allowed_tools": [],
-            "context": "fork",
-        },
-        {
-            "name": "inline-skill",
-            "description": "An inline skill",
-            "path": "/skills/inline-skill/SKILL.md",
-            "license": None,
-            "compatibility": None,
-            "metadata": {},
-            "allowed_tools": [],
-            "context": None,
-        },
-    ]
-
-    result = middleware._format_skills_list(skills)
-    assert "**fork-skill** [fork]:" in result
-    assert "[fork]" not in result.split("inline-skill")[1] if "inline-skill" in result else True
-
-
-def test_loaded_skills_in_excluded_state_keys() -> None:
-    """Test that loaded_skills is in _EXCLUDED_STATE_KEYS for subagents."""
-    assert "loaded_skills" in _EXCLUDED_STATE_KEYS
 
 
 def test_before_agent_initializes_loaded_skills(tmp_path: Path) -> None:
@@ -2001,12 +1821,10 @@ description: A large skill with many lines
             "license": None,
             "compatibility": None,
             "allowed_tools": [],
-            "context": None,
         }
     ]
     runtime = ToolRuntime(
         state={"messages": [], "skills_metadata": skills_metadata, "loaded_skills": {}},
-        context=None,
         tool_call_id="test-call-id",
         store=None,
         stream_writer=lambda _: None,
@@ -2024,74 +1842,3 @@ description: A large skill with many lines
     # Count the step lines to confirm no truncation
     step_lines = [line for line in loaded_body.splitlines() if line.startswith("Step ")]
     assert len(step_lines) == 200
-
-
-def test_skill_tool_fork_uses_skill_body_as_system_prompt(tmp_path: Path) -> None:
-    """Test that fork-context skill body becomes the subagent's system prompt."""
-    from langgraph.types import Command
-
-    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
-    skills_dir = tmp_path / "skills" / "user"
-    skill_path = str(skills_dir / "review-skill" / "SKILL.md")
-    skill_content = """---
-name: review-skill
-description: Runs an automated code review
-context: fork
----
-
-# Code Review Skill
-
-You are a code review agent. Review the code and provide feedback.
-Always start your response with "REVIEW:".
-"""
-
-    backend.upload_files([(skill_path, skill_content.encode("utf-8"))])
-
-    fake_model = GenericFakeChatModel(
-        messages=iter([AIMessage(content="REVIEW: The code looks good.")])
-    )
-
-    middleware = SkillsMiddleware(
-        backend=backend, sources=[str(skills_dir)], model=fake_model, tools=[]
-    )
-
-    skill_tool = middleware.tools[0]
-
-    skills_metadata: list[SkillMetadata] = [
-        {
-            "name": "review-skill",
-            "description": "Runs an automated code review",
-            "path": skill_path,
-            "metadata": {},
-            "license": None,
-            "compatibility": None,
-            "allowed_tools": [],
-            "context": "fork",
-        }
-    ]
-    runtime = ToolRuntime(
-        state={"messages": [], "skills_metadata": skills_metadata, "loaded_skills": {}},
-        context=None,
-        tool_call_id="test-call-id",
-        store=None,
-        stream_writer=lambda _: None,
-        config={},
-    )
-
-    result = skill_tool.func(
-        skill="review-skill", args="Review the auth module.", runtime=runtime,
-    )
-
-    assert isinstance(result, Command)
-    assert result.update["messages"][0].content == "REVIEW: The code looks good."
-
-    # Verify the model received the skill body as system prompt and args as human message
-    assert len(fake_model.call_history) == 1
-    call_messages = fake_model.call_history[0]["messages"]
-    system_msg = call_messages[0]
-    human_msg = call_messages[1]
-    assert system_msg.type == "system"
-    assert "Code Review Skill" in system_msg.text
-    assert 'Always start your response with "REVIEW:"' in system_msg.text
-    assert human_msg.type == "human"
-    assert human_msg.content == "Review the auth module."

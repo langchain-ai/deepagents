@@ -807,7 +807,11 @@ class FilesystemMiddleware(AgentMiddleware):
         ) -> str:
             """Synchronous wrapper for glob tool."""
             resolved_backend = self._get_backend(runtime)
-            infos = resolved_backend.glob_info(pattern, path=path)
+            try:
+                validated_path = _validate_path(path)
+            except ValueError as e:
+                return f"Error: {e}"
+            infos = resolved_backend.glob_info(pattern, path=validated_path)
             paths = [fi.get("path", "") for fi in infos]
             result = truncate_if_too_long(paths)
             return str(result)
@@ -819,7 +823,11 @@ class FilesystemMiddleware(AgentMiddleware):
         ) -> str:
             """Asynchronous wrapper for glob tool."""
             resolved_backend = self._get_backend(runtime)
-            infos = await resolved_backend.aglob_info(pattern, path=path)
+            try:
+                validated_path = _validate_path(path)
+            except ValueError as e:
+                return f"Error: {e}"
+            infos = await resolved_backend.aglob_info(pattern, path=validated_path)
             paths = [fi.get("path", "") for fi in infos]
             result = truncate_if_too_long(paths)
             return str(result)

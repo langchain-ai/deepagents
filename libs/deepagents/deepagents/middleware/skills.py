@@ -200,13 +200,13 @@ class SkillsState(AgentState):
     """Mapping of skill name to loaded SKILL.md body content. Not propagated to parent agents."""
 
 
-class SkillsStateUpdate(TypedDict, total=False):
+class SkillsStateUpdate(TypedDict):
     """State update for the skills middleware."""
 
-    skills_metadata: list[SkillMetadata]
+    skills_metadata: NotRequired[list[SkillMetadata]]
     """List of loaded skill metadata to merge into state."""
 
-    loaded_skills: dict[str, str]
+    loaded_skills: NotRequired[dict[str, str]]
     """Mapping of skill name to loaded SKILL.md body content."""
 
 
@@ -982,4 +982,4 @@ class SkillsMiddleware(AgentMiddleware):
         return await handler(modified_request)
 
 
-__all__ = ["SkillMetadata", "SkillsMiddleware", "_extract_skill_body"]
+__all__ = ["SkillMetadata", "SkillsMiddleware"]

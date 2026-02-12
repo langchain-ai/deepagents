@@ -3,8 +3,8 @@
 import asyncio
 import io
 import os
-import webbrowser
 import signal
+import webbrowser
 from typing import ClassVar, Never, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 

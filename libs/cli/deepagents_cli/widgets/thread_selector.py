@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import sqlite3
 from typing import TYPE_CHECKING, ClassVar
 
+from rich.style import Style
+from rich.text import Text
 from textual.binding import Binding, BindingType
 from textual.containers import Vertical, VerticalScroll
 from textual.css.query import NoMatches
@@ -17,7 +20,12 @@ if TYPE_CHECKING:
     from textual.app import ComposeResult
     from textual.events import Click
 
-from deepagents_cli.config import CharsetMode, _detect_charset_mode, get_glyphs
+from deepagents_cli.config import (
+    CharsetMode,
+    _detect_charset_mode,
+    build_langsmith_thread_url,
+    get_glyphs,
+)
 from deepagents_cli.sessions import ThreadInfo, format_timestamp, list_threads
 
 logger = logging.getLogger(__name__)
@@ -181,6 +189,26 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         self._selected_index = 0
         self._option_widgets: list[ThreadOption] = []
 
+    def _build_title(self, thread_url: str | None = None) -> str | Text:
+        """Build the title, optionally with a clickable thread ID link.
+
+        Args:
+            thread_url: LangSmith thread URL. When provided, the thread ID is
+                rendered as a clickable hyperlink.
+
+        Returns:
+            Plain string or Rich `Text` with an embedded hyperlink.
+        """
+        if not self._current_thread:
+            return "Select Thread"
+        if thread_url:
+            return Text.assemble(
+                "Select Thread (current: ",
+                (self._current_thread, Style(color="cyan", link=thread_url)),
+                ")",
+            )
+        return f"Select Thread (current: {self._current_thread})"
+
     def compose(self) -> ComposeResult:
         """Compose the screen layout.
 
@@ -190,12 +218,9 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         glyphs = get_glyphs()
 
         with Vertical():
-            title = (
-                f"Select Thread (current: {self._current_thread})"
-                if self._current_thread
-                else "Select Thread"
+            yield Static(
+                self._build_title(), classes="thread-selector-title", id="thread-title"
             )
-            yield Static(title, classes="thread-selector-title")
             yield Static(self._format_header(), classes="thread-list-header")
 
             with VerticalScroll(classes="thread-list"):
@@ -234,7 +259,55 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                 break
 
         await self._build_list()
+
+        if self._current_thread:
+            self._resolve_thread_url()
+
         self.focus()
+
+    def _resolve_thread_url(self) -> None:
+        """Start exclusive background worker to resolve LangSmith thread URL.
+
+        `exclusive=True` so repeated calls cancel any in-flight resolution.
+        """
+        self.run_worker(self._fetch_thread_url, exclusive=True)
+
+    async def _fetch_thread_url(self) -> None:
+        """Resolve the LangSmith URL and update the title with a clickable link.
+
+        Applies a 2-second timeout and silently returns on failure so the
+        title is left as plain text without the link.
+        """
+        if not self._current_thread:
+            return
+        try:
+            thread_url = await asyncio.wait_for(
+                asyncio.to_thread(build_langsmith_thread_url, self._current_thread),
+                timeout=2.0,
+            )
+        except (TimeoutError, OSError):
+            logger.debug(
+                "Could not resolve LangSmith thread URL for '%s'",
+                self._current_thread,
+                exc_info=True,
+            )
+            return
+        except Exception:
+            logger.debug(
+                "Unexpected error resolving LangSmith thread URL for '%s'",
+                self._current_thread,
+                exc_info=True,
+            )
+            return
+        if thread_url:
+            try:
+                title_widget = self.query_one("#thread-title", Static)
+                title_widget.update(self._build_title(thread_url))
+            except NoMatches:
+                logger.debug(
+                    "Title widget #thread-title not found; "
+                    "thread selector may have been dismissed during URL resolution"
+                )
 
     async def _show_mount_error(self, detail: str) -> None:
         """Display an error message inside the thread list and refocus.

@@ -490,6 +490,29 @@ async def test_acp_agent_nested_agent_tool_call_returns_final_text() -> None:
     )
 
 
+async def test_acp_agent_with_prebuilt_langchain_agent_end_to_end() -> None:
+    model = GenericFakeChatModel(
+        messages=iter([AIMessage(content="Hello!")]), stream_delimiter=r"(\s)"
+    )
+    prebuilt = create_agent(model, tools=[], checkpointer=MemorySaver())
+
+    agent = AgentServerACP(agent=prebuilt)
+    client = FakeACPClient()
+    agent.on_connect(client)  # type: ignore[arg-type]
+
+    session = await agent.new_session(cwd="/tmp", mcp_servers=[])
+    resp = await agent.prompt(
+        [TextContentBlock(type="text", text="Hi")], session_id=session.session_id
+    )
+    assert resp.stop_reason == "end_turn"
+
+    assert any(
+        e["update"] == update_agent_message(text_block("Hello!"))
+        for e in client.events
+        if e["type"] == "session_update"
+    )
+
+
 async def test_acp_langchain_create_agent_nested_agent_tool_call_messages() -> None:
     @tool
     async def ask_user(question: str, runtime: ToolRuntime) -> str:

@@ -32,6 +32,7 @@ from deepagents_cli.config import (
     SHELL_TOOL_NAMES,
     CharsetMode,
     _detect_charset_mode,
+    build_langsmith_thread_url,
     create_model,
     detect_provider,
     is_shell_command_allowed,
@@ -1002,6 +1003,75 @@ class DeepAgentsApp(App):
         link.stylize(f"link {url}", 0)
         await self._mount_message(AppMessage(link))
 
+    @staticmethod
+    async def _build_thread_message(prefix: str, thread_id: str) -> str | Text:
+        """Build a thread status message, hyperlinking the ID when possible.
+
+        Attempts to resolve the LangSmith thread URL with a short timeout.
+        Falls back to plain text if tracing is not configured or resolution
+        fails.
+
+        Args:
+            prefix: Label before the thread ID (e.g. `'Resumed thread'`).
+            thread_id: The thread identifier.
+
+        Returns:
+            A Rich `Text` with a clickable thread ID, or a plain string.
+        """
+        try:
+            url = await asyncio.wait_for(
+                asyncio.to_thread(build_langsmith_thread_url, thread_id),
+                timeout=2.0,
+            )
+        except (TimeoutError, Exception):
+            url = None
+
+        if url:
+            return Text.assemble(
+                f"{prefix}: ",
+                (thread_id, f"link {url}"),
+            )
+        return f"{prefix}: {thread_id}"
+
+    async def _handle_trace_command(self, command: str) -> None:
+        """Open the current thread in LangSmith.
+
+        Shows a hint if no conversation has been started yet or if LangSmith
+        tracing is not configured. Otherwise, opens the thread URL in the
+        default browser and displays a clickable link.
+
+        Args:
+            command: The raw command text (displayed as user message).
+        """
+        await self._mount_message(UserMessage(command))
+        if not self._session_state:
+            await self._mount_message(AppMessage("No active session."))
+            return
+        thread_id = self._session_state.thread_id
+        try:
+            url = await asyncio.to_thread(build_langsmith_thread_url, thread_id)
+        except Exception:
+            logger.exception("Failed to build LangSmith thread URL for %s", thread_id)
+            await self._mount_message(
+                AppMessage("Failed to resolve LangSmith thread URL.")
+            )
+            return
+        if not url:
+            await self._mount_message(
+                AppMessage(
+                    "LangSmith tracing is not configured. "
+                    "Set LANGSMITH_API_KEY and LANGSMITH_TRACING=true to enable."
+                )
+            )
+            return
+        try:
+            webbrowser.open(url)
+        except Exception:
+            logger.debug("Could not open browser for URL: %s", url, exc_info=True)
+        link = Text(url, style="dim italic")
+        link.stylize(f"link {url}", 0)
+        await self._mount_message(AppMessage(link))
+
     async def _handle_command(self, command: str) -> None:
         """Handle a slash command.
 
@@ -1016,7 +1086,7 @@ class DeepAgentsApp(App):
             await self._mount_message(UserMessage(command))
             help_text = Text(
                 "Commands: /quit, /clear, /model [--default], /remember, "
-                "/tokens, /threads, /changelog, /docs, /feedback, /help\n\n"
+                "/tokens, /threads, /trace, /changelog, /docs, /feedback, /help\n\n"
                 "Interactive Features:\n"
                 "  Enter           Submit your message\n"
                 "  Ctrl+J          Insert newline\n"
@@ -1064,6 +1134,8 @@ class DeepAgentsApp(App):
                 )
         elif cmd == "/threads":
             await self._show_thread_selector()
+        elif cmd == "/trace":
+            await self._handle_trace_command(command)
         elif cmd == "/tokens":
             await self._mount_message(UserMessage(command))
             if self._token_tracker and self._token_tracker.current_context > 0:
@@ -1353,10 +1425,12 @@ class DeepAgentsApp(App):
                 if widget:
                     widget.set_rejected()  # Shows as interrupted/rejected in UI
 
-            # Show system message indicating this is a resumed thread
-            await self._mount_message(
-                AppMessage(f"Resumed thread: {self._lc_thread_id}")
+            # Show system message indicating this is a resumed thread,
+            # with a clickable LangSmith link when tracing is configured.
+            thread_msg = await self._build_thread_message(
+                "Resumed thread", self._lc_thread_id
             )
+            await self._mount_message(AppMessage(thread_msg))
 
             # Scroll to bottom after UI fully renders
             # Use set_timer to ensure layout is complete (Markdown rendering is async)

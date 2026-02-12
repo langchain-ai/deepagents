@@ -726,8 +726,8 @@ class SkillsMiddleware(AgentMiddleware):
         """
         middleware = self
 
-        def _find_skill(skill_name: str, runtime: ToolRuntime) -> SkillMetadata | None:
-            """Find a skill by name from the current state."""
+        def _lookup_skill_metadata(skill_name: str, runtime: ToolRuntime) -> SkillMetadata | None:
+            """Look up a skill by name from the already-loaded metadata in state."""
             skills_metadata: list[SkillMetadata] = runtime.state.get("skills_metadata", [])
             for skill in skills_metadata:
                 if skill["name"] == skill_name:
@@ -738,7 +738,7 @@ class SkillsMiddleware(AgentMiddleware):
             name: Annotated[str, "The name of the skill to load."],
             runtime: ToolRuntime,
         ) -> str:
-            skill_meta = _find_skill(name, runtime)
+            skill_meta = _lookup_skill_metadata(name, runtime)
             if skill_meta is None:
                 available = [s["name"] for s in runtime.state.get("skills_metadata", [])]
                 return f"Skill '{name}' not found. Available skills: {', '.join(available) or 'none'}"
@@ -759,7 +759,7 @@ class SkillsMiddleware(AgentMiddleware):
             name: Annotated[str, "The name of the skill to load."],
             runtime: ToolRuntime,
         ) -> str:
-            skill_meta = _find_skill(name, runtime)
+            skill_meta = _lookup_skill_metadata(name, runtime)
             if skill_meta is None:
                 available = [s["name"] for s in runtime.state.get("skills_metadata", [])]
                 return f"Skill '{name}' not found. Available skills: {', '.join(available) or 'none'}"

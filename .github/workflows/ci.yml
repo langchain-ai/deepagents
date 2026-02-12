@@ -96,7 +96,6 @@ jobs:
     with:
       working-directory: "libs/deepagents"
       python-version: "3.11"
-      typecheck: true
 
   lint-cli:
     name: "🧹 Lint cli"

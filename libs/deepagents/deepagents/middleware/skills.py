@@ -99,9 +99,13 @@ import yaml
 from langchain.agents.middleware.types import PrivateStateAttr
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
+    from langchain_core.runnables import RunnableConfig
+    from langgraph.runtime import Runtime
+
     from deepagents.backends.protocol import BACKEND_TYPES, BackendProtocol
 
-from collections.abc import Awaitable, Callable
 from typing import NotRequired, TypedDict
 
 from langchain.agents.middleware.types import (
@@ -112,10 +116,8 @@ from langchain.agents.middleware.types import (
     ModelResponse,
     ResponseT,
 )
-from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import StructuredTool
 from langgraph.prebuilt import ToolRuntime
-from langgraph.runtime import Runtime
 
 from deepagents.middleware._utils import append_to_system_message
 
@@ -245,7 +247,7 @@ def _validate_skill_name(name: str, directory_name: str) -> tuple[bool, str]:
     return True, ""
 
 
-def _parse_skill_metadata(
+def _parse_skill_metadata(  # noqa: C901
     content: str,
     skill_path: str,
     directory_name: str,
@@ -702,7 +704,8 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
             )
             backend = self._backend(tool_runtime)  # ty: ignore[invalid-argument-type]
             if backend is None:
-                raise AssertionError("SkillsMiddleware requires a valid backend instance")
+                msg = "SkillsMiddleware requires a valid backend instance"
+                raise AssertionError(msg)
             return backend
 
         return self._backend
@@ -720,7 +723,7 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
             return self._backend(runtime)
         return self._backend
 
-    def _create_skill_tool(self) -> StructuredTool:
+    def _create_skill_tool(self) -> StructuredTool:  # noqa: C901
         """Create the `skill` tool for loading skills by name.
 
         Returns:
@@ -836,7 +839,7 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
 
         return request.override(system_message=new_system_message)
 
-    def before_agent(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> SkillsStateUpdate | None:
+    def before_agent(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> SkillsStateUpdate | None:  # ty: ignore[invalid-method-override]
         """Load skills metadata before agent execution (synchronous).
 
         Runs before each agent interaction to discover available skills from all
@@ -871,7 +874,7 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         skills = list(all_skills.values())
         return SkillsStateUpdate(skills_metadata=skills)
 
-    async def abefore_agent(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> SkillsStateUpdate | None:
+    async def abefore_agent(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> SkillsStateUpdate | None:  # ty: ignore[invalid-method-override]
         """Load skills metadata before agent execution (async).
 
         Runs before each agent interaction to discover available skills from all

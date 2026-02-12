@@ -128,7 +128,7 @@ class CompositeBackend(BackendProtocol):
         if path == "/":
             results: list[FileInfo] = []
             results.extend(self.default.ls_info(path))
-            for route_prefix, backend in self.sorted_routes:
+            for route_prefix, _backend in self.sorted_routes:
                 # Add the route itself as a directory (e.g., /memories/)
                 results.append(
                     {
@@ -160,7 +160,7 @@ class CompositeBackend(BackendProtocol):
         if path == "/":
             results: list[FileInfo] = []
             results.extend(await self.default.als_info(path))
-            for route_prefix, backend in self.sorted_routes:
+            for route_prefix, _backend in self.sorted_routes:
                 # Add the route itself as a directory (e.g., /memories/)
                 results.append(
                     {
@@ -241,7 +241,7 @@ class CompositeBackend(BackendProtocol):
                 raw = backend.grep_raw(pattern, search_path or "/", glob)
                 if isinstance(raw, str):
                     return raw
-                return [{**m, "path": f"{route_prefix[:-1]}{m['path']}"} for m in raw]  # ty: ignore
+                return [{**m, "path": f"{route_prefix[:-1]}{m['path']}"} for m in raw]  # ty: ignore[invalid-return-type, missing-typed-dict-key]
 
         # If path is None or "/", search default and all routed backends and merge
         # Otherwise, search only the default backend
@@ -258,7 +258,7 @@ class CompositeBackend(BackendProtocol):
                 if isinstance(raw, str):
                     # This happens if error occurs
                     return raw
-                all_matches.extend({**m, "path": f"{route_prefix[:-1]}{m['path']}"} for m in raw)  # ty: ignore
+                all_matches.extend({**m, "path": f"{route_prefix[:-1]}{m['path']}"} for m in raw)  # ty: ignore[invalid-argument-type]
 
             return all_matches
         # Path specified but doesn't match a route - search only default
@@ -281,7 +281,7 @@ class CompositeBackend(BackendProtocol):
                 raw = await backend.agrep_raw(pattern, search_path or "/", glob)
                 if isinstance(raw, str):
                     return raw
-                return [{**m, "path": f"{route_prefix[:-1]}{m['path']}"} for m in raw]  # ty: ignore
+                return [{**m, "path": f"{route_prefix[:-1]}{m['path']}"} for m in raw]  # ty: ignore[invalid-return-type, missing-typed-dict-key]
 
         # If path is None or "/", search default and all routed backends and merge
         # Otherwise, search only the default backend
@@ -298,13 +298,14 @@ class CompositeBackend(BackendProtocol):
                 if isinstance(raw, str):
                     # This happens if error occurs
                     return raw
-                all_matches.extend({**m, "path": f"{route_prefix[:-1]}{m['path']}"} for m in raw)  # ty: ignore
+                all_matches.extend({**m, "path": f"{route_prefix[:-1]}{m['path']}"} for m in raw)  # ty: ignore[invalid-argument-type]
 
             return all_matches
         # Path specified but doesn't match a route - search only default
         return await self.default.agrep_raw(pattern, path, glob)
 
     def glob_info(self, pattern: str, path: str = "/") -> list[FileInfo]:
+        """Find files matching a glob pattern, routing by path prefix."""
         results: list[FileInfo] = []
 
         # Route based on path, not pattern
@@ -319,7 +320,7 @@ class CompositeBackend(BackendProtocol):
 
         for route_prefix, backend in self.routes.items():
             infos = backend.glob_info(pattern, "/")
-            results.extend({**fi, "path": f"{route_prefix[:-1]}{fi['path']}"} for fi in infos)  # ty: ignore
+            results.extend({**fi, "path": f"{route_prefix[:-1]}{fi['path']}"} for fi in infos)  # ty: ignore[invalid-argument-type]
 
         # Deterministic ordering
         results.sort(key=lambda x: x.get("path", ""))
@@ -341,7 +342,7 @@ class CompositeBackend(BackendProtocol):
 
         for route_prefix, backend in self.routes.items():
             infos = await backend.aglob_info(pattern, "/")
-            results.extend({**fi, "path": f"{route_prefix[:-1]}{fi['path']}"} for fi in infos)  # ty: ignore
+            results.extend({**fi, "path": f"{route_prefix[:-1]}{fi['path']}"} for fi in infos)  # ty: ignore[invalid-argument-type]
 
         # Deterministic ordering
         results.sort(key=lambda x: x.get("path", ""))
@@ -372,7 +373,7 @@ class CompositeBackend(BackendProtocol):
                     files = state.get("files", {})
                     files.update(res.files_update)
                     state["files"] = files
-            except Exception:
+            except Exception:  # noqa: BLE001, S110  # Intentional for best-effort state sync
                 pass
         return res
 
@@ -393,7 +394,7 @@ class CompositeBackend(BackendProtocol):
                     files = state.get("files", {})
                     files.update(res.files_update)
                     state["files"] = files
-            except Exception:
+            except Exception:  # noqa: BLE001, S110  # Intentional for best-effort state sync
                 pass
         return res
 
@@ -402,7 +403,7 @@ class CompositeBackend(BackendProtocol):
         file_path: str,
         old_string: str,
         new_string: str,
-        replace_all: bool = False,
+        replace_all: bool = False,  # noqa: FBT001, FBT002  # Boolean positional arg is part of BackendProtocol API
     ) -> EditResult:
         """Edit a file, routing to appropriate backend.
 
@@ -425,7 +426,7 @@ class CompositeBackend(BackendProtocol):
                     files = state.get("files", {})
                     files.update(res.files_update)
                     state["files"] = files
-            except Exception:
+            except Exception:  # noqa: BLE001, S110  # Intentional for best-effort state sync
                 pass
         return res
 
@@ -434,7 +435,7 @@ class CompositeBackend(BackendProtocol):
         file_path: str,
         old_string: str,
         new_string: str,
-        replace_all: bool = False,
+        replace_all: bool = False,  # noqa: FBT001, FBT002  # Boolean positional arg is part of BackendProtocol API
     ) -> EditResult:
         """Async version of edit."""
         backend, stripped_key = self._get_backend_and_key(file_path)
@@ -447,7 +448,7 @@ class CompositeBackend(BackendProtocol):
                     files = state.get("files", {})
                     files.update(res.files_update)
                     state["files"] = files
-            except Exception:
+            except Exception:  # noqa: BLE001, S110  # Intentional for best-effort state sync
                 pass
         return res
 
@@ -478,10 +479,11 @@ class CompositeBackend(BackendProtocol):
 
         # This shouldn't be reached if the runtime check in the execute tool works correctly,
         # but we include it as a safety fallback.
-        raise NotImplementedError(
+        msg = (
             "Default backend doesn't support command execution (SandboxBackendProtocol). "
             "To enable execution, provide a default backend that implements SandboxBackendProtocol."
         )
+        raise NotImplementedError(msg)
 
     async def aexecute(
         self,
@@ -493,10 +495,11 @@ class CompositeBackend(BackendProtocol):
 
         # This shouldn't be reached if the runtime check in the execute tool works correctly,
         # but we include it as a safety fallback.
-        raise NotImplementedError(
+        msg = (
             "Default backend doesn't support command execution (SandboxBackendProtocol). "
             "To enable execution, provide a default backend that implements SandboxBackendProtocol."
         )
+        raise NotImplementedError(msg)
 
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
         """Upload multiple files, batching by backend for efficiency.
@@ -515,8 +518,6 @@ class CompositeBackend(BackendProtocol):
         results: list[FileUploadResponse | None] = [None] * len(files)
 
         # Group files by backend, tracking original indices
-        from collections import defaultdict
-
         backend_batches: dict[BackendProtocol, list[tuple[int, str, bytes]]] = defaultdict(list)
 
         for idx, (path, content) in enumerate(files):

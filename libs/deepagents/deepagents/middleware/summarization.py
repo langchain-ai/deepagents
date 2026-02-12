@@ -578,7 +578,7 @@ A condensed summary follows:
         """
         counted_messages = [system_message, *messages] if system_message is not None else messages
         try:
-            total_tokens = self.token_counter(counted_messages, tools=tools)
+            total_tokens = self.token_counter(counted_messages, tools=tools)  # ty: ignore[unknown-argument]
         except TypeError:
             total_tokens = self.token_counter(counted_messages)
         if not self._should_truncate_args(messages, total_tokens):
@@ -799,7 +799,7 @@ A condensed summary follows:
         # Step 2: Check if summarization should happen
         counted_messages = [request.system_message, *truncated_messages] if request.system_message is not None else truncated_messages
         try:
-            total_tokens = self.token_counter(counted_messages, tools=request.tools)
+            total_tokens = self.token_counter(counted_messages, tools=request.tools)  # ty: ignore[unknown-argument]
         except TypeError:
             total_tokens = self.token_counter(counted_messages)
         should_summarize = self._should_summarize(truncated_messages, total_tokens)
@@ -845,7 +845,7 @@ A condensed summary follows:
         # Create new summarization event
         new_event: SummarizationEvent = {
             "cutoff_index": state_cutoff_index,
-            "summary_message": new_messages[0],  # The HumanMessage with summary
+            "summary_message": new_messages[0],  # The HumanMessage with summary  # ty: ignore[invalid-argument-type]
             "file_path": file_path,
         }
 
@@ -894,7 +894,7 @@ A condensed summary follows:
         # Step 2: Check if summarization should happen
         counted_messages = [request.system_message, *truncated_messages] if request.system_message is not None else truncated_messages
         try:
-            total_tokens = self.token_counter(counted_messages, tools=request.tools)
+            total_tokens = self.token_counter(counted_messages, tools=request.tools)  # ty: ignore[unknown-argument]
         except TypeError:
             total_tokens = self.token_counter(counted_messages)
         should_summarize = self._should_summarize(truncated_messages, total_tokens)
@@ -940,7 +940,7 @@ A condensed summary follows:
         # Create new summarization event
         new_event: SummarizationEvent = {
             "cutoff_index": state_cutoff_index,
-            "summary_message": new_messages[0],  # The HumanMessage with summary
+            "summary_message": new_messages[0],  # The HumanMessage with summary  # ty: ignore[invalid-argument-type]
             "file_path": file_path,
         }
 

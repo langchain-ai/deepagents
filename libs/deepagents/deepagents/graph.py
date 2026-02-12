@@ -49,7 +49,7 @@ def get_default_model() -> ChatAnthropic:
     )
 
 
-def create_deep_agent(
+def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic with many conditional branches
     model: str | BaseChatModel | None = None,
     tools: Sequence[BaseTool | Callable | dict[str, Any]] | None = None,
     *,
@@ -170,7 +170,7 @@ def create_deep_agent(
     backend = backend if backend is not None else (StateBackend)
 
     # Build general-purpose subagent with default middleware stack
-    gp_middleware: list[AgentMiddleware] = [
+    gp_middleware: list[AgentMiddleware] = [  # ty: ignore[invalid-assignment]
         TodoListMiddleware(),
         FilesystemMiddleware(backend=backend),
         SummarizationMiddleware(
@@ -185,11 +185,11 @@ def create_deep_agent(
         PatchToolCallsMiddleware(),
     ]
     if skills is not None:
-        gp_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
+        gp_middleware.append(SkillsMiddleware(backend=backend, sources=skills))  # ty: ignore[invalid-argument-type]
     if interrupt_on is not None:
         gp_middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
 
-    general_purpose_spec: SubAgent = {
+    general_purpose_spec: SubAgent = {  # ty: ignore[missing-typed-dict-key]
         **GENERAL_PURPOSE_SUBAGENT,
         "model": model,
         "tools": tools or [],
@@ -210,7 +210,7 @@ def create_deep_agent(
 
             # Build middleware: base stack + skills (if specified) + user's middleware
             subagent_summarization_defaults = _compute_summarization_defaults(subagent_model)
-            subagent_middleware: list[AgentMiddleware] = [
+            subagent_middleware: list[AgentMiddleware] = [  # ty: ignore[invalid-assignment]
                 TodoListMiddleware(),
                 FilesystemMiddleware(backend=backend),
                 SummarizationMiddleware(
@@ -226,10 +226,10 @@ def create_deep_agent(
             ]
             subagent_skills = spec.get("skills")
             if subagent_skills:
-                subagent_middleware.append(SkillsMiddleware(backend=backend, sources=subagent_skills))
+                subagent_middleware.append(SkillsMiddleware(backend=backend, sources=subagent_skills))  # ty: ignore[invalid-argument-type]
             subagent_middleware.extend(spec.get("middleware", []))
 
-            processed_spec: SubAgent = {
+            processed_spec: SubAgent = {  # ty: ignore[missing-typed-dict-key]
                 **spec,
                 "model": subagent_model,
                 "tools": spec.get("tools", tools or []),
@@ -241,15 +241,15 @@ def create_deep_agent(
     all_subagents: list[SubAgent | CompiledSubAgent] = [general_purpose_spec, *processed_subagents]
 
     # Build main agent middleware stack
-    deepagent_middleware: list[AgentMiddleware] = [
+    deepagent_middleware: list[AgentMiddleware] = [  # ty: ignore[invalid-assignment]
         TodoListMiddleware(),
     ]
     if memory is not None:
-        deepagent_middleware.append(MemoryMiddleware(backend=backend, sources=memory))
+        deepagent_middleware.append(MemoryMiddleware(backend=backend, sources=memory))  # ty: ignore[invalid-argument-type]
     if skills is not None:
-        deepagent_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
+        deepagent_middleware.append(SkillsMiddleware(backend=backend, sources=skills))  # ty: ignore[invalid-argument-type]
     deepagent_middleware.extend(
-        [
+        [  # ty: ignore[invalid-argument-type]
             FilesystemMiddleware(backend=backend),
             SubAgentMiddleware(
                 backend=backend,

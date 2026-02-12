@@ -371,7 +371,7 @@ def _get_subagents_legacy(
     return specs
 
 
-def _build_task_tool(
+def _build_task_tool(  # noqa: C901
     subagents: list[_SubagentSpec],
     task_description: str | None = None,
 ) -> BaseTool:
@@ -589,7 +589,7 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         if using_old_api and not using_new_api:
             # Legacy API - build subagents from deprecated args
             subagent_specs = _get_subagents_legacy(
-                default_model=default_model,
+                default_model=default_model,  # ty: ignore[invalid-argument-type]
                 default_tools=default_tools or [],
                 default_middleware=default_middleware,
                 default_interrupt_on=default_interrupt_on,

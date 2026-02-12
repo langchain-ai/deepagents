@@ -1,4 +1,5 @@
 import json
+import os
 from typing import Any
 from uuid import uuid4
 
@@ -40,11 +41,13 @@ from acp.schema import (
     ToolCallUpdate,
 )
 from deepagents import create_deep_agent
-from deepagents.backends import CompositeBackend, FilesystemBackend, StateBackend
-from deepagents.graph import Checkpointer, CompiledStateGraph
+from deepagents.backends import CompositeBackend, StateBackend
+from deepagents_cli.backends import CLIShellBackend, patch_filesystem_middleware
+from deepagents_cli.config import settings
 from dotenv import load_dotenv
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.graph.state import Checkpointer, CompiledStateGraph
 from langgraph.types import Command, StateSnapshot
 
 from deepagents_acp.utils import (
@@ -87,8 +90,21 @@ class ACPAgentServer(ACPAgent):
 
         def create_backend(tr):
             ephemeral_backend = StateBackend(tr)
+            shell_env = os.environ.copy()
+            if settings.user_langchain_project:
+                shell_env["LANGSMITH_PROJECT"] = settings.user_langchain_project
+
+            # Use CLIShellBackend for filesystem + shell execution.
+            # Provides `execute` tool via FilesystemMiddleware with per-command
+            # timeout support.
+            shell_backend = CLIShellBackend(
+                root_dir=self._root_dir,
+                inherit_env=True,
+                env=shell_env,
+            )
+            patch_filesystem_middleware()
             return CompositeBackend(
-                default=FilesystemBackend(root_dir=self._root_dir, virtual_mode=True),
+                default=shell_backend,
                 routes={
                     "/memories/": ephemeral_backend,
                     "/conversation_history/": ephemeral_backend,

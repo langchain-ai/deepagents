@@ -16,7 +16,6 @@ __all__ = [
     "BackendProtocol",
     "CompositeBackend",
     "FilesystemBackend",
-    "GitHubBackend",
     "LocalShellBackend",
     "NamespaceFactory",
     "StateBackend",

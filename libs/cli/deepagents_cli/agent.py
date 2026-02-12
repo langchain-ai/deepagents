@@ -127,19 +127,28 @@ def reset_agent(agent_name: str, source_agent: str | None = None) -> None:
 def get_system_prompt(assistant_id: str, sandbox_type: str | None = None) -> str:
     """Get the base system prompt for the agent.
 
-    Loads the immutable system prompt from ``system_prompt.md`` and
+    Loads the immutable system prompt from `system_prompt.md` and
     interpolates dynamic sections (model identity, working directory,
     skills path).
 
     Args:
         assistant_id: The agent identifier for path references
         sandbox_type: Type of sandbox provider
-            ("daytona", "langsmith", "modal", "runloop").
+            (`'daytona'`, `'langsmith'`, `'modal'`, `'runloop'`).
 
-            If None, agent is operating in local mode.
+            If `None`, agent is operating in local mode.
 
     Returns:
         The system prompt string
+
+    Example:
+        ```txt
+        You are running as model {MODEL} (provider: {PROVIDER}).
+
+        Your context window is {CONTEXT_WINDOW} tokens.
+
+        ... {CONDITIONAL SECTIONS} ...
+        ```
     """
     template = (Path(__file__).parent / "system_prompt.md").read_text()
 

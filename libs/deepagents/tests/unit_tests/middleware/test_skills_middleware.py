@@ -9,11 +9,13 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from langchain.agents import create_agent
+from langchain.agents.middleware.types import ModelRequest
 from langchain.tools import ToolRuntime
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.store.memory import InMemoryStore
+from langgraph.types import Command
 
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.state import StateBackend
@@ -1633,8 +1635,6 @@ description: test
 
 def test_skill_tool_inline_loads_skill(tmp_path: Path) -> None:
     """Test skill tool in inline mode: loads skill body into loaded_skills state."""
-    from langgraph.types import Command
-
     backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
     skills_dir = tmp_path / "skills" / "user"
     skill_path = str(skills_dir / "test-skill" / "SKILL.md")
@@ -1704,9 +1704,6 @@ def test_skill_tool_not_found(tmp_path: Path) -> None:
 
 def test_modify_request_injects_loaded_skills() -> None:
     """Test that modify_request injects loaded skill bodies into the system prompt."""
-    from langchain.agents.middleware.types import ModelRequest
-    from langchain_core.messages import SystemMessage
-
     middleware = SkillsMiddleware(backend=None, sources=["/skills/"])  # type: ignore
 
     state = {
@@ -1788,8 +1785,6 @@ def test_skills_middleware_has_skill_tool() -> None:
 
 def test_skill_tool_loads_large_skill_fully(tmp_path: Path) -> None:
     """Test that a large skill (> 100 lines) is fully loaded without truncation."""
-    from langgraph.types import Command
-
     backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
     skills_dir = tmp_path / "skills" / "user"
     skill_path = str(skills_dir / "large-skill" / "SKILL.md")

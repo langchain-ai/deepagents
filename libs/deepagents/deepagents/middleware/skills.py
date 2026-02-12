@@ -580,11 +580,10 @@ SKILL_TOOL_DESCRIPTION = """Invoke a skill by name. Skills provide specialized c
 
 How to invoke:
 - Use the `skill` parameter with the skill name (e.g., skill="web-research")
-- Optionally pass `args` with additional context or instructions for the skill
 
 Examples:
 - skill="web-research" — load the web-research skill into the current context
-- skill="code-review", args="Review the authentication module" — invoke the code-review skill with specific instructions
+- skill="code-review" — invoke the code-review skill
 
 Skills are loaded into the current conversation context for you to follow."""
 
@@ -754,7 +753,6 @@ class SkillsMiddleware(AgentMiddleware):
         def skill_fn(
             skill: Annotated[str, "The name of the skill to invoke."],
             runtime: ToolRuntime,
-            args: Annotated[str, "Optional arguments or instructions for the skill."] = "",  # noqa: ARG001
         ) -> str | Command:
             skill_meta = _find_skill(skill, runtime)
             if skill_meta is None:
@@ -780,7 +778,6 @@ class SkillsMiddleware(AgentMiddleware):
         async def askill_fn(
             skill: Annotated[str, "The name of the skill to invoke."],
             runtime: ToolRuntime,
-            args: Annotated[str, "Optional arguments or instructions for the skill."] = "",  # noqa: ARG001
         ) -> str | Command:
             skill_meta = _find_skill(skill, runtime)
             if skill_meta is None:

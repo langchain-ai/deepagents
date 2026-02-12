@@ -325,9 +325,30 @@ async def test_acp_agent_tool_result_completes_tool_call() -> None:
     agent.on_connect(client)  # type: ignore[arg-type]
 
     session = await agent.new_session(cwd="/tmp", mcp_servers=[])
+    agent._agent = graph
 
-    msg = ToolMessage(content="result", tool_call_id="call_1")
-    agent._cancelled = True
+    class ToolChunkCarrier:
+        tool_call_chunks = [
+            {
+                "id": "call_1",
+                "name": "execute",
+                "args": '{"command": "echo hi"}',
+                "index": 0,
+            }
+        ]
+        content = ""
+
+    active_tool_calls: dict[str, Any] = {}
+    tool_call_accumulator: dict[int, Any] = {}
+
+    await agent._process_tool_call_chunks(
+        session_id=session.session_id,
+        message_chunk=ToolChunkCarrier(),
+        active_tool_calls=active_tool_calls,
+        tool_call_accumulator=tool_call_accumulator,
+    )
+
+    msg = ToolMessage(content="hi\n[Command succeeded with exit code 0]", tool_call_id="call_1")
 
     async def one_chunk(*args: Any, **kwargs: Any):
         yield ((), "messages", (msg, {}))
@@ -348,6 +369,13 @@ async def test_acp_agent_tool_result_completes_tool_call() -> None:
         [TextContentBlock(type="text", text="hi")], session_id=session.session_id
     )
     assert resp.stop_reason == "end_turn"
+
+    tool_call_events = [
+        e
+        for e in client.events
+        if e["type"] == "session_update" and getattr(e["update"], "tool_call_id", None) == "call_1"
+    ]
+    assert tool_call_events
 
 
 async def test_acp_agent_multimodal_prompt_blocks_do_not_error() -> None:
@@ -439,6 +467,169 @@ async def test_acp_agent_end_to_end_clears_plan() -> None:
 
     plan_clear_updates = [u for u in plan_updates if getattr(u, "entries", None) == []]
     assert plan_clear_updates
+
+
+async def test_acp_agent_hitl_approve_always_execute_auto_approves_next_time() -> None:
+    model = GenericFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "execute",
+                            "args": {"command": "python -m pytest -q"},
+                            "id": "call_1",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="done"),
+            ]
+        ),
+        stream_delimiter=None,
+    )
+    graph = create_deep_agent(
+        model=model,
+        middleware=[HumanInTheLoopMiddleware(interrupt_on={"execute": True})],
+        checkpointer=MemorySaver(),
+    )
+
+    agent = AgentServerACP(agent=graph)
+    client = FakeACPClient(permission_outcomes=["approve_always"])
+    agent.on_connect(client)  # type: ignore[arg-type]
+
+    session = await agent.new_session(cwd="/tmp", mcp_servers=[])
+
+    resp = await agent.prompt(
+        [TextContentBlock(type="text", text="hi")], session_id=session.session_id
+    )
+    assert resp.stop_reason == "end_turn"
+
+    permission_requests = [e for e in client.events if e["type"] == "request_permission"]
+    assert len(permission_requests) == 1
+    assert permission_requests[0]["tool_call"].title.startswith("Execute:")
+
+    assert session.session_id in agent._allowed_command_types
+    assert ("execute", "python -m pytest") in agent._allowed_command_types[session.session_id]
+
+    client.events = []
+    state = type("S", (), {"next": ("x",), "interrupts": []})()
+    interrupt = type(
+        "I",
+        (),
+        {
+            "id": "int_2",
+            "value": {
+                "action_requests": [{"name": "execute", "args": {"command": "python -m pytest -q"}}]
+            },
+        },
+    )()
+    state.interrupts = [interrupt]
+    decisions = await agent._handle_interrupts(current_state=state, session_id=session.session_id)
+    assert decisions == [{"type": "approve"}]
+    assert [e for e in client.events if e["type"] == "request_permission"] == []
+
+
+async def test_acp_agent_hitl_approve_always_tool_auto_approves_next_time() -> None:
+    model = GenericFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "write_file",
+                            "args": {"file_path": "/tmp/x.txt", "content": "hi"},
+                            "id": "call_1",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="done"),
+            ]
+        ),
+        stream_delimiter=None,
+    )
+    graph = create_deep_agent(
+        model=model,
+        middleware=[HumanInTheLoopMiddleware(interrupt_on={"write_file": True})],
+        checkpointer=MemorySaver(),
+    )
+
+    agent = AgentServerACP(agent=graph)
+    client = FakeACPClient(permission_outcomes=["approve_always"])
+    agent.on_connect(client)  # type: ignore[arg-type]
+
+    session = await agent.new_session(cwd="/tmp", mcp_servers=[])
+
+    resp = await agent.prompt(
+        [TextContentBlock(type="text", text="hi")], session_id=session.session_id
+    )
+    assert resp.stop_reason == "end_turn"
+
+    assert session.session_id in agent._allowed_command_types
+    assert ("write_file", None) in agent._allowed_command_types[session.session_id]
+
+    client.events = []
+    state = type("S", (), {"next": ("x",), "interrupts": []})()
+    interrupt = type(
+        "I",
+        (),
+        {"id": "int_2", "value": {"action_requests": [{"name": "write_file", "args": {}}]}},
+    )()
+    state.interrupts = [interrupt]
+    decisions = await agent._handle_interrupts(current_state=state, session_id=session.session_id)
+    assert decisions == [{"type": "approve"}]
+    assert [e for e in client.events if e["type"] == "request_permission"] == []
+
+
+async def test_acp_agent_hitl_client_cancel_raises_request_error() -> None:
+    model = GenericFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "write_todos",
+                            "args": {
+                                "todos": [
+                                    {"content": "a", "status": "in_progress"},
+                                    {"content": "b", "status": "pending"},
+                                ]
+                            },
+                            "id": "call_1",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="done"),
+            ]
+        ),
+        stream_delimiter=None,
+    )
+    graph = create_deep_agent(
+        model=model,
+        middleware=[HumanInTheLoopMiddleware(interrupt_on={"write_todos": True})],
+        checkpointer=MemorySaver(),
+    )
+
+    agent = AgentServerACP(agent=graph)
+    client = FakeACPClient(permission_outcomes=[])
+
+    async def request_permission_cancel(*args: Any, **kwargs: Any) -> RequestPermissionResponse:
+        raise RequestError(400, "cancelled")
+
+    client.request_permission = request_permission_cancel  # type: ignore[assignment]
+    agent.on_connect(client)  # type: ignore[arg-type]
+
+    session = await agent.new_session(cwd="/tmp", mcp_servers=[])
+
+    with pytest.raises(RequestError):
+        await agent.prompt(
+            [TextContentBlock(type="text", text="hi")], session_id=session.session_id
+        )
 
 
 async def test_acp_agent_nested_agent_tool_call_returns_final_text() -> None:

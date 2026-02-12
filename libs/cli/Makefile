@@ -1,4 +1,4 @@
-.PHONY: all format lint type test tests integration_test integration_tests test_watch benchmark help run lint_package lint_tests check_imports coverage
+.PHONY: all format lint type test tests integration_test integration_tests test_watch benchmark help run lint_package lint_tests check_imports check_extras_sync coverage
 
 # Default target executed when no arguments are given to make.
 all: help
@@ -63,6 +63,9 @@ format format_diff:
 check_imports: $(shell find deepagents_cli -name '*.py')
 	uv run --all-groups python ./scripts/check_imports.py $^
 
+check_extras_sync:
+	uv run --all-groups python ./scripts/check_extras_sync.py pyproject.toml
+
 ######################
 # HELP
 ######################
@@ -74,6 +77,7 @@ help:
 	@echo 'lint                         - run linters'
 	@echo 'type                         - run type checking'
 	@echo 'check_imports                - check imports'
+	@echo 'check_extras_sync            - check optional extras match required deps'
 	@echo 'lint_package                 - lint only the package'
 	@echo 'lint_tests                   - lint only tests'
 	@echo 'test                         - run unit tests'

@@ -22,7 +22,7 @@ from deepagents import create_deep_agent
 from langchain.agents import create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware
 from langchain.tools import ToolRuntime
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 from langchain_core.tools import tool
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import interrupt
@@ -290,23 +290,24 @@ async def test_acp_agent_tool_call_chunk_starts_tool_call() -> None:
 
     session = await agent.new_session(cwd="/tmp", mcp_servers=[])
 
-    class ToolChunkCarrier:
-        tool_call_chunks = [
+    msg = AIMessageChunk(
+        content="",
+        tool_call_chunks=[
             {
                 "id": "call_123",
                 "name": "read_file",
                 "args": '{"file_path": "/tmp/x.txt"}',
                 "index": 0,
             }
-        ]
-        content = ""
+        ],
+    )
 
     active_tool_calls: dict[str, Any] = {}
     tool_call_accumulator: dict[int, Any] = {}
 
     await agent._process_tool_call_chunks(
         session_id=session.session_id,
-        message_chunk=ToolChunkCarrier(),
+        message_chunk=msg,
         active_tool_calls=active_tool_calls,
         tool_call_accumulator=tool_call_accumulator,
     )
@@ -325,36 +326,29 @@ async def test_acp_agent_tool_result_completes_tool_call() -> None:
     agent.on_connect(client)  # type: ignore[arg-type]
 
     session = await agent.new_session(cwd="/tmp", mcp_servers=[])
-    agent._agent = graph
 
-    class ToolChunkCarrier:
-        tool_call_chunks = [
+    tool_start = AIMessageChunk(
+        content="",
+        tool_call_chunks=[
             {
                 "id": "call_1",
                 "name": "execute",
                 "args": '{"command": "echo hi"}',
                 "index": 0,
             }
-        ]
-        content = ""
-
-    active_tool_calls: dict[str, Any] = {}
-    tool_call_accumulator: dict[int, Any] = {}
-
-    await agent._process_tool_call_chunks(
-        session_id=session.session_id,
-        message_chunk=ToolChunkCarrier(),
-        active_tool_calls=active_tool_calls,
-        tool_call_accumulator=tool_call_accumulator,
+        ],
+    )
+    tool_result = ToolMessage(
+        content="hi\n[Command succeeded with exit code 0]",
+        tool_call_id="call_1",
     )
 
-    msg = ToolMessage(content="hi\n[Command succeeded with exit code 0]", tool_call_id="call_1")
-
-    async def one_chunk(*args: Any, **kwargs: Any):
-        yield ((), "messages", (msg, {}))
+    async def graph_astream(*args: Any, **kwargs: Any):
+        yield ((), "messages", (tool_start, {}))
+        yield ((), "messages", (tool_result, {}))
 
     class Graph:
-        astream = one_chunk
+        astream = graph_astream
 
         async def aget_state(self, config: Any) -> Any:
             class S:

@@ -2,7 +2,6 @@
 
 from deepagents.backends.composite import CompositeBackend
 from deepagents.backends.filesystem import FilesystemBackend
-from deepagents.backends.github import GitHubBackend
 from deepagents.backends.local_shell import LocalShellBackend
 from deepagents.backends.protocol import BackendProtocol
 from deepagents.backends.state import StateBackend

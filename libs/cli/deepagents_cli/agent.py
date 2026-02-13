@@ -514,14 +514,17 @@ def create_cli_agent(
         else:
             # No shell access - use plain FilesystemBackend
             backend = FilesystemBackend()
-
-        # Local context middleware (git info, directory tree, etc.)
-        agent_middleware.append(LocalContextMiddleware())
     else:
         # ========== REMOTE SANDBOX MODE ==========
         backend = sandbox  # Remote sandbox (ModalBackend, etc.)
         # Note: Shell middleware not used in sandbox mode
         # File operations and execute tool are provided by the sandbox backend
+
+    # Local context middleware (git info, directory tree, etc.)
+    # Uses backend.execute() so it works in both local and sandbox modes.
+    # Only enabled when the backend supports shell execution.
+    if hasattr(backend, "execute"):
+        agent_middleware.append(LocalContextMiddleware(backend=backend))
 
     # Get or use custom system prompt
     if system_prompt is None:

@@ -59,6 +59,7 @@ dependencies = [
     "pyyaml>=6.0.0",
     "aiosqlite>=0.19.0,<1.0.0",
     "tomli-w>=1.0.0,<2.0.0",
+    "deepagents-acp>=0.0.3",
 ]
 
 [project.optional-dependencies]

@@ -1,5 +1,4 @@
 """Deep Agents come with planning, filesystem, and subagents."""
-# ruff: noqa: ERA001
 
 from collections.abc import Callable, Sequence
 from pathlib import Path

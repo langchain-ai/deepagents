@@ -6,7 +6,7 @@ import os
 import re
 from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
-from typing import Annotated, Any, Literal, NotRequired
+from typing import Annotated, Any, Literal, NotRequired, cast
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
@@ -853,7 +853,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             if isinstance(raw, str):
                 return raw
             formatted = format_grep_matches(raw, output_mode)
-            return truncate_if_too_long(formatted)  # type: ignore[arg-type]
+            return truncate_if_too_long(formatted)
 
         async def async_grep(
             pattern: Annotated[str, "Text pattern to search for (literal string, not regex)."],
@@ -871,7 +871,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             if isinstance(raw, str):
                 return raw
             formatted = format_grep_matches(raw, output_mode)
-            return truncate_if_too_long(formatted)  # type: ignore[arg-type]
+            return truncate_if_too_long(formatted)
 
         return StructuredTool.from_function(
             name="grep",
@@ -899,8 +899,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     "To use the execute tool, provide a backend that implements SandboxBackendProtocol."
                 )
 
+            # Safe cast: _supports_execution validates that execute()/aexecute() exist
+            # (either SandboxBackendProtocol or CompositeBackend with sandbox default)
+            executable = cast(SandboxBackendProtocol, resolved_backend)
             try:
-                result = resolved_backend.execute(command)  # ty: ignore[unresolved-attribute]
+                result = executable.execute(command)
             except NotImplementedError as e:
                 # Handle case where execute() exists but raises NotImplementedError
                 return f"Error: Execution not available. {e}"
@@ -932,8 +935,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     "To use the execute tool, provide a backend that implements SandboxBackendProtocol."
                 )
 
+            # Safe cast: _supports_execution validates that execute()/aexecute() exist
+            executable = cast(SandboxBackendProtocol, resolved_backend)
             try:
-                result = await resolved_backend.aexecute(command)  # ty: ignore[unresolved-attribute]
+                result = await executable.aexecute(command)
             except NotImplementedError as e:
                 # Handle case where execute() exists but raises NotImplementedError
                 return f"Error: Execution not available. {e}"

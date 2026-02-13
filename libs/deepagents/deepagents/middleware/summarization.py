@@ -835,10 +835,9 @@ A condensed summary follows:
         # Build summary message with file path reference
         new_messages = self._build_new_messages_with_path(summary, file_path)
 
-        # Calculate state cutoff index
-        # If this is a subsequent summarization, convert effective message index to state index
-        # new_state_cutoff = old_state_cutoff + effective_cutoff - 1  # noqa: ERA001
-        # The -1 accounts for the summary message at effective[0]
+        # Calculate state cutoff index.
+        # If this is a subsequent summarization, convert effective message index to state index.
+        # The -1 accounts for the summary message at effective[0].
         previous_event = request.state.get("_summarization_event")
         state_cutoff_index = previous_event["cutoff_index"] + cutoff_index - 1 if previous_event is not None else cutoff_index
 
@@ -930,10 +929,9 @@ A condensed summary follows:
         # Build summary message with file path reference
         new_messages = self._build_new_messages_with_path(summary, file_path)
 
-        # Calculate state cutoff index
-        # If this is a subsequent summarization, convert effective message index to state index
-        # new_state_cutoff = old_state_cutoff + effective_cutoff - 1  # noqa: ERA001
-        # The -1 accounts for the summary message at effective[0]
+        # Calculate state cutoff index.
+        # If this is a subsequent summarization, convert effective message index to state index.
+        # The -1 accounts for the summary message at effective[0].
         previous_event = request.state.get("_summarization_event")
         state_cutoff_index = previous_event["cutoff_index"] + cutoff_index - 1 if previous_event is not None else cutoff_index
 

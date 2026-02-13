@@ -152,7 +152,7 @@ class AgentServerACP(ACPAgent):
                 available_modes=state.available_modes,
                 current_mode_id=mode_id,
             )
-        self._agent = None
+            self._reset_agent(session_id)
         return SetSessionModeResponse()
 
     async def cancel(self, session_id: str, **kwargs: Any) -> None:
@@ -402,6 +402,17 @@ class AgentServerACP(ACPAgent):
                 status="pending",
             )
 
+    def _reset_agent(self, session_id: str) -> None:
+        if isinstance(self._agent_factory, CompiledStateGraph):
+            self._agent = self._agent_factory
+        else:
+            mode = self._session_modes.get(
+                session_id,
+                self._modes.current_mode_id if self._modes is not None else "auto",
+            )
+            context = AgentSessionContext(cwd=self._cwd, mode=mode)
+            self._agent = self._agent_factory(context)
+
     async def prompt(
         self,
         prompt: list[
@@ -418,15 +429,7 @@ class AgentServerACP(ACPAgent):
             cwd = self._session_cwds.get(session_id)
             if cwd is not None:
                 self._cwd = cwd
-            if isinstance(self._agent_factory, CompiledStateGraph):
-                self._agent = self._agent_factory
-            else:
-                mode = self._session_modes.get(
-                    session_id,
-                    self._modes.current_mode_id if self._modes is not None else "auto",
-                )
-                context = AgentSessionContext(cwd=self._cwd, mode=mode)
-                self._agent = self._agent_factory(context)
+            self._reset_agent(session_id)
 
             if getattr(self._agent, "checkpointer", None) is None:
                 self._agent.checkpointer = MemorySaver()

@@ -116,7 +116,7 @@ def extract_command_types(command: str) -> list[str]:
         >>> extract_command_types("npm run build")
         ['npm run build']
         >>> extract_command_types("ls -la | grep foo")
-        ['ls']
+        ['ls', 'grep']
         >>> extract_command_types("cd dir && npm install && npm test")
         ['cd', 'npm install', 'npm test']
     """
@@ -229,24 +229,28 @@ def extract_command_types(command: str) -> list[str]:
             continue
 
         try:
-            # Split by pipes and take the first segment
+            # Split by pipes and process all segments
             pipe_segments = segment.split("|")
-            first_pipe_segment = pipe_segments[0].strip()
 
-            # Parse the first segment to get the command
-            tokens = shlex.split(first_pipe_segment)
-            if not tokens:
-                continue
+            for pipe_segment in pipe_segments:
+                pipe_segment = pipe_segment.strip()
+                if not pipe_segment:
+                    continue
 
-            base_cmd = tokens[0]
+                # Parse the segment to get the command
+                tokens = shlex.split(pipe_segment)
+                if not tokens:
+                    continue
 
-            # Use specific handler if available, otherwise just use base command
-            if base_cmd in COMMAND_HANDLERS:
-                signature = COMMAND_HANDLERS[base_cmd](tokens)
-                command_types.append(signature)
-            else:
-                # Non-sensitive commands - just use the base command
-                command_types.append(base_cmd)
+                base_cmd = tokens[0]
+
+                # Use specific handler if available, otherwise just use base command
+                if base_cmd in COMMAND_HANDLERS:
+                    signature = COMMAND_HANDLERS[base_cmd](tokens)
+                    command_types.append(signature)
+                else:
+                    # Non-sensitive commands - just use the base command
+                    command_types.append(base_cmd)
 
         except (ValueError, IndexError):
             # If parsing fails, skip this segment

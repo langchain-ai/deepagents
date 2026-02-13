@@ -89,9 +89,9 @@ class TestExtractCommandTypes:
 
     def test_command_with_pipes_and_and_operator(self):
         """Test extracting command types from commands with both pipes and &&."""
-        # Only the first command before the pipe is extracted from each && segment
-        assert extract_command_types("ls -la | grep foo && cat file.txt") == ["ls", "cat"]
-        assert extract_command_types("cd dir && ls | wc -l") == ["cd", "ls"]
+        # All commands in a pipeline are extracted from each && segment
+        assert extract_command_types("ls -la | grep foo && cat file.txt") == ["ls", "grep", "cat"]
+        assert extract_command_types("cd dir && ls | wc -l") == ["cd", "ls", "wc"]
 
     def test_empty_command(self):
         """Test extracting command types from empty string."""

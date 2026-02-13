@@ -9,7 +9,7 @@ same detection logic works regardless of where the agent runs.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, NotRequired, cast
+from typing import TYPE_CHECKING, Any, NotRequired, Protocol, cast, runtime_checkable
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
@@ -21,8 +21,16 @@ from langchain.agents.middleware.types import (
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
-    from deepagents.backends.protocol import SandboxBackendProtocol
+    from deepagents.backends.protocol import ExecuteResponse
     from langgraph.runtime import Runtime
+
+
+@runtime_checkable
+class _ExecutableBackend(Protocol):
+    """Any backend that supports ``execute(command) -> ExecuteResponse``."""
+
+    def execute(self, command: str) -> ExecuteResponse: ...
+
 
 logger = logging.getLogger(__name__)
 
@@ -233,7 +241,7 @@ class LocalContextMiddleware(AgentMiddleware):
 
     state_schema = LocalContextState
 
-    def __init__(self, backend: SandboxBackendProtocol) -> None:
+    def __init__(self, backend: _ExecutableBackend) -> None:
         """Initialize with a backend that supports shell execution."""
         self.backend = backend
 

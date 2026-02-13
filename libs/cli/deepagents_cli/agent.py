@@ -38,7 +38,7 @@ from deepagents_cli.config import (
     settings,
 )
 from deepagents_cli.integrations.sandbox_factory import get_default_working_dir
-from deepagents_cli.local_context import LocalContextMiddleware
+from deepagents_cli.local_context import LocalContextMiddleware, _ExecutableBackend
 from deepagents_cli.subagents import list_subagents
 
 DEFAULT_AGENT_NAME = "agent"
@@ -523,7 +523,7 @@ def create_cli_agent(
     # Local context middleware (git info, directory tree, etc.)
     # Uses backend.execute() so it works in both local and sandbox modes.
     # Only enabled when the backend supports shell execution.
-    if hasattr(backend, "execute"):
+    if isinstance(backend, _ExecutableBackend):
         agent_middleware.append(LocalContextMiddleware(backend=backend))
 
     # Get or use custom system prompt

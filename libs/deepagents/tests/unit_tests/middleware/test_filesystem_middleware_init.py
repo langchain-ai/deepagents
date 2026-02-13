@@ -2,7 +2,6 @@
 
 from typing import Any
 
-import pytest
 from langchain.agents import create_agent
 from langchain.tools import ToolRuntime
 from langchain_anthropic import ChatAnthropic
@@ -26,7 +25,6 @@ def build_composite_state_backend(runtime: ToolRuntime, *, routes: dict[str, Any
     return CompositeBackend(default=default_state, routes=built_routes)
 
 
-@pytest.mark.requires("langchain_anthropic")
 class TestFilesystemMiddlewareInit:
     """Tests for FilesystemMiddleware initialization that don't require LLM invocation."""
 

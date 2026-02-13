@@ -20,7 +20,6 @@ def get_weather(city: str) -> str:
     return f"The weather in {city} is sunny."
 
 
-@pytest.mark.requires("langchain_anthropic", "langchain_openai")
 class TestSubagentMiddlewareInit:
     """Tests for SubAgentMiddleware initialization that don't require LLM invocation."""
 

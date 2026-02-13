@@ -15,7 +15,6 @@ from rich.text import Text
 from deepagents_cli.config import ModelResult
 from deepagents_cli.non_interactive import (
     _build_non_interactive_header,
-    _get_thread_url,
     _make_hitl_decision,
     run_non_interactive,
 )
@@ -134,7 +133,8 @@ class TestBuildNonInteractiveHeader:
         with patch("deepagents_cli.non_interactive.settings") as mock_settings:
             mock_settings.model_name = None
             with patch(
-                "deepagents_cli.non_interactive._get_thread_url", return_value=None
+                "deepagents_cli.non_interactive.build_langsmith_thread_url",
+                return_value=None,
             ):
                 header = _build_non_interactive_header("my-agent", "abc123")
         assert "Agent: my-agent" in header.plain
@@ -146,7 +146,8 @@ class TestBuildNonInteractiveHeader:
         with patch("deepagents_cli.non_interactive.settings") as mock_settings:
             mock_settings.model_name = None
             with patch(
-                "deepagents_cli.non_interactive._get_thread_url", return_value=None
+                "deepagents_cli.non_interactive.build_langsmith_thread_url",
+                return_value=None,
             ):
                 header = _build_non_interactive_header("agent", "abc123")
         assert "Agent: agent (default)" in header.plain
@@ -156,7 +157,8 @@ class TestBuildNonInteractiveHeader:
         with patch("deepagents_cli.non_interactive.settings") as mock_settings:
             mock_settings.model_name = "gpt-5"
             with patch(
-                "deepagents_cli.non_interactive._get_thread_url", return_value=None
+                "deepagents_cli.non_interactive.build_langsmith_thread_url",
+                return_value=None,
             ):
                 header = _build_non_interactive_header("agent", "abc123")
         assert "Model: gpt-5" in header.plain
@@ -166,7 +168,8 @@ class TestBuildNonInteractiveHeader:
         with patch("deepagents_cli.non_interactive.settings") as mock_settings:
             mock_settings.model_name = None
             with patch(
-                "deepagents_cli.non_interactive._get_thread_url", return_value=None
+                "deepagents_cli.non_interactive.build_langsmith_thread_url",
+                return_value=None,
             ):
                 header = _build_non_interactive_header("agent", "abc123")
         assert "Model:" not in header.plain
@@ -176,7 +179,8 @@ class TestBuildNonInteractiveHeader:
         with patch("deepagents_cli.non_interactive.settings") as mock_settings:
             mock_settings.model_name = None
             with patch(
-                "deepagents_cli.non_interactive._get_thread_url", return_value=None
+                "deepagents_cli.non_interactive.build_langsmith_thread_url",
+                return_value=None,
             ):
                 header = _build_non_interactive_header("agent", "deadbeef")
         assert "Thread: deadbeef" in header.plain
@@ -187,7 +191,8 @@ class TestBuildNonInteractiveHeader:
         with patch("deepagents_cli.non_interactive.settings") as mock_settings:
             mock_settings.model_name = None
             with patch(
-                "deepagents_cli.non_interactive._get_thread_url", return_value=url
+                "deepagents_cli.non_interactive.build_langsmith_thread_url",
+                return_value=url,
             ):
                 header = _build_non_interactive_header("agent", "abc123")
         # Find the span containing the thread ID and verify it has a link
@@ -197,72 +202,7 @@ class TestBuildNonInteractiveHeader:
                 assert style.link == url
                 break
         else:
-            pytest.fail("Thread ID span with hyperlink not found")  # ty: ignore[invalid-argument-type]
-
-
-class TestGetThreadUrl:
-    """Tests for _get_thread_url().
-
-    The function delegates to ``get_langsmith_project_name`` and
-    ``fetch_langsmith_project_url`` from config, so we mock those
-    rather than env vars / the LangSmith client directly.
-    """
-
-    def test_returns_none_when_langsmith_not_configured(self) -> None:
-        """Should return None when get_langsmith_project_name returns None."""
-        with patch(
-            "deepagents_cli.non_interactive.get_langsmith_project_name",
-            return_value=None,
-        ):
-            assert _get_thread_url("abc123") is None
-
-    def test_returns_none_when_project_url_unavailable(self) -> None:
-        """Should return None when fetch_langsmith_project_url returns None."""
-        with (
-            patch(
-                "deepagents_cli.non_interactive.get_langsmith_project_name",
-                return_value="my-project",
-            ),
-            patch(
-                "deepagents_cli.non_interactive.fetch_langsmith_project_url",
-                return_value=None,
-            ),
-        ):
-            assert _get_thread_url("abc123") is None
-
-    def test_returns_url_when_configured(self) -> None:
-        """Should return a full thread URL when LangSmith is configured."""
-        project_url = "https://smith.langchain.com/o/org/projects/p/proj"
-        with (
-            patch(
-                "deepagents_cli.non_interactive.get_langsmith_project_name",
-                return_value="my-project",
-            ),
-            patch(
-                "deepagents_cli.non_interactive.fetch_langsmith_project_url",
-                return_value=project_url,
-            ),
-        ):
-            result = _get_thread_url("thread42")
-
-        assert result == f"{project_url}/t/thread42"
-
-    def test_strips_trailing_slash_from_project_url(self) -> None:
-        """Should strip trailing slash before appending thread path."""
-        project_url = "https://smith.langchain.com/o/org/projects/p/proj/"
-        with (
-            patch(
-                "deepagents_cli.non_interactive.get_langsmith_project_name",
-                return_value="default",
-            ),
-            patch(
-                "deepagents_cli.non_interactive.fetch_langsmith_project_url",
-                return_value=project_url,
-            ),
-        ):
-            result = _get_thread_url("abc")
-
-        assert result == "https://smith.langchain.com/o/org/projects/p/proj/t/abc"
+            pytest.fail("Thread ID span with hyperlink not found")
 
 
 class TestSandboxSetupForwarding:
@@ -309,7 +249,7 @@ class TestSandboxSetupForwarding:
                 "deepagents_cli.non_interactive.settings",
             ) as mock_settings,
             patch(
-                "deepagents_cli.non_interactive.get_langsmith_project_name",
+                "deepagents_cli.non_interactive.build_langsmith_thread_url",
                 return_value=None,
             ),
             patch(
@@ -385,7 +325,7 @@ class TestQuietMode:
                 "deepagents_cli.non_interactive.settings",
             ) as mock_settings,
             patch(
-                "deepagents_cli.non_interactive.get_langsmith_project_name",
+                "deepagents_cli.non_interactive.build_langsmith_thread_url",
                 return_value=None,
             ),
             patch(
@@ -450,7 +390,7 @@ class TestQuietMode:
                 "deepagents_cli.non_interactive.settings",
             ) as mock_settings,
             patch(
-                "deepagents_cli.non_interactive.get_langsmith_project_name",
+                "deepagents_cli.non_interactive.build_langsmith_thread_url",
                 return_value=None,
             ),
             patch(
@@ -539,7 +479,7 @@ class TestNoStreamMode:
                 "deepagents_cli.non_interactive.settings",
             ) as mock_settings,
             patch(
-                "deepagents_cli.non_interactive.get_langsmith_project_name",
+                "deepagents_cli.non_interactive.build_langsmith_thread_url",
                 return_value=None,
             ),
             patch(
@@ -616,7 +556,7 @@ class TestNoStreamMode:
                 "deepagents_cli.non_interactive.settings",
             ) as mock_settings,
             patch(
-                "deepagents_cli.non_interactive.get_langsmith_project_name",
+                "deepagents_cli.non_interactive.build_langsmith_thread_url",
                 return_value=None,
             ),
             patch(

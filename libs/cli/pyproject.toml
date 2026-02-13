@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "deepagents-cli"
-version = "0.0.20"
+version = "0.0.21"
 description = "Terminal interface for Deep Agents - interactive AI agent with file operations, shell access, and sub-agent capabilities."
 readme = "README.md"
 license = { text = "MIT" }
@@ -26,7 +26,7 @@ classifiers = [
 ]
 dependencies = [
     # Framework
-    "deepagents==0.4.0",
+    "deepagents==0.4.1",
     "langchain>=1.2.10,<2.0.0",
     "langgraph-checkpoint-sqlite>=3.0.0,<4.0.0",
 
@@ -75,7 +75,7 @@ ibm = ["langchain-ibm>=1.0.0,<2.0.0"]
 mistralai = ["langchain-mistralai>=1.0.0,<2.0.0"]
 nvidia = ["langchain-nvidia-ai-endpoints>=1.0.0,<2.0.0"]
 ollama = ["langchain-ollama>=1.0.0,<2.0.0"]
-openai = ["langchain-openai>=1.1.7,<2.0.0"]
+openai = ["langchain-openai>=1.1.8,<2.0.0"]
 perplexity = ["langchain-perplexity>=1.0.0,<2.0.0"]
 vertexai = ["langchain-google-vertexai>=3.0.0,<4.0.0"]
 xai = ["langchain-xai>=1.0.0,<2.0.0"]

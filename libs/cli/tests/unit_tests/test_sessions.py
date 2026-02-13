@@ -217,22 +217,22 @@ class TestGetCheckpointer:
 
 
 class TestFormatTimestamp:
-    """Tests for _format_timestamp helper."""
+    """Tests for format_timestamp helper."""
 
     def test_valid_timestamp(self):
         """Formats valid ISO timestamp."""
-        result = sessions._format_timestamp("2024-12-30T21:18:00+00:00")
+        result = sessions.format_timestamp("2024-12-30T21:18:00+00:00")
         assert result  # Non-empty string
         assert "dec" in result.lower()
 
     def test_none(self):
         """Returns empty for None."""
-        result = sessions._format_timestamp(None)
+        result = sessions.format_timestamp(None)
         assert result == ""
 
     def test_invalid(self):
         """Returns empty for invalid timestamp."""
-        result = sessions._format_timestamp("not a timestamp")
+        result = sessions.format_timestamp("not a timestamp")
         assert result == ""
 
 

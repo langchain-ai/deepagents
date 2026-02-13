@@ -50,23 +50,26 @@ Common sections include:
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Annotated, NotRequired, TypedDict
 
-from langchain_core.runnables import RunnableConfig
-
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
+    from langchain_core.runnables import RunnableConfig
+    from langgraph.runtime import Runtime
+
     from deepagents.backends.protocol import BACKEND_TYPES, BackendProtocol
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     AgentState,
+    ContextT,
     ModelRequest,
     ModelResponse,
     PrivateStateAttr,
+    ResponseT,
 )
 from langchain.tools import ToolRuntime
-from langgraph.runtime import Runtime
 
 from deepagents.middleware._utils import append_to_system_message
 
@@ -90,24 +93,35 @@ class MemoryStateUpdate(TypedDict):
     memory_contents: dict[str, str]
 
 
-MEMORY_SYSTEM_PROMPT = """<agent_memory>
+MEMORY_SYSTEM_PROMPT = (
+    """<agent_memory>
 {agent_memory}
 </agent_memory>
 
 <memory_guidelines>
-    The above <agent_memory> was loaded in from files in your filesystem. As you learn from your interactions with the user, you can save new knowledge by calling the `edit_file` tool.
+    The above <agent_memory> was loaded in from files in your filesystem. """
+    """As you learn from your interactions with the user, """
+    """you can save new knowledge by calling the `edit_file` tool.
 
     **Learning from feedback:**
-    - One of your MAIN PRIORITIES is to learn from your interactions with the user. These learnings can be implicit or explicit. This means that in the future, you will remember this important information.
-    - When you need to remember something, updating memory must be your FIRST, IMMEDIATE action - before responding to the user, before calling other tools, before doing anything else. Just update memory immediately.
+    - One of your MAIN PRIORITIES is to learn from your interactions with the user. """
+    """These learnings can be implicit or explicit. """
+    """This means that in the future, you will remember this important information.
+    - When you need to remember something, updating memory must be your FIRST, """
+    """IMMEDIATE action - before responding to the user, before calling other tools, """
+    """before doing anything else. Just update memory immediately.
     - When user says something is better/worse, capture WHY and encode it as a pattern.
     - Each correction is a chance to improve permanently - don't just fix the immediate issue, update your instructions.
-    - A great opportunity to update your memories is when the user interrupts a tool call and provides feedback. You should update your memories immediately before revising the tool call.
+    - A great opportunity to update your memories is when the user interrupts a tool call """
+    """and provides feedback. You should update your memories immediately before revising the tool call.
     - Look for the underlying principle behind corrections, not just the specific mistake.
-    - The user might not explicitly ask you to remember something, but if they provide information that is useful for future use, you should update your memories immediately.
+    - The user might not explicitly ask you to remember something, """
+    """but if they provide information that is useful for future use, """
+    """you should update your memories immediately.
 
     **Asking for information:**
-    - If you lack context to perform an action (e.g. send a Slack DM, requires a user ID/email) you should explicitly ask the user for this information.
+    - If you lack context to perform an action (e.g. send a Slack DM, """
+    """requires a user ID/email) you should explicitly ask the user for this information.
     - It is preferred for you to ask for information, don't assume anything that you do not know!
     - When the user provides information that is useful for future use, you should update your memories immediately.
 
@@ -150,9 +164,10 @@ MEMORY_SYSTEM_PROMPT = """<agent_memory>
     Tool Call: create_calendar_event(...) -> just calls a tool, does not commit anything to memory, as it is transient information
 </memory_guidelines>
 """
+)
 
 
-class MemoryMiddleware(AgentMiddleware):
+class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
     """Middleware for loading agent memory from `AGENTS.md` files.
 
     Loads memory content from configured sources and injects into the system prompt.
@@ -208,7 +223,7 @@ class MemoryMiddleware(AgentMiddleware):
                 config=config,
                 tool_call_id=None,
             )
-            return self._backend(tool_runtime)
+            return self._backend(tool_runtime)  # ty: ignore[invalid-argument-type]
         return self._backend
 
     def _format_agent_memory(self, contents: dict[str, str]) -> str:
@@ -223,10 +238,7 @@ class MemoryMiddleware(AgentMiddleware):
         if not contents:
             return MEMORY_SYSTEM_PROMPT.format(agent_memory="(No memory loaded)")
 
-        sections = []
-        for path in self.sources:
-            if contents.get(path):
-                sections.append(f"{path}\n{contents[path]}")
+        sections = [f"{path}\n{contents[path]}" for path in self.sources if contents.get(path)]
 
         if not sections:
             return MEMORY_SYSTEM_PROMPT.format(agent_memory="(No memory loaded)")
@@ -251,7 +263,8 @@ class MemoryMiddleware(AgentMiddleware):
         results = await backend.adownload_files([path])
         # Should get exactly one response for one path
         if len(results) != 1:
-            raise AssertionError(f"Expected 1 response for path {path}, got {len(results)}")
+            msg = f"Expected 1 response for path {path}, got {len(results)}"
+            raise AssertionError(msg)
         response = results[0]
 
         if response.error is not None:
@@ -260,7 +273,8 @@ class MemoryMiddleware(AgentMiddleware):
             if response.error == "file_not_found":
                 return None
             # Other errors should be raised
-            raise ValueError(f"Failed to download {path}: {response.error}")
+            msg = f"Failed to download {path}: {response.error}"
+            raise ValueError(msg)
 
         if response.content is not None:
             return response.content.decode("utf-8")
@@ -284,7 +298,8 @@ class MemoryMiddleware(AgentMiddleware):
         results = backend.download_files([path])
         # Should get exactly one response for one path
         if len(results) != 1:
-            raise AssertionError(f"Expected 1 response for path {path}, got {len(results)}")
+            msg = f"Expected 1 response for path {path}, got {len(results)}"
+            raise AssertionError(msg)
         response = results[0]
 
         if response.error is not None:
@@ -293,14 +308,15 @@ class MemoryMiddleware(AgentMiddleware):
             if response.error == "file_not_found":
                 return None
             # Other errors should be raised
-            raise ValueError(f"Failed to download {path}: {response.error}")
+            msg = f"Failed to download {path}: {response.error}"
+            raise ValueError(msg)
 
         if response.content is not None:
             return response.content.decode("utf-8")
 
         return None
 
-    def before_agent(self, state: MemoryState, runtime: Runtime, config: RunnableConfig) -> MemoryStateUpdate | None:
+    def before_agent(self, state: MemoryState, runtime: Runtime, config: RunnableConfig) -> MemoryStateUpdate | None:  # ty: ignore[invalid-method-override]
         """Load memory content before agent execution (synchronous).
 
         Loads memory from all configured sources and stores in state.
@@ -325,11 +341,11 @@ class MemoryMiddleware(AgentMiddleware):
             content = self._load_memory_from_backend_sync(backend, path)
             if content:
                 contents[path] = content
-                logger.debug(f"Loaded memory from: {path}")
+                logger.debug("Loaded memory from: %s", path)
 
         return MemoryStateUpdate(memory_contents=contents)
 
-    async def abefore_agent(self, state: MemoryState, runtime: Runtime, config: RunnableConfig) -> MemoryStateUpdate | None:
+    async def abefore_agent(self, state: MemoryState, runtime: Runtime, config: RunnableConfig) -> MemoryStateUpdate | None:  # ty: ignore[invalid-method-override]
         """Load memory content before agent execution.
 
         Loads memory from all configured sources and stores in state.
@@ -354,11 +370,11 @@ class MemoryMiddleware(AgentMiddleware):
             content = await self._load_memory_from_backend(backend, path)
             if content:
                 contents[path] = content
-                logger.debug(f"Loaded memory from: {path}")
+                logger.debug("Loaded memory from: %s", path)
 
         return MemoryStateUpdate(memory_contents=contents)
 
-    def modify_request(self, request: ModelRequest) -> ModelRequest:
+    def modify_request(self, request: ModelRequest[ContextT]) -> ModelRequest[ContextT]:
         """Inject memory content into the system message.
 
         Args:
@@ -376,9 +392,9 @@ class MemoryMiddleware(AgentMiddleware):
 
     def wrap_model_call(
         self,
-        request: ModelRequest,
-        handler: Callable[[ModelRequest], ModelResponse],
-    ) -> ModelResponse:
+        request: ModelRequest[ContextT],
+        handler: Callable[[ModelRequest[ContextT]], ModelResponse[ResponseT]],
+    ) -> ModelResponse[ResponseT]:
         """Wrap model call to inject memory into system prompt.
 
         Args:
@@ -393,9 +409,9 @@ class MemoryMiddleware(AgentMiddleware):
 
     async def awrap_model_call(
         self,
-        request: ModelRequest,
-        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
-    ) -> ModelResponse:
+        request: ModelRequest[ContextT],
+        handler: Callable[[ModelRequest[ContextT]], Awaitable[ModelResponse[ResponseT]]],
+    ) -> ModelResponse[ResponseT]:
         """Async wrap model call to inject memory into system prompt.
 
         Args:

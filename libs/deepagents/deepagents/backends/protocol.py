@@ -172,6 +172,7 @@ class BackendProtocol(abc.ABC):
     }
     """
 
+    @abc.abstractmethod
     def ls_info(self, path: str) -> list["FileInfo"]:
         """List all files in a directory with metadata.
 
@@ -192,6 +193,7 @@ class BackendProtocol(abc.ABC):
         """Async version of ls_info."""
         return await asyncio.to_thread(self.ls_info, path)
 
+    @abc.abstractmethod
     def read(
         self,
         file_path: str,
@@ -229,6 +231,7 @@ class BackendProtocol(abc.ABC):
         """Async version of read."""
         return await asyncio.to_thread(self.read, file_path, offset, limit)
 
+    @abc.abstractmethod
     def grep_raw(
         self,
         pattern: str,
@@ -279,6 +282,7 @@ class BackendProtocol(abc.ABC):
         """Async version of grep_raw."""
         return await asyncio.to_thread(self.grep_raw, pattern, path, glob)
 
+    @abc.abstractmethod
     def glob_info(self, pattern: str, path: str = "/") -> list["FileInfo"]:
         """Find files matching a glob pattern.
 
@@ -302,6 +306,7 @@ class BackendProtocol(abc.ABC):
         """Async version of glob_info."""
         return await asyncio.to_thread(self.glob_info, pattern, path)
 
+    @abc.abstractmethod
     def write(
         self,
         file_path: str,
@@ -327,12 +332,13 @@ class BackendProtocol(abc.ABC):
         """Async version of write."""
         return await asyncio.to_thread(self.write, file_path, content)
 
+    @abc.abstractmethod
     def edit(
         self,
         file_path: str,
         old_string: str,
         new_string: str,
-        replace_all: bool = False,
+        replace_all: bool = False,  # noqa: FBT001, FBT002  # Boolean arg defines BackendProtocol interface
     ) -> EditResult:
         """Perform exact string replacements in an existing file.
 
@@ -355,11 +361,12 @@ class BackendProtocol(abc.ABC):
         file_path: str,
         old_string: str,
         new_string: str,
-        replace_all: bool = False,
+        replace_all: bool = False,  # noqa: FBT001, FBT002  # Boolean arg defines BackendProtocol interface
     ) -> EditResult:
         """Async version of edit."""
         return await asyncio.to_thread(self.edit, file_path, old_string, new_string, replace_all)
 
+    @abc.abstractmethod
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
         """Upload multiple files to the sandbox.
 
@@ -390,6 +397,7 @@ class BackendProtocol(abc.ABC):
         """Async version of upload_files."""
         return await asyncio.to_thread(self.upload_files, files)
 
+    @abc.abstractmethod
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
         """Download multiple files from the sandbox.
 

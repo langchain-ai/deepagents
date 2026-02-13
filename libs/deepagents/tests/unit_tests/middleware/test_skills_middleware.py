@@ -7,13 +7,16 @@ directories and the FilesystemBackend in normal (non-virtual) mode.
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
 
 from langchain.agents import create_agent
 from langchain.agents.middleware.types import ModelRequest
 from langchain.tools import ToolRuntime
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
-from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import InMemorySaver
+
+if TYPE_CHECKING:
+    from langchain_core.runnables import RunnableConfig
 from langgraph.store.memory import InMemoryStore
 
 from deepagents.backends.filesystem import FilesystemBackend
@@ -609,7 +612,7 @@ def test_list_skills_from_backend_missing_skill_md(tmp_path: Path) -> None:
 
     valid_content = make_skill_content("valid-skill", "Valid skill")
 
-    responses = backend.upload_files(
+    backend.upload_files(
         [
             (valid_skill_path, valid_content.encode("utf-8")),
             (invalid_dir_file, b"Not a skill file"),
@@ -649,7 +652,7 @@ description: [unclosed yaml
 Content
 """
 
-    responses = backend.upload_files(
+    backend.upload_files(
         [
             (valid_skill_path, valid_content.encode("utf-8")),
             (invalid_skill_path, invalid_content.encode("utf-8")),
@@ -684,7 +687,7 @@ def test_list_skills_from_backend_with_helper_files(tmp_path: Path) -> None:
     skill_content = make_skill_content("my-skill", "My test skill")
     helper_content = "def helper(): pass"
 
-    responses = backend.upload_files(
+    backend.upload_files(
         [
             (skill_path, skill_content.encode("utf-8")),
             (helper_path, helper_content.encode("utf-8")),
@@ -711,7 +714,7 @@ def test_format_skills_locations_single_registry() -> None:
     """Test _format_skills_locations with a single source."""
     sources = ["/skills/user/"]
     middleware = SkillsMiddleware(
-        backend=None,  # type: ignore
+        backend=None,  # type: ignore[arg-type]
         sources=sources,
     )
 
@@ -729,7 +732,7 @@ def test_format_skills_locations_multiple_registries() -> None:
         "/skills/project/",
     ]
     middleware = SkillsMiddleware(
-        backend=None,  # type: ignore
+        backend=None,  # type: ignore[arg-type]
         sources=sources,
     )
 
@@ -748,7 +751,7 @@ def test_format_skills_list_empty() -> None:
         "/skills/project/",
     ]
     middleware = SkillsMiddleware(
-        backend=None,  # type: ignore
+        backend=None,  # type: ignore[arg-type]
         sources=sources,
     )
 
@@ -762,7 +765,7 @@ def test_format_skills_list_single_skill() -> None:
     """Test _format_skills_list with a single skill."""
     sources = ["/skills/user/"]
     middleware = SkillsMiddleware(
-        backend=None,  # type: ignore
+        backend=None,  # type: ignore[arg-type]
         sources=sources,
     )
 
@@ -790,7 +793,7 @@ def test_format_skills_list_multiple_skills_multiple_registries() -> None:
         "/skills/project/",
     ]
     middleware = SkillsMiddleware(
-        backend=None,  # type: ignore
+        backend=None,  # type: ignore[arg-type]
         sources=sources,
     )
 
@@ -839,7 +842,7 @@ def test_format_skills_list_multiple_skills_multiple_registries() -> None:
 
 def test_format_skills_list_with_license_and_compatibility() -> None:
     """Test that both license and compatibility are shown in annotations."""
-    middleware = SkillsMiddleware(backend=None, sources=["/skills/"])  # type: ignore
+    middleware = SkillsMiddleware(backend=None, sources=["/skills/"])  # type: ignore[arg-type]
 
     skills: list[SkillMetadata] = [
         {
@@ -859,7 +862,7 @@ def test_format_skills_list_with_license_and_compatibility() -> None:
 
 def test_format_skills_list_license_only() -> None:
     """Test annotation with only license present."""
-    middleware = SkillsMiddleware(backend=None, sources=["/skills/"])  # type: ignore
+    middleware = SkillsMiddleware(backend=None, sources=["/skills/"])  # type: ignore[arg-type]
 
     skills: list[SkillMetadata] = [
         {
@@ -880,7 +883,7 @@ def test_format_skills_list_license_only() -> None:
 
 def test_format_skills_list_compatibility_only() -> None:
     """Test annotation with only compatibility present."""
-    middleware = SkillsMiddleware(backend=None, sources=["/skills/"])  # type: ignore
+    middleware = SkillsMiddleware(backend=None, sources=["/skills/"])  # type: ignore[arg-type]
 
     skills: list[SkillMetadata] = [
         {
@@ -901,7 +904,7 @@ def test_format_skills_list_compatibility_only() -> None:
 
 def test_format_skills_list_no_optional_fields() -> None:
     """Test that no annotations appear when license/compatibility are empty."""
-    middleware = SkillsMiddleware(backend=None, sources=["/skills/"])  # type: ignore
+    middleware = SkillsMiddleware(backend=None, sources=["/skills/"])  # type: ignore[arg-type]
 
     skills: list[SkillMetadata] = [
         {
@@ -949,7 +952,7 @@ def test_before_agent_loads_skills(tmp_path: Path) -> None:
     )
 
     # Call before_agent
-    result = middleware.before_agent({}, None, {})  # type: ignore
+    result = middleware.before_agent({}, None, {})  # type: ignore[arg-type]
 
     assert result is not None
     assert "skills_metadata" in result
@@ -990,7 +993,7 @@ def test_before_agent_skill_override(tmp_path: Path) -> None:
     )
 
     # Call before_agent
-    result = middleware.before_agent({}, None, {})  # type: ignore
+    result = middleware.before_agent({}, None, {})  # type: ignore[arg-type]
 
     assert result is not None
     assert len(result["skills_metadata"]) == 1
@@ -1021,7 +1024,7 @@ def test_before_agent_empty_registries(tmp_path: Path) -> None:
         sources=sources,
     )
 
-    result = middleware.before_agent({}, None, {})  # type: ignore
+    result = middleware.before_agent({}, None, {})  # type: ignore[arg-type]
 
     assert result is not None
     assert result["skills_metadata"] == []
@@ -1301,21 +1304,21 @@ def test_before_agent_skips_loading_if_metadata_present(tmp_path: Path) -> None:
         }
     ]
     state_with_metadata = {"skills_metadata": existing_metadata}
-    result = middleware.before_agent(state_with_metadata, None, {})  # type: ignore
+    result = middleware.before_agent(state_with_metadata, None, {})  # type: ignore[arg-type]
 
     # Should return None, not load new skills
     assert result is None
 
     # Case 2: State has empty list for skills_metadata
     state_with_empty_list = {"skills_metadata": []}
-    result = middleware.before_agent(state_with_empty_list, None, {})  # type: ignore
+    result = middleware.before_agent(state_with_empty_list, None, {})  # type: ignore[arg-type]
 
     # Should still return None and not reload
     assert result is None
 
     # Case 3: State does NOT have skills_metadata key
     state_without_metadata = {}
-    result = middleware.before_agent(state_without_metadata, None, {})  # type: ignore
+    result = middleware.before_agent(state_without_metadata, None, {})  # type: ignore[arg-type]
 
     # Should load skills and return update
     assert result is not None
@@ -1466,7 +1469,7 @@ def test_skills_middleware_with_store_backend_assistant_id() -> None:
 
     # Test: assistant-123 can read its own skill
     config_1 = {"metadata": {"assistant_id": "assistant-123"}}
-    result_1 = middleware.before_agent({}, runtime, config_1)  # type: ignore
+    result_1 = middleware.before_agent({}, runtime, config_1)  # type: ignore[arg-type]
 
     assert result_1 is not None
     assert len(result_1["skills_metadata"]) == 1
@@ -1475,7 +1478,7 @@ def test_skills_middleware_with_store_backend_assistant_id() -> None:
 
     # Test: assistant-456 cannot see assistant-123's skill (different namespace)
     config_2 = {"metadata": {"assistant_id": "assistant-456"}}
-    result_2 = middleware.before_agent({}, runtime, config_2)  # type: ignore
+    result_2 = middleware.before_agent({}, runtime, config_2)  # type: ignore[arg-type]
 
     assert result_2 is not None
     assert len(result_2["skills_metadata"]) == 0  # No skills in assistant-456's namespace yet
@@ -1489,7 +1492,7 @@ def test_skills_middleware_with_store_backend_assistant_id() -> None:
     )
 
     # Test: assistant-456 can read its own skill
-    result_3 = middleware.before_agent({}, runtime, config_2)  # type: ignore
+    result_3 = middleware.before_agent({}, runtime, config_2)  # type: ignore[arg-type]
 
     assert result_3 is not None
     assert len(result_3["skills_metadata"]) == 1
@@ -1497,7 +1500,7 @@ def test_skills_middleware_with_store_backend_assistant_id() -> None:
     assert result_3["skills_metadata"][0]["description"] == "Skill for assistant 2"
 
     # Test: assistant-123 still only sees its own skill (no cross-contamination)
-    result_4 = middleware.before_agent({}, runtime, config_1)  # type: ignore
+    result_4 = middleware.before_agent({}, runtime, config_1)  # type: ignore[arg-type]
 
     assert result_4 is not None
     assert len(result_4["skills_metadata"]) == 1
@@ -1523,7 +1526,7 @@ def test_skills_middleware_with_store_backend_no_assistant_id() -> None:
     )
 
     # Test: empty config accesses default namespace
-    result_1 = middleware.before_agent({}, runtime, {})  # type: ignore
+    result_1 = middleware.before_agent({}, runtime, {})  # type: ignore[arg-type]
 
     assert result_1 is not None
     assert len(result_1["skills_metadata"]) == 1
@@ -1532,7 +1535,7 @@ def test_skills_middleware_with_store_backend_no_assistant_id() -> None:
 
     # Test: config with metadata but no assistant_id also uses default namespace
     config_with_other_metadata = {"metadata": {"some_other_key": "value"}}
-    result_2 = middleware.before_agent({}, runtime, config_with_other_metadata)  # type: ignore
+    result_2 = middleware.before_agent({}, runtime, config_with_other_metadata)  # type: ignore[arg-type]
 
     assert result_2 is not None
     assert len(result_2["skills_metadata"]) == 1
@@ -1559,7 +1562,7 @@ async def test_skills_middleware_with_store_backend_assistant_id_async() -> None
 
     # Test: assistant-123 can read its own skill
     config_1 = {"metadata": {"assistant_id": "assistant-123"}}
-    result_1 = await middleware.abefore_agent({}, runtime, config_1)  # type: ignore
+    result_1 = await middleware.abefore_agent({}, runtime, config_1)  # type: ignore[arg-type]
 
     assert result_1 is not None
     assert len(result_1["skills_metadata"]) == 1
@@ -1568,7 +1571,7 @@ async def test_skills_middleware_with_store_backend_assistant_id_async() -> None
 
     # Test: assistant-456 cannot see assistant-123's skill (different namespace)
     config_2 = {"metadata": {"assistant_id": "assistant-456"}}
-    result_2 = await middleware.abefore_agent({}, runtime, config_2)  # type: ignore
+    result_2 = await middleware.abefore_agent({}, runtime, config_2)  # type: ignore[arg-type]
 
     assert result_2 is not None
     assert len(result_2["skills_metadata"]) == 0  # No skills in assistant-456's namespace yet
@@ -1582,7 +1585,7 @@ async def test_skills_middleware_with_store_backend_assistant_id_async() -> None
     )
 
     # Test: assistant-456 can read its own skill
-    result_3 = await middleware.abefore_agent({}, runtime, config_2)  # type: ignore
+    result_3 = await middleware.abefore_agent({}, runtime, config_2)  # type: ignore[arg-type]
 
     assert result_3 is not None
     assert len(result_3["skills_metadata"]) == 1
@@ -1590,7 +1593,7 @@ async def test_skills_middleware_with_store_backend_assistant_id_async() -> None
     assert result_3["skills_metadata"][0]["description"] == "Async skill for assistant 2"
 
     # Test: assistant-123 still only sees its own skill (no cross-contamination)
-    result_4 = await middleware.abefore_agent({}, runtime, config_1)  # type: ignore
+    result_4 = await middleware.abefore_agent({}, runtime, config_1)  # type: ignore[arg-type]
 
     assert result_4 is not None
     assert len(result_4["skills_metadata"]) == 1
@@ -1706,7 +1709,7 @@ def test_skill_tool_not_found(tmp_path: Path) -> None:
 
 def test_modify_request_injects_skills_system_prompt() -> None:
     """Test that modify_request injects skills system section into the system prompt."""
-    middleware = SkillsMiddleware(backend=None, sources=["/skills/"])  # type: ignore
+    middleware = SkillsMiddleware(backend=None, sources=["/skills/"])  # type: ignore[arg-type]
 
     state = {
         "skills_metadata": [
@@ -1743,7 +1746,7 @@ def test_modify_request_injects_skills_system_prompt() -> None:
 
 def test_format_skills_list_no_read_file_reference() -> None:
     """Test that _format_skills_list no longer references read_file."""
-    middleware = SkillsMiddleware(backend=None, sources=["/skills/"])  # type: ignore
+    middleware = SkillsMiddleware(backend=None, sources=["/skills/"])  # type: ignore[arg-type]
 
     skills: list[SkillMetadata] = [
         {
@@ -1765,7 +1768,7 @@ def test_format_skills_list_no_read_file_reference() -> None:
 
 def test_skills_middleware_has_skill_tool() -> None:
     """Test that SkillsMiddleware creates a skill tool."""
-    middleware = SkillsMiddleware(backend=None, sources=["/skills/"])  # type: ignore
+    middleware = SkillsMiddleware(backend=None, sources=["/skills/"])  # type: ignore[arg-type]
 
     assert len(middleware.tools) == 1
     assert middleware.tools[0].name == "skill"

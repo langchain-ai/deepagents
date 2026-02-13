@@ -64,7 +64,7 @@ class MockSandboxBackend(SandboxBackendProtocol, StateBackend):
         return "mock_sandbox_backend"
 
 
-async def test_composite_state_backend_routes_and_search_async(tmp_path: Path):
+async def test_composite_state_backend_routes_and_search_async(tmp_path: Path):  # noqa: ARG001  # Pytest fixture
     """Test async operations with composite backend routing."""
     rt = make_runtime("t3")
     be = build_composite_state_backend(rt, routes={"/memories/": (StoreBackend)})
@@ -460,7 +460,7 @@ async def test_composite_adownload_routing_async(tmp_path: Path):
 
 async def test_composite_aupload_download_roundtrip_async(tmp_path: Path):
     """Test async upload and download roundtrip through composite backend."""
-    rt = make_runtime("t_roundtrip1")
+    _rt = make_runtime("t_roundtrip1")
     root = tmp_path
 
     fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
@@ -479,7 +479,7 @@ async def test_composite_aupload_download_roundtrip_async(tmp_path: Path):
 
 async def test_composite_partial_success_aupload_async(tmp_path: Path):
     """Test partial success in async batch upload with mixed valid/invalid paths."""
-    rt = make_runtime("t_partial_upload")
+    _rt = make_runtime("t_partial_upload")
     root = tmp_path
 
     fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
@@ -508,7 +508,7 @@ async def test_composite_partial_success_aupload_async(tmp_path: Path):
 
 async def test_composite_partial_success_adownload_async(tmp_path: Path):
     """Test partial success in async batch download with mixed valid/invalid paths."""
-    rt = make_runtime("t_partial_download")
+    _rt = make_runtime("t_partial_download")
     root = tmp_path
 
     fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
@@ -564,7 +564,7 @@ async def test_composite_aupload_download_multiple_routes_async(tmp_path: Path):
 
 async def test_composite_adownload_preserves_original_paths_async(tmp_path: Path):
     """Test async download responses preserve original composite paths."""
-    rt = make_runtime("t_path_preserve")
+    _rt = make_runtime("t_path_preserve")
     root = tmp_path
 
     fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
@@ -707,7 +707,7 @@ async def test_composite_agrep_with_path_none_async(tmp_path: Path) -> None:
 
 async def test_composite_agrep_invalid_regex_async(tmp_path: Path) -> None:
     """Test async grep with special characters (literal search, not regex)."""
-    rt = make_runtime("t_agrep5")
+    _rt = make_runtime("t_agrep5")
     root = tmp_path
 
     fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
@@ -805,7 +805,7 @@ async def test_composite_agrep_route_prefix_restoration_async(tmp_path: Path) ->
 
 async def test_composite_agrep_multiple_matches_per_file_async(tmp_path: Path) -> None:
     """Test async grep returns multiple matches from same file."""
-    rt = make_runtime("t_agrep9")
+    _rt = make_runtime("t_agrep9")
     root = tmp_path
 
     # File with multiple matching lines

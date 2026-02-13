@@ -6,15 +6,98 @@ instead of silently returning None.
 
 import pytest
 
-from deepagents.backends.protocol import BackendProtocol, SandboxBackendProtocol
+from deepagents.backends.protocol import (
+    BackendProtocol,
+    EditResult,
+    ExecuteResponse,
+    FileDownloadResponse,
+    FileInfo,
+    FileUploadResponse,
+    GrepMatch,
+    SandboxBackendProtocol,
+    WriteResult,
+)
 
 
 class BareBackend(BackendProtocol):
-    """Minimal subclass that implements nothing."""
+    """Minimal subclass that delegates to super() so NotImplementedError propagates."""
+
+    def ls_info(self, path: str) -> list[FileInfo]:
+        return super().ls_info(path)
+
+    def read(self, file_path: str, offset: int = 0, limit: int = 2000) -> str:
+        return super().read(file_path, offset, limit)
+
+    def grep_raw(
+        self,
+        pattern: str,
+        path: str | None = None,
+        glob: str | None = None,
+    ) -> list[GrepMatch] | str:
+        return super().grep_raw(pattern, path, glob)
+
+    def glob_info(self, pattern: str, path: str = "/") -> list[FileInfo]:
+        return super().glob_info(pattern, path)
+
+    def write(self, file_path: str, content: str) -> WriteResult:
+        return super().write(file_path, content)
+
+    def edit(
+        self,
+        file_path: str,
+        old_string: str,
+        new_string: str,
+        replace_all: bool = False,  # noqa: FBT001, FBT002
+    ) -> EditResult:
+        return super().edit(file_path, old_string, new_string, replace_all)
+
+    def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
+        return super().upload_files(files)
+
+    def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
+        return super().download_files(paths)
 
 
 class BareSandboxBackend(SandboxBackendProtocol):
-    """Minimal subclass that implements nothing."""
+    """Minimal subclass that delegates to super() so NotImplementedError propagates."""
+
+    def ls_info(self, path: str) -> list[FileInfo]:
+        return super().ls_info(path)
+
+    def read(self, file_path: str, offset: int = 0, limit: int = 2000) -> str:
+        return super().read(file_path, offset, limit)
+
+    def grep_raw(
+        self,
+        pattern: str,
+        path: str | None = None,
+        glob: str | None = None,
+    ) -> list[GrepMatch] | str:
+        return super().grep_raw(pattern, path, glob)
+
+    def glob_info(self, pattern: str, path: str = "/") -> list[FileInfo]:
+        return super().glob_info(pattern, path)
+
+    def write(self, file_path: str, content: str) -> WriteResult:
+        return super().write(file_path, content)
+
+    def edit(
+        self,
+        file_path: str,
+        old_string: str,
+        new_string: str,
+        replace_all: bool = False,  # noqa: FBT001, FBT002
+    ) -> EditResult:
+        return super().edit(file_path, old_string, new_string, replace_all)
+
+    def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
+        return super().upload_files(files)
+
+    def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
+        return super().download_files(paths)
+
+    def execute(self, command: str) -> ExecuteResponse:
+        return super().execute(command)
 
 
 @pytest.fixture

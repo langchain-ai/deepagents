@@ -1,4 +1,5 @@
 import warnings
+from typing import ClassVar
 
 import pytest
 from langchain.agents.middleware import AgentMiddleware
@@ -21,7 +22,7 @@ def get_weather(city: str) -> str:
 
 
 class WeatherMiddleware(AgentMiddleware):
-    tools = [get_weather]
+    tools: ClassVar = [get_weather]
 
 
 def assert_expected_subgraph_actions(expected_tool_calls, agent, inputs):
@@ -66,7 +67,7 @@ class TestSubagentMiddleware:
                 )
             ],
         )
-        assert "task" in agent.nodes["tools"].bound._tools_by_name.keys()
+        assert "task" in agent.nodes["tools"].bound._tools_by_name
         response = agent.invoke({"messages": [HumanMessage(content="What is the weather in Tokyo?")]})
         assert response["messages"][1].tool_calls[0]["name"] == "task"
         assert response["messages"][1].tool_calls[0]["args"]["subagent_type"] == "general-purpose"

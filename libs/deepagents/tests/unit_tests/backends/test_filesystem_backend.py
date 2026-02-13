@@ -87,11 +87,8 @@ def test_filesystem_backend_virtual_mode(tmp_path: Path):
     assert isinstance(matches_bracket, list)  # Should not error, returns empty list or matches
 
     # path traversal blocked
-    try:
+    with pytest.raises(ValueError, match="traversal"):
         be.read("/../a.txt")
-        assert False, "expected ValueError for traversal"
-    except ValueError:
-        pass
 
 
 def test_filesystem_backend_ls_nested_directories(tmp_path: Path):
@@ -206,7 +203,7 @@ def test_filesystem_backend_intercept_large_tool_result(tmp_path: Path):
         config={},
     )
 
-    middleware = FilesystemMiddleware(backend=lambda r: FilesystemBackend(root_dir=str(root), virtual_mode=True), tool_token_limit_before_evict=1000)
+    middleware = FilesystemMiddleware(backend=lambda r: FilesystemBackend(root_dir=str(root), virtual_mode=True), tool_token_limit_before_evict=1000)  # noqa: ARG005  # Lambda signature matches backend factory pattern
 
     large_content = "f" * 5000
     tool_message = ToolMessage(content=large_content, tool_call_id="test_fs_123")
@@ -254,7 +251,7 @@ def test_filesystem_upload_multiple_files(tmp_path: Path):
     responses = be.upload_files(files)
 
     assert len(responses) == 3
-    for i, (path, content) in enumerate(files):
+    for i, (path, _content) in enumerate(files):
         assert responses[i].path == path
         assert responses[i].error is None
 

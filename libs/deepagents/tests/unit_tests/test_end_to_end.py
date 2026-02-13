@@ -23,7 +23,7 @@ from deepagents.backends.store import StoreBackend
 from deepagents.backends.utils import TOOL_RESULT_TOKEN_LIMIT
 from deepagents.graph import create_deep_agent
 from deepagents.middleware.filesystem import NUM_CHARS_PER_TOKEN
-from tests.utils import assert_all_deepagent_qualities
+from tests.utils import SampleMiddlewareWithTools, SampleMiddlewareWithToolsAndState, assert_all_deepagent_qualities
 
 
 class SystemMessageCapturingMiddleware(AgentMiddleware):
@@ -1191,30 +1191,26 @@ class TestDeepAgentEndToEnd:
 class TestDeepAgentStructure:
     """Test basic deep agent structure without making network calls."""
 
-    def test_base_deep_agent(self):
+    def test_base_deep_agent(self) -> None:
         """Verifies that a basic deep agent can be created with default settings."""
         agent = create_deep_agent()
         assert_all_deepagent_qualities(agent)
 
-    def test_deep_agent_with_tool(self):
+    def test_deep_agent_with_tool(self) -> None:
         """Verifies that a deep agent can be created with tools and the tools are properly bound."""
         agent = create_deep_agent(tools=[sample_tool])
         assert_all_deepagent_qualities(agent)
-        assert "sample_tool" in agent.nodes["tools"].bound._tools_by_name.keys()
+        assert "sample_tool" in agent.nodes["tools"].bound._tools_by_name
 
-    def test_deep_agent_with_middleware_with_tool(self):
+    def test_deep_agent_with_middleware_with_tool(self) -> None:
         """Verifies that middleware can inject tools into a deep agent."""
-        from tests.utils import SampleMiddlewareWithTools
-
         agent = create_deep_agent(middleware=[SampleMiddlewareWithTools()])
         assert_all_deepagent_qualities(agent)
-        assert "sample_tool" in agent.nodes["tools"].bound._tools_by_name.keys()
+        assert "sample_tool" in agent.nodes["tools"].bound._tools_by_name
 
-    def test_deep_agent_with_middleware_with_tool_and_state(self):
+    def test_deep_agent_with_middleware_with_tool_and_state(self) -> None:
         """Verifies that middleware can inject both tools and extended state channels."""
-        from tests.utils import SampleMiddlewareWithToolsAndState
-
         agent = create_deep_agent(middleware=[SampleMiddlewareWithToolsAndState()])
         assert_all_deepagent_qualities(agent)
-        assert "sample_tool" in agent.nodes["tools"].bound._tools_by_name.keys()
+        assert "sample_tool" in agent.nodes["tools"].bound._tools_by_name
         assert "sample_input" in agent.stream_channels

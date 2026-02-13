@@ -1,7 +1,10 @@
 """Unit tests for FilesystemMiddleware initialization and configuration."""
 
+from typing import Any
+
 import pytest
 from langchain.agents import create_agent
+from langchain.tools import ToolRuntime
 from langchain_anthropic import ChatAnthropic
 from langgraph.store.memory import InMemoryStore
 
@@ -12,7 +15,7 @@ from deepagents.middleware.filesystem import (
 )
 
 
-def build_composite_state_backend(runtime, *, routes):
+def build_composite_state_backend(runtime: ToolRuntime, *, routes: dict[str, Any]) -> CompositeBackend:
     built_routes = {}
     for prefix, backend_or_factory in routes.items():
         if callable(backend_or_factory):
@@ -27,7 +30,7 @@ def build_composite_state_backend(runtime, *, routes):
 class TestFilesystemMiddlewareInit:
     """Tests for FilesystemMiddleware initialization that don't require LLM invocation."""
 
-    def test_filesystem_tool_prompt_override(self):
+    def test_filesystem_tool_prompt_override(self) -> None:
         """Test that custom tool descriptions can be set via FilesystemMiddleware."""
         agent = create_agent(
             model=ChatAnthropic(model="claude-sonnet-4-20250514"),
@@ -52,7 +55,7 @@ class TestFilesystemMiddlewareInit:
         assert "edit_file" in tools
         assert tools["edit_file"].description == "Squirtle"
 
-    def test_filesystem_tool_prompt_override_with_longterm_memory(self):
+    def test_filesystem_tool_prompt_override_with_longterm_memory(self) -> None:
         """Test that custom tool descriptions work with composite backends and longterm memory."""
         agent = create_agent(
             model=ChatAnthropic(model="claude-sonnet-4-20250514"),

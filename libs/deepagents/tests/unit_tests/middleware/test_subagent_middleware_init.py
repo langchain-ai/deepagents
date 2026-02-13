@@ -25,11 +25,11 @@ class TestSubagentMiddlewareInit:
     """Tests for SubAgentMiddleware initialization that don't require LLM invocation."""
 
     @pytest.fixture(autouse=True)
-    def set_env_vars(self, monkeypatch):
+    def set_env_vars(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Set dummy API key for model initialization."""
         monkeypatch.setenv("OPENAI_API_KEY", "test-key")
 
-    def test_subagent_middleware_init(self):
+    def test_subagent_middleware_init(self) -> None:
         """Test basic SubAgentMiddleware initialization with general-purpose subagent."""
         middleware = SubAgentMiddleware(
             backend=StateBackend,
@@ -48,7 +48,7 @@ class TestSubagentMiddlewareInit:
         assert len(middleware.tools) == 1
         assert middleware.tools[0].name == "task"
 
-    def test_subagent_middleware_with_custom_subagent(self):
+    def test_subagent_middleware_with_custom_subagent(self) -> None:
         """Test SubAgentMiddleware initialization with a custom subagent."""
         middleware = SubAgentMiddleware(
             backend=StateBackend,
@@ -67,7 +67,7 @@ class TestSubagentMiddlewareInit:
         assert middleware.system_prompt.startswith(TASK_SYSTEM_PROMPT)
         assert "weather" in middleware.system_prompt
 
-    def test_subagent_middleware_custom_system_prompt(self):
+    def test_subagent_middleware_custom_system_prompt(self) -> None:
         """Test SubAgentMiddleware with a custom system prompt."""
         middleware = SubAgentMiddleware(
             backend=StateBackend,
@@ -88,7 +88,7 @@ class TestSubagentMiddlewareInit:
 
     # ========== Tests for new API ==========
 
-    def test_new_api_requires_backend(self):
+    def test_new_api_requires_backend(self) -> None:
         """Test that the new API requires backend parameter."""
         with pytest.raises(ValueError, match="requires either"):
             SubAgentMiddleware(
@@ -103,7 +103,7 @@ class TestSubagentMiddlewareInit:
                 ],
             )
 
-    def test_new_api_requires_subagents(self):
+    def test_new_api_requires_subagents(self) -> None:
         """Test that the new API requires at least one subagent."""
         with pytest.raises(ValueError, match="At least one subagent"):
             SubAgentMiddleware(
@@ -111,7 +111,7 @@ class TestSubagentMiddlewareInit:
                 subagents=[],
             )
 
-    def test_new_api_no_deprecation_warning(self):
+    def test_new_api_no_deprecation_warning(self) -> None:
         """Test that using only new API args does not emit deprecation warning."""
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
@@ -132,7 +132,7 @@ class TestSubagentMiddlewareInit:
             assert len(deprecation_warnings) == 0, f"Unexpected deprecation warnings: {deprecation_warnings}"
         assert middleware is not None
 
-    def test_new_api_subagent_requires_model(self):
+    def test_new_api_subagent_requires_model(self) -> None:
         """Test that subagents must specify model when using new API."""
         with pytest.raises(ValueError, match="must specify 'model'"):
             SubAgentMiddleware(
@@ -148,7 +148,7 @@ class TestSubagentMiddlewareInit:
                 ],
             )
 
-    def test_new_api_subagent_requires_tools(self):
+    def test_new_api_subagent_requires_tools(self) -> None:
         """Test that subagents must specify tools when using new API."""
         with pytest.raises(ValueError, match="must specify 'tools'"):
             SubAgentMiddleware(
@@ -166,7 +166,7 @@ class TestSubagentMiddlewareInit:
 
     # ========== Tests for deprecated API ==========
 
-    def test_deprecated_api_still_works(self):
+    def test_deprecated_api_still_works(self) -> None:
         """Test that the deprecated API still works for backward compatibility."""
         with pytest.warns(DeprecationWarning, match="default_model"):
             middleware = SubAgentMiddleware(
@@ -187,7 +187,7 @@ class TestSubagentMiddlewareInit:
         assert "general-purpose" in middleware.system_prompt
         assert "custom" in middleware.system_prompt
 
-    def test_deprecated_api_general_purpose_agent_disabled(self):
+    def test_deprecated_api_general_purpose_agent_disabled(self) -> None:
         """Test deprecated API with general_purpose_agent=False."""
         with pytest.warns(DeprecationWarning, match="default_model"):
             middleware = SubAgentMiddleware(
@@ -208,7 +208,7 @@ class TestSubagentMiddlewareInit:
 
     # ========== Tests for mixing old and new args ==========
 
-    def test_mixed_args_prefers_new_api(self):
+    def test_mixed_args_prefers_new_api(self) -> None:
         """Test that when both backend and deprecated args are provided, new API is used with warning."""
         with pytest.warns(DeprecationWarning, match="default_model"):
             middleware = SubAgentMiddleware(
@@ -226,7 +226,7 @@ class TestSubagentMiddlewareInit:
             )
         assert middleware is not None
 
-    def test_multiple_subagents_with_interrupt_on(self):
+    def test_multiple_subagents_with_interrupt_on(self) -> None:
         """Test creating agent with multiple subagents that have interrupt_on configured."""
         agent = create_agent(
             model="claude-sonnet-4-20250514",

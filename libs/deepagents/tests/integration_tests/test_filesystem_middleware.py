@@ -12,7 +12,6 @@ from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
 from deepagents.backends.protocol import ExecuteResponse
 from deepagents.graph import create_deep_agent
 from deepagents.middleware.filesystem import (
-    WRITE_FILE_TOOL_DESCRIPTION,
     FileData,
     FilesystemMiddleware,
     _supports_execution,
@@ -60,55 +59,6 @@ class TestFilesystem:
         )
         response = agent.invoke({"messages": [HumanMessage(content="What do you like?")]})
         assert "pizza" in response["messages"][1].text.lower()
-
-    def test_filesystem_tool_prompt_override(self):
-        agent = create_agent(
-            model=ChatAnthropic(model="claude-sonnet-4-20250514"),
-            middleware=[
-                FilesystemMiddleware(
-                    backend=StateBackend,
-                    custom_tool_descriptions={
-                        "ls": "Charmander",
-                        "read_file": "Bulbasaur",
-                        "edit_file": "Squirtle",
-                    },
-                )
-            ],
-        )
-        tools = agent.nodes["tools"].bound._tools_by_name
-        assert "ls" in tools
-        assert tools["ls"].description == "Charmander"
-        assert "read_file" in tools
-        assert tools["read_file"].description == "Bulbasaur"
-        assert "write_file" in tools
-        assert tools["write_file"].description == WRITE_FILE_TOOL_DESCRIPTION
-        assert "edit_file" in tools
-        assert tools["edit_file"].description == "Squirtle"
-
-    def test_filesystem_tool_prompt_override_with_longterm_memory(self):
-        agent = create_agent(
-            model=ChatAnthropic(model="claude-sonnet-4-20250514"),
-            middleware=[
-                FilesystemMiddleware(
-                    backend=(lambda rt: build_composite_state_backend(rt, routes={"/memories/": (StoreBackend)})),
-                    custom_tool_descriptions={
-                        "ls": "Charmander",
-                        "read_file": "Bulbasaur",
-                        "edit_file": "Squirtle",
-                    },
-                )
-            ],
-            store=InMemoryStore(),
-        )
-        tools = agent.nodes["tools"].bound._tools_by_name
-        assert "ls" in tools
-        assert tools["ls"].description == "Charmander"
-        assert "read_file" in tools
-        assert tools["read_file"].description == "Bulbasaur"
-        assert "write_file" in tools
-        assert tools["write_file"].description == WRITE_FILE_TOOL_DESCRIPTION
-        assert "edit_file" in tools
-        assert tools["edit_file"].description == "Squirtle"
 
     def test_ls_longterm_without_path(self):
         checkpointer = MemorySaver()

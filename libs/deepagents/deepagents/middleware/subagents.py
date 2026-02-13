@@ -11,7 +11,8 @@ from langchain.chat_models import init_chat_model
 from langchain.tools import BaseTool, ToolRuntime
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, ToolMessage
-from langchain_core.runnables import Runnable
+from langchain_core.runnables import Runnable, RunnableConfig
+from langchain_core.runnables.config import merge_configs
 from langchain_core.tools import StructuredTool
 from langgraph.types import Command
 
@@ -427,6 +428,28 @@ def _build_task_tool(
         subagent_state["messages"] = [HumanMessage(content=description)]
         return subagent, subagent_state
 
+    def _build_subagent_config(runtime: ToolRuntime, subagent: Runnable) -> RunnableConfig:
+        """Build runnable config for subagent invocation.
+
+        Preserves the subagent's identity metadata (e.g. `lc_agent_name`) and adds
+        `parent_tool_call_id` for streaming correlation.
+
+        Args:
+            runtime: The ToolRuntime containing tool_call_id.
+            subagent: The subagent runnable (may provide default config/metadata).
+
+        Returns:
+            Runnable config with `parent_tool_call_id` in metadata.
+        """
+        # Merge subagent's config (contains lc_agent_name) with our metadata
+        # This preserves the subagent's identity while adding correlation info
+        subagent_config = cast("RunnableConfig", getattr(subagent, "config", {}) or {})
+
+        return merge_configs(
+            subagent_config,
+            cast("RunnableConfig", {"metadata": {"parent_tool_call_id": runtime.tool_call_id}}),
+        )
+
     def task(
         description: Annotated[
             str,
@@ -438,11 +461,12 @@ def _build_task_tool(
         if subagent_type not in subagent_graphs:
             allowed_types = ", ".join([f"`{k}`" for k in subagent_graphs])
             return f"We cannot invoke subagent {subagent_type} because it does not exist, the only allowed types are {allowed_types}"
-        subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
-        result = subagent.invoke(subagent_state)
         if not runtime.tool_call_id:
             value_error_msg = "Tool call ID is required for subagent invocation"
             raise ValueError(value_error_msg)
+        subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
+        config = _build_subagent_config(runtime, subagent)
+        result = subagent.invoke(subagent_state, config=config)
         return _return_command_with_state_update(result, runtime.tool_call_id)
 
     async def atask(
@@ -456,11 +480,12 @@ def _build_task_tool(
         if subagent_type not in subagent_graphs:
             allowed_types = ", ".join([f"`{k}`" for k in subagent_graphs])
             return f"We cannot invoke subagent {subagent_type} because it does not exist, the only allowed types are {allowed_types}"
-        subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
-        result = await subagent.ainvoke(subagent_state)
         if not runtime.tool_call_id:
             value_error_msg = "Tool call ID is required for subagent invocation"
             raise ValueError(value_error_msg)
+        subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
+        config = _build_subagent_config(runtime, subagent)
+        result = await subagent.ainvoke(subagent_state, config=config)
         return _return_command_with_state_update(result, runtime.tool_call_id)
 
     return StructuredTool.from_function(

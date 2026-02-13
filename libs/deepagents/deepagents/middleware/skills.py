@@ -111,6 +111,7 @@ from langchain.agents.middleware.types import (
     ModelResponse,
 )
 from langchain_core.runnables import RunnableConfig
+from langchain_core.tools import StructuredTool
 from langgraph.prebuilt import ToolRuntime
 from langgraph.runtime import Runtime
 
@@ -124,31 +125,67 @@ MAX_SKILL_FILE_SIZE = 10 * 1024 * 1024
 # Agent Skills specification constraints (https://agentskills.io/specification)
 MAX_SKILL_NAME_LENGTH = 64
 MAX_SKILL_DESCRIPTION_LENGTH = 1024
+MAX_SKILL_COMPATIBILITY_LENGTH = 500
 
 
 class SkillMetadata(TypedDict):
     """Metadata for a skill per Agent Skills specification (https://agentskills.io/specification)."""
 
-    name: str
-    """Skill identifier (max 64 chars, lowercase alphanumeric and hyphens)."""
-
-    description: str
-    """What the skill does (max 1024 chars)."""
-
     path: str
     """Path to the SKILL.md file."""
+
+    name: str
+    """Skill identifier.
+
+    Constraints per Agent Skills specification:
+
+    - 1-64 characters
+    - Unicode lowercase alphanumeric and hyphens only (`a-z` and `-`).
+    - Must not start or end with `-`
+    - Must not contain consecutive `--`
+    - Must match the parent directory name containing the `SKILL.md` file
+    """
+
+    description: str
+    """What the skill does.
+
+    Constraints per Agent Skills specification:
+
+    - 1-1024 characters
+    - Should describe both what the skill does and when to use it
+    - Should include specific keywords that help agents identify relevant tasks
+    """
 
     license: str | None
     """License name or reference to bundled license file."""
 
     compatibility: str | None
-    """Environment requirements (max 500 chars)."""
+    """Environment requirements.
+
+    Constraints per Agent Skills specification:
+
+    - 1-500 characters if provided
+    - Should only be included if there are specific compatibility requirements
+    - Can indicate intended product, required packages, etc.
+    """
 
     metadata: dict[str, str]
-    """Arbitrary key-value mapping for additional metadata."""
+    """Arbitrary key-value mapping for additional metadata.
+
+    Clients can use this to store additional properties not defined by the spec.
+
+    It is recommended to keep key names unique to avoid conflicts.
+    """
 
     allowed_tools: list[str]
-    """Space-delimited list of pre-approved tools. (Experimental)"""
+    """Tool names the skill recommends using.
+
+    Warning: this is experimental.
+
+    Constraints per Agent Skills specification:
+
+    - Space-delimited list of tool names
+    """
 
 
 class SkillsState(AgentState):
@@ -161,33 +198,45 @@ class SkillsState(AgentState):
 class SkillsStateUpdate(TypedDict):
     """State update for the skills middleware."""
 
-    skills_metadata: list[SkillMetadata]
+    skills_metadata: NotRequired[list[SkillMetadata]]
     """List of loaded skill metadata to merge into state."""
 
 
 def _validate_skill_name(name: str, directory_name: str) -> tuple[bool, str]:
     """Validate skill name per Agent Skills specification.
 
-    Requirements per spec:
-    - Max 64 characters
-    - Lowercase alphanumeric and hyphens only (a-z, 0-9, -)
-    - Cannot start or end with hyphen
-    - No consecutive hyphens
-    - Must match parent directory name
+    Constraints per Agent Skills specification:
+
+    - 1-64 characters
+    - Unicode lowercase alphanumeric and hyphens only (`a-z` and `-`).
+    - Must not start or end with `-`
+    - Must not contain consecutive `--`
+    - Must match the parent directory name containing the `SKILL.md` file
+
+    Unicode lowercase alphanumeric means any character where `c.isalpha() and
+    c.islower()` or `c.isdigit()` returns `True`, which covers accented Latin
+    characters (e.g., `'café'`, `'über-tool'`) and other scripts.
 
     Args:
         name: Skill name from YAML frontmatter
         directory_name: Parent directory name
 
     Returns:
-        (is_valid, error_message) tuple. Error message is empty if valid.
+        `(is_valid, error_message)` tuple.
+
+            Error message is empty if valid.
     """
     if not name:
         return False, "name is required"
     if len(name) > MAX_SKILL_NAME_LENGTH:
         return False, "name exceeds 64 characters"
-    # Pattern: lowercase alphanumeric, single hyphens between segments, no start/end hyphen
-    if not re.match(r"^[a-z0-9]+(-[a-z0-9]+)*$", name):
+    if name.startswith("-") or name.endswith("-") or "--" in name:
+        return False, "name must be lowercase alphanumeric with single hyphens only"
+    for c in name:
+        if c == "-":
+            continue
+        if (c.isalpha() and c.islower()) or c.isdigit():
+            continue
         return False, "name must be lowercase alphanumeric with single hyphens only"
     if name != directory_name:
         return False, f"name '{name}' must match directory name '{directory_name}'"
@@ -199,18 +248,19 @@ def _parse_skill_metadata(
     skill_path: str,
     directory_name: str,
 ) -> SkillMetadata | None:
-    """Parse YAML frontmatter from SKILL.md content.
+    """Parse YAML frontmatter from `SKILL.md` content.
 
-    Extracts metadata per Agent Skills specification from YAML frontmatter delimited
-    by --- markers at the start of the content.
+    Extracts metadata per Agent Skills specification from YAML frontmatter
+    delimited by `---` markers at the start of the content.
 
     Args:
-        content: Content of the SKILL.md file
-        skill_path: Path to the SKILL.md file (for error messages and metadata)
+        content: Content of the `SKILL.md` file
+        skill_path: Path to the `SKILL.md` file (for error messages and metadata)
         directory_name: Name of the parent directory containing the skill
 
     Returns:
-        SkillMetadata if parsing succeeds, None if parsing fails or validation errors occur
+        `SkillMetadata` if parsing succeeds, `None` if parsing fails or
+            validation errors occur
     """
     if len(content) > MAX_SKILL_FILE_SIZE:
         logger.warning("Skipping %s: content too large (%d bytes)", skill_path, len(content))
@@ -237,10 +287,8 @@ def _parse_skill_metadata(
         logger.warning("Skipping %s: frontmatter is not a mapping", skill_path)
         return None
 
-    # Validate required fields
-    name = frontmatter_data.get("name")
-    description = frontmatter_data.get("description")
-
+    name = str(frontmatter_data.get("name", "")).strip()
+    description = str(frontmatter_data.get("description", "")).strip()
     if not name or not description:
         logger.warning("Skipping %s: missing required 'name' or 'description'", skill_path)
         return None
@@ -255,8 +303,7 @@ def _parse_skill_metadata(
             error,
         )
 
-    # Validate description length per spec (max 1024 chars)
-    description_str = str(description).strip()
+    description_str = description
     if len(description_str) > MAX_SKILL_DESCRIPTION_LENGTH:
         logger.warning(
             "Description exceeds %d characters in %s, truncating",
@@ -265,45 +312,131 @@ def _parse_skill_metadata(
         )
         description_str = description_str[:MAX_SKILL_DESCRIPTION_LENGTH]
 
-    if frontmatter_data.get("allowed-tools"):
-        allowed_tools = frontmatter_data.get("allowed-tools").split(" ")
+    raw_tools = frontmatter_data.get("allowed-tools")
+    if isinstance(raw_tools, str):
+        allowed_tools = [
+            t.strip(",")  # Support commas for compatibility with skills created for Claude Code.
+            for t in raw_tools.split()
+            if t.strip(",")
+        ]
     else:
+        if raw_tools is not None:
+            logger.warning(
+                "Ignoring non-string 'allowed-tools' in %s (got %s)",
+                skill_path,
+                type(raw_tools).__name__,
+            )
         allowed_tools = []
+
+    compatibility_str = str(frontmatter_data.get("compatibility", "")).strip() or None
+    if compatibility_str and len(compatibility_str) > MAX_SKILL_COMPATIBILITY_LENGTH:
+        logger.warning(
+            "Compatibility exceeds %d characters in %s, truncating",
+            MAX_SKILL_COMPATIBILITY_LENGTH,
+            skill_path,
+        )
+        compatibility_str = compatibility_str[:MAX_SKILL_COMPATIBILITY_LENGTH]
 
     return SkillMetadata(
         name=str(name),
         description=description_str,
         path=skill_path,
-        metadata=frontmatter_data.get("metadata", {}),
-        license=frontmatter_data.get("license", "").strip() or None,
-        compatibility=frontmatter_data.get("compatibility", "").strip() or None,
+        metadata=_validate_metadata(frontmatter_data.get("metadata", {}), skill_path),
+        license=str(frontmatter_data.get("license", "")).strip() or None,
+        compatibility=compatibility_str,
         allowed_tools=allowed_tools,
     )
+
+
+def _validate_metadata(
+    raw: object,
+    skill_path: str,
+) -> dict[str, str]:
+    """Validate and normalize the metadata field from YAML frontmatter.
+
+    YAML `safe_load` can return any type for the `metadata` key. This
+    ensures the values in `SkillMetadata` are always a `dict[str, str]` by
+    coercing via `str()` and rejecting non-dict inputs.
+
+    Args:
+        raw: Raw value from `frontmatter_data.get("metadata", {})`.
+        skill_path: Path to the `SKILL.md` file (for warning messages).
+
+    Returns:
+        A validated `dict[str, str]`.
+    """
+    if not isinstance(raw, dict):
+        if raw:
+            logger.warning(
+                "Ignoring non-dict metadata in %s (got %s)",
+                skill_path,
+                type(raw).__name__,
+            )
+        return {}
+    return {str(k): str(v) for k, v in raw.items()}
+
+
+def _extract_skill_body(content: str) -> str:
+    """Strip YAML frontmatter from SKILL.md content and return the body.
+
+    Args:
+        content: Full SKILL.md content with YAML frontmatter.
+
+    Returns:
+        The body content after the frontmatter, stripped of leading whitespace.
+    """
+    frontmatter_pattern = r"^---\s*\n.*?\n---\s*\n"
+    return re.sub(frontmatter_pattern, "", content, count=1, flags=re.DOTALL).strip()
+
+
+def _format_skill_annotations(skill: SkillMetadata) -> str:
+    """Build a parenthetical annotation string from optional skill fields.
+
+    Combines license and compatibility into a comma-separated string for
+    display in the system prompt skill listing.
+
+    Args:
+        skill: Skill metadata to extract annotations from.
+
+    Returns:
+        Annotation string like `'License: MIT, Compatibility: Python 3.10+'`,
+            or empty string if neither field is set.
+    """
+    parts: list[str] = []
+    if skill.get("license"):
+        parts.append(f"License: {skill['license']}")
+    if skill.get("compatibility"):
+        parts.append(f"Compatibility: {skill['compatibility']}")
+    return ", ".join(parts)
 
 
 def _list_skills(backend: BackendProtocol, source_path: str) -> list[SkillMetadata]:
     """List all skills from a backend source.
 
-    Scans backend for subdirectories containing SKILL.md files, downloads their content,
-    parses YAML frontmatter, and returns skill metadata.
+    Scans backend for subdirectories containing `SKILL.md` files, downloads
+    their content, parses YAML frontmatter, and returns skill metadata.
 
     Expected structure:
-        source_path/
-        ├── skill-name/
-        │   ├── SKILL.md        # Required
-        │   └── helper.py       # Optional
+
+    ```txt
+    source_path/
+    └── skill-name/
+        ├── SKILL.md   # Required
+        └── helper.py  # Optional
+    ```
 
     Args:
         backend: Backend instance to use for file operations
         source_path: Path to the skills directory in the backend
 
     Returns:
-        List of skill metadata from successfully parsed SKILL.md files
+        List of skill metadata from successfully parsed `SKILL.md` files
     """
     base_path = source_path
 
     skills: list[SkillMetadata] = []
     items = backend.ls_info(base_path)
+
     # Find all skill directories (directories containing SKILL.md)
     skill_dirs = []
     for item in items:
@@ -359,26 +492,30 @@ def _list_skills(backend: BackendProtocol, source_path: str) -> list[SkillMetada
 async def _alist_skills(backend: BackendProtocol, source_path: str) -> list[SkillMetadata]:
     """List all skills from a backend source (async version).
 
-    Scans backend for subdirectories containing SKILL.md files, downloads their content,
-    parses YAML frontmatter, and returns skill metadata.
+    Scans backend for subdirectories containing `SKILL.md` files, downloads
+    their content, parses YAML frontmatter, and returns skill metadata.
 
     Expected structure:
-        source_path/
-        ├── skill-name/
-        │   ├── SKILL.md        # Required
-        │   └── helper.py       # Optional
+
+    ```txt
+    source_path/
+    └── skill-name/
+        ├── SKILL.md   # Required
+        └── helper.py  # Optional
+    ```
 
     Args:
         backend: Backend instance to use for file operations
         source_path: Path to the skills directory in the backend
 
     Returns:
-        List of skill metadata from successfully parsed SKILL.md files
+        List of skill metadata from successfully parsed `SKILL.md` files
     """
     base_path = source_path
 
     skills: list[SkillMetadata] = []
     items = await backend.als_info(base_path)
+
     # Find all skill directories (directories containing SKILL.md)
     skill_dirs = []
     for item in items:
@@ -431,6 +568,17 @@ async def _alist_skills(backend: BackendProtocol, source_path: str) -> list[Skil
     return skills
 
 
+SKILL_TOOL_DESCRIPTION = """Load a skill by name. Skills provide specialized capabilities and domain knowledge.
+
+How to invoke:
+- Use the `name` parameter with the skill name (e.g., name="web-research")
+
+Examples:
+- name="web-research" — load the web-research skill into the current context
+- name="code-review" — invoke the code-review skill
+
+Skills are loaded into the current conversation context for you to follow."""
+
 SKILLS_SYSTEM_PROMPT = """
 
 ## Skills System
@@ -445,11 +593,12 @@ You have access to a skills library that provides specialized capabilities and d
 
 **How to Use Skills (Progressive Disclosure):**
 
-Skills follow a **progressive disclosure** pattern - you see their name and description above, but only read full instructions when needed:
+Skills follow a **progressive disclosure** pattern - you see their name and description above, but only load full instructions when needed:
 
 1. **Recognize when a skill applies**: Check if the user's task matches a skill's description
-2. **Read the skill's full instructions**: Use the path shown in the skill list above
-3. **Follow the skill's instructions**: SKILL.md contains step-by-step workflows, best practices, and examples
+2. **Load the skill's full instructions**: Call the `skill` tool with the skill name (e.g., `name="web-research"`)
+3. **Follow the skill's instructions**: Once loaded, the skill's full instructions appear in your context with
+step-by-step workflows, best practices, and examples
 4. **Access supporting files**: Skills may include helper scripts, configs, or reference docs - use absolute paths
 
 **When to Use Skills:**
@@ -464,8 +613,8 @@ Skills may contain Python scripts or other executable files. Always use absolute
 
 User: "Can you research the latest developments in quantum computing?"
 
-1. Check available skills -> See "web-research" skill with its path
-2. Read the skill using the path shown
+1. Check available skills -> See "web-research" skill
+2. Call the `skill` tool with `name="web-research"` to load full instructions
 3. Follow the skill's research workflow (search -> organize -> synthesize)
 4. Use any helper scripts with absolute paths
 
@@ -479,7 +628,8 @@ class SkillsMiddleware(AgentMiddleware):
     Loads skills from backend sources and injects them into the system prompt
     using progressive disclosure (metadata first, full content on demand).
 
-    Skills are loaded in source order with later sources overriding earlier ones.
+    Skills are loaded in source order with later sources overriding
+    earlier ones.
 
     Example:
         ```python
@@ -497,22 +647,35 @@ class SkillsMiddleware(AgentMiddleware):
 
     Args:
         backend: Backend instance for file operations
-        sources: List of skill source paths. Source names are derived from the last path component.
+        sources: List of skill source paths.
+
+            Source names are derived from the last path component.
     """
 
     state_schema = SkillsState
 
-    def __init__(self, *, backend: BACKEND_TYPES, sources: list[str]) -> None:
+    def __init__(
+        self,
+        *,
+        backend: BACKEND_TYPES,
+        sources: list[str],
+    ) -> None:
         """Initialize the skills middleware.
 
         Args:
-            backend: Backend instance or factory function that takes runtime and returns a backend.
-                     Use a factory for StateBackend: `lambda rt: StateBackend(rt)`
-            sources: List of skill source paths (e.g., ["/skills/user/", "/skills/project/"]).
+            backend: Backend instance or factory function that takes runtime and
+                returns a backend.
+
+                Use a factory for StateBackend: `lambda rt: StateBackend(rt)`
+            sources: List of skill source paths (e.g.,
+                `['/skills/user/', '/skills/project/']`).
         """
         self._backend = backend
         self.sources = sources
         self.system_prompt_template = SKILLS_SYSTEM_PROMPT
+
+        skill_tool = self._create_skill_tool()
+        self.tools = [skill_tool]
 
     def _get_backend(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> BackendProtocol:
         """Resolve backend from instance or factory.
@@ -542,13 +705,93 @@ class SkillsMiddleware(AgentMiddleware):
 
         return self._backend
 
+    def _get_backend_from_tool_runtime(self, runtime: ToolRuntime) -> BackendProtocol:
+        """Resolve backend from tool runtime context.
+
+        Args:
+            runtime: The tool runtime context.
+
+        Returns:
+            Resolved backend instance.
+        """
+        if callable(self._backend):
+            return self._backend(runtime)
+        return self._backend
+
+    def _create_skill_tool(self) -> StructuredTool:
+        """Create the `skill` tool for loading skills by name.
+
+        Returns:
+            A StructuredTool that loads skills by name.
+        """
+        middleware = self
+
+        def _lookup_skill_metadata(skill_name: str, runtime: ToolRuntime) -> SkillMetadata | None:
+            """Look up a skill by name from the already-loaded metadata in state."""
+            skills_metadata: list[SkillMetadata] = runtime.state.get("skills_metadata", [])
+            for skill in skills_metadata:
+                if skill["name"] == skill_name:
+                    return skill
+            return None
+
+        def skill_fn(
+            name: Annotated[str, "The name of the skill to load."],
+            runtime: ToolRuntime,
+        ) -> str:
+            skill_meta = _lookup_skill_metadata(name, runtime)
+            if skill_meta is None:
+                available = [s["name"] for s in runtime.state.get("skills_metadata", [])]
+                return f"Skill '{name}' not found. Available skills: {', '.join(available) or 'none'}"
+
+            backend = middleware._get_backend_from_tool_runtime(runtime)
+            responses = backend.download_files([skill_meta["path"]])
+            if responses[0].error or responses[0].content is None:
+                return f"Failed to load skill '{name}': could not download SKILL.md"
+            try:
+                content = responses[0].content.decode("utf-8")
+            except UnicodeDecodeError:
+                return f"Failed to load skill '{name}': could not decode SKILL.md"
+            body = _extract_skill_body(content)
+
+            return f'<skill name="{name}">\n{body}\n</skill>'
+
+        async def askill_fn(
+            name: Annotated[str, "The name of the skill to load."],
+            runtime: ToolRuntime,
+        ) -> str:
+            skill_meta = _lookup_skill_metadata(name, runtime)
+            if skill_meta is None:
+                available = [s["name"] for s in runtime.state.get("skills_metadata", [])]
+                return f"Skill '{name}' not found. Available skills: {', '.join(available) or 'none'}"
+
+            backend = middleware._get_backend_from_tool_runtime(runtime)
+            responses = await backend.adownload_files([skill_meta["path"]])
+            if responses[0].error or responses[0].content is None:
+                return f"Failed to load skill '{name}': could not download SKILL.md"
+            try:
+                content = responses[0].content.decode("utf-8")
+            except UnicodeDecodeError:
+                return f"Failed to load skill '{name}': could not decode SKILL.md"
+            body = _extract_skill_body(content)
+
+            return f'<skill name="{name}">\n{body}\n</skill>'
+
+        return StructuredTool.from_function(
+            name="skill",
+            func=skill_fn,
+            coroutine=askill_fn,
+            description=SKILL_TOOL_DESCRIPTION,
+        )
+
     def _format_skills_locations(self) -> str:
         """Format skills locations for display in system prompt."""
         locations = []
+
         for i, source_path in enumerate(self.sources):
             name = PurePosixPath(source_path.rstrip("/")).name.capitalize()
             suffix = " (higher priority)" if i == len(self.sources) - 1 else ""
             locations.append(f"**{name} Skills**: `{source_path}`{suffix}")
+
         return "\n".join(locations)
 
     def _format_skills_list(self, skills: list[SkillMetadata]) -> str:
@@ -559,10 +802,13 @@ class SkillsMiddleware(AgentMiddleware):
 
         lines = []
         for skill in skills:
-            lines.append(f"- **{skill['name']}**: {skill['description']}")
+            annotations = _format_skill_annotations(skill)
+            desc_line = f"- **{skill['name']}**: {skill['description']}"
+            if annotations:
+                desc_line += f" ({annotations})"
+            lines.append(desc_line)
             if skill["allowed_tools"]:
                 lines.append(f"  -> Allowed tools: {', '.join(skill['allowed_tools'])}")
-            lines.append(f"  -> Read `{skill['path']}` for full instructions")
 
         return "\n".join(lines)
 

@@ -15,11 +15,13 @@ if TYPE_CHECKING:
     from textual import events
     from textual.app import ComposeResult
 
-from deepagents_cli.config import CharsetMode, _detect_charset_mode, get_glyphs
+from deepagents_cli.config import (
+    SHELL_TOOL_NAMES,
+    CharsetMode,
+    _detect_charset_mode,
+    get_glyphs,
+)
 from deepagents_cli.widgets.tool_renderers import get_renderer
-
-# Tools that support expandable command display (must be subset of _SHELL_TOOLS)
-_SHELL_TOOLS: set[str] = {"bash", "shell", "execute"}
 
 # Max length for truncated shell command display
 _SHELL_COMMAND_TRUNCATE_LENGTH: int = 120
@@ -71,7 +73,7 @@ class ApprovalMenu(Container):
             self.decision = decision
 
     # Tools that don't need detailed info display (already shown in tool call)
-    _MINIMAL_TOOLS: ClassVar[set[str]] = _SHELL_TOOLS
+    _MINIMAL_TOOLS: ClassVar[frozenset[str]] = SHELL_TOOL_NAMES
 
     def __init__(
         self,
@@ -124,7 +126,7 @@ class ApprovalMenu(Container):
         if len(self._action_requests) != 1:
             return False
         req = self._action_requests[0]
-        if req.get("name", "") not in _SHELL_TOOLS:
+        if req.get("name", "") not in SHELL_TOOL_NAMES:
             return False
         command = str(req.get("args", {}).get("command", ""))
         return len(command) > _SHELL_COMMAND_TRUNCATE_LENGTH

@@ -2,7 +2,9 @@ from pathlib import Path
 
 import pytest
 from langchain.tools import ToolRuntime
+from langchain_core.messages import ToolMessage
 from langgraph.store.memory import InMemoryStore
+from langgraph.types import Command
 
 from deepagents.backends.composite import CompositeBackend
 from deepagents.backends.filesystem import FilesystemBackend
@@ -13,6 +15,7 @@ from deepagents.backends.protocol import (
 )
 from deepagents.backends.state import StateBackend
 from deepagents.backends.store import StoreBackend
+from deepagents.middleware.filesystem import FilesystemMiddleware
 
 
 def make_runtime(tid: str = "tc"):
@@ -40,7 +43,7 @@ def build_composite_state_backend(runtime: ToolRuntime, *, routes):
 def test_composite_state_backend_routes_and_search(tmp_path: Path):
     rt = make_runtime("t3")
     # route /memories/ to store
-    be = build_composite_state_backend(rt, routes={"/memories/": (lambda r: StoreBackend(r))})
+    be = build_composite_state_backend(rt, routes={"/memories/": (StoreBackend)})
 
     # write to default (state)
     res = be.write("/file.txt", "alpha")
@@ -144,9 +147,9 @@ def test_composite_backend_multiple_routes():
     comp = build_composite_state_backend(
         rt,
         routes={
-            "/memories/": (lambda r: StoreBackend(r)),
-            "/archive/": (lambda r: StoreBackend(r)),
-            "/cache/": (lambda r: StoreBackend(r)),
+            "/memories/": (StoreBackend),
+            "/archive/": (StoreBackend),
+            "/cache/": (StoreBackend),
         },
     )
 
@@ -291,8 +294,8 @@ def test_composite_backend_ls_multiple_routes_nested():
     comp = build_composite_state_backend(
         rt,
         routes={
-            "/memories/": (lambda r: StoreBackend(r)),
-            "/archive/": (lambda r: StoreBackend(r)),
+            "/memories/": (StoreBackend),
+            "/archive/": (StoreBackend),
         },
     )
 
@@ -380,15 +383,10 @@ def test_composite_backend_ls_trailing_slash(tmp_path: Path):
 
 
 def test_composite_backend_intercept_large_tool_result():
-    from langchain_core.messages import ToolMessage
-    from langgraph.types import Command
-
-    from deepagents.middleware.filesystem import FilesystemMiddleware
-
     rt = make_runtime("t10")
 
     middleware = FilesystemMiddleware(
-        backend=lambda r: build_composite_state_backend(r, routes={"/memories/": (lambda x: StoreBackend(x))}), tool_token_limit_before_evict=1000
+        backend=lambda r: build_composite_state_backend(r, routes={"/memories/": (StoreBackend)}), tool_token_limit_before_evict=1000
     )
     large_content = "z" * 5000
     tool_message = ToolMessage(content=large_content, tool_call_id="test_789")
@@ -402,14 +400,10 @@ def test_composite_backend_intercept_large_tool_result():
 
 def test_composite_backend_intercept_large_tool_result_routed_to_store():
     """Test that large tool results can be routed to a specific backend like StoreBackend."""
-    from langchain_core.messages import ToolMessage
-
-    from deepagents.middleware.filesystem import FilesystemMiddleware
-
     rt = make_runtime("t11")
 
     middleware = FilesystemMiddleware(
-        backend=lambda r: build_composite_state_backend(r, routes={"/large_tool_results/": (lambda x: StoreBackend(x))}),
+        backend=lambda r: build_composite_state_backend(r, routes={"/large_tool_results/": (StoreBackend)}),
         tool_token_limit_before_evict=1000,
     )
 

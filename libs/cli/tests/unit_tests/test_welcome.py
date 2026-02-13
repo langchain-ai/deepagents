@@ -83,7 +83,7 @@ class TestBuildBannerThreadLink:
         thread_id_end = thread_id_start + len("99999")
         links = _extract_links(banner, thread_id_start, thread_id_end)
         assert links, "Expected a link style on the thread ID text"
-        assert links[0] == f"{project_url}/t/99999"
+        assert links[0] == f"{project_url}/t/99999?utm_source=deepagents-cli"
 
     def test_no_thread_line_when_thread_id_is_none(self) -> None:
         """Banner should not contain a thread line when `thread_id` is `None`."""
@@ -126,7 +126,43 @@ class TestBuildBannerThreadLink:
         thread_id_end = thread_id_start + len("77777")
         links = _extract_links(banner, thread_id_start, thread_id_end)
         assert links
-        assert links[0] == f"{project_url}/t/77777"
+        assert links[0] == f"{project_url}/t/77777?utm_source=deepagents-cli"
+
+
+class TestUpdateThreadId:
+    """Tests for `update_thread_id`."""
+
+    def test_update_thread_id_changes_internal_state(self) -> None:
+        """After `update_thread_id`, `_build_banner` should reflect the new ID."""
+        widget = _make_banner(thread_id="old_id")
+        assert "Thread: old_id" in widget._build_banner().plain
+
+        # Patch Static.update to avoid needing an active Textual app context
+        with patch.object(widget, "update"):
+            widget.update_thread_id("new_id")
+
+        banner = widget._build_banner()
+        assert "Thread: new_id" in banner.plain
+        assert "old_id" not in banner.plain
+
+    def test_update_thread_id_preserves_project_url(self) -> None:
+        """Thread link should use the cached project URL after update."""
+        project_url = "https://smith.langchain.com/o/org/projects/p/abc123"
+        widget = _make_banner(thread_id="old_id")
+        widget._project_url = project_url
+
+        with patch.object(widget, "update") as mock_update:
+            widget.update_thread_id("new_id")
+
+        # Verify update_thread_id passed the correct banner to Static.update
+        mock_update.assert_called_once()
+        banner = mock_update.call_args[0][0]
+        assert "Thread: new_id" in banner.plain
+        thread_start = banner.plain.index("new_id")
+        thread_end = thread_start + len("new_id")
+        links = _extract_links(banner, thread_start, thread_end)
+        assert links
+        assert links[0] == f"{project_url}/t/new_id?utm_source=deepagents-cli"
 
 
 class TestBuildBannerReturnType:

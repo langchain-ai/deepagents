@@ -1,18 +1,28 @@
 """CLI commands for skill management.
 
-These commands are registered with the CLI via cli.py:
+These commands are registered with the CLI via main.py:
 - deepagents skills list --agent <agent> [--project]
 - deepagents skills create <name>
 - deepagents skills info <name>
 """
 
 import argparse
-import re
+import functools
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from deepagents.middleware.skills import SkillMetadata
+
 from deepagents_cli.config import COLORS, Settings, console, get_glyphs
 from deepagents_cli.skills.load import list_skills
+from deepagents_cli.ui import (
+    build_help_parent,
+    show_skills_create_help,
+    show_skills_help,
+    show_skills_info_help,
+    show_skills_list_help,
+)
 
 MAX_SKILL_NAME_LENGTH = 64
 
@@ -22,13 +32,19 @@ def _validate_name(name: str) -> tuple[bool, str]:
 
     Requirements (https://agentskills.io/specification):
     - Max 64 characters
-    - Lowercase alphanumeric and hyphens only (a-z, 0-9, -)
+    - Unicode lowercase alphanumeric and hyphens only
     - Cannot start or end with hyphen
     - No consecutive hyphens
     - No path traversal sequences
 
+    Unicode lowercase alphanumeric means any character where
+    `c.isalpha() and c.islower()` or `c.isdigit()` returns `True`,
+    which covers accented Latin characters (e.g., `'cafe'`,
+    `'uber-tool'`) and other scripts.  This matches the SDK's
+    `_validate_skill_name` implementation.
+
     Args:
-        name: The name to validate
+        name: The name to validate.
 
     Returns:
         Tuple of (is_valid, error_message). If valid, error_message is empty.
@@ -41,17 +57,28 @@ def _validate_name(name: str) -> tuple[bool, str]:
     if len(name) > MAX_SKILL_NAME_LENGTH:
         return False, "cannot exceed 64 characters"
 
-    # Check for path traversal sequences
+    # Check for path traversal sequences (CLI-specific; the SDK validates
+    # against the directory name instead, but the CLI accepts user input
+    # directly so we need explicit path-safety checks)
     if ".." in name or "/" in name or "\\" in name:
         return False, "cannot contain path components"
 
-    # Spec: lowercase alphanumeric and hyphens only
-    # Pattern ensures: no start/end hyphen, no consecutive hyphens
-    if not re.match(r"^[a-z0-9]+(-[a-z0-9]+)*$", name):
+    # Structural hyphen checks
+    if name.startswith("-") or name.endswith("-") or "--" in name:
         return (
             False,
-            "must be lowercase letters, numbers, and hyphens only "
-            + "(no uppercase, no underscores, cannot start/end with hyphen)",
+            "must be lowercase alphanumeric with single hyphens only",
+        )
+
+    # Character-by-character check (matches SDK's _validate_skill_name)
+    for c in name:
+        if c == "-":
+            continue
+        if (c.isalpha() and c.islower()) or c.isdigit():
+            continue
+        return (
+            False,
+            "must be lowercase alphanumeric with single hyphens only",
         )
 
     return True, ""
@@ -87,6 +114,39 @@ def _validate_skill_path(skill_dir: Path, base_dir: Path) -> tuple[bool, str]:
         return False, f"Invalid path: {e}"
     else:
         return True, ""
+
+
+def _format_info_fields(skill: SkillMetadata) -> list[tuple[str, str]]:
+    """Extract non-empty optional metadata fields for display.
+
+    The upstream `_parse_skill_metadata` normalises empty/whitespace license
+    and compatibility values to `None`, so the truthy checks below are
+    sufficient.
+
+    Args:
+        skill: Skill metadata to extract display fields from.
+
+    Returns:
+        Ordered list of (label, value) tuples for non-empty fields.
+            Fields appear in order: License, Compatibility, Allowed Tools,
+            Metadata.
+    """
+    fields: list[tuple[str, str]] = []
+    license_val = skill.get("license")
+    if license_val:
+        fields.append(("License", license_val))
+    compat_val = skill.get("compatibility")
+    if compat_val:
+        fields.append(("Compatibility", compat_val))
+    if skill.get("allowed_tools"):
+        fields.append(
+            ("Allowed Tools", ", ".join(str(t) for t in skill["allowed_tools"]))
+        )
+    meta = skill.get("metadata")
+    if meta and isinstance(meta, dict):
+        formatted = ", ".join(f"{k}={v}" for k, v in meta.items())
+        fields.append(("Metadata", formatted))
+    return fields
 
 
 def _list(agent: str, *, project: bool = False) -> None:
@@ -146,8 +206,9 @@ def _list(agent: str, *, project: bool = False) -> None:
         )
         console.print("\n[bold]Project Skills:[/bold]\n", style=COLORS["primary"])
     else:
-        # Load skills from all directories
+        # Load skills from all directories (including built-in)
         skills = list_skills(
+            built_in_skills_dir=settings.get_built_in_skills_dir(),
             user_skills_dir=user_skills_dir,
             project_skills_dir=project_skills_dir,
             user_agent_skills_dir=user_agent_skills_dir,
@@ -155,14 +216,17 @@ def _list(agent: str, *, project: bool = False) -> None:
         )
 
         if not skills:
+            console.print()
             console.print("[yellow]No skills found.[/yellow]")
+            console.print()
             console.print(
                 "[dim]Skills are loaded from these directories "
-                "(lowest to highest precedence):\n"
-                "  1. ~/.deepagents/<agent>/skills/   (user, deepagents alias)\n"
-                "  2. ~/.agents/skills/               (user)\n"
-                "  3. .deepagents/skills/             (project, deepagents alias)\n"
-                "  4. .agents/skills/                 (project)[/dim]",
+                "(highest precedence first):\n"
+                "  1. .agents/skills/                 project skills\n"
+                "  2. .deepagents/skills/             project skills (alias)\n"
+                "  3. ~/.agents/skills/               user skills\n"
+                "  4. ~/.deepagents/<agent>/skills/   user skills (alias)\n"
+                "  5. <package>/built_in_skills/      built-in skills[/dim]",
                 style=COLORS["dim"],
             )
             console.print(
@@ -177,6 +241,7 @@ def _list(agent: str, *, project: bool = False) -> None:
     # Group skills by source
     user_skills = [s for s in skills if s["source"] == "user"]
     project_skills_list = [s for s in skills if s["source"] == "project"]
+    built_in_skills_list = [s for s in skills if s["source"] == "built-in"]
 
     # Show user skills
     if user_skills and not project:
@@ -186,8 +251,9 @@ def _list(agent: str, *, project: bool = False) -> None:
             skill_path = Path(skill["path"])
             name = skill["name"]
             console.print(f"  {bullet} [bold]{name}[/bold]", style=COLORS["primary"])
+            console.print(f"    {skill_path.parent}/", style=COLORS["dim"])
+            console.print()
             console.print(f"    {skill['description']}", style=COLORS["dim"])
-            console.print(f"    Location: {skill_path.parent}/", style=COLORS["dim"])
             console.print()
 
     # Show project skills
@@ -202,8 +268,24 @@ def _list(agent: str, *, project: bool = False) -> None:
             skill_path = Path(skill["path"])
             name = skill["name"]
             console.print(f"  {bullet} [bold]{name}[/bold]", style=COLORS["primary"])
+            console.print(f"    {skill_path.parent}/", style=COLORS["dim"])
+            console.print()
             console.print(f"    {skill['description']}", style=COLORS["dim"])
-            console.print(f"    Location: {skill_path.parent}/", style=COLORS["dim"])
+            console.print()
+
+    # Show built-in skills
+    if built_in_skills_list and not project:
+        if user_skills or project_skills_list:
+            console.print()
+        console.print(
+            "[bold magenta]Built-in Skills:[/bold magenta]", style=COLORS["primary"]
+        )
+        bullet = get_glyphs().bullet
+        for skill in built_in_skills_list:
+            name = skill["name"]
+            console.print(f"  {bullet} [bold]{name}[/bold]", style=COLORS["primary"])
+            console.print()
+            console.print(f"    {skill['description']}", style=COLORS["dim"])
             console.print()
 
 
@@ -212,6 +294,7 @@ def _generate_template(skill_name: str) -> str:
 
     The template follows the Agent Skills spec
     (https://agentskills.io/specification) and the skill-creator guidance:
+
     - Description includes "when to use" trigger information (not the body)
     - Body contains only instructions loaded after the skill triggers
 
@@ -232,9 +315,10 @@ def _generate_template(skill_name: str) -> str:
     return f"""---
 name: {skill_name}
 description: "{description}"
+# (Warning: SKILL.md files exceeding 10 MB are silently skipped at load time.)
 # Optional fields per Agent Skills spec:
 # license: Apache-2.0
-# compatibility: Designed for deepagents CLI
+# compatibility: Designed for Deep Agents CLI
 # metadata:
 #   author: your-org
 #   version: "1.0"
@@ -340,8 +424,9 @@ def _create(skill_name: str, agent: str, project: bool = False) -> None:
     skill_md = skill_dir / "SKILL.md"
     skill_md.write_text(template)
 
+    checkmark = get_glyphs().checkmark
     console.print(
-        f"{get_glyphs().checkmark} Skill '{skill_name}' created successfully!",
+        f"\n[bold]{checkmark} Skill '{skill_name}' created successfully![/bold]",
         style=COLORS["primary"],
     )
     console.print(f"Location: {skill_dir}\n", style=COLORS["dim"])
@@ -353,7 +438,7 @@ def _create(skill_name: str, agent: str, project: bool = False) -> None:
         "\n"
         f"  nano {skill_md}\n"
         "\n"
-        "💡 See examples/skills/ in the deepagents repo for example skills:\n"
+        "  See examples/skills/ in the deepagents-cli repo for example skills:\n"
         "   - web-research: Structured research workflow\n"
         "   - langgraph-docs: LangGraph documentation lookup\n"
         "\n"
@@ -391,6 +476,7 @@ def _info(skill_name: str, *, agent: str = "agent", project: bool = False) -> No
         )
     else:
         skills = list_skills(
+            built_in_skills_dir=settings.get_built_in_skills_dir(),
             user_skills_dir=user_skills_dir,
             project_skills_dir=project_skills_dir,
             user_agent_skills_dir=user_agent_skills_dir,
@@ -412,18 +498,49 @@ def _info(skill_name: str, *, agent: str = "agent", project: bool = False) -> No
     skill_content = skill_path.read_text(encoding="utf-8")
 
     # Determine source label
-    source_label = "Project Skill" if skill["source"] == "project" else "User Skill"
-    source_color = "green" if skill["source"] == "project" else "cyan"
+    source_labels = {
+        "project": ("Project Skill", "green"),
+        "user": ("User Skill", "cyan"),
+        "built-in": ("Built-in Skill", "magenta"),
+    }
+    source_label, source_color = source_labels.get(skill["source"], ("Skill", "dim"))
+
+    # Check if this project skill shadows a user skill with the same name.
+    # This is a cosmetic hint — if the second list_skills() call fails
+    # (e.g. permission error reading user dirs) we silently skip the warning
+    # rather than crashing the entire `skills info` display.
+    shadowed_user_skill = False
+    if skill["source"] == "project" and not project:
+        try:
+            user_only = list_skills(
+                user_skills_dir=user_skills_dir,
+                project_skills_dir=None,
+                user_agent_skills_dir=user_agent_skills_dir,
+                project_agent_skills_dir=None,
+            )
+            shadowed_user_skill = any(s["name"] == skill_name for s in user_only)
+        except Exception:  # noqa: BLE001, S110
+            # Intentionally swallowed — shadow detection is cosmetic
+            pass
 
     console.print(
         f"\n[bold]Skill: {skill['name']}[/bold] "
         f"[bold {source_color}]({source_label})[/bold {source_color}]\n",
         style=COLORS["primary"],
     )
+    if shadowed_user_skill:
+        console.print(
+            f"[yellow]Note: Overrides user skill '{skill_name}' "
+            "of the same name[/yellow]\n"
+        )
+    console.print(f"[bold]Location:[/bold] {skill_path.parent}/\n", style=COLORS["dim"])
     console.print(
         f"[bold]Description:[/bold] {skill['description']}\n", style=COLORS["dim"]
     )
-    console.print(f"[bold]Location:[/bold] {skill_path.parent}/\n", style=COLORS["dim"])
+
+    # Show optional metadata fields
+    for label, value in _format_info_fields(skill):
+        console.print(f"[bold]{label}:[/bold] {value}\n", style=COLORS["dim"])
 
     # List supporting files
     skill_dir = skill_path.parent
@@ -443,28 +560,33 @@ def _info(skill_name: str, *, agent: str = "agent", project: bool = False) -> No
 
 def setup_skills_parser(
     subparsers: Any,
+    *,
+    make_help_action: Callable[[Callable[[], None]], type[argparse.Action]],
 ) -> argparse.ArgumentParser:
     """Setup the skills subcommand parser with all its subcommands.
+
+    Each subcommand gets a dedicated help screen so that
+    `deepagents skills -h` shows skills-specific help, not the
+    global help.
+
+    Args:
+        subparsers: The parent subparsers object to add the skills parser to.
+        make_help_action: Factory that accepts a zero-argument help
+            callable and returns an argparse Action class wired to it.
 
     Returns:
         The skills subparser for argument handling.
     """
-    skills_epilog = """\
-skill directories (lowest to highest precedence):
-  1. ~/.deepagents/<agent>/skills/   user skills (deepagents alias)
-  2. ~/.agents/skills/               user skills
-  3. .deepagents/skills/             project skills (deepagents alias)
-  4. .agents/skills/                 project skills
+    help_parent = functools.partial(
+        build_help_parent, make_help_action=make_help_action
+    )
 
-When two directories contain a skill with the same name, the
-higher-precedence version wins. Project skills override user skills.
-"""
     skills_parser = subparsers.add_parser(
         "skills",
         help="Manage agent skills",
         description="Manage agent skills - create, list, and view skill information.",
-        epilog=skills_epilog,
-        formatter_class=argparse.RawDescriptionHelpFormatter,
+        add_help=False,
+        parents=help_parent(show_skills_help),
     )
     skills_subparsers = skills_parser.add_subparsers(
         dest="skills_command", help="Skills command"
@@ -473,11 +595,14 @@ higher-precedence version wins. Project skills override user skills.
     # Skills list
     list_parser = skills_subparsers.add_parser(
         "list",
+        aliases=["ls"],
         help="List all available skills",
         description=(
             "List skills from all four skill directories "
             "(user, user alias, project, project alias)."
         ),
+        add_help=False,
+        parents=help_parent(show_skills_list_help),
     )
     list_parser.add_argument(
         "--agent",
@@ -496,12 +621,17 @@ higher-precedence version wins. Project skills override user skills.
         help="Create a new skill",
         description=(
             "Create a new skill with a template SKILL.md file. "
-            "By default, skills are created in ~/.deepagents/<agent>/skills/. "
-            "Use --project to create in the project's .deepagents/skills/ directory."
+            "By default, skills are created in "
+            "~/.deepagents/<agent>/skills/. "
+            "Use --project to create in the project's "
+            ".deepagents/skills/ directory."
         ),
+        add_help=False,
+        parents=help_parent(show_skills_create_help),
     )
     create_parser.add_argument(
-        "name", help="Name of the skill to create (e.g., web-research)"
+        "name",
+        help="Name of the skill to create (e.g., web-research)",
     )
     create_parser.add_argument(
         "--agent",
@@ -519,6 +649,8 @@ higher-precedence version wins. Project skills override user skills.
         "info",
         help="Show detailed information about a skill",
         description="Show detailed information about a specific skill",
+        add_help=False,
+        parents=help_parent(show_skills_info_help),
     )
     info_parser.add_argument("name", help="Name of the skill to show info for")
     info_parser.add_argument(
@@ -554,31 +686,17 @@ def execute_skills_command(args: argparse.Namespace) -> None:
             )
             return
 
-    if args.skills_command == "list":
+    # "ls" is an argparse alias for "list" — argparse stores the alias
+    # as-is in the namespace, so we must match both values.
+    if args.skills_command in {"list", "ls"}:
         _list(agent=args.agent, project=args.project)
     elif args.skills_command == "create":
         _create(args.name, agent=args.agent, project=args.project)
     elif args.skills_command == "info":
         _info(args.name, agent=args.agent, project=args.project)
     else:
-        # No subcommand provided, show help
-        console.print(
-            "[yellow]Please specify a skills subcommand: list, create, or info[/yellow]"
-        )
-        console.print("\n[bold]Usage:[/bold]", style=COLORS["primary"])
-        console.print("  deepagents skills <command> [options]\n")
-        console.print("[bold]Available commands:[/bold]", style=COLORS["primary"])
-        console.print("  list              List all available skills")
-        console.print("  create <name>     Create a new skill")
-        console.print("  info <name>       Show detailed information about a skill")
-        console.print("\n[bold]Examples:[/bold]", style=COLORS["primary"])
-        console.print("  deepagents skills list")
-        console.print("  deepagents skills create web-research")
-        console.print("  deepagents skills info web-research")
-        console.print(
-            "\n[dim]For more help on a specific command:[/dim]", style=COLORS["dim"]
-        )
-        console.print("  deepagents skills <command> --help", style=COLORS["dim"])
+        # No subcommand provided, show skills help screen
+        show_skills_help()
 
 
 __all__ = [

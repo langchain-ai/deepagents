@@ -9,8 +9,9 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from langchain.agents import create_agent
+from langchain.agents.middleware.types import ModelRequest
 from langchain.tools import ToolRuntime
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.store.memory import InMemoryStore
@@ -20,12 +21,16 @@ from deepagents.backends.state import StateBackend
 from deepagents.backends.store import StoreBackend
 from deepagents.graph import create_deep_agent
 from deepagents.middleware.skills import (
+    MAX_SKILL_COMPATIBILITY_LENGTH,
     MAX_SKILL_DESCRIPTION_LENGTH,
     MAX_SKILL_FILE_SIZE,
     SkillMetadata,
     SkillsMiddleware,
+    _extract_skill_body,
+    _format_skill_annotations,
     _list_skills,
     _parse_skill_metadata,
+    _validate_metadata,
     _validate_skill_name,
 )
 from tests.unit_tests.chat_model import GenericFakeChatModel
@@ -262,6 +267,251 @@ Content
     assert result is not None
     assert result["license"] is None  # Empty string should become None
     assert result["compatibility"] is None  # Empty string should become None
+
+
+def test_parse_skill_metadata_compatibility_max_length() -> None:
+    """Test _parse_skill_metadata truncates compatibility exceeding 500 chars.
+
+    Per Agent Skills spec, compatibility field must be max 500 characters.
+    """
+    long_compat = "x" * 600
+    content = f"""---
+name: test-skill
+description: A test skill
+compatibility: {long_compat}
+---
+
+Content
+"""
+
+    result = _parse_skill_metadata(content, "/skills/test-skill/SKILL.md", "test-skill")
+    assert result is not None
+    assert result["compatibility"] is not None
+    assert len(result["compatibility"]) == MAX_SKILL_COMPATIBILITY_LENGTH
+
+
+def test_parse_skill_metadata_whitespace_only_description() -> None:
+    """Test _parse_skill_metadata rejects whitespace-only description.
+
+    A description of just spaces becomes empty after `str(...).strip()` and is
+    then rejected by the `if not description` check.
+    """
+    content = """---
+name: test-skill
+description: "   "
+---
+
+Content
+"""
+
+    result = _parse_skill_metadata(content, "/skills/test-skill/SKILL.md", "test-skill")
+    assert result is None
+
+
+def test_parse_skill_metadata_allowed_tools_multiple_spaces() -> None:
+    """Test _parse_skill_metadata handles multiple consecutive spaces in allowed-tools."""
+    content = """---
+name: test-skill
+description: A test skill
+allowed-tools: Bash  Read   Write
+---
+
+Content
+"""
+
+    result = _parse_skill_metadata(content, "/skills/test-skill/SKILL.md", "test-skill")
+    assert result is not None
+    assert result["allowed_tools"] == ["Bash", "Read", "Write"]
+
+
+def test_validate_skill_name_unicode_lowercase() -> None:
+    """Test _validate_skill_name accepts unicode lowercase alphanumeric characters."""
+    # Unicode lowercase letters (e.g., accented characters)
+    is_valid, _ = _validate_skill_name("café", "café")
+    assert is_valid
+
+    is_valid, _ = _validate_skill_name("über-tool", "über-tool")
+    assert is_valid
+
+
+def test_validate_skill_name_rejects_unicode_uppercase() -> None:
+    """Test _validate_skill_name rejects unicode uppercase characters."""
+    is_valid, error = _validate_skill_name("Café", "Café")
+    assert not is_valid
+    assert "lowercase" in error
+
+
+def test_validate_skill_name_rejects_cjk_characters() -> None:
+    """Test _validate_skill_name rejects CJK characters."""
+    is_valid, error = _validate_skill_name("中文", "中文")
+    assert not is_valid
+    assert "lowercase" in error
+
+
+def test_validate_skill_name_rejects_emoji() -> None:
+    """Test _validate_skill_name rejects emoji characters."""
+    is_valid, error = _validate_skill_name("tool-😀", "tool-😀")
+    assert not is_valid
+    assert "lowercase" in error
+
+
+def test_format_skill_annotations_both_fields() -> None:
+    """Test _format_skill_annotations with both license and compatibility."""
+    skill = SkillMetadata(
+        name="s",
+        description="d",
+        path="/p",
+        license="MIT",
+        compatibility="Python 3.10+",
+        metadata={},
+        allowed_tools=[],
+    )
+    assert _format_skill_annotations(skill) == "License: MIT, Compatibility: Python 3.10+"
+
+
+def test_format_skill_annotations_license_only() -> None:
+    """Test _format_skill_annotations with only license set."""
+    skill = SkillMetadata(
+        name="s",
+        description="d",
+        path="/p",
+        license="Apache-2.0",
+        compatibility=None,
+        metadata={},
+        allowed_tools=[],
+    )
+    assert _format_skill_annotations(skill) == "License: Apache-2.0"
+
+
+def test_format_skill_annotations_compatibility_only() -> None:
+    """Test _format_skill_annotations with only compatibility set."""
+    skill = SkillMetadata(
+        name="s",
+        description="d",
+        path="/p",
+        license=None,
+        compatibility="Requires poppler",
+        metadata={},
+        allowed_tools=[],
+    )
+    assert _format_skill_annotations(skill) == "Compatibility: Requires poppler"
+
+
+def test_format_skill_annotations_neither_field() -> None:
+    """Test _format_skill_annotations returns empty string when no fields set."""
+    skill = SkillMetadata(
+        name="s",
+        description="d",
+        path="/p",
+        license=None,
+        compatibility=None,
+        metadata={},
+        allowed_tools=[],
+    )
+    assert _format_skill_annotations(skill) == ""
+
+
+def test_validate_metadata_non_dict_returns_empty() -> None:
+    """Test _validate_metadata returns empty dict for non-dict input."""
+    result = _validate_metadata("not a dict", "/skills/s/SKILL.md")
+    assert result == {}
+
+
+def test_validate_metadata_list_returns_empty() -> None:
+    """Test _validate_metadata returns empty dict for list input."""
+    result = _validate_metadata(["a", "b"], "/skills/s/SKILL.md")
+    assert result == {}
+
+
+def test_validate_metadata_coerces_values_to_str() -> None:
+    """Test _validate_metadata coerces non-string values to strings."""
+    result = _validate_metadata({"count": 42, "active": True}, "/skills/s/SKILL.md")
+    assert result == {"count": "42", "active": "True"}
+
+
+def test_validate_metadata_valid_dict_passthrough() -> None:
+    """Test _validate_metadata passes through valid dict[str, str]."""
+    result = _validate_metadata({"author": "acme"}, "/skills/s/SKILL.md")
+    assert result == {"author": "acme"}
+
+
+def test_parse_skill_metadata_allowed_tools_yaml_list_ignored() -> None:
+    content = """---
+name: test-skill
+description: A test skill
+allowed-tools:
+  - Bash
+  - Read
+  - Write
+---
+
+Content
+"""
+
+    result = _parse_skill_metadata(content, "/skills/test-skill/SKILL.md", "test-skill")
+    assert result is not None
+    assert result["allowed_tools"] == []
+
+
+def test_parse_skill_metadata_allowed_tools_yaml_list_non_strings_ignored() -> None:
+    content = """---
+name: test-skill
+description: A test skill
+allowed-tools:
+  - Read
+  - 123
+  - true
+  -
+  - "  "
+  - Write
+---
+
+Content
+"""
+
+    result = _parse_skill_metadata(content, "/skills/test-skill/SKILL.md", "test-skill")
+    assert result is not None
+    assert result["allowed_tools"] == []
+
+
+def test_parse_skill_metadata_license_boolean_coerced() -> None:
+    """Test _parse_skill_metadata coerces non-string license to string.
+
+    YAML parses `license: true` as Python `True`. The parser should coerce it to
+    a string rather than crashing.
+    """
+    content = """---
+name: test-skill
+description: A test skill
+license: true
+---
+
+Content
+"""
+
+    result = _parse_skill_metadata(content, "/skills/test-skill/SKILL.md", "test-skill")
+    assert result is not None
+    assert result["license"] == "True"
+
+
+def test_parse_skill_metadata_non_dict_metadata_ignored() -> None:
+    """Test _parse_skill_metadata handles non-dict metadata gracefully.
+
+    YAML parses `metadata: some-text` as a string. The parser should coerce it
+    to an empty dict rather than crashing.
+    """
+    content = """---
+name: test-skill
+description: A test skill
+metadata: some-text
+---
+
+Content
+"""
+
+    result = _parse_skill_metadata(content, "/skills/test-skill/SKILL.md", "test-skill")
+    assert result is not None
+    assert result["metadata"] == {}
 
 
 def test_list_skills_from_backend_single_skill(tmp_path: Path) -> None:
@@ -531,7 +781,6 @@ def test_format_skills_list_single_skill() -> None:
     result = middleware._format_skills_list(skills)
     assert "web-research" in result
     assert "Research topics on the web" in result
-    assert "/skills/user/web-research/SKILL.md" in result
 
 
 def test_format_skills_list_multiple_skills_multiple_registries() -> None:
@@ -586,6 +835,92 @@ def test_format_skills_list_multiple_skills_multiple_registries() -> None:
     assert "User skill A" in result
     assert "Project skill B" in result
     assert "User skill C" in result
+
+
+def test_format_skills_list_with_license_and_compatibility() -> None:
+    """Test that both license and compatibility are shown in annotations."""
+    middleware = SkillsMiddleware(backend=None, sources=["/skills/"])  # type: ignore
+
+    skills: list[SkillMetadata] = [
+        {
+            "name": "my-skill",
+            "description": "Does things",
+            "path": "/skills/my-skill/SKILL.md",
+            "license": "Apache-2.0",
+            "compatibility": "Requires poppler",
+            "metadata": {},
+            "allowed_tools": [],
+        }
+    ]
+
+    result = middleware._format_skills_list(skills)
+    assert "(License: Apache-2.0, Compatibility: Requires poppler)" in result
+
+
+def test_format_skills_list_license_only() -> None:
+    """Test annotation with only license present."""
+    middleware = SkillsMiddleware(backend=None, sources=["/skills/"])  # type: ignore
+
+    skills: list[SkillMetadata] = [
+        {
+            "name": "licensed-skill",
+            "description": "A licensed skill",
+            "path": "/skills/licensed-skill/SKILL.md",
+            "license": "MIT",
+            "compatibility": None,
+            "metadata": {},
+            "allowed_tools": [],
+        }
+    ]
+
+    result = middleware._format_skills_list(skills)
+    assert "(License: MIT)" in result
+    assert "Compatibility" not in result
+
+
+def test_format_skills_list_compatibility_only() -> None:
+    """Test annotation with only compatibility present."""
+    middleware = SkillsMiddleware(backend=None, sources=["/skills/"])  # type: ignore
+
+    skills: list[SkillMetadata] = [
+        {
+            "name": "compat-skill",
+            "description": "A compatible skill",
+            "path": "/skills/compat-skill/SKILL.md",
+            "license": None,
+            "compatibility": "Python 3.10+",
+            "metadata": {},
+            "allowed_tools": [],
+        }
+    ]
+
+    result = middleware._format_skills_list(skills)
+    assert "(Compatibility: Python 3.10+)" in result
+    assert "License" not in result
+
+
+def test_format_skills_list_no_optional_fields() -> None:
+    """Test that no annotations appear when license/compatibility are empty."""
+    middleware = SkillsMiddleware(backend=None, sources=["/skills/"])  # type: ignore
+
+    skills: list[SkillMetadata] = [
+        {
+            "name": "plain-skill",
+            "description": "A plain skill",
+            "path": "/skills/plain-skill/SKILL.md",
+            "license": None,
+            "compatibility": None,
+            "metadata": {},
+            "allowed_tools": [],
+        }
+    ]
+
+    result = middleware._format_skills_list(skills)
+    # Description line should NOT have any parenthetical annotation
+    assert "- **plain-skill**: A plain skill" in result
+    assert "License" not in result
+    assert "Compatibility" not in result
+    assert "(advisory)" not in result
 
 
 def test_before_agent_loads_skills(tmp_path: Path) -> None:
@@ -751,7 +1086,7 @@ def test_skills_middleware_with_state_backend_factory() -> None:
     # This is the recommended pattern for StateBackend since it needs runtime context
     sources = ["/skills/user"]
     middleware = SkillsMiddleware(
-        backend=lambda rt: StateBackend(rt),
+        backend=StateBackend,
         sources=sources,
     )
 
@@ -763,8 +1098,8 @@ def test_skills_middleware_with_state_backend_factory() -> None:
 
     runtime = ToolRuntime(
         state={"messages": [], "files": {}},
-        context=None,
         tool_call_id="test",
+        context=None,
         store=None,
         stream_writer=lambda _: None,
         config={},
@@ -781,7 +1116,7 @@ def test_skills_middleware_with_store_backend_factory() -> None:
     # This is the recommended pattern for StoreBackend since it needs runtime context with store
     sources = ["/skills/user"]
     middleware = SkillsMiddleware(
-        backend=lambda rt: StoreBackend(rt),
+        backend=StoreBackend,
         sources=sources,
     )
 
@@ -795,8 +1130,8 @@ def test_skills_middleware_with_store_backend_factory() -> None:
     store = InMemoryStore()
     runtime = ToolRuntime(
         state={"messages": []},
-        context=None,
         tool_call_id="test",
+        context=None,
         store=store,
         stream_writer=lambda _: None,
         config={},
@@ -1115,7 +1450,7 @@ def create_store_skill_item(content: str) -> dict:
 def test_skills_middleware_with_store_backend_assistant_id() -> None:
     """Test namespace isolation: each assistant_id gets its own skills namespace."""
     middleware = SkillsMiddleware(
-        backend=lambda rt: StoreBackend(rt),
+        backend=StoreBackend,
         sources=["/skills/user"],
     )
     store = InMemoryStore()
@@ -1173,7 +1508,7 @@ def test_skills_middleware_with_store_backend_assistant_id() -> None:
 def test_skills_middleware_with_store_backend_no_assistant_id() -> None:
     """Test default namespace: when no assistant_id is provided, uses (filesystem,) namespace."""
     middleware = SkillsMiddleware(
-        backend=lambda rt: StoreBackend(rt),
+        backend=StoreBackend,
         sources=["/skills/user"],
     )
     store = InMemoryStore()
@@ -1208,7 +1543,7 @@ def test_skills_middleware_with_store_backend_no_assistant_id() -> None:
 async def test_skills_middleware_with_store_backend_assistant_id_async() -> None:
     """Test namespace isolation with async: each assistant_id gets its own skills namespace."""
     middleware = SkillsMiddleware(
-        backend=lambda rt: StoreBackend(rt),
+        backend=StoreBackend,
         sources=["/skills/user"],
     )
     store = InMemoryStore()
@@ -1261,3 +1596,234 @@ async def test_skills_middleware_with_store_backend_assistant_id_async() -> None
     assert len(result_4["skills_metadata"]) == 1
     assert result_4["skills_metadata"][0]["name"] == "async-skill-one"
     assert result_4["skills_metadata"][0]["description"] == "Async skill for assistant 1"
+
+
+# --- New tests for skill tool refactor ---
+
+
+def test_extract_skill_body_basic() -> None:
+    """Test _extract_skill_body strips frontmatter and returns body."""
+    content = """---
+name: test-skill
+description: A test skill
+---
+
+# Test Skill
+
+Instructions go here.
+"""
+    body = _extract_skill_body(content)
+    assert body == "# Test Skill\n\nInstructions go here."
+
+
+def test_extract_skill_body_no_frontmatter() -> None:
+    """Test _extract_skill_body returns content when no frontmatter."""
+    content = "# Just a heading\n\nSome content."
+    body = _extract_skill_body(content)
+    assert body == "# Just a heading\n\nSome content."
+
+
+def test_extract_skill_body_empty_body() -> None:
+    """Test _extract_skill_body with only frontmatter and no body."""
+    content = """---
+name: test
+description: test
+---
+"""
+    body = _extract_skill_body(content)
+    assert body == ""
+
+
+def test_skill_tool_inline_loads_skill(tmp_path: Path) -> None:
+    """Test skill tool returns skill body directly as a string."""
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    skills_dir = tmp_path / "skills" / "user"
+    skill_path = str(skills_dir / "test-skill" / "SKILL.md")
+    skill_content = make_skill_content("test-skill", "A test skill for inline loading")
+
+    backend.upload_files([(skill_path, skill_content.encode("utf-8"))])
+
+    middleware = SkillsMiddleware(backend=backend, sources=[str(skills_dir)])
+
+    # Get the skill tool
+    skill_tool = middleware.tools[0]
+    assert skill_tool.name == "skill"
+
+    # Create a ToolRuntime with skills_metadata in state
+    skills_metadata: list[SkillMetadata] = [
+        {
+            "name": "test-skill",
+            "description": "A test skill for inline loading",
+            "path": skill_path,
+            "metadata": {},
+            "license": None,
+            "compatibility": None,
+            "allowed_tools": [],
+        }
+    ]
+    runtime = ToolRuntime(
+        state={"messages": [], "skills_metadata": skills_metadata},
+        tool_call_id="test-call-id",
+        context=None,
+        store=None,
+        stream_writer=lambda _: None,
+        config={},
+    )
+
+    # Call the underlying function directly to bypass StructuredTool annotation handling
+    result = skill_tool.func(name="test-skill", runtime=runtime)
+
+    assert isinstance(result, str)
+    assert '<skill name="test-skill">' in result
+    assert "# Test-Skill Skill" in result
+    assert "</skill>" in result
+
+
+def test_skill_tool_not_found(tmp_path: Path) -> None:
+    """Test skill tool returns error message when skill is not found."""
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    skills_dir = tmp_path / "skills" / "user"
+    skills_dir.mkdir(parents=True)
+
+    middleware = SkillsMiddleware(backend=backend, sources=[str(skills_dir)])
+
+    skill_tool = middleware.tools[0]
+
+    runtime = ToolRuntime(
+        state={"messages": [], "skills_metadata": []},
+        tool_call_id="test-call-id",
+        context=None,
+        store=None,
+        stream_writer=lambda _: None,
+        config={},
+    )
+
+    result = skill_tool.func(name="nonexistent", runtime=runtime)
+
+    assert isinstance(result, str)
+    assert "not found" in result
+
+
+def test_modify_request_injects_skills_system_prompt() -> None:
+    """Test that modify_request injects skills system section into the system prompt."""
+    middleware = SkillsMiddleware(backend=None, sources=["/skills/"])  # type: ignore
+
+    state = {
+        "skills_metadata": [
+            {
+                "name": "test-skill",
+                "description": "A test skill",
+                "path": "/skills/test-skill/SKILL.md",
+                "metadata": {},
+                "license": None,
+                "compatibility": None,
+                "allowed_tools": [],
+            }
+        ],
+    }
+
+    fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="test")]))
+    request = ModelRequest(
+        messages=[HumanMessage(content="Hello")],
+        system_message=SystemMessage(content="Base prompt"),
+        state=state,
+        tools=[],
+        model=fake_model,
+    )
+
+    modified = middleware.modify_request(request)
+
+    system_text = modified.system_message.text
+    assert "Skills System" in system_text
+    assert "test-skill" in system_text
+    assert "A test skill" in system_text
+    # loaded_skills no longer injected into system prompt
+    assert "Active Skills" not in system_text
+
+
+def test_format_skills_list_no_read_file_reference() -> None:
+    """Test that _format_skills_list no longer references read_file."""
+    middleware = SkillsMiddleware(backend=None, sources=["/skills/"])  # type: ignore
+
+    skills: list[SkillMetadata] = [
+        {
+            "name": "test-skill",
+            "description": "A test skill",
+            "path": "/skills/test-skill/SKILL.md",
+            "license": None,
+            "compatibility": None,
+            "metadata": {},
+            "allowed_tools": [],
+        }
+    ]
+
+    result = middleware._format_skills_list(skills)
+    assert "read_file" not in result.lower()
+    assert "Read" not in result
+    assert "SKILL.md" not in result
+
+
+def test_skills_middleware_has_skill_tool() -> None:
+    """Test that SkillsMiddleware creates a skill tool."""
+    middleware = SkillsMiddleware(backend=None, sources=["/skills/"])  # type: ignore
+
+    assert len(middleware.tools) == 1
+    assert middleware.tools[0].name == "skill"
+
+
+def test_skill_tool_loads_large_skill_fully(tmp_path: Path) -> None:
+    """Test that a large skill (> 100 lines) is fully loaded without truncation."""
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    skills_dir = tmp_path / "skills" / "user"
+    skill_path = str(skills_dir / "large-skill" / "SKILL.md")
+
+    # Generate a skill body with 200 lines
+    body_lines = [f"Step {i}: Do something important for line {i}." for i in range(1, 201)]
+    body = "\n".join(body_lines)
+    skill_content = f"""---
+name: large-skill
+description: A large skill with many lines
+---
+
+# Large Skill
+
+{body}
+"""
+
+    backend.upload_files([(skill_path, skill_content.encode("utf-8"))])
+
+    middleware = SkillsMiddleware(backend=backend, sources=[str(skills_dir)])
+    skill_tool = middleware.tools[0]
+
+    skills_metadata: list[SkillMetadata] = [
+        {
+            "name": "large-skill",
+            "description": "A large skill with many lines",
+            "path": skill_path,
+            "metadata": {},
+            "license": None,
+            "compatibility": None,
+            "allowed_tools": [],
+        }
+    ]
+    runtime = ToolRuntime(
+        state={"messages": [], "skills_metadata": skills_metadata},
+        tool_call_id="test-call-id",
+        context=None,
+        store=None,
+        stream_writer=lambda _: None,
+        config={},
+    )
+
+    result = skill_tool.func(name="large-skill", runtime=runtime)
+
+    assert isinstance(result, str)
+    assert '<skill name="large-skill">' in result
+    assert "</skill>" in result
+    # Verify the entire body is present — first, last, and a middle line
+    assert "Step 1: Do something important for line 1." in result
+    assert "Step 100: Do something important for line 100." in result
+    assert "Step 200: Do something important for line 200." in result
+    # Count the step lines to confirm no truncation
+    step_lines = [line for line in result.splitlines() if line.startswith("Step ")]
+    assert len(step_lines) == 200

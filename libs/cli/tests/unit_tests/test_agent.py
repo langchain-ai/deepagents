@@ -10,15 +10,18 @@ if TYPE_CHECKING:
     from langgraph.runtime import Runtime
 
 from deepagents_cli.agent import (
+    DEFAULT_AGENT_NAME,
     _format_edit_file_description,
     _format_execute_description,
     _format_fetch_url_description,
     _format_task_description,
     _format_web_search_description,
     _format_write_file_description,
+    create_cli_agent,
     get_system_prompt,
+    list_agents,
 )
-from deepagents_cli.config import get_glyphs
+from deepagents_cli.config import Settings, get_glyphs
 
 
 def test_format_write_file_description_create_new_file(tmp_path: Path) -> None:
@@ -356,3 +359,151 @@ class TestGetSystemPromptModelIdentity:
         assert "You are running as model `test-model`." in prompt
         assert "(provider:" not in prompt
         assert "context window" not in prompt
+
+
+class TestDefaultAgentName:
+    """Tests for the DEFAULT_AGENT_NAME constant."""
+
+    def test_default_agent_name_value(self) -> None:
+        """Guard against accidental renames of the default agent identifier.
+
+        Other modules (main.py, commands.py) rely on this value matching
+        the directory name under `~/.deepagents/`.
+        """
+        assert DEFAULT_AGENT_NAME == "agent"
+
+
+class TestListAgents:
+    """Tests for list_agents output."""
+
+    def test_default_agent_marked(self, tmp_path: Path) -> None:
+        """Test that the default agent is labeled as (default) in list output."""
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+
+        # Create the default agent directory with AGENTS.md
+        default_dir = agents_dir / DEFAULT_AGENT_NAME
+        default_dir.mkdir()
+        (default_dir / "AGENTS.md").touch()
+
+        # Create a non-default agent
+        other_dir = agents_dir / "researcher"
+        other_dir.mkdir()
+        (other_dir / "AGENTS.md").touch()
+
+        mock_settings = Mock()
+        mock_settings.user_deepagents_dir = agents_dir
+
+        output: list[str] = []
+
+        def capture_print(*args: Any, **_: Any) -> None:
+            output.append(" ".join(str(a) for a in args))
+
+        with (
+            patch("deepagents_cli.agent.settings", mock_settings),
+            patch("deepagents_cli.agent.console") as mock_console,
+        ):
+            mock_console.print = capture_print
+            list_agents()
+
+        joined = "\n".join(output)
+        assert "(default)" in joined
+        # Only the default agent should be marked
+        assert joined.count("(default)") == 1
+        # The default agent name should appear with the (default) label
+        assert DEFAULT_AGENT_NAME in joined
+        # The other agent should NOT be marked as default
+        for line in output:
+            if "researcher" in line and "(default)" in line:
+                msg = "Non-default agent should not be marked as (default)"
+                raise AssertionError(msg)
+
+    def test_non_default_agent_not_marked(self, tmp_path: Path) -> None:
+        """Test that non-default agents are not labeled as (default)."""
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+
+        # Only create a non-default agent
+        custom_dir = agents_dir / "researcher"
+        custom_dir.mkdir()
+        (custom_dir / "AGENTS.md").touch()
+
+        mock_settings = Mock()
+        mock_settings.user_deepagents_dir = agents_dir
+
+        output: list[str] = []
+
+        def capture_print(*args: Any, **_: Any) -> None:
+            output.append(" ".join(str(a) for a in args))
+
+        with (
+            patch("deepagents_cli.agent.settings", mock_settings),
+            patch("deepagents_cli.agent.console") as mock_console,
+        ):
+            mock_console.print = capture_print
+            list_agents()
+
+        joined = "\n".join(output)
+        assert "(default)" not in joined
+
+
+class TestCreateCliAgentSkillsSources:
+    """Test that `create_cli_agent` wires built-in skills as first source."""
+
+    def test_built_in_dir_is_first_source(self, tmp_path: Path) -> None:
+        """Built-in skills dir should be the first (lowest-precedence) source.
+
+        SkillsMiddleware uses last-one-wins dedup, so first = lowest precedence.
+        """
+        agent_dir = tmp_path / "agent"
+        agent_dir.mkdir()
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        built_in_dir = Settings.get_built_in_skills_dir()
+
+        mock_settings = Mock()
+        mock_settings.ensure_agent_dir.return_value = agent_dir
+        mock_settings.ensure_user_skills_dir.return_value = skills_dir
+        mock_settings.get_project_skills_dir.return_value = None
+        mock_settings.get_built_in_skills_dir.return_value = built_in_dir
+        mock_settings.get_user_agent_md_path.return_value = agent_dir / "AGENTS.md"
+        mock_settings.get_project_agent_md_path.return_value = None
+        mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
+        mock_settings.get_project_agents_dir.return_value = None
+        # Needed by get_system_prompt() which formats model identity
+        mock_settings.model_name = None
+        mock_settings.model_provider = None
+        mock_settings.model_context_limit = None
+        mock_settings.project_root = None
+
+        captured_sources: list[list[str]] = []
+
+        class FakeSkillsMiddleware:
+            """Capture the sources arg passed to SkillsMiddleware."""
+
+            def __init__(self, **kwargs: Any) -> None:
+                captured_sources.append(kwargs.get("sources", []))
+
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+
+        with (
+            patch("deepagents_cli.agent.settings", mock_settings),
+            patch("deepagents_cli.agent.SkillsMiddleware", FakeSkillsMiddleware),
+            patch("deepagents_cli.agent.MemoryMiddleware"),
+            patch("deepagents_cli.agent.create_deep_agent", return_value=mock_agent),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=False,
+                enable_skills=True,
+                enable_shell=False,
+            )
+
+        assert len(captured_sources) == 1
+        sources = captured_sources[0]
+        # Built-in dir should be the first source
+        assert sources[0] == str(built_in_dir)
+        # User skills dir should follow
+        assert sources[1] == str(skills_dir)

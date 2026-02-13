@@ -40,10 +40,19 @@ logger = logging.getLogger(__name__)
 # Outputs markdown describing the current working environment.  Each section
 # is guarded by command-existence checks so missing tools (git, python3,
 # node, tree) are silently skipped.
+#
+# The script is built from section functions so each piece can be tested
+# independently.
 # ---------------------------------------------------------------------------
 
-DETECT_CONTEXT_SCRIPT = r"""bash <<'__DETECT_CONTEXT_EOF__'
-CWD="$(pwd)"
+
+def _section_header() -> str:
+    """CWD line and IN_GIT flag (used by other sections).
+
+    Returns:
+        Bash snippet that prints the header and sets ``CWD`` / ``IN_GIT``.
+    """
+    return r"""CWD="$(pwd)"
 echo "## Local Context"
 echo ""
 echo "**Current Directory**: \`${CWD}\`"
@@ -54,9 +63,16 @@ IN_GIT=false
 if command -v git >/dev/null 2>&1 \
     && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   IN_GIT=true
-fi
+fi"""
 
-# --- Project ---
+
+def _section_project() -> str:
+    """Language, monorepo, git root, virtual-env detection.
+
+    Returns:
+        Bash snippet (requires ``CWD`` / ``IN_GIT`` from header).
+    """
+    return r"""# --- Project ---
 LANG=""
 [ -f pyproject.toml ] || [ -f setup.py ] && LANG="python"
 [ -z "$LANG" ] && [ -f package.json ] && LANG="javascript/typescript"
@@ -87,9 +103,16 @@ if $HAS_PROJECT; then
   $MONOREPO && echo "- Monorepo: yes"
   [ -n "$ENVS" ] && echo "- Environments: ${ENVS}"
   echo ""
-fi
+fi"""
 
-# --- Package managers ---
+
+def _section_package_managers() -> str:
+    """Python and Node package manager detection.
+
+    Returns:
+        Bash snippet (standalone).
+    """
+    return r"""# --- Package managers ---
 PKG=""
 if [ -f uv.lock ]; then PKG="Python: uv"
 elif [ -f poetry.lock ]; then PKG="Python: poetry"
@@ -110,8 +133,16 @@ elif [ -f package-lock.json ] || [ -f package.json ]; then NODE_PKG="Node: npm"
 fi
 [ -n "$NODE_PKG" ] && PKG="${PKG:+${PKG}, }${NODE_PKG}"
 [ -n "$PKG" ] && echo "**Package Manager**: ${PKG}" && echo ""
+"""
 
-# --- Runtimes ---
+
+def _section_runtimes() -> str:
+    """Python and Node runtime version detection.
+
+    Returns:
+        Bash snippet (standalone).
+    """
+    return r"""# --- Runtimes ---
 RT=""
 if command -v python3 >/dev/null 2>&1; then
   PV="$(python3 --version 2>/dev/null | awk '{print $2}')"
@@ -122,8 +153,16 @@ if command -v node >/dev/null 2>&1; then
   [ -n "$NV" ] && RT="${RT:+${RT}, }Node ${NV}"
 fi
 [ -n "$RT" ] && echo "**Runtimes**: ${RT}" && echo ""
+"""
 
-# --- Git ---
+
+def _section_git() -> str:
+    """Git branch, main branches, uncommitted changes.
+
+    Returns:
+        Bash snippet (requires ``IN_GIT`` from header).
+    """
+    return r"""# --- Git ---
 if $IN_GIT; then
   BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"
   GT="**Git**: Current branch \`${BRANCH}\`"
@@ -146,9 +185,16 @@ if $IN_GIT; then
 
   echo "$GT"
   echo ""
-fi
+fi"""
 
-# --- Test command ---
+
+def _section_test_command() -> str:
+    """Test command detection (make test / pytest / npm test).
+
+    Returns:
+        Bash snippet (standalone).
+    """
+    return r"""# --- Test command ---
 TC=""
 if [ -f Makefile ] && grep -qE '^tests?:' Makefile 2>/dev/null; then TC="make test"
 elif [ -f pyproject.toml ]; then
@@ -161,8 +207,16 @@ elif [ -f package.json ] \
   TC="npm test"
 fi
 [ -n "$TC" ] && echo "**Run Tests**: \`${TC}\`" && echo ""
+"""
 
-# --- Files ---
+
+def _section_files() -> str:
+    """Directory listing (filtered, capped at 20).
+
+    Returns:
+        Bash snippet (standalone).
+    """
+    return r"""# --- Files ---
 EXCL='node_modules|__pycache__|\.pytest_cache'
 EXCL="${EXCL}|\.mypy_cache|\.ruff_cache|\.tox"
 EXCL="${EXCL}|\.coverage|\.eggs|dist|build"
@@ -183,9 +237,16 @@ if [ -n "$FILES" ]; then
   done
   [ "$SHOWN" -lt "$TOTAL" ] && echo "... ($((TOTAL - SHOWN)) more files)"
   echo ""
-fi
+fi"""
 
-# --- Tree ---
+
+def _section_tree() -> str:
+    """``tree -L 3`` output.
+
+    Returns:
+        Bash snippet (standalone).
+    """
+    return r"""# --- Tree ---
 if command -v tree >/dev/null 2>&1; then
   TREE_EXCL='node_modules|.venv|__pycache__|.pytest_cache'
   TREE_EXCL="${TREE_EXCL}|.git|.mypy_cache|.ruff_cache"
@@ -199,9 +260,16 @@ if command -v tree >/dev/null 2>&1; then
     echo '```'
     echo ""
   fi
-fi
+fi"""
 
-# --- Makefile ---
+
+def _section_makefile() -> str:
+    """First 20 lines of Makefile.
+
+    Returns:
+        Bash snippet (standalone).
+    """
+    return r"""# --- Makefile ---
 if [ -f Makefile ]; then
   echo "**Makefile** (first 20 lines):"
   echo '```makefile'
@@ -209,9 +277,31 @@ if [ -f Makefile ]; then
   TL=$(wc -l < Makefile | tr -d ' ')
   [ "$TL" -gt 20 ] && echo "... (truncated)"
   echo '```'
-fi
-__DETECT_CONTEXT_EOF__
-"""
+fi"""
+
+
+def build_detect_script() -> str:
+    """Concatenate all section functions into the full detection script.
+
+    Returns:
+        Complete bash heredoc ready for ``backend.execute()``.
+    """
+    sections = [
+        _section_header(),
+        _section_project(),
+        _section_package_managers(),
+        _section_runtimes(),
+        _section_git(),
+        _section_test_command(),
+        _section_files(),
+        _section_tree(),
+        _section_makefile(),
+    ]
+    body = "\n".join(sections)
+    return f"bash <<'__DETECT_CONTEXT_EOF__'\n{body}\n__DETECT_CONTEXT_EOF__\n"
+
+
+DETECT_CONTEXT_SCRIPT = build_detect_script()
 
 # ---------------------------------------------------------------------------
 # State schema
@@ -317,4 +407,8 @@ class LocalContextMiddleware(AgentMiddleware):
         return await handler(modified_request or request)
 
 
-__all__ = ["LocalContextMiddleware"]
+__all__ = [
+    "DETECT_CONTEXT_SCRIPT",
+    "LocalContextMiddleware",
+    "build_detect_script",
+]

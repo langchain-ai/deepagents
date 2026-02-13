@@ -1186,3 +1186,35 @@ class TestDeepAgentEndToEnd:
             f"Expected <= {max_reasonable_chars:,} chars (TOOL_RESULT_TOKEN_LIMIT * 4). "
             f"A single-line file should not cause token overflow."
         )
+
+
+class TestDeepAgentStructure:
+    """Test basic deep agent structure without making network calls."""
+
+    def test_base_deep_agent(self):
+        """Verifies that a basic deep agent can be created with default settings."""
+        agent = create_deep_agent()
+        assert_all_deepagent_qualities(agent)
+
+    def test_deep_agent_with_tool(self):
+        """Verifies that a deep agent can be created with tools and the tools are properly bound."""
+        agent = create_deep_agent(tools=[sample_tool])
+        assert_all_deepagent_qualities(agent)
+        assert "sample_tool" in agent.nodes["tools"].bound._tools_by_name.keys()
+
+    def test_deep_agent_with_middleware_with_tool(self):
+        """Verifies that middleware can inject tools into a deep agent."""
+        from tests.utils import SampleMiddlewareWithTools
+
+        agent = create_deep_agent(middleware=[SampleMiddlewareWithTools()])
+        assert_all_deepagent_qualities(agent)
+        assert "sample_tool" in agent.nodes["tools"].bound._tools_by_name.keys()
+
+    def test_deep_agent_with_middleware_with_tool_and_state(self):
+        """Verifies that middleware can inject both tools and extended state channels."""
+        from tests.utils import SampleMiddlewareWithToolsAndState
+
+        agent = create_deep_agent(middleware=[SampleMiddlewareWithToolsAndState()])
+        assert_all_deepagent_qualities(agent)
+        assert "sample_tool" in agent.nodes["tools"].bound._tools_by_name.keys()
+        assert "sample_input" in agent.stream_channels

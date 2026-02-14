@@ -462,7 +462,6 @@ class AgentServerACP(ACPAgent):
 
         current_state = None
         user_decisions = []
-        handled_interrupts_in_stream = False
 
         while current_state is None or current_state.interrupts:
             # Check for cancellation
@@ -470,7 +469,6 @@ class AgentServerACP(ACPAgent):
                 self._cancelled = False  # Reset for next prompt
                 return PromptResponse(stop_reason="cancelled")
 
-            handled_interrupts_in_stream = False
             async for stream_chunk in self._agent.astream(
                 Command(resume={"decisions": user_decisions})
                 if user_decisions
@@ -519,7 +517,6 @@ class AgentServerACP(ACPAgent):
                                 current_state=current_state,
                                 session_id=session_id,
                             )
-                            handled_interrupts_in_stream = True
                             break
 
                     for node_name, update in updates.items():
@@ -590,14 +587,12 @@ class AgentServerACP(ACPAgent):
                     if text and not _namespace:
                         await self._log_text(text=text, session_id=session_id)
 
-            # Check if the agent is interrupted (waiting for HITL approval)
-            # Only check if we didn't already handle interrupts during streaming
-            if not handled_interrupts_in_stream:
-                current_state = await self._agent.aget_state(config)
-                user_decisions = await self._handle_interrupts(
-                    current_state=current_state,
-                    session_id=session_id,
-                )
+            # After streaming completes, check if we need to exit the loop
+            # The loop continues while there are interrupts (line 467)
+            # We get the current state to check the loop condition
+            current_state = await self._agent.aget_state(config)
+            # Note: Interrupts are handled during streaming via __interrupt__ updates
+            # This state check is only for the while loop condition
 
         return PromptResponse(stop_reason="end_turn")
 

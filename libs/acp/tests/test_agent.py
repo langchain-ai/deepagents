@@ -895,9 +895,11 @@ async def test_reset_agent_preserves_session_cwd() -> None:
 async def test_acp_agent_hitl_requests_permission_only_once() -> None:
     """Test that tools requiring approval only prompt the user once, not twice.
 
-    This is a regression test for a bug where _handle_interrupts was called twice:
-    once during streaming when an interrupt was detected, and once after the stream
-    ended. This caused users to be prompted twice for the same tool call.
+    This is a regression test for a bug where _handle_interrupts was called twice
+    for the same interrupt: once during streaming when an __interrupt__ update was
+    detected (line ~515), and again after the stream ended (line ~593). The fix
+    removes the redundant post-stream call since all interrupts are properly handled
+    during streaming via __interrupt__ updates.
     """
     model = GenericFakeChatModel(
         messages=iter(

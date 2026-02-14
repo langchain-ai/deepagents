@@ -12,6 +12,7 @@ from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, StateBackend
 from deepagents_cli.backends import CLIShellBackend, patch_filesystem_middleware
 from deepagents_cli.config import settings
+from deepagents_cli.local_context import LocalContextMiddleware
 from dotenv import load_dotenv
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph.state import Checkpointer, CompiledStateGraph
@@ -77,6 +78,7 @@ async def _serve_example_agent() -> None:
             checkpointer=checkpointer,
             backend=create_backend,
             interrupt_on=interrupt_config,
+            middleware=[LocalContextMiddleware()],
         )
 
     modes = SessionModeState(

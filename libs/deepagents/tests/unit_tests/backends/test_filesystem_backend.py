@@ -1,3 +1,4 @@
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -521,3 +522,269 @@ def test_grep_literal_search_with_special_chars(tmp_path: Path, pattern: str, ex
     matches = be.grep_raw(pattern, path="/")
     assert isinstance(matches, list)
     assert any(expected_file in m["path"] for m in matches), f"Pattern '{pattern}' not found in {expected_file}"
+
+
+def test_gitignore_basic_patterns(tmp_path: Path):
+    """Test basic .gitignore pattern matching."""
+    root = tmp_path
+    (root / ".git").mkdir()  # Mark as git repo
+
+    # Create test files
+    write_file(root / "file1.py", "code")
+    write_file(root / "file2.pyc", "bytecode")
+    write_file(root / "test.txt", "text")
+    write_file(root / "node_modules" / "package.py", "package")
+    write_file(root / "build" / "output.py", "output")
+
+    # Create .gitignore
+    (root / ".gitignore").write_text("*.pyc\nnode_modules/\nbuild/\n")
+
+    be = FilesystemBackend(root_dir=str(root), virtual_mode=True, respect_gitignore=True)
+
+    # Test glob with gitignore enabled
+    results = be.glob_info("**/*.py", path="/")
+    paths = [r["path"] for r in results]
+
+    assert "/file1.py" in paths
+    assert "/file2.pyc" not in paths  # Ignored by *.pyc pattern
+    assert not any("node_modules" in p for p in paths)  # Ignored directory
+    assert not any("build" in p for p in paths)  # Ignored directory
+
+
+def test_gitignore_disabled(tmp_path: Path):
+    """Test that gitignore can be disabled."""
+    root = tmp_path
+    (root / ".git").mkdir()
+
+    write_file(root / "file1.py", "code")
+    write_file(root / "file2.pyc", "bytecode")
+    write_file(root / "build" / "output.py", "output")
+
+    (root / ".gitignore").write_text("*.pyc\nbuild/\n")
+
+    # With respect_gitignore=False, should see all files
+    be = FilesystemBackend(root_dir=str(root), virtual_mode=True, respect_gitignore=False)
+    results = be.glob_info("**/*", path="/")
+    paths = [r["path"] for r in results]
+
+    assert "/file1.py" in paths
+    assert "/file2.pyc" in paths  # Should be included
+    assert any("build" in p for p in paths)  # Should be included
+
+
+def test_gitignore_no_git_repo(tmp_path: Path):
+    """Test that gitignore is not applied if not in a git repo."""
+    root = tmp_path
+    # No .git directory
+
+    write_file(root / "file1.py", "code")
+    write_file(root / "file2.pyc", "bytecode")
+
+    # Even with gitignore file, it shouldn't be applied without .git
+    (root / ".gitignore").write_text("*.pyc\n")
+
+    be = FilesystemBackend(root_dir=str(root), virtual_mode=True, respect_gitignore=True)
+    results = be.glob_info("**/*", path="/")
+    paths = [r["path"] for r in results]
+
+    # Should see all files since not in a git repo
+    assert "/file1.py" in paths
+    assert "/file2.pyc" in paths
+
+
+def test_gitignore_hierarchical(tmp_path: Path):
+    """Test hierarchical .gitignore files with precedence."""
+    root = tmp_path
+    (root / ".git").mkdir()
+
+    # Create files
+    write_file(root / "file1.txt", "root")
+    write_file(root / "file2.log", "log")
+    write_file(root / "subdir" / "file3.txt", "sub")
+    write_file(root / "subdir" / "file4.log", "log")
+    write_file(root / "subdir" / "nested.pyc", "pyc")
+
+    # Root .gitignore ignores .log files
+    (root / ".gitignore").write_text("*.log\n")
+
+    # Subdirectory .gitignore adds *.pyc pattern
+    (root / "subdir" / ".gitignore").write_text("*.pyc\n")
+
+    be = FilesystemBackend(root_dir=str(root), virtual_mode=True, respect_gitignore=True)
+    results = be.glob_info("**/*", path="/")
+    paths = [r["path"] for r in results]
+
+    assert "/file1.txt" in paths
+    assert "/file2.log" not in paths  # Ignored by root .gitignore
+    assert "/subdir/file3.txt" in paths
+    assert "/subdir/file4.log" not in paths  # Ignored by root .gitignore (inherited)
+    assert "/subdir/nested.pyc" not in paths  # Ignored by subdir .gitignore
+
+
+def test_gitignore_negation_patterns(tmp_path: Path):
+    """Test negation patterns with !."""
+    root = tmp_path
+    (root / ".git").mkdir()
+
+    write_file(root / "file1.log", "log1")
+    write_file(root / "file2.log", "log2")
+    write_file(root / "important.log", "important")
+
+    # Ignore all logs except important.log
+    (root / ".gitignore").write_text("*.log\n!important.log\n")
+
+    be = FilesystemBackend(root_dir=str(root), virtual_mode=True, respect_gitignore=True)
+    results = be.glob_info("**/*.log", path="/")
+    paths = [r["path"] for r in results]
+
+    assert "/file1.log" not in paths
+    assert "/file2.log" not in paths
+    assert "/important.log" in paths  # Un-ignored
+
+
+def test_gitignore_comments_and_empty_lines(tmp_path: Path):
+    """Test that comments and empty lines are ignored."""
+    root = tmp_path
+    (root / ".git").mkdir()
+
+    write_file(root / "file1.py", "code")
+    write_file(root / "file2.pyc", "bytecode")
+    write_file(root / "test.txt", "text")
+
+    # .gitignore with comments and empty lines
+    gitignore_content = """
+# This is a comment
+*.pyc
+
+# Another comment
+test.txt
+"""
+    (root / ".gitignore").write_text(gitignore_content)
+
+    be = FilesystemBackend(root_dir=str(root), virtual_mode=True, respect_gitignore=True)
+    results = be.glob_info("**/*", path="/")
+    paths = [r["path"] for r in results]
+
+    assert "/file1.py" in paths
+    assert "/file2.pyc" not in paths
+    assert "/test.txt" not in paths
+
+
+def test_gitignore_directory_patterns(tmp_path: Path):
+    """Test directory-specific patterns (ending with /)."""
+    root = tmp_path
+    (root / ".git").mkdir()
+
+    write_file(root / "build" / "file.py", "build file")
+    write_file(root / "build.py", "build.py file")
+    write_file(root / "dist" / "output.txt", "dist")
+
+    # Ignore build/ directory but not build.py file
+    (root / ".gitignore").write_text("build/\ndist/\n")
+
+    be = FilesystemBackend(root_dir=str(root), virtual_mode=True, respect_gitignore=True)
+    results = be.glob_info("**/*", path="/")
+    paths = [r["path"] for r in results]
+
+    assert "/build.py" in paths  # File is not ignored
+    assert not any("build/" in p or p.startswith("/build/") for p in paths)  # Directory is ignored
+    assert not any("dist" in p for p in paths)
+
+
+def test_gitignore_glob_patterns(tmp_path: Path):
+    """Test glob patterns like **/*.log."""
+    root = tmp_path
+    (root / ".git").mkdir()
+
+    write_file(root / "file.txt", "text")
+    write_file(root / "debug.log", "log")
+    write_file(root / "subdir" / "nested.log", "log")
+    write_file(root / "subdir" / "deep" / "error.log", "log")
+
+    # Ignore all .log files recursively
+    (root / ".gitignore").write_text("**/*.log\n")
+
+    be = FilesystemBackend(root_dir=str(root), virtual_mode=True, respect_gitignore=True)
+    results = be.glob_info("**/*", path="/")
+    paths = [r["path"] for r in results]
+
+    assert "/file.txt" in paths
+    assert "/debug.log" not in paths
+    assert "/subdir/nested.log" not in paths
+    assert "/subdir/deep/error.log" not in paths
+
+
+def test_gitignore_lazy_loading(tmp_path: Path):
+    """Test that .gitignore files are loaded lazily and cached."""
+    root = tmp_path
+    (root / ".git").mkdir()
+
+    write_file(root / "file1.py", "code")
+    write_file(root / "subdir" / "file2.py", "code")
+
+    (root / ".gitignore").write_text("*.pyc\n")
+    (root / "subdir" / ".gitignore").write_text("*.log\n")
+
+    be = FilesystemBackend(root_dir=str(root), virtual_mode=True, respect_gitignore=True)
+
+    # Cache should be empty initially
+    assert len(be._gitignore_cache) == 0
+
+    # Check first file - should load root .gitignore
+    file1_path = root / "file1.py"
+    is_ignored_1 = be._is_ignored(file1_path)
+    assert not is_ignored_1
+    assert root in be._gitignore_cache
+
+    # Check second file - should load subdir .gitignore too
+    file2_path = root / "subdir" / "file2.py"
+    is_ignored_2 = be._is_ignored(file2_path)
+    assert not is_ignored_2
+    assert root / "subdir" in be._gitignore_cache
+
+    # Cache should now have both directories
+    assert len(be._gitignore_cache) == 2
+
+
+def test_find_git_root(tmp_path: Path):
+    """Test _find_git_root method."""
+    root = tmp_path
+    (root / ".git").mkdir()
+    subdir = root / "subdir" / "nested"
+    subdir.mkdir(parents=True)
+
+    # From subdirectory, should find root
+    be = FilesystemBackend(root_dir=str(subdir), virtual_mode=True, respect_gitignore=True)
+    assert be._git_root == root
+
+    # Without .git, should return None (use a completely separate temp directory)
+    with tempfile.TemporaryDirectory() as no_git_tmpdir:
+        no_git_root = Path(no_git_tmpdir)
+        be_no_git = FilesystemBackend(root_dir=str(no_git_root), virtual_mode=True, respect_gitignore=True)
+        assert be_no_git._git_root is None
+
+
+def test_load_gitignore_for_dir(tmp_path: Path):
+    """Test _load_gitignore_for_dir method."""
+    root = tmp_path
+    (root / ".git").mkdir()
+
+    # No .gitignore
+    be = FilesystemBackend(root_dir=str(root), virtual_mode=True, respect_gitignore=True)
+    patterns = be._load_gitignore_for_dir(root)
+    assert patterns == []
+    assert len(be._gitignore_cache) == 1  # Empty result is cached
+
+    # Create a new backend instance for the next test
+    (root / ".gitignore").write_text("*.pyc\n# comment\n\n*.log\n")
+    be2 = FilesystemBackend(root_dir=str(root), virtual_mode=True, respect_gitignore=True)
+    patterns = be2._load_gitignore_for_dir(root)
+    assert "*.pyc" in patterns
+    assert "*.log" in patterns
+    assert "# comment" not in patterns  # Comments filtered out
+    assert "" not in patterns  # Empty lines filtered out
+
+    # Test caching
+    patterns_again = be2._load_gitignore_for_dir(root)
+    assert patterns == patterns_again
+    assert len(be2._gitignore_cache) == 1

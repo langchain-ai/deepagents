@@ -64,6 +64,7 @@ async def _serve_example_agent() -> None:
                 root_dir=_root_dir,
                 inherit_env=True,
                 env=shell_env,
+                respect_gitignore=True,
             )
             patch_filesystem_middleware()
             return CompositeBackend(

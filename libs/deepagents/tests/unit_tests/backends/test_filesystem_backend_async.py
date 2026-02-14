@@ -516,3 +516,30 @@ async def test_filesystem_aglob_recursive(tmp_path: Path):
     assert any("helper.py" in p for p in py_files)
     assert any("test_main.py" in p for p in py_files)
     assert not any("readme.txt" in p for p in py_files)
+
+
+async def test_async_gitignore_basic_patterns(tmp_path: Path):
+    """Test that aglob_info respects .gitignore patterns."""
+    root = tmp_path
+    (root / ".git").mkdir()  # Mark as git repo
+
+    # Create test files
+    write_file(root / "file1.py", "code")
+    write_file(root / "file2.pyc", "bytecode")
+    write_file(root / "test.txt", "text")
+    write_file(root / "node_modules" / "package.py", "package")
+    write_file(root / "build" / "output.py", "output")
+
+    # Create .gitignore
+    (root / ".gitignore").write_text("*.pyc\nnode_modules/\nbuild/\n")
+
+    be = FilesystemBackend(root_dir=str(root), virtual_mode=True, respect_gitignore=True)
+
+    # Test async glob with gitignore enabled
+    results = await be.aglob_info("**/*.py", path="/")
+    paths = [r["path"] for r in results]
+
+    assert "/file1.py" in paths
+    assert "/file2.pyc" not in paths  # Ignored by *.pyc pattern
+    assert not any("node_modules" in p for p in paths)  # Ignored directory
+    assert not any("build" in p for p in paths)  # Ignored directory

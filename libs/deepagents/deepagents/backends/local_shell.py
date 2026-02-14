@@ -105,6 +105,7 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
         max_output_bytes: int = 100_000,
         env: dict[str, str] | None = None,
         inherit_env: bool = False,
+        respect_gitignore: bool = False,
     ) -> None:
         """Initialize local shell backend with filesystem access.
 
@@ -147,12 +148,17 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
             inherit_env: Whether to inherit the parent process's environment variables.
                 When False (default), only variables in `env` dict are available.
                 When True, inherits all `os.environ` variables and applies `env` overrides.
+
+            respect_gitignore: Whether to respect .gitignore patterns when globbing.
+                When True, the glob_info method will exclude files matching .gitignore patterns.
+                Only applies within git repositories. Defaults to False.
         """
         # Initialize parent FilesystemBackend
         super().__init__(
             root_dir=root_dir,
             virtual_mode=virtual_mode,
             max_file_size_mb=10,
+            respect_gitignore=respect_gitignore,
         )
 
         # Store execution parameters

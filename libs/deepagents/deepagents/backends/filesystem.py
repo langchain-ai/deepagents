@@ -71,6 +71,7 @@ class FilesystemBackend(BackendProtocol):
         root_dir: str | Path | None = None,
         virtual_mode: bool = False,
         max_file_size_mb: int = 10,
+        respect_gitignore: bool = False,
     ) -> None:
         """Initialize filesystem backend.
 
@@ -104,10 +105,173 @@ class FilesystemBackend(BackendProtocol):
                 grep's Python fallback search.
 
                 Files exceeding this limit are skipped during search. Defaults to 10 MB.
+
+            respect_gitignore: Whether to respect .gitignore patterns when globbing.
+
+                When `True`, the glob_info method will exclude files and directories
+                that match patterns in .gitignore files. Only applies within git
+                repositories (requires a .git directory).
+
+                When `False` (default), all files matching the glob pattern will be
+                returned regardless of .gitignore patterns.
         """
         self.cwd = Path(root_dir).resolve() if root_dir else Path.cwd()
         self.virtual_mode = virtual_mode
         self.max_file_size_bytes = max_file_size_mb * 1024 * 1024
+        self.respect_gitignore = respect_gitignore
+        self._git_root = self._find_git_root() if respect_gitignore else None
+        # Cache for loaded gitignore patterns by directory
+        self._gitignore_cache: dict[Path, list[str]] = {}
+
+    def _find_git_root(self) -> Path | None:
+        """Find the root of the git repository.
+
+        Returns:
+            Path to the git root directory, or None if not in a git repo.
+        """
+        current = self.cwd
+        while True:
+            if (current / ".git").exists():
+                return current
+            parent = current.parent
+            if parent == current:
+                # Reached filesystem root without finding .git
+                return None
+            current = parent
+
+    def _load_gitignore_for_dir(self, directory: Path) -> list[str]:
+        """Load gitignore patterns for a specific directory.
+
+        Args:
+            directory: Directory to load .gitignore from.
+
+        Returns:
+            List of gitignore patterns, or empty list if no .gitignore exists.
+        """
+        if directory in self._gitignore_cache:
+            return self._gitignore_cache[directory]
+
+        patterns: list[str] = []
+        gitignore_path = directory / ".gitignore"
+
+        if gitignore_path.exists() and gitignore_path.is_file():
+            try:
+                with gitignore_path.open("r", encoding="utf-8") as f:
+                    for raw_line in f:
+                        stripped_line = raw_line.strip()
+                        # Skip empty lines and comments
+                        if stripped_line and not stripped_line.startswith("#"):
+                            patterns.append(stripped_line)
+            except (OSError, UnicodeDecodeError):
+                pass
+
+        self._gitignore_cache[directory] = patterns
+        return patterns
+
+    def _matches_gitignore_pattern(self, rel_path: str, pattern: str) -> bool:
+        """Check if a relative path matches a gitignore pattern.
+
+        Args:
+            rel_path: Relative path with forward slashes.
+            pattern: Gitignore pattern to match against.
+
+        Returns:
+            True if the path matches the pattern.
+        """
+        # If pattern ends with /, it only matches directories
+        # For our purposes, we need to check if any component of the path matches
+        if pattern.endswith("/"):
+            dir_pattern = pattern.rstrip("/")
+            # Check if any path component matches the directory pattern
+            parts = rel_path.split("/")
+            for i in range(len(parts)):
+                # Check each possible prefix path
+                partial_path = "/".join(parts[: i + 1])
+                if wcglob.globmatch(partial_path, dir_pattern, flags=wcglob.GLOBSTAR | wcglob.DOTGLOB):
+                    return True
+            return False
+
+        # If pattern contains a slash, it's anchored to the .gitignore's directory
+        if "/" in pattern:
+            return wcglob.globmatch(rel_path, pattern, flags=wcglob.GLOBSTAR | wcglob.DOTGLOB)
+
+        # Pattern without slash matches at any level (like **/pattern)
+        # Check against the full path and just the filename
+        if wcglob.globmatch(rel_path, pattern, flags=wcglob.GLOBSTAR | wcglob.DOTGLOB):
+            return True
+        # Check if filename matches
+        filename = rel_path.rsplit("/", maxsplit=1)[-1]
+        return wcglob.globmatch(filename, pattern, flags=wcglob.GLOBSTAR | wcglob.DOTGLOB)
+
+    def _is_ignored(self, path: Path) -> bool:
+        """Check if a path should be ignored based on .gitignore patterns.
+
+        Mimics git's behavior: checks .gitignore files hierarchically from the git root
+        down to the file's directory. Later (more specific) .gitignore files can override
+        earlier ones.
+
+        Args:
+            path: Absolute path to check.
+
+        Returns:
+            True if the path matches any .gitignore pattern, False otherwise.
+        """
+        if not self._git_root:
+            return False
+
+        # Resolve both paths to handle symlinks (e.g., /var vs /private/var on macOS)
+        resolved_path = path.resolve()
+        resolved_git_root = self._git_root.resolve()
+
+        try:
+            # Verify path is within git root
+            resolved_path.relative_to(resolved_git_root)
+        except ValueError:
+            # Path is outside git root
+            return False
+
+        # Track whether the file is ignored (can be toggled by ! patterns)
+        is_ignored = False
+
+        # Collect all directories from git root to the file's parent
+        current = resolved_path.parent
+        ancestor_dirs = []
+        while True:
+            ancestor_dirs.append(current)
+            if current == resolved_git_root:
+                break
+            parent = current.parent
+            if parent == current:
+                break
+            current = parent
+
+        # Check .gitignore files from root to file's directory (reverse order)
+        # This ensures proper precedence (more specific rules override general ones)
+        for gitignore_dir in reversed(ancestor_dirs):
+            patterns = self._load_gitignore_for_dir(gitignore_dir)
+            if not patterns:
+                continue
+
+            # Get path relative to this .gitignore's directory
+            try:
+                rel_to_gitignore = resolved_path.relative_to(gitignore_dir)
+            except ValueError:
+                continue
+
+            # Use forward slashes for pattern matching
+            rel_path_str = str(rel_to_gitignore).replace(os.sep, "/")
+
+            # Check each pattern in this .gitignore file
+            for pattern in patterns:
+                # Handle negation patterns (starting with !)
+                if pattern.startswith("!"):
+                    negated_pattern = pattern[1:]
+                    if self._matches_gitignore_pattern(rel_path_str, negated_pattern):
+                        is_ignored = False
+                elif self._matches_gitignore_pattern(rel_path_str, pattern):
+                    is_ignored = True
+
+        return is_ignored
 
     def _resolve_path(self, key: str) -> Path:
         """Resolve a file path with security checks.
@@ -536,6 +700,7 @@ class FilesystemBackend(BackendProtocol):
         Returns:
             List of `FileInfo` dicts for matching files, sorted by path. Each dict
                 contains `path`, `is_dir`, `size`, and `modified_at` fields.
+                Files matching .gitignore patterns are excluded if `respect_gitignore=True`.
         """
         if pattern.startswith("/"):
             pattern = pattern.lstrip("/")
@@ -557,6 +722,11 @@ class FilesystemBackend(BackendProtocol):
                     continue
                 if not is_file:
                     continue
+
+                # Skip if ignored by .gitignore
+                if self.respect_gitignore and self._is_ignored(matched_path):
+                    continue
+
                 if self.virtual_mode:
                     try:
                         matched_path.resolve().relative_to(self.cwd)

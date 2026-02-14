@@ -16,6 +16,8 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import SystemMessage
 from langchain_core.tools import BaseTool
 from langgraph.cache.base import BaseCache
+from langgraph.graph import StateGraph, END
+from langgraph.graph.message import MessagesState
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.store.base import BaseStore
 from langgraph.types import Checkpointer
@@ -27,6 +29,7 @@ from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from deepagents.middleware.skills import SkillsMiddleware
 from deepagents.middleware.subagents import (
+    DEFAULT_SUBAGENT_PROMPT,
     GENERAL_PURPOSE_SUBAGENT,
     CompiledSubAgent,
     SubAgent,
@@ -286,7 +289,8 @@ def create_deep_agent(
         # String: simple concatenation
         final_system_prompt = system_prompt + "\n\n" + BASE_AGENT_PROMPT
 
-    return create_agent(
+    # Create the main agent
+    main_agent = create_agent(
         model,
         system_prompt=final_system_prompt,
         tools=tools,
@@ -298,4 +302,74 @@ def create_deep_agent(
         debug=debug,
         name=name,
         cache=cache,
-    ).with_config({"recursion_limit": 1000})
+    )
+
+    # If there are user-provided subagents (not just the general-purpose one),
+    # embed them as proper subgraphs for Studio visualization
+    if len(processed_subagents) > 0:
+        # Build each user subagent as a compiled graph
+        subagent_graphs: dict[str, CompiledStateGraph] = {}
+        for spec in processed_subagents:
+            subagent_name = spec["name"]
+
+            if "runnable" in spec:
+                # CompiledSubAgent - use the provided runnable
+                subagent_graphs[subagent_name] = spec["runnable"]
+            else:
+                # SubAgent - build it using create_agent
+                subagent_prompt = spec.get("system_prompt", DEFAULT_SUBAGENT_PROMPT)
+                subagent_model = spec["model"]
+                subagent_tools = spec.get("tools", [])
+                subagent_middleware = spec.get("middleware", [])
+
+                # Add interrupt middleware if specified
+                if "interrupt_on" in spec:
+                    subagent_middleware = [
+                        *subagent_middleware,
+                        HumanInTheLoopMiddleware(interrupt_on=spec["interrupt_on"]),
+                    ]
+
+                subagent_graph = create_agent(
+                    subagent_model,
+                    system_prompt=subagent_prompt,
+                    tools=subagent_tools,
+                    middleware=subagent_middleware,
+                    checkpointer=checkpointer,
+                    store=store,
+                    debug=debug,
+                )
+                subagent_graphs[subagent_name] = subagent_graph
+
+        # Create a parent StateGraph that contains main agent + subagents
+        # Use MessagesState as the base state schema (compatible with agents)
+        parent_graph = StateGraph(MessagesState)
+
+        # Add main agent as the primary node
+        parent_graph.add_node("agent", main_agent)
+
+        # Add each subagent - when a compiled graph is added as a node,
+        # LangGraph should automatically namespace its internal nodes
+        for subagent_name, subagent_graph in subagent_graphs.items():
+            parent_graph.add_node(subagent_name, subagent_graph)
+
+        # Set entry point to main agent
+        parent_graph.set_entry_point("agent")
+
+        # Add edges showing agent can route to subagents
+        # The middleware actually handles invocation via task tool, but this shows the potential flow
+        for subagent_name in subagent_graphs:
+            # Agent can call subagent
+            parent_graph.add_edge("agent", subagent_name)
+            # Subagent returns to agent (or END)
+            parent_graph.add_edge(subagent_name, "agent")
+
+        # Agent can also go directly to END
+        parent_graph.add_edge("agent", END)
+
+        return parent_graph.compile(
+            checkpointer=checkpointer,
+            store=store,
+        ).with_config({"recursion_limit": 1000})
+
+    # No user subagents - return main agent directly
+    return main_agent.with_config({"recursion_limit": 1000})

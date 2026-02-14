@@ -26,7 +26,6 @@ from textual.screen import ModalScreen
 from textual.widgets import Static
 
 from deepagents_cli.agent import create_cli_agent
-from deepagents_cli.main import check_optional_tools
 from deepagents_cli.clipboard import copy_selection_to_clipboard
 from deepagents_cli.config import (
     DOCS_URL,
@@ -39,6 +38,7 @@ from deepagents_cli.config import (
     is_shell_command_allowed,
     settings,
 )
+from deepagents_cli.main import check_optional_tools
 from deepagents_cli.model_config import (
     ModelConfigError,
     ModelSpec,

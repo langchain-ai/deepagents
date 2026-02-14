@@ -26,6 +26,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Static
 
 from deepagents_cli.agent import create_cli_agent
+from deepagents_cli.main import check_optional_tools
 from deepagents_cli.clipboard import copy_selection_to_clipboard
 from deepagents_cli.config import (
     DOCS_URL,
@@ -512,6 +513,10 @@ class DeepAgentsApp(App):
 
         # Focus the input (autocomplete is now built into ChatInput)
         self._chat_input.focus_input()
+
+        # Warn about missing optional tools
+        for warning in check_optional_tools():
+            self.notify(warning, severity="warning", timeout=7)
 
         # Size the spacer to fill remaining viewport below input
         self.call_after_refresh(self._size_initial_spacer)

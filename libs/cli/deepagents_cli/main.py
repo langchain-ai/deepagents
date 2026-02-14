@@ -16,6 +16,7 @@ import importlib.util
 import json
 import logging
 import os
+import shutil
 import sys
 import traceback
 from collections.abc import Callable, Sequence
@@ -98,6 +99,21 @@ def check_cli_dependencies() -> None:
         print("\nOr install all dependencies:")
         print("  pip install 'deepagents[cli]'")
         sys.exit(1)
+
+
+def check_optional_tools() -> list[str]:
+    """Check for recommended external tools.
+
+    Returns:
+        List of warning messages for missing tools.
+    """
+    warnings: list[str] = []
+    if shutil.which("rg") is None:
+        warnings.append(
+            "ripgrep is not installed, grep will use a slower fallback. "
+            "Install: https://github.com/BurntSushi/ripgrep#installation"
+        )
+    return warnings
 
 
 def parse_args() -> argparse.Namespace:
@@ -737,6 +753,9 @@ def cli_main() -> None:
                 # No subcommand provided, show threads help screen
                 show_threads_help()
         elif args.non_interactive_message:
+            # Check for optional tools before running agent
+            for warning in check_optional_tools():
+                console.print(f"[yellow]Warning:[/yellow] {warning}")
             # Non-interactive mode - execute single task and exit
             from deepagents_cli.non_interactive import run_non_interactive
 

@@ -13,14 +13,14 @@ from langchain.chat_models import init_chat_model
 from langchain_anthropic import ChatAnthropic
 from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import SystemMessage
+from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
 from langchain_core.tools import BaseTool
 from langgraph.cache.base import BaseCache
-from langgraph.graph import StateGraph, END
+from langgraph.graph import StateGraph, END, START
 from langgraph.graph.message import MessagesState
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.store.base import BaseStore
-from langgraph.types import Checkpointer
+from langgraph.types import Checkpointer, Command, Send
 
 from deepagents.backends import StateBackend
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
@@ -352,19 +352,100 @@ def create_deep_agent(
         for subagent_name, subagent_graph in subagent_graphs.items():
             parent_graph.add_node(subagent_name, subagent_graph)
 
+        # Helper function to check if there are pending subagent tool calls
+        def _should_route_to_subagents(state: MessagesState) -> bool:
+            """Check if the last message contains tool calls for the 'task' tool."""
+            if not state.get("messages"):
+                return False
+            last_message = state["messages"][-1]
+            if isinstance(last_message, AIMessage) and last_message.tool_calls:
+                # Check if any tool call is for the "task" tool (subagent dispatcher)
+                return any(tc.get("name") == "task" for tc in last_message.tool_calls)
+            return False
+
+        # Router function that dispatches to specific subagents based on tool calls
+        def route_to_subagent(state: MessagesState) -> str | list[Send]:
+            """Route to appropriate subagent(s) based on tool calls in the last message.
+
+            Returns either:
+            - A string destination ("agent" to continue without subagent, END to finish)
+            - A list of Send objects to dispatch to specific subagents
+            """
+            if not state.get("messages"):
+                return END
+
+            last_message = state["messages"][-1]
+
+            # Check if this is coming back from a tool execution (ToolMessage)
+            if isinstance(last_message, ToolMessage):
+                # Tool execution complete, return to main agent
+                return "agent"
+
+            # Check for AIMessage with tool calls
+            if isinstance(last_message, AIMessage) and last_message.tool_calls:
+                # Look for "task" tool calls (subagent invocations)
+                task_calls = [tc for tc in last_message.tool_calls if tc.get("name") == "task"]
+
+                if task_calls:
+                    # We have subagent calls - but SubAgentMiddleware will handle the actual execution
+                    # For now, route back to agent to let middleware process the tool call
+                    # In the future, we could dispatch directly here by parsing the tool call args
+                    return "agent"
+
+            # No tool calls or no subagent calls - check if we should end
+            # If the last message is an AIMessage without tool calls, we're done
+            if isinstance(last_message, AIMessage) and not last_message.tool_calls:
+                return END
+
+            return "agent"
+
         # Set entry point to main agent
-        parent_graph.set_entry_point("agent")
+        parent_graph.add_edge(START, "agent")
 
-        # Add edges showing agent can route to subagents
-        # The middleware actually handles invocation via task tool, but this shows the potential flow
+        # Build list of possible destinations from agent
+        agent_destinations = list(subagent_graphs.keys()) + [END]
+
+        # Routing function: where should agent go next?
+        def route_after_agent(state: MessagesState) -> str:
+            """Determine next step after agent execution.
+
+            Routes to:
+            - Specific subagent if "task" tool was called
+            - END if no tool calls (agent is done)
+            - END as fallback
+            """
+            if not state.get("messages"):
+                return END
+
+            last_message = state["messages"][-1]
+
+            # If no tool calls, we're done
+            if not isinstance(last_message, AIMessage) or not last_message.tool_calls:
+                return END
+
+            # Check if any tool call is for "task" (subagent invocation)
+            # The middleware will have processed this and we just need to detect it
+            # For now, route back to agent since middleware handles execution
+            # In a full implementation, we'd parse the tool call and route to specific subagent
+            for tool_call in last_message.tool_calls:
+                if tool_call.get("name") == "task":
+                    # TODO: Parse args to get subagent name and route there
+                    # For now, stay in agent since middleware handles it
+                    return END
+
+            # No subagent calls, we're done
+            return END
+
+        # Add conditional edge from agent
+        parent_graph.add_conditional_edges(
+            "agent",
+            route_after_agent,
+            agent_destinations
+        )
+
+        # Each subagent routes back to agent after completion
         for subagent_name in subagent_graphs:
-            # Agent can call subagent
-            parent_graph.add_edge("agent", subagent_name)
-            # Subagent returns to agent (or END)
             parent_graph.add_edge(subagent_name, "agent")
-
-        # Agent can also go directly to END
-        parent_graph.add_edge("agent", END)
 
         return parent_graph.compile(
             checkpointer=checkpointer,

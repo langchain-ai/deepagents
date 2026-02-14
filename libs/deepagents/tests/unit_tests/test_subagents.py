@@ -8,13 +8,14 @@ and child agents.
 import warnings
 from pathlib import Path
 from typing import Any, TypedDict
+from unittest.mock import Mock
 
 import pytest
 from langchain.agents import create_agent
 from langchain.agents.middleware import TodoListMiddleware
 from langchain.agents.structured_output import ToolStrategy
 from langchain.tools import ToolRuntime
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig, RunnableLambda
 from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
@@ -1591,3 +1592,220 @@ class TestSubAgentMiddlewareValidation:
         assert len(w) == 1
         assert issubclass(w[0].category, DeprecationWarning)
         assert "deprecated" in str(w[0].message).lower()
+
+
+class TestMessageExtractionFromSubagents:
+    """Tests for message extraction from subagents.
+
+    These tests verify the fix for issue #979:
+    https://github.com/langchain-ai/deepagents/issues/979
+
+    The fix simplifies message extraction using LangChain's .text property
+    and adds error handling for empty content scenarios.
+    """
+
+    @staticmethod
+    def _create_mock_message(message_type: str, text_content: str, content: list[Any] | None = None) -> Mock:
+        """Create a mock message with .text property.
+
+        Args:
+            message_type: Message type ("ai" or "tool")
+            text_content: Text to return from .text property
+            content: Optional content value (defaults to empty list if not provided)
+
+        Returns:
+            Mock message object with type, text, and content attributes
+        """
+        mock = Mock()
+        mock.type = message_type
+        mock.text = text_content
+        mock.content = content if content is not None else []
+        return mock
+
+    def test_multipart_content_with_empty_blocks(self) -> None:
+        """Test extraction from multi-part content with empty and non-text blocks.
+
+        Verifies that LangChain's .text property correctly extracts and concatenates
+        text from complex list content, filtering out empty blocks and non-text types.
+        """
+        parent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {"description": "Parse data", "subagent_type": "parser"},
+                                "id": "call_parse",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Parsing complete."),
+                ]
+            )
+        )
+
+        # Create mock message with list content (empty blocks, text blocks, non-text blocks)
+        mock_message = self._create_mock_message(
+            message_type="ai",
+            text_content="First partSecond partThird part",
+            content=[
+                {"type": "text", "text": ""},  # Empty text block
+                {"type": "text", "text": "First part"},
+                {"type": "image", "data": "..."},  # Non-text block
+                {"type": "text", "text": ""},  # Another empty
+                {"type": "text", "text": "Second part"},
+                "Third part",  # String block
+            ],
+        )
+
+        def custom_subagent_func(state: dict[str, Any]) -> dict[str, Any]:
+            return {"messages": state["messages"] + [mock_message]}
+
+        parent_agent = create_deep_agent(
+            model=parent_chat_model,
+            checkpointer=InMemorySaver(),
+            subagents=[
+                CompiledSubAgent(
+                    name="parser",
+                    description="Parser subagent.",
+                    runnable=RunnableLambda(custom_subagent_func),
+                )
+            ],
+        )
+
+        result = parent_agent.invoke(
+            {"messages": [HumanMessage(content="Parse data")]},
+            config={"configurable": {"thread_id": "test_multipart"}},
+        )
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert tool_messages, "Should have ToolMessage from subagent"
+
+        # Verify extracted text contains all non-empty parts
+        content = tool_messages[0].content
+        assert "First part" in content
+        assert "Second part" in content
+        assert "Third part" in content
+
+    def test_toolmessage_extraction_for_toolstrategy(self) -> None:
+        """Test extraction from ToolMessage for ToolStrategy pattern.
+
+        When using ToolStrategy for structured output, the subagent conversation
+        ends with a ToolMessage. Verifies that extraction falls back to ToolMessage
+        when no AIMessage with content is found.
+        """
+        parent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {"description": "Get weather", "subagent_type": "weather"},
+                                "id": "call_weather",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Weather retrieved."),
+                ]
+            )
+        )
+
+        # Simulate ToolStrategy: conversation ends with ToolMessage containing result
+        def toolstrategy_subagent(state: dict[str, Any]) -> dict[str, Any]:
+            ai_with_toolcall = AIMessage(
+                content="",
+                tool_calls=[{"name": "WeatherSchema", "args": {"city": "Tokyo", "temp": 22}, "id": "struct_call", "type": "tool_call"}],
+            )
+            tool_result = ToolMessage(content="Returning structured response: city='Tokyo' temp=22", tool_call_id="struct_call")
+            return {"messages": state["messages"] + [ai_with_toolcall, tool_result]}
+
+        parent_agent = create_deep_agent(
+            model=parent_chat_model,
+            checkpointer=InMemorySaver(),
+            subagents=[
+                CompiledSubAgent(
+                    name="weather",
+                    description="Weather service.",
+                    runnable=RunnableLambda(toolstrategy_subagent),
+                )
+            ],
+        )
+
+        result = parent_agent.invoke(
+            {"messages": [HumanMessage(content="Get weather")]},
+            config={"configurable": {"thread_id": "test_toolstrategy"}},
+        )
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool" and msg.tool_call_id == "call_weather"]
+        assert tool_messages, "Should have ToolMessage from subagent"
+
+        # Verify ToolMessage content was extracted (fallback to ToolMessage worked)
+        content = tool_messages[0].content
+        assert "Returning structured response" in content
+        assert "Tokyo" in content
+
+    def test_empty_content_error_handling(self) -> None:
+        """Test graceful error handling when subagent returns empty content.
+
+        Verifies the fix for issue #979 where empty subagent messages would crash.
+        Now returns an error string that allows the conversation to continue.
+        """
+        parent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {"description": "Process data", "subagent_type": "processor"},
+                                "id": "call_process",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="I received an error from the subagent."),
+                ]
+            )
+        )
+
+        # Create subagent that returns empty message (triggers ValueError)
+        def empty_subagent(state: dict[str, Any]) -> dict[str, Any]:
+            empty_message = AIMessage(content="")  # Empty content - will trigger error
+            return {"messages": state["messages"] + [empty_message]}
+
+        parent_agent = create_deep_agent(
+            model=parent_chat_model,
+            checkpointer=InMemorySaver(),
+            subagents=[
+                CompiledSubAgent(
+                    name="processor",
+                    description="Data processor.",
+                    runnable=RunnableLambda(empty_subagent),
+                )
+            ],
+        )
+
+        result = parent_agent.invoke(
+            {"messages": [HumanMessage(content="Process data")]},
+            config={"configurable": {"thread_id": "test_empty_error"}},
+        )
+
+        # Verify conversation continued with error message
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert tool_messages, "Should have ToolMessage even after error"
+
+        # Verify error message was returned (not crash)
+        error_content = tool_messages[0].content
+        assert "Error:" in error_content
+        assert "No content found" in error_content
+
+        # Verify parent agent received final response
+        ai_messages = [msg for msg in result["messages"] if msg.type == "ai"]
+        assert any("error" in msg.content.lower() or "received" in msg.content.lower() for msg in ai_messages)

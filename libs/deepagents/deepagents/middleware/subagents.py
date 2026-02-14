@@ -16,6 +16,7 @@ from langchain_core.tools import StructuredTool
 from langgraph.types import Command
 
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
+from deepagents.exceptions import EmptyContentError
 from deepagents.middleware._utils import append_to_system_message
 
 
@@ -371,6 +372,35 @@ def _get_subagents_legacy(
     return specs
 
 
+def _extract_message_content(messages: list) -> str:
+    """Extract text content from a list of messages.
+
+    Implements a multi-tier extraction strategy:
+    - Tier 1 (Priority): Extract from AIMessage with backward iteration
+    - Tier 2 (Fallback): Extract from ToolMessage when no AIMessage has content
+    - Tier 3 (Error): Raise EmptyContentError if no content found
+
+    Args:
+        messages: List of message objects to extract content from.
+
+    Returns:
+        Extracted message content as a string.
+
+    Raises:
+        EmptyContentError: If no content found in any message.
+    """
+    for msg in reversed(messages):
+        msg_type = getattr(msg, "type", None)
+
+        # Check AIMessage first, then ToolMessage as fallback
+        if msg_type in ("ai", "tool"):
+            text = getattr(msg, "text", None)
+            if text and isinstance(text, str) and (stripped := text.strip()):
+                return stripped
+
+    raise EmptyContentError
+
+
 def _build_task_tool(
     subagents: list[_SubagentSpec],
     task_description: str | None = None,
@@ -410,8 +440,8 @@ def _build_task_tool(
             raise ValueError(error_msg)
 
         state_update = {k: v for k, v in result.items() if k not in _EXCLUDED_STATE_KEYS}
-        # Strip trailing whitespace to prevent API errors with Anthropic
-        message_text = result["messages"][-1].text.rstrip() if result["messages"][-1].text else ""
+        message_text = _extract_message_content(result["messages"])
+
         return Command(
             update={
                 **state_update,
@@ -443,7 +473,10 @@ def _build_task_tool(
         if not runtime.tool_call_id:
             value_error_msg = "Tool call ID is required for subagent invocation"
             raise ValueError(value_error_msg)
-        return _return_command_with_state_update(result, runtime.tool_call_id)
+        try:
+            return _return_command_with_state_update(result, runtime.tool_call_id)
+        except EmptyContentError as e:
+            return f"Error: {e}"
 
     async def atask(
         description: Annotated[
@@ -461,7 +494,10 @@ def _build_task_tool(
         if not runtime.tool_call_id:
             value_error_msg = "Tool call ID is required for subagent invocation"
             raise ValueError(value_error_msg)
-        return _return_command_with_state_update(result, runtime.tool_call_id)
+        try:
+            return _return_command_with_state_update(result, runtime.tool_call_id)
+        except EmptyContentError as e:
+            return f"Error: {e}"
 
     return StructuredTool.from_function(
         name="task",

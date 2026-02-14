@@ -28,8 +28,8 @@ def _validate_server_config(server_name: str, server_config: dict) -> None:
         error_msg = f"Server '{server_name}' config must be a dictionary"
         raise TypeError(error_msg)
 
-    # Determine server type
-    server_type = server_config.get("type", "stdio")
+    # Determine server type - support both "type" and "transport" field names
+    server_type = server_config.get("type") or server_config.get("transport", "stdio")
 
     if server_type in ("sse", "http"):
         # SSE/HTTP server validation - requires url field
@@ -163,7 +163,7 @@ async def get_mcp_tools(config_path: str) -> tuple[list[BaseTool], MCPSessionMan
     # Convert Claude Desktop format to langchain-mcp-adapters format
     connections = {}
     for server_name, server_config in config["mcpServers"].items():
-        server_type = server_config.get("type", "stdio")
+        server_type = server_config.get("type") or server_config.get("transport", "stdio")
 
         if server_type in ("sse", "http"):
             # SSE/HTTP server connection

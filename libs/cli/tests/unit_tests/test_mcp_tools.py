@@ -348,6 +348,35 @@ class TestLoadMCPConfig:
         assert headers["Authorization"] == "Bearer secret"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("transport_field", "transport_value"),
+        [
+            ("transport", "http"),
+            ("transport", "sse"),
+            ("type", "http"),
+            ("type", "sse"),
+        ],
+    )
+    async def test_load_config_transport_field_alias(
+        self, tmp_path: Path, transport_field: str, transport_value: str
+    ) -> None:
+        """Test that both 'type' and 'transport' fields are accepted for server type."""
+        config_file = tmp_path / "transport-alias.json"
+        config_data = {
+            "mcpServers": {
+                "remote": {
+                    transport_field: transport_value,
+                    "url": "https://api.example.com/mcp",
+                }
+            }
+        }
+        config_file.write_text(json.dumps(config_data))
+
+        config = load_mcp_config(str(config_file))
+
+        assert config == config_data
+
+    @pytest.mark.asyncio
     async def test_load_config_invalid_headers_type(self, tmp_path: Path) -> None:
         """Test that TypeError is raised when headers is not a dictionary."""
         config_file = tmp_path / "invalid-headers.json"

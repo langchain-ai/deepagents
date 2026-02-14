@@ -462,6 +462,7 @@ class AgentServerACP(ACPAgent):
 
         current_state = None
         user_decisions = []
+        handled_interrupts_in_stream = False
 
         while current_state is None or current_state.interrupts:
             # Check for cancellation
@@ -469,6 +470,7 @@ class AgentServerACP(ACPAgent):
                 self._cancelled = False  # Reset for next prompt
                 return PromptResponse(stop_reason="cancelled")
 
+            handled_interrupts_in_stream = False
             async for stream_chunk in self._agent.astream(
                 Command(resume={"decisions": user_decisions})
                 if user_decisions
@@ -517,6 +519,7 @@ class AgentServerACP(ACPAgent):
                                 current_state=current_state,
                                 session_id=session_id,
                             )
+                            handled_interrupts_in_stream = True
                             break
 
                     for node_name, update in updates.items():
@@ -588,11 +591,13 @@ class AgentServerACP(ACPAgent):
                         await self._log_text(text=text, session_id=session_id)
 
             # Check if the agent is interrupted (waiting for HITL approval)
-            current_state = await self._agent.aget_state(config)
-            user_decisions = await self._handle_interrupts(
-                current_state=current_state,
-                session_id=session_id,
-            )
+            # Only check if we didn't already handle interrupts during streaming
+            if not handled_interrupts_in_stream:
+                current_state = await self._agent.aget_state(config)
+                user_decisions = await self._handle_interrupts(
+                    current_state=current_state,
+                    session_id=session_id,
+                )
 
         return PromptResponse(stop_reason="end_turn")
 

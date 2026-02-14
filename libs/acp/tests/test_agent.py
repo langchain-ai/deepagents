@@ -890,3 +890,55 @@ async def test_reset_agent_preserves_session_cwd() -> None:
     # Verify the new agent was also created with the same cwd
     assert len(created_cwds) == 2
     assert created_cwds[1] == "/custom/path"
+
+
+async def test_acp_agent_hitl_requests_permission_only_once() -> None:
+    """Test that tools requiring approval only prompt the user once, not twice.
+
+    This is a regression test for a bug where _handle_interrupts was called twice:
+    once during streaming when an interrupt was detected, and once after the stream
+    ended. This caused users to be prompted twice for the same tool call.
+    """
+    model = GenericFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "write_file",
+                            "args": {"file_path": "/tmp/test.txt", "content": "hello"},
+                            "id": "call_1",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="File written successfully"),
+            ]
+        ),
+        stream_delimiter=None,
+    )
+    graph = create_deep_agent(
+        model=model,
+        middleware=[HumanInTheLoopMiddleware(interrupt_on={"write_file": True})],
+        checkpointer=MemorySaver(),
+    )
+
+    agent = AgentServerACP(agent=graph)
+    client = FakeACPClient(permission_outcomes=["approve"])
+    agent.on_connect(client)  # type: ignore[arg-type]
+
+    session = await agent.new_session(cwd="/tmp", mcp_servers=[])
+
+    resp = await agent.prompt(
+        [TextContentBlock(type="text", text="Write a test file")], session_id=session.session_id
+    )
+    assert resp.stop_reason == "end_turn"
+
+    # Count permission requests - should be exactly 1, not 2
+    permission_requests = [e for e in client.events if e["type"] == "request_permission"]
+    assert len(permission_requests) == 1, (
+        f"Expected exactly 1 permission request, got {len(permission_requests)}. "
+        "This indicates the double approval bug has regressed."
+    )
+    assert permission_requests[0]["tool_call"].title == "Write `/tmp/test.txt`"

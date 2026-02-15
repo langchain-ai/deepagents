@@ -172,6 +172,9 @@ ignore-var-parameters = true
 "tests/**" = ["ANN001", "ANN201", "D1", "DOC", "F401", "PLC0415", "PLC1901", "PLC2701", "PLR2004", "PLR6201", "PLR6301", "PLW0108", "RUF001", "S", "SLF"]
 "tests/unit_tests/test_imports.py" = ["PLC0415"]  # Imports inside function ARE the test
 "scripts/**" = ["BLE001", "INP", "S", "T201"]
+"deepagents_cli/loop_detection.py" = [
+    "DOC201",  # Returns section not needed for simple one-line docstrings
+]
 "deepagents_cli/agent.py" = [
     "PLR2004",  # Magic value used in comparison
     "SIM108",   # Use ternary operator instead of if-else

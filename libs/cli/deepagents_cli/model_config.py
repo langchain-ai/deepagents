@@ -165,6 +165,7 @@ PROVIDER_API_KEY_ENV: dict[str, str] = {
     "mistralai": "MISTRAL_API_KEY",
     "nvidia": "NVIDIA_API_KEY",
     "openai": "OPENAI_API_KEY",
+    "openrouter": "OPENROUTER_API_KEY",
     "perplexity": "PPLX_API_KEY",
     "together": "TOGETHER_API_KEY",
     "xai": "XAI_API_KEY",
@@ -174,8 +175,10 @@ PROVIDER_API_KEY_ENV: dict[str, str] = {
 Used by `has_provider_credentials` to verify credentials *before* model
 creation, so the UI can show a warning icon and a specific error message
 (e.g., "ANTHROPIC_API_KEY not set") instead of letting the provider fail at call
-time. Providers not listed here fall through to the config-file check or the
-langchain registry fallback.
+time.
+
+Providers not listed here fall through to the config-file check or the langchain
+registry fallback.
 """
 
 

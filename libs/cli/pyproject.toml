@@ -76,11 +76,12 @@ mistralai = ["langchain-mistralai>=1.0.0,<2.0.0"]
 nvidia = ["langchain-nvidia-ai-endpoints>=1.0.0,<2.0.0"]
 ollama = ["langchain-ollama>=1.0.0,<2.0.0"]
 openai = ["langchain-openai>=1.1.8,<2.0.0"]
+openrouter = ["langchain-openrouter>=0.0.1,<2.0.0"]
 perplexity = ["langchain-perplexity>=1.0.0,<2.0.0"]
 vertexai = ["langchain-google-vertexai>=3.0.0,<4.0.0"]
 xai = ["langchain-xai>=1.0.0,<2.0.0"]
 all-providers = [
-    "deepagents-cli[anthropic,bedrock,cohere,deepseek,fireworks,google-genai,groq,huggingface,ibm,mistralai,nvidia,ollama,openai,perplexity,vertexai,xai]",
+    "deepagents-cli[anthropic,bedrock,cohere,deepseek,fireworks,google-genai,groq,huggingface,ibm,mistralai,nvidia,ollama,openai,openrouter,perplexity,vertexai,xai]",
 ]
 
 [project.scripts]

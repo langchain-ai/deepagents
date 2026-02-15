@@ -377,22 +377,33 @@ def show_skills_help() -> None:
     console.print("  list|ls           List all available skills")
     console.print("  create <name>     Create a new skill")
     console.print("  info <name>       Show detailed information about a skill")
+    console.print("  delete <name>     Delete a skill")
     console.print()
-    console.print("[bold]Options:[/bold]", style=COLORS["primary"])
+    console.print("[bold]Common options:[/bold]", style=COLORS["primary"])
+    console.print("  --agent <name>    Specify agent identifier (default: agent)")
+    console.print("  --project         Use project-level skills instead of user-level")
     console.print("  -h, --help        Show this help message")
     console.print()
+    console.print("[bold]Examples:[/bold]", style=COLORS["primary"])
+    console.print("  deepagents skills list")
+    console.print("  deepagents skills list --project")
+    console.print("  deepagents skills create my-skill")
+    console.print("  deepagents skills create my-skill --agent myagent")
+    console.print("  deepagents skills info my-skill")
+    console.print("  deepagents skills delete my-skill")
+    console.print("  deepagents skills delete my-skill --force --project")
+    console.print("  deepagents skills delete -h")
+    console.print()
     console.print(
-        "[dim]Skills are loaded from these directories "
-        "(highest precedence first):\n"
-        "  1. .agents/skills/                 project skills\n"
+        "[bold]Skill directories (highest precedence first):[/bold]",
+        style=COLORS["primary"],
+    )
+    console.print(
+        "[dim]  1. .agents/skills/                 project skills\n"
         "  2. .deepagents/skills/             project skills (alias)\n"
         "  3. ~/.agents/skills/               user skills\n"
         "  4. ~/.deepagents/<agent>/skills/   user skills (alias)\n"
         "  5. <package>/built_in_skills/      built-in skills[/dim]",
-        style=COLORS["dim"],
-    )
-    console.print(
-        "\n[dim]Create your first skill:\n  deepagents skills create my-skill[/dim]",
         style=COLORS["dim"],
     )
     console.print()
@@ -440,6 +451,25 @@ def show_skills_info_help() -> None:
     console.print("  --agent NAME      Agent identifier (default: agent)")
     console.print("  --project         Search only in project skills")
     console.print("  -h, --help        Show this help message")
+    console.print()
+
+
+def show_skills_delete_help() -> None:
+    """Show help information for the `skills delete` subcommand."""
+    console.print()
+    console.print("[bold]Usage:[/bold]", style=COLORS["primary"])
+    console.print("  deepagents skills delete <name> [options]")
+    console.print()
+    console.print("[bold]Options:[/bold]", style=COLORS["primary"])
+    console.print("  --agent NAME      Agent identifier (default: agent)")
+    console.print("  --project         Search only in project skills")
+    console.print("  -f, --force       Skip confirmation prompt")
+    console.print("  -h, --help        Show this help message")
+    console.print()
+    console.print("[bold]Examples:[/bold]", style=COLORS["primary"])
+    console.print("  deepagents skills delete old-skill")
+    console.print("  deepagents skills delete old-skill --force")
+    console.print("  deepagents skills delete old-skill --project")
     console.print()
 
 

@@ -4,7 +4,7 @@ import argparse
 import io
 import re
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from deepagents.middleware.skills import SkillMetadata, _parse_skill_metadata
@@ -12,6 +12,7 @@ from rich.console import Console
 
 from deepagents_cli.main import parse_args
 from deepagents_cli.skills.commands import (
+    _delete,
     _format_info_fields,
     _generate_template,
     _info,
@@ -879,3 +880,225 @@ class TestSkillsLsDispatch:
         # rather than falling through to show_skills_help()
         joined = "\n".join(output)
         assert "No skills found" in joined or "Available Skills" in joined
+
+
+class TestDeleteSkill:
+    """Test cases for the _delete command."""
+
+    @staticmethod
+    def _create_test_skill(skills_dir: Path, skill_name: str) -> Path:
+        """Create a test skill directory with a minimal SKILL.md.
+
+        Args:
+            skills_dir: Parent skills directory.
+            skill_name: Name of the skill to create.
+
+        Returns:
+            Path to the created skill directory.
+        """
+        skill_dir = skills_dir / skill_name
+        skill_dir.mkdir(parents=True)
+        content = (
+            "---\n"
+            f"name: {skill_name}\n"
+            "description: Test skill for unit tests\n"
+            "---\n"
+            "\n"
+            f"# {skill_name} Skill\n"
+            "\n"
+            "Test content.\n"
+        )
+        (skill_dir / "SKILL.md").write_text(content)
+        return skill_dir
+
+    def test_delete_existing_skill_with_force(self, tmp_path: Path) -> None:
+        """Test deleting an existing skill with --force flag."""
+        user_skills_dir = tmp_path / ".deepagents" / "agent" / "skills"
+        skill_dir = self._create_test_skill(user_skills_dir, "test-skill")
+        assert skill_dir.exists()
+
+        mock_settings = MagicMock()
+        mock_settings.get_user_skills_dir.return_value = user_skills_dir
+        mock_settings.get_project_skills_dir.return_value = None
+
+        with patch("deepagents_cli.skills.commands.Settings") as mock_settings_cls:
+            mock_settings_cls.from_environment.return_value = mock_settings
+            _delete("test-skill", agent="agent", project=False, force=True)
+
+        assert not skill_dir.exists()
+
+    def test_delete_nonexistent_skill(self, tmp_path: Path) -> None:
+        """Test deleting a skill that doesn't exist."""
+        user_skills_dir = tmp_path / ".deepagents" / "agent" / "skills"
+        user_skills_dir.mkdir(parents=True)
+
+        mock_settings = MagicMock()
+        mock_settings.get_user_skills_dir.return_value = user_skills_dir
+        mock_settings.get_project_skills_dir.return_value = None
+
+        with patch("deepagents_cli.skills.commands.Settings") as mock_settings_cls:
+            mock_settings_cls.from_environment.return_value = mock_settings
+            _delete("nonexistent-skill", agent="agent", project=False, force=True)
+
+    def test_delete_with_confirmation_yes(self, tmp_path: Path) -> None:
+        """Test deleting a skill with user confirmation (yes)."""
+        user_skills_dir = tmp_path / ".deepagents" / "agent" / "skills"
+        skill_dir = self._create_test_skill(user_skills_dir, "test-skill")
+        assert skill_dir.exists()
+
+        mock_settings = MagicMock()
+        mock_settings.get_user_skills_dir.return_value = user_skills_dir
+        mock_settings.get_project_skills_dir.return_value = None
+
+        with patch("deepagents_cli.skills.commands.Settings") as mock_settings_cls:
+            mock_settings_cls.from_environment.return_value = mock_settings
+            with patch("builtins.input", return_value="y"):
+                _delete("test-skill", agent="agent", project=False, force=False)
+
+        assert not skill_dir.exists()
+
+    def test_delete_with_confirmation_no(self, tmp_path: Path) -> None:
+        """Test canceling skill deletion with user confirmation (no)."""
+        user_skills_dir = tmp_path / ".deepagents" / "agent" / "skills"
+        skill_dir = self._create_test_skill(user_skills_dir, "test-skill")
+        assert skill_dir.exists()
+
+        mock_settings = MagicMock()
+        mock_settings.get_user_skills_dir.return_value = user_skills_dir
+        mock_settings.get_project_skills_dir.return_value = None
+
+        with patch("deepagents_cli.skills.commands.Settings") as mock_settings_cls:
+            mock_settings_cls.from_environment.return_value = mock_settings
+            with patch("builtins.input", return_value="n"):
+                _delete("test-skill", agent="agent", project=False, force=False)
+
+        assert skill_dir.exists()
+
+    def test_delete_with_confirmation_empty_input(self, tmp_path: Path) -> None:
+        """Test canceling skill deletion with empty input (default: no)."""
+        user_skills_dir = tmp_path / ".deepagents" / "agent" / "skills"
+        skill_dir = self._create_test_skill(user_skills_dir, "test-skill")
+        assert skill_dir.exists()
+
+        mock_settings = MagicMock()
+        mock_settings.get_user_skills_dir.return_value = user_skills_dir
+        mock_settings.get_project_skills_dir.return_value = None
+
+        with patch("deepagents_cli.skills.commands.Settings") as mock_settings_cls:
+            mock_settings_cls.from_environment.return_value = mock_settings
+            with patch("builtins.input", return_value=""):
+                _delete("test-skill", agent="agent", project=False, force=False)
+
+        assert skill_dir.exists()
+
+    def test_delete_with_keyboard_interrupt(self, tmp_path: Path) -> None:
+        """Test canceling skill deletion with Ctrl+C."""
+        user_skills_dir = tmp_path / ".deepagents" / "agent" / "skills"
+        skill_dir = self._create_test_skill(user_skills_dir, "test-skill")
+        assert skill_dir.exists()
+
+        mock_settings = MagicMock()
+        mock_settings.get_user_skills_dir.return_value = user_skills_dir
+        mock_settings.get_project_skills_dir.return_value = None
+
+        with patch("deepagents_cli.skills.commands.Settings") as mock_settings_cls:
+            mock_settings_cls.from_environment.return_value = mock_settings
+            with patch("builtins.input", side_effect=KeyboardInterrupt):
+                _delete("test-skill", agent="agent", project=False, force=False)
+
+        assert skill_dir.exists()
+
+    def test_delete_invalid_skill_name(self, tmp_path: Path) -> None:
+        """Test deleting with an invalid skill name."""
+        user_skills_dir = tmp_path / ".deepagents" / "agent" / "skills"
+        user_skills_dir.mkdir(parents=True)
+
+        mock_settings = MagicMock()
+        mock_settings.get_user_skills_dir.return_value = user_skills_dir
+        mock_settings.get_project_skills_dir.return_value = None
+
+        invalid_names = [
+            "../../../etc/passwd",
+            "skill;rm -rf /",
+            "",
+            "skill name",  # space
+        ]
+
+        with patch("deepagents_cli.skills.commands.Settings") as mock_settings_cls:
+            mock_settings_cls.from_environment.return_value = mock_settings
+            for invalid_name in invalid_names:
+                _delete(invalid_name, agent="agent", project=False, force=True)
+
+    def test_delete_project_skill(self, tmp_path: Path) -> None:
+        """Test deleting a project-level skill."""
+        project_skills_dir = tmp_path / "project" / ".deepagents" / "skills"
+        skill_dir = self._create_test_skill(project_skills_dir, "project-skill")
+        assert skill_dir.exists()
+
+        mock_settings = MagicMock()
+        user_dir = tmp_path / ".deepagents" / "agent" / "skills"
+        mock_settings.get_user_skills_dir.return_value = user_dir
+        mock_settings.get_project_skills_dir.return_value = project_skills_dir
+
+        with patch("deepagents_cli.skills.commands.Settings") as mock_settings_cls:
+            mock_settings_cls.from_environment.return_value = mock_settings
+            _delete("project-skill", agent="agent", project=True, force=True)
+
+        assert not skill_dir.exists()
+
+    def test_delete_project_skill_not_in_project(self, tmp_path: Path) -> None:
+        """Test deleting a project skill when not in a project directory."""
+        mock_settings = MagicMock()
+        user_dir = tmp_path / ".deepagents" / "agent" / "skills"
+        mock_settings.get_user_skills_dir.return_value = user_dir
+        mock_settings.get_project_skills_dir.return_value = None
+
+        with patch("deepagents_cli.skills.commands.Settings") as mock_settings_cls:
+            mock_settings_cls.from_environment.return_value = mock_settings
+            _delete("any-skill", agent="agent", project=True, force=True)
+
+    def test_delete_skill_with_supporting_files(self, tmp_path: Path) -> None:
+        """Test deleting a skill that contains multiple supporting files."""
+        user_skills_dir = tmp_path / ".deepagents" / "agent" / "skills"
+        skill_dir = self._create_test_skill(user_skills_dir, "complex-skill")
+
+        (skill_dir / "helper.py").write_text("# Helper script")
+        (skill_dir / "config.json").write_text("{}")
+        (skill_dir / "subdir").mkdir()
+        (skill_dir / "subdir" / "nested.txt").write_text("nested file")
+
+        assert skill_dir.exists()
+        assert (skill_dir / "helper.py").exists()
+        assert (skill_dir / "subdir" / "nested.txt").exists()
+
+        mock_settings = MagicMock()
+        mock_settings.get_user_skills_dir.return_value = user_skills_dir
+        mock_settings.get_project_skills_dir.return_value = None
+
+        with patch("deepagents_cli.skills.commands.Settings") as mock_settings_cls:
+            mock_settings_cls.from_environment.return_value = mock_settings
+            _delete("complex-skill", agent="agent", project=False, force=True)
+
+        assert not skill_dir.exists()
+
+    def test_delete_skill_for_specific_agent(self, tmp_path: Path) -> None:
+        """Test deleting a skill for a specific agent."""
+        agent1_skills_dir = tmp_path / ".deepagents" / "agent1" / "skills"
+        agent2_skills_dir = tmp_path / ".deepagents" / "agent2" / "skills"
+
+        skill_dir_agent1 = self._create_test_skill(agent1_skills_dir, "shared-skill")
+        skill_dir_agent2 = self._create_test_skill(agent2_skills_dir, "shared-skill")
+
+        assert skill_dir_agent1.exists()
+        assert skill_dir_agent2.exists()
+
+        mock_settings = MagicMock()
+        mock_settings.get_project_skills_dir.return_value = None
+        mock_settings.get_user_skills_dir.return_value = agent1_skills_dir
+
+        with patch("deepagents_cli.skills.commands.Settings") as mock_settings_cls:
+            mock_settings_cls.from_environment.return_value = mock_settings
+            _delete("shared-skill", agent="agent1", project=False, force=True)
+
+        assert not skill_dir_agent1.exists()
+        assert skill_dir_agent2.exists()

@@ -4,10 +4,12 @@ These commands are registered with the CLI via main.py:
 - deepagents skills list --agent <agent> [--project]
 - deepagents skills create <name>
 - deepagents skills info <name>
+- deepagents skills delete <name>
 """
 
 import argparse
 import functools
+import shutil
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -19,6 +21,7 @@ from deepagents_cli.skills.load import list_skills
 from deepagents_cli.ui import (
     build_help_parent,
     show_skills_create_help,
+    show_skills_delete_help,
     show_skills_help,
     show_skills_info_help,
     show_skills_list_help,
@@ -558,6 +561,117 @@ def _info(skill_name: str, *, agent: str = "agent", project: bool = False) -> No
     console.print()
 
 
+def _delete(
+    skill_name: str,
+    agent: str,
+    project: bool = False,
+    force: bool = False,
+) -> None:
+    """Delete a skill directory.
+
+    Args:
+        skill_name: Name of the skill to delete.
+        agent: Agent identifier for skills.
+        project: If True, only search in project skills.
+        force: If True, skip confirmation prompt.
+    """
+    # Validate skill name first
+    is_valid, error_msg = _validate_name(skill_name)
+    if not is_valid:
+        console.print(f"[bold red]Error:[/bold red] Invalid skill name: {error_msg}")
+        return
+
+    settings = Settings.from_environment()
+    user_skills_dir = settings.get_user_skills_dir(agent)
+    project_skills_dir = settings.get_project_skills_dir()
+
+    # Load skills based on --project flag
+    if project:
+        if not project_skills_dir:
+            console.print("[bold red]Error:[/bold red] Not in a project directory.")
+            return
+        skills = list_skills(
+            user_skills_dir=None,
+            project_skills_dir=project_skills_dir,
+        )
+    else:
+        skills = list_skills(
+            user_skills_dir=user_skills_dir,
+            project_skills_dir=project_skills_dir,
+        )
+
+    # Find the skill
+    skill = next((s for s in skills if s["name"] == skill_name), None)
+
+    if not skill:
+        console.print(f"[bold red]Error:[/bold red] Skill '{skill_name}' not found.")
+        console.print("\n[dim]Available skills:[/dim]", style=COLORS["dim"])
+        for s in skills:
+            source_tag = "[project]" if s["source"] == "project" else "[user]"
+            console.print(f"  - {s['name']} {source_tag}", style=COLORS["dim"])
+        return
+
+    skill_path = Path(skill["path"])
+    skill_dir = skill_path.parent
+
+    # Validate the path is safe to delete
+    base_dir = project_skills_dir if skill["source"] == "project" else user_skills_dir
+    if base_dir:
+        is_valid_path, path_error = _validate_skill_path(skill_dir, base_dir)
+        if not is_valid_path:
+            console.print(f"[bold red]Error:[/bold red] {path_error}")
+            return
+
+    # Determine source label
+    source_label = "Project Skill" if skill["source"] == "project" else "User Skill"
+    source_color = "green" if skill["source"] == "project" else "cyan"
+
+    # List files that will be deleted
+    files_to_delete = list(skill_dir.rglob("*"))
+    file_count = len([f for f in files_to_delete if f.is_file()])
+
+    console.print(
+        f"\n[bold]Skill:[/bold] {skill_name}"
+        f" [bold {source_color}]({source_label})[/bold {source_color}]",
+        style=COLORS["primary"],
+    )
+    console.print(
+        f"[bold]Location:[/bold] {skill_dir}/",
+        style=COLORS["dim"],
+    )
+    console.print(
+        f"[bold]Files:[/bold] {file_count} file(s) will be deleted\n",
+        style=COLORS["dim"],
+    )
+
+    # Confirmation
+    if not force:
+        console.print(
+            "[yellow]Are you sure you want to delete this skill? (y/N)[/yellow] ",
+            end="",
+        )
+        try:
+            response = input().strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            console.print("\n[dim]Cancelled.[/dim]")
+            return
+
+        if response not in {"y", "yes"}:
+            console.print("[dim]Cancelled.[/dim]")
+            return
+
+    # Delete the skill directory
+    try:
+        shutil.rmtree(skill_dir)
+        checkmark = get_glyphs().checkmark
+        console.print(
+            f"{checkmark} Skill '{skill_name}' deleted successfully!",
+            style=COLORS["primary"],
+        )
+    except OSError as e:
+        console.print(f"[bold red]Error:[/bold red] Failed to delete skill: {e}")
+
+
 def setup_skills_parser(
     subparsers: Any,
     *,
@@ -663,6 +777,32 @@ def setup_skills_parser(
         action="store_true",
         help="Search only in project skills",
     )
+
+    # Skills delete
+    delete_parser = skills_subparsers.add_parser(
+        "delete",
+        help="Delete a skill",
+        description="Delete a skill directory and all its contents",
+        add_help=False,
+        parents=help_parent(show_skills_delete_help),
+    )
+    delete_parser.add_argument("name", help="Name of the skill to delete")
+    delete_parser.add_argument(
+        "--agent",
+        default="agent",
+        help="Agent identifier for skills (default: agent)",
+    )
+    delete_parser.add_argument(
+        "--project",
+        action="store_true",
+        help="Search only in project skills",
+    )
+    delete_parser.add_argument(
+        "-f",
+        "--force",
+        action="store_true",
+        help="Skip confirmation prompt",
+    )
     return skills_parser
 
 
@@ -694,6 +834,8 @@ def execute_skills_command(args: argparse.Namespace) -> None:
         _create(args.name, agent=args.agent, project=args.project)
     elif args.skills_command == "info":
         _info(args.name, agent=args.agent, project=args.project)
+    elif args.skills_command == "delete":
+        _delete(args.name, agent=args.agent, project=args.project, force=args.force)
     else:
         # No subcommand provided, show skills help screen
         show_skills_help()

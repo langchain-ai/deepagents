@@ -28,6 +28,7 @@ class HistoryManager:
         self._entries: list[str] = []
         self._current_index: int = -1
         self._temp_input: str = ""
+        self._query: str = ""
         self._load_history()
 
     def _load_history(self) -> None:
@@ -100,47 +101,53 @@ class HistoryManager:
 
         self.reset_navigation()
 
-    def get_previous(self, current_input: str, prefix: str = "") -> str | None:
-        """Get the previous history entry.
+    def get_previous(self, current_input: str, *, query: str = "") -> str | None:
+        """Get the previous history entry matching a substring query.
+
+        The query is captured on the first call of a navigation session
+        (when ``_current_index == -1``) and reused for all subsequent
+        calls until `reset_navigation`. Passing a different value on
+        later calls has no effect.
 
         Args:
-            current_input: Current input text (saved on first navigation)
-            prefix: Optional prefix to filter entries
+            current_input: Current input text (saved on first navigation).
+            query: Substring to match against history entries.
+                Captured once on the first call of a navigation session.
 
         Returns:
-            Previous matching entry or None
+            Previous matching entry or `None`.
         """
         if not self._entries:
             return None
 
-        # Save current input on first navigation
+        # Save current input and capture query on first navigation
         if self._current_index == -1:
             self._temp_input = current_input
             self._current_index = len(self._entries)
+            self._query = query.strip().lower()
 
         # Search backwards for matching entry
         for i in range(self._current_index - 1, -1, -1):
-            if self._entries[i].startswith(prefix):
+            if not self._query or self._query in self._entries[i].lower():
                 self._current_index = i
                 return self._entries[i]
 
         return None
 
-    def get_next(self, prefix: str = "") -> str | None:
-        """Get the next history entry.
+    def get_next(self) -> str | None:
+        """Get the next history entry matching the stored query.
 
-        Args:
-            prefix: Optional prefix to filter entries
+        Uses the query captured by the most recent `get_previous` call.
 
         Returns:
-            Next matching entry, original input at end, or None
+            Next matching entry, original input at end, or `None`.
         """
         if self._current_index == -1:
             return None
 
         # Search forwards for matching entry
         for i in range(self._current_index + 1, len(self._entries)):
-            if self._entries[i].startswith(prefix):
+            if not self._query or self._query in self._entries[i].lower():
                 self._current_index = i
                 return self._entries[i]
 
@@ -153,3 +160,4 @@ class HistoryManager:
         """Reset navigation state."""
         self._current_index = -1
         self._temp_input = ""
+        self._query = ""

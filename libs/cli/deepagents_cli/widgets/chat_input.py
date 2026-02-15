@@ -532,7 +532,7 @@ class ChatInput(Vertical):
         self, event: ChatTextArea.HistoryPrevious
     ) -> None:
         """Handle history previous request."""
-        entry = self._history.get_previous(event.current_text)
+        entry = self._history.get_previous(event.current_text, query=event.current_text)
         if entry is not None and self._text_area:
             self._text_area.set_text_from_history(entry)
 

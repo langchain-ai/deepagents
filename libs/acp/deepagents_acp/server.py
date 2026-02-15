@@ -302,8 +302,8 @@ class AgentServerACP(ACPAgent):
                             "args": tool_args,
                         }
 
-                        # Create the appropriate tool call update
-                        update = self._create_tool_call_update(tool_id, tool_name, tool_args)
+                        # Create the appropriate tool call start
+                        update = self._create_tool_call_start(tool_id, tool_name, tool_args)
 
                         await self._conn.session_update(
                             session_id=session_id,
@@ -318,7 +318,7 @@ class AgentServerACP(ACPAgent):
                     except json.JSONDecodeError:
                         pass
 
-    def _create_tool_call_update(
+    def _create_tool_call_start(
         self, tool_id: str, tool_name: str, tool_args: dict[str, Any]
     ) -> ToolCallStart:
         """Create a tool call update based on tool type and arguments."""
@@ -342,6 +342,7 @@ class AgentServerACP(ACPAgent):
                 title=title,
                 kind=tool_kind,
                 status="pending",
+                raw_input=tool_args,
             )
         elif tool_name == "edit_file" and isinstance(tool_args, dict):
             path = tool_args.get("file_path", "")
@@ -371,6 +372,7 @@ class AgentServerACP(ACPAgent):
                     title=title,
                     kind=tool_kind,
                     status="pending",
+                    raw_input=tool_args,
                 )
         elif tool_name == "write_file" and isinstance(tool_args, dict):
             path = tool_args.get("file_path")
@@ -380,15 +382,13 @@ class AgentServerACP(ACPAgent):
                 title=title,
                 kind=tool_kind,
                 status="pending",
+                raw_input=tool_args,
             )
         elif tool_name == "execute" and isinstance(tool_args, dict):
             command = tool_args.get("command", "")
-            # Truncate long commands for display
-            display_command = truncate_execute_command_for_display(command=command)
-            title = f"Execute: `{display_command}`" if command else "Execute command"
             return start_tool_call(
                 tool_call_id=tool_id,
-                title=title,
+                title=command if command else "Execute command",
                 kind=tool_kind,
                 status="pending",
                 raw_input=tool_args,
@@ -400,6 +400,7 @@ class AgentServerACP(ACPAgent):
                 title=title,
                 kind=tool_kind,
                 status="pending",
+                raw_input=tool_args,
             )
 
     def _reset_agent(self, session_id: str) -> None:
@@ -712,8 +713,7 @@ class AgentServerACP(ACPAgent):
 
                     # Request permission from the client
                     tool_call_update = ToolCallUpdate(
-                        tool_call_id=tool_call_id,
-                        title=title,
+                        tool_call_id=tool_call_id, title=title, raw_input=tool_args
                     )
                     response = await self._conn.request_permission(
                         session_id=session_id,

@@ -333,8 +333,6 @@ class AgentServerACP(ACPAgent):
         }
         tool_kind = kind_map.get(tool_name, "other")
 
-        raw_input = json.dumps(tool_args, indent=2)
-
         # Determine title and create appropriate update based on tool type
         if tool_name == "read_file" and isinstance(tool_args, dict):
             path = tool_args.get("file_path")
@@ -344,7 +342,7 @@ class AgentServerACP(ACPAgent):
                 title=title,
                 kind=tool_kind,
                 status="pending",
-                raw_input=raw_input,
+                raw_input=tool_args,
             )
         elif tool_name == "edit_file" and isinstance(tool_args, dict):
             path = tool_args.get("file_path", "")
@@ -374,7 +372,7 @@ class AgentServerACP(ACPAgent):
                     title=title,
                     kind=tool_kind,
                     status="pending",
-                    raw_input=raw_input,
+                    raw_input=tool_args,
                 )
         elif tool_name == "write_file" and isinstance(tool_args, dict):
             path = tool_args.get("file_path")
@@ -384,19 +382,16 @@ class AgentServerACP(ACPAgent):
                 title=title,
                 kind=tool_kind,
                 status="pending",
-                raw_input=raw_input,
+                raw_input=tool_args,
             )
         elif tool_name == "execute" and isinstance(tool_args, dict):
             command = tool_args.get("command", "")
-            # Truncate long commands for display
-            display_command = truncate_execute_command_for_display(command=command)
-            title = f"Execute: `{display_command}`" if command else "Execute command"
             return start_tool_call(
                 tool_call_id=tool_id,
-                title=title,
+                title=command if command else "Execute command",
                 kind=tool_kind,
                 status="pending",
-                raw_input=raw_input,
+                raw_input=tool_args,
             )
         else:
             title = tool_name
@@ -405,7 +400,7 @@ class AgentServerACP(ACPAgent):
                 title=title,
                 kind=tool_kind,
                 status="pending",
-                raw_input=raw_input,
+                raw_input=tool_args,
             )
 
     def _reset_agent(self, session_id: str) -> None:
@@ -718,9 +713,7 @@ class AgentServerACP(ACPAgent):
 
                     # Request permission from the client
                     tool_call_update = ToolCallUpdate(
-                        tool_call_id=tool_call_id,
-                        title=title,
-                        raw_input=json.dumps(tool_args, indent=2),
+                        tool_call_id=tool_call_id, title=title, raw_input=tool_args
                     )
                     response = await self._conn.request_permission(
                         session_id=session_id,

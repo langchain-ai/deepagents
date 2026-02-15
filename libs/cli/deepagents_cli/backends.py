@@ -234,6 +234,12 @@ class CLIFilesystemMiddleware(FilesystemMiddleware):
             if timeout is not None and timeout <= 0:
                 return f"Error: timeout must be a positive integer, got {timeout}."
 
+            if timeout is not None and timeout > self._max_timeout:
+                return (
+                    f"Error: timeout {timeout}s exceeds"
+                    f" maximum allowed ({self._max_timeout}s)."
+                )
+
             resolved_backend = self._get_backend(runtime)  # type: ignore[invalid-argument-type]
             proto = _get_sandbox_backend(resolved_backend)
 
@@ -274,6 +280,12 @@ class CLIFilesystemMiddleware(FilesystemMiddleware):
             """
             if timeout is not None and timeout <= 0:
                 return f"Error: timeout must be a positive integer, got {timeout}."
+
+            if timeout is not None and timeout > self._max_timeout:
+                return (
+                    f"Error: timeout {timeout}s exceeds"
+                    f" maximum allowed ({self._max_timeout}s)."
+                )
 
             resolved_backend = self._get_backend(runtime)  # type: ignore[invalid-argument-type]
             proto = _get_sandbox_backend(resolved_backend)

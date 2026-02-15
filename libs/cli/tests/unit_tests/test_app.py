@@ -1,10 +1,12 @@
 """Unit tests for DeepAgentsApp."""
 
+import asyncio
 import io
 import os
+import signal
 import webbrowser
-from typing import ClassVar
-from unittest.mock import MagicMock, patch
+from typing import ClassVar, Never, cast
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from textual.app import App, ComposeResult
@@ -614,3 +616,136 @@ class TestTraceCommand:
 
             app_msgs = app.query(AppMessage)
             assert any("No active session" in str(w._content) for w in app_msgs)
+
+
+class TestBashInterrupt:
+    """Test interrupt behavior for active bash commands."""
+
+    @pytest.mark.asyncio
+    async def test_escape_interrupts_active_bash_command(self) -> None:
+        """Escape should terminate an active bash process."""
+
+        class FakeProcess:
+            """Minimal async subprocess stand-in for interrupt tests."""
+
+            def __init__(self) -> None:
+                self.pid = 43210
+                self.returncode: int | None = None
+                self._done = asyncio.Event()
+                self.terminated = False
+
+            async def communicate(self) -> tuple[bytes, bytes]:
+                await self._done.wait()
+                return (b"", b"")
+
+            def terminate(self) -> None:
+                self.terminated = True
+                self.returncode = 130
+                self._done.set()
+
+            def kill(self) -> None:
+                self.returncode = 137
+                self._done.set()
+
+        app = DeepAgentsApp()
+        fake_process = FakeProcess()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            def _killpg(_pgid: int, _sig: int) -> None:
+                fake_process.returncode = 130
+                fake_process._done.set()
+
+            with (
+                patch(
+                    "deepagents_cli.app.asyncio.create_subprocess_shell",
+                    new=AsyncMock(return_value=fake_process),
+                ),
+                patch(
+                    "deepagents_cli.app.os.killpg", side_effect=_killpg
+                ) as mock_killpg,
+            ):
+                task = asyncio.create_task(app._handle_bash_command("sleep 60"))
+                await pilot.pause()
+
+                assert app._bash_process is fake_process
+
+                app.action_interrupt()
+                await task
+                mock_killpg.assert_called_once_with(fake_process.pid, signal.SIGTERM)
+
+            assert fake_process.terminated is True
+            assert app._bash_process is None
+            assert any(
+                msg._content == "Command interrupted" for msg in app.query(AppMessage)
+            )
+
+    @pytest.mark.asyncio
+    async def test_ctrl_c_interrupts_active_bash_command(self) -> None:
+        """Ctrl+C should terminate an active bash process."""
+
+        class FakeProcess:
+            def __init__(self) -> None:
+                self.returncode: int | None = None
+                self.terminated = False
+
+            def terminate(self) -> None:
+                self.terminated = True
+                self.returncode = 130
+
+        app = DeepAgentsApp()
+        process = FakeProcess()
+        app._bash_process = cast("asyncio.subprocess.Process", process)
+
+        app.action_quit_or_interrupt()
+
+        assert process.terminated is True
+        assert app._bash_interrupted is True
+        assert app._quit_pending is False
+
+    @pytest.mark.asyncio
+    async def test_bash_timeout_kills_process(self) -> None:
+        """Timed-out bash command should be killed and surfaced as an error."""
+
+        class FakeProcess:
+            def __init__(self) -> None:
+                self.pid = 43210
+                self.returncode: int | None = None
+                self.killed = False
+
+            async def communicate(self) -> tuple[bytes, bytes]:
+                return (b"", b"")
+
+            def kill(self) -> None:
+                self.killed = True
+                self.returncode = 137
+
+        app = DeepAgentsApp()
+        fake_process = FakeProcess()
+
+        def _raise_timeout(awaitable, timeout) -> Never:
+            _ = timeout
+            awaitable.close()
+            raise TimeoutError
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch(
+                    "deepagents_cli.app.asyncio.create_subprocess_shell",
+                    new=AsyncMock(return_value=fake_process),
+                ),
+                patch(
+                    "deepagents_cli.app.asyncio.wait_for",
+                    new=AsyncMock(side_effect=_raise_timeout),
+                ),
+            ):
+                await app._handle_bash_command("sleep 60")
+
+            assert fake_process.killed is True
+            assert app._bash_process is None
+            assert any(
+                msg._content == "Command timed out (60s limit)"
+                for msg in app.query(ErrorMessage)
+            )

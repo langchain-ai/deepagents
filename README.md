@@ -21,6 +21,9 @@
 
 <br>
 
+> [!CAUTION]
+> **This repository is deprecated and is no longer maintained.** Please do not use it for new projects. It may contain outdated or unsupported code.
+
 Deep Agents is an agent harness.  An opinionated, ready-to-run agent out of the box. Instead of wiring up prompts, tools, and context management yourself, you get a working agent immediately and customize what you need.
 
 **What's included:**

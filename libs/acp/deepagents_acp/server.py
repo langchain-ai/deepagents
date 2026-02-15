@@ -405,6 +405,7 @@ class AgentServerACP(ACPAgent):
                 title=title,
                 kind=tool_kind,
                 status="pending",
+                raw_input=raw_input,
             )
 
     def _reset_agent(self, session_id: str) -> None:

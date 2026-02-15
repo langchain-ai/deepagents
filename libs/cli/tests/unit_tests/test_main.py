@@ -1,12 +1,13 @@
 """Unit tests for main entry point."""
 
 import inspect
+from unittest.mock import patch
 
 import pytest
 
 from deepagents_cli.app import run_textual_app
 from deepagents_cli.config import build_langsmith_thread_url, reset_langsmith_url_cache
-from deepagents_cli.main import run_textual_cli_async
+from deepagents_cli.main import check_optional_tools, run_textual_cli_async
 
 
 class TestResumeHintLogic:
@@ -124,3 +125,33 @@ class TestThreadMessage:
             if "Thread:" in line and "Resuming" not in line and "Starting" not in line
         ]
         assert len(lines) == 0, f"Should not have old 'Thread:' format. Found: {lines}"
+
+
+class TestCheckOptionalTools:
+    """Tests for check_optional_tools() function."""
+
+    def test_returns_warning_when_rg_not_found(self) -> None:
+        """Returns a warning about ripgrep when `rg` is not on PATH."""
+        with patch("deepagents_cli.main.shutil.which", return_value=None):
+            warnings = check_optional_tools()
+
+        assert len(warnings) == 1
+        assert "ripgrep" in warnings[0]
+        assert "https://github.com/BurntSushi/ripgrep" in warnings[0]
+
+    def test_returns_empty_when_rg_found(self) -> None:
+        """Returns empty list when `rg` is found on PATH."""
+        with patch("deepagents_cli.main.shutil.which", return_value="/usr/bin/rg"):
+            warnings = check_optional_tools()
+
+        assert warnings == []
+
+    def test_warning_suppressed_via_config(self, tmp_path) -> None:
+        """Returns empty list when ripgrep warning is suppressed in config."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[warnings]\nsuppress = ["ripgrep"]\n')
+
+        with patch("deepagents_cli.main.shutil.which", return_value=None):
+            warnings = check_optional_tools(config_path=config_path)
+
+        assert warnings == []

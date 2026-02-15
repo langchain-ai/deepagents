@@ -101,19 +101,31 @@ def check_cli_dependencies() -> None:
         sys.exit(1)
 
 
-def check_optional_tools() -> list[str]:
+def check_optional_tools(*, config_path: Path | None = None) -> list[str]:
     """Check for recommended external tools.
+
+    Skips warnings that the user has suppressed via
+    `[warnings].suppress` in `config.toml`.
+
+    Args:
+        config_path: Path to config file.
+
+            Defaults to `~/.deepagents/config.toml`.
 
     Returns:
         List of warning messages for missing tools.
     """
-    warnings: list[str] = []
-    if shutil.which("rg") is None:
-        warnings.append(
+    from deepagents_cli.model_config import is_warning_suppressed
+
+    result: list[str] = []
+    if shutil.which("rg") is None and not is_warning_suppressed("ripgrep", config_path):
+        result.append(
             "ripgrep is not installed, grep will use a slower fallback. "
-            "Install: https://github.com/BurntSushi/ripgrep#installation"
+            "Install: https://github.com/BurntSushi/ripgrep#installation\n"
+            "Suppress: add 'ripgrep' to [warnings].suppress "
+            "in ~/.deepagents/config.toml"
         )
-    return warnings
+    return result
 
 
 def parse_args() -> argparse.Namespace:

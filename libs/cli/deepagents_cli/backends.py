@@ -84,7 +84,7 @@ class CLIShellBackend(LocalShellBackend):
                 truncated=False,
             )
 
-        effective_timeout = timeout if timeout is not None else self._timeout
+        effective_timeout = timeout if timeout is not None else self._default_timeout
         if effective_timeout <= 0:
             msg = f"timeout must be positive, got {effective_timeout}"
             raise ValueError(msg)
@@ -234,7 +234,13 @@ class CLIFilesystemMiddleware(FilesystemMiddleware):
             if timeout is not None and timeout <= 0:
                 return f"Error: timeout must be a positive integer, got {timeout}."
 
-            resolved_backend = self._get_backend(runtime)  # type: ignore[arg-type]
+            if timeout is not None and timeout > self._max_timeout:
+                return (
+                    f"Error: timeout {timeout}s exceeds"
+                    f" maximum allowed ({self._max_timeout}s)."
+                )
+
+            resolved_backend = self._get_backend(runtime)  # type: ignore[invalid-argument-type]
             proto = _get_sandbox_backend(resolved_backend)
 
             if proto is None:
@@ -275,7 +281,13 @@ class CLIFilesystemMiddleware(FilesystemMiddleware):
             if timeout is not None and timeout <= 0:
                 return f"Error: timeout must be a positive integer, got {timeout}."
 
-            resolved_backend = self._get_backend(runtime)  # type: ignore[arg-type]
+            if timeout is not None and timeout > self._max_timeout:
+                return (
+                    f"Error: timeout {timeout}s exceeds"
+                    f" maximum allowed ({self._max_timeout}s)."
+                )
+
+            resolved_backend = self._get_backend(runtime)  # type: ignore[invalid-argument-type]
             proto = _get_sandbox_backend(resolved_backend)
 
             if proto is None:

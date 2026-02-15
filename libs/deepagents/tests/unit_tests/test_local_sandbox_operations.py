@@ -41,15 +41,19 @@ class LocalSubprocessSandbox(BaseSandbox):
         """Initialize the local subprocess sandbox."""
         self._id = "local-subprocess-sandbox"
 
-    def execute(self, command: str) -> ExecuteResponse:
+    def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
         """Execute a command using subprocess on the local machine.
 
         Args:
             command: Full shell command string to execute.
+            timeout: Maximum time in seconds to wait for the command.
+
+                If None, uses the default of 30 seconds.
 
         Returns:
             ExecuteResponse with combined output, exit code, and truncation flag.
         """
+        effective_timeout = timeout if timeout is not None else 30
         try:
             # shell=True mimics real sandbox behavior; only runs in CI, poses no risk
             result = subprocess.run(  # noqa: S602
@@ -58,7 +62,7 @@ class LocalSubprocessSandbox(BaseSandbox):
                 shell=True,
                 capture_output=True,
                 text=True,
-                timeout=30,
+                timeout=effective_timeout,
             )
             # Combine stdout and stderr
             output = result.stdout + result.stderr
@@ -69,7 +73,7 @@ class LocalSubprocessSandbox(BaseSandbox):
             )
         except subprocess.TimeoutExpired:
             return ExecuteResponse(
-                output="Error: Command timed out after 30 seconds",
+                output=f"Error: Command timed out after {effective_timeout} seconds",
                 exit_code=124,
                 truncated=True,
             )

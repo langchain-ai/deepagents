@@ -832,16 +832,27 @@ def is_warning_suppressed(key: str, config_path: Path | None = None) -> bool:
     if config_path is None:
         config_path = DEFAULT_CONFIG_PATH
 
-    if not config_path.exists():
-        return False
-
     try:
+        if not config_path.exists():
+            return False
         with config_path.open("rb") as f:
             data = tomllib.load(f)
     except (OSError, tomllib.TOMLDecodeError):
+        logger.debug(
+            "Could not read config file %s for warning suppression check",
+            config_path,
+            exc_info=True,
+        )
         return False
 
     suppress_list = data.get("warnings", {}).get("suppress", [])
+    if not isinstance(suppress_list, list):
+        logger.debug(
+            "[warnings].suppress in %s should be a list, got %s",
+            config_path,
+            type(suppress_list).__name__,
+        )
+        return False
     return key in suppress_list
 
 

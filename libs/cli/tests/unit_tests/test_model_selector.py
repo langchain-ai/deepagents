@@ -327,3 +327,227 @@ class TestModelSelectorCurrentModelPreselection:
                 f"After clearing filter, expected index {current_index} "
                 f"but got {screen._selected_index}"
             )
+
+
+class TestModelSelectorFuzzyMatching:
+    """Tests for fuzzy search filtering."""
+
+    @pytest.mark.asyncio
+    async def test_fuzzy_exact_substring_still_works(self) -> None:
+        """Exact substring matches should still work with fuzzy matching."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.show_selector()
+            await pilot.pause()
+
+            screen = app.screen
+            assert isinstance(screen, ModelSelectorScreen)
+
+            for char in "claude":
+                await pilot.press(char)
+            await pilot.pause()
+
+            specs = [spec for spec, _ in screen._filtered_models]
+            assert any("claude" in s for s in specs), (
+                f"'claude' substring should match. Got: {specs}"
+            )
+
+    @pytest.mark.asyncio
+    async def test_fuzzy_subsequence_match(self) -> None:
+        """Subsequence queries like 'cs45' should match 'claude-sonnet-4-5'."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.show_selector()
+            await pilot.pause()
+
+            screen = app.screen
+            assert isinstance(screen, ModelSelectorScreen)
+
+            for char in "cs45":
+                await pilot.press(char)
+            await pilot.pause()
+
+            specs = [spec for spec, _ in screen._filtered_models]
+            assert any("claude-sonnet-4-5" in s for s in specs), (
+                f"'cs45' should fuzzy-match claude-sonnet-4-5. Got: {specs}"
+            )
+
+    @pytest.mark.asyncio
+    async def test_fuzzy_across_hyphen(self) -> None:
+        """Queries should match across hyphens (e.g., 'gpt4' matches 'gpt-4o')."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.show_selector()
+            await pilot.pause()
+
+            screen = app.screen
+            assert isinstance(screen, ModelSelectorScreen)
+
+            for char in "gpt4":
+                await pilot.press(char)
+            await pilot.pause()
+
+            specs = [spec for spec, _ in screen._filtered_models]
+            assert any("gpt-4" in s for s in specs), (
+                f"'gpt4' should fuzzy-match gpt-4 models. Got: {specs}"
+            )
+
+    @pytest.mark.asyncio
+    async def test_fuzzy_case_insensitive(self) -> None:
+        """Fuzzy matching should be case-insensitive."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.show_selector()
+            await pilot.pause()
+
+            screen = app.screen
+            assert isinstance(screen, ModelSelectorScreen)
+
+            # Type uppercase "CLAUDE"
+            for char in "CLAUDE":
+                await pilot.press(char)
+            await pilot.pause()
+
+            specs = [spec for spec, _ in screen._filtered_models]
+            assert any("claude" in s for s in specs), (
+                f"'CLAUDE' should case-insensitively match claude models. Got: {specs}"
+            )
+
+    @pytest.mark.asyncio
+    async def test_fuzzy_no_match(self) -> None:
+        """A query that matches nothing should produce an empty filtered list."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.show_selector()
+            await pilot.pause()
+
+            screen = app.screen
+            assert isinstance(screen, ModelSelectorScreen)
+
+            for char in "xyz999qqq":
+                await pilot.press(char)
+            await pilot.pause()
+
+            assert len(screen._filtered_models) == 0
+
+    @pytest.mark.asyncio
+    async def test_fuzzy_ranking_better_match_first(self) -> None:
+        """Better fuzzy matches should rank higher than weaker matches."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.show_selector()
+            await pilot.pause()
+
+            screen = app.screen
+            assert isinstance(screen, ModelSelectorScreen)
+
+            for char in "claude":
+                await pilot.press(char)
+            await pilot.pause()
+
+            specs = [spec for spec, _ in screen._filtered_models]
+            # All results should contain "claude" as a subsequence
+            assert len(specs) > 0
+            # The first result should be a strong match (contains "claude")
+            assert "claude" in specs[0].lower()
+
+    @pytest.mark.asyncio
+    async def test_empty_filter_shows_all(self) -> None:
+        """Empty filter should show all models in original order."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.show_selector()
+            await pilot.pause()
+
+            screen = app.screen
+            assert isinstance(screen, ModelSelectorScreen)
+
+            total = len(screen._filtered_models)
+            assert total == len(screen._all_models)
+
+    @pytest.mark.asyncio
+    async def test_whitespace_filter_shows_all(self) -> None:
+        """Whitespace-only filter should be treated as empty."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.show_selector()
+            await pilot.pause()
+
+            screen = app.screen
+            assert isinstance(screen, ModelSelectorScreen)
+
+            await pilot.press("space", "space", "space")
+            await pilot.pause()
+
+            assert len(screen._filtered_models) == len(screen._all_models)
+
+    @pytest.mark.asyncio
+    async def test_selection_clamped_on_filter(self) -> None:
+        """Selected index should stay valid when filter results shrink."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.show_selector()
+            await pilot.pause()
+
+            screen = app.screen
+            assert isinstance(screen, ModelSelectorScreen)
+
+            # Move selection down several times
+            for _ in range(5):
+                await pilot.press("down")
+            await pilot.pause()
+
+            # Now type a filter that produces fewer results
+            for char in "claude":
+                await pilot.press(char)
+            await pilot.pause()
+
+            count = len(screen._filtered_models)
+            assert screen._selected_index < count or count == 0
+
+    @pytest.mark.asyncio
+    async def test_enter_selects_fuzzy_result(self) -> None:
+        """Pressing Enter after fuzzy filtering should select the top result."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.show_selector()
+            await pilot.pause()
+
+            screen = app.screen
+            assert isinstance(screen, ModelSelectorScreen)
+
+            for char in "claude":
+                await pilot.press(char)
+            await pilot.pause()
+
+            assert len(screen._filtered_models) > 0
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert app.dismissed is True
+            assert app.result is not None
+            model_spec, _ = app.result
+            assert "claude" in model_spec.lower()
+
+    @pytest.mark.asyncio
+    async def test_navigation_after_fuzzy_filter(self) -> None:
+        """Arrow keys should work correctly on fuzzy-filtered results."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.show_selector()
+            await pilot.pause()
+
+            screen = app.screen
+            assert isinstance(screen, ModelSelectorScreen)
+
+            for char in "claude":
+                await pilot.press(char)
+            await pilot.pause()
+
+            count = len(screen._filtered_models)
+            if count > 1:
+                initial = screen._selected_index
+                await pilot.press("down")
+                await pilot.pause()
+                assert screen._selected_index == (initial + 1) % count

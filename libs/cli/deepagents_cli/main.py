@@ -16,6 +16,7 @@ import importlib.util
 import json
 import logging
 import os
+import shutil
 import sys
 import traceback
 from collections.abc import Callable, Sequence
@@ -48,7 +49,7 @@ from deepagents_cli.config import (
     settings,
 )
 from deepagents_cli.integrations.sandbox_factory import create_sandbox
-from deepagents_cli.model_config import ModelConfigError
+from deepagents_cli.model_config import ModelConfigError, is_warning_suppressed
 from deepagents_cli.sessions import (
     delete_thread_command,
     find_similar_threads,
@@ -98,6 +99,71 @@ def check_cli_dependencies() -> None:
         print("\nOr install all dependencies:")
         print("  pip install 'deepagents[cli]'")
         sys.exit(1)
+
+
+_RIPGREP_URL = "https://github.com/BurntSushi/ripgrep#installation"
+
+_RIPGREP_SUPPRESS_HINT = (
+    "To suppress, add to ~/.deepagents/config.toml:\n"
+    "\\[warnings]\n"
+    'suppress = \\["ripgrep"]'
+)
+
+
+def check_optional_tools(*, config_path: Path | None = None) -> list[str]:
+    """Check for recommended external tools and return missing tool names.
+
+    Skips tools that the user has suppressed via
+    `[warnings].suppress` in `config.toml`.
+
+    Args:
+        config_path: Path to config file.
+
+            Defaults to `~/.deepagents/config.toml`.
+
+    Returns:
+        List of missing tool names (e.g. `["ripgrep"]`).
+    """
+    missing: list[str] = []
+    if shutil.which("rg") is None and not is_warning_suppressed("ripgrep", config_path):
+        missing.append("ripgrep")
+    return missing
+
+
+def format_tool_warning_tui(tool: str) -> str:
+    """Format a missing-tool warning for the TUI toast.
+
+    Args:
+        tool: Name of the missing tool.
+
+    Returns:
+        Plain-text warning suitable for `App.notify`.
+    """
+    if tool == "ripgrep":
+        return (
+            "ripgrep is not installed; the grep tool will use a slower fallback.\n"
+            f"\nInstall: {_RIPGREP_URL}\n\n"
+            f"{_RIPGREP_SUPPRESS_HINT}"
+        )
+    return f"{tool} is not installed."
+
+
+def format_tool_warning_cli(tool: str) -> str:
+    """Format a missing-tool warning for non-interactive Rich console output.
+
+    Args:
+        tool: Name of the missing tool.
+
+    Returns:
+        Rich-markup string suitable for `console.print`.
+    """
+    if tool == "ripgrep":
+        return (
+            "ripgrep is not installed; the grep tool will use a slower fallback.\n"
+            f"Install: [link={_RIPGREP_URL}]{_RIPGREP_URL}[/link]\n\n"
+            f"{_RIPGREP_SUPPRESS_HINT}\n"
+        )
+    return f"{tool} is not installed."
 
 
 def parse_args() -> argparse.Namespace:
@@ -737,6 +803,18 @@ def cli_main() -> None:
                 # No subcommand provided, show threads help screen
                 show_threads_help()
         elif args.non_interactive_message:
+            # Check for optional tools before running agent (stderr so
+            # --quiet piped output stays clean)
+            try:
+                from rich.console import Console as _Console
+
+                warn_console = _Console(stderr=True)
+                for tool in check_optional_tools():
+                    warn_console.print(
+                        f"[yellow]Warning:[/yellow] {format_tool_warning_cli(tool)}"
+                    )
+            except Exception:
+                logger.debug("Failed to check for optional tools", exc_info=True)
             # Non-interactive mode - execute single task and exit
             from deepagents_cli.non_interactive import run_non_interactive
 

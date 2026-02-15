@@ -38,6 +38,7 @@ from deepagents_cli.config import (
     is_shell_command_allowed,
     settings,
 )
+from deepagents_cli.main import check_optional_tools, format_tool_warning_tui
 from deepagents_cli.model_config import (
     ModelConfigError,
     ModelSpec,
@@ -512,6 +513,15 @@ class DeepAgentsApp(App):
 
         # Focus the input (autocomplete is now built into ChatInput)
         self._chat_input.focus_input()
+
+        # Warn about missing optional tools (advisory only — never block startup)
+        try:
+            for tool in check_optional_tools():
+                self.notify(
+                    format_tool_warning_tui(tool), severity="warning", timeout=15
+                )
+        except Exception:
+            logger.debug("Failed to check for optional tools", exc_info=True)
 
         # Size the spacer to fill remaining viewport below input
         self.call_after_refresh(self._size_initial_spacer)

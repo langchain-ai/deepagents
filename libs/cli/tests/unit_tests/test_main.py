@@ -1,12 +1,19 @@
 """Unit tests for main entry point."""
 
 import inspect
+from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 from deepagents_cli.app import run_textual_app
 from deepagents_cli.config import build_langsmith_thread_url, reset_langsmith_url_cache
-from deepagents_cli.main import run_textual_cli_async
+from deepagents_cli.main import (
+    check_optional_tools,
+    format_tool_warning_cli,
+    format_tool_warning_tui,
+    run_textual_cli_async,
+)
 
 
 class TestResumeHintLogic:
@@ -124,3 +131,90 @@ class TestThreadMessage:
             if "Thread:" in line and "Resuming" not in line and "Starting" not in line
         ]
         assert len(lines) == 0, f"Should not have old 'Thread:' format. Found: {lines}"
+
+
+class TestCheckOptionalTools:
+    """Tests for check_optional_tools() function."""
+
+    def test_returns_tool_name_when_rg_not_found(self) -> None:
+        """Returns `['ripgrep']` when `rg` is not on PATH."""
+        with patch("deepagents_cli.main.shutil.which", return_value=None):
+            missing = check_optional_tools()
+
+        assert missing == ["ripgrep"]
+
+    def test_returns_empty_when_rg_found(self) -> None:
+        """Returns empty list when `rg` is found on PATH."""
+        with patch("deepagents_cli.main.shutil.which", return_value="/usr/bin/rg"):
+            missing = check_optional_tools()
+
+        assert missing == []
+
+    def test_warning_suppressed_via_config(self, tmp_path: Path) -> None:
+        """Returns empty list when ripgrep warning is suppressed in config."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[warnings]\nsuppress = ["ripgrep"]\n')
+
+        with patch("deepagents_cli.main.shutil.which", return_value=None):
+            missing = check_optional_tools(config_path=config_path)
+
+        assert missing == []
+
+    def test_malformed_config_does_not_suppress(self, tmp_path: Path) -> None:
+        """Malformed TOML config degrades gracefully instead of crashing."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("this is not valid toml [[[")
+
+        with patch("deepagents_cli.main.shutil.which", return_value=None):
+            missing = check_optional_tools(config_path=config_path)
+
+        assert missing == ["ripgrep"]
+
+    def test_non_list_suppress_does_not_crash(self, tmp_path: Path) -> None:
+        """Non-list `suppress` value degrades gracefully instead of crashing."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[warnings]\nsuppress = true\n")
+
+        with patch("deepagents_cli.main.shutil.which", return_value=None):
+            missing = check_optional_tools(config_path=config_path)
+
+        assert missing == ["ripgrep"]
+
+    def test_unrelated_suppress_key_does_not_suppress(self, tmp_path: Path) -> None:
+        """Suppressing a different key does not suppress the ripgrep warning."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[warnings]\nsuppress = ["something_else"]\n')
+
+        with patch("deepagents_cli.main.shutil.which", return_value=None):
+            missing = check_optional_tools(config_path=config_path)
+
+        assert missing == ["ripgrep"]
+
+
+class TestFormatToolWarnings:
+    """Tests for TUI and CLI warning formatters."""
+
+    def test_tui_format_contains_url(self) -> None:
+        """TUI format includes the install URL as plain text."""
+        msg = format_tool_warning_tui("ripgrep")
+        assert "https://github.com/BurntSushi/ripgrep#installation" in msg
+        assert "[link=" not in msg
+
+    def test_cli_format_contains_rich_link(self) -> None:
+        """CLI format wraps the URL in Rich `[link]` markup."""
+        msg = format_tool_warning_cli("ripgrep")
+        assert "[link=https://github.com/BurntSushi/ripgrep#installation]" in msg
+        assert "[/link]" in msg
+
+    def test_both_formats_contain_suppress_hint(self) -> None:
+        """Both formats include the config suppression hint."""
+        formatters = (format_tool_warning_tui, format_tool_warning_cli)
+        for fmt in formatters:
+            msg = fmt("ripgrep")
+            assert "\\[warnings]" in msg
+            assert 'suppress = \\["ripgrep"]' in msg
+
+    def test_unknown_tool_fallback(self) -> None:
+        """Unknown tools get a generic message."""
+        assert format_tool_warning_tui("foo") == "foo is not installed."
+        assert format_tool_warning_cli("foo") == "foo is not installed."

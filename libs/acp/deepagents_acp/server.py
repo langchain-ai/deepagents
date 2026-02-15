@@ -333,6 +333,8 @@ class AgentServerACP(ACPAgent):
         }
         tool_kind = kind_map.get(tool_name, "other")
 
+        raw_input = json.dumps(tool_args, indent=2)
+
         # Determine title and create appropriate update based on tool type
         if tool_name == "read_file" and isinstance(tool_args, dict):
             path = tool_args.get("file_path")
@@ -342,6 +344,7 @@ class AgentServerACP(ACPAgent):
                 title=title,
                 kind=tool_kind,
                 status="pending",
+                raw_input=raw_input,
             )
         elif tool_name == "edit_file" and isinstance(tool_args, dict):
             path = tool_args.get("file_path", "")
@@ -371,6 +374,7 @@ class AgentServerACP(ACPAgent):
                     title=title,
                     kind=tool_kind,
                     status="pending",
+                    raw_input=raw_input,
                 )
         elif tool_name == "write_file" and isinstance(tool_args, dict):
             path = tool_args.get("file_path")
@@ -380,6 +384,7 @@ class AgentServerACP(ACPAgent):
                 title=title,
                 kind=tool_kind,
                 status="pending",
+                raw_input=raw_input,
             )
         elif tool_name == "execute" and isinstance(tool_args, dict):
             command = tool_args.get("command", "")
@@ -391,7 +396,7 @@ class AgentServerACP(ACPAgent):
                 title=title,
                 kind=tool_kind,
                 status="pending",
-                raw_input=tool_args,
+                raw_input=raw_input,
             )
         else:
             title = tool_name
@@ -714,6 +719,7 @@ class AgentServerACP(ACPAgent):
                     tool_call_update = ToolCallUpdate(
                         tool_call_id=tool_call_id,
                         title=title,
+                        raw_input=json.dumps(tool_args, indent=2),
                     )
                     response = await self._conn.request_permission(
                         session_id=session_id,

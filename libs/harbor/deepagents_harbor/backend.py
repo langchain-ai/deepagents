@@ -155,7 +155,7 @@ awk -v offset={offset} -v limit={limit} '
         # Heredocs bypass this by passing data through stdin rather than as arguments.
         cmd = f"""
 if [ -e {safe_path} ]; then
-    echo "Error: File '{file_path}' already exists" >&2
+    echo "Error: File '"{safe_path}"' already exists" >&2
     exit 1
 fi
 parent_dir=$(dirname {safe_path})
@@ -164,7 +164,7 @@ if ! base64 -d > {safe_path} <<'__DEEPAGENTS_EOF__'
 {content_b64}
 __DEEPAGENTS_EOF__
 then
-    echo "Error: Failed to decode content for file '{file_path}'" >&2
+    echo "Error: Failed to decode content for file '"{safe_path}"' " >&2
     exit 1
 fi
 """

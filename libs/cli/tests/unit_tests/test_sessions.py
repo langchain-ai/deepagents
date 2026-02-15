@@ -3,12 +3,15 @@
 import asyncio
 import json
 import sqlite3
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 
 from deepagents_cli import sessions
+from deepagents_cli.app import TextualSessionState
 
 
 class TestGenerateThreadId:
@@ -68,8 +71,6 @@ class TestThreadFunctions:
         """)
 
         # Insert test threads with metadata as JSON
-        from datetime import UTC, datetime
-
         now = datetime.now(UTC).isoformat()
         earlier = "2024-01-01T10:00:00+00:00"
 
@@ -216,22 +217,22 @@ class TestGetCheckpointer:
 
 
 class TestFormatTimestamp:
-    """Tests for _format_timestamp helper."""
+    """Tests for format_timestamp helper."""
 
     def test_valid_timestamp(self):
         """Formats valid ISO timestamp."""
-        result = sessions._format_timestamp("2024-12-30T21:18:00+00:00")
+        result = sessions.format_timestamp("2024-12-30T21:18:00+00:00")
         assert result  # Non-empty string
         assert "dec" in result.lower()
 
     def test_none(self):
         """Returns empty for None."""
-        result = sessions._format_timestamp(None)
+        result = sessions.format_timestamp(None)
         assert result == ""
 
     def test_invalid(self):
         """Returns empty for invalid timestamp."""
-        result = sessions._format_timestamp("not a timestamp")
+        result = sessions.format_timestamp("not a timestamp")
         assert result == ""
 
 
@@ -240,24 +241,18 @@ class TestTextualSessionState:
 
     def test_stores_provided_thread_id(self):
         """TextualSessionState stores provided thread_id."""
-        from deepagents_cli.app import TextualSessionState
-
         tid = sessions.generate_thread_id()
         state = TextualSessionState(thread_id=tid)
         assert state.thread_id == tid
 
     def test_generates_id_if_none(self):
         """TextualSessionState generates ID if none provided."""
-        from deepagents_cli.app import TextualSessionState
-
         state = TextualSessionState(thread_id=None)
         assert state.thread_id is not None
         assert len(state.thread_id) == 8
 
     def test_reset_thread(self):
         """reset_thread generates a new thread ID."""
-        from deepagents_cli.app import TextualSessionState
-
         state = TextualSessionState(thread_id="original")
         old_id = state.thread_id
         new_id = state.reset_thread()
@@ -334,8 +329,6 @@ class TestListThreadsWithMessageCount:
     @pytest.fixture
     def temp_db_with_messages(self, tmp_path: Path) -> Path:
         """Create a temporary database with threads and messages in checkpoint blob."""
-        from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
-
         db_path = tmp_path / "test_sessions.db"
         conn = sqlite3.connect(str(db_path))
         conn.execute("""
@@ -420,8 +413,6 @@ class TestMessageCountFromCheckpointBlob:
     @pytest.fixture
     def temp_db_with_checkpoint_messages(self, tmp_path: Path) -> Path:
         """Create a database with messages in checkpoint blob, no writes."""
-        from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
-
         db_path = tmp_path / "test_sessions.db"
         conn = sqlite3.connect(str(db_path))
 

@@ -23,7 +23,7 @@ from deepagents.backends.store import StoreBackend
 from deepagents.backends.utils import TOOL_RESULT_TOKEN_LIMIT
 from deepagents.graph import create_deep_agent
 from deepagents.middleware.filesystem import NUM_CHARS_PER_TOKEN
-from tests.utils import assert_all_deepagent_qualities
+from tests.utils import SampleMiddlewareWithTools, SampleMiddlewareWithToolsAndState, assert_all_deepagent_qualities
 
 
 class SystemMessageCapturingMiddleware(AgentMiddleware):
@@ -486,7 +486,7 @@ class TestDeepAgentEndToEnd:
         content = str(capturing_middleware.captured_system_messages[0].content)
         assert "You are a helpful assistant." in content
         assert "Always be polite." in content
-        assert "you have access to a number of standard tools" in content
+        assert "You are a Deep Agent" in content
 
     def test_deep_agent_with_system_message_string_content(self) -> None:
         """Test that create_deep_agent accepts a SystemMessage with string content."""
@@ -506,7 +506,7 @@ class TestDeepAgentEndToEnd:
 
         content = str(capturing_middleware.captured_system_messages[0].content)
         assert "You are a helpful research assistant." in content
-        assert "you have access to a number of standard tools" in content
+        assert "You are a Deep Agent" in content
 
     def test_deep_agent_two_turns_no_initial_files(self) -> None:
         """Test deepagent with two conversation turns without specifying files on invoke.
@@ -1186,3 +1186,31 @@ class TestDeepAgentEndToEnd:
             f"Expected <= {max_reasonable_chars:,} chars (TOOL_RESULT_TOKEN_LIMIT * 4). "
             f"A single-line file should not cause token overflow."
         )
+
+
+class TestDeepAgentStructure:
+    """Test basic deep agent structure without making network calls."""
+
+    def test_base_deep_agent(self) -> None:
+        """Verifies that a basic deep agent can be created with default settings."""
+        agent = create_deep_agent()
+        assert_all_deepagent_qualities(agent)
+
+    def test_deep_agent_with_tool(self) -> None:
+        """Verifies that a deep agent can be created with tools and the tools are properly bound."""
+        agent = create_deep_agent(tools=[sample_tool])
+        assert_all_deepagent_qualities(agent)
+        assert "sample_tool" in agent.nodes["tools"].bound._tools_by_name
+
+    def test_deep_agent_with_middleware_with_tool(self) -> None:
+        """Verifies that middleware can inject tools into a deep agent."""
+        agent = create_deep_agent(middleware=[SampleMiddlewareWithTools()])
+        assert_all_deepagent_qualities(agent)
+        assert "sample_tool" in agent.nodes["tools"].bound._tools_by_name
+
+    def test_deep_agent_with_middleware_with_tool_and_state(self) -> None:
+        """Verifies that middleware can inject both tools and extended state channels."""
+        agent = create_deep_agent(middleware=[SampleMiddlewareWithToolsAndState()])
+        assert_all_deepagent_qualities(agent)
+        assert "sample_tool" in agent.nodes["tools"].bound._tools_by_name
+        assert "sample_input" in agent.stream_channels

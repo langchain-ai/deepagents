@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.message import Message
 from textual.reactive import reactive
 from textual.widgets import Static, TextArea
@@ -115,7 +115,7 @@ class CompletionOption(Static):
         self.post_message(self.Clicked(self._index))
 
 
-class CompletionPopup(Vertical):
+class CompletionPopup(VerticalScroll):
     """Popup widget that displays completion suggestions as clickable options."""
 
     DEFAULT_CSS = """
@@ -179,6 +179,10 @@ class CompletionPopup(Vertical):
             self._options.append(option)
             await self.mount(option)
 
+        # Scroll selected option into view
+        if 0 <= selected_index < len(self._options):
+            self._options[selected_index].scroll_visible()
+
     def update_selection(self, selected_index: int) -> None:
         """Update which option is selected without rebuilding the list."""
         if self._selected_index == selected_index:
@@ -192,6 +196,7 @@ class CompletionPopup(Vertical):
         self._selected_index = selected_index
         if 0 <= selected_index < len(self._options):
             self._options[selected_index].set_selected(selected=True)
+            self._options[selected_index].scroll_visible()
 
     def on_completion_option_clicked(self, event: CompletionOption.Clicked) -> None:
         """Handle click on a completion option."""
@@ -366,7 +371,7 @@ class ChatInput(Vertical):
     ChatInput {
         height: auto;
         min-height: 3;
-        max-height: 12;
+        max-height: 25;
         padding: 0;
         background: $surface;
         border: solid $primary;
@@ -446,7 +451,6 @@ class ChatInput(Vertical):
         if history_file is None:
             history_file = Path.home() / ".deepagents" / "history.jsonl"
         self._history = HistoryManager(history_file)
-        self._submit_enabled = True
 
     def compose(self) -> ComposeResult:
         """Compose the chat input layout.
@@ -506,16 +510,20 @@ class ChatInput(Vertical):
         self.scroll_visible()
 
     def on_chat_text_area_submitted(self, event: ChatTextArea.Submitted) -> None:
-        """Handle text submission."""
-        if not self._submit_enabled:
-            return  # Submission disabled while agent is working
+        """Handle text submission.
+
+        Always posts the Submitted event - the app layer decides whether to
+        process immediately or queue based on agent status.
+        """
         value = event.value
         if value:
             if self._completion_manager:
                 self._completion_manager.reset()
 
             self._history.add(value)
+            # Always post the message - app layer decides to queue or process
             self.post_message(self.Submitted(value, self.mode))
+            # Always clear input for immediate feedback
             if self._text_area:
                 self._text_area.clear_text()
             self.mode = "normal"
@@ -637,10 +645,6 @@ class ChatInput(Vertical):
                 self._text_area.blur()
                 if self._completion_manager:
                     self._completion_manager.reset()
-
-    def set_submit_enabled(self, *, enabled: bool) -> None:
-        """Enable or disable submission (Enter key). User can still type."""
-        self._submit_enabled = enabled
 
     def set_cursor_active(self, *, active: bool) -> None:
         """Set whether the cursor should be actively blinking.

@@ -1,6 +1,12 @@
 """Unit tests for main entry point."""
 
+import inspect
+
 import pytest
+
+from deepagents_cli.app import run_textual_app
+from deepagents_cli.config import build_langsmith_thread_url, reset_langsmith_url_cache
+from deepagents_cli.main import run_textual_cli_async
 
 
 class TestResumeHintLogic:
@@ -38,16 +44,47 @@ class TestResumeHintLogic:
         assert not show_resume_hint, "Resume hint not shown for resumed threads"
 
 
+class TestLangSmithTeardownUrl:
+    """Test LangSmith thread URL display logic on teardown."""
+
+    def setup_method(self) -> None:
+        """Clear LangSmith URL cache before each test."""
+        reset_langsmith_url_cache()
+
+    def test_thread_url_requires_all_components(self) -> None:
+        """LangSmith link requires thread_id, project_name, and project_url."""
+        thread_url = build_langsmith_thread_url("abc123")
+        # Without LangSmith configured, should return None
+        assert thread_url is None
+
+    def test_thread_url_not_shown_for_none_thread_id(self) -> None:
+        """Guard condition: thread_url and thread_exists both needed."""
+        thread_url = None
+        thread_exists = True
+        show_link = bool(thread_url and thread_exists)
+        assert not show_link
+
+    def test_thread_url_not_shown_when_no_checkpoints(self) -> None:
+        """Guard condition: thread must have checkpointed content."""
+        thread_url = "https://smith.langchain.com/o/org/projects/p/proj/t/abc"
+        thread_exists = False
+        show_link = bool(thread_url and thread_exists)
+        assert not show_link
+
+    def test_thread_url_shown_when_all_conditions_met(self) -> None:
+        """Guard condition: both thread_url and thread_exists must be truthy."""
+        thread_url = "https://smith.langchain.com/o/org/projects/p/proj/t/abc"
+        thread_exists = True
+        show_link = bool(thread_url and thread_exists)
+        assert show_link
+
+
 class TestRunTextualAppReturnType:
     """Test that run_textual_app returns proper return code."""
 
     @pytest.mark.asyncio
     async def test_run_textual_app_returns_int(self) -> None:
         """run_textual_app should return an integer return code."""
-        import inspect
-
-        from deepagents_cli.app import run_textual_app
-
         # Verify the function signature returns int
         sig = inspect.signature(run_textual_app)
         # Handle both 'int' string and int type (forward refs)
@@ -62,10 +99,6 @@ class TestRunTextualCliAsyncReturnType:
 
     def test_run_textual_cli_async_returns_int(self) -> None:
         """run_textual_cli_async should return an integer return code."""
-        import inspect
-
-        from deepagents_cli.main import run_textual_cli_async
-
         # Verify the function signature returns int
         sig = inspect.signature(run_textual_cli_async)
         assert sig.return_annotation in (int, "int"), (
@@ -78,10 +111,6 @@ class TestThreadMessage:
 
     def test_new_session_message_format(self) -> None:
         """New session message should say 'Starting with thread:' not 'Thread:'."""
-        import inspect
-
-        from deepagents_cli.main import run_textual_cli_async
-
         # This tests that the format is correct by checking the source
         source = inspect.getsource(run_textual_cli_async)
         assert "Starting with thread:" in source, (

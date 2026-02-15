@@ -13,14 +13,12 @@ from deepagents.backends.protocol import (
     FileUploadResponse,
     SandboxBackendProtocol,
 )
-from deepagents.backends.sandbox import (
-    BaseSandbox,
-    SandboxListResponse,
-    SandboxProvider,
-)
+from deepagents.backends.sandbox import BaseSandbox
+
+from deepagents_cli.integrations.sandbox_provider import SandboxProvider
 
 if TYPE_CHECKING:
-    from langsmith.sandbox import Sandbox, SandboxClient
+    from langsmith.sandbox import Sandbox, SandboxClient, SandboxTemplate
 
 
 # Default template configuration
@@ -130,7 +128,7 @@ class LangSmithBackend(BaseSandbox):
         return responses
 
 
-class LangSmithProvider(SandboxProvider[dict[str, Any]]):
+class LangSmithProvider(SandboxProvider):
     """LangSmith sandbox provider implementation.
 
     Manages LangSmith sandbox lifecycle using the LangSmith SDK.
@@ -151,42 +149,36 @@ class LangSmithProvider(SandboxProvider[dict[str, Any]]):
         if not self._api_key:
             msg = "LANGSMITH_API_KEY environment variable not set"
             raise ValueError(msg)
-        self._client: SandboxClient = sandbox.SandboxClient()
-
-    def list(
-        self,
-        *,
-        cursor: str | None = None,
-        **kwargs: Any,
-    ) -> SandboxListResponse[dict[str, Any]]:
-        """List available LangSmith sandboxes.
-
-        Raises:
-            NotImplementedError: LangSmith SDK list API not yet implemented.
-        """
-        msg = "Listing with LangSmith SDK not yet implemented"
-        raise NotImplementedError(msg)
+        self._client: SandboxClient = sandbox.SandboxClient(api_key=self._api_key)
 
     def get_or_create(
         self,
         *,
         sandbox_id: str | None = None,
         timeout: int = 180,
-        **kwargs: Any,  # noqa: ARG002
+        template: str | None = None,
+        template_image: str | None = None,
+        **kwargs: Any,
     ) -> SandboxBackendProtocol:
         """Get existing or create new LangSmith sandbox.
 
         Args:
             sandbox_id: Optional existing sandbox name to reuse
             timeout: Timeout in seconds for sandbox startup (default: 180)
+            template: Template name for the sandbox
+            template_image: Docker image for the template
             **kwargs: Additional LangSmith-specific parameters
 
         Returns:
             LangSmithBackend instance
 
         Raises:
-            RuntimeError: Sandbox connection or startup failed
+            RuntimeError: If sandbox connection or startup fails
+            TypeError: If unsupported keyword arguments are provided
         """
+        if kwargs:
+            msg = f"Received unsupported arguments: {list(kwargs.keys())}"
+            raise TypeError(msg)
         if sandbox_id:
             # Connect to existing sandbox by name
             try:
@@ -196,16 +188,21 @@ class LangSmithProvider(SandboxProvider[dict[str, Any]]):
                 raise RuntimeError(msg) from e
             return LangSmithBackend(sandbox)
 
+        resolved_template_name, resolved_image_name = self._resolve_template(
+            template, template_image
+        )
+
         # Create new sandbox - ensure template exists first
-        self._ensure_template()
+        self._ensure_template(resolved_template_name, resolved_image_name)
 
         try:
             sandbox = self._client.create_sandbox(
-                template_name=DEFAULT_TEMPLATE_NAME, timeout=timeout
+                template_name=resolved_template_name, timeout=timeout
             )
         except Exception as e:
             msg = (
-                f"Failed to create sandbox from template '{DEFAULT_TEMPLATE_NAME}': {e}"
+                f"Failed to create sandbox from template "
+                f"'{resolved_template_name}': {e}"
             )
             raise RuntimeError(msg) from e
 
@@ -237,7 +234,32 @@ class LangSmithProvider(SandboxProvider[dict[str, Any]]):
         """
         self._client.delete_sandbox(sandbox_id)
 
-    def _ensure_template(self) -> None:
+    @staticmethod
+    def _resolve_template(
+        template: SandboxTemplate | str | None,
+        template_image: str | None = None,
+    ) -> tuple[str, str]:
+        """Resolve template name and image from kwargs.
+
+        Returns:
+            Tuple of (template_name, template_image). Always returns values,
+            using defaults if not provided.
+        """
+        resolved_image = template_image or DEFAULT_TEMPLATE_IMAGE
+        if template is None:
+            return DEFAULT_TEMPLATE_NAME, resolved_image
+        if isinstance(template, str):
+            return template, resolved_image
+        # SandboxTemplate object - extract image if not provided
+        if template_image is None and template.image:
+            resolved_image = template.image
+        return template.name, resolved_image
+
+    def _ensure_template(
+        self,
+        template_name: str,
+        template_image: str,
+    ) -> None:
         """Ensure template exists, creating it if needed.
 
         Raises:
@@ -246,21 +268,17 @@ class LangSmithProvider(SandboxProvider[dict[str, Any]]):
         from langsmith.sandbox import ResourceNotFoundError
 
         try:
-            self._client.get_template(DEFAULT_TEMPLATE_NAME)
+            self._client.get_template(template_name)
         except ResourceNotFoundError as e:
             if e.resource_type != "template":
                 msg = f"Unexpected resource not found: {e}"
                 raise RuntimeError(msg) from e
             # Template doesn't exist, create it
             try:
-                self._client.create_template(
-                    name=DEFAULT_TEMPLATE_NAME, image=DEFAULT_TEMPLATE_IMAGE
-                )
+                self._client.create_template(name=template_name, image=template_image)
             except Exception as create_err:
-                msg = (
-                    f"Failed to create template '{DEFAULT_TEMPLATE_NAME}': {create_err}"
-                )
+                msg = f"Failed to create template '{template_name}': {create_err}"
                 raise RuntimeError(msg) from create_err
         except Exception as e:
-            msg = f"Failed to check template '{DEFAULT_TEMPLATE_NAME}': {e}"
+            msg = f"Failed to check template '{template_name}': {e}"
             raise RuntimeError(msg) from e

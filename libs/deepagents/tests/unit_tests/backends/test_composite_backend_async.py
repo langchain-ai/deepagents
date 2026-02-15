@@ -67,7 +67,7 @@ class MockSandboxBackend(SandboxBackendProtocol, StateBackend):
 async def test_composite_state_backend_routes_and_search_async(tmp_path: Path):
     """Test async operations with composite backend routing."""
     rt = make_runtime("t3")
-    be = build_composite_state_backend(rt, routes={"/memories/": (lambda r: StoreBackend(r))})
+    be = build_composite_state_backend(rt, routes={"/memories/": (StoreBackend)})
 
     # write to default (state)
     res = await be.awrite("/file.txt", "alpha")
@@ -170,9 +170,9 @@ async def test_composite_backend_multiple_routes_async():
     comp = build_composite_state_backend(
         rt,
         routes={
-            "/memories/": (lambda r: StoreBackend(r)),
-            "/archive/": (lambda r: StoreBackend(r)),
-            "/cache/": (lambda r: StoreBackend(r)),
+            "/memories/": (StoreBackend),
+            "/archive/": (StoreBackend),
+            "/cache/": (StoreBackend),
         },
     )
 
@@ -289,8 +289,8 @@ async def test_composite_backend_als_multiple_routes_nested_async():
     comp = build_composite_state_backend(
         rt,
         routes={
-            "/memories/": (lambda r: StoreBackend(r)),
-            "/archive/": (lambda r: StoreBackend(r)),
+            "/memories/": (StoreBackend),
+            "/archive/": (StoreBackend),
         },
     )
 

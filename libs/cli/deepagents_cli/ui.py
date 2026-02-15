@@ -92,6 +92,21 @@ def format_tool_display(tool_name: str, tool_args: dict) -> str:
     """
     prefix = get_glyphs().tool_prefix
 
+    def truncate_path_middle(path_str: str, max_length: int = 60) -> str:
+        """Truncate a path while preserving both prefix and filename.
+
+        Returns:
+            A potentially shortened path string with middle ellipsis.
+        """
+        if len(path_str) <= max_length:
+            return path_str
+        ellipsis = get_glyphs().ellipsis
+        if max_length <= len(ellipsis) + 2:
+            return truncate_value(path_str, max_length)
+        head_len = (max_length - len(ellipsis)) // 2
+        tail_len = max_length - len(ellipsis) - head_len
+        return f"{path_str[:head_len]}{ellipsis}{path_str[-tail_len:]}"
+
     def abbreviate_path(path_str: str, max_length: int = 60) -> str:
         """Abbreviate a file path intelligently - show basename or relative path.
 
@@ -121,10 +136,10 @@ def format_tool_display(tool_name: str, tool_args: dict) -> str:
                 return path_str
         except Exception:
             # Fallback to original string if any error
-            return truncate_value(path_str, max_length)
+            return truncate_path_middle(path_str, max_length)
         else:
-            # Otherwise, just show basename (filename only)
-            return path.name
+            # Preserve both root context and file name for long absolute paths.
+            return truncate_path_middle(path_str, max_length)
 
     # Tool-specific formatting - show the most important argument(s)
     if tool_name in {"read_file", "write_file", "edit_file"}:

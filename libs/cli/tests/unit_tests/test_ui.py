@@ -118,6 +118,20 @@ class TestFormatToolDisplayOther:
         assert result.startswith(f"{prefix} read_file(")
         assert "file.py" in result
 
+    def test_read_file_long_absolute_path_keeps_context(self) -> None:
+        """Long absolute paths should keep directory context, not basename only."""
+        prefix = get_glyphs().tool_prefix
+        long_path = (
+            "/Users/liweiguang/worktrees/project-alpha/service-a/src/deep/module/"
+            "very_important_file.py"
+        )
+        result = format_tool_display("read_file", {"file_path": long_path})
+
+        assert result.startswith(f"{prefix} read_file(")
+        assert "very_important_file.py" in result
+        assert "/" in result
+        assert get_glyphs().ellipsis in result
+
     def test_web_search(self) -> None:
         """Test web_search display shows query."""
         prefix = get_glyphs().tool_prefix

@@ -57,9 +57,12 @@ def copy_selection_to_clipboard(app: App) -> None:
 
         selection = widget.text_selection
 
+        if selection.end is None:
+            continue
+
         try:
             result = widget.get_selection(selection)
-        except (AttributeError, TypeError, ValueError) as e:
+        except (AttributeError, TypeError, ValueError, IndexError) as e:
             logger.debug(
                 "Failed to get selection from widget %s: %s",
                 type(widget).__name__,

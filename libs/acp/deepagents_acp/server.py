@@ -302,8 +302,8 @@ class AgentServerACP(ACPAgent):
                             "args": tool_args,
                         }
 
-                        # Create the appropriate tool call update
-                        update = self._create_tool_call_update(tool_id, tool_name, tool_args)
+                        # Create the appropriate tool call start
+                        update = self._create_tool_call_start(tool_id, tool_name, tool_args)
 
                         await self._conn.session_update(
                             session_id=session_id,
@@ -318,7 +318,7 @@ class AgentServerACP(ACPAgent):
                     except json.JSONDecodeError:
                         pass
 
-    def _create_tool_call_update(
+    def _create_tool_call_start(
         self, tool_id: str, tool_name: str, tool_args: dict[str, Any]
     ) -> ToolCallStart:
         """Create a tool call update based on tool type and arguments."""

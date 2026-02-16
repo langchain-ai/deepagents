@@ -909,7 +909,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
             # Safe cast: _supports_execution validates that execute()/aexecute() exist
             # (either SandboxBackendProtocol or CompositeBackend with sandbox default)
-            executable = cast(SandboxBackendProtocol, resolved_backend)
+            executable = cast("SandboxBackendProtocol", resolved_backend)
             try:
                 result = executable.execute(command)
             except NotImplementedError as e:
@@ -944,7 +944,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 )
 
             # Safe cast: _supports_execution validates that execute()/aexecute() exist
-            executable = cast(SandboxBackendProtocol, resolved_backend)
+            executable = cast("SandboxBackendProtocol", resolved_backend)
             try:
                 result = await executable.aexecute(command)
             except NotImplementedError as e:

@@ -116,7 +116,6 @@ from langchain.agents.middleware.types import (
     ModelResponse,
     ResponseT,
 )
-from langchain_core.runnables import RunnableConfig
 from langgraph.prebuilt import ToolRuntime
 
 from deepagents.middleware._utils import append_to_system_message

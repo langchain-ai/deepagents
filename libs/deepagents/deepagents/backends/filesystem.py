@@ -543,7 +543,8 @@ class FilesystemBackend(BackendProtocol):
             pattern = pattern.lstrip("/")
 
         if self.virtual_mode and ".." in Path(pattern).parts:
-            raise ValueError("Path traversal not allowed in glob pattern")
+            msg = "Path traversal not allowed in glob pattern"
+            raise ValueError(msg)
 
         search_path = self.cwd if path == "/" else self._resolve_path(path)
         if not search_path.exists() or not search_path.is_dir():

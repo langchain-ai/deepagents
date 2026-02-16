@@ -518,7 +518,9 @@ class CompositeBackend(BackendProtocol):
         )
         raise NotImplementedError(msg)
 
-    def _batch_upload(self, files: list[tuple[str, bytes]], backend_batches: dict[BackendProtocol, list[tuple[int, str, bytes]]]) -> list[FileUploadResponse]:
+    def _batch_upload(
+        self, files: list[tuple[str, bytes]], backend_batches: dict[BackendProtocol, list[tuple[int, str, bytes]]]
+    ) -> list[FileUploadResponse]:
         """Process upload batches and return results in original order."""
         results: list[FileUploadResponse | None] = [None] * len(files)
         for backend, batch in backend_batches.items():
@@ -532,7 +534,9 @@ class CompositeBackend(BackendProtocol):
                 )
         return [r for r in results if r is not None]
 
-    async def _abatch_upload(self, files: list[tuple[str, bytes]], backend_batches: dict[BackendProtocol, list[tuple[int, str, bytes]]]) -> list[FileUploadResponse]:
+    async def _abatch_upload(
+        self, files: list[tuple[str, bytes]], backend_batches: dict[BackendProtocol, list[tuple[int, str, bytes]]]
+    ) -> list[FileUploadResponse]:
         """Process upload batches (async) and return results in original order."""
         results: list[FileUploadResponse | None] = [None] * len(files)
         for backend, batch in backend_batches.items():

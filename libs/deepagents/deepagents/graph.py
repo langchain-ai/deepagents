@@ -149,14 +149,7 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
             # Use Responses API by default. To use chat completions, use
             # `model=init_chat_model("openai:...")`
             # To disable data retention with the Responses API, use
-            # ```
-            # model=init_chat_model(
-            #     "openai:...",
-            #     use_responses_api=True,
-            #     store=False,
-            #     include=["reasoning.encrypted_content"],
-            # )
-            # ```
+            # `model=init_chat_model("openai:...", use_responses_api=True, store=False, include=["reasoning.encrypted_content"])`
             model_init_params: dict = {"use_responses_api": True}
         else:
             model_init_params = {}

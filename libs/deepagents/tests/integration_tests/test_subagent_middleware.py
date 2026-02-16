@@ -1,3 +1,5 @@
+from typing import ClassVar
+
 import pytest
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import HumanMessage

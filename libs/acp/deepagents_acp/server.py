@@ -152,7 +152,7 @@ class AgentServerACP(ACPAgent):
                 available_modes=state.available_modes,
                 current_mode_id=mode_id,
             )
-        self._agent = None
+            self._reset_agent(session_id)
         return SetSessionModeResponse()
 
     async def cancel(self, session_id: str, **kwargs: Any) -> None:
@@ -302,8 +302,8 @@ class AgentServerACP(ACPAgent):
                             "args": tool_args,
                         }
 
-                        # Create the appropriate tool call update
-                        update = self._create_tool_call_update(tool_id, tool_name, tool_args)
+                        # Create the appropriate tool call start
+                        update = self._create_tool_call_start(tool_id, tool_name, tool_args)
 
                         await self._conn.session_update(
                             session_id=session_id,
@@ -318,7 +318,7 @@ class AgentServerACP(ACPAgent):
                     except json.JSONDecodeError:
                         pass
 
-    def _create_tool_call_update(
+    def _create_tool_call_start(
         self, tool_id: str, tool_name: str, tool_args: dict[str, Any]
     ) -> ToolCallStart:
         """Create a tool call update based on tool type and arguments."""
@@ -342,6 +342,7 @@ class AgentServerACP(ACPAgent):
                 title=title,
                 kind=tool_kind,
                 status="pending",
+                raw_input=tool_args,
             )
         elif tool_name == "edit_file" and isinstance(tool_args, dict):
             path = tool_args.get("file_path", "")
@@ -371,6 +372,7 @@ class AgentServerACP(ACPAgent):
                     title=title,
                     kind=tool_kind,
                     status="pending",
+                    raw_input=tool_args,
                 )
         elif tool_name == "write_file" and isinstance(tool_args, dict):
             path = tool_args.get("file_path")
@@ -380,15 +382,13 @@ class AgentServerACP(ACPAgent):
                 title=title,
                 kind=tool_kind,
                 status="pending",
+                raw_input=tool_args,
             )
         elif tool_name == "execute" and isinstance(tool_args, dict):
             command = tool_args.get("command", "")
-            # Truncate long commands for display
-            display_command = truncate_execute_command_for_display(command=command)
-            title = f"Execute: `{display_command}`" if command else "Execute command"
             return start_tool_call(
                 tool_call_id=tool_id,
-                title=title,
+                title=command if command else "Execute command",
                 kind=tool_kind,
                 status="pending",
                 raw_input=tool_args,
@@ -400,7 +400,19 @@ class AgentServerACP(ACPAgent):
                 title=title,
                 kind=tool_kind,
                 status="pending",
+                raw_input=tool_args,
             )
+
+    def _reset_agent(self, session_id: str) -> None:
+        if isinstance(self._agent_factory, CompiledStateGraph):
+            self._agent = self._agent_factory
+        else:
+            mode = self._session_modes.get(
+                session_id,
+                self._modes.current_mode_id if self._modes is not None else "auto",
+            )
+            context = AgentSessionContext(cwd=self._cwd, mode=mode)
+            self._agent = self._agent_factory(context)
 
     async def prompt(
         self,
@@ -418,15 +430,7 @@ class AgentServerACP(ACPAgent):
             cwd = self._session_cwds.get(session_id)
             if cwd is not None:
                 self._cwd = cwd
-            if isinstance(self._agent_factory, CompiledStateGraph):
-                self._agent = self._agent_factory
-            else:
-                mode = self._session_modes.get(
-                    session_id,
-                    self._modes.current_mode_id if self._modes is not None else "auto",
-                )
-                context = AgentSessionContext(cwd=self._cwd, mode=mode)
-                self._agent = self._agent_factory(context)
+            self._reset_agent(session_id)
 
             if getattr(self._agent, "checkpointer", None) is None:
                 self._agent.checkpointer = MemorySaver()
@@ -584,12 +588,12 @@ class AgentServerACP(ACPAgent):
                     if text and not _namespace:
                         await self._log_text(text=text, session_id=session_id)
 
-            # Check if the agent is interrupted (waiting for HITL approval)
+            # After streaming completes, check if we need to exit the loop
+            # The loop continues while there are interrupts (line 467)
+            # We get the current state to check the loop condition
             current_state = await self._agent.aget_state(config)
-            user_decisions = await self._handle_interrupts(
-                current_state=current_state,
-                session_id=session_id,
-            )
+            # Note: Interrupts are handled during streaming via __interrupt__ updates
+            # This state check is only for the while loop condition
 
         return PromptResponse(stop_reason="end_turn")
 
@@ -709,8 +713,7 @@ class AgentServerACP(ACPAgent):
 
                     # Request permission from the client
                     tool_call_update = ToolCallUpdate(
-                        tool_call_id=tool_call_id,
-                        title=title,
+                        tool_call_id=tool_call_id, title=title, raw_input=tool_args
                     )
                     response = await self._conn.request_permission(
                         session_id=session_id,

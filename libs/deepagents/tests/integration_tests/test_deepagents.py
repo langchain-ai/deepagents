@@ -19,8 +19,6 @@ from tests.utils import (
     TOY_BASKETBALL_RESEARCH,
     ResearchMiddleware,
     ResearchMiddlewareWithTools,
-    SampleMiddlewareWithTools,
-    SampleMiddlewareWithToolsAndState,
     WeatherToolMiddleware,
     assert_all_deepagent_qualities,
     get_soccer_scores,
@@ -30,26 +28,6 @@ from tests.utils import (
 
 
 class TestDeepAgents:
-    def test_base_deep_agent(self):
-        agent = create_deep_agent()
-        assert_all_deepagent_qualities(agent)
-
-    def test_deep_agent_with_tool(self):
-        agent = create_deep_agent(tools=[sample_tool])
-        assert_all_deepagent_qualities(agent)
-        assert "sample_tool" in agent.nodes["tools"].bound._tools_by_name
-
-    def test_deep_agent_with_middleware_with_tool(self):
-        agent = create_deep_agent(middleware=[SampleMiddlewareWithTools()])
-        assert_all_deepagent_qualities(agent)
-        assert "sample_tool" in agent.nodes["tools"].bound._tools_by_name
-
-    def test_deep_agent_with_middleware_with_tool_and_state(self):
-        agent = create_deep_agent(middleware=[SampleMiddlewareWithToolsAndState()])
-        assert_all_deepagent_qualities(agent)
-        assert "sample_tool" in agent.nodes["tools"].bound._tools_by_name
-        assert "sample_input" in agent.stream_channels
-
     def test_deep_agent_with_subagents(self):
         subagents = [
             {

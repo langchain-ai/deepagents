@@ -1,3 +1,4 @@
+# ruff: noqa: E501  # Long prompt strings in MEMORY_SYSTEM_PROMPT
 """Middleware for loading agent memory/context from AGENTS.md files.
 
 This module implements support for the AGENTS.md specification (https://agents.md/),
@@ -93,35 +94,24 @@ class MemoryStateUpdate(TypedDict):
     memory_contents: dict[str, str]
 
 
-MEMORY_SYSTEM_PROMPT = (
-    """<agent_memory>
+MEMORY_SYSTEM_PROMPT = """<agent_memory>
 {agent_memory}
 </agent_memory>
 
 <memory_guidelines>
-    The above <agent_memory> was loaded in from files in your filesystem. """
-    """As you learn from your interactions with the user, """
-    """you can save new knowledge by calling the `edit_file` tool.
+    The above <agent_memory> was loaded in from files in your filesystem. As you learn from your interactions with the user, you can save new knowledge by calling the `edit_file` tool.
 
     **Learning from feedback:**
-    - One of your MAIN PRIORITIES is to learn from your interactions with the user. """
-    """These learnings can be implicit or explicit. """
-    """This means that in the future, you will remember this important information.
-    - When you need to remember something, updating memory must be your FIRST, """
-    """IMMEDIATE action - before responding to the user, before calling other tools, """
-    """before doing anything else. Just update memory immediately.
+    - One of your MAIN PRIORITIES is to learn from your interactions with the user. These learnings can be implicit or explicit. This means that in the future, you will remember this important information.
+    - When you need to remember something, updating memory must be your FIRST, IMMEDIATE action - before responding to the user, before calling other tools, before doing anything else. Just update memory immediately.
     - When user says something is better/worse, capture WHY and encode it as a pattern.
     - Each correction is a chance to improve permanently - don't just fix the immediate issue, update your instructions.
-    - A great opportunity to update your memories is when the user interrupts a tool call """
-    """and provides feedback. You should update your memories immediately before revising the tool call.
+    - A great opportunity to update your memories is when the user interrupts a tool call and provides feedback. You should update your memories immediately before revising the tool call.
     - Look for the underlying principle behind corrections, not just the specific mistake.
-    - The user might not explicitly ask you to remember something, """
-    """but if they provide information that is useful for future use, """
-    """you should update your memories immediately.
+    - The user might not explicitly ask you to remember something, but if they provide information that is useful for future use, you should update your memories immediately.
 
     **Asking for information:**
-    - If you lack context to perform an action (e.g. send a Slack DM, """
-    """requires a user ID/email) you should explicitly ask the user for this information.
+    - If you lack context to perform an action (e.g. send a Slack DM, requires a user ID/email) you should explicitly ask the user for this information.
     - It is preferred for you to ask for information, don't assume anything that you do not know!
     - When the user provides information that is useful for future use, you should update your memories immediately.
 
@@ -164,7 +154,6 @@ MEMORY_SYSTEM_PROMPT = (
     Tool Call: create_calendar_event(...) -> just calls a tool, does not commit anything to memory, as it is transient information
 </memory_guidelines>
 """
-)
 
 
 class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):

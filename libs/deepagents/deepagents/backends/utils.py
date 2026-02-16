@@ -180,7 +180,7 @@ def perform_string_replacement(
     content: str,
     old_string: str,
     new_string: str,
-    replace_all: bool,  # noqa: FBT001  # Boolean arg matches backend API pattern
+    replace_all: bool | None,  # noqa: FBT001
 ) -> tuple[str, int] | str:
     """Perform string replacement with occurrence validation.
 

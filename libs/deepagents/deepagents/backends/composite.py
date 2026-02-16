@@ -420,7 +420,7 @@ class CompositeBackend(BackendProtocol):
         file_path: str,
         old_string: str,
         new_string: str,
-        replace_all: bool = False,  # noqa: FBT001, FBT002  # Boolean positional arg is part of BackendProtocol API
+        replace_all: bool | None = None,  # noqa: FBT001
     ) -> EditResult:
         """Edit a file, routing to appropriate backend.
 
@@ -452,7 +452,7 @@ class CompositeBackend(BackendProtocol):
         file_path: str,
         old_string: str,
         new_string: str,
-        replace_all: bool = False,  # noqa: FBT001, FBT002  # Boolean positional arg is part of BackendProtocol API
+        replace_all: bool | None = None,  # noqa: FBT001
     ) -> EditResult:
         """Async version of edit."""
         backend, stripped_key = self._get_backend_and_key(file_path)
@@ -518,38 +518,6 @@ class CompositeBackend(BackendProtocol):
         )
         raise NotImplementedError(msg)
 
-    def _batch_upload(
-        self, files: list[tuple[str, bytes]], backend_batches: dict[BackendProtocol, list[tuple[int, str, bytes]]]
-    ) -> list[FileUploadResponse]:
-        """Process upload batches and return results in original order."""
-        results: list[FileUploadResponse | None] = [None] * len(files)
-        for backend, batch in backend_batches.items():
-            indices, stripped_paths, contents = zip(*batch, strict=False)
-            batch_files = list(zip(stripped_paths, contents, strict=False))
-            batch_responses = backend.upload_files(batch_files)
-            for i, orig_idx in enumerate(indices):
-                results[orig_idx] = FileUploadResponse(
-                    path=files[orig_idx][0],
-                    error=batch_responses[i].error if i < len(batch_responses) else None,
-                )
-        return [r for r in results if r is not None]
-
-    async def _abatch_upload(
-        self, files: list[tuple[str, bytes]], backend_batches: dict[BackendProtocol, list[tuple[int, str, bytes]]]
-    ) -> list[FileUploadResponse]:
-        """Process upload batches (async) and return results in original order."""
-        results: list[FileUploadResponse | None] = [None] * len(files)
-        for backend, batch in backend_batches.items():
-            indices, stripped_paths, contents = zip(*batch, strict=False)
-            batch_files = list(zip(stripped_paths, contents, strict=False))
-            batch_responses = await backend.aupload_files(batch_files)
-            for i, orig_idx in enumerate(indices):
-                results[orig_idx] = FileUploadResponse(
-                    path=files[orig_idx][0],
-                    error=batch_responses[i].error if i < len(batch_responses) else None,
-                )
-        return [r for r in results if r is not None]
-
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
         """Upload multiple files, batching by backend for efficiency.
 
@@ -563,46 +531,62 @@ class CompositeBackend(BackendProtocol):
             List of FileUploadResponse objects, one per input file.
             Response order matches input order.
         """
+        # Pre-allocate result list
+        results: list[FileUploadResponse | None] = [None] * len(files)
+
+        # Group files by backend, tracking original indices
         backend_batches: dict[BackendProtocol, list[tuple[int, str, bytes]]] = defaultdict(list)
+
         for idx, (path, content) in enumerate(files):
             backend, stripped_path = self._get_backend_and_key(path)
             backend_batches[backend].append((idx, stripped_path, content))
-        return self._batch_upload(files, backend_batches)
+
+        # Process each backend's batch
+        for backend, batch in backend_batches.items():
+            # Extract data for backend call
+            indices, stripped_paths, contents = zip(*batch, strict=False)
+            batch_files = list(zip(stripped_paths, contents, strict=False))
+
+            # Call backend once with all its files
+            batch_responses = backend.upload_files(batch_files)
+
+            # Place responses at original indices with original paths
+            for i, orig_idx in enumerate(indices):
+                results[orig_idx] = FileUploadResponse(
+                    path=files[orig_idx][0],  # Original path
+                    error=batch_responses[i].error if i < len(batch_responses) else None,
+                )
+
+        return [r for r in results if r is not None]
 
     async def aupload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
         """Async version of upload_files."""
+        # Pre-allocate result list
+        results: list[FileUploadResponse | None] = [None] * len(files)
+
+        # Group files by backend, tracking original indices
         backend_batches: dict[BackendProtocol, list[tuple[int, str, bytes]]] = defaultdict(list)
+
         for idx, (path, content) in enumerate(files):
             backend, stripped_path = self._get_backend_and_key(path)
             backend_batches[backend].append((idx, stripped_path, content))
-        return await self._abatch_upload(files, backend_batches)
 
-    def _batch_download(self, paths: list[str], backend_batches: dict[BackendProtocol, list[tuple[int, str]]]) -> list[FileDownloadResponse]:
-        """Process download batches and return results in original order."""
-        results: list[FileDownloadResponse | None] = [None] * len(paths)
+        # Process each backend's batch
         for backend, batch in backend_batches.items():
-            indices, stripped_paths = zip(*batch, strict=False)
-            batch_responses = backend.download_files(list(stripped_paths))
+            # Extract data for backend call
+            indices, stripped_paths, contents = zip(*batch, strict=False)
+            batch_files = list(zip(stripped_paths, contents, strict=False))
+
+            # Call backend once with all its files
+            batch_responses = await backend.aupload_files(batch_files)
+
+            # Place responses at original indices with original paths
             for i, orig_idx in enumerate(indices):
-                results[orig_idx] = FileDownloadResponse(
-                    path=paths[orig_idx],
-                    content=batch_responses[i].content if i < len(batch_responses) else None,
+                results[orig_idx] = FileUploadResponse(
+                    path=files[orig_idx][0],  # Original path
                     error=batch_responses[i].error if i < len(batch_responses) else None,
                 )
-        return [r for r in results if r is not None]
 
-    async def _abatch_download(self, paths: list[str], backend_batches: dict[BackendProtocol, list[tuple[int, str]]]) -> list[FileDownloadResponse]:
-        """Process download batches (async) and return results in original order."""
-        results: list[FileDownloadResponse | None] = [None] * len(paths)
-        for backend, batch in backend_batches.items():
-            indices, stripped_paths = zip(*batch, strict=False)
-            batch_responses = await backend.adownload_files(list(stripped_paths))
-            for i, orig_idx in enumerate(indices):
-                results[orig_idx] = FileDownloadResponse(
-                    path=paths[orig_idx],
-                    content=batch_responses[i].content if i < len(batch_responses) else None,
-                    error=batch_responses[i].error if i < len(batch_responses) else None,
-                )
         return [r for r in results if r is not None]
 
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
@@ -618,16 +602,58 @@ class CompositeBackend(BackendProtocol):
             List of FileDownloadResponse objects, one per input path.
             Response order matches input order.
         """
+        # Pre-allocate result list
+        results: list[FileDownloadResponse | None] = [None] * len(paths)
+
         backend_batches: dict[BackendProtocol, list[tuple[int, str]]] = defaultdict(list)
+
         for idx, path in enumerate(paths):
             backend, stripped_path = self._get_backend_and_key(path)
             backend_batches[backend].append((idx, stripped_path))
-        return self._batch_download(paths, backend_batches)
+
+        # Process each backend's batch
+        for backend, batch in backend_batches.items():
+            # Extract data for backend call
+            indices, stripped_paths = zip(*batch, strict=False)
+
+            # Call backend once with all its paths
+            batch_responses = backend.download_files(list(stripped_paths))
+
+            # Place responses at original indices with original paths
+            for i, orig_idx in enumerate(indices):
+                results[orig_idx] = FileDownloadResponse(
+                    path=paths[orig_idx],  # Original path
+                    content=batch_responses[i].content if i < len(batch_responses) else None,
+                    error=batch_responses[i].error if i < len(batch_responses) else None,
+                )
+
+        return [r for r in results if r is not None]
 
     async def adownload_files(self, paths: list[str]) -> list[FileDownloadResponse]:
         """Async version of download_files."""
+        # Pre-allocate result list
+        results: list[FileDownloadResponse | None] = [None] * len(paths)
+
         backend_batches: dict[BackendProtocol, list[tuple[int, str]]] = defaultdict(list)
+
         for idx, path in enumerate(paths):
             backend, stripped_path = self._get_backend_and_key(path)
             backend_batches[backend].append((idx, stripped_path))
-        return await self._abatch_download(paths, backend_batches)
+
+        # Process each backend's batch
+        for backend, batch in backend_batches.items():
+            # Extract data for backend call
+            indices, stripped_paths = zip(*batch, strict=False)
+
+            # Call backend once with all its paths
+            batch_responses = await backend.adownload_files(list(stripped_paths))
+
+            # Place responses at original indices with original paths
+            for i, orig_idx in enumerate(indices):
+                results[orig_idx] = FileDownloadResponse(
+                    path=paths[orig_idx],  # Original path
+                    content=batch_responses[i].content if i < len(batch_responses) else None,
+                    error=batch_responses[i].error if i < len(batch_responses) else None,
+                )
+
+        return [r for r in results if r is not None]

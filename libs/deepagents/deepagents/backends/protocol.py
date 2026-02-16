@@ -338,7 +338,7 @@ class BackendProtocol(abc.ABC):
         file_path: str,
         old_string: str,
         new_string: str,
-        replace_all: bool = False,  # noqa: FBT001, FBT002  # Boolean arg defines BackendProtocol interface
+        replace_all: bool | None = None,  # noqa: FBT001
     ) -> EditResult:
         """Perform exact string replacements in an existing file.
 
@@ -361,7 +361,7 @@ class BackendProtocol(abc.ABC):
         file_path: str,
         old_string: str,
         new_string: str,
-        replace_all: bool = False,  # noqa: FBT001, FBT002  # Boolean arg defines BackendProtocol interface
+        replace_all: bool | None = None,  # noqa: FBT001
     ) -> EditResult:
         """Async version of edit."""
         return await asyncio.to_thread(self.edit, file_path, old_string, new_string, replace_all)

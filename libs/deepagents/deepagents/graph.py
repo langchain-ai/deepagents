@@ -48,7 +48,7 @@ def get_default_model() -> ChatAnthropic:
     )
 
 
-def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic with many conditional branches
+def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly logic with many conditional branches
     model: str | BaseChatModel | None = None,
     tools: Sequence[BaseTool | Callable | dict[str, Any]] | None = None,
     *,
@@ -162,7 +162,7 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
     backend = backend if backend is not None else (StateBackend)
 
     # Build general-purpose subagent with default middleware stack
-    gp_middleware: list[AgentMiddleware] = [  # ty: ignore[invalid-assignment]
+    gp_middleware: list[AgentMiddleware[Any, Any, Any]] = [
         TodoListMiddleware(),
         FilesystemMiddleware(backend=backend),
         SummarizationMiddleware(
@@ -177,7 +177,7 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
         PatchToolCallsMiddleware(),
     ]
     if skills is not None:
-        gp_middleware.append(SkillsMiddleware(backend=backend, sources=skills))  # ty: ignore[invalid-argument-type]
+        gp_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
     if interrupt_on is not None:
         gp_middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
 
@@ -202,7 +202,7 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
 
             # Build middleware: base stack + skills (if specified) + user's middleware
             subagent_summarization_defaults = _compute_summarization_defaults(subagent_model)
-            subagent_middleware: list[AgentMiddleware] = [  # ty: ignore[invalid-assignment]
+            subagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
                 TodoListMiddleware(),
                 FilesystemMiddleware(backend=backend),
                 SummarizationMiddleware(
@@ -218,7 +218,7 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
             ]
             subagent_skills = spec.get("skills")
             if subagent_skills:
-                subagent_middleware.append(SkillsMiddleware(backend=backend, sources=subagent_skills))  # ty: ignore[invalid-argument-type]
+                subagent_middleware.append(SkillsMiddleware(backend=backend, sources=subagent_skills))
             subagent_middleware.extend(spec.get("middleware", []))
 
             processed_spec: SubAgent = {  # ty: ignore[missing-typed-dict-key]
@@ -233,15 +233,15 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
     all_subagents: list[SubAgent | CompiledSubAgent] = [general_purpose_spec, *processed_subagents]
 
     # Build main agent middleware stack
-    deepagent_middleware: list[AgentMiddleware] = [  # ty: ignore[invalid-assignment]
+    deepagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
         TodoListMiddleware(),
     ]
     if memory is not None:
-        deepagent_middleware.append(MemoryMiddleware(backend=backend, sources=memory))  # ty: ignore[invalid-argument-type]
+        deepagent_middleware.append(MemoryMiddleware(backend=backend, sources=memory))
     if skills is not None:
-        deepagent_middleware.append(SkillsMiddleware(backend=backend, sources=skills))  # ty: ignore[invalid-argument-type]
+        deepagent_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
     deepagent_middleware.extend(
-        [  # ty: ignore[invalid-argument-type]
+        [
             FilesystemMiddleware(backend=backend),
             SubAgentMiddleware(
                 backend=backend,
@@ -268,12 +268,12 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
     if system_prompt is None:
         final_system_prompt: str | SystemMessage = BASE_AGENT_PROMPT
     elif isinstance(system_prompt, SystemMessage):
-        # SystemMessage: append BASE_AGENT_PROMPT to content_blocks
-        new_content = [
-            *system_prompt.content_blocks,
-            {"type": "text", "text": f"\n\n{BASE_AGENT_PROMPT}"},
-        ]
-        final_system_prompt = SystemMessage(content=new_content)  # ty: ignore[no-matching-overload]
+        # SystemMessage: append BASE_AGENT_PROMPT to content
+        if isinstance(system_prompt.content, str):
+            final_system_prompt = SystemMessage(content=system_prompt.content + f"\n\n{BASE_AGENT_PROMPT}")
+        else:
+            new_content = [*system_prompt.content, {"type": "text", "text": f"\n\n{BASE_AGENT_PROMPT}"}]
+            final_system_prompt = SystemMessage(content=new_content)
     else:
         # String: simple concatenation
         final_system_prompt = system_prompt + "\n\n" + BASE_AGENT_PROMPT

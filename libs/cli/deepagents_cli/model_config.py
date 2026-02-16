@@ -701,7 +701,9 @@ def _save_model_field(
     Args:
         field: Key name under the `[models]` table (e.g., `'default'` or `'recent'`).
         model_spec: The model to save in `provider:model` format.
-        config_path: Path to config file. Defaults to `~/.deepagents/config.toml`.
+        config_path: Path to config file.
+
+            Defaults to `~/.deepagents/config.toml`.
 
     Returns:
         True if save succeeded, False if it failed due to I/O errors.
@@ -752,7 +754,9 @@ def save_default_model(model_spec: str, config_path: Path | None = None) -> bool
 
     Args:
         model_spec: The model to set as default in `provider:model` format.
-        config_path: Path to config file. Defaults to `~/.deepagents/config.toml`.
+        config_path: Path to config file.
+
+            Defaults to `~/.deepagents/config.toml`.
 
     Returns:
         True if save succeeded, False if it failed due to I/O errors.
@@ -770,7 +774,9 @@ def clear_default_model(config_path: Path | None = None) -> bool:
     `[models].recent` or environment auto-detection.
 
     Args:
-        config_path: Path to config file. Defaults to `~/.deepagents/config.toml`.
+        config_path: Path to config file.
+
+            Defaults to `~/.deepagents/config.toml`.
 
     Returns:
         True if the key was removed (or was already absent), False on I/O error.
@@ -809,6 +815,99 @@ def clear_default_model(config_path: Path | None = None) -> bool:
         return True
 
 
+def is_warning_suppressed(key: str, config_path: Path | None = None) -> bool:
+    """Check if a warning key is suppressed in the config file.
+
+    Reads the `[warnings].suppress` list from `config.toml` and checks
+    whether `key` is present.
+
+    Args:
+        key: Warning identifier to check (e.g., `'ripgrep'`).
+        config_path: Path to config file.
+
+            Defaults to `~/.deepagents/config.toml`.
+
+    Returns:
+        `True` if the warning is suppressed, `False` otherwise (including
+            when the file is missing, unreadable, or has no
+            `[warnings]` section).
+    """
+    if config_path is None:
+        config_path = DEFAULT_CONFIG_PATH
+
+    try:
+        if not config_path.exists():
+            return False
+        with config_path.open("rb") as f:
+            data = tomllib.load(f)
+    except (OSError, tomllib.TOMLDecodeError):
+        logger.debug(
+            "Could not read config file %s for warning suppression check",
+            config_path,
+            exc_info=True,
+        )
+        return False
+
+    suppress_list = data.get("warnings", {}).get("suppress", [])
+    if not isinstance(suppress_list, list):
+        logger.debug(
+            "[warnings].suppress in %s should be a list, got %s",
+            config_path,
+            type(suppress_list).__name__,
+        )
+        return False
+    return key in suppress_list
+
+
+def suppress_warning(key: str, config_path: Path | None = None) -> bool:
+    """Add a warning key to the suppression list in the config file.
+
+    Reads existing config (if any), adds `key` to `[warnings].suppress`,
+    and writes back using atomic temp-file rename. Deduplicates entries.
+
+    Args:
+        key: Warning identifier to suppress (e.g., `'ripgrep'`).
+        config_path: Path to config file.
+
+            Defaults to `~/.deepagents/config.toml`.
+
+    Returns:
+        `True` if save succeeded, `False` if it failed due to I/O errors.
+    """
+    if config_path is None:
+        config_path = DEFAULT_CONFIG_PATH
+
+    try:
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if config_path.exists():
+            with config_path.open("rb") as f:
+                data = tomllib.load(f)
+        else:
+            data = {}
+
+        if "warnings" not in data:
+            data["warnings"] = {}
+        suppress_list: list[str] = data["warnings"].get("suppress", [])
+        if key not in suppress_list:
+            suppress_list.append(key)
+        data["warnings"]["suppress"] = suppress_list
+
+        fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "wb") as f:
+                tomli_w.dump(data, f)
+            Path(tmp_path).replace(config_path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                Path(tmp_path).unlink()
+            raise
+    except (OSError, tomllib.TOMLDecodeError):
+        logger.exception("Could not save warning suppression for '%s'", key)
+        return False
+    return True
+
+
 def save_recent_model(model_spec: str, config_path: Path | None = None) -> bool:
     """Update the recently used model in config file.
 
@@ -817,7 +916,9 @@ def save_recent_model(model_spec: str, config_path: Path | None = None) -> bool:
 
     Args:
         model_spec: The model to save in `provider:model` format.
-        config_path: Path to config file. Defaults to `~/.deepagents/config.toml`.
+        config_path: Path to config file.
+
+            Defaults to `~/.deepagents/config.toml`.
 
     Returns:
         True if save succeeded, False if it failed due to I/O errors.

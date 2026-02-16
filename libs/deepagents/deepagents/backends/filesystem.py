@@ -69,7 +69,7 @@ class FilesystemBackend(BackendProtocol):
     def __init__(
         self,
         root_dir: str | Path | None = None,
-        virtual_mode: bool = False,  # noqa: FBT001, FBT002  # Boolean arg is part of BackendProtocol API
+        virtual_mode: bool | None = None,  # noqa: FBT001  # Boolean arg is part of BackendProtocol API
         max_file_size_mb: int = 10,
     ) -> None:
         """Initialize filesystem backend.

@@ -1123,14 +1123,25 @@ class DeepAgentsApp(App):
                 )
 
                 cli_line = f"deepagents-cli version: {cli_version}"
-            except Exception:  # noqa: BLE001  # Resilient version lookup
+            except ImportError:
+                logger.debug("deepagents_cli._version module not found")
+                cli_line = "deepagents-cli version: unknown"
+            except Exception:
+                logger.warning("Unexpected error looking up CLI version", exc_info=True)
                 cli_line = "deepagents-cli version: unknown"
             try:
-                from importlib.metadata import version as _pkg_version
+                from importlib.metadata import (
+                    PackageNotFoundError,
+                    version as _pkg_version,
+                )
 
                 sdk_version = _pkg_version("deepagents")
                 sdk_line = f"deepagents (SDK) version: {sdk_version}"
-            except Exception:  # noqa: BLE001  # Resilient version lookup
+            except PackageNotFoundError:
+                logger.debug("deepagents SDK package not found in environment")
+                sdk_line = "deepagents (SDK) version: unknown"
+            except Exception:
+                logger.warning("Unexpected error looking up SDK version", exc_info=True)
                 sdk_line = "deepagents (SDK) version: unknown"
             await self._mount_message(AppMessage(f"{cli_line}\n{sdk_line}"))
         elif cmd == "/clear":

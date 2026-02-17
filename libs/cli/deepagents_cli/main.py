@@ -395,10 +395,17 @@ def parse_args() -> argparse.Namespace:
     )
 
     try:
-        from importlib.metadata import version as _pkg_version
+        from importlib.metadata import (
+            PackageNotFoundError,
+            version as _pkg_version,
+        )
 
         sdk_version = _pkg_version("deepagents")
-    except Exception:  # noqa: BLE001  # Resilient version lookup
+    except PackageNotFoundError:
+        logger.debug("deepagents SDK package not found in environment")
+        sdk_version = "unknown"
+    except Exception:
+        logger.warning("Unexpected error looking up SDK version", exc_info=True)
         sdk_version = "unknown"
     parser.add_argument(
         "-v",

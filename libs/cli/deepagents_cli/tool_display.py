@@ -172,8 +172,13 @@ def format_tool_display(tool_name: str, tool_args: dict) -> str:
             desc = truncate_value(desc, 100)
             return f'{prefix} {tool_name}("{desc}")'
 
+    elif tool_name == "ask_user":
+        if "questions" in tool_args and isinstance(tool_args["questions"], list):
+            count = len(tool_args["questions"])
+            label = "question" if count == 1 else "questions"
+            return f"{prefix} {tool_name}({count} {label})"
+
     elif tool_name == "write_todos":
-        # Todos: show count of items
         if "todos" in tool_args and isinstance(tool_args["todos"], list):
             count = len(tool_args["todos"])
             return f"{prefix} {tool_name}({count} items)"

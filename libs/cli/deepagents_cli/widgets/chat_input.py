@@ -555,6 +555,8 @@ class ChatInput(Vertical):
         entry = self._history.get_previous(event.current_text)
         if entry is not None and self._text_area:
             self._text_area.set_text_from_history(entry)
+        elif self._text_area:
+            self._text_area._navigating_history = False
 
     def on_chat_text_area_history_next(
         self,
@@ -564,6 +566,8 @@ class ChatInput(Vertical):
         entry = self._history.get_next()
         if entry is not None and self._text_area:
             self._text_area.set_text_from_history(entry)
+        elif self._text_area:
+            self._text_area._navigating_history = False
 
     async def on_key(self, event: events.Key) -> None:
         """Handle key events for completion navigation."""

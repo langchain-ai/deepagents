@@ -278,6 +278,47 @@ class TestPromptIndicator:
             assert any(m.mode == "bash" for m in messages)
 
 
+class TestHistoryNavigationFlag:
+    """Test that _navigating_history resets when history is exhausted."""
+
+    @pytest.mark.asyncio
+    async def test_down_arrow_at_bottom_resets_navigating_flag(self) -> None:
+        """Pressing down with no history should not leave _navigating_history stuck."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input._text_area
+            assert text_area is not None
+
+            assert not text_area._navigating_history
+
+            await pilot.press("down")
+            await pilot.pause()
+
+            assert not text_area._navigating_history
+
+    @pytest.mark.asyncio
+    async def test_autocomplete_works_after_down_arrow(self) -> None:
+        """Typing '/' after pressing down should still trigger completions."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input._text_area
+            assert text_area is not None
+
+            # Press down at the bottom of empty history
+            await pilot.press("down")
+            await pilot.pause()
+
+            # Now type '/' — completions should appear
+            text_area.insert("/")
+            await pilot.pause()
+
+            assert chat_input._completion_manager is not None
+            controller = chat_input._completion_manager._active
+            assert controller is not None
+
+
 class TestCompletionPopupClickBubbling:
     """Test that clicks on options bubble up through the popup."""
 

@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 from deepagents.middleware.skills import (
     SkillMetadata,
-    _list_skills as list_skills_from_backend,
+    _list_skills as list_skills_from_backend,  # noqa: PLC2701  # Intentional access to internal skill listing
 )
 
 from deepagents_cli._version import __version__ as _cli_version

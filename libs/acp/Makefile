@@ -30,8 +30,8 @@ lint_diff format_diff: PYTHON_FILES=$(shell git diff --relative=. --name-only --
 
 lint lint_diff:
 	[ "$(PYTHON_FILES)" = "" ] ||	uv run --group test ruff format $(PYTHON_FILES) --diff
-	[ "$(PYTHON_FILES)" = "" ] ||	uv run --group test ruff check $(PYTHON_FILES) --diff
-	# [ "$(PYTHON_FILES)" = "" ] || uv run --group dev ty check $(PYTHON_FILES)
+	[ "$(PYTHON_FILES)" = "" ] ||	uv run --group test ruff check $(PYTHON_FILES)
+	uv run --group test ty check deepagents_acp
 
 format format_diff:
 	[ "$(PYTHON_FILES)" = "" ] || uv run --group test ruff format $(PYTHON_FILES)

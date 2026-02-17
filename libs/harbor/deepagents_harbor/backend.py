@@ -1,4 +1,4 @@
-"""Implement harbor backend."""
+"""Harbor sandbox backend for executing commands in Harbor environments."""
 
 import base64
 import json
@@ -13,6 +13,18 @@ from deepagents.backends.protocol import (
     WriteResult,
 )
 from harbor.environments.base import BaseEnvironment
+
+_SYNC_NOT_SUPPORTED = "This backend only supports async execution. Use the async variant instead."
+
+# Shell exit codes used by the aedit command script
+_EXIT_NOT_FOUND = 1
+_EXIT_MULTIPLE_MATCHES = 2
+_EXIT_FILE_MISSING = 3
+_EXIT_DECODE_FAILED = 4
+
+# Parsing constants
+_PIPE_FIELD_COUNT = 2  # expected number of pipe-separated fields in ls/glob output
+_GREP_FIELD_COUNT = 3  # minimum number of colon-separated fields in grep output
 
 
 class HarborSandbox(SandboxBackendProtocol):
@@ -78,7 +90,7 @@ class HarborSandbox(SandboxBackendProtocol):
         command: str,
     ) -> ExecuteResponse:
         """Execute a bash command in the task environment."""
-        raise NotImplementedError("This backend only supports async execution")
+        raise NotImplementedError(_SYNC_NOT_SUPPORTED)
 
     @property
     def id(self) -> str:
@@ -127,7 +139,7 @@ awk -v offset={offset} -v limit={limit} '
         limit: int = 2000,
     ) -> str:
         """Read file content with line numbers using shell commands."""
-        raise NotImplementedError("Use aread instead")
+        raise NotImplementedError(_SYNC_NOT_SUPPORTED)
 
     async def awrite(
         self,
@@ -171,14 +183,14 @@ fi
         content: str,
     ) -> WriteResult:
         """Create a new file using shell commands."""
-        raise NotImplementedError("Use awrite instead")
+        raise NotImplementedError(_SYNC_NOT_SUPPORTED)
 
     async def aedit(
         self,
         file_path: str,
         old_string: str,
         new_string: str,
-        replace_all: bool = False,  # noqa: FBT001, FBT002
+        replace_all: bool = False,
     ) -> EditResult:
         """Edit a file by replacing string occurrences using shell commands."""
         # Create JSON payload with old and new strings, then base64 encode
@@ -248,15 +260,15 @@ __DEEPAGENTS_EOF__
         exit_code = result.exit_code
         output = result.output.strip()
 
-        if exit_code == 1:
+        if exit_code == _EXIT_NOT_FOUND:
             return EditResult(error=f"Error: String not found in file: '{old_string}'")
-        if exit_code == 2:
+        if exit_code == _EXIT_MULTIPLE_MATCHES:
             return EditResult(
                 error=f"Error: String '{old_string}' appears multiple times. Use replace_all=True to replace all occurrences."
             )
-        if exit_code == 3:
+        if exit_code == _EXIT_FILE_MISSING:
             return EditResult(error=f"Error: File '{file_path}' not found")
-        if exit_code == 4:
+        if exit_code == _EXIT_DECODE_FAILED:
             return EditResult(error=f"Error: Failed to decode edit payload: {output}")
         if exit_code != 0:
             return EditResult(
@@ -275,10 +287,10 @@ __DEEPAGENTS_EOF__
         file_path: str,
         old_string: str,
         new_string: str,
-        replace_all: bool = False,  # noqa: FBT001, FBT002
+        replace_all: bool = False,
     ) -> EditResult:
         """Edit a file by replacing string occurrences using shell commands."""
-        raise NotImplementedError("Use aedit instead")
+        raise NotImplementedError(_SYNC_NOT_SUPPORTED)
 
     async def als_info(self, path: str) -> list[FileInfo]:
         """List directory contents with metadata using shell commands."""
@@ -309,14 +321,14 @@ done
             if not line:
                 continue
             parts = line.split("|")
-            if len(parts) == 2:
+            if len(parts) == _PIPE_FIELD_COUNT:
                 file_infos.append({"path": parts[0], "is_dir": parts[1] == "true"})
 
         return file_infos
 
     def ls_info(self, path: str) -> list[FileInfo]:
         """List directory contents with metadata using shell commands."""
-        raise NotImplementedError("Use als_info instead")
+        raise NotImplementedError(_SYNC_NOT_SUPPORTED)
 
     async def agrep_raw(
         self,
@@ -350,7 +362,7 @@ done
         for line in output.split("\n"):
             # Format is: path:line_number:text
             parts = line.split(":", 2)
-            if len(parts) >= 3:
+            if len(parts) >= _GREP_FIELD_COUNT:
                 try:
                     matches.append(
                         {
@@ -371,7 +383,7 @@ done
         glob: str | None = None,
     ) -> list[GrepMatch] | str:
         """Search for pattern in files using grep."""
-        raise NotImplementedError("Use agrep_raw instead")
+        raise NotImplementedError(_SYNC_NOT_SUPPORTED)
 
     async def aglob_info(self, pattern: str, path: str = "/") -> list[FileInfo]:
         """Find files matching glob pattern using shell commands.
@@ -410,7 +422,7 @@ done
             if not line:
                 continue
             parts = line.split("|")
-            if len(parts) == 2:
+            if len(parts) == _PIPE_FIELD_COUNT:
                 file_infos.append(
                     {
                         "path": parts[0],
@@ -422,4 +434,4 @@ done
 
     def glob_info(self, pattern: str, path: str = "/") -> list[FileInfo]:
         """Find files matching glob pattern using shell commands."""
-        raise NotImplementedError("Use aglob_info instead")
+        raise NotImplementedError(_SYNC_NOT_SUPPORTED)

@@ -131,7 +131,7 @@ class SlashCommandController:
         self._selected_index = 0
 
     @staticmethod
-    def can_handle(text: str, cursor_index: int) -> bool:  # noqa: ARG004
+    def can_handle(text: str, cursor_index: int) -> bool:  # noqa: ARG004  # Required by AutocompleteProvider interface
         """Handle input that starts with /.
 
         Returns:

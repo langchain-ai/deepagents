@@ -34,7 +34,7 @@ if _deepagents_project:
     # Override LANGSMITH_PROJECT for agent traces
     os.environ["LANGSMITH_PROJECT"] = _deepagents_project
 
-from deepagents_cli.model_config import (  # noqa: E402
+from deepagents_cli.model_config import (  # noqa: E402  # Import after os.environ setup above
     ModelConfig,
     ModelConfigError,
     ModelSpec,
@@ -118,7 +118,7 @@ UNICODE_GLYPHS = Glyphs(
     arrow_up="↑",
     arrow_down="↓",
     bullet="•",
-    cursor="›",  # noqa: RUF001
+    cursor="›",  # noqa: RUF001  # Intentional Unicode glyph
     # Box-drawing characters
     box_vertical="│",
     box_horizontal="─",
@@ -174,7 +174,7 @@ def _is_editable_install() -> bool:
     Returns:
         True if installed in editable mode, False otherwise.
     """
-    global _editable_cache  # noqa: PLW0603
+    global _editable_cache  # noqa: PLW0603  # Module-level cache requires global statement
     if _editable_cache is not None:
         return _editable_cache
 
@@ -220,7 +220,7 @@ def get_glyphs() -> Glyphs:
     Returns:
         The appropriate Glyphs instance based on charset mode detection.
     """
-    global _glyphs_cache  # noqa: PLW0603
+    global _glyphs_cache  # noqa: PLW0603  # Module-level cache requires global statement
     if _glyphs_cache is not None:
         return _glyphs_cache
 
@@ -231,7 +231,7 @@ def get_glyphs() -> Glyphs:
 
 def reset_glyphs_cache() -> None:
     """Reset the glyphs cache (for testing)."""
-    global _glyphs_cache  # noqa: PLW0603
+    global _glyphs_cache  # noqa: PLW0603  # Module-level cache requires global statement
     _glyphs_cache = None
 
 
@@ -351,7 +351,7 @@ def _find_project_agent_md(project_root: Path) -> list[Path]:
     """
     paths = []
 
-    # Check .deepagents/AGENTS.md (preferred)
+    # Check .deepagents/AGENTS.md (preferred)  # noqa: ERA001
     deepagents_md = project_root / ".deepagents" / "AGENTS.md"
     if deepagents_md.exists():
         paths.append(deepagents_md)
@@ -993,7 +993,7 @@ def fetch_langsmith_project_url(project_name: str) -> str | None:
     Returns:
         Project URL string if found, None otherwise.
     """
-    global _langsmith_url_cache  # noqa: PLW0603
+    global _langsmith_url_cache  # noqa: PLW0603  # Module-level cache requires global statement
 
     if _langsmith_url_cache is not None:
         cached_name, cached_url = _langsmith_url_cache
@@ -1045,7 +1045,7 @@ def build_langsmith_thread_url(thread_id: str) -> str | None:
 
 def reset_langsmith_url_cache() -> None:
     """Reset the LangSmith URL cache (for testing)."""
-    global _langsmith_url_cache  # noqa: PLW0603
+    global _langsmith_url_cache  # noqa: PLW0603  # Module-level cache requires global statement
     _langsmith_url_cache = None
 
 
@@ -1447,7 +1447,7 @@ def validate_model_capabilities(model: BaseChatModel, model_name: str) -> None:
 
     # Warn about potentially limited context (< 8k tokens)
     max_input_tokens = profile.get("max_input_tokens")
-    if max_input_tokens and max_input_tokens < 8000:
+    if max_input_tokens and max_input_tokens < 8000:  # noqa: PLR2004  # Model context window default
         console.print(
             f"[dim][yellow]Warning:[/yellow] Model '{model_name}' has limited context "
             f"({max_input_tokens:,} tokens). Agent performance may be affected.[/dim]"

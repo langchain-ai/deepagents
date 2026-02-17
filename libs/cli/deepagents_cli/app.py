@@ -1612,6 +1612,14 @@ class DeepAgentsApp(App):
             self.screen.dismiss(None)
             return
 
+        # If approval menu is active, reject it first.
+        # During HITL, the agent worker remains active while awaiting approval.
+        # Prioritizing rejection prevents a stale approval widget from staying
+        # interactive after an interruption.
+        if self._pending_approval_widget:
+            self._pending_approval_widget.action_select_reject()
+            return
+
         # If agent is running, interrupt it and discard queued messages
         if self._agent_running and self._agent_worker:
             self._pending_messages.clear()
@@ -1620,10 +1628,6 @@ class DeepAgentsApp(App):
             self._queued_widgets.clear()
             self._agent_worker.cancel()
             return
-
-        # If approval menu is active, reject it
-        if self._pending_approval_widget:
-            self._pending_approval_widget.action_select_reject()
 
     def action_quit_app(self) -> None:
         """Handle quit action (Ctrl+D)."""

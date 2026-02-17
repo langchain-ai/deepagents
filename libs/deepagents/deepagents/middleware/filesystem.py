@@ -318,7 +318,11 @@ EXECUTION_SYSTEM_PROMPT = """## Execute Tool `execute`
 You have access to an `execute` tool for running shell commands in a sandboxed environment.
 Use this tool to run commands, scripts, tests, builds, and other shell operations.
 
-When possible, prefer the dedicated filesystem tools over shell equivalents (e.g., `read_file` over `cat`, `edit_file` over `sed`).
+Guidelines:
+- Prefer filesystem tools over shell equivalents when possible (e.g., `read_file` over `cat`, `glob` over `find`, `grep` tool over shell `grep`).
+- Use absolute paths; avoid `cd`.
+- Quote paths with spaces.
+- Output may be truncated; if you need more detail, write output to a file and `read_file` it.
 
 - execute: run a shell command in the sandbox (returns output and exit code)"""
 

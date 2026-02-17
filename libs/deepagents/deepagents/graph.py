@@ -1,7 +1,6 @@
 """Deep Agents come with planning, filesystem, and subagents."""
 
 from collections.abc import Callable, Sequence
-from pathlib import Path
 from typing import Any
 
 from langchain.agents import create_agent
@@ -25,6 +24,7 @@ from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from deepagents.middleware.skills import SkillsMiddleware
+from deepagents.middleware.special_instructions import SpecialInstructionsMiddleware
 from deepagents.middleware.subagents import (
     GENERAL_PURPOSE_SUBAGENT,
     CompiledSubAgent,
@@ -71,7 +71,6 @@ Keep working until the task is fully complete. Don't stop partway and explain wh
 ## Progress Updates
 
 For longer tasks, provide brief progress updates at reasonable intervals — a concise sentence recapping what you've done and what's next."""
-
 
 
 def get_default_model() -> ChatAnthropic:
@@ -302,14 +301,18 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
     if interrupt_on is not None:
         deepagent_middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
 
-    # Combine system_prompt with BASE_AGENT_PROMPT
+    # system_prompt becomes a last-applied middleware to ensure it is prioritized.
     if system_prompt is None:
         final_system_prompt: str | SystemMessage = BASE_AGENT_PROMPT
-    elif isinstance(system_prompt, SystemMessage):
-        final_system_prompt = SystemMessage(content_blocks=[*system_prompt.content_blocks, {"type": "text", "text": f"\n\n{BASE_AGENT_PROMPT}"}])
     else:
-        # String: simple concatenation
-        final_system_prompt = system_prompt + "\n\n" + BASE_AGENT_PROMPT
+        final_system_prompt = BASE_AGENT_PROMPT
+
+        if isinstance(system_prompt, SystemMessage):
+            user_text = "\n".join(str(part.get("text", "")) if isinstance(part, dict) else str(part) for part in system_prompt.content_blocks)
+        else:
+            user_text = system_prompt
+
+        deepagent_middleware.append(SpecialInstructionsMiddleware(user_text))
 
     return create_agent(
         model,

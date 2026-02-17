@@ -1,5 +1,4 @@
 """Deep Agents come with planning, filesystem, and subagents."""
-# ruff: noqa: ERA001
 
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -74,6 +73,7 @@ Keep working until the task is fully complete. Don't stop partway and explain wh
 For longer tasks, provide brief progress updates at reasonable intervals — a concise sentence recapping what you've done and what's next."""
 
 
+
 def get_default_model() -> ChatAnthropic:
     """Get the default model for deep agents.
 
@@ -82,11 +82,11 @@ def get_default_model() -> ChatAnthropic:
     """
     return ChatAnthropic(
         model_name="claude-sonnet-4-5-20250929",
-        max_tokens=20000,  # type: ignore[call-arg]
+        max_tokens=20000,
     )
 
 
-def create_deep_agent(
+def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic with many conditional branches
     model: str | BaseChatModel | None = None,
     tools: Sequence[BaseTool | Callable | dict[str, Any]] | None = None,
     *,
@@ -187,14 +187,7 @@ def create_deep_agent(
             # Use Responses API by default. To use chat completions, use
             # `model=init_chat_model("openai:...")`
             # To disable data retention with the Responses API, use
-            # ```
-            # model=init_chat_model(
-            #     "openai:...",
-            #     use_responses_api=True,
-            #     store=False,
-            #     include=["reasoning.encrypted_content"],
-            # )
-            # ```
+            # `model=init_chat_model("openai:...", use_responses_api=True, store=False, include=["reasoning.encrypted_content"])`
             model_init_params: dict = {"use_responses_api": True}
         else:
             model_init_params = {}
@@ -207,7 +200,7 @@ def create_deep_agent(
     backend = backend if backend is not None else (StateBackend)
 
     # Build general-purpose subagent with default middleware stack
-    gp_middleware: list[AgentMiddleware] = [
+    gp_middleware: list[AgentMiddleware[Any, Any, Any]] = [
         TodoListMiddleware(),
         FilesystemMiddleware(backend=backend),
         SummarizationMiddleware(
@@ -226,7 +219,7 @@ def create_deep_agent(
     if interrupt_on is not None:
         gp_middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
 
-    general_purpose_spec: SubAgent = {
+    general_purpose_spec: SubAgent = {  # ty: ignore[missing-typed-dict-key]
         **GENERAL_PURPOSE_SUBAGENT,
         "model": model,
         "tools": tools or [],
@@ -247,7 +240,7 @@ def create_deep_agent(
 
             # Build middleware: base stack + skills (if specified) + user's middleware
             subagent_summarization_defaults = _compute_summarization_defaults(subagent_model)
-            subagent_middleware: list[AgentMiddleware] = [
+            subagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
                 TodoListMiddleware(),
                 FilesystemMiddleware(backend=backend),
                 SummarizationMiddleware(
@@ -266,7 +259,7 @@ def create_deep_agent(
                 subagent_middleware.append(SkillsMiddleware(backend=backend, sources=subagent_skills))
             subagent_middleware.extend(spec.get("middleware", []))
 
-            processed_spec: SubAgent = {
+            processed_spec: SubAgent = {  # ty: ignore[missing-typed-dict-key]
                 **spec,
                 "model": subagent_model,
                 "tools": spec.get("tools", tools or []),
@@ -278,7 +271,7 @@ def create_deep_agent(
     all_subagents: list[SubAgent | CompiledSubAgent] = [general_purpose_spec, *processed_subagents]
 
     # Build main agent middleware stack
-    deepagent_middleware: list[AgentMiddleware] = [
+    deepagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
         TodoListMiddleware(),
     ]
     if memory is not None:
@@ -313,12 +306,7 @@ def create_deep_agent(
     if system_prompt is None:
         final_system_prompt: str | SystemMessage = BASE_AGENT_PROMPT
     elif isinstance(system_prompt, SystemMessage):
-        # SystemMessage: append BASE_AGENT_PROMPT to content_blocks
-        new_content = [
-            *system_prompt.content_blocks,
-            {"type": "text", "text": f"\n\n{BASE_AGENT_PROMPT}"},
-        ]
-        final_system_prompt = SystemMessage(content=new_content)
+        final_system_prompt = SystemMessage(content_blocks=[*system_prompt.content_blocks, {"type": "text", "text": f"\n\n{BASE_AGENT_PROMPT}"}])
     else:
         # String: simple concatenation
         final_system_prompt = system_prompt + "\n\n" + BASE_AGENT_PROMPT

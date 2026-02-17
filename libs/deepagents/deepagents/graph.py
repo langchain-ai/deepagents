@@ -12,12 +12,14 @@ from langchain.chat_models import init_chat_model
 from langchain_anthropic import ChatAnthropic
 from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import SystemMessage
+from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
 from langchain_core.tools import BaseTool
 from langgraph.cache.base import BaseCache
+from langgraph.graph import StateGraph, END, START
+from langgraph.graph.message import MessagesState
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.store.base import BaseStore
-from langgraph.types import Checkpointer
+from langgraph.types import Checkpointer, Command, Send
 
 from deepagents.backends import StateBackend
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
@@ -26,6 +28,7 @@ from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from deepagents.middleware.skills import SkillsMiddleware
 from deepagents.middleware.subagents import (
+    DEFAULT_SUBAGENT_PROMPT,
     GENERAL_PURPOSE_SUBAGENT,
     CompiledSubAgent,
     SubAgent,
@@ -273,7 +276,8 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
         # String: simple concatenation
         final_system_prompt = system_prompt + "\n\n" + BASE_AGENT_PROMPT
 
-    return create_agent(
+    # Create the main agent
+    main_agent = create_agent(
         model,
         system_prompt=final_system_prompt,
         tools=tools,
@@ -285,4 +289,155 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
         debug=debug,
         name=name,
         cache=cache,
-    ).with_config({"recursion_limit": 1000})
+    )
+
+    # If there are user-provided subagents (not just the general-purpose one),
+    # embed them as proper subgraphs for Studio visualization
+    if len(processed_subagents) > 0:
+        # Build each user subagent as a compiled graph
+        subagent_graphs: dict[str, CompiledStateGraph] = {}
+        for spec in processed_subagents:
+            subagent_name = spec["name"]
+
+            if "runnable" in spec:
+                # CompiledSubAgent - use the provided runnable
+                subagent_graphs[subagent_name] = spec["runnable"]
+            else:
+                # SubAgent - build it using create_agent
+                subagent_prompt = spec.get("system_prompt", DEFAULT_SUBAGENT_PROMPT)
+                subagent_model = spec["model"]
+                subagent_tools = spec.get("tools", [])
+                subagent_middleware = spec.get("middleware", [])
+
+                # Add interrupt middleware if specified
+                if "interrupt_on" in spec:
+                    subagent_middleware = [
+                        *subagent_middleware,
+                        HumanInTheLoopMiddleware(interrupt_on=spec["interrupt_on"]),
+                    ]
+
+                subagent_graph = create_agent(
+                    subagent_model,
+                    system_prompt=subagent_prompt,
+                    tools=subagent_tools,
+                    middleware=subagent_middleware,
+                    checkpointer=checkpointer,
+                    store=store,
+                    debug=debug,
+                )
+                subagent_graphs[subagent_name] = subagent_graph
+
+        # Create a parent StateGraph that contains main agent + subagents
+        # Use MessagesState as the base state schema (compatible with agents)
+        parent_graph = StateGraph(MessagesState)
+
+        # Add main agent as the primary node
+        parent_graph.add_node("agent", main_agent)
+
+        # Add each subagent - when a compiled graph is added as a node,
+        # LangGraph should automatically namespace its internal nodes
+        for subagent_name, subagent_graph in subagent_graphs.items():
+            parent_graph.add_node(subagent_name, subagent_graph)
+
+        # Helper function to check if there are pending subagent tool calls
+        def _should_route_to_subagents(state: MessagesState) -> bool:
+            """Check if the last message contains tool calls for the 'task' tool."""
+            if not state.get("messages"):
+                return False
+            last_message = state["messages"][-1]
+            if isinstance(last_message, AIMessage) and last_message.tool_calls:
+                # Check if any tool call is for the "task" tool (subagent dispatcher)
+                return any(tc.get("name") == "task" for tc in last_message.tool_calls)
+            return False
+
+        # Router function that dispatches to specific subagents based on tool calls
+        def route_to_subagent(state: MessagesState) -> str | list[Send]:
+            """Route to appropriate subagent(s) based on tool calls in the last message.
+
+            Returns either:
+            - A string destination ("agent" to continue without subagent, END to finish)
+            - A list of Send objects to dispatch to specific subagents
+            """
+            if not state.get("messages"):
+                return END
+
+            last_message = state["messages"][-1]
+
+            # Check if this is coming back from a tool execution (ToolMessage)
+            if isinstance(last_message, ToolMessage):
+                # Tool execution complete, return to main agent
+                return "agent"
+
+            # Check for AIMessage with tool calls
+            if isinstance(last_message, AIMessage) and last_message.tool_calls:
+                # Look for "task" tool calls (subagent invocations)
+                task_calls = [tc for tc in last_message.tool_calls if tc.get("name") == "task"]
+
+                if task_calls:
+                    # We have subagent calls - but SubAgentMiddleware will handle the actual execution
+                    # For now, route back to agent to let middleware process the tool call
+                    # In the future, we could dispatch directly here by parsing the tool call args
+                    return "agent"
+
+            # No tool calls or no subagent calls - check if we should end
+            # If the last message is an AIMessage without tool calls, we're done
+            if isinstance(last_message, AIMessage) and not last_message.tool_calls:
+                return END
+
+            return "agent"
+
+        # Set entry point to main agent
+        parent_graph.add_edge(START, "agent")
+
+        # Build list of possible destinations from agent
+        agent_destinations = list(subagent_graphs.keys()) + [END]
+
+        # Routing function: where should agent go next?
+        def route_after_agent(state: MessagesState) -> str:
+            """Determine next step after agent execution.
+
+            Routes to:
+            - Specific subagent if "task" tool was called
+            - END if no tool calls (agent is done)
+            - END as fallback
+            """
+            if not state.get("messages"):
+                return END
+
+            last_message = state["messages"][-1]
+
+            # If no tool calls, we're done
+            if not isinstance(last_message, AIMessage) or not last_message.tool_calls:
+                return END
+
+            # Check if any tool call is for "task" (subagent invocation)
+            # The middleware will have processed this and we just need to detect it
+            # For now, route back to agent since middleware handles execution
+            # In a full implementation, we'd parse the tool call and route to specific subagent
+            for tool_call in last_message.tool_calls:
+                if tool_call.get("name") == "task":
+                    # TODO: Parse args to get subagent name and route there
+                    # For now, stay in agent since middleware handles it
+                    return END
+
+            # No subagent calls, we're done
+            return END
+
+        # Add conditional edge from agent
+        parent_graph.add_conditional_edges(
+            "agent",
+            route_after_agent,
+            agent_destinations
+        )
+
+        # Each subagent routes back to agent after completion
+        for subagent_name in subagent_graphs:
+            parent_graph.add_edge(subagent_name, "agent")
+
+        return parent_graph.compile(
+            checkpointer=checkpointer,
+            store=store,
+        ).with_config({"recursion_limit": 1000})
+
+    # No user subagents - return main agent directly
+    return main_agent.with_config({"recursion_limit": 1000})

@@ -32,11 +32,11 @@ from deepagents.backends.protocol import (
     WriteResult,
 )
 from deepagents.backends.utils import (
-    _validate_path,
     format_content_with_line_numbers,
     format_grep_matches,
     sanitize_tool_call_id,
     truncate_if_too_long,
+    validate_path,
 )
 from deepagents.middleware._utils import append_to_system_message
 
@@ -458,7 +458,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             """Synchronous wrapper for ls tool."""
             resolved_backend = self._get_backend(runtime)
             try:
-                validated_path = _validate_path(path)
+                validated_path = validate_path(path)
             except ValueError as e:
                 return f"Error: {e}"
             infos = resolved_backend.ls_info(validated_path)
@@ -473,7 +473,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             """Asynchronous wrapper for ls tool."""
             resolved_backend = self._get_backend(runtime)
             try:
-                validated_path = _validate_path(path)
+                validated_path = validate_path(path)
             except ValueError as e:
                 return f"Error: {e}"
             infos = await resolved_backend.als_info(validated_path)
@@ -502,7 +502,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             """Synchronous wrapper for read_file tool."""
             resolved_backend = self._get_backend(runtime)
             try:
-                validated_path = _validate_path(file_path)
+                validated_path = validate_path(file_path)
             except ValueError as e:
                 return f"Error: {e}"
 
@@ -551,7 +551,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             """Asynchronous wrapper for read_file tool."""
             resolved_backend = self._get_backend(runtime)
             try:
-                validated_path = _validate_path(file_path)
+                validated_path = validate_path(file_path)
             except ValueError as e:
                 return f"Error: {e}"
 
@@ -610,7 +610,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             """Synchronous wrapper for write_file tool."""
             resolved_backend = self._get_backend(runtime)
             try:
-                validated_path = _validate_path(file_path)
+                validated_path = validate_path(file_path)
             except ValueError as e:
                 return f"Error: {e}"
             res: WriteResult = resolved_backend.write(validated_path, content)
@@ -639,7 +639,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             """Asynchronous wrapper for write_file tool."""
             resolved_backend = self._get_backend(runtime)
             try:
-                validated_path = _validate_path(file_path)
+                validated_path = validate_path(file_path)
             except ValueError as e:
                 return f"Error: {e}"
             res: WriteResult = await resolved_backend.awrite(validated_path, content)
@@ -682,7 +682,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             """Synchronous wrapper for edit_file tool."""
             resolved_backend = self._get_backend(runtime)
             try:
-                validated_path = _validate_path(file_path)
+                validated_path = validate_path(file_path)
             except ValueError as e:
                 return f"Error: {e}"
             res: EditResult = resolved_backend.edit(validated_path, old_string, new_string, replace_all=replace_all)
@@ -713,7 +713,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             """Asynchronous wrapper for edit_file tool."""
             resolved_backend = self._get_backend(runtime)
             try:
-                validated_path = _validate_path(file_path)
+                validated_path = validate_path(file_path)
             except ValueError as e:
                 return f"Error: {e}"
             res: EditResult = await resolved_backend.aedit(validated_path, old_string, new_string, replace_all=replace_all)
@@ -752,7 +752,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             """Synchronous wrapper for glob tool."""
             resolved_backend = self._get_backend(runtime)
             try:
-                validated_path = _validate_path(path)
+                validated_path = validate_path(path)
             except ValueError as e:
                 return f"Error: {e}"
             infos = resolved_backend.glob_info(pattern, path=validated_path)
@@ -768,7 +768,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             """Asynchronous wrapper for glob tool."""
             resolved_backend = self._get_backend(runtime)
             try:
-                validated_path = _validate_path(path)
+                validated_path = validate_path(path)
             except ValueError as e:
                 return f"Error: {e}"
             infos = await resolved_backend.aglob_info(pattern, path=validated_path)

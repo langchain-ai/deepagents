@@ -1,6 +1,7 @@
 """`FilesystemBackend`: Read and write files directly from the filesystem."""
 
 import json
+import logging
 import os
 import re
 import subprocess
@@ -23,6 +24,8 @@ from deepagents.backends.utils import (
     format_content_with_line_numbers,
     perform_string_replacement,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class FilesystemBackend(BackendProtocol):
@@ -162,7 +165,7 @@ class FilesystemBackend(BackendProtocol):
         """
         return "/" + path.resolve().relative_to(self.cwd).as_posix()
 
-    def ls_info(self, path: str) -> list[FileInfo]:  # noqa: C901, PLR0912  # Complex virtual_mode logic
+    def ls_info(self, path: str) -> list[FileInfo]:  # noqa: C901, PLR0912, PLR0915  # Complex virtual_mode logic
         """List files and directories in the specified directory (non-recursive).
 
         Args:
@@ -227,8 +230,11 @@ class FilesystemBackend(BackendProtocol):
                     # Virtual mode: strip cwd prefix using Path for cross-platform support
                     try:
                         virt_path = self._to_virtual_path(child_path)
-                    except (ValueError, OSError):
-                        # Path escaped root or could not be resolved -- skip it
+                    except ValueError:
+                        logger.debug("Skipping path outside root: %s", child_path)
+                        continue
+                    except OSError:
+                        logger.warning("Could not resolve path: %s", child_path, exc_info=True)
                         continue
 
                     if is_file:
@@ -433,7 +439,7 @@ class FilesystemBackend(BackendProtocol):
                 matches.append({"path": fpath, "line": int(line_num), "text": line_text})
         return matches
 
-    def _ripgrep_search(self, pattern: str, base_full: Path, include_glob: str | None) -> dict[str, list[tuple[int, str]]] | None:
+    def _ripgrep_search(self, pattern: str, base_full: Path, include_glob: str | None) -> dict[str, list[tuple[int, str]]] | None:  # noqa: C901  # Split except clauses for logging
         """Search using ripgrep with fixed-string (literal) mode.
 
         Args:
@@ -477,7 +483,11 @@ class FilesystemBackend(BackendProtocol):
             if self.virtual_mode:
                 try:
                     virt = self._to_virtual_path(p)
-                except (ValueError, OSError):
+                except ValueError:
+                    logger.debug("Skipping grep result outside root: %s", p)
+                    continue
+                except OSError:
+                    logger.warning("Could not resolve grep result path: %s", p, exc_info=True)
                     continue
             else:
                 virt = str(p)
@@ -489,7 +499,7 @@ class FilesystemBackend(BackendProtocol):
 
         return results
 
-    def _python_search(self, pattern: str, base_full: Path, include_glob: str | None) -> dict[str, list[tuple[int, str]]]:  # noqa: C901
+    def _python_search(self, pattern: str, base_full: Path, include_glob: str | None) -> dict[str, list[tuple[int, str]]]:  # noqa: C901, PLR0912
         """Fallback search using Python when ripgrep is unavailable.
 
         Recursively searches files, respecting `max_file_size_bytes` limit.
@@ -530,7 +540,11 @@ class FilesystemBackend(BackendProtocol):
                     if self.virtual_mode:
                         try:
                             virt_path = self._to_virtual_path(fp)
-                        except (ValueError, OSError):
+                        except ValueError:
+                            logger.debug("Skipping grep result outside root: %s", fp)
+                            continue
+                        except OSError:
+                            logger.warning("Could not resolve grep result path: %s", fp, exc_info=True)
                             continue
                     else:
                         virt_path = str(fp)
@@ -593,8 +607,11 @@ class FilesystemBackend(BackendProtocol):
                     # Virtual mode: use Path for cross-platform support
                     try:
                         virt = self._to_virtual_path(matched_path)
-                    except (ValueError, OSError):
-                        # Path escaped root or could not be resolved -- skip it
+                    except ValueError:
+                        logger.debug("Skipping glob result outside root: %s", matched_path)
+                        continue
+                    except OSError:
+                        logger.warning("Could not resolve glob result path: %s", matched_path, exc_info=True)
                         continue
                     try:
                         st = matched_path.stat()

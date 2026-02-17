@@ -7,6 +7,7 @@ import asyncio
 import json
 import logging
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -24,6 +25,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.types import Command, Interrupt
 from pydantic import TypeAdapter, ValidationError
 
+from deepagents_cli.config import ConversationContext, settings
 from deepagents_cli.file_ops import FileOpTracker
 from deepagents_cli.image_utils import create_multimodal_content
 from deepagents_cli.input import ImageTracker, parse_file_mentions
@@ -41,6 +43,56 @@ logger = logging.getLogger(__name__)
 HITLDecision = ApproveDecision | EditDecision | RejectDecision
 
 _HITL_REQUEST_ADAPTER = TypeAdapter(HITLRequest)
+
+
+@dataclass
+class ExecuteTaskResult:
+    """Result of execute_task_textual, potentially containing a step-into context."""
+
+    step_into_context: ConversationContext | None = None
+
+
+def _create_branch_context(
+    assistant_id: str | None,
+    subagent_type: str,
+    task_description: str,
+) -> ConversationContext:
+    """Create a new conversation context for stepping into a subagent.
+
+    Creates the branch directory and summary file.
+    """
+    from pathlib import Path
+
+    branch_id = uuid.uuid4().hex[:8]
+    thread_id = str(uuid.uuid4())
+
+    agent_name = assistant_id or "agent"
+    branch_dir = settings.user_deepagents_dir / agent_name / "branches" / branch_id
+    branch_dir.mkdir(parents=True, exist_ok=True)
+
+    summary_path = branch_dir / "summary.md"
+    summary_template = f"""# Branch Summary: {subagent_type}
+
+## Task
+{task_description}
+
+## Findings
+
+<!-- Add your findings here -->
+
+## Conclusion
+
+<!-- Summary for parent context -->
+"""
+    summary_path.write_text(summary_template)
+
+    return ConversationContext(
+        thread_id=thread_id,
+        subagent_type=subagent_type,
+        task_description=task_description,
+        summary_path=summary_path,
+        parent_tool_call_id=None,
+    )
 
 
 def _build_stream_config(
@@ -222,7 +274,7 @@ async def execute_task_textual(
     adapter: TextualUIAdapter,
     backend: Any = None,  # noqa: ANN401  # Dynamic backend type
     image_tracker: ImageTracker | None = None,
-) -> None:
+) -> ExecuteTaskResult:
     """Execute a task with output directed to Textual UI.
 
     This is the Textual-compatible version of execute_task() that uses
@@ -236,6 +288,10 @@ async def execute_task_textual(
         adapter: The TextualUIAdapter for UI operations
         backend: Optional backend for file operations
         image_tracker: Optional tracker for images
+
+    Returns:
+        ExecuteTaskResult with optional step_into_context if user chose
+        to step into a subagent.
 
     Raises:
         ValidationError: If HITL request validation fails (re-raised).
@@ -700,6 +756,32 @@ async def execute_task_textual(
                                                 tool_name, args
                                             )
 
+                            elif decision_type == "step_into":
+                                # User wants to step into this subagent
+                                task_args = decision.get("args", {})
+                                subagent_type = task_args.get(
+                                    "subagent_type", "general-purpose"
+                                )
+                                task_description = task_args.get(
+                                    "description", ""
+                                )
+                                step_into_ctx = _create_branch_context(
+                                    assistant_id,
+                                    subagent_type,
+                                    task_description,
+                                )
+                                await adapter._mount_message(
+                                    AppMessage(
+                                        f"Stepped into: {subagent_type} subagent\n"
+                                        f"Summary file: {step_into_ctx.summary_path}\n"
+                                        "Type /return to exit, /summary to edit "
+                                        "summary, /context to see stack"
+                                    )
+                                )
+                                return ExecuteTaskResult(
+                                    step_into_context=step_into_ctx
+                                )
+
                             elif decision_type == "reject":
                                 # Reject all
                                 decisions = [
@@ -757,7 +839,7 @@ async def execute_task_textual(
                             "Command rejected. Tell the agent what you'd like instead."
                         )
                     )
-                    return
+                    return ExecuteTaskResult()
 
                 stream_input = Command(resume=hitl_response)
             else:
@@ -804,7 +886,7 @@ async def execute_task_textual(
                 )
             else:
                 adapter._token_tracker.show()  # Restore previous value
-        return
+        return ExecuteTaskResult()
 
     except KeyboardInterrupt:
         # Clear active message immediately so it won't block pruning
@@ -847,11 +929,13 @@ async def execute_task_textual(
                 )
             else:
                 adapter._token_tracker.show()  # Restore previous value
-        return
+        return ExecuteTaskResult()
 
     # Update token tracker
     if adapter._token_tracker and (captured_input_tokens or captured_output_tokens):
         adapter._token_tracker.add(captured_input_tokens, captured_output_tokens)
+
+    return ExecuteTaskResult()
 
 
 async def _flush_assistant_text_ns(

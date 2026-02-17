@@ -147,6 +147,21 @@ class FilesystemBackend(BackendProtocol):
             return path
         return (self.cwd / path).resolve()
 
+    def _to_virtual_path(self, path: Path) -> str:
+        """Convert a filesystem path to a virtual path relative to cwd.
+
+        Args:
+            path: Filesystem path to convert.
+
+        Returns:
+            Forward-slash relative path string prefixed with `/`.
+
+        Raises:
+            ValueError: If path is outside cwd.
+            OSError: If path cannot be resolved (broken symlink, permission denied).
+        """
+        return "/" + path.resolve().relative_to(self.cwd).as_posix()
+
     def ls_info(self, path: str) -> list[FileInfo]:  # noqa: C901, PLR0912  # Complex virtual_mode logic
         """List files and directories in the specified directory (non-recursive).
 
@@ -209,17 +224,12 @@ class FilesystemBackend(BackendProtocol):
                         except OSError:
                             results.append({"path": abs_path + "/", "is_dir": True})
                 else:
-                    # Virtual mode: strip cwd prefix
-                    if abs_path.startswith(cwd_str):
-                        relative_path = abs_path[len(cwd_str) :]
-                    elif abs_path.startswith(str(self.cwd)):
-                        # Handle case where cwd doesn't end with /
-                        relative_path = abs_path[len(str(self.cwd)) :].lstrip("/")
-                    else:
-                        # Path is outside cwd, return as-is or skip
-                        relative_path = abs_path
-
-                    virt_path = "/" + relative_path
+                    # Virtual mode: strip cwd prefix using Path for cross-platform support
+                    try:
+                        virt_path = self._to_virtual_path(child_path)
+                    except (ValueError, OSError):
+                        # Path escaped root or could not be resolved -- skip it
+                        continue
 
                     if is_file:
                         try:
@@ -466,8 +476,8 @@ class FilesystemBackend(BackendProtocol):
             p = Path(ftext)
             if self.virtual_mode:
                 try:
-                    virt = "/" + str(p.resolve().relative_to(self.cwd))
-                except Exception:  # noqa: BLE001, S112  # Intentional skip of unresolvable paths
+                    virt = self._to_virtual_path(p)
+                except (ValueError, OSError):
                     continue
             else:
                 virt = str(p)
@@ -519,8 +529,8 @@ class FilesystemBackend(BackendProtocol):
                 if regex.search(line):
                     if self.virtual_mode:
                         try:
-                            virt_path = "/" + str(fp.resolve().relative_to(self.cwd))
-                        except Exception:  # noqa: BLE001, S112  # Intentional skip of unresolvable paths
+                            virt_path = self._to_virtual_path(fp)
+                        except (ValueError, OSError):
                             continue
                     else:
                         virt_path = str(fp)
@@ -580,16 +590,12 @@ class FilesystemBackend(BackendProtocol):
                     except OSError:
                         results.append({"path": abs_path, "is_dir": False})
                 else:
-                    cwd_str = str(self.cwd)
-                    if not cwd_str.endswith("/"):
-                        cwd_str += "/"
-                    if abs_path.startswith(cwd_str):
-                        relative_path = abs_path[len(cwd_str) :]
-                    elif abs_path.startswith(str(self.cwd)):
-                        relative_path = abs_path[len(str(self.cwd)) :].lstrip("/")
-                    else:
-                        relative_path = abs_path
-                    virt = "/" + relative_path
+                    # Virtual mode: use Path for cross-platform support
+                    try:
+                        virt = self._to_virtual_path(matched_path)
+                    except (ValueError, OSError):
+                        # Path escaped root or could not be resolved -- skip it
+                        continue
                     try:
                         st = matched_path.stat()
                         results.append(

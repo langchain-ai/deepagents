@@ -655,6 +655,15 @@ class ChatInput(Vertical):
         if self._text_area:
             self._text_area.set_app_focus(has_focus=active)
 
+    @property
+    def is_completion_active(self) -> bool:
+        """Check if completion suggestions are currently active/visible.
+
+        Returns:
+            True if the completion popup is showing.
+        """
+        return bool(self._current_suggestions)
+
     # =========================================================================
     # CompletionView protocol implementation
     # =========================================================================

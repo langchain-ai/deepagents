@@ -1612,6 +1612,11 @@ class DeepAgentsApp(App):
             self.screen.dismiss(None)
             return
 
+        # If completion popup is active, close it (handled by ChatInput, but we consume event)
+        if self._chat_input and self._chat_input.is_completion_active:
+            self._chat_input.clear_completion_suggestions()
+            return
+
         # If agent is running, interrupt it and discard queued messages
         if self._agent_running and self._agent_worker:
             self._pending_messages.clear()

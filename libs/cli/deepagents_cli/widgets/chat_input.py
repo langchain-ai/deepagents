@@ -463,6 +463,11 @@ class ChatInput(Vertical):
         self._popup: CompletionPopup | None = None
         self._completion_manager: MultiCompletionManager | None = None
 
+        # Guard flag: set True before programmatically stripping the mode
+        # prefix character so the resulting text-change event does not
+        # re-evaluate mode.
+        self._stripping_prefix = False
+
         # Track current suggestions for click handling
         self._current_suggestions: list[tuple[str, str]] = []
         self._current_selected_index = 0
@@ -507,12 +512,26 @@ class ChatInput(Vertical):
         """Detect input mode and update completions."""
         text = event.text_area.text
 
-        # Update mode based on first character
-        if text.startswith("!"):
-            self.mode = "bash"
+        # Guard: skip mode re-detection after we programmatically stripped
+        # a prefix character.
+        if self._stripping_prefix:
+            self._stripping_prefix = False
+        elif text.startswith("!"):
+            if self.mode != "bash":
+                self.mode = "bash"
+            # Strip unconditionally even when already in-mode: completion
+            # controllers may write replacement text that includes the trigger
+            # character (e.g. "/help"). The _stripping_prefix guard on the
+            # resulting change event prevents infinite loops.
+            self._strip_mode_prefix()
+            return
         elif text.startswith("/"):
-            self.mode = "command"
-        else:
+            if self.mode != "command":
+                self.mode = "command"
+            self._strip_mode_prefix()
+            return
+        elif not text and self.mode != "normal":
+            # Reset mode when text is fully cleared
             self.mode = "normal"
 
         # Skip completion during history navigation to avoid popup flashing
@@ -521,13 +540,66 @@ class ChatInput(Vertical):
                 self._completion_manager.reset()
             return
 
-        # Update completion suggestions
+        # Update completion suggestions — synthesize virtual prefix so
+        # controllers see the original trigger character.
         if self._completion_manager and self._text_area:
             cursor_offset = self._get_cursor_offset()
-            self._completion_manager.on_text_changed(text, cursor_offset)
+            completion_text = text
+            if self.mode == "command":
+                completion_text = "/" + text
+                cursor_offset += 1
+            self._completion_manager.on_text_changed(completion_text, cursor_offset)
 
         # Scroll input into view when content changes (handles text wrap)
         self.scroll_visible()
+
+    def _strip_mode_prefix(self) -> None:
+        """Remove the first character (mode trigger) from the text area.
+
+        Sets the `_stripping_prefix` guard so the resulting text-change event is
+        not misinterpreted as new input.
+        """
+        if not self._text_area:
+            return
+        text = self._text_area.text
+        row, col = self._text_area.cursor_location
+        self._stripping_prefix = True
+        self._text_area.text = text[1:]
+        # Shift cursor left by 1 to account for removed character
+        if row == 0 and col > 0:
+            col -= 1
+        self._text_area.move_cursor((row, col))
+
+    def _submit_value(self, value: str) -> None:
+        """Prepend mode prefix, save to history, post message, and reset input.
+
+        This is the single path for all submission flows so the prefix-prepend +
+        history + post + clear + mode-reset logic stays in one place.
+
+        Args:
+            value: The stripped text to submit (without mode prefix).
+        """
+        if not value:
+            return
+
+        if self._completion_manager:
+            self._completion_manager.reset()
+
+        # Prepend mode prefix so the app layer receives the original trigger
+        # form (e.g. "!ls", "/help"). The value may already contain the prefix
+        # when a completion controller wrote it back into the text area before
+        # the strip handler ran.
+        if self.mode == "bash" and not value.startswith("!"):
+            value = "!" + value
+        elif self.mode == "command" and not value.startswith("/"):
+            value = "/" + value
+
+        self._history.add(value)
+        self.post_message(self.Submitted(value, self.mode))
+
+        if self._text_area:
+            self._text_area.clear_text()
+        self.mode = "normal"
 
     def on_chat_text_area_submitted(self, event: ChatTextArea.Submitted) -> None:
         """Handle text submission.
@@ -535,18 +607,7 @@ class ChatInput(Vertical):
         Always posts the Submitted event - the app layer decides whether to
         process immediately or queue based on agent status.
         """
-        value = event.value
-        if value:
-            if self._completion_manager:
-                self._completion_manager.reset()
-
-            self._history.add(value)
-            # Always post the message - app layer decides to queue or process
-            self.post_message(self.Submitted(value, self.mode))
-            # Always clear input for immediate feedback
-            if self._text_area:
-                self._text_area.clear_text()
-            self.mode = "normal"
+        self._submit_value(event.value)
 
     def on_chat_text_area_history_previous(
         self, event: ChatTextArea.HistoryPrevious
@@ -577,6 +638,12 @@ class ChatInput(Vertical):
         text = self._text_area.text
         cursor = self._get_cursor_offset()
 
+        # Synthesize virtual prefix so completion controllers see the
+        # original trigger character (e.g. "/" for slash commands).
+        if self.mode == "command":
+            text = "/" + text
+            cursor += 1
+
         result = self._completion_manager.on_key(event, text, cursor)
 
         match result:
@@ -586,23 +653,14 @@ class ChatInput(Vertical):
             case CompletionResult.SUBMIT:
                 event.prevent_default()
                 event.stop()
-                value = self._text_area.text.strip()
-                if value:
-                    self._completion_manager.reset()
-                    self._history.add(value)
-                    self.post_message(self.Submitted(value, self.mode))
-                    self._text_area.clear_text()
-                    self.mode = "normal"
+                self._submit_value(self._text_area.text.strip())
             case CompletionResult.IGNORED if event.key == "enter":
                 # Handle Enter when completion is not active (bash/normal modes)
                 value = self._text_area.text.strip()
                 if value:
                     event.prevent_default()
                     event.stop()
-                    self._history.add(value)
-                    self.post_message(self.Submitted(value, self.mode))
-                    self._text_area.clear_text()
-                    self.mode = "normal"
+                    self._submit_value(value)
 
     def _get_cursor_offset(self) -> int:
         """Get the cursor offset as a single integer.
@@ -752,10 +810,13 @@ class ChatInput(Vertical):
         text = self._text_area.text
         cursor = self._get_cursor_offset()
 
-        # Determine replacement range based on completion type
+        # Determine replacement range based on completion type.
+        # For slash commands, synthesize the virtual prefix so positions
+        # align with what the controller expects.
         if label.startswith("/"):
-            # Slash command: replace from start
-            self.replace_completion_range(0, cursor, label)
+            # Slash command: replace in virtual-prefix space
+            virtual_cursor = cursor + 1 if self.mode == "command" else cursor
+            self.replace_completion_range(0, virtual_cursor, label)
         elif label.startswith("@"):
             # File mention: replace from @ to cursor
             at_index = text[:cursor].rfind("@")

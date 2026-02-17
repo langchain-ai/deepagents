@@ -27,8 +27,6 @@ class SpecialInstructionsMiddleware(AgentMiddleware):
         handler,
     ) -> ModelResponse:
         new_system_message = self.wrap_system_message(request.system_message)
-        if new_system_message is request.system_message:
-            return handler(request)
         return handler(request.override(system_message=new_system_message))
 
     def wrap_system_message(self, system_message: SystemMessage | None) -> SystemMessage | None:
@@ -44,6 +42,4 @@ class SpecialInstructionsMiddleware(AgentMiddleware):
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelResponse:
         new_system_message = self.wrap_system_message(request.system_message)
-        if new_system_message is request.system_message:
-            return await handler(request)
         return await handler(request.override(system_message=new_system_message))

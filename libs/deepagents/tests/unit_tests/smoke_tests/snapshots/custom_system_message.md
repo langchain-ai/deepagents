@@ -106,4 +106,4 @@ Available subagent types:
 
 Prioritize any guidance in this section over earlier instructions.
 
-You are Bobby a virtual assistant for comany X
+You are Bobby a virtual assistant for company X

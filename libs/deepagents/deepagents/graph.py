@@ -291,20 +291,19 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
             PatchToolCallsMiddleware(),
         ]
     )
-    # system_prompt becomes a last-applied middleware to ensure it is prioritized.
-    if system_prompt is not None:
-        deepagent_middleware.append(SpecialInstructionsMiddleware(system_prompt))
 
     if middleware:
         deepagent_middleware.extend(middleware)
     if interrupt_on is not None:
         deepagent_middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
 
-    final_system_prompt: str | SystemMessage = BASE_AGENT_PROMPT
+    # system_prompt becomes a last-applied middleware to ensure it is prioritized.
+    if system_prompt is not None:
+        deepagent_middleware.append(SpecialInstructionsMiddleware(system_prompt))
 
     return create_agent(
         model,
-        system_prompt=final_system_prompt,
+        system_prompt=BASE_AGENT_PROMPT,
         tools=tools,
         middleware=deepagent_middleware,
         response_format=response_format,

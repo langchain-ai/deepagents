@@ -134,11 +134,11 @@ For hotfixes or exceptional cases, you can trigger a release manually. Use the `
 
 1. Go to **Actions** > **Package Release**
 2. Click **Run workflow**
-3. Select the CLI
+3. Select the package to release
 4. (Optionally enable `dangerous-nonmain-release` for hotfix branches)
 
 > [!WARNING]
-> Manual releases should be rare. Prefer the standard release-please flow.
+> Manual releases should be rare. Prefer the standard release-please flow for the CLI. Manual dispatch bypasses the changelog detection in `release-please.yml` and skips the lockfile update job. Only use it for recovery scenarios (e.g., the release workflow failed after the release PR was already merged).
 
 ## Troubleshooting
 
@@ -223,6 +223,38 @@ Edit `.release-please-manifest.json` to the last good version:
 ```
 
 Also update `libs/cli/pyproject.toml` and `_version.py` to match.
+
+### Release Failed: CLI SDK Pin Mismatch
+
+If the release workflow fails at the "Verify CLI pins latest SDK version" step with:
+
+```txt
+CLI SDK pin does not match SDK version!
+SDK version (libs/deepagents/pyproject.toml): 0.4.2
+CLI SDK pin (libs/cli/pyproject.toml): 0.4.1
+```
+
+This means the CLI's pinned `deepagents` dependency in `libs/cli/pyproject.toml` doesn't match the current SDK version. This can happen when the SDK is released independently and the CLI's pin isn't updated before the CLI release PR is merged.
+
+**To fix:**
+
+1. **Hotfix the pin on `main`:**
+
+   ```bash
+   # Update the pin in libs/cli/pyproject.toml
+   # e.g., change deepagents==0.4.1 to deepagents==0.4.2
+   cd libs/cli && uv lock
+   git add libs/cli/pyproject.toml libs/cli/uv.lock
+   git commit -m "hotfix(cli): bump SDK pin to <VERSION>"
+   git push origin main
+   ```
+
+2. **Manually trigger the release** (the push to `main` won't re-trigger the release because the commit doesn't modify `libs/cli/CHANGELOG.md`):
+   - Go to **Actions** > **Package Release**
+   - Click **Run workflow**
+   - Select `main` branch and `deepagents-cli` package
+
+3. **Publish the draft release** once the workflow completes
 
 ### Re-releasing a Version
 

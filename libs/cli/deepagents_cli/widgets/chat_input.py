@@ -205,6 +205,7 @@ class CompletionPopup(VerticalScroll):
 
     def hide(self) -> None:
         """Hide the popup."""
+        self._pending_suggestions = []
         self.styles.display = "none"  # type: ignore[assignment]  # Textual accepts string display values at runtime
 
     def show(self) -> None:
@@ -654,6 +655,21 @@ class ChatInput(Vertical):
         """
         if self._text_area:
             self._text_area.set_app_focus(has_focus=active)
+
+    def dismiss_completion(self) -> bool:
+        """Dismiss completion: clear view and reset controller state.
+
+        Returns:
+            True if completion was active and has been dismissed.
+        """
+        if not self._current_suggestions:
+            return False
+        if self._completion_manager:
+            self._completion_manager.reset()
+        # Always clear local state so the popup is hidden even if the
+        # manager's active controller was already None (no-op reset).
+        self.clear_completion_suggestions()
+        return True
 
     # =========================================================================
     # CompletionView protocol implementation

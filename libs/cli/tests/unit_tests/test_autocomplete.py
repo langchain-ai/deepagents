@@ -255,6 +255,28 @@ class TestSlashCommandController:
 
         mock_view.clear_completion_suggestions.assert_called()
 
+    def test_suggestions_return_after_reset(self, controller, mock_view):
+        """Suggestions reappear when text is re-entered after a reset."""
+        controller.on_text_changed("/", 1)
+        mock_view.render_completion_suggestions.assert_called()
+
+        controller.reset()
+        mock_view.reset_mock()
+
+        # Re-entering "/" should show suggestions again
+        controller.on_text_changed("/", 1)
+        mock_view.render_completion_suggestions.assert_called()
+        suggestions = mock_view.render_completion_suggestions.call_args[0][0]
+        assert len(suggestions) == len(SLASH_COMMANDS)
+
+    @pytest.mark.usefixtures("mock_view")
+    def test_double_reset_is_safe(self, controller):
+        """Calling reset twice does not raise or double-clear."""
+        controller.on_text_changed("/", 1)
+        controller.reset()
+        # Second reset should be a no-op (suggestions already empty)
+        controller.reset()
+
 
 class TestFuzzyFileControllerCanHandle:
     """Tests for FuzzyFileController.can_handle method."""
@@ -348,5 +370,26 @@ class TestMultiCompletionManager:
     def test_reset_clears_active(self, manager):
         """Reset clears active controller."""
         manager.on_text_changed("/cmd", 4)
+        manager.reset()
+        assert manager._active is None
+
+    def test_reactivates_after_reset(self, manager, mock_view):
+        """Controller reactivates for new input after a full reset."""
+        manager.on_text_changed("/", 1)
+        assert isinstance(manager._active, SlashCommandController)
+
+        manager.reset()
+        assert manager._active is None
+        mock_view.reset_mock()
+
+        # Typing "/" again should reactivate the slash controller
+        manager.on_text_changed("/", 1)
+        assert isinstance(manager._active, SlashCommandController)
+        mock_view.render_completion_suggestions.assert_called()
+
+    def test_double_reset_is_safe(self, manager):
+        """Calling reset when already inactive is a no-op."""
+        manager.on_text_changed("/cmd", 4)
+        manager.reset()
         manager.reset()
         assert manager._active is None

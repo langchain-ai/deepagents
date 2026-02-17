@@ -6,6 +6,7 @@ import pytest
 from textual.app import App, ComposeResult
 from textual.containers import Container
 
+from deepagents_cli.widgets.autocomplete import SLASH_COMMANDS
 from deepagents_cli.widgets.chat_input import (
     ChatInput,
     CompletionOption,
@@ -232,3 +233,109 @@ class TestCompletionPopupClickBubbling:
             # Click on second option
             await pilot.click(options[1])
             assert 1 in app.option_clicked_indices
+
+
+class _ChatInputTestApp(App[None]):
+    """Minimal app that hosts a ChatInput for testing."""
+
+    def compose(self) -> ComposeResult:
+        yield ChatInput(id="chat-input")
+
+
+class TestDismissCompletion:
+    """Test ChatInput.dismiss_completion edge cases."""
+
+    @pytest.mark.asyncio
+    async def test_dismiss_returns_false_when_no_suggestions(self) -> None:
+        """dismiss_completion returns False when nothing is shown."""
+        app = _ChatInputTestApp()
+        async with app.run_test():
+            chat = app.query_one("#chat-input", ChatInput)
+            assert chat.dismiss_completion() is False
+
+    @pytest.mark.asyncio
+    async def test_dismiss_clears_popup_and_state(self) -> None:
+        """dismiss_completion hides popup and resets all state."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one("#chat-input", ChatInput)
+            popup = chat.query_one(CompletionPopup)
+
+            # Trigger slash completion
+            assert chat._text_area is not None
+            chat._text_area.text = "/"
+            await pilot.pause()
+
+            # Completion should be active
+            assert chat._current_suggestions
+            assert popup.styles.display == "block"
+
+            # Dismiss
+            result = chat.dismiss_completion()
+            assert result is True
+
+            # All state should be cleaned up
+            assert chat._current_suggestions == []
+            assert popup.styles.display == "none"
+            assert chat._text_area._completion_active is False
+
+    @pytest.mark.asyncio
+    async def test_dismiss_is_idempotent(self) -> None:
+        """Calling dismiss_completion twice is safe."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one("#chat-input", ChatInput)
+
+            assert chat._text_area is not None
+            chat._text_area.text = "/"
+            await pilot.pause()
+            assert chat._current_suggestions
+
+            assert chat.dismiss_completion() is True
+            # Second call is a no-op
+            assert chat.dismiss_completion() is False
+
+    @pytest.mark.asyncio
+    async def test_completion_reappears_after_dismiss(self) -> None:
+        """Typing / after dismiss_completion re-opens the menu."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one("#chat-input", ChatInput)
+            popup = chat.query_one(CompletionPopup)
+
+            assert chat._text_area is not None
+
+            # Show → dismiss
+            chat._text_area.text = "/"
+            await pilot.pause()
+            assert chat._current_suggestions
+            chat.dismiss_completion()
+
+            # Clear input and retype /
+            chat._text_area.text = ""
+            await pilot.pause()
+            chat._text_area.text = "/"
+            await pilot.pause()
+
+            # Menu should reappear with all commands
+            assert len(chat._current_suggestions) == len(SLASH_COMMANDS)
+            assert popup.styles.display == "block"
+
+    @pytest.mark.asyncio
+    async def test_popup_hide_cancels_pending_rebuild(self) -> None:
+        """Hiding the popup clears pending suggestions so a stale rebuild is a no-op."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            popup = app.query_one(CompletionPopup)
+
+            # Schedule a rebuild then immediately hide
+            popup.update_suggestions([("/help", "Show help")], selected_index=0)
+            popup.hide()
+
+            # Let the queued _rebuild_options run
+            await pilot.pause()
+
+            # Popup should remain hidden with no option widgets
+            assert popup.styles.display == "none"
+            assert popup.query(CompletionOption) is not None  # query exists
+            assert len(popup.query(CompletionOption)) == 0

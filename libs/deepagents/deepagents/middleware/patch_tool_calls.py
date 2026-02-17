@@ -18,6 +18,8 @@ class PatchToolCallsMiddleware(AgentMiddleware):
             return None
 
         patched_messages = []
+        needs_patch = False
+
         # Iterate over the messages and add any dangling tool calls
         for i, msg in enumerate(messages):
             patched_messages.append(msg)
@@ -29,6 +31,7 @@ class PatchToolCallsMiddleware(AgentMiddleware):
                     )
                     if corresponding_tool_msg is None:
                         # We have a dangling tool call which needs a ToolMessage
+                        needs_patch = True
                         tool_msg = (
                             f"Tool call {tool_call['name']} with id {tool_call['id']} was "
                             "cancelled - another message came in before it could be completed."
@@ -40,5 +43,9 @@ class PatchToolCallsMiddleware(AgentMiddleware):
                                 tool_call_id=tool_call["id"],
                             )
                         )
+
+        # Only return patched messages if patching is actually needed
+        if not needs_patch:
+            return None
 
         return {"messages": Overwrite(patched_messages)}

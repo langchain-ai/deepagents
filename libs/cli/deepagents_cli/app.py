@@ -16,7 +16,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from rich.text import Text
 from textual.app import App
 from textual.binding import Binding, BindingType
@@ -25,7 +24,6 @@ from textual.css.query import NoMatches
 from textual.screen import ModalScreen
 from textual.widgets import Static
 
-from deepagents_cli.agent import create_cli_agent
 from deepagents_cli.clipboard import copy_selection_to_clipboard
 from deepagents_cli.config import (
     DOCS_URL,
@@ -38,16 +36,7 @@ from deepagents_cli.config import (
     is_shell_command_allowed,
     settings,
 )
-from deepagents_cli.main import check_optional_tools, format_tool_warning_tui
-from deepagents_cli.model_config import (
-    ModelConfigError,
-    ModelSpec,
-    clear_default_model,
-    get_credential_env_var,
-    has_provider_credentials,
-    save_default_model,
-    save_recent_model,
-)
+from deepagents_cli.model_config import ModelSpec, save_recent_model
 from deepagents_cli.textual_adapter import TextualUIAdapter, execute_task_textual
 from deepagents_cli.widgets.approval import ApprovalMenu
 from deepagents_cli.widgets.chat_input import ChatInput
@@ -516,12 +505,25 @@ class DeepAgentsApp(App):
 
         # Warn about missing optional tools (advisory only — never block startup)
         try:
-            for tool in check_optional_tools():
-                self.notify(
-                    format_tool_warning_tui(tool), severity="warning", timeout=15
-                )
-        except Exception:
-            logger.debug("Failed to check for optional tools", exc_info=True)
+            from deepagents_cli.main import (
+                check_optional_tools,
+                format_tool_warning_tui,
+            )
+        except ImportError:
+            logger.warning(
+                "Could not import optional tools checker; skipping tool warnings",
+                exc_info=True,
+            )
+        else:
+            try:
+                for tool in check_optional_tools():
+                    self.notify(
+                        format_tool_warning_tui(tool),
+                        severity="warning",
+                        timeout=15,
+                    )
+            except Exception:
+                logger.debug("Failed to check for optional tools", exc_info=True)
 
         # Size the spacer to fill remaining viewport below input
         self.call_after_refresh(self._size_initial_spacer)
@@ -1345,6 +1347,12 @@ class DeepAgentsApp(App):
         if not self._agent or not self._lc_thread_id:
             return
 
+        from langchain_core.messages import (
+            AIMessage,
+            HumanMessage,
+            ToolMessage,
+        )
+
         config: RunnableConfig = {"configurable": {"thread_id": self._lc_thread_id}}
 
         try:
@@ -1876,6 +1884,13 @@ class DeepAgentsApp(App):
         """
         logger.info("Switching model to %s", model_spec)
 
+        from deepagents_cli.agent import create_cli_agent
+        from deepagents_cli.model_config import (
+            ModelConfigError,
+            get_credential_env_var,
+            has_provider_credentials,
+        )
+
         # Strip leading colon — treat ":claude-opus-4-6" as "claude-opus-4-6"
         model_spec = model_spec.removeprefix(":")
 
@@ -2010,6 +2025,8 @@ class DeepAgentsApp(App):
         Args:
             model_spec: The model specification (e.g., `'anthropic:claude-opus-4-6'`).
         """
+        from deepagents_cli.model_config import save_default_model
+
         model_spec = model_spec.removeprefix(":")
 
         parsed = ModelSpec.try_parse(model_spec)
@@ -2033,6 +2050,8 @@ class DeepAgentsApp(App):
         After clearing, future launches fall back to `[models].recent` or
         environment auto-detection.
         """
+        from deepagents_cli.model_config import clear_default_model
+
         if clear_default_model():
             await self._mount_message(
                 AppMessage(

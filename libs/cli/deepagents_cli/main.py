@@ -26,51 +26,13 @@ from typing import Any
 # Suppress Pydantic v1 compatibility warnings from langchain on Python 3.14+
 warnings.filterwarnings("ignore", message=".*Pydantic V1.*", category=UserWarning)
 
-from rich.style import Style
-from rich.text import Text
-
 from deepagents_cli._version import __version__
 
 logger = logging.getLogger(__name__)
 
-# Now safe to import agent (which imports LangChain modules)
-from deepagents_cli.agent import (
-    DEFAULT_AGENT_NAME,
-    create_cli_agent,
-    list_agents,
-    reset_agent,
-)
-
-# CRITICAL: Import config FIRST to set LANGSMITH_PROJECT before LangChain loads
-from deepagents_cli.config import (
-    build_langsmith_thread_url,
-    console,
-    create_model,
-    settings,
-)
-from deepagents_cli.integrations.sandbox_factory import create_sandbox
-from deepagents_cli.model_config import ModelConfigError, is_warning_suppressed
-from deepagents_cli.sessions import (
-    delete_thread_command,
-    find_similar_threads,
-    generate_thread_id,
-    get_checkpointer,
-    get_most_recent,
-    get_thread_agent,
-    list_threads_command,
-    thread_exists,
-)
-from deepagents_cli.skills import execute_skills_command, setup_skills_parser
-from deepagents_cli.tools import fetch_url, http_request, web_search
-from deepagents_cli.ui import (
-    build_help_parent,
-    show_help,
-    show_list_help,
-    show_reset_help,
-    show_threads_delete_help,
-    show_threads_help,
-    show_threads_list_help,
-)
+# Duplicated from agent.DEFAULT_AGENT_NAME to avoid importing the heavy agent
+# module at startup. Keep in sync with agent.py. Tested.
+_DEFAULT_AGENT_NAME = "agent"
 
 
 def check_cli_dependencies() -> None:
@@ -124,6 +86,8 @@ def check_optional_tools(*, config_path: Path | None = None) -> list[str]:
     Returns:
         List of missing tool names (e.g. `["ripgrep"]`).
     """
+    from deepagents_cli.model_config import is_warning_suppressed
+
     missing: list[str] = []
     if shutil.which("rg") is None and not is_warning_suppressed("ripgrep", config_path):
         missing.append("ripgrep")
@@ -172,6 +136,16 @@ def parse_args() -> argparse.Namespace:
     Returns:
         Parsed arguments namespace.
     """
+    from deepagents_cli.skills import setup_skills_parser
+    from deepagents_cli.ui import (
+        build_help_parent,
+        show_help,
+        show_list_help,
+        show_reset_help,
+        show_threads_delete_help,
+        show_threads_help,
+        show_threads_list_help,
+    )
 
     # Factory that builds an argparse Action whose __call__ invokes the
     # supplied *help_fn* instead of argparse's default help text.  Each
@@ -309,7 +283,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "-a",
         "--agent",
-        default=DEFAULT_AGENT_NAME,
+        default=_DEFAULT_AGENT_NAME,
         metavar="NAME",
         help="Agent to use (e.g., coder, researcher).",
     )
@@ -469,7 +443,14 @@ async def run_textual_cli_async(
     Returns:
         The app's return code (0 for success, non-zero for error).
     """
+    from rich.text import Text
+
+    from deepagents_cli.agent import create_cli_agent
     from deepagents_cli.app import run_textual_app
+    from deepagents_cli.config import console, create_model, settings
+    from deepagents_cli.model_config import ModelConfigError
+    from deepagents_cli.sessions import get_checkpointer
+    from deepagents_cli.tools import fetch_url, http_request, web_search
 
     try:
         result = create_model(model_name, extra_kwargs=model_params)
@@ -502,6 +483,12 @@ async def run_textual_cli_async(
         sandbox_cm = None
 
         if sandbox_type != "none":
+            # Deferred: sandbox_factory imports provider-specific SDKs,
+            # only needed when a sandbox is actually requested.
+            from deepagents_cli.integrations.sandbox_factory import (
+                create_sandbox,
+            )
+
             try:
                 # Create sandbox context manager but keep it open
                 sandbox_cm = create_sandbox(
@@ -591,6 +578,8 @@ def apply_stdin_pipe(args: argparse.Namespace) -> None:
     Args:
         args: The parsed argument namespace (mutated in place).
     """
+    from deepagents_cli.config import console
+
     if sys.stdin is None:
         return
 
@@ -684,6 +673,8 @@ def cli_main() -> None:
 
     # Check dependencies first
     check_cli_dependencies()
+
+    from deepagents_cli.config import console, settings
 
     try:
         args = parse_args()
@@ -780,14 +771,28 @@ def cli_main() -> None:
             sys.exit(0)
 
         if args.command == "help":
+            from deepagents_cli.ui import show_help
+
             show_help()
         elif args.command == "list":
+            from deepagents_cli.agent import list_agents
+
             list_agents()
         elif args.command == "reset":
+            from deepagents_cli.agent import reset_agent
+
             reset_agent(args.agent, args.source_agent)
         elif args.command == "skills":
+            from deepagents_cli.skills import execute_skills_command
+
             execute_skills_command(args)
         elif args.command == "threads":
+            from deepagents_cli.sessions import (
+                delete_thread_command,
+                list_threads_command,
+            )
+            from deepagents_cli.ui import show_threads_help
+
             # "ls" is an argparse alias for "list" — argparse stores the
             # alias as-is in the namespace, so we must match both values.
             if args.threads_command in {"list", "ls"}:
@@ -807,14 +812,20 @@ def cli_main() -> None:
             # --quiet piped output stays clean)
             try:
                 from rich.console import Console as _Console
-
-                warn_console = _Console(stderr=True)
-                for tool in check_optional_tools():
-                    warn_console.print(
-                        f"[yellow]Warning:[/yellow] {format_tool_warning_cli(tool)}"
-                    )
-            except Exception:
-                logger.debug("Failed to check for optional tools", exc_info=True)
+            except ImportError:
+                logger.warning(
+                    "Could not import rich.console; skipping tool warnings",
+                    exc_info=True,
+                )
+            else:
+                try:
+                    warn_console = _Console(stderr=True)
+                    for tool in check_optional_tools():
+                        warn_console.print(
+                            f"[yellow]Warning:[/yellow] {format_tool_warning_cli(tool)}"
+                        )
+                except Exception:
+                    logger.debug("Failed to check for optional tools", exc_info=True)
             # Non-interactive mode - execute single task and exit
             from deepagents_cli.non_interactive import run_non_interactive
 
@@ -834,6 +845,20 @@ def cli_main() -> None:
             sys.exit(exit_code)
         else:
             # Interactive mode - handle thread resume
+            from rich.style import Style
+            from rich.text import Text
+
+            from deepagents_cli.config import (
+                build_langsmith_thread_url,
+            )
+            from deepagents_cli.sessions import (
+                find_similar_threads,
+                generate_thread_id,
+                get_most_recent,
+                get_thread_agent,
+                thread_exists,
+            )
+
             thread_id = None
             is_resumed = False
 
@@ -841,7 +866,7 @@ def cli_main() -> None:
                 # -r (no ID): Get most recent thread
                 # If --agent specified, filter by that agent; otherwise get
                 # most recent overall
-                agent_filter = args.agent if args.agent != DEFAULT_AGENT_NAME else None
+                agent_filter = args.agent if args.agent != _DEFAULT_AGENT_NAME else None
                 thread_id = asyncio.run(get_most_recent(agent_filter))
                 if thread_id:
                     is_resumed = True
@@ -862,7 +887,7 @@ def cli_main() -> None:
                 if asyncio.run(thread_exists(args.resume_thread)):
                     thread_id = args.resume_thread
                     is_resumed = True
-                    if args.agent == DEFAULT_AGENT_NAME:
+                    if args.agent == _DEFAULT_AGENT_NAME:
                         agent_name = asyncio.run(get_thread_agent(thread_id))
                         if agent_name:
                             args.agent = agent_name

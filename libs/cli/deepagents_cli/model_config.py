@@ -214,6 +214,8 @@ def _get_builtin_providers() -> dict[str, Any]:
     if _builtin_providers_cache is not None:
         return _builtin_providers_cache
 
+    # Deferred: langchain.chat_models pulls in heavy provider registry,
+    # only needed when resolving provider names for model config.
     from langchain.chat_models import base  # noqa: PLC0415
 
     registry: dict[str, Any] | None = getattr(base, "_BUILTIN_PROVIDERS", None)

@@ -1317,7 +1317,7 @@ class DeepAgentsApp(App):
             if ctx.subagent_type == "root":
                 lines.append(f"  [{i}] root (main conversation){marker}")
             else:
-                max_preview_len = 40  # noqa: PLR2004
+                max_preview_len = 40
                 task_preview = (
                     ctx.task_description[:max_preview_len] + "..."
                     if len(ctx.task_description) > max_preview_len

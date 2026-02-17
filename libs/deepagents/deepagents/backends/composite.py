@@ -19,6 +19,7 @@ Examples:
 """
 
 from collections import defaultdict
+from typing import cast
 
 from deepagents.backends.protocol import (
     BackendProtocol,
@@ -420,7 +421,7 @@ class CompositeBackend(BackendProtocol):
         file_path: str,
         old_string: str,
         new_string: str,
-        replace_all: bool | None = None,  # noqa: FBT001
+        replace_all: bool = False,  # noqa: FBT001, FBT002
     ) -> EditResult:
         """Edit a file, routing to appropriate backend.
 
@@ -452,7 +453,7 @@ class CompositeBackend(BackendProtocol):
         file_path: str,
         old_string: str,
         new_string: str,
-        replace_all: bool | None = None,  # noqa: FBT001
+        replace_all: bool = False,  # noqa: FBT001, FBT002
     ) -> EditResult:
         """Async version of edit."""
         backend, stripped_key = self._get_backend_and_key(file_path)
@@ -557,7 +558,7 @@ class CompositeBackend(BackendProtocol):
                     error=batch_responses[i].error if i < len(batch_responses) else None,
                 )
 
-        return [r for r in results if r is not None]
+        return cast("list[FileUploadResponse]", results)
 
     async def aupload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
         """Async version of upload_files."""
@@ -587,7 +588,7 @@ class CompositeBackend(BackendProtocol):
                     error=batch_responses[i].error if i < len(batch_responses) else None,
                 )
 
-        return [r for r in results if r is not None]
+        return cast("list[FileUploadResponse]", results)
 
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
         """Download multiple files, batching by backend for efficiency.
@@ -627,7 +628,7 @@ class CompositeBackend(BackendProtocol):
                     error=batch_responses[i].error if i < len(batch_responses) else None,
                 )
 
-        return [r for r in results if r is not None]
+        return cast("list[FileDownloadResponse]", results)
 
     async def adownload_files(self, paths: list[str]) -> list[FileDownloadResponse]:
         """Async version of download_files."""
@@ -656,4 +657,4 @@ class CompositeBackend(BackendProtocol):
                     error=batch_responses[i].error if i < len(batch_responses) else None,
                 )
 
-        return [r for r in results if r is not None]
+        return cast("list[FileDownloadResponse]", results)

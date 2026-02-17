@@ -450,7 +450,7 @@ class StoreBackend(BackendProtocol):
         file_path: str,
         old_string: str,
         new_string: str,
-        replace_all: bool | None = None,  # noqa: FBT001
+        replace_all: bool = False,  # noqa: FBT001, FBT002
     ) -> EditResult:
         """Edit a file by replacing string occurrences.
 
@@ -488,7 +488,7 @@ class StoreBackend(BackendProtocol):
         file_path: str,
         old_string: str,
         new_string: str,
-        replace_all: bool | None = None,  # noqa: FBT001
+        replace_all: bool = False,  # noqa: FBT001, FBT002
     ) -> EditResult:
         """Async version of edit using native store async methods.
 

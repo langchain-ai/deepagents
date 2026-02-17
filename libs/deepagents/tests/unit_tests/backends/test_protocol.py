@@ -47,7 +47,7 @@ class BareBackend(BackendProtocol):
         file_path: str,
         old_string: str,
         new_string: str,
-        replace_all: bool | None = None,  # noqa: FBT001
+        replace_all: bool = False,  # noqa: FBT001, FBT002
     ) -> EditResult:
         return super().edit(file_path, old_string, new_string, replace_all)
 
@@ -86,7 +86,7 @@ class BareSandboxBackend(SandboxBackendProtocol):
         file_path: str,
         old_string: str,
         new_string: str,
-        replace_all: bool | None = None,  # noqa: FBT001
+        replace_all: bool = False,  # noqa: FBT001, FBT002
     ) -> EditResult:
         return super().edit(file_path, old_string, new_string, replace_all)
 

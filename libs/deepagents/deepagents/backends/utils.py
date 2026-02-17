@@ -231,7 +231,7 @@ def truncate_if_too_long(result: list[str] | str) -> list[str] | str:
     return result
 
 
-def _validate_path(path: str, *, allowed_prefixes: Sequence[str] | None = None) -> str:
+def validate_path(path: str, *, allowed_prefixes: Sequence[str] | None = None) -> str:
     r"""Validate and normalize file path for security.
 
     Ensures paths are safe to use by preventing directory traversal attacks
@@ -259,12 +259,12 @@ def _validate_path(path: str, *, allowed_prefixes: Sequence[str] | None = None) 
 
     Example:
         ```python
-        _validate_path("foo/bar")  # Returns: "/foo/bar"
-        _validate_path("/./foo//bar")  # Returns: "/foo/bar"
-        _validate_path("../etc/passwd")  # Raises ValueError
-        _validate_path(r"C:\\Users\\file.txt")  # Raises ValueError
-        _validate_path("/data/file.txt", allowed_prefixes=["/data/"])  # OK
-        _validate_path("/etc/file.txt", allowed_prefixes=["/data/"])  # Raises ValueError
+        validate_path("foo/bar")  # Returns: "/foo/bar"
+        validate_path("/./foo//bar")  # Returns: "/foo/bar"
+        validate_path("../etc/passwd")  # Raises ValueError
+        validate_path(r"C:\\Users\\file.txt")  # Raises ValueError
+        validate_path("/data/file.txt", allowed_prefixes=["/data/"])  # OK
+        validate_path("/etc/file.txt", allowed_prefixes=["/data/"])  # Raises ValueError
         ```
     """
     # Check for traversal as a path component (not substring) to avoid

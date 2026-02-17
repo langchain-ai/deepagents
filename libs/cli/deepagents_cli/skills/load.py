@@ -1,7 +1,7 @@
 """Skill loader for CLI commands.
 
-This module provides filesystem-based skill loading for CLI operations
-(list, create, info). It wraps the prebuilt middleware functionality from
+This module provides filesystem-based skill discovery for CLI operations
+(list, create, info, delete). It wraps the prebuilt middleware functionality from
 deepagents.middleware.skills and adapts it for direct filesystem access
 needed by CLI commands.
 

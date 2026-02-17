@@ -666,8 +666,9 @@ class ChatInput(Vertical):
             return False
         if self._completion_manager:
             self._completion_manager.reset()
-        else:
-            self.clear_completion_suggestions()
+        # Always clear local state so the popup is hidden even if the
+        # manager's active controller was already None (no-op reset).
+        self.clear_completion_suggestions()
         return True
 
     # =========================================================================

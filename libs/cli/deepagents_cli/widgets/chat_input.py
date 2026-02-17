@@ -378,6 +378,14 @@ class ChatInput(Vertical):
         border: solid $primary;
     }
 
+    ChatInput.mode-bash {
+        border: solid #ff1493;
+    }
+
+    ChatInput.mode-command {
+        border: solid #8b5cf6;
+    }
+
     ChatInput .input-row {
         height: auto;
         width: 100%;
@@ -389,6 +397,14 @@ class ChatInput(Vertical):
         padding: 0 1;
         color: $primary;
         text-style: bold;
+    }
+
+    ChatInput.mode-bash .input-prompt {
+        color: #ff1493;
+    }
+
+    ChatInput.mode-command .input-prompt {
+        color: #8b5cf6;
     }
 
     ChatInput ChatTextArea {
@@ -604,7 +620,17 @@ class ChatInput(Vertical):
         return offset + min(col, len(lines[row]))
 
     def watch_mode(self, mode: str) -> None:
-        """Post mode changed message when mode changes."""
+        """Post mode changed message and update prompt indicator."""
+        prompt = self.query_one("#prompt", Static)
+        self.remove_class("mode-bash", "mode-command")
+        if mode == "bash":
+            prompt.update("!")
+            self.add_class("mode-bash")
+        elif mode == "command":
+            prompt.update("/")
+            self.add_class("mode-command")
+        else:
+            prompt.update(">")
         self.post_message(self.ModeChanged(mode))
 
     def focus_input(self) -> None:

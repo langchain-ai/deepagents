@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 from textual.app import App, ComposeResult
 from textual.containers import Container
+from textual.widgets import Static
 
 from deepagents_cli.widgets.autocomplete import SLASH_COMMANDS
 from deepagents_cli.widgets.chat_input import (
@@ -191,6 +192,78 @@ class TestCompletionOptionClick:
             await pilot.click(opt1)
 
             assert 1 in app.clicked_indices
+
+
+def _prompt_text(prompt: Static) -> str:
+    """Read the current text content of a Static widget."""
+    return str(prompt._Static__content)  # type: ignore[attr-defined]  # accessing internal content store
+
+
+class TestPromptIndicator:
+    """Test that the prompt indicator reflects the current input mode."""
+
+    @pytest.mark.asyncio
+    async def test_prompt_shows_bang_in_bash_mode(self) -> None:
+        """Typing '!' should change the prompt indicator and border to bash style."""
+
+        class TestApp(App[None]):
+            def compose(self) -> ComposeResult:
+                yield ChatInput()
+
+        app = TestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            prompt = chat_input.query_one("#prompt", Static)
+
+            assert _prompt_text(prompt) == ">"
+            assert not chat_input.has_class("mode-bash")
+
+            chat_input.mode = "bash"
+            await pilot.pause()
+            assert _prompt_text(prompt) == "!"
+            assert chat_input.has_class("mode-bash")
+
+    @pytest.mark.asyncio
+    async def test_prompt_shows_slash_in_command_mode(self) -> None:
+        """Typing '/' should change the prompt indicator and border to command style."""
+
+        class TestApp(App[None]):
+            def compose(self) -> ComposeResult:
+                yield ChatInput()
+
+        app = TestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            prompt = chat_input.query_one("#prompt", Static)
+
+            chat_input.mode = "command"
+            await pilot.pause()
+            assert _prompt_text(prompt) == "/"
+            assert chat_input.has_class("mode-command")
+
+    @pytest.mark.asyncio
+    async def test_prompt_reverts_to_default_on_normal_mode(self) -> None:
+        """Clearing mode prefix should revert indicator, border, and CSS classes."""
+
+        class TestApp(App[None]):
+            def compose(self) -> ComposeResult:
+                yield ChatInput()
+
+        app = TestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            prompt = chat_input.query_one("#prompt", Static)
+
+            chat_input.mode = "bash"
+            await pilot.pause()
+            assert _prompt_text(prompt) == "!"
+            assert chat_input.has_class("mode-bash")
+
+            chat_input.mode = "normal"
+            await pilot.pause()
+            assert _prompt_text(prompt) == ">"
+            assert not chat_input.has_class("mode-bash")
+            assert not chat_input.has_class("mode-command")
 
 
 class TestCompletionPopupClickBubbling:

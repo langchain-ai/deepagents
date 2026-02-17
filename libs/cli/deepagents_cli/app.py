@@ -5,8 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-
-# S404: subprocess is required for user-initiated shell commands via ! prefix
+import signal
 import subprocess  # noqa: S404
 import uuid
 import webbrowser
@@ -446,6 +445,9 @@ class DeepAgentsApp(App):
         # Agent task tracking for interruption
         self._agent_worker: Worker[None] | None = None
         self._agent_running = False
+        self._bash_process: asyncio.subprocess.Process | None = None
+        self._bash_pgid: int | None = None
+        self._bash_interrupted = False
         self._loading_widget: LoadingWidget | None = None
         self._token_tracker: TextualTokenTracker | None = None
         # User message queue for sequential processing
@@ -955,27 +957,50 @@ class DeepAgentsApp(App):
         await self._mount_message(UserMessage(f"!{command}"))
 
         # Execute bash command (user explicitly requested via ! prefix)
-        # S604: shell=True is intentional - user requested shell execution via ! prefix
+        # S602: shell execution is intentional for !-prefixed user commands
         try:
-            result = await asyncio.to_thread(  # noqa: S604
-                subprocess.run,
+            self._bash_interrupted = False
+            create_kwargs: dict[str, Any] = {
+                "stdout": asyncio.subprocess.PIPE,
+                "stderr": asyncio.subprocess.PIPE,
+                "cwd": self._cwd,
+            }
+            if os.name == "nt":
+                creation_flag = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                if creation_flag:
+                    create_kwargs["creationflags"] = creation_flag
+            else:
+                # Run in a new session so escape/ctrl+c can terminate the full
+                # shell command group (for example `!sleep 60`).
+                create_kwargs["start_new_session"] = True
+            process = await asyncio.create_subprocess_shell(
                 command,
-                shell=True,
-                capture_output=True,
-                text=True,
-                cwd=self._cwd,
-                timeout=60,
+                **create_kwargs,
             )
-            # text=True ensures stdout/stderr are str, not bytes
-            stdout = result.stdout
-            stderr = result.stderr
-            if not isinstance(stdout, str):
-                stdout = stdout.decode() if stdout else ""
-            output = stdout.strip()
+            self._bash_process = process
+            self._bash_pgid = process.pid if os.name != "nt" else None
+            try:
+                stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                    process.communicate(), timeout=60
+                )
+            except TimeoutError:
+                with suppress(ProcessLookupError):
+                    process.kill()
+                await process.communicate()
+                await self._mount_message(ErrorMessage("Command timed out (60s limit)"))
+                return
+            finally:
+                self._bash_process = None
+                self._bash_pgid = None
+
+            output = (
+                stdout_bytes.decode(errors="replace").strip() if stdout_bytes else ""
+            )
+            stderr = (
+                stderr_bytes.decode(errors="replace").strip() if stderr_bytes else ""
+            )
             if stderr:
-                if not isinstance(stderr, str):
-                    stderr = stderr.decode() if stderr else ""
-                output += f"\n[stderr]\n{stderr.strip()}"
+                output += f"\n[stderr]\n{stderr}"
 
             if output:
                 # Display output as assistant message (uses markdown for code blocks)
@@ -985,19 +1010,25 @@ class DeepAgentsApp(App):
             else:
                 await self._mount_message(AppMessage("Command completed (no output)"))
 
-            if result.returncode != 0:
+            if self._bash_interrupted:
+                await self._mount_message(AppMessage("Command interrupted"))
+                return
+
+            if process.returncode and process.returncode != 0:
                 await self._mount_message(
-                    ErrorMessage(f"Exit code: {result.returncode}")
+                    ErrorMessage(f"Exit code: {process.returncode}")
                 )
 
             # Scroll to show the output (user-initiated command, so scroll is expected)
             chat = self.query_one("#chat", VerticalScroll)
             chat.scroll_end(animate=False)
 
-        except subprocess.TimeoutExpired:
-            await self._mount_message(ErrorMessage("Command timed out (60s limit)"))
         except OSError as e:
             await self._mount_message(ErrorMessage(str(e)))
+        finally:
+            self._bash_process = None
+            self._bash_pgid = None
+            self._bash_interrupted = False
 
     async def _open_url_command(self, command: str, cmd: str) -> None:
         """Open a URL in the browser and display a clickable link.
@@ -1589,6 +1620,11 @@ class DeepAgentsApp(App):
             self._quit_pending = False
             return
 
+        # If a bash command is running, terminate it.
+        if self._interrupt_bash_process():
+            self._quit_pending = False
+            return
+
         # If approval menu is active, reject it
         if self._pending_approval_widget:
             self._pending_approval_widget.action_select_reject()
@@ -1612,6 +1648,10 @@ class DeepAgentsApp(App):
             self.screen.dismiss(None)
             return
 
+        # If a bash command is running, terminate it.
+        if self._interrupt_bash_process():
+            return
+
         # If agent is running, interrupt it and discard queued messages
         if self._agent_running and self._agent_worker:
             self._pending_messages.clear()
@@ -1624,6 +1664,27 @@ class DeepAgentsApp(App):
         # If approval menu is active, reject it
         if self._pending_approval_widget:
             self._pending_approval_widget.action_select_reject()
+
+    def _interrupt_bash_process(self) -> bool:
+        """Terminate the active bash command, if one is running.
+
+        Returns:
+            `True` if a live process was found and termination was requested.
+        """
+        if self._bash_process is None or self._bash_process.returncode is not None:
+            return False
+
+        self._bash_interrupted = True
+        if os.name != "nt" and self._bash_pgid is not None:
+            with suppress(ProcessLookupError, PermissionError, OSError):
+                os.killpg(self._bash_pgid, signal.SIGTERM)
+        elif os.name == "nt" and hasattr(signal, "CTRL_BREAK_EVENT"):
+            with suppress(ProcessLookupError, OSError):
+                self._bash_process.send_signal(signal.CTRL_BREAK_EVENT)
+
+        with suppress(ProcessLookupError, OSError):
+            self._bash_process.terminate()
+        return True
 
     def action_quit_app(self) -> None:
         """Handle quit action (Ctrl+D)."""

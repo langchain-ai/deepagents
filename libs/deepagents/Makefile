@@ -12,10 +12,15 @@ UV_FROZEN = true
 
 # Define a variable for the test file path.
 TEST_FILE ?= tests/unit_tests/
+SMOKE_TESTS ?= tests/unit_tests/smoke_tests/
 integration_test integration_tests: TEST_FILE=tests/integration_tests/
 
 test tests:
 	uv run --group test pytest -vvv --disable-socket --allow-unix-socket $(TEST_FILE)
+
+update-snapshots:
+	# update snapshots for smoke tests
+	uv run --group test pytest -vvv --disable-socket --allow-unix-socket --update-snapshots $(SMOKE_TESTS)
 
 coverage:
 	uv run --group test pytest --cov \

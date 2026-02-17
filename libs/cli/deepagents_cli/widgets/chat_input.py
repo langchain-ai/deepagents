@@ -507,7 +507,7 @@ class ChatInput(Vertical):
         # re-evaluate mode.
         self._stripping_prefix = False
         # Number of virtual prefix characters currently injected for
-        # completion controller calls (0 for normal/bash, 1 for command).
+        # completion controller calls (0 for normal, 1 for bash/command).
         self._completion_prefix_len = 0
 
         # Track current suggestions for click handling
@@ -599,11 +599,17 @@ class ChatInput(Vertical):
         """
         if not self._text_area:
             return
+        if self._stripping_prefix:
+            logger.warning(
+                "Previous _stripping_prefix guard was never cleared; "
+                "resetting. This may indicate a missed text-change event."
+            )
         text = self._text_area.text
+        if not text:
+            return
         row, col = self._text_area.cursor_location
         self._stripping_prefix = True
         self._text_area.text = text[1:]
-        # Shift cursor left by 1 to account for removed character
         if row == 0 and col > 0:
             col -= 1
         self._text_area.move_cursor((row, col))
@@ -642,11 +648,14 @@ class ChatInput(Vertical):
         mapped = index - self._completion_prefix_len
         text_len = len(self._text_area.text)
         if mapped < 0 or mapped > text_len:
-            logger.debug(
-                "Completion index %d mapped to %d, outside [0, %d]; clamping",
+            logger.warning(
+                "Completion index %d mapped to %d, outside [0, %d]; "
+                "clamping (prefix_len=%d, mode=%s)",
                 index,
                 mapped,
                 text_len,
+                self._completion_prefix_len,
+                self.mode,
             )
         return max(0, min(mapped, text_len))
 
@@ -909,9 +918,9 @@ class ChatInput(Vertical):
                     "Slash completion clicked but _completion_view is not "
                     "initialized; this indicates a widget lifecycle issue."
                 )
-            else:
-                _, virtual_cursor = self._completion_text_and_cursor()
-                self._completion_view.replace_completion_range(0, virtual_cursor, label)
+                return
+            _, virtual_cursor = self._completion_text_and_cursor()
+            self._completion_view.replace_completion_range(0, virtual_cursor, label)
         elif label.startswith("@"):
             # File mention: replace from @ to cursor
             at_index = text[:cursor].rfind("@")

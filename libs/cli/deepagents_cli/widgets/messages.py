@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import json
+import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -31,8 +32,30 @@ if TYPE_CHECKING:
     from textual.timer import Timer
     from textual.widgets._markdown import MarkdownStream
 
+logger = logging.getLogger(__name__)
+
 _PREFIX_TO_MODE: dict[str, str] = {v: k for k, v in MODE_PREFIXES.items()}
 """Reverse lookup: trigger character -> mode name."""
+
+
+def _mode_color(mode: str | None) -> str:
+    """Return the color string for a mode, falling back to primary.
+
+    Args:
+        mode: Mode name (e.g. `'bash'`, `'command'`) or `None`.
+
+    Returns:
+        Hex color string from `COLORS`.
+    """
+    if not mode:
+        return COLORS["primary"]
+    color = COLORS.get(f"mode_{mode}")
+    if color is None:
+        logger.warning(
+            "Missing color key 'mode_%s' in COLORS; falling back to primary.", mode
+        )
+        return COLORS["primary"]
+    return color
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,7 +128,7 @@ class UserMessage(Static):
     def on_mount(self) -> None:
         """Set border style based on charset mode and content prefix."""
         mode = _PREFIX_TO_MODE.get(self._content[:1]) if self._content else None
-        color = COLORS[f"mode_{mode}"] if mode else COLORS["primary"]
+        color = _mode_color(mode)
         border_type = "ascii" if _detect_charset_mode() == CharsetMode.ASCII else "wide"
         self.styles.border_left = (border_type, color)
 
@@ -122,7 +145,7 @@ class UserMessage(Static):
         # mode trigger character (e.g. "!" for bash, "/" for commands).
         mode = _PREFIX_TO_MODE.get(content[:1]) if content else None
         if mode:
-            text.append(f"{content[0]} ", style=f"bold {COLORS[f'mode_{mode}']}")
+            text.append(f"{content[0]} ", style=f"bold {_mode_color(mode)}")
             content = content[1:]
         else:
             text.append("> ", style=f"bold {COLORS['primary']}")

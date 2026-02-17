@@ -1612,7 +1612,8 @@ class DeepAgentsApp(App):
             self.screen.dismiss(None)
             return
 
-        # If completion popup is active, close it (handled by ChatInput, but we consume event)
+        # If completion popup is active, close it.
+        # (Handled by ChatInput, but we consume the event.)
         if self._chat_input and self._chat_input.is_completion_active:
             self._chat_input.clear_completion_suggestions()
             return

@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 from textual.app import App, ComposeResult
 from textual.containers import Container
+from textual.widgets import Static
 
 from deepagents_cli.widgets.autocomplete import SLASH_COMMANDS
 from deepagents_cli.widgets.chat_input import (
@@ -193,6 +194,131 @@ class TestCompletionOptionClick:
             assert 1 in app.clicked_indices
 
 
+class _ChatInputTestApp(App[None]):
+    """Minimal app that hosts a ChatInput for testing."""
+
+    def compose(self) -> ComposeResult:
+        yield ChatInput(id="chat-input")
+
+
+def _prompt_text(prompt: Static) -> str:
+    """Read the current text content of a Static widget."""
+    return str(prompt._Static__content)  # type: ignore[attr-defined]  # accessing internal content store
+
+
+class TestPromptIndicator:
+    """Test that the prompt indicator reflects the current input mode."""
+
+    @pytest.mark.asyncio
+    async def test_prompt_shows_bang_in_bash_mode(self) -> None:
+        """Setting mode to 'bash' should change prompt to '!' and apply bash styling."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            prompt = chat_input.query_one("#prompt", Static)
+
+            assert _prompt_text(prompt) == ">"
+            assert not chat_input.has_class("mode-bash")
+
+            chat_input.mode = "bash"
+            await pilot.pause()
+            assert _prompt_text(prompt) == "!"
+            assert chat_input.has_class("mode-bash")
+
+    @pytest.mark.asyncio
+    async def test_prompt_shows_slash_in_command_mode(self) -> None:
+        """Setting mode to 'command' should change prompt and styling."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            prompt = chat_input.query_one("#prompt", Static)
+
+            chat_input.mode = "command"
+            await pilot.pause()
+            assert _prompt_text(prompt) == "/"
+            assert chat_input.has_class("mode-command")
+
+    @pytest.mark.asyncio
+    async def test_prompt_reverts_to_default_on_normal_mode(self) -> None:
+        """Resetting mode to 'normal' should revert indicator and classes."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            prompt = chat_input.query_one("#prompt", Static)
+
+            chat_input.mode = "bash"
+            await pilot.pause()
+            assert _prompt_text(prompt) == "!"
+            assert chat_input.has_class("mode-bash")
+
+            chat_input.mode = "normal"
+            await pilot.pause()
+            assert _prompt_text(prompt) == ">"
+            assert not chat_input.has_class("mode-bash")
+            assert not chat_input.has_class("mode-command")
+
+    @pytest.mark.asyncio
+    async def test_mode_change_posts_message(self) -> None:
+        """Setting mode should post a ModeChanged message."""
+        messages: list[ChatInput.ModeChanged] = []
+
+        class RecordingApp(App[None]):
+            def compose(self) -> ComposeResult:
+                yield ChatInput()
+
+            def on_chat_input_mode_changed(self, event: ChatInput.ModeChanged) -> None:
+                messages.append(event)
+
+        app = RecordingApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+
+            chat_input.mode = "bash"
+            await pilot.pause()
+            assert any(m.mode == "bash" for m in messages)
+
+
+class TestHistoryNavigationFlag:
+    """Test that _navigating_history resets when history is exhausted."""
+
+    @pytest.mark.asyncio
+    async def test_down_arrow_at_bottom_resets_navigating_flag(self) -> None:
+        """Pressing down with no history should not leave _navigating_history stuck."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input._text_area
+            assert text_area is not None
+
+            assert not text_area._navigating_history
+
+            await pilot.press("down")
+            await pilot.pause()
+
+            assert not text_area._navigating_history
+
+    @pytest.mark.asyncio
+    async def test_autocomplete_works_after_down_arrow(self) -> None:
+        """Typing '/' after pressing down should still trigger completions."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input._text_area
+            assert text_area is not None
+
+            # Press down at the bottom of empty history
+            await pilot.press("down")
+            await pilot.pause()
+
+            # Now type '/' — completions should appear
+            text_area.insert("/")
+            await pilot.pause()
+
+            assert chat_input._completion_manager is not None
+            controller = chat_input._completion_manager._active
+            assert controller is not None
+
+
 class TestCompletionPopupClickBubbling:
     """Test that clicks on options bubble up through the popup."""
 
@@ -233,13 +359,6 @@ class TestCompletionPopupClickBubbling:
             # Click on second option
             await pilot.click(options[1])
             assert 1 in app.option_clicked_indices
-
-
-class _ChatInputTestApp(App[None]):
-    """Minimal app that hosts a ChatInput for testing."""
-
-    def compose(self) -> ComposeResult:
-        yield ChatInput(id="chat-input")
 
 
 class TestDismissCompletion:

@@ -55,6 +55,8 @@ COLORS = {
     "agent": "#10b981",
     "thinking": "#34d399",
     "tool": "#fbbf24",
+    "mode_bash": "#ff1493",
+    "mode_command": "#8b5cf6",
 }
 
 

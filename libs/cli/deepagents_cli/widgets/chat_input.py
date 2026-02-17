@@ -7,12 +7,13 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.css.query import NoMatches
 from textual.message import Message
 from textual.reactive import reactive
 from textual.widgets import Static, TextArea
 from textual.widgets.text_area import Selection
 
-from deepagents_cli.config import CharsetMode, _detect_charset_mode, get_glyphs
+from deepagents_cli.config import COLORS, CharsetMode, _detect_charset_mode, get_glyphs
 from deepagents_cli.widgets.autocomplete import (
     SLASH_COMMANDS,
     CompletionResult,
@@ -378,6 +379,14 @@ class ChatInput(Vertical):
         border: solid $primary;
     }
 
+    ChatInput.mode-bash {
+        border: solid __MODE_BASH__;
+    }
+
+    ChatInput.mode-command {
+        border: solid __MODE_CMD__;
+    }
+
     ChatInput .input-row {
         height: auto;
         width: 100%;
@@ -389,6 +398,14 @@ class ChatInput(Vertical):
         padding: 0 1;
         color: $primary;
         text-style: bold;
+    }
+
+    ChatInput.mode-bash .input-prompt {
+        color: __MODE_BASH__;
+    }
+
+    ChatInput.mode-command .input-prompt {
+        color: __MODE_CMD__;
     }
 
     ChatInput ChatTextArea {
@@ -404,7 +421,9 @@ class ChatInput(Vertical):
     ChatInput ChatTextArea:focus {
         border: none;
     }
-    """
+    """.replace("__MODE_BASH__", COLORS["mode_bash"]).replace(
+        "__MODE_CMD__", COLORS["mode_command"]
+    )
 
     class Submitted(Message):
         """Message sent when input is submitted."""
@@ -536,6 +555,8 @@ class ChatInput(Vertical):
         entry = self._history.get_previous(event.current_text)
         if entry is not None and self._text_area:
             self._text_area.set_text_from_history(entry)
+        elif self._text_area:
+            self._text_area._navigating_history = False
 
     def on_chat_text_area_history_next(
         self,
@@ -545,6 +566,8 @@ class ChatInput(Vertical):
         entry = self._history.get_next()
         if entry is not None and self._text_area:
             self._text_area.set_text_from_history(entry)
+        elif self._text_area:
+            self._text_area._navigating_history = False
 
     async def on_key(self, event: events.Key) -> None:
         """Handle key events for completion navigation."""
@@ -604,7 +627,20 @@ class ChatInput(Vertical):
         return offset + min(col, len(lines[row]))
 
     def watch_mode(self, mode: str) -> None:
-        """Post mode changed message when mode changes."""
+        """Post mode changed message and update prompt indicator."""
+        try:
+            prompt = self.query_one("#prompt", Static)
+        except NoMatches:
+            return
+        self.remove_class("mode-bash", "mode-command")
+        if mode == "bash":
+            prompt.update("!")
+            self.add_class("mode-bash")
+        elif mode == "command":
+            prompt.update("/")
+            self.add_class("mode-command")
+        else:
+            prompt.update(">")
         self.post_message(self.ModeChanged(mode))
 
     def focus_input(self) -> None:

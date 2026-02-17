@@ -259,12 +259,6 @@ ignore-var-parameters = true
     "E722",     # Do not use bare `except`
     "PLR2004",  # Magic value used in comparison
 ]
-"deepagents_cli/ui.py" = [
-    "ANN401",   # Dynamically typed expressions (typing.Any) are disallowed
-    "ARG002",   # Unused method argument
-    "BLE001",   # Do not catch blind exception
-    "PLR2004",  # Magic value used in comparison
-]
 "deepagents_cli/widgets/approval.py" = [
     "A002",     # Argument shadows a Python builtin
     "ARG002",   # Unused method argument

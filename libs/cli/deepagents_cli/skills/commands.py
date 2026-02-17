@@ -6,16 +6,19 @@ These commands are registered with the CLI via main.py:
 - deepagents skills info <name>
 """
 
-import argparse
-import functools
-from collections.abc import Callable
-from pathlib import Path
-from typing import Any
+from __future__ import annotations
 
-from deepagents.middleware.skills import SkillMetadata
+import functools
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    import argparse
+    from collections.abc import Callable
+
+    from deepagents.middleware.skills import SkillMetadata
 
 from deepagents_cli.config import COLORS, Settings, console, get_glyphs
-from deepagents_cli.skills.load import list_skills
 from deepagents_cli.ui import (
     build_help_parent,
     show_skills_create_help,
@@ -157,6 +160,11 @@ def _list(agent: str, *, project: bool = False) -> None:
         project: If True, show only project skills.
             If False, show all skills (user + project).
     """
+    # Deferred: skills.load imports the deepagents SDK. This module is
+    # imported at CLI startup for setup_skills_parser(), so a top-level
+    # import here would penalize every command (e.g. `--help`).
+    from deepagents_cli.skills.load import list_skills  # noqa: PLC0415
+
     settings = Settings.from_environment()
     user_skills_dir = settings.get_user_skills_dir(agent)
     project_skills_dir = settings.get_project_skills_dir()
@@ -457,6 +465,11 @@ def _info(skill_name: str, *, agent: str = "agent", project: bool = False) -> No
         project: If True, only search in project skills.
             If False, search in both user and project skills.
     """
+    # Deferred: skills.load imports the deepagents SDK. This module is
+    # imported at CLI startup for setup_skills_parser(), so a top-level
+    # import here would penalize every command (e.g. `--help`).
+    from deepagents_cli.skills.load import list_skills  # noqa: PLC0415
+
     settings = Settings.from_environment()
     user_skills_dir = settings.get_user_skills_dir(agent)
     project_skills_dir = settings.get_project_skills_dir()

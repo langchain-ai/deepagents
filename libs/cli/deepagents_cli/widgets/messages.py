@@ -16,7 +16,7 @@ from textual.widgets import Markdown, Static
 
 from deepagents_cli.config import CharsetMode, _detect_charset_mode, get_glyphs
 from deepagents_cli.input import EMAIL_PREFIX_PATTERN, INPUT_HIGHLIGHT_PATTERN
-from deepagents_cli.ui import format_tool_display
+from deepagents_cli.tool_display import format_tool_display
 from deepagents_cli.widgets.diff import format_diff_textual
 
 if TYPE_CHECKING:

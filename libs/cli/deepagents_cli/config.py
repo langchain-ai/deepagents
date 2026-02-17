@@ -797,6 +797,11 @@ class SessionState:
         """Get the current context's thread_id (backwards compatible)."""
         return self.current_context.thread_id
 
+    @thread_id.setter
+    def thread_id(self, value: str) -> None:
+        """Set the current context's thread_id."""
+        self.current_context.thread_id = value
+
     @property
     def current_context(self) -> ConversationContext:
         """Get the current (topmost) conversation context."""

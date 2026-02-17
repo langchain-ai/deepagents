@@ -1,4 +1,4 @@
-"""Unit tests for skills command sanitization and validation."""
+"""Unit tests for skills CLI commands."""
 
 import argparse
 import io
@@ -470,6 +470,7 @@ class TestSkillsHelpFlag:
         assert "list" in output.lower()
         assert "create" in output.lower()
         assert "info" in output.lower()
+        assert "delete" in output.lower()
 
         # Should NOT contain global-only content
         assert "Start interactive thread" not in output
@@ -956,8 +957,11 @@ class TestDeleteSkill:
         joined = "\n".join(output)
         assert "not found" in joined.lower()
 
-    def test_delete_with_confirmation_yes(self, tmp_path: Path) -> None:
-        """Test deleting a skill with user confirmation (yes)."""
+    @pytest.mark.parametrize("response", ["y", "yes"])
+    def test_delete_with_confirmation_accepted(
+        self, tmp_path: Path, response: str
+    ) -> None:
+        """Test deleting a skill with user confirmation (y/yes)."""
         user_skills_dir = tmp_path / ".deepagents" / "agent" / "skills"
         skill_dir = self._create_test_skill(user_skills_dir, "test-skill")
         assert skill_dir.exists()
@@ -970,7 +974,7 @@ class TestDeleteSkill:
 
         with patch("deepagents_cli.skills.commands.Settings") as mock_settings_cls:
             mock_settings_cls.from_environment.return_value = mock_settings
-            with patch("builtins.input", return_value="y"):
+            with patch("builtins.input", return_value=response):
                 _delete("test-skill", agent="agent", project=False, force=False)
 
         assert not skill_dir.exists()
@@ -1181,7 +1185,7 @@ class TestDeleteSkill:
         assert skill_dir_agent2.exists()
 
     def test_delete_rmtree_os_error(self, tmp_path: Path) -> None:
-        """Test that OSError during shutil.rmtree is handled gracefully."""
+        """Test that OSError during shutil.rmtree exits with code 1."""
         user_skills_dir = tmp_path / ".deepagents" / "agent" / "skills"
         skill_dir = self._create_test_skill(user_skills_dir, "test-skill")
         assert skill_dir.exists()
@@ -1204,9 +1208,120 @@ class TestDeleteSkill:
         ):
             mock_settings_cls.from_environment.return_value = mock_settings
             mock_console.print = capture_print
-            _delete("test-skill", agent="agent", project=False, force=True)
+            with pytest.raises(SystemExit) as exc_info:
+                _delete("test-skill", agent="agent", project=False, force=True)
 
+        assert exc_info.value.code == 1
         joined = "\n".join(output)
-        assert "failed to delete skill" in joined.lower()
+        assert "failed to fully delete skill" in joined.lower()
+        assert "partially removed" in joined.lower()
         # Skill directory should still exist since rmtree was mocked to fail
         assert skill_dir.exists()
+
+    def test_delete_refuses_when_base_dir_none(self, tmp_path: Path) -> None:
+        """Deletion should be refused when base skills directory is None."""
+        agent_skills_dir = tmp_path / ".agents" / "skills"
+        self._create_test_skill(agent_skills_dir, "orphan-skill")
+
+        mock_settings = MagicMock()
+        mock_settings.get_user_skills_dir.return_value = None
+        mock_settings.get_project_skills_dir.return_value = None
+        mock_settings.get_user_agent_skills_dir.return_value = agent_skills_dir
+        mock_settings.get_project_agent_skills_dir.return_value = None
+
+        output: list[str] = []
+
+        def capture_print(*args: str, **_: str) -> None:
+            output.append(" ".join(str(a) for a in args))
+
+        with (
+            patch("deepagents_cli.skills.commands.Settings") as mock_settings_cls,
+            patch("deepagents_cli.skills.commands.console") as mock_console,
+        ):
+            mock_settings_cls.from_environment.return_value = mock_settings
+            mock_console.print = capture_print
+            _delete("orphan-skill", agent="agent", project=False, force=True)
+
+        joined = "\n".join(output)
+        assert "cannot determine" in joined.lower() or "refusing" in joined.lower()
+        # Must NOT have been deleted
+        assert (agent_skills_dir / "orphan-skill").exists()
+
+
+class TestDeleteArgparsing:
+    """Test argparse wiring for `deepagents skills delete`."""
+
+    def test_delete_args_parsed(self) -> None:
+        """Verify `skills delete my-skill --force --project` parses correctly."""
+        with patch(
+            "sys.argv",
+            ["deepagents", "skills", "delete", "my-skill", "--force", "--project"],
+        ):
+            args = parse_args()
+        assert args.command == "skills"
+        assert args.skills_command == "delete"
+        assert args.name == "my-skill"
+        assert args.force is True
+        assert args.project is True
+
+    def test_delete_args_defaults(self) -> None:
+        """Verify default values for optional delete arguments."""
+        with patch("sys.argv", ["deepagents", "skills", "delete", "my-skill"]):
+            args = parse_args()
+        assert args.force is False
+        assert args.project is False
+        assert args.agent == "agent"
+
+    def test_delete_help_shows_delete_options(self) -> None:
+        """Running `deepagents skills delete -h` should show delete options."""
+        buf = io.StringIO()
+        test_console = Console(file=buf, highlight=False, width=120)
+
+        with (
+            patch("sys.argv", ["deepagents", "skills", "delete", "-h"]),
+            patch("deepagents_cli.ui.console", test_console),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            parse_args()
+
+        assert exc_info.value.code in (0, None)
+        output = buf.getvalue()
+        assert "--force" in output or "-f" in output
+        assert "--project" in output
+
+    def test_execute_skills_command_dispatches_delete(self, tmp_path: Path) -> None:
+        """Verify `execute_skills_command` routes 'delete' to `_delete()`."""
+        user_skills_dir = tmp_path / ".deepagents" / "agent" / "skills"
+        user_skills_dir.mkdir(parents=True)
+
+        mock_settings = MagicMock()
+        mock_settings.get_user_skills_dir.return_value = user_skills_dir
+        mock_settings.get_project_skills_dir.return_value = None
+        mock_settings.get_user_agent_skills_dir.return_value = None
+        mock_settings.get_project_agent_skills_dir.return_value = None
+
+        args = argparse.Namespace(
+            skills_command="delete",
+            name="nonexistent-skill",
+            agent="agent",
+            project=False,
+            force=True,
+        )
+
+        output: list[str] = []
+
+        def capture_print(*args_p: str, **_: str) -> None:
+            output.append(" ".join(str(a) for a in args_p))
+
+        with (
+            patch("deepagents_cli.skills.commands.Settings") as mock_settings_cls,
+            patch("deepagents_cli.skills.commands.console") as mock_console,
+        ):
+            mock_settings_cls.from_environment.return_value = mock_settings
+            mock_console.print = capture_print
+            execute_skills_command(args)
+
+        # Should have dispatched to _delete and shown "not found"
+        # rather than falling through to show_skills_help()
+        joined = "\n".join(output)
+        assert "not found" in joined.lower()

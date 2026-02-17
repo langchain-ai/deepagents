@@ -68,7 +68,7 @@ def show_help() -> None:
         "  deepagents reset --agent AGENT [--target SRC]  Reset an agent's prompt"
     )
     console.print(
-        "  deepagents skills <list|create|info>           Manage agent skills"
+        "  deepagents skills <list|create|info|delete>    Manage agent skills"
     )
     console.print(
         "  deepagents threads <list|delete>               Manage conversation threads"

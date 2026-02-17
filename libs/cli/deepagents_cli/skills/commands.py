@@ -1,10 +1,10 @@
 """CLI commands for skill management.
 
 These commands are registered with the CLI via main.py:
-- deepagents skills list --agent <agent> [--project]
-- deepagents skills create <name>
-- deepagents skills info <name>
-- deepagents skills delete <name>
+- deepagents skills list [options]
+- deepagents skills create <name> [options]
+- deepagents skills info <name> [options]
+- deepagents skills delete <name> [options]
 """
 
 from __future__ import annotations
@@ -586,6 +586,9 @@ def _delete(
 
             If `False`, search in both user and project skills.
         force: If `True`, skip confirmation prompt.
+
+    Raises:
+        SystemExit: If the deletion fails or a safety check is violated.
     """
     # Validate skill name first (per Agent Skills spec)
     is_valid, error_msg = _validate_name(skill_name)
@@ -654,8 +657,12 @@ def _delete(
     source_label = "Project Skill" if skill["source"] == "project" else "User Skill"
     source_color = "green" if skill["source"] == "project" else "cyan"
 
-    # Count files for the confirmation summary
-    file_count = sum(1 for f in skill_dir.rglob("*") if f.is_file())
+    # Count files for the confirmation summary (display-only; a permission
+    # error in a subdirectory should not abort the entire delete flow).
+    try:
+        file_count = sum(1 for f in skill_dir.rglob("*") if f.is_file())
+    except OSError:
+        file_count = -1
 
     console.print(
         f"\n[bold]Skill:[/bold] {skill_name}"
@@ -666,10 +673,16 @@ def _delete(
         f"[bold]Location:[/bold] {skill_dir}/",
         style=COLORS["dim"],
     )
-    console.print(
-        f"[bold]Files:[/bold] {file_count} file(s) will be deleted\n",
-        style=COLORS["dim"],
-    )
+    if file_count >= 0:
+        console.print(
+            f"[bold]Files:[/bold] {file_count} file(s) will be deleted\n",
+            style=COLORS["dim"],
+        )
+    else:
+        console.print(
+            "[bold]Files:[/bold] (unable to count files)\n",
+            style=COLORS["dim"],
+        )
 
     # Confirmation
     if not force:
@@ -687,6 +700,20 @@ def _delete(
             console.print("[dim]Cancelled.[/dim]")
             return
 
+    # Re-validate immediately before deletion to narrow the TOCTOU window
+    # (the user may have paused at the confirmation prompt).
+    if skill_dir.is_symlink():
+        console.print(
+            "[bold red]Error:[/bold red] Skill directory is a symlink. "
+            "Refusing to delete for safety."
+        )
+        raise SystemExit(1)
+
+    is_valid_path, path_error = _validate_skill_path(skill_dir, base_dir)
+    if not is_valid_path:
+        console.print(f"[bold red]Error:[/bold red] {path_error}")
+        raise SystemExit(1)
+
     # Delete the skill directory
     try:
         shutil.rmtree(skill_dir)
@@ -696,7 +723,12 @@ def _delete(
             style=COLORS["primary"],
         )
     except OSError as e:
-        console.print(f"[bold red]Error:[/bold red] Failed to delete skill: {e}")
+        console.print(
+            f"[bold red]Error:[/bold red] Failed to fully delete skill: {e}\n"
+            f"[yellow]Warning:[/yellow] Some files may have been partially removed.\n"
+            f"Please inspect: {skill_dir}/"
+        )
+        raise SystemExit(1) from e
 
 
 def setup_skills_parser(

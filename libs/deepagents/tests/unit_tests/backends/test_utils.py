@@ -82,6 +82,11 @@ class TestValidatePath:
         with pytest.raises(ValueError, match="Path traversal not allowed"):
             _validate_path("/workspace/../../../etc/shadow")
 
+    def test_dot_and_empty_string_normalize_to_slash_dot(self) -> None:
+        """Document that `'.'` and `''` normalize to `'/.'` via `os.path.normpath`."""
+        assert _validate_path(".") == "/."
+        assert _validate_path("") == "/."
+
 
 class TestGlobSearchFiles:
     """Tests for _glob_search_files."""

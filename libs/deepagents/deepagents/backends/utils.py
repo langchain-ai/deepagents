@@ -287,7 +287,7 @@ def _validate_path(path: str, *, allowed_prefixes: Sequence[str] | None = None) 
 
     # Defense-in-depth: verify normpath didn't produce traversal
     if ".." in normalized.split("/"):
-        msg = f"Path traversal not allowed: {path}"
+        msg = f"Path traversal detected after normalization: {path} -> {normalized}"
         raise ValueError(msg)
 
     if allowed_prefixes is not None and not any(normalized.startswith(prefix) for prefix in allowed_prefixes):

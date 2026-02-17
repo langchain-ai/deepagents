@@ -520,6 +520,31 @@ def test_grep_literal_search_with_special_chars(tmp_path: Path, pattern: str, ex
     assert any(expected_file in m["path"] for m in matches), f"Pattern '{pattern}' not found in {expected_file}"
 
 
+class TestToVirtualPath:
+    """Tests for FilesystemBackend._to_virtual_path."""
+
+    def test_returns_forward_slash_relative_path(self, tmp_path: Path):
+        """Nested path is returned as forward-slash virtual path."""
+        (tmp_path / "src").mkdir()
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        result = be._to_virtual_path(tmp_path / "src" / "file.py")
+        assert result == "/src/file.py"
+
+    def test_cwd_itself_returns_slash_dot(self, tmp_path: Path):
+        """Cwd path returns `/.` since `Path('.').as_posix()` is `'.'`."""
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        result = be._to_virtual_path(tmp_path)
+        assert result == "/."
+
+    def test_outside_cwd_raises_value_error(self, tmp_path: Path):
+        """Path outside cwd raises ValueError."""
+        sub = tmp_path / "sub"
+        sub.mkdir()
+        be = FilesystemBackend(root_dir=str(sub), virtual_mode=True)
+        with pytest.raises(ValueError, match="is not in the subpath of"):
+            be._to_virtual_path(tmp_path / "outside.txt")
+
+
 class TestWindowsPathHandling:
     """Tests that virtual-mode paths always use forward slashes."""
 

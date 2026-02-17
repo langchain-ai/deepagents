@@ -158,6 +158,7 @@ class FilesystemBackend(BackendProtocol):
 
         Raises:
             ValueError: If path is outside cwd.
+            OSError: If path cannot be resolved (broken symlink, permission denied).
         """
         return "/" + path.resolve().relative_to(self.cwd).as_posix()
 
@@ -226,8 +227,8 @@ class FilesystemBackend(BackendProtocol):
                     # Virtual mode: strip cwd prefix using Path for cross-platform support
                     try:
                         virt_path = self._to_virtual_path(child_path)
-                    except ValueError:
-                        # Path escaped root directory -- skip it entirely
+                    except (ValueError, OSError):
+                        # Path escaped root or could not be resolved -- skip it
                         continue
 
                     if is_file:
@@ -592,8 +593,8 @@ class FilesystemBackend(BackendProtocol):
                     # Virtual mode: use Path for cross-platform support
                     try:
                         virt = self._to_virtual_path(matched_path)
-                    except ValueError:
-                        # Path escaped root directory -- skip it entirely
+                    except (ValueError, OSError):
+                        # Path escaped root or could not be resolved -- skip it
                         continue
                     try:
                         st = matched_path.stat()

@@ -518,3 +518,45 @@ def test_grep_literal_search_with_special_chars(tmp_path: Path, pattern: str, ex
     matches = be.grep_raw(pattern, path="/")
     assert isinstance(matches, list)
     assert any(expected_file in m["path"] for m in matches), f"Pattern '{pattern}' not found in {expected_file}"
+
+
+class TestWindowsPathHandling:
+    """Tests that virtual-mode paths always use forward slashes."""
+
+    @pytest.fixture
+    def backend(self, tmp_path: Path):
+        """Create a backend with nested directories."""
+        (tmp_path / "src" / "utils").mkdir(parents=True)
+        (tmp_path / "src" / "main.py").write_text("print('main')")
+        (tmp_path / "src" / "utils" / "helper.py").write_text("def help(): pass")
+        return FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+    def test_ls_info_paths(self, backend):
+        """ls_info should return forward-slash paths."""
+        infos = backend.ls_info("/src")
+        for info in infos:
+            assert "\\" not in info["path"], f"Backslash in ls_info path: {info['path']}"
+
+    def test_glob_info_paths(self, backend):
+        """glob_info should return forward-slash paths."""
+        result = backend.glob_info("**/*.py", path="/")
+        assert isinstance(result, list)
+        for info in result:
+            assert "\\" not in info["path"], f"Backslash in glob_info path: {info['path']}"
+
+    def test_grep_raw_paths(self, backend):
+        """grep_raw should return forward-slash paths."""
+        matches = backend.grep_raw("def", path="/")
+        assert isinstance(matches, list)
+        for m in matches:
+            assert "\\" not in m["path"], f"Backslash in grep_raw path: {m['path']}"
+
+    def test_deeply_nested_path(self, tmp_path: Path):
+        """Deeply nested paths should still use forward slashes."""
+        deep = tmp_path / "a" / "b" / "c" / "d"
+        deep.mkdir(parents=True)
+        (deep / "file.txt").write_text("content")
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        infos = be.ls_info("/a/b/c/d")
+        for info in infos:
+            assert "\\" not in info["path"], f"Backslash in deep path: {info['path']}"

@@ -209,15 +209,12 @@ class FilesystemBackend(BackendProtocol):
                         except OSError:
                             results.append({"path": abs_path + "/", "is_dir": True})
                 else:
-                    # Virtual mode: strip cwd prefix
-                    if abs_path.startswith(cwd_str):
-                        relative_path = abs_path[len(cwd_str) :]
-                    elif abs_path.startswith(str(self.cwd)):
-                        # Handle case where cwd doesn't end with /
-                        relative_path = abs_path[len(str(self.cwd)) :].lstrip("/")
-                    else:
-                        # Path is outside cwd, return as-is or skip
-                        relative_path = abs_path
+                    # Virtual mode: strip cwd prefix using Path for cross-platform support
+                    try:
+                        relative_path = child_path.resolve().relative_to(self.cwd).as_posix()
+                    except ValueError:
+                        # Path is outside cwd, use the filename only
+                        relative_path = child_path.name
 
                     virt_path = "/" + relative_path
 
@@ -466,7 +463,7 @@ class FilesystemBackend(BackendProtocol):
             p = Path(ftext)
             if self.virtual_mode:
                 try:
-                    virt = "/" + str(p.resolve().relative_to(self.cwd))
+                    virt = "/" + p.resolve().relative_to(self.cwd).as_posix()
                 except Exception:  # noqa: BLE001, S112  # Intentional skip of unresolvable paths
                     continue
             else:
@@ -519,7 +516,7 @@ class FilesystemBackend(BackendProtocol):
                 if regex.search(line):
                     if self.virtual_mode:
                         try:
-                            virt_path = "/" + str(fp.resolve().relative_to(self.cwd))
+                            virt_path = "/" + fp.resolve().relative_to(self.cwd).as_posix()
                         except Exception:  # noqa: BLE001, S112  # Intentional skip of unresolvable paths
                             continue
                     else:
@@ -580,15 +577,12 @@ class FilesystemBackend(BackendProtocol):
                     except OSError:
                         results.append({"path": abs_path, "is_dir": False})
                 else:
-                    cwd_str = str(self.cwd)
-                    if not cwd_str.endswith("/"):
-                        cwd_str += "/"
-                    if abs_path.startswith(cwd_str):
-                        relative_path = abs_path[len(cwd_str) :]
-                    elif abs_path.startswith(str(self.cwd)):
-                        relative_path = abs_path[len(str(self.cwd)) :].lstrip("/")
-                    else:
-                        relative_path = abs_path
+                    # Virtual mode: use Path for cross-platform support
+                    try:
+                        relative_path = matched_path.resolve().relative_to(self.cwd).as_posix()
+                    except ValueError:
+                        # Path is outside cwd, use the filename only
+                        relative_path = matched_path.name
                     virt = "/" + relative_path
                     try:
                         st = matched_path.stat()

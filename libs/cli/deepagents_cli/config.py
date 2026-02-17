@@ -1,5 +1,7 @@
 """Configuration, constants, and model creation for the CLI."""
 
+from __future__ import annotations
+
 import importlib
 import json
 import logging
@@ -12,7 +14,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import dotenv
 from rich.console import Console
@@ -32,16 +34,15 @@ if _deepagents_project:
     # Override LANGSMITH_PROJECT for agent traces
     os.environ["LANGSMITH_PROJECT"] = _deepagents_project
 
-# E402: Now safe to import LangChain modules
-from langchain.chat_models import init_chat_model  # noqa: E402
-from langchain_core.language_models import BaseChatModel  # noqa: E402
-from langchain_core.runnables import RunnableConfig  # noqa: E402
-
 from deepagents_cli.model_config import (  # noqa: E402
     ModelConfig,
     ModelConfigError,
     ModelSpec,
 )
+
+if TYPE_CHECKING:
+    from langchain_core.language_models import BaseChatModel
+    from langchain_core.runnables import RunnableConfig
 
 DOCS_URL = "https://docs.langchain.com/oss/python/deepagents/cli"
 
@@ -456,7 +457,7 @@ class Settings:
     shell_allow_list: list[str] | None = None
 
     @classmethod
-    def from_environment(cls, *, start_path: Path | None = None) -> "Settings":
+    def from_environment(cls, *, start_path: Path | None = None) -> Settings:
         """Create settings by detecting the current environment.
 
         Args:
@@ -1039,7 +1040,7 @@ def build_langsmith_thread_url(thread_id: str) -> str | None:
     if not project_url:
         return None
 
-    return f"{project_url.rstrip('/')}/t/{thread_id}"
+    return f"{project_url.rstrip('/')}/t/{thread_id}?utm_source=deepagents-cli"
 
 
 def reset_langsmith_url_cache() -> None:
@@ -1192,6 +1193,10 @@ def _create_model_from_class(
         ModelConfigError: If the class cannot be imported, is not a
             `BaseChatModel` subclass, or fails to instantiate.
     """
+    from langchain_core.language_models import (
+        BaseChatModel as _BaseChatModel,  # Runtime import; module level is typing only
+    )
+
     if ":" not in class_path:
         msg = (
             f"Invalid class_path '{class_path}' for provider '{provider}': "
@@ -1215,7 +1220,7 @@ def _create_model_from_class(
         )
         raise ModelConfigError(msg)
 
-    if not (isinstance(cls, type) and issubclass(cls, BaseChatModel)):
+    if not (isinstance(cls, type) and issubclass(cls, _BaseChatModel)):
         msg = (
             f"'{class_path}' is not a BaseChatModel subclass (got {type(cls).__name__})"
         )
@@ -1246,6 +1251,8 @@ def _create_model_via_init(
     Raises:
         ModelConfigError: On import, value, or runtime errors.
     """
+    from langchain.chat_models import init_chat_model
+
     try:
         if provider:
             return init_chat_model(model_name, model_provider=provider, **kwargs)

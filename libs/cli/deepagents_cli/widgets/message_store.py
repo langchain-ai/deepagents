@@ -202,6 +202,8 @@ class MessageData:
         Returns:
             MessageData containing all the widget's state.
         """
+        # Deferred: prevents import-order issue — both modules live in the
+        # widgets package, and messages is re-exported from widgets/__init__.
         from deepagents_cli.widgets.messages import (  # noqa: PLC0415
             AppMessage,
             AssistantMessage,

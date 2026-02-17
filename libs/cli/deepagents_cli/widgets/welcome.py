@@ -99,7 +99,10 @@ class WelcomeBanner(Static):
             if project_url:
                 banner.append(
                     f"'{self._project_name}'",
-                    style=Style(color="cyan", link=project_url),
+                    style=Style(
+                        color="cyan",
+                        link=f"{project_url}?utm_source=deepagents-cli",
+                    ),
                 )
             else:
                 banner.append(f"'{self._project_name}'", style="cyan")
@@ -107,7 +110,10 @@ class WelcomeBanner(Static):
 
         if self._cli_thread_id:
             if project_url:
-                thread_url = f"{project_url.rstrip('/')}/t/{self._cli_thread_id}"
+                thread_url = (
+                    f"{project_url.rstrip('/')}/t/{self._cli_thread_id}"
+                    "?utm_source=deepagents-cli"
+                )
                 thread_line = Text.assemble(
                     ("Thread: ", "dim"),
                     (self._cli_thread_id, Style(dim=True, link=thread_url)),

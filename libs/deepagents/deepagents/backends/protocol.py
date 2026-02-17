@@ -158,7 +158,9 @@ class EditResult:
     occurrences: int | None = None
 
 
-class BackendProtocol(abc.ABC):  # noqa: B024 — methods raise NotImplementedError instead of using @abstractmethod to avoid breaking subclasses that only implement a subset
+# noqa: B024 — methods raise NotImplementedError instead of using
+# @abstractmethod to avoid breaking subclasses that only implement a subset
+class BackendProtocol(abc.ABC):  # noqa: B024
     """Protocol for pluggable memory backends (single, unified).
 
     Backends can store files in different locations (state, filesystem, database, etc.)

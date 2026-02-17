@@ -763,9 +763,7 @@ async def execute_task_textual(
                                 subagent_type = task_args.get(
                                     "subagent_type", "general-purpose"
                                 )
-                                task_description = task_args.get(
-                                    "description", ""
-                                )
+                                task_description = task_args.get("description", "")
                                 step_into_ctx = _create_branch_context(
                                     assistant_id,
                                     subagent_type,

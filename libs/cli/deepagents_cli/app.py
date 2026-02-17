@@ -209,9 +209,7 @@ class TextualSessionState(SessionState):
         """
         super().__init__(auto_approve=auto_approve)
         # Override root thread_id with compact format
-        self.context_stack[0].thread_id = (
-            thread_id or uuid.uuid4().hex[:8]
-        )
+        self.context_stack[0].thread_id = thread_id or uuid.uuid4().hex[:8]
 
     def reset_thread(self) -> str:
         """Reset to a new thread (and context stack).

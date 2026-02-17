@@ -194,6 +194,13 @@ class TestCompletionOptionClick:
             assert 1 in app.clicked_indices
 
 
+class _ChatInputTestApp(App[None]):
+    """Minimal app that hosts a ChatInput for testing."""
+
+    def compose(self) -> ComposeResult:
+        yield ChatInput(id="chat-input")
+
+
 def _prompt_text(prompt: Static) -> str:
     """Read the current text content of a Static widget."""
     return str(prompt._Static__content)  # type: ignore[attr-defined]  # accessing internal content store
@@ -204,13 +211,8 @@ class TestPromptIndicator:
 
     @pytest.mark.asyncio
     async def test_prompt_shows_bang_in_bash_mode(self) -> None:
-        """Typing '!' should change the prompt indicator and border to bash style."""
-
-        class TestApp(App[None]):
-            def compose(self) -> ComposeResult:
-                yield ChatInput()
-
-        app = TestApp()
+        """Setting mode to 'bash' should change prompt to '!' and apply bash styling."""
+        app = _ChatInputTestApp()
         async with app.run_test() as pilot:
             chat_input = app.query_one(ChatInput)
             prompt = chat_input.query_one("#prompt", Static)
@@ -225,13 +227,8 @@ class TestPromptIndicator:
 
     @pytest.mark.asyncio
     async def test_prompt_shows_slash_in_command_mode(self) -> None:
-        """Typing '/' should change the prompt indicator and border to command style."""
-
-        class TestApp(App[None]):
-            def compose(self) -> ComposeResult:
-                yield ChatInput()
-
-        app = TestApp()
+        """Setting mode to 'command' should change prompt and styling."""
+        app = _ChatInputTestApp()
         async with app.run_test() as pilot:
             chat_input = app.query_one(ChatInput)
             prompt = chat_input.query_one("#prompt", Static)
@@ -243,13 +240,8 @@ class TestPromptIndicator:
 
     @pytest.mark.asyncio
     async def test_prompt_reverts_to_default_on_normal_mode(self) -> None:
-        """Clearing mode prefix should revert indicator, border, and CSS classes."""
-
-        class TestApp(App[None]):
-            def compose(self) -> ComposeResult:
-                yield ChatInput()
-
-        app = TestApp()
+        """Resetting mode to 'normal' should revert indicator and classes."""
+        app = _ChatInputTestApp()
         async with app.run_test() as pilot:
             chat_input = app.query_one(ChatInput)
             prompt = chat_input.query_one("#prompt", Static)
@@ -264,6 +256,26 @@ class TestPromptIndicator:
             assert _prompt_text(prompt) == ">"
             assert not chat_input.has_class("mode-bash")
             assert not chat_input.has_class("mode-command")
+
+    @pytest.mark.asyncio
+    async def test_mode_change_posts_message(self) -> None:
+        """Setting mode should post a ModeChanged message."""
+        messages: list[ChatInput.ModeChanged] = []
+
+        class RecordingApp(App[None]):
+            def compose(self) -> ComposeResult:
+                yield ChatInput()
+
+            def on_chat_input_mode_changed(self, event: ChatInput.ModeChanged) -> None:
+                messages.append(event)
+
+        app = RecordingApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+
+            chat_input.mode = "bash"
+            await pilot.pause()
+            assert any(m.mode == "bash" for m in messages)
 
 
 class TestCompletionPopupClickBubbling:
@@ -306,13 +318,6 @@ class TestCompletionPopupClickBubbling:
             # Click on second option
             await pilot.click(options[1])
             assert 1 in app.option_clicked_indices
-
-
-class _ChatInputTestApp(App[None]):
-    """Minimal app that hosts a ChatInput for testing."""
-
-    def compose(self) -> ComposeResult:
-        yield ChatInput(id="chat-input")
 
 
 class TestDismissCompletion:

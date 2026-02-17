@@ -11,7 +11,7 @@ from textual.css.query import NoMatches
 from textual.reactive import reactive
 from textual.widgets import Static
 
-from deepagents_cli.config import settings
+from deepagents_cli.config import COLORS, settings
 
 logger = logging.getLogger(__name__)
 
@@ -40,13 +40,13 @@ class StatusBar(Horizontal):
     }
 
     StatusBar .status-mode.bash {
-        background: #ff1493;
+        background: __MODE_BASH__;
         color: white;
         text-style: bold;
     }
 
     StatusBar .status-mode.command {
-        background: #8b5cf6;
+        background: __MODE_CMD__;
         color: white;
     }
 
@@ -92,7 +92,9 @@ class StatusBar(Horizontal):
         padding: 0 1;
         color: $text-muted;
     }
-    """
+    """.replace("__MODE_BASH__", COLORS["mode_bash"]).replace(
+        "__MODE_CMD__", COLORS["mode_command"]
+    )
 
     mode: reactive[str] = reactive("normal", init=False)
     status_message: reactive[str] = reactive("", init=False)

@@ -7,12 +7,13 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.css.query import NoMatches
 from textual.message import Message
 from textual.reactive import reactive
 from textual.widgets import Static, TextArea
 from textual.widgets.text_area import Selection
 
-from deepagents_cli.config import CharsetMode, _detect_charset_mode, get_glyphs
+from deepagents_cli.config import COLORS, CharsetMode, _detect_charset_mode, get_glyphs
 from deepagents_cli.widgets.autocomplete import (
     SLASH_COMMANDS,
     CompletionResult,
@@ -379,11 +380,11 @@ class ChatInput(Vertical):
     }
 
     ChatInput.mode-bash {
-        border: solid #ff1493;
+        border: solid __MODE_BASH__;
     }
 
     ChatInput.mode-command {
-        border: solid #8b5cf6;
+        border: solid __MODE_CMD__;
     }
 
     ChatInput .input-row {
@@ -400,11 +401,11 @@ class ChatInput(Vertical):
     }
 
     ChatInput.mode-bash .input-prompt {
-        color: #ff1493;
+        color: __MODE_BASH__;
     }
 
     ChatInput.mode-command .input-prompt {
-        color: #8b5cf6;
+        color: __MODE_CMD__;
     }
 
     ChatInput ChatTextArea {
@@ -420,7 +421,9 @@ class ChatInput(Vertical):
     ChatInput ChatTextArea:focus {
         border: none;
     }
-    """
+    """.replace("__MODE_BASH__", COLORS["mode_bash"]).replace(
+        "__MODE_CMD__", COLORS["mode_command"]
+    )
 
     class Submitted(Message):
         """Message sent when input is submitted."""
@@ -621,7 +624,10 @@ class ChatInput(Vertical):
 
     def watch_mode(self, mode: str) -> None:
         """Post mode changed message and update prompt indicator."""
-        prompt = self.query_one("#prompt", Static)
+        try:
+            prompt = self.query_one("#prompt", Static)
+        except NoMatches:
+            return
         self.remove_class("mode-bash", "mode-command")
         if mode == "bash":
             prompt.update("!")

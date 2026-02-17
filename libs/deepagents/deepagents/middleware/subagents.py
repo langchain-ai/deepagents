@@ -1,5 +1,7 @@
 """Middleware for providing subagents to an agent via a `task` tool."""
 
+import asyncio
+import json
 import warnings
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Annotated, Any, NotRequired, TypedDict, Unpack, cast
@@ -262,7 +264,21 @@ When NOT to use the task tool:
 ## Important Task Tool Usage Notes to Remember
 - Whenever possible, parallelize the work that you do. This is true for both tool_calls, and for tasks. Whenever you have independent steps to complete - make tool_calls, or kick off tasks (subagents) in parallel to accomplish them faster. This saves time for the user, which is incredibly important.
 - Remember to use the `task` tool to silo independent tasks within a multi-part objective.
-- You should use the `task` tool whenever you have a complex task that will take multiple steps, and is independent from other tasks that the agent needs to complete. These agents are highly competent and efficient."""  # noqa: E501
+- You should use the `task` tool whenever you have a complex task that will take multiple steps, and is independent from other tasks that the agent needs to complete. These agents are highly competent and efficient.
+
+## `swarm` (parallel subagent fan-out)
+
+You also have access to a `swarm` tool for launching many subagents in parallel from a JSON config file. Use this when you need to process many chunks of data with the same (or similar) instructions.
+
+### When to use `swarm` instead of `task`:
+- When you have **10+ independent sub-tasks** that follow a similar pattern
+- When you want to **programmatically generate** the task list (write a script to create the config)
+- When you need to **process a large file in chunks** — write a script to split it, generate the config, then swarm
+
+### Workflow:
+1. Write a Python script that generates a JSON config file with all your tasks
+2. Call `swarm(config_file="/path/to/config.json", output_dir="/path/to/results/")`
+3. Read the result files from the output directory to aggregate"""  # noqa: E501
 
 
 DEFAULT_GENERAL_PURPOSE_DESCRIPTION = "General-purpose agent for researching complex questions, searching for files and content, and executing multi-step tasks. When you are searching for a keyword or file and are not confident that you will find the right match in the first few tries use this agent to perform the search for you. This agent has access to all tools as the main agent."  # noqa: E501
@@ -471,6 +487,160 @@ def _build_task_tool(
     )
 
 
+SWARM_TOOL_DESCRIPTION = """Launch many subagents in parallel from a JSON config file.
+
+Use this when you need to fan out the same (or similar) work across many chunks of data — for example, processing sections of a large file, classifying batches of entries, or querying multiple documents.
+
+## Workflow
+1. Write a Python script (via `execute`) that reads your data, chunks it, and generates a JSON config file.
+2. Call `swarm(config_file="/path/to/config.json", output_dir="/path/to/results/")`.
+3. All tasks run in parallel. Each result is written to `<output_dir>/<task_id>.txt`.
+4. Read the result files to aggregate.
+
+## Config file format
+```json
+{{
+  "tasks": [
+    {{
+      "id": "chunk_0",
+      "description": "Read /tmp/context.txt lines 0-100. Classify each entry. Return JSON counts.",
+      "subagent_type": "general-purpose"
+    }},
+    {{
+      "id": "chunk_1",
+      "description": "Read /tmp/context.txt lines 100-200. Classify each entry. Return JSON counts.",
+      "subagent_type": "general-purpose"
+    }}
+  ]
+}}
+```
+
+Fields:
+- `id` (optional): Identifier for the task, used as the output filename. Defaults to the task index.
+- `description` (required): The task description, same as what you'd pass to `task(description=...)`.
+- `subagent_type` (required): Which subagent to use, same as `task(subagent_type=...)`.
+
+Available subagent types:
+{available_agents}
+"""
+
+
+def _build_swarm_tool(
+    subagents: list[_SubagentSpec],
+    backend: "BackendProtocol | BackendFactory | None" = None,
+) -> BaseTool:
+    """Create a swarm tool that fans out many subagent tasks in parallel.
+
+    Args:
+        subagents: List of subagent specs containing name, description, and runnable.
+        backend: Backend for reading config and writing results.
+
+    Returns:
+        A StructuredTool that reads a JSON config and runs all tasks in parallel.
+    """
+    subagent_graphs: dict[str, Runnable] = {spec["name"]: spec["runnable"] for spec in subagents}
+    subagent_description_str = "\n".join(f"- {s['name']}: {s['description']}" for s in subagents)
+    description = SWARM_TOOL_DESCRIPTION.format(available_agents=subagent_description_str)
+
+    async def _run_one_task(
+        task_spec: dict,
+        parent_state: dict,
+        idx: int,
+    ) -> tuple[str, str]:
+        """Run a single swarm sub-task. Returns (task_id, result_text)."""
+        task_id = str(task_spec.get("id", idx))
+        desc = task_spec["description"]
+        subagent_type = task_spec["subagent_type"]
+
+        if subagent_type not in subagent_graphs:
+            allowed = ", ".join(subagent_graphs.keys())
+            return task_id, f"Error: unknown subagent_type '{subagent_type}'. Allowed: {allowed}"
+
+        subagent = subagent_graphs[subagent_type]
+        subagent_state = dict(parent_state)
+        subagent_state["messages"] = [HumanMessage(content=desc)]
+
+        try:
+            result = await subagent.ainvoke(subagent_state)
+            messages = result.get("messages", [])
+            if messages:
+                text = messages[-1].text or ""
+                return task_id, text.rstrip()
+            return task_id, ""
+        except Exception as e:
+            return task_id, f"Error: {e}"
+
+    async def _execute_swarm(
+        config_file: str,
+        output_dir: str,
+        runtime: ToolRuntime,
+    ) -> str:
+        """Core implementation of swarm."""
+        # Read config file from disk
+        try:
+            with open(config_file) as f:
+                config_data = json.load(f)
+        except Exception as e:
+            return f"Error reading config file '{config_file}': {e}"
+
+        tasks = config_data.get("tasks", [])
+        if not tasks:
+            return "Error: config file contains no tasks."
+
+        # Prepare parent state (stripped of excluded keys)
+        parent_state = {k: v for k, v in runtime.state.items() if k not in _EXCLUDED_STATE_KEYS}
+
+        # Run all tasks in parallel
+        coros = [_run_one_task(task_spec, parent_state, idx) for idx, task_spec in enumerate(tasks)]
+        results = await asyncio.gather(*coros, return_exceptions=True)
+
+        # Write results to output files
+        import os
+        output_dir_clean = output_dir.rstrip("/")
+        os.makedirs(output_dir_clean, exist_ok=True)
+        summaries = []
+        for item in results:
+            if isinstance(item, Exception):
+                summaries.append(f"Error: {item}")
+                continue
+            task_id, result_text = item
+            output_path = f"{output_dir_clean}/{task_id}.txt"
+            try:
+                with open(output_path, "w") as f:
+                    f.write(result_text)
+                summaries.append(f"✓ {task_id}: wrote {len(result_text)} chars to {output_path}")
+            except Exception as e:
+                summaries.append(f"✗ {task_id}: error writing result: {e}")
+
+        completed = sum(1 for s in summaries if s.startswith("✓"))
+        summary = f"{completed}/{len(tasks)} tasks completed. Results in {output_dir_clean}/\n"
+        summary += "\n".join(summaries)
+        return summary
+
+    def swarm(
+        config_file: Annotated[str, "Absolute path to the JSON config file containing the task definitions."],
+        output_dir: Annotated[str, "Absolute path to the directory where result files will be written. Each task result is written to <output_dir>/<task_id>.txt."],
+        runtime: ToolRuntime,
+    ) -> str:
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            return pool.submit(asyncio.run, _execute_swarm(config_file, output_dir, runtime)).result()
+
+    async def aswarm(
+        config_file: Annotated[str, "Absolute path to the JSON config file containing the task definitions."],
+        output_dir: Annotated[str, "Absolute path to the directory where result files will be written. Each task result is written to <output_dir>/<task_id>.txt."],
+        runtime: ToolRuntime,
+    ) -> str:
+        return await _execute_swarm(config_file, output_dir, runtime)
+
+    return StructuredTool.from_function(
+        name="swarm",
+        func=swarm,
+        coroutine=aswarm,
+        description=description,
+    )
+
+
 class _DeprecatedKwargs(TypedDict, total=False):
     """TypedDict for deprecated SubAgentMiddleware keyword arguments.
 
@@ -608,6 +778,7 @@ class SubAgentMiddleware(AgentMiddleware):
             raise ValueError(msg)
 
         task_tool = _build_task_tool(subagent_specs, task_description)
+        swarm_tool = _build_swarm_tool(subagent_specs, backend=backend)
 
         # Build system prompt with available agents
         if system_prompt and subagent_specs:
@@ -616,7 +787,7 @@ class SubAgentMiddleware(AgentMiddleware):
         else:
             self.system_prompt = system_prompt
 
-        self.tools = [task_tool]
+        self.tools = [task_tool, swarm_tool]
 
     def _get_subagents(self) -> list[_SubagentSpec]:
         """Create runnable agents from specs.

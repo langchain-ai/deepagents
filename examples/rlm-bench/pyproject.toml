@@ -1,0 +1,17 @@
+[project]
+name = "rlm-bench"
+version = "0.1.0"
+description = "Benchmark deepagents CLI on RLM paper tasks (S-NIAH, OOLONG, BrowseComp-Plus)"
+requires-python = ">=3.11"
+dependencies = [
+    "deepagents-cli[anthropic]>=0.0.21",
+    "datasets>=3.0.0",
+    "rich>=13.0.0",
+]
+
+[dependency-groups]
+dev = []
+
+[tool.uv.sources]
+deepagents-cli = { path = "../../libs/cli", editable = true }
+deepagents = { path = "../../libs/deepagents", editable = true }

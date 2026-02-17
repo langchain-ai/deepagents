@@ -1,5 +1,6 @@
 """Custom tools for the CLI agent."""
 
+import re
 from typing import Any, Literal
 
 import requests
@@ -19,6 +20,21 @@ from deepagents_cli.config import settings
 tavily_client = (
     TavilyClient(api_key=settings.tavily_api_key) if settings.has_tavily else None
 )
+
+
+_HTTP_URL_PATTERN = re.compile(r"https?://[^\s)\]}>\"']+")
+
+
+def _extract_first_http_url(text: str) -> str | None:
+    """Extract the first HTTP(S) URL from text.
+
+    Returns:
+        First detected HTTP(S) URL, or `None` when no URL is present.
+    """
+    match = _HTTP_URL_PATTERN.search(text)
+    if not match:
+        return None
+    return match.group(0).rstrip(".,;:!?")
 
 
 def http_request(
@@ -121,6 +137,16 @@ def web_search(  # noqa: ANN201  # Return type depends on dynamic tool configura
     4. Cite sources by mentioning the page titles or URLs
     5. NEVER show the raw JSON to the user - always provide a formatted response
     """
+    direct_url = _extract_first_http_url(query)
+    if direct_url:
+        fetched = fetch_url(direct_url)
+        return {
+            "query": query,
+            "direct_fetch": True,
+            "source_tool": "fetch_url",
+            **fetched,
+        }
+
     if tavily_client is None:
         return {
             "error": "Tavily API key not configured. "

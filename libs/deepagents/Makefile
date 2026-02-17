@@ -51,6 +51,7 @@ lint_tests: PYTHON_FILES=tests
 lint lint_diff lint_package lint_tests:
 	[ "$(PYTHON_FILES)" = "" ] || uv run --all-groups ruff check $(PYTHON_FILES)
 	[ "$(PYTHON_FILES)" = "" ] || uv run --all-groups ruff format $(PYTHON_FILES) --diff
+	uv run --all-groups ty check deepagents
 
 typecheck:
 	uv run --all-groups ty check deepagents
@@ -70,7 +71,7 @@ help:
 	@echo '----'
 	@echo 'coverage                     - run unit tests and generate coverage report'
 	@echo 'format                       - run code formatters'
-	@echo 'lint                         - run linters'
+	@echo 'lint                         - run linters and type checker'
 	@echo 'typecheck                    - run type checker (ty)'
 	@echo 'check_imports                - check imports'
 	@echo 'lint_package                 - lint only the package'

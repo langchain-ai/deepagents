@@ -603,7 +603,7 @@ async def run_non_interactive(
     if sandbox_type != "none":
         # Conditional: sandbox_factory transitively imports provider modules
         # and SDKs — skip that cost for the common no-sandbox path.
-        from deepagents_cli.integrations.sandbox_factory import (  # noqa: PLC0415
+        from deepagents_cli.integrations.sandbox_factory import (
             create_sandbox,
         )
 

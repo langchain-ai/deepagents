@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import subprocess  # noqa: S404
+import subprocess  # noqa: S404  # Shell execution is core functionality of the CLI backend
 from typing import Annotated, cast
 
 from deepagents.backends.composite import CompositeBackend
@@ -29,7 +29,9 @@ from deepagents.middleware.filesystem import (
     FilesystemMiddleware,
     FilesystemState,
 )
-from langchain.tools import ToolRuntime  # noqa: TC002
+from langchain.tools import (
+    ToolRuntime,  # noqa: TC002  # Used at runtime in type annotations for tool functions
+)
 from langchain_core.tools import BaseTool, StructuredTool
 
 logger = logging.getLogger(__name__)
@@ -90,7 +92,7 @@ class CLIShellBackend(LocalShellBackend):
             raise ValueError(msg)
 
         try:
-            result = subprocess.run(  # noqa: S602
+            result = subprocess.run(  # noqa: S602  # Shell execution is intentional for LLM-controlled commands
                 command,
                 check=False,
                 shell=True,  # Intentional: designed for LLM-controlled shell execution
@@ -133,10 +135,7 @@ class CLIShellBackend(LocalShellBackend):
                 exit_code=124,  # Standard timeout exit code
                 truncated=False,
             )
-        except Exception as e:  # noqa: BLE001
-            # Broad exception catch is intentional: we want to catch all
-            # execution errors and return a consistent ExecuteResponse rather
-            # than propagating exceptions that would crash the agent loop.
+        except Exception as e:  # noqa: BLE001  # Must catch all execution errors to return consistent ExecuteResponse
             return ExecuteResponse(
                 output=f"Error executing command ({type(e).__name__}): {e}",
                 exit_code=1,
@@ -258,7 +257,7 @@ class CLIFilesystemMiddleware(FilesystemMiddleware):
                 str, "Shell command to execute in the sandbox environment."
             ],
             runtime: ToolRuntime[None, FilesystemState],
-            timeout: Annotated[  # noqa: ASYNC109
+            timeout: Annotated[  # noqa: ASYNC109  # Timeout parameter is passed to subprocess, not used as async timeout
                 int | None, _TIMEOUT_DESC
             ] = None,
         ) -> str:
@@ -323,5 +322,5 @@ def patch_filesystem_middleware() -> None:
     import deepagents.graph as graph_module
     import deepagents.middleware.filesystem as fs_module
 
-    fs_module.FilesystemMiddleware = CLIFilesystemMiddleware  # type: ignore[misc]
-    graph_module.FilesystemMiddleware = CLIFilesystemMiddleware  # type: ignore[misc]
+    fs_module.FilesystemMiddleware = CLIFilesystemMiddleware  # type: ignore[misc]  # Monkey-patching middleware for CLI-specific behavior
+    graph_module.FilesystemMiddleware = CLIFilesystemMiddleware  # type: ignore[misc]  # Monkey-patching middleware for CLI-specific behavior

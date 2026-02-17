@@ -193,7 +193,7 @@ def clear_caches() -> None:
 
     Intended for tests and for a hypothetical "refresh models" UI action.
     """
-    global _available_models_cache, _builtin_providers_cache, _default_config_cache  # noqa: PLW0603
+    global _available_models_cache, _builtin_providers_cache, _default_config_cache  # noqa: PLW0603  # Module-level caches require global statement
     _available_models_cache = None
     _builtin_providers_cache = None
     _default_config_cache = None
@@ -210,13 +210,13 @@ def _get_builtin_providers() -> dict[str, Any]:
     Returns:
         The provider registry dict from `langchain.chat_models.base`.
     """
-    global _builtin_providers_cache  # noqa: PLW0603
+    global _builtin_providers_cache  # noqa: PLW0603  # Module-level cache requires global statement
     if _builtin_providers_cache is not None:
         return _builtin_providers_cache
 
     # Deferred: langchain.chat_models pulls in heavy provider registry,
     # only needed when resolving provider names for model config.
-    from langchain.chat_models import base  # noqa: PLC0415
+    from langchain.chat_models import base
 
     registry: dict[str, Any] | None = getattr(base, "_BUILTIN_PROVIDERS", None)
     if registry is None:
@@ -316,7 +316,7 @@ def get_available_models() -> dict[str, list[str]]:
         Dictionary mapping provider names to lists of model identifiers.
             Only includes providers whose packages are installed.
     """
-    global _available_models_cache  # noqa: PLW0603
+    global _available_models_cache  # noqa: PLW0603  # Module-level cache requires global statement
     if _available_models_cache is not None:
         return _available_models_cache
 
@@ -485,7 +485,7 @@ class ModelConfig:
                 Returns empty config if file is missing, unreadable, or contains
                 invalid TOML syntax.
         """
-        global _default_config_cache  # noqa: PLW0603
+        global _default_config_cache  # noqa: PLW0603  # Module-level cache requires global statement
         is_default = config_path is None
         if is_default and _default_config_cache is not None:
             return _default_config_cache
@@ -743,7 +743,7 @@ def _save_model_field(
         return False
     else:
         # Invalidate config cache so the next load() picks up the change.
-        global _default_config_cache  # noqa: PLW0603
+        global _default_config_cache  # noqa: PLW0603  # Module-level cache requires global statement
         _default_config_cache = None
         return True
 
@@ -812,7 +812,7 @@ def clear_default_model(config_path: Path | None = None) -> bool:
         logger.exception("Could not clear default model preference")
         return False
     else:
-        global _default_config_cache  # noqa: PLW0603
+        global _default_config_cache  # noqa: PLW0603  # Module-level cache requires global statement
         _default_config_cache = None
         return True
 

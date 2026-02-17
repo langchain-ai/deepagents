@@ -158,7 +158,7 @@ def _list(agent: str, *, project: bool = False) -> None:
     # Deferred: skills.load imports the deepagents SDK. This module is
     # imported at CLI startup for setup_skills_parser(), so a top-level
     # import here would penalize every command (e.g. `--help`).
-    from deepagents_cli.skills.load import list_skills  # noqa: PLC0415
+    from deepagents_cli.skills.load import list_skills
 
     settings = Settings.from_environment()
     user_skills_dir = settings.get_user_skills_dir(agent)
@@ -463,7 +463,7 @@ def _info(skill_name: str, *, agent: str = "agent", project: bool = False) -> No
     # Deferred: skills.load imports the deepagents SDK. This module is
     # imported at CLI startup for setup_skills_parser(), so a top-level
     # import here would penalize every command (e.g. `--help`).
-    from deepagents_cli.skills.load import list_skills  # noqa: PLC0415
+    from deepagents_cli.skills.load import list_skills
 
     settings = Settings.from_environment()
     user_skills_dir = settings.get_user_skills_dir(agent)
@@ -527,8 +527,7 @@ def _info(skill_name: str, *, agent: str = "agent", project: bool = False) -> No
                 project_agent_skills_dir=None,
             )
             shadowed_user_skill = any(s["name"] == skill_name for s in user_only)
-        except Exception:  # noqa: BLE001, S110
-            # Intentionally swallowed — shadow detection is cosmetic
+        except Exception:  # noqa: BLE001, S110  # Shadow detection is cosmetic, safe to swallow
             pass
 
     console.print(
@@ -732,7 +731,7 @@ def _delete(
 
 
 def setup_skills_parser(
-    subparsers: Any,
+    subparsers: Any,  # noqa: ANN401  # argparse subparsers uses dynamic typing
     *,
     make_help_action: Callable[[Callable[[], None]], type[argparse.Action]],
 ) -> argparse.ArgumentParser:

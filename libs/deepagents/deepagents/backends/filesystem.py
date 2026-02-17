@@ -147,6 +147,20 @@ class FilesystemBackend(BackendProtocol):
             return path
         return (self.cwd / path).resolve()
 
+    def _to_virtual_path(self, path: Path) -> str:
+        """Convert a filesystem path to a virtual path relative to cwd.
+
+        Args:
+            path: Filesystem path to convert.
+
+        Returns:
+            Forward-slash relative path string prefixed with `/`.
+
+        Raises:
+            ValueError: If path is outside cwd.
+        """
+        return "/" + path.resolve().relative_to(self.cwd).as_posix()
+
     def ls_info(self, path: str) -> list[FileInfo]:  # noqa: C901, PLR0912  # Complex virtual_mode logic
         """List files and directories in the specified directory (non-recursive).
 
@@ -211,12 +225,10 @@ class FilesystemBackend(BackendProtocol):
                 else:
                     # Virtual mode: strip cwd prefix using Path for cross-platform support
                     try:
-                        relative_path = child_path.resolve().relative_to(self.cwd).as_posix()
+                        virt_path = self._to_virtual_path(child_path)
                     except ValueError:
-                        # Path is outside cwd, use the filename only
-                        relative_path = child_path.name
-
-                    virt_path = "/" + relative_path
+                        # Path escaped root directory -- skip it entirely
+                        continue
 
                     if is_file:
                         try:
@@ -463,8 +475,8 @@ class FilesystemBackend(BackendProtocol):
             p = Path(ftext)
             if self.virtual_mode:
                 try:
-                    virt = "/" + p.resolve().relative_to(self.cwd).as_posix()
-                except Exception:  # noqa: BLE001, S112  # Intentional skip of unresolvable paths
+                    virt = self._to_virtual_path(p)
+                except (ValueError, OSError):
                     continue
             else:
                 virt = str(p)
@@ -516,8 +528,8 @@ class FilesystemBackend(BackendProtocol):
                 if regex.search(line):
                     if self.virtual_mode:
                         try:
-                            virt_path = "/" + fp.resolve().relative_to(self.cwd).as_posix()
-                        except Exception:  # noqa: BLE001, S112  # Intentional skip of unresolvable paths
+                            virt_path = self._to_virtual_path(fp)
+                        except (ValueError, OSError):
                             continue
                     else:
                         virt_path = str(fp)
@@ -579,11 +591,10 @@ class FilesystemBackend(BackendProtocol):
                 else:
                     # Virtual mode: use Path for cross-platform support
                     try:
-                        relative_path = matched_path.resolve().relative_to(self.cwd).as_posix()
+                        virt = self._to_virtual_path(matched_path)
                     except ValueError:
-                        # Path is outside cwd, use the filename only
-                        relative_path = matched_path.name
-                    virt = "/" + relative_path
+                        # Path escaped root directory -- skip it entirely
+                        continue
                     try:
                         st = matched_path.stat()
                         results.append(

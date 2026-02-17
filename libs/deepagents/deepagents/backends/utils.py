@@ -9,7 +9,7 @@ import os
 import re
 from collections.abc import Sequence
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Literal, overload
 
 import wcmatch.glob as wcglob
@@ -267,7 +267,10 @@ def _validate_path(path: str, *, allowed_prefixes: Sequence[str] | None = None) 
         _validate_path("/etc/file.txt", allowed_prefixes=["/data/"])  # Raises ValueError
         ```
     """
-    if ".." in path or path.startswith("~"):
+    # Check for traversal as a path component (not substring) to avoid
+    # false-positive rejection of legitimate filenames like "foo..bar.txt"
+    parts = PurePosixPath(path.replace("\\", "/")).parts
+    if ".." in parts or path.startswith("~"):
         msg = f"Path traversal not allowed: {path}"
         raise ValueError(msg)
 
@@ -281,6 +284,11 @@ def _validate_path(path: str, *, allowed_prefixes: Sequence[str] | None = None) 
 
     if not normalized.startswith("/"):
         normalized = f"/{normalized}"
+
+    # Defense-in-depth: verify normpath didn't produce traversal
+    if ".." in normalized.split("/"):
+        msg = f"Path traversal not allowed: {path}"
+        raise ValueError(msg)
 
     if allowed_prefixes is not None and not any(normalized.startswith(prefix) for prefix in allowed_prefixes):
         msg = f"Path must start with one of {allowed_prefixes}: {path}"

@@ -62,6 +62,18 @@ class TestFuzzyScore:
         long_score = _fuzzy_score("test", "very/long/path/to/test.py")
         assert short_score > long_score
 
+    def test_backslash_normalization(self):
+        """Backslash-separated paths score the same as forward-slash paths."""
+        forward = _fuzzy_score("helper", "src/utils/helper.py")
+        backward = _fuzzy_score("helper", "src\\utils\\helper.py")
+        assert backward == forward
+        assert backward > 100  # Should be a strong filename match
+
+    def test_mixed_separator_normalization(self):
+        """Mixed forward/backslash paths are normalized before scoring."""
+        score = _fuzzy_score("helper", "src/utils\\helper.py")
+        assert score > 100  # Should extract filename correctly
+
 
 class TestFuzzySearch:
     """Tests for the _fuzzy_search function."""

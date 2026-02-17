@@ -68,14 +68,27 @@ def test_cli_version_flag() -> None:
     # argparse exits with 0 for --version
     assert result.returncode == 0
     assert f"deepagents-cli {__version__}" in result.stdout
+    from importlib.metadata import version as pkg_version
+
+    sdk_version = pkg_version("deepagents")
+    assert f"deepagents (SDK) {sdk_version}" in result.stdout
 
 
 def test_version_slash_command_message_format() -> None:
     """Verify the `/version` slash command message format matches expected output."""
-    # This tests the exact message format used in app.py's _handle_command for /version
-    expected_message = f"deepagents version: {__version__}"
-    assert "deepagents version:" in expected_message
-    assert __version__ in expected_message
+    from importlib.metadata import version as pkg_version
+
+    sdk_version = pkg_version("deepagents")
+
+    # CLI version line
+    cli_line = f"deepagents-cli version: {__version__}"
+    assert "deepagents-cli version:" in cli_line
+    assert __version__ in cli_line
+
+    # SDK version line
+    sdk_line = f"deepagents (SDK) version: {sdk_version}"
+    assert "deepagents (SDK) version:" in sdk_line
+    assert sdk_version in sdk_line
 
 
 def test_help_mentions_version_flag() -> None:

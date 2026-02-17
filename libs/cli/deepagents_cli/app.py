@@ -1116,15 +1116,23 @@ class DeepAgentsApp(App):
             await self._open_url_command(command, cmd)
         elif cmd == "/version":
             await self._mount_message(UserMessage(command))
-            # Show CLI package version
+            # Show CLI and SDK package versions
             try:
-                from deepagents_cli._version import __version__
-
-                await self._mount_message(
-                    AppMessage(f"deepagents version: {__version__}")
+                from deepagents_cli._version import (
+                    __version__ as cli_version,
                 )
-            except Exception:  # noqa: BLE001  # Resilient model selector error handling
-                await self._mount_message(AppMessage("deepagents version: unknown"))
+
+                cli_line = f"deepagents-cli version: {cli_version}"
+            except Exception:  # noqa: BLE001  # Resilient version lookup
+                cli_line = "deepagents-cli version: unknown"
+            try:
+                from importlib.metadata import version as _pkg_version
+
+                sdk_version = _pkg_version("deepagents")
+                sdk_line = f"deepagents (SDK) version: {sdk_version}"
+            except Exception:  # noqa: BLE001  # Resilient version lookup
+                sdk_line = "deepagents (SDK) version: unknown"
+            await self._mount_message(AppMessage(f"{cli_line}\n{sdk_line}"))
         elif cmd == "/clear":
             self._pending_messages.clear()
             self._queued_widgets.clear()

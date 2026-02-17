@@ -394,11 +394,24 @@ def parse_args() -> argparse.Namespace:
         "Applies to both -n and interactive modes.",
     )
 
+    try:
+        from importlib.metadata import (
+            PackageNotFoundError,
+            version as _pkg_version,
+        )
+
+        sdk_version = _pkg_version("deepagents")
+    except PackageNotFoundError:
+        logger.debug("deepagents SDK package not found in environment")
+        sdk_version = "unknown"
+    except Exception:
+        logger.warning("Unexpected error looking up SDK version", exc_info=True)
+        sdk_version = "unknown"
     parser.add_argument(
         "-v",
         "--version",
         action="version",
-        version=f"deepagents-cli {__version__}",
+        version=f"deepagents-cli {__version__}\ndeepagents (SDK) {sdk_version}",
     )
     parser.add_argument(
         "-h",

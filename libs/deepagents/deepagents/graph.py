@@ -16,7 +16,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import SystemMessage
 from langchain_core.tools import BaseTool
 from langgraph.cache.base import BaseCache
-from langgraph.graph.state import CompiledStateGraph
+from langgraph.graph.state import CompiledStateGraph, RunnableConfig
 from langgraph.store.base import BaseStore
 from langgraph.types import Checkpointer
 
@@ -32,7 +32,7 @@ from deepagents.middleware.subagents import (
     SubAgent,
     SubAgentMiddleware,
 )
-from deepagents.middleware.summarization import SummarizationMiddleware, _compute_summarization_defaults
+from deepagents.middleware.summarization import SummarizationDefaults, SummarizationMiddleware, _compute_summarization_defaults
 
 BASE_AGENT_PROMPT = (Path(__file__).parent / "base_prompt.md").read_text()
 
@@ -47,6 +47,56 @@ def get_default_model() -> ChatAnthropic:
         model_name="claude-sonnet-4-5-20250929",
         max_tokens=20000,  # type: ignore[call-arg]
     )
+
+
+def _build_general_purpose_subagent(
+    *,
+    model: str | BaseChatModel | None = None,
+    tools: Sequence[BaseTool | Callable | dict[str, Any]] | None = None,
+    backend: BackendProtocol | BackendFactory | None = None,
+    skills: list[str] | None = None,
+    interrupt_on: dict[str, bool | InterruptOnConfig] | None = None,
+    summarization_defaults: SummarizationDefaults,
+) -> SubAgent:
+    """Build general-purpose subagent with default middleware stack.
+
+    Args:
+        model: The model to use.
+        tools: The tools the agent should have access to.
+        backend: Optional backend for file storage and execution.
+        skills: Optional list of skill source paths (e.g., `["/skills/user/", "/skills/project/"]`).
+        interrupt_on: Mapping of tool names to interrupt configs.
+        summarization_defaults: Default settings for trigger, keep, and truncate_args_settings.
+
+    Returns:
+        `GeneralPurposeSpec` specification of the general-purpose subagent.
+    """
+    gp_middleware: list[AgentMiddleware] = [
+        TodoListMiddleware(),
+        FilesystemMiddleware(backend=backend),
+        SummarizationMiddleware(
+            model=model,
+            backend=backend,
+            trigger=summarization_defaults["trigger"],
+            keep=summarization_defaults["keep"],
+            trim_tokens_to_summarize=None,
+            truncate_args_settings=summarization_defaults["truncate_args_settings"],
+        ),
+        AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
+        PatchToolCallsMiddleware(),
+    ]
+    if skills is not None:
+        gp_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
+    if interrupt_on is not None:
+        gp_middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
+
+    general_purpose_spec: SubAgent = {
+        **GENERAL_PURPOSE_SUBAGENT,
+        "model": model,
+        "tools": tools or [],
+        "middleware": gp_middleware,
+    }
+    return general_purpose_spec
 
 
 def create_deep_agent(
@@ -67,6 +117,7 @@ def create_deep_agent(
     debug: bool = False,
     name: str | None = None,
     cache: BaseCache | None = None,
+    config: RunnableConfig | None = None,
 ) -> CompiledStateGraph:
     """Create a deep agent.
 
@@ -139,6 +190,7 @@ def create_deep_agent(
         debug: Whether to enable debug mode. Passed through to `create_agent`.
         name: The name of the agent. Passed through to `create_agent`.
         cache: The cache to use for the agent. Passed through to `create_agent`.
+        config: The config to use for the agent. Passed through to `create_agent`. Defaults to `{"recursion_limit": 1000}
 
     Returns:
         A configured deep agent.
@@ -169,32 +221,14 @@ def create_deep_agent(
 
     backend = backend if backend is not None else (StateBackend)
 
-    # Build general-purpose subagent with default middleware stack
-    gp_middleware: list[AgentMiddleware] = [
-        TodoListMiddleware(),
-        FilesystemMiddleware(backend=backend),
-        SummarizationMiddleware(
-            model=model,
-            backend=backend,
-            trigger=summarization_defaults["trigger"],
-            keep=summarization_defaults["keep"],
-            trim_tokens_to_summarize=None,
-            truncate_args_settings=summarization_defaults["truncate_args_settings"],
-        ),
-        AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
-        PatchToolCallsMiddleware(),
-    ]
-    if skills is not None:
-        gp_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
-    if interrupt_on is not None:
-        gp_middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
-
-    general_purpose_spec: SubAgent = {
-        **GENERAL_PURPOSE_SUBAGENT,
-        "model": model,
-        "tools": tools or [],
-        "middleware": gp_middleware,
-    }
+    general_purpose_spec = _build_general_purpose_subagent(
+        model=model,
+        tools=tools,
+        backend=backend,
+        skills=skills,
+        summarization_defaults=summarization_defaults,
+        interrupt_on=interrupt_on,
+    )
 
     # Process user-provided subagents to fill in defaults for model, tools, and middleware
     processed_subagents: list[SubAgent | CompiledSubAgent] = []
@@ -286,6 +320,9 @@ def create_deep_agent(
         # String: simple concatenation
         final_system_prompt = system_prompt + "\n\n" + BASE_AGENT_PROMPT
 
+    if config is None:
+        config = {"recursion_limit": 1000}
+
     return create_agent(
         model,
         system_prompt=final_system_prompt,
@@ -298,4 +335,4 @@ def create_deep_agent(
         debug=debug,
         name=name,
         cache=cache,
-    ).with_config({"recursion_limit": 1000})
+    ).with_config(config)

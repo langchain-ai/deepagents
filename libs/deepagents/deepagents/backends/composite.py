@@ -37,19 +37,12 @@ from deepagents.backends.state import StateBackend
 
 def _remap_grep_path(m: GrepMatch, route_prefix: str) -> GrepMatch:
     """Create a new GrepMatch with the route prefix prepended to the path."""
-    return GrepMatch(path=f"{route_prefix[:-1]}{m['path']}", line=m["line"], text=m["text"])
+    return {**m, "path": f"{route_prefix[:-1]}{m['path']}"}
 
 
 def _remap_file_info_path(fi: FileInfo, route_prefix: str) -> FileInfo:
     """Create a new FileInfo with the route prefix prepended to the path."""
-    result: FileInfo = {"path": f"{route_prefix[:-1]}{fi['path']}"}
-    if "is_dir" in fi:
-        result["is_dir"] = fi["is_dir"]
-    if "size" in fi:
-        result["size"] = fi["size"]
-    if "modified_at" in fi:
-        result["modified_at"] = fi["modified_at"]
-    return result
+    return {**fi, "path": f"{route_prefix[:-1]}{fi['path']}"}
 
 
 class CompositeBackend(BackendProtocol):

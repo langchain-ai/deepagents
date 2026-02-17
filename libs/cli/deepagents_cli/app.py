@@ -39,6 +39,7 @@ from deepagents_cli.config import (
 from deepagents_cli.model_config import ModelSpec, save_recent_model
 from deepagents_cli.textual_adapter import TextualUIAdapter, execute_task_textual
 from deepagents_cli.widgets.approval import ApprovalMenu
+from deepagents_cli.widgets.ask_user import AskUserMenu
 from deepagents_cli.widgets.chat_input import ChatInput
 from deepagents_cli.widgets.loading import LoadingWidget
 from deepagents_cli.widgets.message_store import MessageData, MessageStore
@@ -432,6 +433,7 @@ class DeepAgentsApp(App):
         self._session_state: TextualSessionState | None = None
         self._ui_adapter: TextualUIAdapter | None = None
         self._pending_approval_widget: Any = None
+        self._pending_ask_user_widget: Any = None
         # Agent task tracking for interruption
         self._agent_worker: Worker[None] | None = None
         self._agent_running = False
@@ -497,6 +499,7 @@ class DeepAgentsApp(App):
                 set_spinner=self._set_spinner,
                 set_active_message=self._set_active_message,
                 sync_message_content=self._sync_message_content,
+                request_ask_user=self._request_ask_user,
             )
             self._ui_adapter.set_token_tracker(self._token_tracker)
 
@@ -892,6 +895,68 @@ class DeepAgentsApp(App):
             self._status_bar.set_auto_approve(enabled=True)
         if self._session_state:
             self._session_state.auto_approve = True
+
+    async def _request_ask_user(
+        self,
+        questions: list[dict[str, Any]],
+    ) -> asyncio.Future:
+        """Display the ask_user widget and return a Future with user answers.
+
+        Returns:
+            A Future that resolves to the user's answers.
+        """
+        loop = asyncio.get_running_loop()
+        result_future: asyncio.Future = loop.create_future()
+
+        if self._pending_ask_user_widget is not None:
+            while self._pending_ask_user_widget is not None:  # noqa: ASYNC110
+                await asyncio.sleep(0.1)
+
+        unique_id = f"ask-user-menu-{uuid.uuid4().hex[:8]}"
+        menu = AskUserMenu(questions, id=unique_id)
+        menu.set_future(result_future)
+
+        self._pending_ask_user_widget = menu
+
+        try:
+            messages = self.query_one("#messages", Container)
+            await self._mount_before_queued(messages, menu)
+            self.call_after_refresh(menu.scroll_visible)
+            self.call_after_refresh(menu.focus)
+        except Exception as e:
+            logger.exception(
+                "Failed to mount ask-user menu (id=%s)",
+                unique_id,
+            )
+            self._pending_ask_user_widget = None
+            if not result_future.done():
+                result_future.set_exception(e)
+
+        return result_future
+
+    async def on_ask_user_menu_answered(
+        self,
+        event: Any,  # noqa: ARG002, ANN401
+    ) -> None:
+        """Handle ask_user menu answers - remove widget and refocus input."""
+        if self._pending_ask_user_widget:
+            await self._pending_ask_user_widget.remove()
+            self._pending_ask_user_widget = None
+
+        if self._chat_input:
+            self.call_after_refresh(self._chat_input.focus_input)
+
+    async def on_ask_user_menu_cancelled(
+        self,
+        event: Any,  # noqa: ARG002, ANN401
+    ) -> None:
+        """Handle ask_user menu cancellation - remove widget and refocus input."""
+        if self._pending_ask_user_widget:
+            await self._pending_ask_user_widget.remove()
+            self._pending_ask_user_widget = None
+
+        if self._chat_input:
+            self.call_after_refresh(self._chat_input.focus_input)
 
     async def _process_message(self, value: str, mode: InputMode) -> None:
         """Route a message to the appropriate handler based on mode.

@@ -382,6 +382,7 @@ def create_cli_agent(
     enable_memory: bool = True,
     enable_skills: bool = True,
     enable_shell: bool = True,
+    enable_ask_user: bool = False,
     checkpointer: BaseCheckpointSaver | None = None,
 ) -> tuple[Pregel, CompositeBackend]:
     """Create a CLI-configured agent with flexible options.
@@ -413,6 +414,7 @@ def create_cli_agent(
         enable_skills: Enable `SkillsMiddleware` for custom agent skills
         enable_shell: Enable shell execution via `CLIShellBackend`
             (only in local mode). When enabled, the `execute` tool is available.
+        enable_ask_user: Enable the `ask_user` tool for interactive questioning.
         checkpointer: Optional checkpointer for session persistence.
 
             If `None`, uses `InMemorySaver` (no persistence across
@@ -580,6 +582,7 @@ def create_cli_agent(
         backend=composite_backend,
         middleware=agent_middleware,
         interrupt_on=interrupt_on,
+        enable_ask_user=enable_ask_user,
         checkpointer=final_checkpointer,
         subagents=custom_subagents or None,
     ).with_config(config)

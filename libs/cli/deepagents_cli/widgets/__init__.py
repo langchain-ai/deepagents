@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from deepagents_cli.widgets.ask_user import AskUserMenu
 from deepagents_cli.widgets.chat_input import ChatInput
 from deepagents_cli.widgets.messages import (
     AppMessage,
@@ -16,6 +17,7 @@ from deepagents_cli.widgets.welcome import WelcomeBanner
 
 __all__ = [
     "AppMessage",
+    "AskUserMenu",
     "AssistantMessage",
     "ChatInput",
     "DiffMessage",

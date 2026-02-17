@@ -168,6 +168,51 @@ Screen {
     margin-top: 0;
 }
 
+/* Ask user widget */
+.ask-user-menu {
+    height: auto;
+    margin: 1 0;
+    padding: 0 1;
+    background: $surface;
+    border: solid $success;
+}
+
+.ask-user-menu .ask-user-title {
+    text-style: bold;
+    color: $success;
+    margin-bottom: 0;
+}
+
+.ask-user-menu .ask-user-help {
+    color: $text-muted;
+    text-style: italic;
+    margin-top: 0;
+    margin-bottom: 0;
+}
+
+.ask-user-menu .ask-user-questions {
+    height: auto;
+    padding: 0 1;
+}
+
+.ask-user-menu .ask-user-question {
+    height: auto;
+    margin-bottom: 1;
+}
+
+.ask-user-menu .ask-user-choice {
+    height: 1;
+    padding: 0 1;
+}
+
+.ask-user-menu .ask-user-text-input {
+    margin: 0 1;
+}
+
+.ask-user-menu .ask-user-other-input {
+    margin: 0 1;
+}
+
 /* Completion popup styling (used by ChatInput) - appears BELOW input */
 #completion-popup {
     height: auto;

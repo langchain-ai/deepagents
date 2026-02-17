@@ -17,7 +17,6 @@ from langchain.agents.middleware.human_in_the_loop import (
     ApproveDecision,
     EditDecision,
     HITLRequest,
-    HITLResponse,
     RejectDecision,
 )
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
@@ -112,6 +111,9 @@ class TextualUIAdapter:
     allowing the app to sync its status bar and session state.
     """
 
+    _request_ask_user: Callable[..., Awaitable[Any]] | None
+    """Async callback for ask_user interrupts. Returns a Future with user answers."""
+
     _scroll_to_bottom: Callable[[], None] | None
     """Callback to scroll chat to bottom."""
 
@@ -143,6 +145,7 @@ class TextualUIAdapter:
         set_spinner: Callable[[str | None], Awaitable[None]] | None = None,
         set_active_message: Callable[[str | None], None] | None = None,
         sync_message_content: Callable[[str, str], None] | None = None,
+        request_ask_user: Callable[..., Awaitable[Any]] | None = None,
     ) -> None:
         """Initialize the adapter.
 
@@ -159,6 +162,7 @@ class TextualUIAdapter:
             set_active_message: Callback to set the active streaming message ID.
             sync_message_content: Callback to sync final content back to the
                 message store after streaming completes.
+            request_ask_user: Async callable for ask_user interrupts.
         """
         self._mount_message = mount_message
         self._update_status = update_status
@@ -168,6 +172,7 @@ class TextualUIAdapter:
         self._set_spinner = set_spinner
         self._set_active_message = set_active_message
         self._sync_message_content = sync_message_content
+        self._request_ask_user = request_ask_user
 
         # State tracking
         self._current_tool_messages: dict[str, ToolCallMessage] = {}
@@ -318,9 +323,9 @@ async def execute_task_textual(
     try:
         while True:
             interrupt_occurred = False
-            hitl_response: dict[str, HITLResponse] = {}
             suppress_resumed_output = False
             pending_interrupts: dict[str, HITLRequest] = {}
+            pending_ask_user: dict[str, dict] = {}
 
             async for chunk in agent.astream(
                 stream_input,
@@ -352,18 +357,24 @@ async def execute_task_textual(
                         interrupts: list[Interrupt] = data["__interrupt__"]
                         if interrupts:
                             for interrupt_obj in interrupts:
-                                try:
-                                    validated_request = (
-                                        _HITL_REQUEST_ADAPTER.validate_python(
-                                            interrupt_obj.value
-                                        )
-                                    )
-                                    pending_interrupts[interrupt_obj.id] = (
-                                        validated_request
-                                    )
+                                iv = interrupt_obj.value
+                                if (
+                                    isinstance(iv, dict)
+                                    and iv.get("type") == "ask_user"
+                                ):
+                                    pending_ask_user[interrupt_obj.id] = iv
                                     interrupt_occurred = True
-                                except ValidationError:  # noqa: TRY203  # Re-raise preserves exception context in handler
-                                    raise
+                                else:
+                                    try:
+                                        validated_request = (
+                                            _HITL_REQUEST_ADAPTER.validate_python(iv)
+                                        )
+                                        pending_interrupts[interrupt_obj.id] = (
+                                            validated_request
+                                        )
+                                        interrupt_occurred = True
+                                    except ValidationError:  # noqa: TRY203  # Re-raise preserves exception context in handler
+                                        raise
 
                     # Check for todo updates (not yet implemented in Textual UI)
                     chunk_data = next(iter(data.values())) if data else None
@@ -630,36 +641,67 @@ async def execute_task_textual(
             # Handle HITL after stream completes
             if interrupt_occurred:
                 any_rejected = False
+                resume_payload: dict[str, Any] = {}
+
+                for interrupt_id, ask_req in list(pending_ask_user.items()):
+                    questions = ask_req.get("questions", [])
+
+                    if adapter._request_ask_user:
+                        if adapter._set_spinner:
+                            await adapter._set_spinner(None)
+                        future = await adapter._request_ask_user(questions)
+                        result = await future
+
+                        if isinstance(result, dict):
+                            if result.get("type") == "answered":
+                                answers = result.get("answers", [])
+                                resume_payload[interrupt_id] = {"answers": answers}
+                                tool_id = ask_req.get("tool_call_id")
+                                if (
+                                    tool_id
+                                    and tool_id in adapter._current_tool_messages
+                                ):
+                                    tool_msg = adapter._current_tool_messages[tool_id]
+                                    tool_msg.set_success("User answered")
+                                    adapter._current_tool_messages.pop(tool_id, None)
+                            else:
+                                resume_payload[interrupt_id] = {
+                                    "answers": ["(cancelled)" for _ in questions]
+                                }
+                                any_rejected = True
+                        else:
+                            resume_payload[interrupt_id] = {
+                                "answers": ["(cancelled)" for _ in questions]
+                            }
+                            any_rejected = True
+                    else:
+                        resume_payload[interrupt_id] = {
+                            "answers": ["(ask_user not supported)" for _ in questions]
+                        }
 
                 for interrupt_id, hitl_request in list(pending_interrupts.items()):
                     action_requests = hitl_request["action_requests"]
 
                     if session_state.auto_approve:
-                        # Auto-approve silently - start running animation
                         decisions: list[HITLDecision] = [
                             ApproveDecision(type="approve") for _ in action_requests
                         ]
-                        hitl_response[interrupt_id] = {"decisions": decisions}
-                        # Mark all tools as running
+                        resume_payload[interrupt_id] = {"decisions": decisions}
                         for tool_msg in list(adapter._current_tool_messages.values()):
                             tool_msg.set_running()
                     else:
-                        # Batch approval - one dialog for all parallel tool calls
                         future = await adapter._request_approval(
                             action_requests, assistant_id
                         )
                         decision = await future
 
-                        # Handle the batch decision
                         if isinstance(decision, dict):
                             decision_type = decision.get("type")
 
                             if decision_type == "auto_approve_all":
-                                # Enable auto-approve for session
                                 session_state.auto_approve = True
                                 if adapter._on_auto_approve_enabled:
                                     adapter._on_auto_approve_enabled()
-                                # Approve all
                                 decisions = [
                                     ApproveDecision(type="approve")
                                     for _ in action_requests
@@ -669,10 +711,12 @@ async def execute_task_textual(
                                 )
                                 for tool_msg in tool_msgs:
                                     tool_msg.set_running()
-                                # Mark file ops as approved
                                 for action_request in action_requests:
                                     tool_name = action_request.get("name")
-                                    if tool_name in {"write_file", "edit_file"}:
+                                    if tool_name in {
+                                        "write_file",
+                                        "edit_file",
+                                    }:
                                         args = action_request.get("args", {})
                                         if isinstance(args, dict):
                                             file_op_tracker.mark_hitl_approved(
@@ -680,7 +724,6 @@ async def execute_task_textual(
                                             )
 
                             elif decision_type == "approve":
-                                # Approve all
                                 decisions = [
                                     ApproveDecision(type="approve")
                                     for _ in action_requests
@@ -690,10 +733,12 @@ async def execute_task_textual(
                                 )
                                 for tool_msg in tool_msgs:
                                     tool_msg.set_running()
-                                # Mark file ops as approved
                                 for action_request in action_requests:
                                     tool_name = action_request.get("name")
-                                    if tool_name in {"write_file", "edit_file"}:
+                                    if tool_name in {
+                                        "write_file",
+                                        "edit_file",
+                                    }:
                                         args = action_request.get("args", {})
                                         if isinstance(args, dict):
                                             file_op_tracker.mark_hitl_approved(
@@ -701,7 +746,6 @@ async def execute_task_textual(
                                             )
 
                             elif decision_type == "reject":
-                                # Reject all
                                 decisions = [
                                     RejectDecision(type="reject")
                                     for _ in action_requests
@@ -743,15 +787,15 @@ async def execute_task_textual(
                             adapter._current_tool_messages.clear()
                             any_rejected = True
 
-                        hitl_response[interrupt_id] = {"decisions": decisions}
+                        resume_payload[interrupt_id] = {"decisions": decisions}
 
                         if any_rejected:
                             break
 
                 suppress_resumed_output = any_rejected
 
-            if interrupt_occurred and hitl_response:
-                if suppress_resumed_output:
+            if interrupt_occurred and resume_payload:
+                if suppress_resumed_output and not pending_ask_user:
                     await adapter._mount_message(
                         AppMessage(
                             "Command rejected. Tell the agent what you'd like instead."
@@ -759,7 +803,7 @@ async def execute_task_textual(
                     )
                     return
 
-                stream_input = Command(resume=hitl_response)
+                stream_input = Command(resume=resume_payload)
             else:
                 break
 

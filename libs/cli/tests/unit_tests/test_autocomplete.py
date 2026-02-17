@@ -269,7 +269,8 @@ class TestSlashCommandController:
         suggestions = mock_view.render_completion_suggestions.call_args[0][0]
         assert len(suggestions) == len(SLASH_COMMANDS)
 
-    def test_double_reset_is_safe(self, controller, mock_view):
+    @pytest.mark.usefixtures("mock_view")
+    def test_double_reset_is_safe(self, controller):
         """Calling reset twice does not raise or double-clear."""
         controller.on_text_changed("/", 1)
         controller.reset()

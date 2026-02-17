@@ -158,7 +158,7 @@ class EditResult:
     occurrences: int | None = None
 
 
-class BackendProtocol(abc.ABC):
+class BackendProtocol(abc.ABC):  # noqa: B024 — methods raise NotImplementedError instead of using @abstractmethod to avoid breaking subclasses that only implement a subset
     """Protocol for pluggable memory backends (single, unified).
 
     Backends can store files in different locations (state, filesystem, database, etc.)
@@ -172,7 +172,6 @@ class BackendProtocol(abc.ABC):
     }
     """
 
-    @abc.abstractmethod
     def ls_info(self, path: str) -> list["FileInfo"]:
         """List all files in a directory with metadata.
 
@@ -193,7 +192,6 @@ class BackendProtocol(abc.ABC):
         """Async version of ls_info."""
         return await asyncio.to_thread(self.ls_info, path)
 
-    @abc.abstractmethod
     def read(
         self,
         file_path: str,
@@ -231,7 +229,6 @@ class BackendProtocol(abc.ABC):
         """Async version of read."""
         return await asyncio.to_thread(self.read, file_path, offset, limit)
 
-    @abc.abstractmethod
     def grep_raw(
         self,
         pattern: str,
@@ -282,7 +279,6 @@ class BackendProtocol(abc.ABC):
         """Async version of grep_raw."""
         return await asyncio.to_thread(self.grep_raw, pattern, path, glob)
 
-    @abc.abstractmethod
     def glob_info(self, pattern: str, path: str = "/") -> list["FileInfo"]:
         """Find files matching a glob pattern.
 
@@ -306,7 +302,6 @@ class BackendProtocol(abc.ABC):
         """Async version of glob_info."""
         return await asyncio.to_thread(self.glob_info, pattern, path)
 
-    @abc.abstractmethod
     def write(
         self,
         file_path: str,
@@ -332,7 +327,6 @@ class BackendProtocol(abc.ABC):
         """Async version of write."""
         return await asyncio.to_thread(self.write, file_path, content)
 
-    @abc.abstractmethod
     def edit(
         self,
         file_path: str,
@@ -366,7 +360,6 @@ class BackendProtocol(abc.ABC):
         """Async version of edit."""
         return await asyncio.to_thread(self.edit, file_path, old_string, new_string, replace_all)
 
-    @abc.abstractmethod
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
         """Upload multiple files to the sandbox.
 
@@ -397,7 +390,6 @@ class BackendProtocol(abc.ABC):
         """Async version of upload_files."""
         return await asyncio.to_thread(self.upload_files, files)
 
-    @abc.abstractmethod
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
         """Download multiple files from the sandbox.
 

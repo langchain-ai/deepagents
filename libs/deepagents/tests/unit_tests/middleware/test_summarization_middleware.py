@@ -10,7 +10,7 @@ from langchain.agents.middleware.types import ExtendedModelResponse, ModelReques
 from langchain_core.exceptions import ContextOverflowError
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 
-from deepagents.backends.protocol import BackendProtocol, EditResult, FileDownloadResponse, FileInfo, GrepMatch, WriteResult
+from deepagents.backends.protocol import BackendProtocol, EditResult, FileDownloadResponse, WriteResult
 from deepagents.middleware.summarization import SummarizationMiddleware
 
 if TYPE_CHECKING:
@@ -117,23 +117,6 @@ class MockBackend(BackendProtocol):
 
     async def aread(self, path: str, offset: int = 0, limit: int = 2000) -> str:
         return self.read(path, offset, limit)
-
-    def ls_info(self, path: str) -> list[FileInfo]:
-        return []
-
-    def grep_raw(
-        self,
-        pattern: str,
-        path: str | None = None,
-        glob: str | None = None,
-    ) -> list[GrepMatch] | str:
-        return []
-
-    def glob_info(self, pattern: str, path: str = "/") -> list[FileInfo]:
-        return []
-
-    def upload_files(self, files: list[tuple[str, bytes]]) -> list:
-        return []
 
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
         """Download files - returns raw content as bytes."""

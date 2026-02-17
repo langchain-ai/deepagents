@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -22,6 +23,8 @@ from deepagents_cli.widgets.autocomplete import (
     SlashCommandController,
 )
 from deepagents_cli.widgets.history import HistoryManager
+
+logger = logging.getLogger(__name__)
 
 MODE_PREFIXES: dict[str, str] = {
     "bash": "!",
@@ -368,6 +371,32 @@ class ChatTextArea(TextArea):
         self.move_cursor((0, 0))
 
 
+class _CompletionViewAdapter:
+    """Translate completion-space replacements to text-area coordinates."""
+
+    def __init__(self, chat_input: ChatInput) -> None:
+        """Initialize adapter with its owning `ChatInput`."""
+        self._chat_input = chat_input
+
+    def render_completion_suggestions(
+        self, suggestions: list[tuple[str, str]], selected_index: int
+    ) -> None:
+        """Delegate suggestion rendering to `ChatInput`."""
+        self._chat_input.render_completion_suggestions(suggestions, selected_index)
+
+    def clear_completion_suggestions(self) -> None:
+        """Delegate completion clearing to `ChatInput`."""
+        self._chat_input.clear_completion_suggestions()
+
+    def replace_completion_range(self, start: int, end: int, replacement: str) -> None:
+        """Map completion indices to text-area indices before replacing text."""
+        self._chat_input.replace_completion_range(
+            self._chat_input._completion_index_to_text_index(start),
+            self._chat_input._completion_index_to_text_index(end),
+            replacement,
+        )
+
+
 class ChatInput(Vertical):
     """Chat input widget with prompt, multi-line text, autocomplete, and history.
 
@@ -471,11 +500,15 @@ class ChatInput(Vertical):
         self._text_area: ChatTextArea | None = None
         self._popup: CompletionPopup | None = None
         self._completion_manager: MultiCompletionManager | None = None
+        self._completion_view: _CompletionViewAdapter | None = None
 
         # Guard flag: set True before programmatically stripping the mode
         # prefix character so the resulting text-change event does not
         # re-evaluate mode.
         self._stripping_prefix = False
+        # Number of virtual prefix characters currently injected for
+        # completion controller calls (0 for normal/bash, 1 for command).
+        self._completion_prefix_len = 0
 
         # Track current suggestions for click handling
         self._current_suggestions: list[tuple[str, str]] = []
@@ -507,11 +540,12 @@ class ChatInput(Vertical):
         self._popup = self.query_one("#completion-popup", CompletionPopup)
 
         # Both controllers implement the CompletionController protocol but have
-        # different concrete types; the list-item warning is a false positive
+        # different concrete types; the list-item warning is a false positive.
+        self._completion_view = _CompletionViewAdapter(self)
         self._completion_manager = MultiCompletionManager(
             [
-                SlashCommandController(SLASH_COMMANDS, self),
-                FuzzyFileController(self, cwd=self._cwd),
+                SlashCommandController(SLASH_COMMANDS, self._completion_view),
+                FuzzyFileController(self._completion_view, cwd=self._cwd),
             ]  # type: ignore[list-item]  # Controller types are compatible at runtime
         )
 
@@ -520,6 +554,14 @@ class ChatInput(Vertical):
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
         """Detect input mode and update completions."""
         text = event.text_area.text
+
+        # History handlers explicitly decide mode and stripped display text.
+        # Skip mode detection here so recalled entries don't inherit stale mode.
+        if self._text_area and self._text_area._navigating_history:
+            if self._completion_manager:
+                self._completion_manager.reset()
+            self.scroll_visible()
+            return
 
         # Guard: skip mode re-detection after we programmatically stripped
         # a prefix character.
@@ -541,16 +583,9 @@ class ChatInput(Vertical):
             # Reset mode when text is fully cleared
             self.mode = "normal"
 
-        # Skip completion during history navigation to avoid popup flashing
-        if self._text_area and self._text_area._navigating_history:
-            if self._completion_manager:
-                self._completion_manager.reset()
-            return
-
-        # Update completion suggestions — synthesize virtual prefix so
-        # controllers see the original trigger character.
+        # Update completion suggestions using completion-space text/cursor.
         if self._completion_manager and self._text_area:
-            vtext, vcursor = self._with_virtual_prefix(text, self._get_cursor_offset())
+            vtext, vcursor = self._completion_text_and_cursor()
             self._completion_manager.on_text_changed(vtext, vcursor)
 
         # Scroll input into view when content changes (handles text wrap)
@@ -573,26 +608,47 @@ class ChatInput(Vertical):
             col -= 1
         self._text_area.move_cursor((row, col))
 
-    def _with_virtual_prefix(self, text: str, cursor: int) -> tuple[str, int]:
-        """Prepend the mode trigger character so controllers see the original form.
+    def _completion_text_and_cursor(self) -> tuple[str, int]:
+        """Return controller-facing text/cursor in completion space.
 
-        When the mode prefix has been stripped from the text area, completion
-        controllers still need to see it (e.g. `SlashCommandController` expects
-        text starting with `'/'`).  This method re-synthesizes that prefix for
-        the given text and cursor offset.
-
-        Args:
-            text: Current text area content (prefix already stripped).
-            cursor: Cursor offset within `text`.
-
-        Returns:
-            Tuple of (text with virtual prefix, adjusted cursor offset).
-            Returns the inputs unchanged when no prefix applies.
+        Also updates `_completion_prefix_len` so that subsequent calls to
+        `_completion_index_to_text_index` use the matching offset.
         """
+        if not self._text_area:
+            self._completion_prefix_len = 0
+            return "", 0
+
+        text = self._text_area.text
+        cursor = self._get_cursor_offset()
         prefix = MODE_PREFIXES.get(self.mode, "")
+        self._completion_prefix_len = len(prefix)
+
         if prefix:
             return prefix + text, cursor + len(prefix)
         return text, cursor
+
+    def _completion_index_to_text_index(self, index: int) -> int:
+        """Translate completion-space index into text-area index.
+
+        Args:
+            index: Cursor/index position in completion space.
+
+        Returns:
+            Clamped index in text-area space.
+        """
+        if not self._text_area:
+            return 0
+
+        mapped = index - self._completion_prefix_len
+        text_len = len(self._text_area.text)
+        if mapped < 0 or mapped > text_len:
+            logger.debug(
+                "Completion index %d mapped to %d, outside [0, %d]; clamping",
+                index,
+                mapped,
+                text_len,
+            )
+        return max(0, min(mapped, text_len))
 
     def _submit_value(self, value: str) -> None:
         """Prepend mode prefix, save to history, post message, and reset input.
@@ -638,8 +694,9 @@ class ChatInput(Vertical):
         """Handle history previous request."""
         entry = self._history.get_previous(event.current_text)
         if entry is not None and self._text_area:
-            self._text_area.set_text_from_history(entry)
-            self._normalize_mode_for_history(entry)
+            mode, display_text = self._history_entry_mode_and_text(entry)
+            self.mode = mode
+            self._text_area.set_text_from_history(display_text)
         elif self._text_area:
             self._text_area._navigating_history = False
 
@@ -650,37 +707,35 @@ class ChatInput(Vertical):
         """Handle history next request."""
         entry = self._history.get_next()
         if entry is not None and self._text_area:
-            self._text_area.set_text_from_history(entry)
-            self._normalize_mode_for_history(entry)
+            mode, display_text = self._history_entry_mode_and_text(entry)
+            self.mode = mode
+            self._text_area.set_text_from_history(display_text)
         elif self._text_area:
             self._text_area._navigating_history = False
 
-    def _normalize_mode_for_history(self, entry: str) -> None:
-        """Reset mode to normal when a history entry has no mode prefix.
-
-        Prefixed entries (e.g. `!ls`) will have their mode set by
-        `on_text_area_changed` when the prefix character is detected.
-
-        Non-prefixed entries must explicitly reset the mode so that a stale
-        bash/command mode does not cause the submit path to prepend an
-        unwanted `!` or `/`.
+    @staticmethod
+    def _history_entry_mode_and_text(entry: str) -> tuple[str, str]:
+        """Return mode and stripped display text for a history entry.
 
         Args:
-            entry: The raw history entry text.
+            entry: Raw entry value read from history storage.
+
+        Returns:
+            Tuple of `(mode, display_text)` where mode-trigger prefixes are
+                removed from `display_text`.
         """
-        if self.mode != "normal" and not any(
-            entry.startswith(p) for p in _PREFIX_TO_MODE
-        ):
-            self.mode = "normal"
+        for prefix, mode in _PREFIX_TO_MODE.items():
+            # Small dict; loop is fine. No need to over-engineer right now
+            if entry.startswith(prefix):
+                return mode, entry[len(prefix) :]
+        return "normal", entry
 
     async def on_key(self, event: events.Key) -> None:
         """Handle key events for completion navigation."""
         if not self._completion_manager or not self._text_area:
             return
 
-        text, cursor = self._with_virtual_prefix(
-            self._text_area.text, self._get_cursor_offset()
-        )
+        text, cursor = self._completion_text_and_cursor()
         result = self._completion_manager.on_key(event, text, cursor)
 
         match result:
@@ -728,12 +783,10 @@ class ChatInput(Vertical):
         except NoMatches:
             return
         self.remove_class("mode-bash", "mode-command")
-        if mode == "bash":
-            prompt.update("!")
-            self.add_class("mode-bash")
-        elif mode == "command":
-            prompt.update("/")
-            self.add_class("mode-command")
+        prefix = MODE_PREFIXES.get(mode)
+        if prefix:
+            prompt.update(prefix)
+            self.add_class(f"mode-{mode}")
         else:
             prompt.update(">")
         self.post_message(self.ModeChanged(mode))
@@ -848,11 +901,17 @@ class ChatInput(Vertical):
         cursor = self._get_cursor_offset()
 
         # Determine replacement range based on completion type.
-        # For slash commands, synthesize the virtual prefix so positions
-        # align with what the controller expects.
+        # Slash completions use completion-space coordinates and are translated
+        # through the completion view adapter.
         if label.startswith("/"):
-            _, virtual_cursor = self._with_virtual_prefix(text, cursor)
-            self.replace_completion_range(0, virtual_cursor, label)
+            if self._completion_view is None:
+                logger.warning(
+                    "Slash completion clicked but _completion_view is not "
+                    "initialized; this indicates a widget lifecycle issue."
+                )
+            else:
+                _, virtual_cursor = self._completion_text_and_cursor()
+                self._completion_view.replace_completion_range(0, virtual_cursor, label)
         elif label.startswith("@"):
             # File mention: replace from @ to cursor
             at_index = text[:cursor].rfind("@")
@@ -867,22 +926,11 @@ class ChatInput(Vertical):
         self._text_area.focus()
 
     def replace_completion_range(self, start: int, end: int, replacement: str) -> None:
-        """Replace text in the input field.
-
-        Completion controllers operate on *virtual* text that includes the
-        synthesized mode prefix (e.g. `/`).  The real text area content has
-        the prefix stripped, so we translate the incoming positions by
-        subtracting the prefix length before indexing into real text.
-        """
+        """Replace text in the input field."""
         if not self._text_area:
             return
 
         text = self._text_area.text
-
-        # Translate virtual to real coordinates
-        prefix_len = len(MODE_PREFIXES.get(self.mode, ""))
-        start = max(0, start - prefix_len)
-        end = max(start, end - prefix_len)
 
         start = max(0, min(start, len(text)))
         end = max(start, min(end, len(text)))

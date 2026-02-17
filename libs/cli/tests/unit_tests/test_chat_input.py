@@ -786,52 +786,71 @@ class TestSlashCompletionCursorMapping:
     """Regression: virtual-to-real index translation for slash replacement."""
 
     @pytest.mark.asyncio
-    async def test_replace_completion_range_translates_virtual_coords(self) -> None:
-        """replace_completion_range should subtract mode prefix from positions."""
+    async def test_tab_completion_mid_token_preserves_suffix(self) -> None:
+        """Applying slash completion mid-token should keep text after cursor."""
         app = _ChatInputTestApp()
         async with app.run_test() as pilot:
             chat = app.query_one(ChatInput)
             assert chat._text_area is not None
 
-            # Enter command mode with text "he" (stripped from "/he")
-            chat._text_area.text = "/he"
+            # Enter command mode through typed input so cursor is at end.
+            chat._text_area.insert("/")
             await _pause_for_strip(pilot)
+            chat._text_area.insert("he")
+            await pilot.pause()
             assert chat.mode == "command"
             assert chat._text_area.text == "he"
+            await pilot.press("left")
+            await pilot.pause()
 
-            # Simulate a replacement using virtual coordinates:
-            # controller sees "/he" with cursor at 2 (between 'h' and 'e')
-            # virtual start=0, virtual end=2
-            chat.replace_completion_range(0, 2, "/help")
+            # Apply selected slash completion via keyboard path.
+            await pilot.press("tab")
             await _pause_for_strip(pilot)
 
-            # After stripping the "/" prefix from "/help", text should be
-            # "help" + "e" (the character after cursor was preserved).
-            # The space is appended by replace_completion_range.
-            assert "e" in chat._text_area.text
-            assert chat._text_area.text.startswith("help")
+            assert chat._text_area.text == "help e"
 
     @pytest.mark.asyncio
-    async def test_replace_at_end_of_line_replaces_all(self) -> None:
-        """When cursor is at end, virtual coords cover the whole real text."""
+    async def test_click_completion_mid_token_preserves_suffix(self) -> None:
+        """Click-selecting slash completion mid-token should keep suffix text."""
         app = _ChatInputTestApp()
         async with app.run_test() as pilot:
             chat = app.query_one(ChatInput)
             assert chat._text_area is not None
 
-            # Enter command mode: "/he" → stripped to "he", cursor at end (2)
-            chat._text_area.text = "/he"
+            chat._text_area.insert("/")
             await _pause_for_strip(pilot)
+            chat._text_area.insert("he")
+            await pilot.pause()
+            await pilot.press("left")
+            await pilot.pause()
+
+            chat.on_completion_popup_option_clicked(
+                CompletionPopup.OptionClicked(index=0)
+            )
+            await _pause_for_strip(pilot)
+
+            assert chat._text_area.text == "help e"
+
+    @pytest.mark.asyncio
+    async def test_tab_completion_at_end_replaces_whole_token(self) -> None:
+        """Tab-completing at end should replace all typed command text."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            # Enter command mode through typed input so cursor is at end.
+            chat._text_area.insert("/")
+            await _pause_for_strip(pilot)
+            chat._text_area.insert("he")
+            await pilot.pause()
             assert chat.mode == "command"
             assert chat._text_area.text == "he"
 
-            # Virtual end=3 (cursor at end of virtual "/he") maps to real 2
-            chat.replace_completion_range(0, 3, "/help")
+            await pilot.press("tab")
             await _pause_for_strip(pilot)
 
-            # Entire text replaced — no leftover characters
-            text = chat._text_area.text
-            assert text.strip() == "help"
+            assert chat._text_area.text == "help "
 
     @pytest.mark.asyncio
     async def test_normal_mode_replace_is_unaffected(self) -> None:
@@ -850,3 +869,97 @@ class TestSlashCompletionCursorMapping:
             await pilot.pause()
 
             assert chat._text_area.text == "hello @world "
+
+
+class TestHistorySlashPrefixRecall:
+    """Test that recalling a slash-prefixed history entry enters command mode."""
+
+    @pytest.mark.asyncio
+    async def test_history_slash_prefixed_entry_enters_command_mode(self) -> None:
+        """Recalling a `/help` history entry should enter command mode."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._history._entries.append("/help")
+
+            await pilot.press("up")
+            await _pause_for_strip(pilot)
+
+            assert chat.mode == "command"
+            assert chat._text_area.text == "help"
+
+            chat.dismiss_completion()
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(app.submitted) == 1
+            assert app.submitted[0].value == "/help"
+            assert app.submitted[0].mode == "command"
+
+
+class TestCompletionIndexToTextIndex:
+    """Edge-case tests for _completion_index_to_text_index clamping."""
+
+    @pytest.mark.asyncio
+    async def test_negative_mapped_index_clamps_to_zero(self) -> None:
+        """A completion index below the prefix length should clamp to 0."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            # Enter command mode so prefix_len == 1
+            chat._text_area.text = "/"
+            await _pause_for_strip(pilot)
+            assert chat.mode == "command"
+
+            # index=0 in completion space -> 0 - 1 = -1 -> clamped to 0
+            assert chat._completion_index_to_text_index(0) == 0
+
+    @pytest.mark.asyncio
+    async def test_overflow_index_clamps_to_text_length(self) -> None:
+        """A completion index beyond text length should clamp to len(text)."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.text = "/he"
+            await _pause_for_strip(pilot)
+            # text is now "he" (len 2), prefix_len is 1
+            # index=100 -> 100 - 1 = 99 -> clamped to 2
+            assert chat._completion_index_to_text_index(100) == 2
+
+    @pytest.mark.asyncio
+    async def test_normal_mode_passes_through(self) -> None:
+        """In normal mode (prefix_len=0), index maps 1:1."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.text = "hello"
+            await pilot.pause()
+            assert chat._completion_index_to_text_index(3) == 3
+
+
+class TestHistoryRecallSuppressesCompletions:
+    """Test that history navigation does not trigger completions."""
+
+    @pytest.mark.asyncio
+    async def test_history_recall_does_not_trigger_completions(self) -> None:
+        """Recalling a history entry with '@' should not open file completions."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._history._entries.append("tell me about @package.json")
+
+            await pilot.press("up")
+            await pilot.pause()
+
+            assert chat._text_area.text == "tell me about @package.json"
+            assert chat._current_suggestions == []

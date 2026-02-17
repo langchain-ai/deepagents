@@ -6,15 +6,13 @@ import os
 import re
 from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
-from typing import Annotated, Any, Literal, NotRequired, cast
+from typing import Annotated, Literal, NotRequired
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     AgentState,
-    ContextT,
     ModelRequest,
     ModelResponse,
-    ResponseT,
 )
 from langchain.tools import ToolRuntime
 from langchain.tools.tool_node import ToolCallRequest
@@ -292,7 +290,16 @@ Examples:
 Note: This tool is only available if the backend supports execution (SandboxBackendProtocol).
 If execution is not supported, the tool will return an error message."""
 
-FILESYSTEM_SYSTEM_PROMPT = """## Filesystem Tools `ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`
+FILESYSTEM_SYSTEM_PROMPT = """## Following Conventions
+
+- Read files before editing — understand existing content before making changes
+- Mimic existing style, naming conventions, and patterns
+
+## Tool Usage and File Reading
+
+Follow the tool docs for the available tools. In particular, for filesystem tools, use pagination (offset/limit) when reading large files.
+
+## Filesystem Tools `ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`
 
 You have access to a filesystem which you can interact with using these tools.
 All file paths must start with a /.
@@ -308,6 +315,8 @@ EXECUTION_SYSTEM_PROMPT = """## Execute Tool `execute`
 
 You have access to an `execute` tool for running shell commands in a sandboxed environment.
 Use this tool to run commands, scripts, tests, builds, and other shell operations.
+
+When possible, prefer the dedicated filesystem tools over shell equivalents (e.g., `read_file` over `cat`, `edit_file` over `sed`).
 
 - execute: run a shell command in the sandbox (returns output and exit code)"""
 
@@ -404,7 +413,7 @@ def _create_content_preview(content_str: str, *, head_lines: int = 5, tail_lines
     return head_sample + truncation_notice + tail_sample
 
 
-class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]):
+class FilesystemMiddleware(AgentMiddleware):
     """Middleware for providing filesystem and optional execution tools to an agent.
 
     This middleware adds filesystem tools to the agent: `ls`, `read_file`, `write_file`,
@@ -492,7 +501,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             self._create_execute_tool(),
         ]
 
-    def _get_backend(self, runtime: ToolRuntime[Any, Any]) -> BackendProtocol:
+    def _get_backend(self, runtime: ToolRuntime) -> BackendProtocol:
         """Get the resolved backend instance from backend or factory.
 
         Args:
@@ -546,7 +555,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             coroutine=async_ls,
         )
 
-    def _create_read_file_tool(self) -> BaseTool:  # noqa: C901
+    def _create_read_file_tool(self) -> BaseTool:
         """Create the read_file tool."""
         tool_description = self._custom_tool_descriptions.get("read_file") or READ_FILE_TOOL_DESCRIPTION
         token_limit = self._tool_token_limit_before_evict
@@ -861,7 +870,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             if isinstance(raw, str):
                 return raw
             formatted = format_grep_matches(raw, output_mode)
-            return truncate_if_too_long(formatted)
+            return truncate_if_too_long(formatted)  # type: ignore[arg-type]
 
         async def async_grep(
             pattern: Annotated[str, "Text pattern to search for (literal string, not regex)."],
@@ -879,7 +888,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             if isinstance(raw, str):
                 return raw
             formatted = format_grep_matches(raw, output_mode)
-            return truncate_if_too_long(formatted)
+            return truncate_if_too_long(formatted)  # type: ignore[arg-type]
 
         return StructuredTool.from_function(
             name="grep",
@@ -888,7 +897,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             coroutine=async_grep,
         )
 
-    def _create_execute_tool(self) -> BaseTool:  # noqa: C901
+    def _create_execute_tool(self) -> BaseTool:
         """Create the execute tool for sandbox command execution."""
         tool_description = self._custom_tool_descriptions.get("execute") or EXECUTE_TOOL_DESCRIPTION
 
@@ -907,11 +916,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     "To use the execute tool, provide a backend that implements SandboxBackendProtocol."
                 )
 
-            # Safe cast: _supports_execution validates that execute()/aexecute() exist
-            # (either SandboxBackendProtocol or CompositeBackend with sandbox default)
-            executable = cast("SandboxBackendProtocol", resolved_backend)
             try:
-                result = executable.execute(command)
+                result = resolved_backend.execute(command)
             except NotImplementedError as e:
                 # Handle case where execute() exists but raises NotImplementedError
                 return f"Error: Execution not available. {e}"
@@ -943,10 +949,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     "To use the execute tool, provide a backend that implements SandboxBackendProtocol."
                 )
 
-            # Safe cast: _supports_execution validates that execute()/aexecute() exist
-            executable = cast("SandboxBackendProtocol", resolved_backend)
             try:
-                result = await executable.aexecute(command)
+                result = await resolved_backend.aexecute(command)
             except NotImplementedError as e:
                 # Handle case where execute() exists but raises NotImplementedError
                 return f"Error: Execution not available. {e}"
@@ -972,9 +976,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
     def wrap_model_call(
         self,
-        request: ModelRequest[ContextT],
-        handler: Callable[[ModelRequest[ContextT]], ModelResponse[ResponseT]],
-    ) -> ModelResponse[ResponseT]:
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], ModelResponse],
+    ) -> ModelResponse:
         """Update the system prompt and filter tools based on backend capabilities.
 
         Args:
@@ -990,7 +994,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         backend_supports_execution = False
         if has_execute_tool:
             # Resolve backend to check execution support
-            backend = self._get_backend(request.runtime)  # ty: ignore[invalid-argument-type]
+            backend = self._get_backend(request.runtime)
             backend_supports_execution = _supports_execution(backend)
 
             # If execute tool exists but backend doesn't support it, filter it out
@@ -1010,7 +1014,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             if has_execute_tool and backend_supports_execution:
                 prompt_parts.append(EXECUTION_SYSTEM_PROMPT)
 
-            system_prompt = "\n\n".join(prompt_parts)
+            system_prompt = "\n\n".join(prompt_parts).strip()
 
         if system_prompt:
             new_system_message = append_to_system_message(request.system_message, system_prompt)
@@ -1020,9 +1024,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
     async def awrap_model_call(
         self,
-        request: ModelRequest[ContextT],
-        handler: Callable[[ModelRequest[ContextT]], Awaitable[ModelResponse[ResponseT]]],
-    ) -> ModelResponse[ResponseT]:
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
+    ) -> ModelResponse:
         """(async) Update the system prompt and filter tools based on backend capabilities.
 
         Args:
@@ -1038,7 +1042,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         backend_supports_execution = False
         if has_execute_tool:
             # Resolve backend to check execution support
-            backend = self._get_backend(request.runtime)  # ty: ignore[invalid-argument-type]
+            backend = self._get_backend(request.runtime)
             backend_supports_execution = _supports_execution(backend)
 
             # If execute tool exists but backend doesn't support it, filter it out
@@ -1058,7 +1062,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             if has_execute_tool and backend_supports_execution:
                 prompt_parts.append(EXECUTION_SYSTEM_PROMPT)
 
-            system_prompt = "\n\n".join(prompt_parts)
+            system_prompt = "\n\n".join(prompt_parts).strip()
 
         if system_prompt:
             new_system_message = append_to_system_message(request.system_message, system_prompt)
@@ -1248,8 +1252,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 if files_update is not None:
                     accumulated_file_updates.update(files_update)
             return Command(update={**update, "messages": processed_messages, "files": accumulated_file_updates})
-        msg = f"Unreachable code reached in _intercept_large_tool_result: for tool_result of type {type(tool_result)}"
-        raise AssertionError(msg)
+        raise AssertionError(f"Unreachable code reached in _intercept_large_tool_result: for tool_result of type {type(tool_result)}")
 
     async def _aintercept_large_tool_result(self, tool_result: ToolMessage | Command, runtime: ToolRuntime) -> ToolMessage | Command:
         """Async version of _intercept_large_tool_result.
@@ -1295,8 +1298,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 if files_update is not None:
                     accumulated_file_updates.update(files_update)
             return Command(update={**update, "messages": processed_messages, "files": accumulated_file_updates})
-        msg = f"Unreachable code reached in _aintercept_large_tool_result: for tool_result of type {type(tool_result)}"
-        raise AssertionError(msg)
+        raise AssertionError(f"Unreachable code reached in _aintercept_large_tool_result: for tool_result of type {type(tool_result)}")
 
     def wrap_tool_call(
         self,

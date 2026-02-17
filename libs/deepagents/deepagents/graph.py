@@ -1,4 +1,5 @@
 """Deep Agents come with planning, filesystem, and subagents."""
+# ruff: noqa: ERA001
 
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -33,7 +34,44 @@ from deepagents.middleware.subagents import (
 )
 from deepagents.middleware.summarization import SummarizationMiddleware, _compute_summarization_defaults
 
-BASE_AGENT_PROMPT = (Path(__file__).parent / "base_prompt.md").read_text()
+BASE_AGENT_PROMPT = """You are a Deep Agent, an AI assistant that helps users accomplish tasks using tools. You respond with text and tool calls. The user can see your responses and tool outputs in real time.
+
+## Core Behavior
+
+- Be concise and direct. Don't over-explain unless asked.
+- NEVER add unnecessary preamble (\"Sure!\", \"Great question!\", \"I'll now...\").
+- Don't say \"I'll now do X\" — just do it.
+- If the request is ambiguous, ask questions before acting.
+- If asked how to approach something, explain first, then act.
+
+## Professional Objectivity
+
+- Prioritize accuracy over validating the user's beliefs
+- Disagree respectfully when the user is incorrect
+- Avoid unnecessary superlatives, praise, or emotional validation
+
+## Following Conventions
+
+- Read files before editing — understand existing content before making changes
+- Mimic existing style, naming conventions, and patterns
+
+## Doing Tasks
+
+When the user asks you to do something:
+
+1. **Understand first** — read relevant files, check existing patterns. Quick but thorough — gather enough evidence to start, then iterate.
+2. **Act** — implement the solution. Work quickly but accurately.
+3. **Verify** — check your work against what was asked, not against your own output. Your first attempt is rarely correct — iterate.
+
+Keep working until the task is fully complete. Don't stop partway and explain what you would do — just do it. Only yield back to the user when the task is done or you're genuinely blocked.
+
+**When things go wrong:**
+- If something fails repeatedly, stop and analyze *why* — don't keep retrying the same approach.
+- If you're blocked, tell the user what's wrong and ask for guidance.
+
+## Progress Updates
+
+For longer tasks, provide brief progress updates at reasonable intervals — a concise sentence recapping what you've done and what's next."""
 
 
 def get_default_model() -> ChatAnthropic:
@@ -44,11 +82,11 @@ def get_default_model() -> ChatAnthropic:
     """
     return ChatAnthropic(
         model_name="claude-sonnet-4-5-20250929",
-        max_tokens=20000,
+        max_tokens=20000,  # type: ignore[call-arg]
     )
 
 
-def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic with many conditional branches
+def create_deep_agent(
     model: str | BaseChatModel | None = None,
     tools: Sequence[BaseTool | Callable | dict[str, Any]] | None = None,
     *,
@@ -149,7 +187,14 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
             # Use Responses API by default. To use chat completions, use
             # `model=init_chat_model("openai:...")`
             # To disable data retention with the Responses API, use
-            # `model=init_chat_model("openai:...", use_responses_api=True, store=False, include=["reasoning.encrypted_content"])`
+            # ```
+            # model=init_chat_model(
+            #     "openai:...",
+            #     use_responses_api=True,
+            #     store=False,
+            #     include=["reasoning.encrypted_content"],
+            # )
+            # ```
             model_init_params: dict = {"use_responses_api": True}
         else:
             model_init_params = {}
@@ -162,7 +207,7 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
     backend = backend if backend is not None else (StateBackend)
 
     # Build general-purpose subagent with default middleware stack
-    gp_middleware: list[AgentMiddleware[Any, Any, Any]] = [
+    gp_middleware: list[AgentMiddleware] = [
         TodoListMiddleware(),
         FilesystemMiddleware(backend=backend),
         SummarizationMiddleware(
@@ -181,7 +226,7 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
     if interrupt_on is not None:
         gp_middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
 
-    general_purpose_spec: SubAgent = {  # ty: ignore[missing-typed-dict-key]
+    general_purpose_spec: SubAgent = {
         **GENERAL_PURPOSE_SUBAGENT,
         "model": model,
         "tools": tools or [],
@@ -202,7 +247,7 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
 
             # Build middleware: base stack + skills (if specified) + user's middleware
             subagent_summarization_defaults = _compute_summarization_defaults(subagent_model)
-            subagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
+            subagent_middleware: list[AgentMiddleware] = [
                 TodoListMiddleware(),
                 FilesystemMiddleware(backend=backend),
                 SummarizationMiddleware(
@@ -221,7 +266,7 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
                 subagent_middleware.append(SkillsMiddleware(backend=backend, sources=subagent_skills))
             subagent_middleware.extend(spec.get("middleware", []))
 
-            processed_spec: SubAgent = {  # ty: ignore[missing-typed-dict-key]
+            processed_spec: SubAgent = {
                 **spec,
                 "model": subagent_model,
                 "tools": spec.get("tools", tools or []),
@@ -233,7 +278,7 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
     all_subagents: list[SubAgent | CompiledSubAgent] = [general_purpose_spec, *processed_subagents]
 
     # Build main agent middleware stack
-    deepagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
+    deepagent_middleware: list[AgentMiddleware] = [
         TodoListMiddleware(),
     ]
     if memory is not None:
@@ -268,7 +313,12 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
     if system_prompt is None:
         final_system_prompt: str | SystemMessage = BASE_AGENT_PROMPT
     elif isinstance(system_prompt, SystemMessage):
-        final_system_prompt = SystemMessage(content_blocks=[*system_prompt.content_blocks, {"type": "text", "text": f"\n\n{BASE_AGENT_PROMPT}"}])
+        # SystemMessage: append BASE_AGENT_PROMPT to content_blocks
+        new_content = [
+            *system_prompt.content_blocks,
+            {"type": "text", "text": f"\n\n{BASE_AGENT_PROMPT}"},
+        ]
+        final_system_prompt = SystemMessage(content=new_content)
     else:
         # String: simple concatenation
         final_system_prompt = system_prompt + "\n\n" + BASE_AGENT_PROMPT

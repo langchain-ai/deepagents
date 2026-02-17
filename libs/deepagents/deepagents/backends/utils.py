@@ -8,7 +8,7 @@ enable composition without fragile string parsing.
 import re
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, overload
 
 import wcmatch.glob as wcglob
 
@@ -30,8 +30,7 @@ def sanitize_tool_call_id(tool_call_id: str) -> str:
 
     Replaces dangerous characters (., /, \) with underscores.
     """
-    sanitized = tool_call_id.replace(".", "_").replace("/", "_").replace("\\", "_")
-    return sanitized
+    return tool_call_id.replace(".", "_").replace("/", "_").replace("\\", "_")
 
 
 def format_content_with_line_numbers(
@@ -181,7 +180,7 @@ def perform_string_replacement(
     content: str,
     old_string: str,
     new_string: str,
-    replace_all: bool,
+    replace_all: bool = False,  # noqa: FBT001, FBT002
 ) -> tuple[str, int] | str:
     """Perform string replacement with occurrence validation.
 
@@ -200,10 +199,21 @@ def perform_string_replacement(
         return f"Error: String not found in file: '{old_string}'"
 
     if occurrences > 1 and not replace_all:
-        return f"Error: String '{old_string}' appears {occurrences} times in file. Use replace_all=True to replace all instances, or provide a more specific string with surrounding context."
+        return (
+            f"Error: String '{old_string}' appears {occurrences} times in file. "
+            f"Use replace_all=True to replace all instances, or provide a more specific string with surrounding context."
+        )
 
     new_content = content.replace(old_string, new_string)
     return new_content, occurrences
+
+
+@overload
+def truncate_if_too_long(result: list[str]) -> list[str]: ...
+
+
+@overload
+def truncate_if_too_long(result: str) -> str: ...
 
 
 def truncate_if_too_long(result: list[str] | str) -> list[str] | str:
@@ -211,7 +221,7 @@ def truncate_if_too_long(result: list[str] | str) -> list[str] | str:
     if isinstance(result, list):
         total_chars = sum(len(item) for item in result)
         if total_chars > TOOL_RESULT_TOKEN_LIMIT * 4:
-            return result[: len(result) * TOOL_RESULT_TOKEN_LIMIT * 4 // total_chars] + [TRUNCATION_GUIDANCE]
+            return result[: len(result) * TOOL_RESULT_TOKEN_LIMIT * 4 // total_chars] + [TRUNCATION_GUIDANCE]  # noqa: RUF005  # Concatenation preferred for clarity
         return result
     # string
     if len(result) > TOOL_RESULT_TOKEN_LIMIT * 4:
@@ -242,7 +252,8 @@ def _normalize_path(path: str | None) -> str:
     """
     path = path or "/"
     if not path or path.strip() == "":
-        raise ValueError("Path cannot be empty")
+        msg = "Path cannot be empty"
+        raise ValueError(msg)
 
     normalized = path if path.startswith("/") else "/" + path
 
@@ -288,7 +299,7 @@ def _glob_search_files(
     pattern: str,
     path: str = "/",
 ) -> str:
-    """Search files dict for paths matching glob pattern.
+    r"""Search files dict for paths matching glob pattern.
 
     Args:
         files: Dictionary of file paths to FileData.

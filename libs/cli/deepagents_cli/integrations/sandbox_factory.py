@@ -56,7 +56,7 @@ def _run_sandbox_setup(backend: SandboxBackendProtocol, setup_script_path: str) 
 
 _PROVIDER_TO_WORKING_DIR = {
     "daytona": "/home/daytona",
-    "langsmith": "/tmp",  # noqa: S108
+    "langsmith": "/tmp",  # noqa: S108  # LangSmith sandbox working directory
     "modal": "/workspace",
     "runloop": "/home/user",
 }
@@ -114,7 +114,7 @@ def create_sandbox(
                     f"[dim]{glyphs.checkmark} {provider.capitalize()} sandbox "
                     f"{backend.id} terminated[/dim]"
                 )
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001  # Cleanup errors should not mask the original sandbox failure
                 warning = get_glyphs().warning
                 console.print(
                     f"[yellow]{warning} Cleanup failed for {provider} sandbox "

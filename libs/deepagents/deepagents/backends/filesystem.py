@@ -69,7 +69,7 @@ class FilesystemBackend(BackendProtocol):
     def __init__(
         self,
         root_dir: str | Path | None = None,
-        virtual_mode: bool = False,
+        virtual_mode: bool = False,  # noqa: FBT001, FBT002  # Boolean arg is part of BackendProtocol API
         max_file_size_mb: int = 10,
     ) -> None:
         """Initialize filesystem backend.
@@ -132,12 +132,14 @@ class FilesystemBackend(BackendProtocol):
         if self.virtual_mode:
             vpath = key if key.startswith("/") else "/" + key
             if ".." in vpath or vpath.startswith("~"):
-                raise ValueError("Path traversal not allowed")
+                msg = "Path traversal not allowed"
+                raise ValueError(msg)
             full = (self.cwd / vpath.lstrip("/")).resolve()
             try:
                 full.relative_to(self.cwd)
             except ValueError:
-                raise ValueError(f"Path:{full} outside root directory: {self.cwd}") from None
+                msg = f"Path:{full} outside root directory: {self.cwd}"
+                raise ValueError(msg) from None
             return full
 
         path = Path(key)
@@ -145,7 +147,7 @@ class FilesystemBackend(BackendProtocol):
             return path
         return (self.cwd / path).resolve()
 
-    def ls_info(self, path: str) -> list[FileInfo]:
+    def ls_info(self, path: str) -> list[FileInfo]:  # noqa: C901, PLR0912  # Complex virtual_mode logic
         """List files and directories in the specified directory (non-recursive).
 
         Args:
@@ -188,7 +190,7 @@ class FilesystemBackend(BackendProtocol):
                                     "path": abs_path,
                                     "is_dir": False,
                                     "size": int(st.st_size),
-                                    "modified_at": datetime.fromtimestamp(st.st_mtime).isoformat(),
+                                    "modified_at": datetime.fromtimestamp(st.st_mtime).isoformat(),  # noqa: DTZ006  # Local filesystem timestamps don't need timezone
                                 }
                             )
                         except OSError:
@@ -201,7 +203,7 @@ class FilesystemBackend(BackendProtocol):
                                     "path": abs_path + "/",
                                     "is_dir": True,
                                     "size": 0,
-                                    "modified_at": datetime.fromtimestamp(st.st_mtime).isoformat(),
+                                    "modified_at": datetime.fromtimestamp(st.st_mtime).isoformat(),  # noqa: DTZ006  # Local filesystem timestamps don't need timezone
                                 }
                             )
                         except OSError:
@@ -227,7 +229,7 @@ class FilesystemBackend(BackendProtocol):
                                     "path": virt_path,
                                     "is_dir": False,
                                     "size": int(st.st_size),
-                                    "modified_at": datetime.fromtimestamp(st.st_mtime).isoformat(),
+                                    "modified_at": datetime.fromtimestamp(st.st_mtime).isoformat(),  # noqa: DTZ006  # Local filesystem timestamps don't need timezone
                                 }
                             )
                         except OSError:
@@ -240,7 +242,7 @@ class FilesystemBackend(BackendProtocol):
                                     "path": virt_path + "/",
                                     "is_dir": True,
                                     "size": 0,
-                                    "modified_at": datetime.fromtimestamp(st.st_mtime).isoformat(),
+                                    "modified_at": datetime.fromtimestamp(st.st_mtime).isoformat(),  # noqa: DTZ006  # Local filesystem timestamps don't need timezone
                                 }
                             )
                         except OSError:
@@ -336,7 +338,7 @@ class FilesystemBackend(BackendProtocol):
         file_path: str,
         old_string: str,
         new_string: str,
-        replace_all: bool = False,
+        replace_all: bool = False,  # noqa: FBT001, FBT002
     ) -> EditResult:
         """Edit a file by replacing string occurrences.
 
@@ -465,7 +467,7 @@ class FilesystemBackend(BackendProtocol):
             if self.virtual_mode:
                 try:
                     virt = "/" + str(p.resolve().relative_to(self.cwd))
-                except Exception:
+                except Exception:  # noqa: BLE001, S112  # Intentional skip of unresolvable paths
                     continue
             else:
                 virt = str(p)
@@ -477,7 +479,7 @@ class FilesystemBackend(BackendProtocol):
 
         return results
 
-    def _python_search(self, pattern: str, base_full: Path, include_glob: str | None) -> dict[str, list[tuple[int, str]]]:
+    def _python_search(self, pattern: str, base_full: Path, include_glob: str | None) -> dict[str, list[tuple[int, str]]]:  # noqa: C901
         """Fallback search using Python when ripgrep is unavailable.
 
         Recursively searches files, respecting `max_file_size_bytes` limit.
@@ -518,7 +520,7 @@ class FilesystemBackend(BackendProtocol):
                     if self.virtual_mode:
                         try:
                             virt_path = "/" + str(fp.resolve().relative_to(self.cwd))
-                        except Exception:
+                        except Exception:  # noqa: BLE001, S112  # Intentional skip of unresolvable paths
                             continue
                     else:
                         virt_path = str(fp)
@@ -526,7 +528,7 @@ class FilesystemBackend(BackendProtocol):
 
         return results
 
-    def glob_info(self, pattern: str, path: str = "/") -> list[FileInfo]:
+    def glob_info(self, pattern: str, path: str = "/") -> list[FileInfo]:  # noqa: C901, PLR0912  # Complex virtual_mode logic
         """Find files matching a glob pattern.
 
         Args:
@@ -541,7 +543,8 @@ class FilesystemBackend(BackendProtocol):
             pattern = pattern.lstrip("/")
 
         if self.virtual_mode and ".." in Path(pattern).parts:
-            raise ValueError("Path traversal not allowed in glob pattern")
+            msg = "Path traversal not allowed in glob pattern"
+            raise ValueError(msg)
 
         search_path = self.cwd if path == "/" else self._resolve_path(path)
         if not search_path.exists() or not search_path.is_dir():
@@ -571,7 +574,7 @@ class FilesystemBackend(BackendProtocol):
                                 "path": abs_path,
                                 "is_dir": False,
                                 "size": int(st.st_size),
-                                "modified_at": datetime.fromtimestamp(st.st_mtime).isoformat(),
+                                "modified_at": datetime.fromtimestamp(st.st_mtime).isoformat(),  # noqa: DTZ006  # Local filesystem timestamps don't need timezone
                             }
                         )
                     except OSError:
@@ -594,7 +597,7 @@ class FilesystemBackend(BackendProtocol):
                                 "path": virt,
                                 "is_dir": False,
                                 "size": int(st.st_size),
-                                "modified_at": datetime.fromtimestamp(st.st_mtime).isoformat(),
+                                "modified_at": datetime.fromtimestamp(st.st_mtime).isoformat(),  # noqa: DTZ006  # Local filesystem timestamps don't need timezone
                             }
                         )
                     except OSError:

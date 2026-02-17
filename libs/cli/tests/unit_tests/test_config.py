@@ -293,7 +293,7 @@ class TestCreateModelProfileExtraction:
     now uses it internally.
     """
 
-    @patch("deepagents_cli.config.init_chat_model")
+    @patch("langchain.chat_models.init_chat_model")
     def test_extracts_context_limit_from_profile(
         self, mock_init_chat_model: Mock
     ) -> None:
@@ -305,7 +305,7 @@ class TestCreateModelProfileExtraction:
         result = create_model("anthropic:claude-sonnet-4-5")
         assert result.context_limit == 200000
 
-    @patch("deepagents_cli.config.init_chat_model")
+    @patch("langchain.chat_models.init_chat_model")
     def test_handles_missing_profile_gracefully(
         self, mock_init_chat_model: Mock
     ) -> None:
@@ -316,7 +316,7 @@ class TestCreateModelProfileExtraction:
         result = create_model("anthropic:claude-sonnet-4-5")
         assert result.context_limit is None
 
-    @patch("deepagents_cli.config.init_chat_model")
+    @patch("langchain.chat_models.init_chat_model")
     def test_handles_none_profile(self, mock_init_chat_model: Mock) -> None:
         """Test that profile=None leaves context_limit as None."""
         mock_model = Mock()
@@ -326,7 +326,7 @@ class TestCreateModelProfileExtraction:
         result = create_model("anthropic:claude-sonnet-4-5")
         assert result.context_limit is None
 
-    @patch("deepagents_cli.config.init_chat_model")
+    @patch("langchain.chat_models.init_chat_model")
     def test_handles_non_dict_profile(self, mock_init_chat_model: Mock) -> None:
         """Test that non-dict profile is handled safely."""
         mock_model = Mock()
@@ -336,7 +336,7 @@ class TestCreateModelProfileExtraction:
         result = create_model("anthropic:claude-sonnet-4-5")
         assert result.context_limit is None
 
-    @patch("deepagents_cli.config.init_chat_model")
+    @patch("langchain.chat_models.init_chat_model")
     def test_handles_non_int_max_input_tokens(self, mock_init_chat_model: Mock) -> None:
         """Test that string max_input_tokens is ignored."""
         mock_model = Mock()
@@ -346,7 +346,7 @@ class TestCreateModelProfileExtraction:
         result = create_model("anthropic:claude-sonnet-4-5")
         assert result.context_limit is None
 
-    @patch("deepagents_cli.config.init_chat_model")
+    @patch("langchain.chat_models.init_chat_model")
     def test_handles_missing_max_input_tokens_key(
         self, mock_init_chat_model: Mock
     ) -> None:
@@ -1010,7 +1010,7 @@ api_key_env = "FIREWORKS_API_KEY"
 class TestCreateModelExtraKwargs:
     """Tests for create_model() with extra_kwargs from --model-params."""
 
-    @patch("deepagents_cli.config.init_chat_model")
+    @patch("langchain.chat_models.init_chat_model")
     def test_extra_kwargs_passed_to_model(self, mock_init_chat_model: Mock) -> None:
         """extra_kwargs are forwarded to init_chat_model."""
         mock_model = Mock()
@@ -1022,7 +1022,7 @@ class TestCreateModelExtraKwargs:
         _, call_kwargs = mock_init_chat_model.call_args
         assert call_kwargs["temperature"] == 0.7
 
-    @patch("deepagents_cli.config.init_chat_model")
+    @patch("langchain.chat_models.init_chat_model")
     def test_extra_kwargs_override_config(
         self, mock_init_chat_model: Mock, tmp_path: Path
     ) -> None:
@@ -1053,7 +1053,7 @@ max_tokens = 1024
         # Config kwarg preserved when not overridden
         assert call_kwargs["max_tokens"] == 1024
 
-    @patch("deepagents_cli.config.init_chat_model")
+    @patch("langchain.chat_models.init_chat_model")
     def test_none_extra_kwargs_is_noop(self, mock_init_chat_model: Mock) -> None:
         """extra_kwargs=None does not affect behavior."""
         mock_model = Mock()
@@ -1063,7 +1063,7 @@ max_tokens = 1024
         create_model("anthropic:claude-sonnet-4-5", extra_kwargs=None)
         mock_init_chat_model.assert_called_once()
 
-    @patch("deepagents_cli.config.init_chat_model")
+    @patch("langchain.chat_models.init_chat_model")
     def test_empty_extra_kwargs_is_noop(self, mock_init_chat_model: Mock) -> None:
         """extra_kwargs={} does not affect behavior."""
         mock_model = Mock()
@@ -1077,7 +1077,7 @@ max_tokens = 1024
 class TestCreateModelEdgeCaseParsing:
     """Tests for create_model() edge-case spec parsing."""
 
-    @patch("deepagents_cli.config.init_chat_model")
+    @patch("langchain.chat_models.init_chat_model")
     def test_leading_colon_treated_as_bare_model(
         self, mock_init_chat_model: Mock
     ) -> None:
@@ -1101,7 +1101,7 @@ class TestCreateModelEdgeCaseParsing:
             create_model("anthropic:")
 
     @patch("deepagents_cli.config._get_default_model_spec")
-    @patch("deepagents_cli.config.init_chat_model")
+    @patch("langchain.chat_models.init_chat_model")
     def test_empty_string_uses_default(
         self, mock_init_chat_model: Mock, mock_default: Mock
     ) -> None:

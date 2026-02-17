@@ -16,7 +16,7 @@ from textual.widgets import Markdown, Static
 
 from deepagents_cli.config import CharsetMode, _detect_charset_mode, get_glyphs
 from deepagents_cli.input import EMAIL_PREFIX_PATTERN, INPUT_HIGHLIGHT_PATTERN
-from deepagents_cli.ui import format_tool_display
+from deepagents_cli.tool_display import format_tool_display
 from deepagents_cli.widgets.diff import format_diff_textual
 
 if TYPE_CHECKING:
@@ -216,7 +216,7 @@ class AssistantMessage(Vertical):
         self._markdown: Markdown | None = None
         self._stream: MarkdownStream | None = None
 
-    def compose(self) -> ComposeResult:
+    def compose(self) -> ComposeResult:  # noqa: PLR6301  # Textual widget method convention
         """Compose the assistant message layout.
 
         Yields:
@@ -647,7 +647,7 @@ class ToolCallMessage(Vertical):
         # Default: return as-is but escape markup
         return FormattedOutput(content=self._escape_markup(output))
 
-    def _escape_markup(self, text: str) -> str:
+    def _escape_markup(self, text: str) -> str:  # noqa: PLR6301  # Grouped as method for widget cohesion
         """Escape Rich markup characters.
 
         Returns:
@@ -655,7 +655,7 @@ class ToolCallMessage(Vertical):
         """
         return text.replace("[", r"\[").replace("]", r"\]")
 
-    def _prefix_output(self, content: str) -> str:
+    def _prefix_output(self, content: str) -> str:  # noqa: PLR6301  # Grouped as method for widget cohesion
         """Prefix output with output marker and indent continuation lines.
 
         Args:
@@ -705,7 +705,7 @@ class ToolCallMessage(Vertical):
 
         return FormattedOutput(content="\n".join(lines), truncation=truncation)
 
-    def _parse_todo_items(self, output: str) -> list | None:
+    def _parse_todo_items(self, output: str) -> list | None:  # noqa: PLR6301  # Grouped as method for widget cohesion
         """Parse todo items from output.
 
         Returns:
@@ -723,7 +723,7 @@ class ToolCallMessage(Vertical):
         except (ValueError, SyntaxError):
             return None
 
-    def _build_todo_stats(self, items: list) -> str:
+    def _build_todo_stats(self, items: list) -> str:  # noqa: PLR6301  # Grouped as method for widget cohesion
         """Build stats string for todo list.
 
         Returns:

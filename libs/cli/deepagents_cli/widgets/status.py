@@ -128,7 +128,7 @@ class StatusBar(Horizontal):
         model_display = self._format_model_display()
         yield Static(model_display, classes="status-model", id="model-display")
 
-    def _format_model_display(self) -> str:
+    def _format_model_display(self) -> str:  # noqa: PLR6301  # Textual widget method convention
         """Format the model display string.
 
         Returns:
@@ -248,7 +248,7 @@ class StatusBar(Horizontal):
 
         if new_value > 0:
             # Format with K suffix for thousands
-            if new_value >= 1000:
+            if new_value >= 1000:  # noqa: PLR2004  # Count formatting threshold
                 display.update(f"{new_value / 1000:.1f}K tokens")
             else:
                 display.update(f"{new_value} tokens")

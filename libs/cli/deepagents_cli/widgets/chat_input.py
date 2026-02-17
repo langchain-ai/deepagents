@@ -205,7 +205,7 @@ class CompletionPopup(VerticalScroll):
 
     def hide(self) -> None:
         """Hide the popup."""
-        self.styles.display = "none"  # type: ignore[assignment]
+        self.styles.display = "none"  # type: ignore[assignment]  # Textual accepts string display values at runtime
 
     def show(self) -> None:
         """Show the popup."""
@@ -452,7 +452,7 @@ class ChatInput(Vertical):
             history_file = Path.home() / ".deepagents" / "history.jsonl"
         self._history = HistoryManager(history_file)
 
-    def compose(self) -> ComposeResult:
+    def compose(self) -> ComposeResult:  # noqa: PLR6301  # Textual widget method convention
         """Compose the chat input layout.
 
         Yields:
@@ -478,7 +478,7 @@ class ChatInput(Vertical):
             [
                 SlashCommandController(SLASH_COMMANDS, self),
                 FuzzyFileController(self, cwd=self._cwd),
-            ]  # type: ignore[list-item]
+            ]  # type: ignore[list-item]  # Controller types are compatible at runtime
         )
 
         self._text_area.focus()
@@ -538,7 +538,7 @@ class ChatInput(Vertical):
 
     def on_chat_text_area_history_next(
         self,
-        event: ChatTextArea.HistoryNext,
+        event: ChatTextArea.HistoryNext,  # noqa: ARG002  # Textual event handler signature
     ) -> None:
         """Handle history next request."""
         entry = self._history.get_next()

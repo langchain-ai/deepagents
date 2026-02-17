@@ -23,6 +23,15 @@ from deepagents_cli.widgets.autocomplete import (
 )
 from deepagents_cli.widgets.history import HistoryManager
 
+MODE_PREFIXES: dict[str, str] = {
+    "bash": "!",
+    "command": "/",
+}
+"""Maps each non-normal mode to its trigger character."""
+
+_PREFIX_TO_MODE: dict[str, str] = {v: k for k, v in MODE_PREFIXES.items()}
+"""Reverse lookup: trigger character -> mode name."""
+
 if TYPE_CHECKING:
     from textual import events
     from textual.app import ComposeResult
@@ -516,18 +525,16 @@ class ChatInput(Vertical):
         # a prefix character.
         if self._stripping_prefix:
             self._stripping_prefix = False
-        elif text.startswith("!"):
-            if self.mode != "bash":
-                self.mode = "bash"
-            # Strip unconditionally even when already in-mode: completion
-            # controllers may write replacement text that includes the trigger
-            # character (e.g. "/help"). The _stripping_prefix guard on the
-            # resulting change event prevents infinite loops.
-            self._strip_mode_prefix()
-            return
-        elif text.startswith("/"):
-            if self.mode != "command":
-                self.mode = "command"
+        elif text and text[0] in _PREFIX_TO_MODE:
+            # Detected a mode-trigger prefix (e.g. "!" or "/").
+            # Strip it unconditionally -- even when already in the correct
+            # mode -- because completion controllers may write replacement
+            # text that re-includes the trigger character.  The
+            # _stripping_prefix guard prevents the resulting change event
+            # from looping back here.
+            detected = _PREFIX_TO_MODE[text[0]]
+            if self.mode != detected:
+                self.mode = detected
             self._strip_mode_prefix()
             return
         elif not text and self.mode != "normal":
@@ -543,12 +550,8 @@ class ChatInput(Vertical):
         # Update completion suggestions — synthesize virtual prefix so
         # controllers see the original trigger character.
         if self._completion_manager and self._text_area:
-            cursor_offset = self._get_cursor_offset()
-            completion_text = text
-            if self.mode == "command":
-                completion_text = "/" + text
-                cursor_offset += 1
-            self._completion_manager.on_text_changed(completion_text, cursor_offset)
+            vtext, vcursor = self._with_virtual_prefix(text, self._get_cursor_offset())
+            self._completion_manager.on_text_changed(vtext, vcursor)
 
         # Scroll input into view when content changes (handles text wrap)
         self.scroll_visible()
@@ -570,6 +573,27 @@ class ChatInput(Vertical):
             col -= 1
         self._text_area.move_cursor((row, col))
 
+    def _with_virtual_prefix(self, text: str, cursor: int) -> tuple[str, int]:
+        """Prepend the mode trigger character so controllers see the original form.
+
+        When the mode prefix has been stripped from the text area, completion
+        controllers still need to see it (e.g. `SlashCommandController` expects
+        text starting with `'/'`).  This method re-synthesizes that prefix for
+        the given text and cursor offset.
+
+        Args:
+            text: Current text area content (prefix already stripped).
+            cursor: Cursor offset within `text`.
+
+        Returns:
+            Tuple of (text with virtual prefix, adjusted cursor offset).
+            Returns the inputs unchanged when no prefix applies.
+        """
+        prefix = MODE_PREFIXES.get(self.mode, "")
+        if prefix:
+            return prefix + text, cursor + len(prefix)
+        return text, cursor
+
     def _submit_value(self, value: str) -> None:
         """Prepend mode prefix, save to history, post message, and reset input.
 
@@ -589,10 +613,9 @@ class ChatInput(Vertical):
         # form (e.g. "!ls", "/help"). The value may already contain the prefix
         # when a completion controller wrote it back into the text area before
         # the strip handler ran.
-        if self.mode == "bash" and not value.startswith("!"):
-            value = "!" + value
-        elif self.mode == "command" and not value.startswith("/"):
-            value = "/" + value
+        prefix = MODE_PREFIXES.get(self.mode, "")
+        if prefix and not value.startswith(prefix):
+            value = prefix + value
 
         self._history.add(value)
         self.post_message(self.Submitted(value, self.mode))
@@ -616,6 +639,7 @@ class ChatInput(Vertical):
         entry = self._history.get_previous(event.current_text)
         if entry is not None and self._text_area:
             self._text_area.set_text_from_history(entry)
+            self._normalize_mode_for_history(entry)
         elif self._text_area:
             self._text_area._navigating_history = False
 
@@ -627,23 +651,36 @@ class ChatInput(Vertical):
         entry = self._history.get_next()
         if entry is not None and self._text_area:
             self._text_area.set_text_from_history(entry)
+            self._normalize_mode_for_history(entry)
         elif self._text_area:
             self._text_area._navigating_history = False
+
+    def _normalize_mode_for_history(self, entry: str) -> None:
+        """Reset mode to normal when a history entry has no mode prefix.
+
+        Prefixed entries (e.g. `!ls`) will have their mode set by
+        `on_text_area_changed` when the prefix character is detected.
+
+        Non-prefixed entries must explicitly reset the mode so that a stale
+        bash/command mode does not cause the submit path to prepend an
+        unwanted `!` or `/`.
+
+        Args:
+            entry: The raw history entry text.
+        """
+        if self.mode != "normal" and not any(
+            entry.startswith(p) for p in _PREFIX_TO_MODE
+        ):
+            self.mode = "normal"
 
     async def on_key(self, event: events.Key) -> None:
         """Handle key events for completion navigation."""
         if not self._completion_manager or not self._text_area:
             return
 
-        text = self._text_area.text
-        cursor = self._get_cursor_offset()
-
-        # Synthesize virtual prefix so completion controllers see the
-        # original trigger character (e.g. "/" for slash commands).
-        if self.mode == "command":
-            text = "/" + text
-            cursor += 1
-
+        text, cursor = self._with_virtual_prefix(
+            self._text_area.text, self._get_cursor_offset()
+        )
         result = self._completion_manager.on_key(event, text, cursor)
 
         match result:
@@ -814,8 +851,7 @@ class ChatInput(Vertical):
         # For slash commands, synthesize the virtual prefix so positions
         # align with what the controller expects.
         if label.startswith("/"):
-            # Slash command: replace in virtual-prefix space
-            virtual_cursor = cursor + 1 if self.mode == "command" else cursor
+            _, virtual_cursor = self._with_virtual_prefix(text, cursor)
             self.replace_completion_range(0, virtual_cursor, label)
         elif label.startswith("@"):
             # File mention: replace from @ to cursor
@@ -831,11 +867,23 @@ class ChatInput(Vertical):
         self._text_area.focus()
 
     def replace_completion_range(self, start: int, end: int, replacement: str) -> None:
-        """Replace text in the input field."""
+        """Replace text in the input field.
+
+        Completion controllers operate on *virtual* text that includes the
+        synthesized mode prefix (e.g. `/`).  The real text area content has
+        the prefix stripped, so we translate the incoming positions by
+        subtracting the prefix length before indexing into real text.
+        """
         if not self._text_area:
             return
 
         text = self._text_area.text
+
+        # Translate virtual to real coordinates
+        prefix_len = len(MODE_PREFIXES.get(self.mode, ""))
+        start = max(0, start - prefix_len)
+        end = max(start, end - prefix_len)
+
         start = max(0, min(start, len(text)))
         end = max(start, min(end, len(text)))
 

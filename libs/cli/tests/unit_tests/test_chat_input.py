@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import pytest
 from textual.app import App, ComposeResult
 from textual.containers import Container
@@ -13,6 +15,9 @@ from deepagents_cli.widgets.chat_input import (
     CompletionOption,
     CompletionPopup,
 )
+
+if TYPE_CHECKING:
+    from textual.pilot import Pilot
 
 
 class TestCompletionOption:
@@ -201,6 +206,26 @@ class _ChatInputTestApp(App[None]):
         yield ChatInput(id="chat-input")
 
 
+class _RecordingApp(App[None]):
+    """App that records ChatInput.Submitted events for assertion."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.submitted: list[ChatInput.Submitted] = []
+
+    def compose(self) -> ComposeResult:
+        yield ChatInput(id="chat-input")
+
+    def on_chat_input_submitted(self, event: ChatInput.Submitted) -> None:
+        self.submitted.append(event)
+
+
+async def _pause_for_strip(pilot: Pilot[None]) -> None:
+    """Wait two frames so the prefix-strip text-change event propagates."""
+    await pilot.pause()
+    await pilot.pause()
+
+
 def _prompt_text(prompt: Static) -> str:
     """Read the current text content of a Static widget."""
     return str(prompt._Static__content)  # type: ignore[attr-defined]  # accessing internal content store
@@ -313,8 +338,7 @@ class TestHistoryNavigationFlag:
             # Now type '/' — the prefix is stripped but completions appear
             # via the virtual prefix path.
             text_area.insert("/")
-            await pilot.pause()
-            await pilot.pause()  # second pause for strip re-trigger
+            await _pause_for_strip(pilot)
 
             assert chat_input.mode == "command"
             assert chat_input._completion_manager is not None
@@ -387,8 +411,7 @@ class TestDismissCompletion:
             # text area but completions appear via virtual prefix synthesis.
             assert chat._text_area is not None
             chat._text_area.text = "/"
-            await pilot.pause()
-            await pilot.pause()  # allow strip re-trigger
+            await _pause_for_strip(pilot)
 
             # Completion should be active
             assert chat.mode == "command"
@@ -413,8 +436,7 @@ class TestDismissCompletion:
 
             assert chat._text_area is not None
             chat._text_area.text = "/"
-            await pilot.pause()
-            await pilot.pause()  # allow strip re-trigger
+            await _pause_for_strip(pilot)
             assert chat._current_suggestions
 
             assert chat.dismiss_completion() is True
@@ -433,8 +455,7 @@ class TestDismissCompletion:
 
             # Show → dismiss
             chat._text_area.text = "/"
-            await pilot.pause()
-            await pilot.pause()  # allow strip re-trigger
+            await _pause_for_strip(pilot)
             assert chat._current_suggestions
             chat.dismiss_completion()
 
@@ -445,8 +466,7 @@ class TestDismissCompletion:
 
             # Retype / — prefix stripped, mode becomes command, completions appear
             chat._text_area.text = "/"
-            await pilot.pause()
-            await pilot.pause()  # allow strip re-trigger
+            await _pause_for_strip(pilot)
 
             # Menu should reappear with all commands
             assert len(chat._current_suggestions) == len(SLASH_COMMANDS)
@@ -484,8 +504,7 @@ class TestModePrefixStripping:
             assert chat._text_area is not None
 
             chat._text_area.text = "!ls"
-            await pilot.pause()
-            await pilot.pause()  # allow strip re-trigger
+            await _pause_for_strip(pilot)
 
             assert chat.mode == "bash"
             assert chat._text_area.text == "ls"
@@ -499,8 +518,7 @@ class TestModePrefixStripping:
             assert chat._text_area is not None
 
             chat._text_area.text = "/"
-            await pilot.pause()
-            await pilot.pause()  # allow strip re-trigger
+            await _pause_for_strip(pilot)
 
             assert chat.mode == "command"
             assert chat._text_area.text == ""
@@ -515,8 +533,7 @@ class TestModePrefixStripping:
 
             # Enter bash mode
             chat._text_area.text = "!ls"
-            await pilot.pause()
-            await pilot.pause()
+            await _pause_for_strip(pilot)
             assert chat.mode == "bash"
 
             # Clear text — mode should reset
@@ -534,8 +551,7 @@ class TestModePrefixStripping:
 
             # Type "/" to enter command mode
             chat._text_area.text = "/"
-            await pilot.pause()
-            await pilot.pause()
+            await _pause_for_strip(pilot)
             assert chat.mode == "command"
 
             # Now type "h" — the virtual prefix makes the controller see "/h"
@@ -550,24 +566,14 @@ class TestModePrefixStripping:
     @pytest.mark.asyncio
     async def test_submission_prepends_bash_prefix(self) -> None:
         """Submitting in bash mode should prepend `'!'` to the value."""
-        submitted: list[ChatInput.Submitted] = []
-
-        class RecordingApp(App[None]):
-            def compose(self) -> ComposeResult:
-                yield ChatInput(id="chat-input")
-
-            def on_chat_input_submitted(self, event: ChatInput.Submitted) -> None:
-                submitted.append(event)
-
-        app = RecordingApp()
+        app = _RecordingApp()
         async with app.run_test() as pilot:
             chat = app.query_one(ChatInput)
             assert chat._text_area is not None
 
             # Enter bash mode
             chat._text_area.text = "!ls"
-            await pilot.pause()
-            await pilot.pause()
+            await _pause_for_strip(pilot)
             assert chat.mode == "bash"
             assert chat._text_area.text == "ls"
 
@@ -576,23 +582,14 @@ class TestModePrefixStripping:
             await pilot.pause()
 
             # Should have received "!ls"
-            assert len(submitted) == 1
-            assert submitted[0].value == "!ls"
-            assert submitted[0].mode == "bash"
+            assert len(app.submitted) == 1
+            assert app.submitted[0].value == "!ls"
+            assert app.submitted[0].mode == "bash"
 
     @pytest.mark.asyncio
     async def test_submission_prepends_command_prefix(self) -> None:
         """Submitting in command mode should prepend `'/'` to the value."""
-        submitted: list[ChatInput.Submitted] = []
-
-        class RecordingApp(App[None]):
-            def compose(self) -> ComposeResult:
-                yield ChatInput(id="chat-input")
-
-            def on_chat_input_submitted(self, event: ChatInput.Submitted) -> None:
-                submitted.append(event)
-
-        app = RecordingApp()
+        app = _RecordingApp()
         async with app.run_test() as pilot:
             chat = app.query_one(ChatInput)
             assert chat._text_area is not None
@@ -601,8 +598,7 @@ class TestModePrefixStripping:
             # Use insert() rather than .text= so cursor stays at end, as
             # it would in real typing.
             chat._text_area.insert("/")
-            await pilot.pause()
-            await pilot.pause()
+            await _pause_for_strip(pilot)
             assert chat.mode == "command"
 
             # Dismiss completion so Enter takes the direct submission path
@@ -615,9 +611,9 @@ class TestModePrefixStripping:
             await pilot.press("enter")
             await pilot.pause()
 
-            assert len(submitted) == 1
-            assert submitted[0].value == "/help"
-            assert submitted[0].mode == "command"
+            assert len(app.submitted) == 1
+            assert app.submitted[0].value == "/help"
+            assert app.submitted[0].mode == "command"
 
     @pytest.mark.asyncio
     async def test_mode_resets_after_submission(self) -> None:
@@ -629,8 +625,7 @@ class TestModePrefixStripping:
 
             # Enter bash mode and submit
             chat._text_area.text = "!ls"
-            await pilot.pause()
-            await pilot.pause()
+            await _pause_for_strip(pilot)
             assert chat.mode == "bash"
 
             await pilot.press("enter")
@@ -649,8 +644,7 @@ class TestModePrefixStripping:
 
             # Enter bash mode
             chat._text_area.text = "!echo hello"
-            await pilot.pause()
-            await pilot.pause()
+            await _pause_for_strip(pilot)
             assert chat.mode == "bash"
             assert chat._text_area.text == "echo hello"
 
@@ -668,24 +662,14 @@ class TestModePrefixStripping:
             assert chat._text_area is not None
 
             chat._text_area.text = "!echo"
-            await pilot.pause()
-            await pilot.pause()
+            await _pause_for_strip(pilot)
             assert chat.mode == "bash"
             assert chat._current_suggestions == []
 
     @pytest.mark.asyncio
     async def test_submission_does_not_double_prefix(self) -> None:
         """If text already starts with prefix, submission should not add another."""
-        submitted: list[ChatInput.Submitted] = []
-
-        class RecordingApp(App[None]):
-            def compose(self) -> ComposeResult:
-                yield ChatInput(id="chat-input")
-
-            def on_chat_input_submitted(self, event: ChatInput.Submitted) -> None:
-                submitted.append(event)
-
-        app = RecordingApp()
+        app = _RecordingApp()
         async with app.run_test() as pilot:
             chat = app.query_one(ChatInput)
             assert chat._text_area is not None
@@ -699,5 +683,170 @@ class TestModePrefixStripping:
             await pilot.press("enter")
             await pilot.pause()
 
-            assert len(submitted) == 1
-            assert submitted[0].value == "!already-prefixed"
+            assert len(app.submitted) == 1
+            assert app.submitted[0].value == "!already-prefixed"
+
+
+class TestHistoryRecallModeReset:
+    """Regression: history recall must not inherit a stale bash/command mode."""
+
+    @pytest.mark.asyncio
+    async def test_history_non_prefixed_entry_resets_bash_mode(self) -> None:
+        """Recalling a normal-mode entry while in bash mode should reset to normal."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            # Seed history with a normal-mode entry
+            chat._history._entries.append("echo hello")
+
+            # Enter bash mode
+            chat._text_area.text = "!ls"
+            await _pause_for_strip(pilot)
+            assert chat.mode == "bash"
+
+            # Press up to recall the non-prefixed history entry through
+            # the ChatInput handler (which normalizes mode).
+            await pilot.press("up")
+            await pilot.pause()
+
+            # Mode must have reset to normal
+            assert chat.mode == "normal"
+            assert chat._text_area.text == "echo hello"
+
+            # Submitting should NOT prepend "!"
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(app.submitted) == 1
+            assert app.submitted[0].value == "echo hello"
+            assert app.submitted[0].mode == "normal"
+
+    @pytest.mark.asyncio
+    async def test_history_prefixed_entry_keeps_mode(self) -> None:
+        """Recalling a bash-prefixed entry should re-enter bash mode."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            # Seed history with a bash-mode entry
+            chat._history._entries.append("!ls")
+
+            # Press up to recall the prefixed entry
+            await pilot.press("up")
+            await _pause_for_strip(pilot)
+
+            assert chat.mode == "bash"
+            assert chat._text_area.text == "ls"
+
+            # Submit — should prepend "!"
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(app.submitted) == 1
+            assert app.submitted[0].value == "!ls"
+            assert app.submitted[0].mode == "bash"
+
+    @pytest.mark.asyncio
+    async def test_history_non_prefixed_entry_resets_command_mode(self) -> None:
+        """Recalling a normal entry while in command mode should reset to normal."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            # Seed history with a normal-mode entry
+            chat._history._entries.append("hello world")
+
+            # Enter command mode
+            chat._text_area.text = "/"
+            await _pause_for_strip(pilot)
+            assert chat.mode == "command"
+
+            # Dismiss completion so up arrow goes to history, not completion nav
+            chat.dismiss_completion()
+
+            # Recall the non-prefixed entry
+            await pilot.press("up")
+            await pilot.pause()
+
+            assert chat.mode == "normal"
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(app.submitted) == 1
+            assert app.submitted[0].value == "hello world"
+            assert app.submitted[0].mode == "normal"
+
+
+class TestSlashCompletionCursorMapping:
+    """Regression: virtual-to-real index translation for slash replacement."""
+
+    @pytest.mark.asyncio
+    async def test_replace_completion_range_translates_virtual_coords(self) -> None:
+        """replace_completion_range should subtract mode prefix from positions."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            # Enter command mode with text "he" (stripped from "/he")
+            chat._text_area.text = "/he"
+            await _pause_for_strip(pilot)
+            assert chat.mode == "command"
+            assert chat._text_area.text == "he"
+
+            # Simulate a replacement using virtual coordinates:
+            # controller sees "/he" with cursor at 2 (between 'h' and 'e')
+            # virtual start=0, virtual end=2
+            chat.replace_completion_range(0, 2, "/help")
+            await _pause_for_strip(pilot)
+
+            # After stripping the "/" prefix from "/help", text should be
+            # "help" + "e" (the character after cursor was preserved).
+            # The space is appended by replace_completion_range.
+            assert "e" in chat._text_area.text
+            assert chat._text_area.text.startswith("help")
+
+    @pytest.mark.asyncio
+    async def test_replace_at_end_of_line_replaces_all(self) -> None:
+        """When cursor is at end, virtual coords cover the whole real text."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            # Enter command mode: "/he" → stripped to "he", cursor at end (2)
+            chat._text_area.text = "/he"
+            await _pause_for_strip(pilot)
+            assert chat.mode == "command"
+            assert chat._text_area.text == "he"
+
+            # Virtual end=3 (cursor at end of virtual "/he") maps to real 2
+            chat.replace_completion_range(0, 3, "/help")
+            await _pause_for_strip(pilot)
+
+            # Entire text replaced — no leftover characters
+            text = chat._text_area.text
+            assert text.strip() == "help"
+
+    @pytest.mark.asyncio
+    async def test_normal_mode_replace_is_unaffected(self) -> None:
+        """In normal mode (no prefix), coordinates pass through unchanged."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.text = "hello @wor"
+            await pilot.pause()
+            assert chat.mode == "normal"
+
+            # Replace @wor (positions 6..10) with @world
+            chat.replace_completion_range(6, 10, "@world")
+            await pilot.pause()
+
+            assert chat._text_area.text == "hello @world "

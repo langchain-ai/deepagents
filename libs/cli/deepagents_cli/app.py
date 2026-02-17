@@ -192,6 +192,7 @@ class TextualSessionState(SessionState):
     """Session state for the Textual app.
 
     Extends SessionState with context stack support for step-into subagents.
+    Uses 8-char hex thread IDs for compact display.
     """
 
     def __init__(
@@ -207,17 +208,20 @@ class TextualSessionState(SessionState):
             thread_id: Optional thread ID (generates 8-char hex if not provided)
         """
         super().__init__(auto_approve=auto_approve)
-        # Override root thread_id if provided
-        if thread_id:
-            self.context_stack[0].thread_id = thread_id
+        # Override root thread_id with compact format
+        self.context_stack[0].thread_id = (
+            thread_id or uuid.uuid4().hex[:8]
+        )
 
     def reset_thread(self) -> str:
         """Reset to a new thread (and context stack).
 
         Returns:
-            The new thread_id.
+            The new thread_id (8-char hex).
         """
         self.reset_to_root()
+        # Use compact thread IDs for the Textual UI
+        self.context_stack[0].thread_id = uuid.uuid4().hex[:8]
         return self.thread_id
 
 
@@ -1313,9 +1317,10 @@ class DeepAgentsApp(App):
             if ctx.subagent_type == "root":
                 lines.append(f"  [{i}] root (main conversation){marker}")
             else:
+                _max_preview = 40
                 task_preview = (
-                    ctx.task_description[:40] + "..."
-                    if len(ctx.task_description) > 40
+                    ctx.task_description[:_max_preview] + "..."
+                    if len(ctx.task_description) > _max_preview
                     else ctx.task_description
                 )
                 lines.append(f"  [{i}] {ctx.subagent_type}{marker}")

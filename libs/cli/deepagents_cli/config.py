@@ -10,7 +10,7 @@ import re
 import shlex
 import sys
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import StrEnum
 from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
@@ -749,7 +749,7 @@ class ConversationContext:
     subagent_type: str  # "root" for main conversation, or subagent type name
     task_description: str  # Original task from parent (empty for root)
     summary_path: Path | None  # Where summary will be written (None for root)
-    parent_tool_call_id: str | None  # For returning ToolMessage to parent (None for root)
+    parent_tool_call_id: str | None  # For ToolMessage to parent
 
 
 class SessionState:

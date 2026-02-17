@@ -208,9 +208,10 @@ class ApprovalMenu(Container):
         # Help text at the very bottom
         glyphs = get_glyphs()
         quick_keys = "y/n/a" if not self._is_task_tool else "y/n/s/a"
+        b = glyphs.bullet
         help_text = (
-            f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate {glyphs.bullet} "
-            f"Enter select {glyphs.bullet} {quick_keys} quick keys {glyphs.bullet} Esc reject"
+            f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate {b} "
+            f"Enter select {b} {quick_keys} quick keys {b} Esc reject"
         )
         if self._has_expandable_command:
             help_text += f" {glyphs.bullet} e expand"
@@ -325,7 +326,7 @@ class ApprovalMenu(Container):
         self._handle_selection(idx)
 
     def action_select_auto_when_task(self) -> None:
-        """Handle '4' key — auto-approve (only meaningful when task tool shows 4 options)."""
+        """Handle '4' key — auto-approve (task tool 4-option mode)."""
         if self._is_task_tool:
             self._selected = 3
             self._update_options()

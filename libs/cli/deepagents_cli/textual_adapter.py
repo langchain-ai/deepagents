@@ -60,9 +60,10 @@ def _create_branch_context(
     """Create a new conversation context for stepping into a subagent.
 
     Creates the branch directory and summary file.
-    """
-    from pathlib import Path
 
+    Returns:
+        A new ConversationContext with isolated thread ID and summary path.
+    """
     branch_id = uuid.uuid4().hex[:8]
     thread_id = str(uuid.uuid4())
 

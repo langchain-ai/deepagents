@@ -14,7 +14,13 @@ from rich.text import Text
 from textual.containers import Vertical
 from textual.widgets import Markdown, Static
 
-from deepagents_cli.config import CharsetMode, _detect_charset_mode, get_glyphs
+from deepagents_cli.config import (
+    COLORS,
+    MODE_PREFIXES,
+    CharsetMode,
+    _detect_charset_mode,
+    get_glyphs,
+)
 from deepagents_cli.input import EMAIL_PREFIX_PATTERN, INPUT_HIGHLIGHT_PATTERN
 from deepagents_cli.tool_display import format_tool_display
 from deepagents_cli.widgets.diff import format_diff_textual
@@ -24,6 +30,9 @@ if TYPE_CHECKING:
     from textual.events import Click
     from textual.timer import Timer
     from textual.widgets._markdown import MarkdownStream
+
+_PREFIX_TO_MODE: dict[str, str] = {v: k for k, v in MODE_PREFIXES.items()}
+"""Reverse lookup: trigger character -> mode name."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,9 +103,11 @@ class UserMessage(Static):
         self._content = content
 
     def on_mount(self) -> None:
-        """Set border style based on charset mode."""
-        if _detect_charset_mode() == CharsetMode.ASCII:
-            self.styles.border_left = ("ascii", "#10b981")
+        """Set border style based on charset mode and content prefix."""
+        mode = _PREFIX_TO_MODE.get(self._content[:1]) if self._content else None
+        color = COLORS[f"mode_{mode}"] if mode else COLORS["primary"]
+        border_type = "ascii" if _detect_charset_mode() == CharsetMode.ASCII else "wide"
+        self.styles.border_left = (border_type, color)
 
     def compose(self) -> ComposeResult:
         """Compose the user message layout.
@@ -105,10 +116,18 @@ class UserMessage(Static):
             Static widget containing the formatted user message.
         """
         text = Text()
-        text.append("> ", style="bold #10b981")
+        content = self._content
+
+        # Use mode-specific prefix indicator when content starts with a
+        # mode trigger character (e.g. "!" for bash, "/" for commands).
+        mode = _PREFIX_TO_MODE.get(content[:1]) if content else None
+        if mode:
+            text.append(f"{content[0]} ", style=f"bold {COLORS[f'mode_{mode}']}")
+            content = content[1:]
+        else:
+            text.append("> ", style=f"bold {COLORS['primary']}")
 
         # Highlight @mentions and /commands in the content
-        content = self._content
         last_end = 0
         for match in INPUT_HIGHLIGHT_PATTERN.finditer(content):
             start, end = match.span()
@@ -179,8 +198,14 @@ class QueuedUserMessage(Static):
             Static widget containing the formatted queued message (greyed out).
         """
         text = Text()
-        text.append("> ", style="bold #6b7280")
-        text.append(self._content, style="#9ca3af")
+        content = self._content
+        mode = _PREFIX_TO_MODE.get(content[:1]) if content else None
+        if mode:
+            text.append(f"{content[0]} ", style=f"bold {COLORS['dim']}")
+            content = content[1:]
+        else:
+            text.append("> ", style=f"bold {COLORS['dim']}")
+        text.append(content, style="#9ca3af")
         yield Static(text)
 
 

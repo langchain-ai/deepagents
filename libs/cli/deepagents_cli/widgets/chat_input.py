@@ -14,7 +14,13 @@ from textual.reactive import reactive
 from textual.widgets import Static, TextArea
 from textual.widgets.text_area import Selection
 
-from deepagents_cli.config import COLORS, CharsetMode, _detect_charset_mode, get_glyphs
+from deepagents_cli.config import (
+    COLORS,
+    MODE_PREFIXES,
+    CharsetMode,
+    _detect_charset_mode,
+    get_glyphs,
+)
 from deepagents_cli.widgets.autocomplete import (
     SLASH_COMMANDS,
     CompletionResult,
@@ -25,12 +31,6 @@ from deepagents_cli.widgets.autocomplete import (
 from deepagents_cli.widgets.history import HistoryManager
 
 logger = logging.getLogger(__name__)
-
-MODE_PREFIXES: dict[str, str] = {
-    "bash": "!",
-    "command": "/",
-}
-"""Maps each non-normal mode to its trigger character."""
 
 _PREFIX_TO_MODE: dict[str, str] = {v: k for k, v in MODE_PREFIXES.items()}
 """Reverse lookup: trigger character -> mode name."""

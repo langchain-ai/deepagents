@@ -10,6 +10,7 @@ These commands are registered with the CLI via main.py:
 from __future__ import annotations
 
 import functools
+import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -105,16 +106,8 @@ def _validate_skill_path(skill_dir: Path, base_dir: Path) -> tuple[bool, str]:
         resolved_base = base_dir.resolve()
 
         # Check if skill_dir is within base_dir
-        # Use is_relative_to if available (Python 3.9+), otherwise use string comparison
-        if hasattr(resolved_skill, "is_relative_to"):
-            if not resolved_skill.is_relative_to(resolved_base):
-                return False, f"Skill directory must be within {base_dir}"
-        else:
-            # Fallback for older Python versions
-            try:
-                resolved_skill.relative_to(resolved_base)
-            except ValueError:
-                return False, f"Skill directory must be within {base_dir}"
+        if not resolved_skill.is_relative_to(resolved_base):
+            return False, f"Skill directory must be within {base_dir}"
     except (OSError, RuntimeError) as e:
         return False, f"Invalid path: {e}"
     else:
@@ -575,27 +568,41 @@ def _info(skill_name: str, *, agent: str = "agent", project: bool = False) -> No
 
 def _delete(
     skill_name: str,
-    agent: str,
+    *,
+    agent: str = "agent",
     project: bool = False,
     force: bool = False,
 ) -> None:
-    """Delete a skill directory.
+    """Delete a skill directory after validation and optional user confirmation.
+
+    Validates the skill name, locates the skill in user or project directories,
+    confirms the deletion with the user (unless `force` is `True`), and
+    recursively removes the skill directory.
 
     Args:
         skill_name: Name of the skill to delete.
         agent: Agent identifier for skills.
-        project: If True, only search in project skills.
-        force: If True, skip confirmation prompt.
+        project: If `True`, only search in project skills.
+
+            If `False`, search in both user and project skills.
+        force: If `True`, skip confirmation prompt.
     """
-    # Validate skill name first
+    # Validate skill name first (per Agent Skills spec)
     is_valid, error_msg = _validate_name(skill_name)
     if not is_valid:
         console.print(f"[bold red]Error:[/bold red] Invalid skill name: {error_msg}")
         return
 
+    # Deferred: skills.load imports the deepagents SDK. This module is
+    # imported at CLI startup for setup_skills_parser(), so a top-level
+    # import here would penalize every command (e.g. `--help`).
+    from deepagents_cli.skills.load import list_skills  # noqa: PLC0415
+
     settings = Settings.from_environment()
     user_skills_dir = settings.get_user_skills_dir(agent)
     project_skills_dir = settings.get_project_skills_dir()
+    user_agent_skills_dir = settings.get_user_agent_skills_dir()
+    project_agent_skills_dir = settings.get_project_agent_skills_dir()
 
     # Load skills based on --project flag
     if project:
@@ -605,11 +612,15 @@ def _delete(
         skills = list_skills(
             user_skills_dir=None,
             project_skills_dir=project_skills_dir,
+            user_agent_skills_dir=None,
+            project_agent_skills_dir=project_agent_skills_dir,
         )
     else:
         skills = list_skills(
             user_skills_dir=user_skills_dir,
             project_skills_dir=project_skills_dir,
+            user_agent_skills_dir=user_agent_skills_dir,
+            project_agent_skills_dir=project_agent_skills_dir,
         )
 
     # Find the skill
@@ -628,19 +639,23 @@ def _delete(
 
     # Validate the path is safe to delete
     base_dir = project_skills_dir if skill["source"] == "project" else user_skills_dir
-    if base_dir:
-        is_valid_path, path_error = _validate_skill_path(skill_dir, base_dir)
-        if not is_valid_path:
-            console.print(f"[bold red]Error:[/bold red] {path_error}")
-            return
+    if not base_dir:
+        console.print(
+            "[bold red]Error:[/bold red] Cannot determine base skills directory. "
+            "Refusing to delete."
+        )
+        return
+    is_valid_path, path_error = _validate_skill_path(skill_dir, base_dir)
+    if not is_valid_path:
+        console.print(f"[bold red]Error:[/bold red] {path_error}")
+        return
 
     # Determine source label
     source_label = "Project Skill" if skill["source"] == "project" else "User Skill"
     source_color = "green" if skill["source"] == "project" else "cyan"
 
-    # List files that will be deleted
-    files_to_delete = list(skill_dir.rglob("*"))
-    file_count = len([f for f in files_to_delete if f.is_file()])
+    # Count files for the confirmation summary
+    file_count = sum(1 for f in skill_dir.rglob("*") if f.is_file())
 
     console.print(
         f"\n[bold]Skill:[/bold] {skill_name}"
@@ -710,7 +725,7 @@ def setup_skills_parser(
     skills_parser = subparsers.add_parser(
         "skills",
         help="Manage agent skills",
-        description="Manage agent skills - create, list, and view skill information.",
+        description="Manage agent skills - list, create, view, and delete skills.",
         add_help=False,
         parents=help_parent(show_skills_help),
     )

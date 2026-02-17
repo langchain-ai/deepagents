@@ -178,7 +178,7 @@ fi
         file_path: str,
         old_string: str,
         new_string: str,
-        replace_all: bool = False,
+        replace_all: bool = False,  # noqa: FBT001, FBT002
     ) -> EditResult:
         """Edit a file by replacing string occurrences using shell commands."""
         # Create JSON payload with old and new strings, then base64 encode
@@ -275,7 +275,7 @@ __DEEPAGENTS_EOF__
         file_path: str,
         old_string: str,
         new_string: str,
-        replace_all: bool = False,
+        replace_all: bool = False,  # noqa: FBT001, FBT002
     ) -> EditResult:
         """Edit a file by replacing string occurrences using shell commands."""
         raise NotImplementedError("Use aedit instead")

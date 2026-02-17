@@ -6,13 +6,15 @@ import os
 import re
 from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
-from typing import Annotated, Literal, NotRequired
+from typing import Annotated, Any, Literal, NotRequired, cast
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     AgentState,
+    ContextT,
     ModelRequest,
     ModelResponse,
+    ResponseT,
 )
 from langchain.tools import ToolRuntime
 from langchain.tools.tool_node import ToolCallRequest
@@ -402,7 +404,7 @@ def _create_content_preview(content_str: str, *, head_lines: int = 5, tail_lines
     return head_sample + truncation_notice + tail_sample
 
 
-class FilesystemMiddleware(AgentMiddleware):
+class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]):
     """Middleware for providing filesystem and optional execution tools to an agent.
 
     This middleware adds filesystem tools to the agent: `ls`, `read_file`, `write_file`,
@@ -490,7 +492,7 @@ class FilesystemMiddleware(AgentMiddleware):
             self._create_execute_tool(),
         ]
 
-    def _get_backend(self, runtime: ToolRuntime) -> BackendProtocol:
+    def _get_backend(self, runtime: ToolRuntime[Any, Any]) -> BackendProtocol:
         """Get the resolved backend instance from backend or factory.
 
         Args:
@@ -544,7 +546,7 @@ class FilesystemMiddleware(AgentMiddleware):
             coroutine=async_ls,
         )
 
-    def _create_read_file_tool(self) -> BaseTool:
+    def _create_read_file_tool(self) -> BaseTool:  # noqa: C901
         """Create the read_file tool."""
         tool_description = self._custom_tool_descriptions.get("read_file") or READ_FILE_TOOL_DESCRIPTION
         token_limit = self._tool_token_limit_before_evict
@@ -859,7 +861,7 @@ class FilesystemMiddleware(AgentMiddleware):
             if isinstance(raw, str):
                 return raw
             formatted = format_grep_matches(raw, output_mode)
-            return truncate_if_too_long(formatted)  # type: ignore[arg-type]
+            return truncate_if_too_long(formatted)
 
         async def async_grep(
             pattern: Annotated[str, "Text pattern to search for (literal string, not regex)."],
@@ -877,7 +879,7 @@ class FilesystemMiddleware(AgentMiddleware):
             if isinstance(raw, str):
                 return raw
             formatted = format_grep_matches(raw, output_mode)
-            return truncate_if_too_long(formatted)  # type: ignore[arg-type]
+            return truncate_if_too_long(formatted)
 
         return StructuredTool.from_function(
             name="grep",
@@ -886,7 +888,7 @@ class FilesystemMiddleware(AgentMiddleware):
             coroutine=async_grep,
         )
 
-    def _create_execute_tool(self) -> BaseTool:
+    def _create_execute_tool(self) -> BaseTool:  # noqa: C901
         """Create the execute tool for sandbox command execution."""
         tool_description = self._custom_tool_descriptions.get("execute") or EXECUTE_TOOL_DESCRIPTION
 
@@ -905,8 +907,11 @@ class FilesystemMiddleware(AgentMiddleware):
                     "To use the execute tool, provide a backend that implements SandboxBackendProtocol."
                 )
 
+            # Safe cast: _supports_execution validates that execute()/aexecute() exist
+            # (either SandboxBackendProtocol or CompositeBackend with sandbox default)
+            executable = cast("SandboxBackendProtocol", resolved_backend)
             try:
-                result = resolved_backend.execute(command)
+                result = executable.execute(command)
             except NotImplementedError as e:
                 # Handle case where execute() exists but raises NotImplementedError
                 return f"Error: Execution not available. {e}"
@@ -938,8 +943,10 @@ class FilesystemMiddleware(AgentMiddleware):
                     "To use the execute tool, provide a backend that implements SandboxBackendProtocol."
                 )
 
+            # Safe cast: _supports_execution validates that execute()/aexecute() exist
+            executable = cast("SandboxBackendProtocol", resolved_backend)
             try:
-                result = await resolved_backend.aexecute(command)
+                result = await executable.aexecute(command)
             except NotImplementedError as e:
                 # Handle case where execute() exists but raises NotImplementedError
                 return f"Error: Execution not available. {e}"
@@ -965,9 +972,9 @@ class FilesystemMiddleware(AgentMiddleware):
 
     def wrap_model_call(
         self,
-        request: ModelRequest,
-        handler: Callable[[ModelRequest], ModelResponse],
-    ) -> ModelResponse:
+        request: ModelRequest[ContextT],
+        handler: Callable[[ModelRequest[ContextT]], ModelResponse[ResponseT]],
+    ) -> ModelResponse[ResponseT]:
         """Update the system prompt and filter tools based on backend capabilities.
 
         Args:
@@ -983,7 +990,7 @@ class FilesystemMiddleware(AgentMiddleware):
         backend_supports_execution = False
         if has_execute_tool:
             # Resolve backend to check execution support
-            backend = self._get_backend(request.runtime)
+            backend = self._get_backend(request.runtime)  # ty: ignore[invalid-argument-type]
             backend_supports_execution = _supports_execution(backend)
 
             # If execute tool exists but backend doesn't support it, filter it out
@@ -1013,9 +1020,9 @@ class FilesystemMiddleware(AgentMiddleware):
 
     async def awrap_model_call(
         self,
-        request: ModelRequest,
-        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
-    ) -> ModelResponse:
+        request: ModelRequest[ContextT],
+        handler: Callable[[ModelRequest[ContextT]], Awaitable[ModelResponse[ResponseT]]],
+    ) -> ModelResponse[ResponseT]:
         """(async) Update the system prompt and filter tools based on backend capabilities.
 
         Args:
@@ -1031,7 +1038,7 @@ class FilesystemMiddleware(AgentMiddleware):
         backend_supports_execution = False
         if has_execute_tool:
             # Resolve backend to check execution support
-            backend = self._get_backend(request.runtime)
+            backend = self._get_backend(request.runtime)  # ty: ignore[invalid-argument-type]
             backend_supports_execution = _supports_execution(backend)
 
             # If execute tool exists but backend doesn't support it, filter it out
@@ -1241,7 +1248,8 @@ class FilesystemMiddleware(AgentMiddleware):
                 if files_update is not None:
                     accumulated_file_updates.update(files_update)
             return Command(update={**update, "messages": processed_messages, "files": accumulated_file_updates})
-        raise AssertionError(f"Unreachable code reached in _intercept_large_tool_result: for tool_result of type {type(tool_result)}")
+        msg = f"Unreachable code reached in _intercept_large_tool_result: for tool_result of type {type(tool_result)}"
+        raise AssertionError(msg)
 
     async def _aintercept_large_tool_result(self, tool_result: ToolMessage | Command, runtime: ToolRuntime) -> ToolMessage | Command:
         """Async version of _intercept_large_tool_result.
@@ -1287,7 +1295,8 @@ class FilesystemMiddleware(AgentMiddleware):
                 if files_update is not None:
                     accumulated_file_updates.update(files_update)
             return Command(update={**update, "messages": processed_messages, "files": accumulated_file_updates})
-        raise AssertionError(f"Unreachable code reached in _aintercept_large_tool_result: for tool_result of type {type(tool_result)}")
+        msg = f"Unreachable code reached in _aintercept_large_tool_result: for tool_result of type {type(tool_result)}"
+        raise AssertionError(msg)
 
     def wrap_tool_call(
         self,

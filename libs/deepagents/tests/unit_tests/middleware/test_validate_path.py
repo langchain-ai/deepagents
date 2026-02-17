@@ -1,8 +1,4 @@
-"""Unit tests for _validate_path() function.
-
-Note: _validate_path is now defined in backends/utils.py but re-exported
-from middleware.filesystem for backwards compatibility.
-"""
+"""Unit tests for _validate_path() function."""
 
 import pytest
 

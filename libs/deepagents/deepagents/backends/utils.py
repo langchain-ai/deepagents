@@ -239,20 +239,22 @@ def _validate_path(path: str, *, allowed_prefixes: Sequence[str] | None = None) 
     forward slashes and start with a leading slash.
 
     This function is designed for virtual filesystem paths and rejects
-    Windows absolute paths (e.g., C:/..., F:/...) to maintain consistency
+    Windows absolute paths (e.g., `C:/...`, `F:/...`) to maintain consistency
     and prevent path format ambiguity.
 
     Args:
         path: The path to validate and normalize.
-        allowed_prefixes: Optional list of allowed path prefixes. If provided,
-            the normalized path must start with one of these prefixes.
+        allowed_prefixes: Optional list of allowed path prefixes.
+
+            If provided, the normalized path must start with one of
+            these prefixes.
 
     Returns:
         Normalized canonical path starting with `/` and using forward slashes.
 
     Raises:
         ValueError: If path contains traversal sequences (`..` or `~`), is a
-            Windows absolute path (e.g., C:/...), or does not start with an
+            Windows absolute path (e.g., `C:/...`), or does not start with an
             allowed prefix when `allowed_prefixes` is specified.
 
     Example:

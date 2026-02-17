@@ -1611,19 +1611,19 @@ class DeepAgentsApp(App):
             self.notify("Press Ctrl+C again to quit", timeout=3)
 
     def action_interrupt(self) -> None:
-        """Handle escape key - interrupt agent, reject approval, or dismiss modal.
+        """Handle escape key.
 
-        This is the primary way to stop a running agent.
+        Dismiss completion popup, dismiss modal, interrupt agent,
+        or reject approval. This is the primary way to stop a
+        running agent.
         """
         # If a modal screen is active, dismiss it
         if isinstance(self.screen, ModalScreen):
             self.screen.dismiss(None)
             return
 
-        # If completion popup is active, close it.
-        # (Handled by ChatInput, but we consume the event.)
-        if self._chat_input and self._chat_input.is_completion_active:
-            self._chat_input.clear_completion_suggestions()
+        # Close completion popup before interrupting the agent
+        if self._chat_input and self._chat_input.dismiss_completion():
             return
 
         # If agent is running, interrupt it and discard queued messages

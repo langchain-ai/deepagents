@@ -1,33 +1,34 @@
 """Agent management and creation for the CLI."""
 
+from __future__ import annotations
+
 import os
 import shutil
 import tempfile
-from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend
 from deepagents.backends.filesystem import FilesystemBackend
-from deepagents.backends.sandbox import SandboxBackendProtocol
 from deepagents.middleware import MemoryMiddleware, SkillsMiddleware
+from langgraph.checkpoint.memory import InMemorySaver
 
 from deepagents_cli.backends import CLIShellBackend, patch_filesystem_middleware
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Sequence
+
+    from deepagents.backends.sandbox import SandboxBackendProtocol
     from deepagents.middleware.subagents import CompiledSubAgent, SubAgent
-from langchain.agents.middleware import (
-    InterruptOnConfig,
-)
-from langchain.agents.middleware.types import AgentState
-from langchain.messages import ToolCall
-from langchain.tools import BaseTool
-from langchain_core.language_models import BaseChatModel
-from langgraph.checkpoint.base import BaseCheckpointSaver
-from langgraph.checkpoint.memory import InMemorySaver
-from langgraph.pregel import Pregel
-from langgraph.runtime import Runtime
+    from langchain.agents.middleware import InterruptOnConfig
+    from langchain.agents.middleware.types import AgentState
+    from langchain.messages import ToolCall
+    from langchain.tools import BaseTool
+    from langchain_core.language_models import BaseChatModel
+    from langgraph.checkpoint.base import BaseCheckpointSaver
+    from langgraph.pregel import Pregel
+    from langgraph.runtime import Runtime
 
 from deepagents_cli.config import (
     COLORS,

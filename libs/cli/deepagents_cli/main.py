@@ -684,6 +684,23 @@ def cli_main() -> None:
     # DEEPAGENTS_LANGSMITH_PROJECT while shell commands use the
     # user's original LANGSMITH_PROJECT (via LocalShellBackend env).
 
+    # Fast path: print version without loading heavy dependencies
+    if len(sys.argv) == 2 and sys.argv[1] in {"-v", "--version"}:  # noqa: PLR2004  # argv length check for fast-path
+        try:
+            from importlib.metadata import (
+                PackageNotFoundError,
+                version as _pkg_version,
+            )
+
+            sdk_version = _pkg_version("deepagents")
+        except PackageNotFoundError:
+            sdk_version = "unknown"
+        except Exception:  # Best-effort SDK version lookup
+            logger.debug("Unexpected error looking up SDK version", exc_info=True)
+            sdk_version = "unknown"
+        print(f"deepagents-cli {__version__}\ndeepagents (SDK) {sdk_version}")  # noqa: T201  # CLI version output
+        sys.exit(0)
+
     # Check dependencies first
     check_cli_dependencies()
 

@@ -44,7 +44,7 @@ def _patch_list_threads(threads: list[ThreadInfo] | None = None) -> Any:  # noqa
     """
     data = threads if threads is not None else MOCK_THREADS
     return patch(
-        "deepagents_cli.widgets.thread_selector.list_threads",
+        "deepagents_cli.sessions.list_threads",
         new_callable=AsyncMock,
         return_value=data,
     )
@@ -773,7 +773,7 @@ class TestThreadSelectorErrorHandling:
     async def test_list_threads_error_still_dismissable(self) -> None:
         """Database error should not crash; Escape still works."""
         with patch(
-            "deepagents_cli.widgets.thread_selector.list_threads",
+            "deepagents_cli.sessions.list_threads",
             new_callable=AsyncMock,
             side_effect=OSError("database is locked"),
         ):

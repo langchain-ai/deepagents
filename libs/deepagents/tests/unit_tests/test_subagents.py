@@ -943,3 +943,85 @@ class TestCompiledSubAgentValidation:
                 {"messages": [HumanMessage(content="Process this")]},
                 config={"configurable": {"thread_id": "test_thread_no_messages"}},
             )
+
+
+class TestPregelStateFiltering:
+    """Tests that __pregel_* keys are stripped from state before subagent invocation."""
+
+    def test_pregel_keys_excluded_from_subagent_state(self) -> None:
+        """Test that __pregel_* internal LangGraph keys are not passed to subagents.
+
+        LangGraph injects runtime objects such as __pregel_send (a Send instance)
+        into the graph config during execution. These objects are not msgpack-serializable
+        and must be stripped before the subagent state is checkpointed, otherwise
+        LangGraph raises: TypeError: Type is not msgpack serializable: Send
+        """
+        received_states: list[dict] = []
+
+        @tool
+        def capture_state(query: str, runtime: ToolRuntime) -> str:
+            """Captures the subagent runtime state."""
+            received_states.append(dict(runtime.state))
+            return "captured"
+
+        parent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {"description": "Capture state", "subagent_type": "state-agent"},
+                                "id": "call_pregel",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+        subagent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "capture_state",
+                                "args": {"query": "test"},
+                                "id": "call_capture",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Captured."),
+                ]
+            )
+        )
+
+        compiled_subagent = create_agent(
+            model=subagent_chat_model, tools=[capture_state], name="state-agent"
+        )
+        parent_agent = create_deep_agent(
+            model=parent_chat_model,
+            checkpointer=InMemorySaver(),
+            name="orchestrator",
+            subagents=[
+                CompiledSubAgent(
+                    name="state-agent",
+                    description="State-capturing subagent.",
+                    runnable=compiled_subagent,
+                )
+            ],
+        )
+
+        parent_agent.invoke(
+            {"messages": [HumanMessage(content="Capture")]},
+            config={"configurable": {"thread_id": "test_pregel_filtering"}},
+        )
+
+        assert len(received_states) > 0, "Subagent tool should have been invoked"
+        pregel_keys = [k for k in received_states[0] if k.startswith("__pregel_")]
+        assert pregel_keys == [], f"__pregel_* keys should be excluded from subagent state, found: {pregel_keys}"

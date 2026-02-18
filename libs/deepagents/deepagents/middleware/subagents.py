@@ -110,7 +110,10 @@ DEFAULT_SUBAGENT_PROMPT = "In order to complete the objective that the user asks
 # 1. The messages key is handled explicitly to ensure only the final message is included
 # 2. The todos and structured_response keys are excluded as they do not have a defined reducer
 #    and no clear meaning for returning them from a subagent to the main agent.
+# 3. Keys starting with __pregel_ are LangGraph internal runtime objects (e.g. Send) that are
+#    not msgpack-serializable and must not be passed into subagent state or checkpoints.
 _EXCLUDED_STATE_KEYS = {"messages", "todos", "structured_response"}
+_PREGEL_PREFIX = "__pregel_"
 
 TASK_TOOL_DESCRIPTION = """Launch an ephemeral subagent to handle complex, multi-step independent tasks with isolated context windows.
 
@@ -387,7 +390,11 @@ def _create_task_tool(
         """Prepare state for invocation."""
         subagent = subagent_graphs[subagent_type]
         # Create a new state dict to avoid mutating the original
-        subagent_state = {k: v for k, v in runtime.state.items() if k not in _EXCLUDED_STATE_KEYS}
+        subagent_state = {
+            k: v
+            for k, v in runtime.state.items()
+            if k not in _EXCLUDED_STATE_KEYS and not k.startswith(_PREGEL_PREFIX)
+        }
         subagent_state["messages"] = [HumanMessage(content=description)]
         return subagent, subagent_state
 

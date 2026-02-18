@@ -274,6 +274,7 @@ class ChatTextArea(TextArea):
         kwargs.pop("placeholder", None)
         super().__init__(**kwargs)
         self._navigating_history = False
+        self._in_history = False
         self._completion_active = False
         self._app_has_focus = True
 
@@ -331,25 +332,29 @@ class ChatTextArea(TextArea):
                 self.post_message(self.Submitted(value))
             return
 
-        # Up arrow on first line = history previous
-        if event.key == "up":
-            row, _ = self.cursor_location
-            if row == 0:
-                event.prevent_default()
-                event.stop()
-                self._navigating_history = True
-                self.post_message(self.HistoryPrevious(self.text))
-                return
+        # Up/Down arrow: only navigate history at input boundaries.
+        # Up requires cursor at position (0, 0); Down requires cursor at
+        # the very end.  When already browsing history, either boundary
+        # allows navigation in both directions.
+        if event.key in {"up", "down"}:
+            row, col = self.cursor_location
+            text = self.text
+            lines = text.split("\n")
+            last_row = len(lines) - 1
+            at_start = row == 0 and col == 0
+            at_end = row == last_row and col == len(lines[last_row])
+            navigate = (
+                event.key == "up" and (at_start or (self._in_history and at_end))
+            ) or (event.key == "down" and (at_end or (self._in_history and at_start)))
 
-        # Down arrow on last line = history next
-        if event.key == "down":
-            row, _ = self.cursor_location
-            total_lines = self.text.count("\n") + 1
-            if row == total_lines - 1:
+            if navigate:
                 event.prevent_default()
                 event.stop()
                 self._navigating_history = True
-                self.post_message(self.HistoryNext())
+                if event.key == "up":
+                    self.post_message(self.HistoryPrevious(self.text))
+                else:
+                    self.post_message(self.HistoryNext())
                 return
 
         await super()._on_key(event)
@@ -367,6 +372,7 @@ class ChatTextArea(TextArea):
 
     def clear_text(self) -> None:
         """Clear the text area."""
+        self._in_history = False
         self.text = ""
         self.move_cursor((0, 0))
 
@@ -708,6 +714,8 @@ class ChatInput(Vertical):
             self._text_area.set_text_from_history(display_text)
         elif self._text_area:
             self._text_area._navigating_history = False
+        if self._text_area:
+            self._text_area._in_history = self._history.in_history
 
     def on_chat_text_area_history_next(
         self,
@@ -721,6 +729,8 @@ class ChatInput(Vertical):
             self._text_area.set_text_from_history(display_text)
         elif self._text_area:
             self._text_area._navigating_history = False
+        if self._text_area:
+            self._text_area._in_history = self._history.in_history
 
     @staticmethod
     def _history_entry_mode_and_text(entry: str) -> tuple[str, str]:

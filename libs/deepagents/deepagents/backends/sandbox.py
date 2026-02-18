@@ -10,6 +10,7 @@ It also defines the BaseSandbox implementation used by the CLI sandboxes.
 from __future__ import annotations
 
 import base64
+import binascii
 import json
 import logging
 import shlex
@@ -437,10 +438,7 @@ except PermissionError:
         for path, content in files:
             b64 = base64.b64encode(content).decode("ascii")
 
-            if len(b64) <= self._UPLOAD_CHUNK_BYTES:
-                result = self._upload_single(path, b64)
-            else:
-                result = self._upload_chunked(path, b64)
+            result = self._upload_single(path, b64) if len(b64) <= self._UPLOAD_CHUNK_BYTES else self._upload_chunked(path, b64)
 
             if result.exit_code == 0:
                 responses.append(FileUploadResponse(path=path))
@@ -463,7 +461,7 @@ except PermissionError:
             ExecuteResponse from the sandbox.
         """
         cmd = (
-            "python3 -c \"\n"
+            'python3 -c "\n'
             "import base64, pathlib, sys\n"
             "b64 = sys.stdin.read().strip()\n"
             "p = pathlib.Path('" + file_path + "')\n"
@@ -493,10 +491,10 @@ except PermissionError:
 
         # Ensure parent directory exists.
         result = self.execute(
-            "python3 -c \""
+            'python3 -c "'
             "import pathlib; "
             "pathlib.Path('" + file_path + "').parent.mkdir(parents=True, exist_ok=True)"
-            "\""
+            '"'
         )
         if result.exit_code != 0:
             return result
@@ -506,7 +504,7 @@ except PermissionError:
         for i in range(0, len(b64), chunk_size):
             chunk = b64[i : i + chunk_size]
             append_cmd = (
-                "python3 -c \"\n"
+                'python3 -c "\n'
                 "import sys\n"
                 "chunk = sys.stdin.read().strip()\n"
                 "with open('" + tmp_b64 + "', 'a') as f:\n"
@@ -522,12 +520,12 @@ except PermissionError:
 
         # Decode the assembled base64 file to the final path.
         decode_cmd = (
-            "python3 -c \""
+            'python3 -c "'
             "import base64, pathlib; "
             "b64 = pathlib.Path('" + tmp_b64 + "').read_text(); "
             "pathlib.Path('" + file_path + "').write_bytes(base64.b64decode(b64)); "
             "pathlib.Path('" + tmp_b64 + "').unlink()"
-            "\""
+            '"'
         )
         return self.execute(decode_cmd)
 
@@ -558,10 +556,10 @@ except PermissionError:
         for path in paths:
             # Get file size to decide between single and chunked download.
             size_cmd = (
-                "python3 -c \""
+                'python3 -c "'
                 "import os; "
                 "print(os.path.getsize('" + path + "'))"
-                "\""
+                '"'
             )
             size_result = self.execute(size_cmd)
             if size_result.exit_code != 0:
@@ -579,10 +577,7 @@ except PermissionError:
                 continue
 
             # Small files can be downloaded in one shot.
-            if file_size <= self._DOWNLOAD_CHUNK_BYTES:
-                response = self._download_single(path)
-            else:
-                response = self._download_chunked(path, file_size)
+            response = self._download_single(path) if file_size <= self._DOWNLOAD_CHUNK_BYTES else self._download_chunked(path, file_size)
             responses.append(response)
 
         return responses
@@ -597,17 +592,17 @@ except PermissionError:
             FileDownloadResponse with content or error.
         """
         cmd = (
-            "python3 -c \""
+            'python3 -c "'
             "import base64; "
             "print(base64.b64encode(open('" + file_path + "', 'rb').read()).decode())"
-            "\""
+            '"'
         )
         result = self.execute(cmd)
         if result.exit_code == 0 and result.output.strip():
             try:
                 content = base64.b64decode(result.output.strip())
                 return FileDownloadResponse(path=file_path, content=content)
-            except Exception:
+            except (ValueError, binascii.Error):
                 return FileDownloadResponse(path=file_path, error="file_not_found")
         return FileDownloadResponse(path=file_path, error="file_not_found")
 
@@ -631,12 +626,12 @@ except PermissionError:
 
         while offset < file_size:
             chunk_cmd = (
-                "python3 -c \""
+                'python3 -c "'
                 "import base64; "
                 "f = open('" + file_path + "', 'rb'); "
                 "f.seek(" + str(offset) + "); "
                 "print(base64.b64encode(f.read(" + str(self._DOWNLOAD_CHUNK_BYTES) + ")).decode())"
-                "\""
+                '"'
             )
             result = self.execute(chunk_cmd)
             if result.exit_code != 0 or not result.output.strip():
@@ -644,7 +639,7 @@ except PermissionError:
 
             try:
                 chunk = base64.b64decode(result.output.strip())
-            except Exception:
+            except (ValueError, binascii.Error):
                 return FileDownloadResponse(path=file_path, error="file_not_found")
 
             chunks.append(chunk)

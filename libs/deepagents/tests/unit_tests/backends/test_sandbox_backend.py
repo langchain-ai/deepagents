@@ -11,11 +11,7 @@ that need to be escaped as {{e}} for Python's .format() method.
 import base64
 import json
 
-from deepagents.backends.protocol import (
-    ExecuteResponse,
-    FileDownloadResponse,
-    FileUploadResponse,
-)
+from deepagents.backends.protocol import ExecuteResponse
 from deepagents.backends.sandbox import (
     _EDIT_COMMAND_TEMPLATE,
     _GLOB_COMMAND_TEMPLATE,

@@ -1,0 +1,128 @@
+from __future__ import annotations
+
+import uuid
+from dataclasses import dataclass
+from typing import Any
+
+from langchain_core.messages import AIMessage, ToolMessage
+from langsmith import testing as t
+
+from deepagents.backends.utils import create_file_data, file_data_to_string
+
+
+def _coerce_result_files_to_strings(raw_files: Any) -> dict[str, str]:
+    if raw_files is None:
+        return {}
+    if not isinstance(raw_files, dict):
+        raise TypeError(f"Expected files to be dict, got {type(raw_files)}")
+
+    files: dict[str, str] = {}
+    for path, file_data in raw_files.items():
+        if isinstance(file_data, str):
+            files[path] = file_data
+        elif isinstance(file_data, dict) and "content" in file_data:
+            files[path] = file_data_to_string(file_data)
+        else:
+            raise TypeError(f"Unexpected file representation for {path}: {type(file_data)}")
+
+    return files
+
+
+@dataclass(frozen=True)
+class TrajectoryExpectations:
+    """Optional assertions for an `AgentTrajectory`.
+
+    Any expectation left as `None` is not enforced.
+
+    Attributes:
+        num_agent_steps: Exact number of model/action steps.
+            This counts the number of `AIMessage` actions captured in the trajectory.
+        num_tool_call_requests: Exact number of tool call requests.
+            This is computed as the sum of `len(step.action.tool_calls)` across all steps.
+        max_agent_steps: Upper bound on the number of model/action steps.
+        max_tool_call_requests: Upper bound on the number of tool call requests.
+    """
+
+    num_agent_steps: int | None = None
+    num_tool_call_requests: int | None = None
+    max_agent_steps: int | None = None
+    max_tool_call_requests: int | None = None
+
+
+@dataclass(frozen=True)
+class AgentStep:
+    """A step of the agent."""
+
+    index: int
+    """Start counting from 1"""
+    action: AIMessage
+    """AI message output from the agent. May or may not contain tool calls."""
+    observations: list[ToolMessage]
+    """Any observations made through tool calls."""
+
+    def __post_init__(self) -> None:
+        if self.index <= 0:
+            raise ValueError("index must be positive")
+
+
+@dataclass(frozen=True)
+class AgentTrajectory:
+    """A trajectory of the agent."""
+
+    steps: list[AgentStep]
+    files: dict[str, str]
+
+
+def run_agent(
+    agent: Any,
+    *,
+    query: str,
+    initial_files: dict[str, str] | None = None,
+    expect: TrajectoryExpectations | None = None,
+) -> AgentTrajectory:
+    """Run agent eval against the given query."""
+    inputs: dict[str, Any] = {"messages": [{"role": "user", "content": query}]}
+    if initial_files is not None:
+        inputs["files"] = {path: create_file_data(content) for path, content in initial_files.items()}
+    thread_id = uuid.uuid4()
+    config = {"configurable": {"thread_id": thread_id}}
+    t.log_inputs(inputs)
+    result = agent.invoke(inputs, config)
+    t.log_outputs(result)
+
+    steps: list[AgentStep] = []
+    current_step: AgentStep | None = None
+
+    # loop through all new messages
+    for msg in result["messages"][1:]:
+        if isinstance(msg, AIMessage):
+            if current_step is not None:
+                steps.append(current_step)
+            current_step = AgentStep(index=len(steps) + 1, action=msg, observations=[])
+        elif isinstance(msg, ToolMessage):
+            if current_step is not None:
+                current_step.observations.append(msg)
+
+    if current_step is not None:
+        steps.append(current_step)
+
+    agent_steps = len(steps)
+    tool_call_requests = sum(len(step.action.tool_calls) for step in steps)
+
+    t.log_feedback(key="agent_steps", value=agent_steps)
+    t.log_feedback(key="tool_call_requests", value=tool_call_requests)
+
+    if expect is not None:
+        if expect.num_agent_steps is not None:
+            assert agent_steps == expect.num_agent_steps
+        if expect.num_tool_call_requests is not None:
+            assert tool_call_requests == expect.num_tool_call_requests
+        if expect.max_agent_steps is not None:
+            assert agent_steps <= expect.max_agent_steps
+        if expect.max_tool_call_requests is not None:
+            assert tool_call_requests <= expect.max_tool_call_requests
+
+    return AgentTrajectory(
+        steps=steps,
+        files=_coerce_result_files_to_strings(result.get("files")),
+    )

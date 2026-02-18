@@ -64,27 +64,28 @@ def test_write_files_in_parallel() -> None:
 def test_ls_directory_contains_file_yes_no() -> None:
     """Uses ls then answers YES/NO about a directory entry."""
     agent = create_deep_agent()
-    trajectory = run_agent(
+    run_agent(
         agent,
         initial_files={
             "/foo/a.md": "a",
             "/foo/b.md": "b",
             "/foo/c.md": "c",
         },
-        query="Is there a file named c.md in /foo? Answer with YES or NO only.",
+        query="Is there a file named c.md in /foo? Answer with [YES] or [NO] only.",
         # 1st step: request a tool call to list /foo.
         # 2nd step: answer YES/NO.
         # 1 tool call request: ls.
-        expect=TrajectoryExpectations(num_agent_steps=2, num_tool_call_requests=1),
+        expect=TrajectoryExpectations(num_agent_steps=2, num_tool_call_requests=1).require_final_text_contains(
+            "[YES]",
+        ),
     )
-    assert trajectory.steps[-1].action.text.strip().upper() == "YES"
 
 
 @pytest.mark.langsmith
 def test_ls_directory_missing_file_yes_no() -> None:
     """Uses ls then answers YES/NO about a missing directory entry."""
     agent = create_deep_agent()
-    trajectory = run_agent(
+    run_agent(
         agent,
         initial_files={
             "/foo/a.md": "a",
@@ -128,9 +129,9 @@ def test_read_then_write_derived_output() -> None:
         # 1st step: request a tool call to read /data.txt.
         # 2nd step: request a tool call to write /out.txt.
         # 2 tool call requests: read_file, write_file.
-        expect=TrajectoryExpectations(num_agent_steps=2, num_tool_call_requests=2),
+        expect=TrajectoryExpectations(num_agent_steps=3, num_tool_call_requests=2),
     )
-    assert trajectory.files["/out.txt"] == "gamma\nbeta\nalpha\n"
+    assert trajectory.files["/out.txt"].splitlines() == ["gamma", "beta", "alpha"]
 
 
 @pytest.mark.langsmith
@@ -151,13 +152,13 @@ def test_avoid_unnecessary_tool_calls() -> None:
 def test_read_files_in_parallel() -> None:
     """Performs two independent read_file calls in a single agent step."""
     agent = create_deep_agent()
-    trajectory = run_agent(
+    run_agent(
         agent,
         initial_files={
             "/a.md": "same",
             "/b.md": "same",
         },
-        query="Read /a.md and /b.md in parallel and tell me if they are identical. Answer YES or NO only.",
+        query="Read /a.md and /b.md in parallel and tell me if they are identical. Answer with [YES] or [NO] only.",
         # 1st step: request 2 read_file tool calls in parallel.
         # 2nd step: answer YES/NO.
         # 2 tool call requests: read_file /a.md and read_file /b.md.
@@ -165,9 +166,9 @@ def test_read_files_in_parallel() -> None:
             TrajectoryExpectations(num_agent_steps=2, num_tool_call_requests=2)
             .require_tool_call(step=1, name="read_file", args_contains={"file_path": "/a.md"})
             .require_tool_call(step=1, name="read_file", args_contains={"file_path": "/b.md"})
+            .require_final_text_contains("[YES]")
         ),
     )
-    assert trajectory.steps[-1].action.text.strip().upper() == "YES"
 
 
 @pytest.mark.langsmith

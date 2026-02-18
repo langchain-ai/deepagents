@@ -1,20 +1,22 @@
 """Sandbox lifecycle management with provider abstraction."""
 
+from __future__ import annotations
+
 import os
 import shlex
 import string
-from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
-
-from deepagents.backends.protocol import SandboxBackendProtocol
+from typing import TYPE_CHECKING
 
 from deepagents_cli.config import console, get_glyphs
-from deepagents_cli.integrations.daytona import DaytonaProvider
-from deepagents_cli.integrations.langsmith import LangSmithProvider
-from deepagents_cli.integrations.modal import ModalProvider
-from deepagents_cli.integrations.runloop import RunloopProvider
-from deepagents_cli.integrations.sandbox_provider import SandboxProvider
+
+if TYPE_CHECKING:
+    from collections.abc import Generator
+
+    from deepagents.backends.protocol import SandboxBackendProtocol
+
+    from deepagents_cli.integrations.sandbox_provider import SandboxProvider
 
 
 def _run_sandbox_setup(backend: SandboxBackendProtocol, setup_script_path: str) -> None:
@@ -162,12 +164,20 @@ def _get_provider(provider_name: str) -> SandboxProvider:
         ValueError: If provider_name is unknown
     """
     if provider_name == "daytona":
+        from deepagents_cli.integrations.daytona import DaytonaProvider
+
         return DaytonaProvider()
     if provider_name == "langsmith":
+        from deepagents_cli.integrations.langsmith import LangSmithProvider
+
         return LangSmithProvider()
     if provider_name == "modal":
+        from deepagents_cli.integrations.modal import ModalProvider
+
         return ModalProvider()
     if provider_name == "runloop":
+        from deepagents_cli.integrations.runloop import RunloopProvider
+
         return RunloopProvider()
     msg = (
         f"Unknown sandbox provider: {provider_name}. "

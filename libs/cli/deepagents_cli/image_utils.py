@@ -13,8 +13,6 @@ import sys
 import tempfile
 from dataclasses import dataclass
 
-from PIL import Image, UnidentifiedImageError
-
 logger = logging.getLogger(__name__)
 
 
@@ -73,6 +71,8 @@ def get_image_from_path(path: pathlib.Path) -> ImageData | None:
     Returns:
         `ImageData` when the file is a valid image, otherwise `None`.
     """
+    from PIL import Image, UnidentifiedImageError
+
     try:
         image_bytes = path.read_bytes()
         if not image_bytes:
@@ -107,6 +107,8 @@ def _get_macos_clipboard_image() -> ImageData | None:
     Returns:
         ImageData if an image is found, None otherwise.
     """
+    from PIL import Image, UnidentifiedImageError
+
     # Try pngpaste first (fast if installed)
     pngpaste_path = _get_executable("pngpaste")
     if pngpaste_path:
@@ -155,6 +157,8 @@ def _get_clipboard_via_osascript() -> ImageData | None:
     Returns:
         ImageData if an image is found, None otherwise.
     """
+    from PIL import Image, UnidentifiedImageError
+
     # Get osascript path - it's a macOS builtin so should always exist
     osascript_path = _get_executable("osascript")
     if not osascript_path:

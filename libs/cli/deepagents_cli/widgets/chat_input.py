@@ -249,6 +249,24 @@ class ChatTextArea(TextArea):
         Binding("cmd+shift+z,super+shift+z", "redo", "Redo", show=False, priority=True),
     ]
 
+    _navigating_history: bool
+    """Transient guard set `True` only while `ChatInput` replaces text with a
+    history entry.
+
+    Prevents `watch_text` from treating the programmatic replacement as user
+    typing (which would trigger autocomplete, etc.).
+    """
+
+    _in_history: bool
+    """Persistent flag that stays `True` while the user is browsing history.
+
+    Relaxes cursor-boundary checks so Up/Down work from either end of
+    the text.
+
+    Reset to `False` when navigating past the newest entry, submitting,
+    or clearing.
+    """
+
     class Submitted(Message):
         """Message sent when text is submitted."""
 
@@ -409,7 +427,7 @@ class ChatInput(Vertical):
     Features:
     - Multi-line input with TextArea
     - Enter to submit, Ctrl+J for newlines (reliable across terminals)
-    - Up/Down arrows for command history on first/last line
+    - Up/Down arrows for command history at input boundaries (start/end of text)
     - Autocomplete for @ (files) and / (commands)
     """
 
@@ -714,6 +732,7 @@ class ChatInput(Vertical):
             self._text_area.set_text_from_history(display_text)
         elif self._text_area:
             self._text_area._navigating_history = False
+        # Keep text area's _in_history in sync with the history manager.
         if self._text_area:
             self._text_area._in_history = self._history.in_history
 
@@ -729,6 +748,9 @@ class ChatInput(Vertical):
             self._text_area.set_text_from_history(display_text)
         elif self._text_area:
             self._text_area._navigating_history = False
+        # Keep text area's _in_history in sync with the history manager.
+        # When the user presses Down past the newest entry, get_next()
+        # resets navigation internally, so in_history becomes False.
         if self._text_area:
             self._text_area._in_history = self._history.in_history
 

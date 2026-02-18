@@ -266,6 +266,59 @@ class AgentServerACP(ACPAgent):
 
             await self._log_text(session_id=session_id, text=plan_text)
 
+    async def _handle_task_update(
+        self,
+        session_id: str,
+        tasks: list[dict[str, Any]],
+    ) -> None:
+        """Handle task list updates from the tools node.
+
+        Args:
+            session_id: The session ID
+            tasks: List of task dictionaries with content, status, and optional dependencies
+
+        Note:
+            Tasks come from the CLI's write_tasks tool and have the structure:
+            [{'id': 'uuid', 'content': 'Task description', 'status': 'pending'|'in_progress'|'completed'|'blocked',
+              'blocked_by': ['other-task-id', ...]}, ...]
+        """
+        # Convert tasks to PlanEntry objects
+        entries = []
+        for task in tasks:
+            content = task.get("content", "")
+            status = task.get("status", "pending")
+
+            # Map 'blocked' status to 'pending' for ACP compatibility
+            if status == "blocked":
+                status = "pending"
+
+            # Validate status
+            if status not in ("pending", "in_progress", "completed"):
+                status = "pending"
+
+            # Add dependency info to content if present
+            blocked_by = task.get("blocked_by", [])
+            if blocked_by:
+                content = f"{content} (blocked by: {', '.join(blocked_by)})"
+
+            entry = PlanEntry(
+                content=content,
+                status=status,
+                priority="medium",
+            )
+            entries.append(entry)
+
+        # Send plan update notification
+        update = AgentPlanUpdate(
+            session_update="plan",
+            entries=entries,
+        )
+        await self._conn.session_update(
+            session_id=session_id,
+            update=update,
+            source="DeepAgent",
+        )
+
     async def _process_tool_call_chunks(
         self,
         session_id: str,
@@ -538,10 +591,17 @@ class AgentServerACP(ACPAgent):
                             break
 
                     for node_name, update in updates.items():
-                        if node_name == "tools" and isinstance(update, dict) and "todos" in update:
-                            todos = update.get("todos", [])
-                            if todos:
-                                await self._handle_todo_update(session_id, todos, log_plan=False)
+                        if node_name == "tools" and isinstance(update, dict):
+                            # Handle legacy todos (from TodoListMiddleware)
+                            if "todos" in update:
+                                todos = update.get("todos", [])
+                                if todos:
+                                    await self._handle_todo_update(session_id, todos, log_plan=False)
+                            # Handle new tasks (from TaskMiddleware)
+                            if "tasks" in update:
+                                tasks = update.get("tasks", [])
+                                if tasks:
+                                    await self._handle_task_update(session_id, tasks)
 
                     continue
 

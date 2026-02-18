@@ -191,8 +191,8 @@ class TestNonInteractiveVersionMetadata:
 
         assert len(captured_configs) == 1
         metadata = captured_configs[0]["metadata"]
-        assert "deepagents_version" in metadata
         assert "deepagents_cli_version" in metadata
+        assert "deepagents_version" not in metadata
 
 
 class TestBuildNonInteractiveHeader:

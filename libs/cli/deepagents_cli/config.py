@@ -15,7 +15,6 @@ from enum import StrEnum
 from importlib.metadata import (
     PackageNotFoundError,
     distribution,
-    version as pkg_version,
 )
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -26,13 +25,6 @@ from rich.console import Console
 from deepagents_cli._version import __version__
 
 logger = logging.getLogger(__name__)
-
-# Version constants for LangSmith trace metadata
-try:
-    _sdk_version: str = pkg_version("deepagents")
-except PackageNotFoundError:
-    _sdk_version = "unknown"
-_cli_version: str = __version__
 
 dotenv.load_dotenv()
 
@@ -333,6 +325,10 @@ def build_stream_config(
 ) -> RunnableConfig:
     """Build the LangGraph stream config dict.
 
+    Injects `deepagents_cli_version` into every config so LangSmith traces
+    can be filtered by CLI release. The SDK version (`deepagents_version`)
+    is attached separately by the SDK's `create_deep_agent` via `with_config`.
+
     The `thread_id` in `configurable` is automatically propagated as run
     metadata by LangGraph, so it can be used for LangSmith filtering without
     a separate metadata key.
@@ -347,8 +343,7 @@ def build_stream_config(
     from datetime import UTC, datetime
 
     metadata: dict[str, str] = {
-        "deepagents_version": _sdk_version,
-        "deepagents_cli_version": _cli_version,
+        "deepagents_cli_version": __version__,
     }
     if assistant_id:
         metadata.update(

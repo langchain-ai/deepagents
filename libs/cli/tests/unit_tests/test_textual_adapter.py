@@ -119,18 +119,23 @@ class TestBuildStreamConfig:
         assert "agent_name" not in config["metadata"]
         assert "updated_at" not in config["metadata"]
 
-    def test_version_metadata_always_present(self) -> None:
-        """Version keys should be present regardless of `assistant_id`."""
-        config = build_stream_config("t-100", assistant_id=None)
-        assert "deepagents_version" in config["metadata"]
-        assert "deepagents_cli_version" in config["metadata"]
+    def test_cli_version_metadata_always_present(self) -> None:
+        """CLI version should be present regardless of `assistant_id`."""
+        from deepagents_cli._version import __version__
 
-    def test_version_metadata_with_assistant(self) -> None:
-        """Version keys should coexist with assistant-specific metadata."""
+        config = build_stream_config("t-100", assistant_id=None)
+        assert config["metadata"]["deepagents_cli_version"] == __version__
+
+    def test_cli_version_metadata_with_assistant(self) -> None:
+        """CLI version should coexist with assistant-specific metadata."""
         config = build_stream_config("t-200", assistant_id="my-agent")
-        assert "deepagents_version" in config["metadata"]
         assert "deepagents_cli_version" in config["metadata"]
         assert config["metadata"]["assistant_id"] == "my-agent"
+
+    def test_sdk_version_not_set_by_cli(self) -> None:
+        """SDK version should not be set by the CLI; the SDK owns that key."""
+        config = build_stream_config("t-300", assistant_id=None)
+        assert "deepagents_version" not in config["metadata"]
 
     def test_configurable_thread_id(self) -> None:
         """`configurable.thread_id` should match the provided thread ID."""

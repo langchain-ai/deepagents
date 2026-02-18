@@ -17,11 +17,11 @@ from typing_extensions import TypedDict
 FileFormat = Literal["v1", "v2"]
 r"""File storage format version.
 
-- ``"v1"``: Legacy format — ``content`` stored as ``list[str]`` (lines split
-  on ``\\n``), no ``encoding`` field.
-- ``"v2"``: Current format — ``content`` stored as a plain ``str`` (UTF-8 text
-  or base64-encoded binary), with an ``encoding`` field (``"utf-8"`` or
-  ``"base64"``).
+- `"v1"`: Legacy format — `content` stored as `list[str]` (lines split
+  on `\\n`), no `encoding` field.
+- `"v2"`: Current format — `content` stored as a plain `str` (UTF-8 text
+  or base64-encoded binary), with an `encoding` field (`"utf-8"` or
+  `"base64"`).
 """
 
 FileOperationError = Literal[

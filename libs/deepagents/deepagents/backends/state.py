@@ -51,10 +51,10 @@ class StateBackend(BackendProtocol):
 
         Args:
             runtime: The ToolRuntime instance providing store access and configuration.
-            file_format: Storage format version. ``"v2"`` (default) stores
-                content as a plain ``str`` with an ``encoding`` field.
-                ``"v1"`` stores content as ``list[str]`` (lines split on
-                ``\\n``) without an ``encoding`` field, for consumers that
+            file_format: Storage format version. `"v2"` (default) stores
+                content as a plain `str` with an `encoding` field.
+                `"v1"` stores content as `list[str]` (lines split on
+                `\\n`) without an `encoding` field, for consumers that
                 expect the legacy format.
         """
         self.runtime = runtime
@@ -63,7 +63,7 @@ class StateBackend(BackendProtocol):
     def _prepare_for_storage(self, file_data: FileData) -> dict[str, Any]:
         """Convert FileData to the format used for state storage.
 
-        When ``file_format="v1"``, returns the legacy format.
+        When `file_format="v1"`, returns the legacy format.
         """
         if self._file_format == "v1":
             return _to_legacy_file_data(file_data)

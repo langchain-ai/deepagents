@@ -129,10 +129,10 @@ class StoreBackend(BackendProtocol):
                 .. warning::
                     This API is subject to change in a minor version.
 
-            file_format: Storage format version. ``"v2"`` (default) stores
-                content as a plain ``str`` with an ``encoding`` field.
-                ``"v1"`` stores content as ``list[str]`` (lines split on
-                ``\\n``) without an ``encoding`` field, for consumers that
+            file_format: Storage format version. `"v2"` (default) stores
+                content as a plain `str` with an `encoding` field.
+                `"v1"` stores content as `list[str]` (lines split on
+                `\\n`) without an `encoding` field, for consumers that
                 expect the legacy format.
 
         Example:
@@ -262,8 +262,8 @@ class StoreBackend(BackendProtocol):
     def _convert_file_data_to_store_value(self, file_data: FileData) -> dict[str, Any]:
         """Convert FileData to a dict suitable for store.put().
 
-        When ``file_format="v1"``, returns the legacy format with ``content``
-        as ``list[str]`` and no ``encoding`` key.
+        When `file_format="v1"`, returns the legacy format with `content`
+        as `list[str]` and no `encoding` key.
 
         Args:
             file_data: The FileData to convert.

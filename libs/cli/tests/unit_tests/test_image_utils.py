@@ -321,3 +321,37 @@ class TestGetImageFromPath:
         """Missing files should return None instead of raising."""
         file_path = tmp_path / "missing.png"
         assert get_image_from_path(file_path) is None
+
+    def test_get_image_from_path_jpeg_normalizes_format(self, tmp_path: Path) -> None:
+        """JPEG images should normalize 'JPEG' format to 'jpeg'."""
+        img_path = tmp_path / "photo.jpg"
+        img = Image.new("RGB", (4, 4), color="green")
+        img.save(img_path, format="JPEG")
+
+        result = get_image_from_path(img_path)
+
+        assert result is not None
+        assert result.format == "jpeg"
+
+
+class TestSyncToTextWithIDGaps:
+    """Tests for ImageTracker.sync_to_text with non-contiguous IDs."""
+
+    def test_sync_to_text_with_id_gap_preserves_max_id(self) -> None:
+        """Deleting the middle image should set next_id based on max surviving ID."""
+        tracker = ImageTracker()
+        img1 = ImageData(base64_data="a", format="png", placeholder="")
+        img2 = ImageData(base64_data="b", format="png", placeholder="")
+        img3 = ImageData(base64_data="c", format="png", placeholder="")
+
+        tracker.add_image(img1)
+        tracker.add_image(img2)
+        tracker.add_image(img3)
+
+        # Remove the middle placeholder — IDs 1 and 3 remain
+        tracker.sync_to_text("[image 1] and [image 3]")
+
+        assert len(tracker.images) == 2
+        assert tracker.images[0].placeholder == "[image 1]"
+        assert tracker.images[1].placeholder == "[image 3]"
+        assert tracker.next_id == 4

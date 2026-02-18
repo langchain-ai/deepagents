@@ -37,7 +37,10 @@ _PREFIX_TO_MODE: dict[str, str] = {v: k for k, v in MODE_PREFIXES.items()}
 """Reverse lookup: trigger character -> mode name."""
 
 _IMAGE_PLACEHOLDER_PATTERN = re.compile(r"\[image \d+\]")
-"""Pattern for image placeholder tokens inserted into composer text."""
+"""Pattern for detecting image placeholder tokens in the text area.
+
+Used to locate tokens for atomic backspace/delete handling.
+"""
 
 if TYPE_CHECKING:
     from textual import events
@@ -430,7 +433,13 @@ class ChatTextArea(TextArea):
     def _find_image_placeholder_span(
         self, cursor_offset: int, *, backwards: bool
     ) -> tuple[int, int] | None:
-        """Return placeholder span to delete for current cursor and key direction."""
+        """Return placeholder span to delete for current cursor and key direction.
+
+        Args:
+            cursor_offset: Character offset of the cursor from the start of text.
+            backwards: Whether the delete action is backwards (backspace) or
+                forwards (delete).
+        """
         text = self.text
         for match in _IMAGE_PLACEHOLDER_PATTERN.finditer(text):
             start, end = match.span()
@@ -620,7 +629,15 @@ class ChatInput(Vertical):
         # prefix character so the resulting text-change event does not
         # re-evaluate mode.
         self._stripping_prefix = False
+
+        # When the user submits, we clear the text area which fires a
+        # text-change event. Without this guard the tracker would see the
+        # now-empty text, assume all images were deleted, and discard them
+        # before the app has a chance to send them. Each submit bumps the
+        # counter by one; the next text-change event decrements it and
+        # skips the sync.
         self._skip_image_sync_events = 0
+
         # Number of virtual prefix characters currently injected for
         # completion controller calls (0 for normal, 1 for bash/command).
         self._completion_prefix_len = 0
@@ -669,7 +686,6 @@ class ChatInput(Vertical):
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
         """Detect input mode and update completions."""
         text = event.text_area.text
-        is_path_payload = self._is_dropped_path_payload(text)
         self._sync_image_tracker_to_text(text)
 
         # History handlers explicitly decide mode and stripped display text.
@@ -679,6 +695,11 @@ class ChatInput(Vertical):
                 self._completion_manager.reset()
             self.scroll_visible()
             return
+
+        # Checked after the guards above so we skip the (potentially slow)
+        # filesystem lookup when the text change came from history navigation
+        # or prefix stripping, which never need path detection.
+        is_path_payload = self._is_dropped_path_payload(text)
 
         # Guard: skip mode re-detection after we programmatically stripped
         # a prefix character.
@@ -839,11 +860,22 @@ class ChatInput(Vertical):
         self.mode = "normal"
 
     def _sync_image_tracker_to_text(self, text: str) -> None:
-        """Keep tracked images aligned with placeholder tokens in input text."""
+        """Keep tracked images aligned with placeholder tokens in input text.
+
+        Args:
+            text: Current text in the input area.
+        """
         if not self._image_tracker:
             return
         if self._skip_image_sync_events:
-            self._skip_image_sync_events -= 1
+            if self._skip_image_sync_events < 0:
+                logger.warning(
+                    "_skip_image_sync_events is negative (%d); resetting to 0",
+                    self._skip_image_sync_events,
+                )
+                self._skip_image_sync_events = 0
+            else:
+                self._skip_image_sync_events -= 1
             return
         self._image_tracker.sync_to_text(text)
 
@@ -898,11 +930,15 @@ class ChatInput(Vertical):
     def handle_external_paste(self, pasted: str) -> bool:
         """Handle paste text from app-level routing when input is not focused.
 
+        When the text area is mounted, the paste is always consumed: file paths
+        are attached as images, and plain text is inserted directly.
+
         Args:
             pasted: Raw pasted text payload.
 
         Returns:
-            `True` when paste was handled by the input, otherwise `False`.
+            `True` when the text area is mounted and the paste was inserted,
+                `False` if the widget is not yet composed.
         """
         if not self._text_area:
             return False
@@ -919,7 +955,12 @@ class ChatInput(Vertical):
         return True
 
     def _insert_pasted_paths(self, raw_text: str, paths: list[Path]) -> None:
-        """Insert pasted path payload, attaching images when possible."""
+        """Insert pasted path payload, attaching images when possible.
+
+        Args:
+            raw_text: Original paste payload text.
+            paths: Resolved file paths parsed from the payload.
+        """
         if not self._text_area:
             return
         replacement, attached = self._build_path_replacement(
@@ -939,6 +980,12 @@ class ChatInput(Vertical):
     ) -> tuple[str, bool]:
         """Build replacement text for dropped paths and attach any images.
 
+        Args:
+            raw_text: Original paste payload text.
+            paths: Resolved file paths parsed from the payload.
+            add_trailing_space: Whether to append a trailing space after the
+                last token when paths are separated by spaces.
+
         Returns:
             Tuple of `(replacement, attached)` where `attached` indicates whether
             at least one image attachment was created.
@@ -953,6 +1000,7 @@ class ChatInput(Vertical):
         for path in paths:
             image_data = get_image_from_path(path)
             if image_data is None:
+                logger.debug("Could not load image from dropped path: %s", path)
                 parts.append(str(path))
                 continue
             parts.append(self._image_tracker.add_image(image_data))
@@ -970,6 +1018,9 @@ class ChatInput(Vertical):
     def _replace_submitted_paths_with_images(self, value: str) -> str:
         """Replace dropped-path payloads in submitted text with image placeholders.
 
+        Args:
+            value: Stripped submitted text (without mode prefix).
+
         Returns:
             Submitted text with image placeholders when attachment succeeded.
         """
@@ -985,6 +1036,10 @@ class ChatInput(Vertical):
             paths = parse_pasted_file_paths(prefixed)
             if paths:
                 candidate = prefixed
+                logger.debug(
+                    "Recovering stripped absolute path; resetting mode from "
+                    "'command' to 'normal'"
+                )
                 self.mode = "normal"
 
         if paths:

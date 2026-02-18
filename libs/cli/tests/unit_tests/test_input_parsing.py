@@ -289,3 +289,25 @@ def test_parse_pasted_file_paths_returns_empty_for_missing_file(tmp_path: Path) 
     """Missing dropped files should fall back to regular text paste."""
     missing = tmp_path / "missing.png"
     assert parse_pasted_file_paths(str(missing)) == []
+
+
+def test_parse_pasted_file_paths_returns_empty_for_empty_string() -> None:
+    """Empty string should return an empty list."""
+    assert parse_pasted_file_paths("") == []
+
+
+def test_parse_pasted_file_paths_returns_empty_for_whitespace() -> None:
+    """Whitespace-only payloads should return an empty list."""
+    assert parse_pasted_file_paths("   \n\t  ") == []
+
+
+def test_parse_pasted_file_paths_handles_angle_bracket_wrapped_path(
+    tmp_path: Path,
+) -> None:
+    """Angle-bracket wrapped paths (e.g. from some terminals) should resolve."""
+    img = tmp_path / "bracketed.png"
+    img.write_bytes(b"img")
+
+    result = parse_pasted_file_paths(f"<{img}>")
+
+    assert result == [img.resolve()]

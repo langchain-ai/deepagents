@@ -1,5 +1,6 @@
 """Input handling utilities including image tracking and file mention parsing."""
 
+import logging
 import re
 import shlex
 from pathlib import Path
@@ -7,6 +8,8 @@ from urllib.parse import unquote, urlparse
 
 from deepagents_cli.config import console
 from deepagents_cli.image_utils import ImageData
+
+logger = logging.getLogger(__name__)
 
 PATH_CHAR_CLASS = r"A-Za-z0-9._~/\\:-"
 """Characters allowed in file paths.
@@ -49,7 +52,11 @@ slash commands, so a `/` mid-string is not highlighted.
 """
 
 IMAGE_PLACEHOLDER_PATTERN = re.compile(r"\[image (?P<id>\d+)\]")
-"""Pattern for image placeholders in composed user text."""
+"""Pattern for image placeholders with a named `id` capture group.
+
+Used to extract numeric IDs from placeholder tokens so the tracker can prune
+stale entries and compute the next available ID.
+"""
 
 
 class ImageTracker:
@@ -216,7 +223,8 @@ def parse_pasted_file_paths(text: str) -> list[Path]:
             return []
         try:
             resolved = path.expanduser().resolve()
-        except (OSError, RuntimeError):
+        except (OSError, RuntimeError) as e:
+            logger.debug("Path resolution failed for token %r: %s", token, e)
             return []
         if not resolved.exists() or not resolved.is_file():
             return []
@@ -227,6 +235,9 @@ def parse_pasted_file_paths(text: str) -> list[Path]:
 
 def _split_paste_line(line: str) -> list[str]:
     """Split a single pasted line into path-like tokens.
+
+    Args:
+        line: A single line from the paste payload.
 
     Returns:
         Parsed shell-like tokens, or an empty list when parsing fails.
@@ -240,6 +251,9 @@ def _split_paste_line(line: str) -> list[str]:
 
 def _token_to_path(token: str) -> Path | None:
     """Convert a pasted token into a path candidate.
+
+    Args:
+        token: A single shell-split token from the paste payload.
 
     Returns:
         A parsed path candidate, or `None` when token parsing fails.

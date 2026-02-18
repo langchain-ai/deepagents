@@ -94,7 +94,8 @@ def get_image_from_path(path: pathlib.Path) -> ImageData | None:
             format=image_format,
             placeholder="[image]",
         )
-    except (UnidentifiedImageError, OSError):
+    except (UnidentifiedImageError, OSError) as e:
+        logger.debug("Failed to load image from %s: %s", path, e, exc_info=True)
         return None
 
 

@@ -1195,6 +1195,36 @@ class TestDroppedImagePaste:
     """Tests for drag/drop image-path handling via paste events."""
 
     @pytest.mark.asyncio
+    async def test_forward_delete_removes_placeholder(self, tmp_path) -> None:
+        """Forward-delete should remove `[image N]` as a single token."""
+        img_path = tmp_path / "fwddelete.png"
+        from PIL import Image
+
+        image = Image.new("RGB", (4, 4), color="magenta")
+        image.save(img_path, format="PNG")
+
+        app = _ImagePasteApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste(str(img_path))
+            await pilot.pause()
+            assert chat._text_area.text == "[image 1] "
+
+            # Move cursor to start and press forward-delete
+            chat._text_area.move_cursor((0, 0))
+            await pilot.pause()
+            await pilot.press("delete")
+            await pilot.pause()
+
+            # Forward-delete removes the placeholder token but not the
+            # trailing space (unlike backspace which catches it).
+            assert "[image" not in chat._text_area.text
+            assert app.tracker.get_images() == []
+            assert app.tracker.next_id == 1
+
+    @pytest.mark.asyncio
     async def test_backspace_removes_full_image_placeholder(self, tmp_path) -> None:
         """Backspace should remove `[image N]` as a single token."""
         img_path = tmp_path / "backspace.png"
@@ -1348,6 +1378,38 @@ class TestDroppedImagePaste:
             assert app.submitted[0].value == "[image 1]"
             assert app.submitted[0].mode == "normal"
             assert len(app.tracker.get_images()) == 1
+
+    @pytest.mark.asyncio
+    async def test_sync_resumes_after_submit_skip(self, tmp_path) -> None:
+        """Image tracker sync should resume after the post-submit skip event."""
+        img_path = tmp_path / "sync_resume.png"
+        from PIL import Image
+
+        image = Image.new("RGB", (4, 4), color="yellow")
+        image.save(img_path, format="PNG")
+
+        app = _ImagePasteRecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            # Paste an image and submit
+            chat.handle_external_paste(str(img_path))
+            await pilot.pause()
+            assert chat._text_area.text == "[image 1] "
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            # After submit, the skip counter fires for the clear_text event.
+            # Typing new text should now sync normally (tracker is cleared).
+            chat._text_area.insert("hello")
+            await pilot.pause()
+
+            # The tracker should have synced and cleared images since
+            # the new text has no placeholders.
+            assert app.tracker.get_images() == []
+            assert app.tracker.next_id == 1
 
     @pytest.mark.asyncio
     async def test_submit_recovers_if_command_mode_already_stripped_path(

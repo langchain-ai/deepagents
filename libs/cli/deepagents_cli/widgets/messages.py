@@ -11,6 +11,7 @@ from pathlib import Path
 from time import time
 from typing import TYPE_CHECKING, Any
 
+from rich.markup import escape as escape_markup
 from rich.text import Text
 from textual.containers import Vertical
 from textual.widgets import Markdown, Static
@@ -695,13 +696,19 @@ class ToolCallMessage(Vertical):
         # Default: return as-is but escape markup
         return FormattedOutput(content=self._escape_markup(output))
 
-    def _escape_markup(self, text: str) -> str:  # noqa: PLR6301  # Grouped as method for widget cohesion
+    @staticmethod
+    def _escape_markup(text: str) -> str:
         """Escape Rich markup characters.
+
+        Uses Rich's built-in `escape` which only targets actual markup
+        patterns (e.g. `[bold]`, `[red]`). Unlike a blanket bracket
+        replacement, this avoids rendering visible backslashes before `]`
+        in tool output.
 
         Returns:
             Escaped text safe for Rich rendering.
         """
-        return text.replace("[", r"\[").replace("]", r"\]")
+        return escape_markup(text)
 
     def _prefix_output(self, content: str) -> str:  # noqa: PLR6301  # Grouped as method for widget cohesion
         """Prefix output with output marker and indent continuation lines.

@@ -239,7 +239,7 @@ def test_find_magic_phrase_deep_nesting() -> None:
         ),
         # 1st step: grep for MAGIC_PHRASE to locate the file.
         # 2nd step: read the file (if needed) and answer with the phrase.
-        # 2 tool call requests: grep + read_file.
+        # 1 tool call requests: grep
         expect=(
             TrajectoryExpectations(num_agent_steps=2, num_tool_call_requests=1)
             .require_tool_call(step=1, name="grep", args_contains={"pattern": "MAGIC_PHRASE:"})

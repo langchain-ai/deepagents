@@ -200,6 +200,20 @@ class TestFormatToolMessageContent:
         assert "Image" in result
         assert "image" in result
 
+    def test_mixed_list_with_strings_and_image_blocks(self) -> None:
+        """Test that mixed string/image list preserves ordering."""
+        content = [
+            "Here is the screenshot:",
+            {"type": "image", "base64": "A" * 4000, "mime_type": "image/png"},
+            "Analysis complete.",
+        ]
+        result = format_tool_message_content(content)
+        lines = result.split("\n")
+        assert lines[0] == "Here is the screenshot:"
+        assert "Image" in lines[1]
+        assert "AAAA" not in lines[1]
+        assert lines[2] == "Analysis complete."
+
 
 class TestFormatContentBlock:
     """Tests for `_format_content_block`."""
@@ -226,3 +240,29 @@ class TestFormatContentBlock:
         block = {"type": "image", "url": "https://example.com/img.png"}
         result = _format_content_block(block)
         assert '"url"' in result
+
+    def test_image_block_none_base64_returns_json(self) -> None:
+        """Test that image block with None base64 falls through to JSON."""
+        block = {"type": "image", "base64": None, "mime_type": "image/png"}
+        result = _format_content_block(block)
+        assert '"type"' in result
+        assert "Image" not in result
+
+    def test_image_block_non_string_base64_returns_json(self) -> None:
+        """Test that image block with non-string base64 falls through to JSON."""
+        block = {"type": "image", "base64": 12345}
+        result = _format_content_block(block)
+        assert "12345" in result
+        assert "Image" not in result
+
+    def test_image_block_empty_base64(self) -> None:
+        """Test that empty base64 string produces a 0KB placeholder."""
+        block = {"type": "image", "base64": "", "mime_type": "image/png"}
+        result = _format_content_block(block)
+        assert result == "[Image: image/png, ~0KB]"
+
+    def test_non_serializable_dict_falls_back_to_str(self) -> None:
+        """Test that dicts with non-serializable values fall back to str()."""
+        block = {"type": "data", "value": object()}
+        result = _format_content_block(block)
+        assert "type" in result

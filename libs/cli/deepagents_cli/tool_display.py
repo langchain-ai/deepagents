@@ -198,7 +198,7 @@ def _format_content_block(block: dict) -> str:
     Returns:
         A display-friendly string for the block.
     """
-    if block.get("type") == "image" and "base64" in block:
+    if block.get("type") == "image" and isinstance(block.get("base64"), str):
         b64 = block["base64"]
         size_kb = len(b64) * 3 // 4 // 1024  # approximate decoded size
         mime = block.get("mime_type", "image")

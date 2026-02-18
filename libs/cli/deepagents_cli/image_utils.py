@@ -64,6 +64,41 @@ def get_clipboard_image() -> ImageData | None:
     return None
 
 
+def get_image_from_path(path: pathlib.Path) -> ImageData | None:
+    """Read and encode an image file from disk.
+
+    Args:
+        path: Path to the image file.
+
+    Returns:
+        `ImageData` when the file is a valid image, otherwise `None`.
+    """
+    try:
+        image_bytes = path.read_bytes()
+        if not image_bytes:
+            return None
+
+        with Image.open(io.BytesIO(image_bytes)) as image:
+            image_format = (image.format or "").lower()
+
+        if image_format == "jpg":
+            image_format = "jpeg"
+        if not image_format:
+            suffix = path.suffix.lower().removeprefix(".")
+            image_format = "jpeg" if suffix == "jpg" else suffix
+        if not image_format:
+            image_format = "png"
+
+        return ImageData(
+            base64_data=encode_image_to_base64(image_bytes),
+            format=image_format,
+            placeholder="[image]",
+        )
+    except (UnidentifiedImageError, OSError) as e:
+        logger.debug("Failed to load image from %s: %s", path, e, exc_info=True)
+        return None
+
+
 def _get_macos_clipboard_image() -> ImageData | None:
     """Get clipboard image on macOS using pngpaste or osascript.
 

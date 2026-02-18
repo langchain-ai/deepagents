@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -35,10 +36,18 @@ logger = logging.getLogger(__name__)
 _PREFIX_TO_MODE: dict[str, str] = {v: k for k, v in MODE_PREFIXES.items()}
 """Reverse lookup: trigger character -> mode name."""
 
+_IMAGE_PLACEHOLDER_PATTERN = re.compile(r"\[image \d+\]")
+"""Pattern for detecting image placeholder tokens in the text area.
+
+Used to locate tokens for atomic backspace/delete handling.
+"""
+
 if TYPE_CHECKING:
     from textual import events
     from textual.app import ComposeResult
     from textual.events import Click
+
+    from deepagents_cli.input import ImageTracker
 
 
 class CompletionOption(Static):
@@ -286,6 +295,15 @@ class ChatTextArea(TextArea):
     class HistoryNext(Message):
         """Request next history entry."""
 
+    class PastedPaths(Message):
+        """Message sent when paste payload resolves to file paths."""
+
+        def __init__(self, raw_text: str, paths: list[Path]) -> None:
+            """Initialize with raw pasted text and parsed file paths."""
+            self.raw_text = raw_text
+            self.paths = paths
+            super().__init__()
+
     def __init__(self, **kwargs: Any) -> None:
         """Initialize the chat text area."""
         # Remove placeholder if passed, TextArea doesn't support it the same way
@@ -334,6 +352,16 @@ class ChatTextArea(TextArea):
             self.insert("\n")
             return
 
+        if event.key == "backspace" and self._delete_image_placeholder(backwards=True):
+            event.prevent_default()
+            event.stop()
+            return
+
+        if event.key == "delete" and self._delete_image_placeholder(backwards=False):
+            event.prevent_default()
+            event.stop()
+            return
+
         # If completion is active, let parent handle navigation keys
         if self._completion_active and event.key in {"up", "down", "tab", "enter"}:
             # Prevent TextArea's default behavior (e.g., Enter inserting newline)
@@ -376,6 +404,74 @@ class ChatTextArea(TextArea):
                 return
 
         await super()._on_key(event)
+
+    def _delete_image_placeholder(self, *, backwards: bool) -> bool:
+        """Delete a full image placeholder token in one keypress.
+
+        Args:
+            backwards: Whether the delete action is backwards (`backspace`) or
+                forwards (`delete`).
+
+        Returns:
+            `True` when a placeholder token was deleted.
+        """
+        if not self.text or not self.selection.is_empty:
+            return False
+
+        cursor_offset = self.document.get_index_from_location(self.cursor_location)  # type: ignore[attr-defined]  # Document has this method; DocumentBase stub is narrower
+        span = self._find_image_placeholder_span(cursor_offset, backwards=backwards)
+        if span is None:
+            return False
+
+        start, end = span
+        start_location = self.document.get_location_from_index(start)  # type: ignore[attr-defined]  # Document has this method; DocumentBase stub is narrower
+        end_location = self.document.get_location_from_index(end)  # type: ignore[attr-defined]
+        self.delete(start_location, end_location)
+        self.move_cursor(start_location)
+        return True
+
+    def _find_image_placeholder_span(
+        self, cursor_offset: int, *, backwards: bool
+    ) -> tuple[int, int] | None:
+        """Return placeholder span to delete for current cursor and key direction.
+
+        Args:
+            cursor_offset: Character offset of the cursor from the start of text.
+            backwards: Whether the delete action is backwards (backspace) or
+                forwards (delete).
+        """
+        text = self.text
+        for match in _IMAGE_PLACEHOLDER_PATTERN.finditer(text):
+            start, end = match.span()
+            if backwards:
+                # Cursor is inside token or right after a trailing space inserted
+                # with the token.
+                if start < cursor_offset <= end:
+                    return start, end
+                if cursor_offset > 0:
+                    previous_index = cursor_offset - 1
+                    if (
+                        previous_index < len(text)
+                        and previous_index == end
+                        and text[previous_index].isspace()
+                    ):
+                        return start, cursor_offset
+            elif start <= cursor_offset < end:
+                return start, end
+        return None
+
+    async def _on_paste(self, event: events.Paste) -> None:
+        """Handle paste events and detect dragged file paths."""
+        from deepagents_cli.input import parse_pasted_file_paths
+
+        paths = parse_pasted_file_paths(event.text)
+        if not paths:
+            await super()._on_paste(event)
+            return
+
+        event.prevent_default()
+        event.stop()
+        self.post_message(self.PastedPaths(event.text, paths))
 
     def set_text_from_history(self, text: str) -> None:
         """Set text from history navigation."""
@@ -510,6 +606,7 @@ class ChatInput(Vertical):
         self,
         cwd: str | Path | None = None,
         history_file: Path | None = None,
+        image_tracker: ImageTracker | None = None,
         **kwargs: Any,
     ) -> None:
         """Initialize the chat input widget.
@@ -517,10 +614,12 @@ class ChatInput(Vertical):
         Args:
             cwd: Current working directory for file completion
             history_file: Path to history file (default: ~/.deepagents/history.jsonl)
+            image_tracker: Optional tracker for attached images
             **kwargs: Additional arguments for parent
         """
         super().__init__(**kwargs)
         self._cwd = Path(cwd) if cwd else Path.cwd()
+        self._image_tracker = image_tracker
         self._text_area: ChatTextArea | None = None
         self._popup: CompletionPopup | None = None
         self._completion_manager: MultiCompletionManager | None = None
@@ -530,6 +629,15 @@ class ChatInput(Vertical):
         # prefix character so the resulting text-change event does not
         # re-evaluate mode.
         self._stripping_prefix = False
+
+        # When the user submits, we clear the text area which fires a
+        # text-change event. Without this guard the tracker would see the
+        # now-empty text, assume all images were deleted, and discard them
+        # before the app has a chance to send them. Each submit bumps the
+        # counter by one; the next text-change event decrements it and
+        # skips the sync.
+        self._skip_image_sync_events = 0
+
         # Number of virtual prefix characters currently injected for
         # completion controller calls (0 for normal, 1 for bash/command).
         self._completion_prefix_len = 0
@@ -578,6 +686,7 @@ class ChatInput(Vertical):
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
         """Detect input mode and update completions."""
         text = event.text_area.text
+        self._sync_image_tracker_to_text(text)
 
         # History handlers explicitly decide mode and stripped display text.
         # Skip mode detection here so recalled entries don't inherit stale mode.
@@ -587,33 +696,66 @@ class ChatInput(Vertical):
             self.scroll_visible()
             return
 
+        # Checked after the guards above so we skip the (potentially slow)
+        # filesystem lookup when the text change came from history navigation
+        # or prefix stripping, which never need path detection.
+        is_path_payload = self._is_dropped_path_payload(text)
+
         # Guard: skip mode re-detection after we programmatically stripped
         # a prefix character.
         if self._stripping_prefix:
             self._stripping_prefix = False
         elif text and text[0] in _PREFIX_TO_MODE:
-            # Detected a mode-trigger prefix (e.g. "!" or "/").
-            # Strip it unconditionally -- even when already in the correct
-            # mode -- because completion controllers may write replacement
-            # text that re-includes the trigger character.  The
-            # _stripping_prefix guard prevents the resulting change event
-            # from looping back here.
-            detected = _PREFIX_TO_MODE[text[0]]
-            if self.mode != detected:
-                self.mode = detected
-            self._strip_mode_prefix()
-            return
+            if text[0] == "/" and is_path_payload:
+                # Absolute dropped paths stay normal input, not slash-command mode.
+                if self.mode != "normal":
+                    self.mode = "normal"
+            else:
+                # Detected a mode-trigger prefix (e.g. "!" or "/").
+                # Strip it unconditionally -- even when already in the correct
+                # mode -- because completion controllers may write replacement
+                # text that re-includes the trigger character.  The
+                # _stripping_prefix guard prevents the resulting change event
+                # from looping back here.
+                detected = _PREFIX_TO_MODE[text[0]]
+                if self.mode != detected:
+                    self.mode = detected
+                self._strip_mode_prefix()
+                return
         elif not text and self.mode != "normal":
             # Reset mode when text is fully cleared
             self.mode = "normal"
 
         # Update completion suggestions using completion-space text/cursor.
         if self._completion_manager and self._text_area:
-            vtext, vcursor = self._completion_text_and_cursor()
-            self._completion_manager.on_text_changed(vtext, vcursor)
+            if is_path_payload:
+                self._completion_manager.reset()
+            else:
+                vtext, vcursor = self._completion_text_and_cursor()
+                self._completion_manager.on_text_changed(vtext, vcursor)
 
         # Scroll input into view when content changes (handles text wrap)
         self.scroll_visible()
+
+    @staticmethod
+    def _is_existing_path_payload(text: str) -> bool:
+        """Return whether text is a dropped-path payload for existing files."""
+        from deepagents_cli.input import parse_pasted_file_paths
+
+        if len(text) < 2:  # noqa: PLR2004  # Need at least '/' + one char
+            return False
+        return bool(parse_pasted_file_paths(text))
+
+    def _is_dropped_path_payload(self, text: str) -> bool:
+        """Return whether current text looks like a dropped file-path payload."""
+        if not text:
+            return False
+        if self._is_existing_path_payload(text):
+            return True
+        if self.mode == "command":
+            candidate = f"/{text.lstrip('/')}"
+            return self._is_existing_path_payload(candidate)
+        return False
 
     def _strip_mode_prefix(self) -> None:
         """Remove the first character (mode trigger) from the text area.
@@ -698,6 +840,8 @@ class ChatInput(Vertical):
         if self._completion_manager:
             self._completion_manager.reset()
 
+        value = self._replace_submitted_paths_with_images(value)
+
         # Prepend mode prefix so the app layer receives the original trigger
         # form (e.g. "!ls", "/help"). The value may already contain the prefix
         # when a completion controller wrote it back into the text area before
@@ -710,8 +854,30 @@ class ChatInput(Vertical):
         self.post_message(self.Submitted(value, self.mode))
 
         if self._text_area:
+            # Preserve submission-time attachments until adapter consumes them.
+            self._skip_image_sync_events += 1
             self._text_area.clear_text()
         self.mode = "normal"
+
+    def _sync_image_tracker_to_text(self, text: str) -> None:
+        """Keep tracked images aligned with placeholder tokens in input text.
+
+        Args:
+            text: Current text in the input area.
+        """
+        if not self._image_tracker:
+            return
+        if self._skip_image_sync_events:
+            if self._skip_image_sync_events < 0:
+                logger.warning(
+                    "_skip_image_sync_events is negative (%d); resetting to 0",
+                    self._skip_image_sync_events,
+                )
+                self._skip_image_sync_events = 0
+            else:
+                self._skip_image_sync_events -= 1
+            return
+        self._image_tracker.sync_to_text(text)
 
     def on_chat_text_area_submitted(self, event: ChatTextArea.Submitted) -> None:
         """Handle text submission.
@@ -753,6 +919,136 @@ class ChatInput(Vertical):
         # resets navigation internally, so in_history becomes False.
         if self._text_area:
             self._text_area._in_history = self._history.in_history
+
+    def on_chat_text_area_pasted_paths(self, event: ChatTextArea.PastedPaths) -> None:
+        """Handle paste payloads that resolve to dropped file paths."""
+        if not self._text_area:
+            return
+
+        self._insert_pasted_paths(event.raw_text, event.paths)
+
+    def handle_external_paste(self, pasted: str) -> bool:
+        """Handle paste text from app-level routing when input is not focused.
+
+        When the text area is mounted, the paste is always consumed: file paths
+        are attached as images, and plain text is inserted directly.
+
+        Args:
+            pasted: Raw pasted text payload.
+
+        Returns:
+            `True` when the text area is mounted and the paste was inserted,
+                `False` if the widget is not yet composed.
+        """
+        if not self._text_area:
+            return False
+
+        from deepagents_cli.input import parse_pasted_file_paths
+
+        paths = parse_pasted_file_paths(pasted)
+        if paths:
+            self._insert_pasted_paths(pasted, paths)
+        else:
+            self._text_area.insert(pasted)
+
+        self._text_area.focus()
+        return True
+
+    def _insert_pasted_paths(self, raw_text: str, paths: list[Path]) -> None:
+        """Insert pasted path payload, attaching images when possible.
+
+        Args:
+            raw_text: Original paste payload text.
+            paths: Resolved file paths parsed from the payload.
+        """
+        if not self._text_area:
+            return
+        replacement, attached = self._build_path_replacement(
+            raw_text, paths, add_trailing_space=True
+        )
+        if attached:
+            self._text_area.insert(replacement)
+            return
+        self._text_area.insert(raw_text)
+
+    def _build_path_replacement(
+        self,
+        raw_text: str,
+        paths: list[Path],
+        *,
+        add_trailing_space: bool,
+    ) -> tuple[str, bool]:
+        """Build replacement text for dropped paths and attach any images.
+
+        Args:
+            raw_text: Original paste payload text.
+            paths: Resolved file paths parsed from the payload.
+            add_trailing_space: Whether to append a trailing space after the
+                last token when paths are separated by spaces.
+
+        Returns:
+            Tuple of `(replacement, attached)` where `attached` indicates whether
+            at least one image attachment was created.
+        """
+        if not self._image_tracker:
+            return raw_text, False
+
+        from deepagents_cli.image_utils import get_image_from_path
+
+        parts: list[str] = []
+        attached = False
+        for path in paths:
+            image_data = get_image_from_path(path)
+            if image_data is None:
+                logger.debug("Could not load image from dropped path: %s", path)
+                parts.append(str(path))
+                continue
+            parts.append(self._image_tracker.add_image(image_data))
+            attached = True
+
+        if not attached:
+            return raw_text, False
+
+        separator = "\n" if "\n" in raw_text else " "
+        replacement = separator.join(parts)
+        if separator == " " and add_trailing_space:
+            replacement += " "
+        return replacement, True
+
+    def _replace_submitted_paths_with_images(self, value: str) -> str:
+        """Replace dropped-path payloads in submitted text with image placeholders.
+
+        Args:
+            value: Stripped submitted text (without mode prefix).
+
+        Returns:
+            Submitted text with image placeholders when attachment succeeded.
+        """
+        from deepagents_cli.input import parse_pasted_file_paths
+
+        paths = parse_pasted_file_paths(value)
+        candidate = value
+
+        # Recovery path: if command mode stripped the leading slash from an
+        # absolute dropped path, rehydrate it before resolving attachments.
+        if not paths and self.mode == "command":
+            prefixed = f"/{value.lstrip('/')}"
+            paths = parse_pasted_file_paths(prefixed)
+            if paths:
+                candidate = prefixed
+                logger.debug(
+                    "Recovering stripped absolute path; resetting mode from "
+                    "'command' to 'normal'"
+                )
+                self.mode = "normal"
+
+        if paths:
+            replacement, attached = self._build_path_replacement(
+                candidate, paths, add_trailing_space=False
+            )
+            if attached:
+                return replacement.strip()
+        return value
 
     @staticmethod
     def _history_entry_mode_and_text(entry: str) -> tuple[str, str]:

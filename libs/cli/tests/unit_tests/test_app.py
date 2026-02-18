@@ -4,9 +4,10 @@ import io
 import os
 import webbrowser
 from typing import ClassVar
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Container
@@ -658,3 +659,74 @@ class TestTraceCommand:
 
             app_msgs = app.query(AppMessage)
             assert any("No active session" in str(w._content) for w in app_msgs)
+
+
+class TestRunAgentTaskImageTracker:
+    """Tests image tracker wiring from app into textual execution."""
+
+    @pytest.mark.asyncio
+    async def test_run_agent_task_passes_image_tracker(self) -> None:
+        """`_run_agent_task` should forward the shared image tracker."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._ui_adapter is not None
+
+            with patch(
+                "deepagents_cli.app.execute_task_textual", new_callable=AsyncMock
+            ) as mock_execute:
+                await app._run_agent_task("hello")
+
+            mock_execute.assert_awaited_once()
+            assert mock_execute.await_args is not None
+            assert mock_execute.await_args.kwargs["image_tracker"] is app._image_tracker
+
+
+class TestPasteRouting:
+    """Tests app-level paste routing when chat input focus lags."""
+
+    @pytest.mark.asyncio
+    async def test_on_paste_routes_unfocused_event_to_chat_input(self) -> None:
+        """Unfocused paste events should be forwarded to chat input handler."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._chat_input is not None
+
+            event = events.Paste("/tmp/photo.png")
+            with (
+                patch.object(app, "_is_input_focused", return_value=False),
+                patch.object(
+                    app._chat_input, "handle_external_paste", return_value=True
+                ) as mock_handle,
+                patch.object(event, "prevent_default") as mock_prevent,
+                patch.object(event, "stop") as mock_stop,
+            ):
+                app.on_paste(event)
+
+            mock_handle.assert_called_once_with("/tmp/photo.png")
+            mock_prevent.assert_called_once()
+            mock_stop.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_on_paste_does_not_route_when_input_already_focused(self) -> None:
+        """Focused input should keep normal TextArea paste handling path."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._chat_input is not None
+
+            event = events.Paste("/tmp/photo.png")
+            with (
+                patch.object(app, "_is_input_focused", return_value=True),
+                patch.object(
+                    app._chat_input, "handle_external_paste", return_value=True
+                ) as mock_handle,
+                patch.object(event, "prevent_default") as mock_prevent,
+                patch.object(event, "stop") as mock_stop,
+            ):
+                app.on_paste(event)
+
+            mock_handle.assert_not_called()
+            mock_prevent.assert_not_called()
+            mock_stop.assert_not_called()

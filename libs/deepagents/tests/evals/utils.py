@@ -3,8 +3,10 @@ from __future__ import annotations
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Any
 
 from langchain_core.messages import AIMessage, ToolMessage
+from langgraph.graph.state import CompiledStateGraph
 from langsmith import testing as t
 
 from deepagents.backends.utils import create_file_data, file_data_to_string
@@ -128,7 +130,7 @@ def _assert_expectations(trajectory: AgentTrajectory, expect: TrajectoryExpectat
 
 
 def run_agent(
-    agent: object,
+    agent: CompiledStateGraph[Any, Any],
     *,
     query: str,
     initial_files: dict[str, str] | None = None,
@@ -141,13 +143,7 @@ def run_agent(
     thread_id = uuid.uuid4()
     config = {"configurable": {"thread_id": thread_id}}
     t.log_inputs(inputs)
-
-    agent_invoke = getattr(agent, "invoke", None)
-    if agent_invoke is None:
-        msg = f"Expected agent to have invoke(...); got {type(agent)}"
-        raise TypeError(msg)
-
-    result = agent_invoke(inputs, config)
+    result = agent.invoke(inputs, config)
     t.log_outputs(result)
 
     if not isinstance(result, Mapping):

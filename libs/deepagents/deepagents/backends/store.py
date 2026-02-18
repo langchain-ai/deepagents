@@ -23,6 +23,7 @@ from deepagents.backends.protocol import (
     FileInfo,
     FileUploadResponse,
     GrepMatch,
+    ReadResult,
     WriteResult,
 )
 from deepagents.backends.utils import (
@@ -30,7 +31,6 @@ from deepagents.backends.utils import (
     _to_legacy_file_data,
     create_file_data,
     file_data_to_string,
-    format_read_response,
     grep_matches_from_files,
     perform_string_replacement,
     update_file_data,
@@ -387,42 +387,30 @@ class StoreBackend(BackendProtocol):
         infos.sort(key=lambda x: x.get("path", ""))
         return infos
 
-    def read(
-        self,
-        file_path: str,
-        offset: int = 0,
-        limit: int = 2000,
-    ) -> str:
-        """Read file content with line numbers.
+    def read(self, file_path: str) -> ReadResult:
+        """Read raw file data.
 
         Args:
             file_path: Absolute file path.
-            offset: Line offset to start reading from (0-indexed).
-            limit: Maximum number of lines to read.
 
         Returns:
-            Formatted file content with line numbers, or error message.
+            ReadResult with file_data on success, or error on failure.
         """
         store = self._get_store()
         namespace = self._get_namespace()
         item: Item | None = store.get(namespace, file_path)
 
         if item is None:
-            return f"Error: File '{file_path}' not found"
+            return ReadResult(error=f"File '{file_path}' not found")
 
         try:
             file_data = self._convert_store_item_to_file_data(item)
         except ValueError as e:
-            return f"Error: {e}"
+            return ReadResult(error=str(e))
 
-        return format_read_response(file_data, offset, limit)
+        return ReadResult(file_data=file_data)
 
-    async def aread(
-        self,
-        file_path: str,
-        offset: int = 0,
-        limit: int = 2000,
-    ) -> str:
+    async def aread(self, file_path: str) -> ReadResult:
         """Async version of read using native store async methods.
 
         This avoids sync calls in async context by using store.aget directly.
@@ -432,14 +420,14 @@ class StoreBackend(BackendProtocol):
         item: Item | None = await store.aget(namespace, file_path)
 
         if item is None:
-            return f"Error: File '{file_path}' not found"
+            return ReadResult(error=f"File '{file_path}' not found")
 
         try:
             file_data = self._convert_store_item_to_file_data(item)
         except ValueError as e:
-            return f"Error: {e}"
+            return ReadResult(error=str(e))
 
-        return format_read_response(file_data, offset, limit)
+        return ReadResult(file_data=file_data)
 
     def write(
         self,

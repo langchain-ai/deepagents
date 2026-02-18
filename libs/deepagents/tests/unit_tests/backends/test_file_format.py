@@ -208,8 +208,9 @@ def test_store_legacy_list_content_read():
     with warnings.catch_warnings(record=True) as w:
         warnings.simplefilter("always")
         result = be.read("/legacy/file.txt")
-        assert "line1" in result
-        assert "line2" in result
+        assert result.error is None
+        assert result.file_data is not None
+        assert result.file_data["content"] == "line1\nline2\nline3"
         deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
         assert len(deprecation_warnings) >= 1
 
@@ -236,13 +237,12 @@ def test_state_legacy_list_content_read():
     rt = _make_state_runtime(files={"/old/file.txt": legacy_fd})
     be = StateBackend(rt)
 
-    with warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter("always")
-        result = be.read("/old/file.txt")
-        assert "alpha" in result
-        assert "beta" in result
-        deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
-        assert len(deprecation_warnings) >= 1
+    # read() now returns ReadResult with raw file_data (no deprecation warning
+    # since it doesn't normalize content)
+    result = be.read("/old/file.txt")
+    assert result.error is None
+    assert result.file_data is not None
+    assert result.file_data["content"] == ["alpha", "beta"]
 
     with warnings.catch_warnings(record=True) as w:
         warnings.simplefilter("always")
@@ -362,8 +362,10 @@ def test_store_write_as_list_readable():
 
     be.write("/file.txt", "aaa\nbbb")
     result = be.read("/file.txt")
-    assert "aaa" in result
-    assert "bbb" in result
+    assert result.error is None
+    assert result.file_data is not None
+    assert "aaa" in result.file_data["content"]
+    assert "bbb" in result.file_data["content"]
 
 
 # ---------------------------------------------------------------------------

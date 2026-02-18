@@ -107,9 +107,10 @@ def test_local_shell_backend_filesystem_operations() -> None:
         assert write_result.path == "/test.txt"
 
         # Read the file
-        content = backend.read("/test.txt")
-        assert "Hello" in content
-        assert "World" in content
+        result = backend.read("/test.txt")
+        assert result.error is None
+        assert "Hello" in result.file_data["content"]
+        assert "World" in result.file_data["content"]
 
         # Edit the file
         edit_result = backend.edit("/test.txt", "World", "Universe")
@@ -117,9 +118,10 @@ def test_local_shell_backend_filesystem_operations() -> None:
         assert edit_result.occurrences == 1
 
         # Verify edit
-        content = backend.read("/test.txt")
-        assert "Universe" in content
-        assert "World" not in content
+        result = backend.read("/test.txt")
+        assert result.error is None
+        assert "Universe" in result.file_data["content"]
+        assert "World" not in result.file_data["content"]
 
 
 def test_local_shell_backend_integration_shell_and_filesystem() -> None:
@@ -141,8 +143,9 @@ def test_local_shell_backend_integration_shell_and_filesystem() -> None:
         backend.execute("echo 'Shell created' > shell_file.txt")
 
         # Read via filesystem
-        content = backend.read("/shell_file.txt")
-        assert "Shell created" in content
+        result = backend.read("/shell_file.txt")
+        assert result.error is None
+        assert "Shell created" in result.file_data["content"]
 
 
 def test_local_shell_backend_ls_info() -> None:
@@ -287,13 +290,15 @@ async def test_local_shell_backend_async_filesystem_operations() -> None:
         assert write_result.error is None
 
         # Async read
-        content = await backend.aread("/async_test.txt")
-        assert "async content" in content
+        result = await backend.aread("/async_test.txt")
+        assert result.error is None
+        assert "async content" in result.file_data["content"]
 
         # Async edit
         edit_result = await backend.aedit("/async_test.txt", "async", "modified")
         assert edit_result.error is None
 
         # Verify
-        content = await backend.aread("/async_test.txt")
-        assert "modified content" in content
+        result = await backend.aread("/async_test.txt")
+        assert result.error is None
+        assert "modified content" in result.file_data["content"]

@@ -133,6 +133,19 @@ class FileData(TypedDict):
 
 
 @dataclass
+class ReadResult:
+    """Result from backend read operations.
+
+    Attributes:
+        error: Error message on failure, None on success.
+        file_data: FileData dict on success, None on failure.
+    """
+
+    error: str | None = None
+    file_data: FileData | None = None
+
+
+@dataclass
 class WriteResult:
     """Result from backend write operations.
 
@@ -229,39 +242,33 @@ class BackendProtocol(abc.ABC):  # noqa: B024
     def read(
         self,
         file_path: str,
-        offset: int = 0,
-        limit: int = 2000,
-    ) -> str:
-        """Read file content with line numbers.
+    ) -> "ReadResult":
+        """Read raw file data.
+
+        Returns a ``ReadResult`` containing the file's ``FileData`` on success
+        (including encoding info), or an error message on failure.  Pagination
+        and line-number formatting are handled by the tool layer.
 
         Args:
             file_path: Absolute path to the file to read. Must start with '/'.
-            offset: Line number to start reading from (0-indexed). Default: 0.
-            limit: Maximum number of lines to read. Default: 2000.
 
         Returns:
-            String containing file content formatted with line numbers (cat -n format),
-            starting at line 1. Lines longer than 2000 characters are truncated.
+            ReadResult with ``file_data`` on success or ``error`` on failure.
 
-            Returns an error string if the file doesn't exist or can't be read.
-
-        !!! note
-            - Use pagination (offset/limit) for large files to avoid context overflow
-            - First scan: `read(path, limit=100)` to see file structure
-            - Read more: `read(path, offset=100, limit=200)` for next section
-            - ALWAYS read a file before editing it
-            - If file exists but is empty, you'll receive a system reminder warning
+        .. deprecated::
+            ``offset`` and ``limit`` parameters have been removed from the
+            backend protocol.  Third-party integrations that previously passed
+            these arguments should update to call ``read(file_path)`` and
+            handle pagination in the tool / presentation layer instead.
         """
         raise NotImplementedError
 
     async def aread(
         self,
         file_path: str,
-        offset: int = 0,
-        limit: int = 2000,
-    ) -> str:
+    ) -> "ReadResult":
         """Async version of read."""
-        return await asyncio.to_thread(self.read, file_path, offset, limit)
+        return await asyncio.to_thread(self.read, file_path)
 
     def grep_raw(
         self,

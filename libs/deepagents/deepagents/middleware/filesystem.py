@@ -1,7 +1,7 @@
 """Middleware for providing filesystem tools to an agent."""
 # ruff: noqa: E501
 
-import base64
+import warnings
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Annotated, Any, Literal, NotRequired, cast
@@ -28,10 +28,14 @@ from deepagents.backends.protocol import (
     BackendProtocol,
     EditResult,
     FileData as FileData,  # Re-export for backwards compatibility
+    ReadResult,
     SandboxBackendProtocol,
     WriteResult,
 )
 from deepagents.backends.utils import (
+    _paginate_content,
+    create_file_data,
+    file_data_to_string,
     format_content_with_line_numbers,
     format_grep_matches,
     sanitize_tool_call_id,
@@ -68,6 +72,30 @@ READ_FILE_TRUNCATION_MSG = (
 # Using 4 chars per token as a conservative approximation (actual ratio varies by content)
 # This errs on the high side to avoid premature eviction of content that might fit
 NUM_CHARS_PER_TOKEN = 4
+
+
+def _coerce_read_result(raw: ReadResult | str) -> ReadResult:
+    """Wrap a legacy ``str`` return from ``read()`` into a ``ReadResult``.
+
+    Third-party backends may still return a plain string from ``read()``.
+    This shim converts it to the new ``ReadResult`` type and emits a
+    deprecation warning so authors can migrate at their own pace.
+
+    If *raw* is already a ``ReadResult`` it is returned unchanged.
+    """
+    if isinstance(raw, ReadResult):
+        return raw
+    if isinstance(raw, str):
+        warnings.warn(
+            "Backend.read() returning str is deprecated. Return a ReadResult instead. See BackendProtocol.read() docstring for details.",
+            DeprecationWarning,
+            stacklevel=3,
+        )
+        if raw.startswith("Error:"):
+            return ReadResult(error=raw[len("Error:") :].strip())
+        return ReadResult(file_data=create_file_data(raw))
+    msg = f"Backend.read() must return ReadResult or str, got {type(raw).__name__}"
+    raise TypeError(msg)
 
 
 def _file_data_reducer(left: dict[str, FileData] | None, right: dict[str, FileData | None]) -> dict[str, FileData]:
@@ -493,14 +521,21 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             except ValueError as e:
                 return f"Error: {e}"
 
-            ext = Path(validated_path).suffix.lower()
-            if ext in IMAGE_EXTENSIONS:
-                responses = resolved_backend.download_files([validated_path])
-                if responses and responses[0].content is not None:
+            read_result = _coerce_read_result(resolved_backend.read(validated_path))
+
+            if read_result.error:
+                return f"Error: {read_result.error}"
+
+            file_data = read_result.file_data
+            encoding = file_data.get("encoding", "utf-8")
+
+            if encoding == "base64":
+                # Binary file — check if it's an image for multimodal display
+                ext = Path(validated_path).suffix.lower()
+                if ext in IMAGE_EXTENSIONS:
                     media_type = IMAGE_MEDIA_TYPES.get(ext, "image/png")
-                    image_b64 = base64.standard_b64encode(responses[0].content).decode("utf-8")
                     return ToolMessage(
-                        content_blocks=[create_image_block(base64=image_b64, mime_type=media_type)],
+                        content_blocks=[create_image_block(base64=file_data["content"], mime_type=media_type)],
                         name="read_file",
                         tool_call_id=runtime.tool_call_id,
                         additional_kwargs={
@@ -508,26 +543,19 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                             "read_file_media_type": media_type,
                         },
                     )
-                if responses and responses[0].error:
-                    return f"Error reading image: {responses[0].error}"
-                return "Error reading image: unknown error"
+                return f"Error: Cannot display binary file '{validated_path}'"
 
-            result = resolved_backend.read(validated_path, offset=offset, limit=limit)
+            # UTF-8 text — apply pagination
+            content = file_data_to_string(file_data)
+            paginated = _paginate_content(content, offset, limit)
 
-            lines = result.splitlines(keepends=True)
-            if len(lines) > limit:
-                lines = lines[:limit]
-                result = "".join(lines)
-
-            # Check if result exceeds token threshold and truncate if necessary
-            if token_limit and len(result) >= NUM_CHARS_PER_TOKEN * token_limit:
-                # Calculate truncation message length to ensure final result stays under threshold
+            # Token truncation
+            if token_limit and len(paginated) >= NUM_CHARS_PER_TOKEN * token_limit:
                 truncation_msg = READ_FILE_TRUNCATION_MSG.format(file_path=validated_path)
                 max_content_length = NUM_CHARS_PER_TOKEN * token_limit - len(truncation_msg)
-                result = result[:max_content_length]
-                result += truncation_msg
+                paginated = paginated[:max_content_length] + truncation_msg
 
-            return result
+            return paginated
 
         async def async_read_file(
             file_path: Annotated[str, "Absolute path to the file to read. Must be absolute, not relative."],
@@ -542,14 +570,21 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             except ValueError as e:
                 return f"Error: {e}"
 
-            ext = Path(validated_path).suffix.lower()
-            if ext in IMAGE_EXTENSIONS:
-                responses = await resolved_backend.adownload_files([validated_path])
-                if responses and responses[0].content is not None:
+            read_result = _coerce_read_result(await resolved_backend.aread(validated_path))
+
+            if read_result.error:
+                return f"Error: {read_result.error}"
+
+            file_data = read_result.file_data
+            encoding = file_data.get("encoding", "utf-8")
+
+            if encoding == "base64":
+                # Binary file — check if it's an image for multimodal display
+                ext = Path(validated_path).suffix.lower()
+                if ext in IMAGE_EXTENSIONS:
                     media_type = IMAGE_MEDIA_TYPES.get(ext, "image/png")
-                    image_b64 = base64.standard_b64encode(responses[0].content).decode("utf-8")
                     return ToolMessage(
-                        content_blocks=[create_image_block(base64=image_b64, mime_type=media_type)],
+                        content_blocks=[create_image_block(base64=file_data["content"], mime_type=media_type)],
                         name="read_file",
                         tool_call_id=runtime.tool_call_id,
                         additional_kwargs={
@@ -557,26 +592,19 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                             "read_file_media_type": media_type,
                         },
                     )
-                if responses and responses[0].error:
-                    return f"Error reading image: {responses[0].error}"
-                return "Error reading image: unknown error"
+                return f"Error: Cannot display binary file '{validated_path}'"
 
-            result = await resolved_backend.aread(validated_path, offset=offset, limit=limit)
+            # UTF-8 text — apply pagination
+            content = file_data_to_string(file_data)
+            paginated = _paginate_content(content, offset, limit)
 
-            lines = result.splitlines(keepends=True)
-            if len(lines) > limit:
-                lines = lines[:limit]
-                result = "".join(lines)
-
-            # Check if result exceeds token threshold and truncate if necessary
-            if token_limit and len(result) >= NUM_CHARS_PER_TOKEN * token_limit:
-                # Calculate truncation message length to ensure final result stays under threshold
+            # Token truncation
+            if token_limit and len(paginated) >= NUM_CHARS_PER_TOKEN * token_limit:
                 truncation_msg = READ_FILE_TRUNCATION_MSG.format(file_path=validated_path)
                 max_content_length = NUM_CHARS_PER_TOKEN * token_limit - len(truncation_msg)
-                result = result[:max_content_length]
-                result += truncation_msg
+                paginated = paginated[:max_content_length] + truncation_msg
 
-            return result
+            return paginated
 
         return StructuredTool.from_function(
             name="read_file",

@@ -1,5 +1,6 @@
 """`FilesystemBackend`: Read and write files directly from the filesystem."""
 
+import base64
 import json
 import logging
 import os
@@ -17,11 +18,11 @@ from deepagents.backends.protocol import (
     FileInfo,
     FileUploadResponse,
     GrepMatch,
+    ReadResult,
     WriteResult,
 )
 from deepagents.backends.utils import (
-    check_empty_content,
-    format_content_with_line_numbers,
+    create_file_data,
     perform_string_replacement,
 )
 
@@ -270,48 +271,38 @@ class FilesystemBackend(BackendProtocol):
         results.sort(key=lambda x: x.get("path", ""))
         return results
 
-    def read(
-        self,
-        file_path: str,
-        offset: int = 0,
-        limit: int = 2000,
-    ) -> str:
-        """Read file content with line numbers.
+    def read(self, file_path: str) -> ReadResult:
+        """Read raw file data.
+
+        Reads the file in binary mode, attempts UTF-8 decode, and falls back
+        to base64 encoding for binary files.
 
         Args:
             file_path: Absolute or relative file path.
-            offset: Line offset to start reading from (0-indexed).
-            limit: Maximum number of lines to read.
 
         Returns:
-            Formatted file content with line numbers, or error message.
+            ReadResult with file_data on success, or error on failure.
         """
         resolved_path = self._resolve_path(file_path)
 
         if not resolved_path.exists() or not resolved_path.is_file():
-            return f"Error: File '{file_path}' not found"
+            return ReadResult(error=f"File '{file_path}' not found")
 
         try:
-            # Open with O_NOFOLLOW where available to avoid symlink traversal
             fd = os.open(resolved_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-            with os.fdopen(fd, "r", encoding="utf-8") as f:
-                content = f.read()
+            with os.fdopen(fd, "rb") as f:
+                raw_bytes = f.read()
 
-            empty_msg = check_empty_content(content)
-            if empty_msg:
-                return empty_msg
+            try:
+                content = raw_bytes.decode("utf-8")
+                encoding = "utf-8"
+            except UnicodeDecodeError:
+                content = base64.standard_b64encode(raw_bytes).decode("ascii")
+                encoding = "base64"
 
-            lines = content.splitlines()
-            start_idx = offset
-            end_idx = min(start_idx + limit, len(lines))
-
-            if start_idx >= len(lines):
-                return f"Error: Line offset {offset} exceeds file length ({len(lines)} lines)"
-
-            selected_lines = lines[start_idx:end_idx]
-            return format_content_with_line_numbers(selected_lines, start_line=start_idx + 1)
-        except (OSError, UnicodeDecodeError) as e:
-            return f"Error reading file '{file_path}': {e}"
+            return ReadResult(file_data=create_file_data(content, encoding=encoding))
+        except OSError as e:
+            return ReadResult(error=f"Error reading file '{file_path}': {e}")
 
     def write(
         self,

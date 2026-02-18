@@ -1,3 +1,6 @@
+import base64 as b64mod
+import warnings as _warnings
+
 import pytest
 from langchain.agents import create_agent
 from langchain.agents.middleware.types import ToolCallRequest
@@ -15,7 +18,6 @@ from langgraph.types import Command, Overwrite
 from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
 from deepagents.backends.protocol import (
     ExecuteResponse,
-    FileDownloadResponse,
     SandboxBackendProtocol,
 )
 from deepagents.backends.utils import (
@@ -1128,19 +1130,20 @@ class TestFilesystemMiddleware:
 
     def test_read_file_image_returns_standard_image_content_block(self):
         """Test image reads return standard image blocks with base64 + mime_type."""
-
-        class ImageBackend(StateBackend):
-            def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
-                return [
-                    FileDownloadResponse(
-                        path=paths[0],
-                        content=b"fake-image-bytes",
-                        error=None,
-                    )
-                ]
-
-        middleware = FilesystemMiddleware(backend=lambda rt: ImageBackend(rt))  # noqa: PLW0108
-        state = FilesystemState(messages=[], files={})
+        # Pre-populate state with a base64-encoded image file
+        image_b64 = b64mod.standard_b64encode(b"fake-image-bytes").decode("ascii")
+        middleware = FilesystemMiddleware()
+        state = FilesystemState(
+            messages=[],
+            files={
+                "/app/frame_001.jpg": {
+                    "content": image_b64,
+                    "encoding": "base64",
+                    "created_at": "2024-01-01T00:00:00",
+                    "modified_at": "2024-01-01T00:00:00",
+                },
+            },
+        )
         runtime = ToolRuntime(
             state=state,
             context=None,
@@ -1163,14 +1166,9 @@ class TestFilesystemMiddleware:
         assert result.content[0]["mime_type"] == "image/jpeg"
         assert result.content[0]["base64"] == "ZmFrZS1pbWFnZS1ieXRlcw=="
 
-    def test_read_file_image_returns_error_when_download_fails(self):
-        """Image reads should return a clear backend error string."""
-
-        class ImageBackend(StateBackend):
-            def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
-                return [FileDownloadResponse(path=paths[0], content=None, error="file_not_found")]
-
-        middleware = FilesystemMiddleware(backend=lambda rt: ImageBackend(rt))  # noqa: PLW0108
+    def test_read_file_image_returns_error_when_file_not_found(self):
+        """Image reads for missing files should return a clear error string."""
+        middleware = FilesystemMiddleware()
         state = FilesystemState(messages=[], files={})
         runtime = ToolRuntime(
             state=state,
@@ -1185,7 +1183,68 @@ class TestFilesystemMiddleware:
         result = read_file_tool.invoke({"file_path": "/app/missing.png", "runtime": runtime})
 
         assert isinstance(result, str)
-        assert result == "Error reading image: file_not_found"
+        assert "not found" in result.lower()
+
+    def test_read_file_legacy_str_backend_compat(self):
+        """Third-party backends returning str from read() still work with deprecation warning."""
+
+        class LegacyBackend(StateBackend):
+            """Backend that returns str from read() (old API)."""
+
+            def read(self, file_path: str) -> str:  # type: ignore[override]
+                return "     1\tlegacy content line 1\n     2\tlegacy content line 2"
+
+        middleware = FilesystemMiddleware(backend=lambda rt: LegacyBackend(rt))  # noqa: PLW0108
+        state = FilesystemState(messages=[], files={})
+        runtime = ToolRuntime(
+            state=state,
+            context=None,
+            tool_call_id="legacy-1",
+            store=None,
+            stream_writer=lambda _: None,
+            config={},
+        )
+
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+
+        with _warnings.catch_warnings(record=True) as w:
+            _warnings.simplefilter("always")
+            result = read_file_tool.invoke({"file_path": "/test.txt", "runtime": runtime})
+            assert len(w) == 1
+            assert issubclass(w[0].category, DeprecationWarning)
+            assert "ReadResult" in str(w[0].message)
+
+        assert isinstance(result, str)
+        assert "legacy content" in result
+
+    def test_read_file_legacy_str_error_backend_compat(self):
+        """Third-party backends returning 'Error:' str from read() are coerced properly."""
+
+        class LegacyErrorBackend(StateBackend):
+            def read(self, file_path: str) -> str:  # type: ignore[override]
+                return "Error: file not found"
+
+        middleware = FilesystemMiddleware(backend=lambda rt: LegacyErrorBackend(rt))  # noqa: PLW0108
+        state = FilesystemState(messages=[], files={})
+        runtime = ToolRuntime(
+            state=state,
+            context=None,
+            tool_call_id="legacy-err",
+            store=None,
+            stream_writer=lambda _: None,
+            config={},
+        )
+
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+
+        with _warnings.catch_warnings(record=True) as w:
+            _warnings.simplefilter("always")
+            result = read_file_tool.invoke({"file_path": "/missing.txt", "runtime": runtime})
+            assert len(w) == 1
+            assert issubclass(w[0].category, DeprecationWarning)
+
+        assert isinstance(result, str)
+        assert "file not found" in result
 
     def test_execute_tool_returns_error_when_backend_doesnt_support(self):
         """Test that execute tool returns friendly error instead of raising exception."""

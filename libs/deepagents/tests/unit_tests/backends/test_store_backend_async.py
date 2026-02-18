@@ -30,8 +30,9 @@ async def test_store_backend_async_crud_and_search():
     assert isinstance(msg, WriteResult) and msg.error is None and msg.path == "/docs/readme.md"
 
     # aread
-    txt = await be.aread("/docs/readme.md")
-    assert "hello store" in txt
+    result = await be.aread("/docs/readme.md")
+    assert result.error is None
+    assert "hello store" in result.file_data["content"]
 
     # aedit
     msg2 = await be.aedit("/docs/readme.md", "hello", "hi", replace_all=False)
@@ -130,8 +131,8 @@ async def test_store_backend_async_errors():
     assert isinstance(err, EditResult) and err.error and "not found" in err.error
 
     # aread missing file
-    content = await be.aread("/nonexistent.txt")
-    assert "Error" in content or "not found" in content.lower()
+    result = await be.aread("/nonexistent.txt")
+    assert result.error is not None
 
 
 async def test_store_backend_aedit_replace_all():
@@ -153,20 +154,22 @@ async def test_store_backend_aedit_replace_all():
     assert res3.error is None
     assert res3.occurrences == 2
 
-    content = await be.aread("/test.txt")
-    assert "qux bar qux baz" in content
+    result = await be.aread("/test.txt")
+    assert result.error is None
+    assert "qux bar qux baz" in result.file_data["content"]
 
     # Now test replace_all=False with unique string (should succeed)
     res4 = await be.aedit("/test.txt", "bar", "xyz", replace_all=False)
     assert res4.error is None
     assert res4.occurrences == 1
 
-    content2 = await be.aread("/test.txt")
-    assert "qux xyz qux baz" in content2
+    result2 = await be.aread("/test.txt")
+    assert result2.error is None
+    assert "qux xyz qux baz" in result2.file_data["content"]
 
 
 async def test_store_backend_aread_with_offset_and_limit():
-    """Test async read with offset and limit."""
+    """Test async read returns full content."""
     rt = make_runtime()
     be = StoreBackend(rt)
 
@@ -175,13 +178,14 @@ async def test_store_backend_aread_with_offset_and_limit():
     res = await be.awrite("/multi.txt", lines)
     assert res.error is None
 
-    # Read with offset
-    content_offset = await be.aread("/multi.txt", offset=2, limit=3)
-    assert "Line 3" in content_offset
-    assert "Line 4" in content_offset
-    assert "Line 5" in content_offset
-    assert "Line 1" not in content_offset
-    assert "Line 6" not in content_offset
+    # Read full content
+    result = await be.aread("/multi.txt")
+    assert result.error is None
+    assert "Line 3" in result.file_data["content"]
+    assert "Line 4" in result.file_data["content"]
+    assert "Line 5" in result.file_data["content"]
+    assert "Line 1" in result.file_data["content"]
+    assert "Line 6" in result.file_data["content"]
 
 
 async def test_store_backend_agrep_with_glob():

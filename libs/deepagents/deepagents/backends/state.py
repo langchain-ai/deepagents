@@ -12,6 +12,7 @@ from deepagents.backends.protocol import (
     FileInfo,
     FileUploadResponse,
     GrepMatch,
+    ReadResult,
     WriteResult,
 )
 from deepagents.backends.utils import (
@@ -19,7 +20,6 @@ from deepagents.backends.utils import (
     _to_legacy_file_data,
     create_file_data,
     file_data_to_string,
-    format_read_response,
     grep_matches_from_files,
     perform_string_replacement,
     update_file_data,
@@ -60,11 +60,7 @@ class StateBackend(BackendProtocol):
         self.runtime = runtime
         self._file_format = file_format
 
-    def _prepare_for_storage(self, file_data: FileData) -> dict[str, Any]:
-        """Convert FileData to the format used for state storage.
-
-        When `file_format="v1"`, returns the legacy format.
-        """
+    def _to_storage_format(self, file_data: FileData) -> dict[str, Any]:
         if self._file_format == "v1":
             return _to_legacy_file_data(file_data)
         return {**file_data}
@@ -120,29 +116,22 @@ class StateBackend(BackendProtocol):
         infos.sort(key=lambda x: x.get("path", ""))
         return infos
 
-    def read(
-        self,
-        file_path: str,
-        offset: int = 0,
-        limit: int = 2000,
-    ) -> str:
-        """Read file content with line numbers.
+    def read(self, file_path: str) -> ReadResult:
+        """Read raw file data.
 
         Args:
             file_path: Absolute file path.
-            offset: Line offset to start reading from (0-indexed).
-            limit: Maximum number of lines to read.
 
         Returns:
-            Formatted file content with line numbers, or error message.
+            ReadResult with file_data on success, or error on failure.
         """
         files = self.runtime.state.get("files", {})
         file_data = files.get(file_path)
 
         if file_data is None:
-            return f"Error: File '{file_path}' not found"
+            return ReadResult(error=f"File '{file_path}' not found")
 
-        return format_read_response(file_data, offset, limit)
+        return ReadResult(file_data=file_data)
 
     def write(
         self,
@@ -159,7 +148,7 @@ class StateBackend(BackendProtocol):
             return WriteResult(error=f"Cannot write to {file_path} because it already exists. Read and then make an edit, or write to a new path.")
 
         new_file_data = create_file_data(content)
-        return WriteResult(path=file_path, files_update={file_path: self._prepare_for_storage(new_file_data)})
+        return WriteResult(path=file_path, files_update={file_path: self._to_storage_format(new_file_data)})
 
     def edit(
         self,
@@ -186,7 +175,7 @@ class StateBackend(BackendProtocol):
 
         new_content, occurrences = result
         new_file_data = update_file_data(file_data, new_content)
-        return EditResult(path=file_path, files_update={file_path: self._prepare_for_storage(new_file_data)}, occurrences=int(occurrences))
+        return EditResult(path=file_path, files_update={file_path: self._to_storage_format(new_file_data)}, occurrences=int(occurrences))
 
     def grep_raw(
         self,

@@ -108,6 +108,17 @@ SLASH_COMMANDS: list[tuple[str, str]] = [
 ]
 """Built-in slash commands with descriptions."""
 
+SLASH_COMMAND_ALIASES: dict[str, str] = {
+    "/exit": "/quit",
+    "/continue": "/threads",
+    "/resume": "/threads",
+}
+"""Aliases that map to canonical slash commands.
+
+When a user types an alias (e.g., `/exit`), the autocomplete system
+shows the canonical command (`/quit`) as a suggestion.
+"""
+
 MAX_SUGGESTIONS = 10
 
 
@@ -118,15 +129,21 @@ class SlashCommandController:
         self,
         commands: list[tuple[str, str]],
         view: CompletionView,
+        *,
+        aliases: dict[str, str] | None = None,
     ) -> None:
         """Initialize the slash command controller.
 
         Args:
             commands: List of (command, description) tuples
             view: View to render suggestions to
+            aliases: Mapping of alias commands to their canonical targets.
+                When a user types an alias prefix, the target command is
+                included in suggestions.
         """
         self._commands = commands
         self._view = view
+        self._aliases = aliases or {}
         self._suggestions: list[tuple[str, str]] = []
         self._selected_index = 0
 
@@ -158,13 +175,22 @@ class SlashCommandController:
 
         # Get the search string (text after /)
         search = text[1:cursor_index].lower()
+        typed = "/" + search
 
-        # Filter commands that match
+        # Filter commands that match by prefix
         suggestions = [
-            (cmd, desc)
-            for cmd, desc in self._commands
-            if cmd.lower().startswith("/" + search)
+            (cmd, desc) for cmd, desc in self._commands if cmd.lower().startswith(typed)
         ]
+
+        # Also include commands reachable through aliases
+        matched = {cmd for cmd, _ in suggestions}
+        for alias, target in self._aliases.items():
+            if alias.lower().startswith(typed) and target.lower() not in matched:
+                for cmd, desc in self._commands:
+                    if cmd.lower() == target.lower():
+                        suggestions.append((cmd, desc))
+                        matched.add(cmd.lower())
+                        break
 
         if suggestions:
             self._suggestions = suggestions

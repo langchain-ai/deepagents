@@ -4,6 +4,7 @@ import io
 import sys
 from collections.abc import AsyncIterator, Generator
 from contextlib import contextmanager
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -123,6 +124,75 @@ class TestMakeHitlDecision:
                 {"name": tool_name, "args": {"command": "rm -rf /"}}, console
             )
             assert result["type"] == "reject"
+
+
+class TestNonInteractiveVersionMetadata:
+    """Tests for version metadata in non-interactive config."""
+
+    @pytest.mark.asyncio
+    async def test_config_includes_version_metadata(self) -> None:
+        """Non-interactive config should include version keys in metadata."""
+        captured_configs: list[Any] = []
+
+        mock_cp = MagicMock()
+        mock_checkpointer_cm = AsyncMock()
+        mock_checkpointer_cm.__aenter__.return_value = mock_cp
+        mock_checkpointer_cm.__aexit__.return_value = None
+
+        mock_agent = MagicMock()
+        mock_agent.astream = MagicMock(return_value=_async_iter([]))
+
+        def capture_config(
+            *args: Any,  # Test stub matching _run_agent_loop signature
+            **_kwargs: Any,
+        ) -> None:
+            # args[2] is the config positional argument
+            captured_configs.append(args[2])
+
+        with (
+            patch(
+                "deepagents_cli.non_interactive.create_model",
+                return_value=ModelResult(
+                    model=MagicMock(),
+                    model_name="test-model",
+                    provider="test",
+                ),
+            ),
+            patch(
+                "deepagents_cli.non_interactive.generate_thread_id",
+                return_value="test-thread",
+            ),
+            patch(
+                "deepagents_cli.non_interactive.settings",
+            ) as mock_settings,
+            patch(
+                "deepagents_cli.non_interactive.build_langsmith_thread_url",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_cli.non_interactive.get_checkpointer",
+                return_value=mock_checkpointer_cm,
+            ),
+            patch(
+                "deepagents_cli.non_interactive.create_cli_agent",
+            ) as mock_create_agent,
+            patch(
+                "deepagents_cli.non_interactive._run_agent_loop",
+                side_effect=capture_config,
+            ),
+        ):
+            mock_settings.shell_allow_list = None
+            mock_settings.has_tavily = False
+            mock_settings.model_name = None
+
+            mock_create_agent.return_value = (mock_agent, MagicMock())
+
+            await run_non_interactive(message="test", quiet=True)
+
+        assert len(captured_configs) == 1
+        metadata = captured_configs[0]["metadata"]
+        assert "deepagents_version" in metadata
+        assert "deepagents_cli_version" in metadata
 
 
 class TestBuildNonInteractiveHeader:

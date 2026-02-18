@@ -12,7 +12,11 @@ import sys
 import uuid
 from dataclasses import dataclass
 from enum import StrEnum
-from importlib.metadata import PackageNotFoundError, distribution
+from importlib.metadata import (
+    PackageNotFoundError,
+    distribution,
+    version as pkg_version,
+)
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -22,6 +26,13 @@ from rich.console import Console
 from deepagents_cli._version import __version__
 
 logger = logging.getLogger(__name__)
+
+# Version constants for LangSmith trace metadata
+try:
+    _sdk_version: str = pkg_version("deepagents")
+except PackageNotFoundError:
+    _sdk_version = "unknown"
+_cli_version: str = __version__
 
 dotenv.load_dotenv()
 
@@ -314,6 +325,44 @@ MAX_ARG_LENGTH = 150
 
 # Agent configuration
 config: RunnableConfig = {"recursion_limit": 1000}
+
+
+def build_stream_config(
+    thread_id: str,
+    assistant_id: str | None,
+) -> RunnableConfig:
+    """Build the LangGraph stream config dict.
+
+    The `thread_id` in `configurable` is automatically propagated as run
+    metadata by LangGraph, so it can be used for LangSmith filtering without
+    a separate metadata key.
+
+    Args:
+        thread_id: The CLI session thread identifier.
+        assistant_id: The agent/assistant identifier, if any.
+
+    Returns:
+        Config dict with `configurable` and `metadata` keys.
+    """
+    from datetime import UTC, datetime
+
+    metadata: dict[str, str] = {
+        "deepagents_version": _sdk_version,
+        "deepagents_cli_version": _cli_version,
+    }
+    if assistant_id:
+        metadata.update(
+            {
+                "assistant_id": assistant_id,
+                "agent_name": assistant_id,
+                "updated_at": datetime.now(UTC).isoformat(),
+            }
+        )
+    return {
+        "configurable": {"thread_id": thread_id},
+        "metadata": metadata,
+    }
+
 
 # Rich console instance
 console = Console(highlight=False)

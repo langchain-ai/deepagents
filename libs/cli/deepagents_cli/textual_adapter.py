@@ -7,7 +7,6 @@ import asyncio
 import json
 import logging
 import uuid
-from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -24,6 +23,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.types import Command, Interrupt
 from pydantic import TypeAdapter, ValidationError
 
+from deepagents_cli.config import build_stream_config
 from deepagents_cli.file_ops import FileOpTracker
 from deepagents_cli.image_utils import create_multimodal_content
 from deepagents_cli.input import ImageTracker, parse_file_mentions
@@ -41,38 +41,6 @@ logger = logging.getLogger(__name__)
 HITLDecision = ApproveDecision | EditDecision | RejectDecision
 
 _HITL_REQUEST_ADAPTER = TypeAdapter(HITLRequest)
-
-
-def _build_stream_config(
-    thread_id: str,
-    assistant_id: str | None,
-) -> dict[str, Any]:
-    """Build the LangGraph stream config dict.
-
-    The `thread_id` in `configurable` is automatically propagated as run
-    metadata by LangGraph, so it can be used for LangSmith filtering without
-    a separate metadata key.
-
-    Args:
-        thread_id: The CLI session thread identifier.
-        assistant_id: The agent/assistant identifier, if any.
-
-    Returns:
-        Config dict with `configurable` and `metadata` keys.
-    """
-    metadata: dict[str, str] = {}
-    if assistant_id:
-        metadata.update(
-            {
-                "assistant_id": assistant_id,
-                "agent_name": assistant_id,
-                "updated_at": datetime.now(UTC).isoformat(),
-            }
-        )
-    return {
-        "configurable": {"thread_id": thread_id},
-        "metadata": metadata,
-    }
 
 
 def _is_summarization_chunk(metadata: dict | None) -> bool:
@@ -285,7 +253,7 @@ async def execute_task_textual(
         message_content = final_input
 
     thread_id = session_state.thread_id
-    config = _build_stream_config(thread_id, assistant_id)
+    config = build_stream_config(thread_id, assistant_id)
 
     captured_input_tokens = 0
     captured_output_tokens = 0

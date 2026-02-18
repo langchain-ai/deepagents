@@ -8,6 +8,7 @@ from tests.evals.utils import TrajectoryExpectations, run_agent
 
 @pytest.mark.langsmith
 def test_task_calls_weather_subagent() -> None:
+    """Requests a named subagent via task."""
     agent = create_deep_agent(
         subagents=[
             {
@@ -31,6 +32,7 @@ def test_task_calls_weather_subagent() -> None:
 
 @pytest.mark.langsmith
 def test_task_calls_general_purpose_subagent() -> None:
+    """Requests the general-purpose subagent via task."""
     agent = create_deep_agent()
     trajectory = run_agent(
         agent,

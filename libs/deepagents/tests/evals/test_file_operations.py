@@ -8,6 +8,7 @@ from tests.evals.utils import TrajectoryExpectations, run_agent
 
 @pytest.mark.langsmith
 def test_read_file_seeded_state_backend_file() -> None:
+    """Reads a seeded file and answers a question."""
     agent = create_deep_agent()
     trajectory = run_agent(
         agent,
@@ -23,6 +24,7 @@ def test_read_file_seeded_state_backend_file() -> None:
 
 @pytest.mark.langsmith
 def test_write_file_simple() -> None:
+    """Writes a file then answers a follow-up."""
     agent = create_deep_agent(system_prompt="Your name is Foo Bar.")
     trajectory = run_agent(
         agent,
@@ -38,6 +40,7 @@ def test_write_file_simple() -> None:
 
 @pytest.mark.langsmith
 def test_write_files_in_parallel() -> None:
+    """Writes two files in parallel then confirms."""
     agent = create_deep_agent()
     trajectory = run_agent(
         agent,
@@ -54,3 +57,23 @@ def test_write_files_in_parallel() -> None:
     assert len(step1_tool_calls) == 2
     assert {tc["name"] for tc in step1_tool_calls} == {"write_file"}
     assert {tc["args"]["file_path"] for tc in step1_tool_calls} == {"/a.md", "/b.md"}
+
+
+@pytest.mark.langsmith
+def test_ls_directory_contains_file_yes_no() -> None:
+    """Uses ls then answers YES/NO about a directory entry."""
+    agent = create_deep_agent()
+    trajectory = run_agent(
+        agent,
+        initial_files={
+            "/foo/a.md": "a",
+            "/foo/b.md": "b",
+            "/foo/c.md": "c",
+        },
+        query="Is there a file named c.md in /foo? Answer with YES or NO only.",
+        # 1st step: request a tool call to list /foo.
+        # 2nd step: answer YES/NO.
+        # 1 tool call request: ls.
+        expect=TrajectoryExpectations(num_agent_steps=2, num_tool_call_requests=1),
+    )
+    assert trajectory.steps[-1].action.text.strip().upper() == "YES"

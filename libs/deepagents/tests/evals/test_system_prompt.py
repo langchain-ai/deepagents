@@ -8,7 +8,7 @@ from tests.evals.utils import TrajectoryExpectations, run_agent
 
 @pytest.mark.langsmith
 def test_custom_system_prompt() -> None:
-    """Verify that custom system provided prompt works is incorporated."""
+    """Custom system prompt is reflected in the answer."""
     agent = create_deep_agent(system_prompt="Your name is Foo Bar.")
     trajectory = run_agent(
         agent,

@@ -347,7 +347,7 @@ class LocalContextMiddleware(AgentMiddleware):
     def before_agent(  # type: ignore[override]
         self,
         state: LocalContextState,
-        runtime: Runtime,
+        runtime: Runtime,  # noqa: ARG002  # Required by interface but not used in local context
     ) -> dict[str, Any] | None:
         """Run context detection on first interaction.
 

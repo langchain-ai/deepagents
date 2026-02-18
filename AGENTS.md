@@ -211,6 +211,14 @@ def send_email(to: str, msg: str, *, priority: str = "normal") -> bool:
 - **Message passing** for widget communication - see [Events guide](https://textual.textualize.io/guide/events/)
 - **Reactive attributes** for state management - see [Reactivity guide](https://textual.textualize.io/guide/reactivity/)
 
+**Startup performance:**
+
+The CLI must stay fast to launch. Never import heavy packages (e.g., `deepagents`, LangChain, LangGraph) at module level or in the argument-parsing path. These imports pull in large dependency trees and add seconds to every invocation, including trivial commands like `deepagents -v`.
+
+- Keep top-level imports in `main.py` and other entry-point modules minimal.
+- Defer heavy imports to the point where they are actually needed (inside functions/methods).
+- To read another package's version without importing it, use `importlib.metadata.version("package-name")`.
+
 **Building chat/streaming interfaces:**
 
 - Blog post: [Anatomy of a Textual User Interface](https://textual.textualize.io/blog/2024/09/15/anatomy-of-a-textual-user-interface/) - demonstrates building an AI chat interface with streaming responses

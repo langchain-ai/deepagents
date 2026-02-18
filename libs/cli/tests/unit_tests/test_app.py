@@ -434,6 +434,50 @@ class TestMessageQueue:
             mock_worker.cancel.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_interrupt_dismisses_completion_without_stopping_agent(self) -> None:
+        """Esc should dismiss completion popup without interrupting the agent."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            mock_worker = MagicMock()
+            app._agent_worker = mock_worker
+
+            # Activate completion by typing "/"
+            chat = app._chat_input
+            assert chat is not None
+            assert chat._text_area is not None
+            chat._text_area.text = "/"
+            await pilot.pause()
+            assert chat._current_suggestions  # completion is active
+
+            # Esc should dismiss completion, NOT cancel the agent
+            app.action_interrupt()
+
+            assert chat._current_suggestions == []
+            mock_worker.cancel.assert_not_called()
+            assert app._agent_running is True
+
+    @pytest.mark.asyncio
+    async def test_interrupt_falls_through_when_no_completion(self) -> None:
+        """Esc should interrupt the agent when completion is not active."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            mock_worker = MagicMock()
+            app._agent_worker = mock_worker
+
+            # No completion active — interrupt should reach the agent
+            chat = app._chat_input
+            assert chat is not None
+            assert not chat._current_suggestions
+
+            app.action_interrupt()
+
+            mock_worker.cancel.assert_called_once()
+
+    @pytest.mark.asyncio
     async def test_queue_cleared_on_ctrl_c(self) -> None:
         """Ctrl+C should clear the message queue."""
         app = DeepAgentsApp()

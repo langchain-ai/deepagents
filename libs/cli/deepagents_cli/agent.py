@@ -290,7 +290,7 @@ def _format_task_description(
 
     # Truncate description if too long for display
     description_preview = description
-    if len(description) > 500:
+    if len(description) > 500:  # noqa: PLR2004  # Subagent description length threshold
         description_preview = description[:500] + "..."
 
     glyphs = get_glyphs()
@@ -332,32 +332,32 @@ def _add_interrupt_on() -> dict[str, InterruptOnConfig]:
     """
     execute_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
-        "description": _format_execute_description,  # type: ignore[typeddict-item]
+        "description": _format_execute_description,  # type: ignore[typeddict-item]  # Callable description narrower than TypedDict expects
     }
 
     write_file_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
-        "description": _format_write_file_description,  # type: ignore[typeddict-item]
+        "description": _format_write_file_description,  # type: ignore[typeddict-item]  # Callable description narrower than TypedDict expects
     }
 
     edit_file_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
-        "description": _format_edit_file_description,  # type: ignore[typeddict-item]
+        "description": _format_edit_file_description,  # type: ignore[typeddict-item]  # Callable description narrower than TypedDict expects
     }
 
     web_search_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
-        "description": _format_web_search_description,  # type: ignore[typeddict-item]
+        "description": _format_web_search_description,  # type: ignore[typeddict-item]  # Callable description narrower than TypedDict expects
     }
 
     fetch_url_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
-        "description": _format_fetch_url_description,  # type: ignore[typeddict-item]
+        "description": _format_fetch_url_description,  # type: ignore[typeddict-item]  # Callable description narrower than TypedDict expects
     }
 
     task_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
-        "description": _format_task_description,  # type: ignore[typeddict-item]
+        "description": _format_task_description,  # type: ignore[typeddict-item]  # Callable description narrower than TypedDict expects
     }
 
     return {
@@ -534,12 +534,12 @@ def create_cli_agent(
 
     # Configure interrupt_on based on auto_approve setting
     interrupt_on: dict[str, bool | InterruptOnConfig] | None = None
-    if auto_approve:
+    if auto_approve:  # noqa: SIM108  # if-else more readable for interrupt_on config
         # No interrupts - all tools run automatically
         interrupt_on = {}
     else:
         # Full HITL for destructive operations
-        interrupt_on = _add_interrupt_on()  # type: ignore[assignment]
+        interrupt_on = _add_interrupt_on()  # type: ignore[assignment]  # InterruptOnConfig is compatible at runtime
 
     # Set up composite backend with routing
     # For local FilesystemBackend, route large tool results to /tmp to avoid polluting

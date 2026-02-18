@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.0.22](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.21...deepagents-cli==0.0.22) (2026-02-17)
+
+
+### Features
+
+* **cli:** add `langchain-openrouter` ([#1340](https://github.com/langchain-ai/deepagents/issues/1340)) ([5b35247](https://github.com/langchain-ai/deepagents/commit/5b35247b126ed328e9562ac3a3c2acd184b39011))
+* **cli:** update system & default prompt ([#1293](https://github.com/langchain-ai/deepagents/issues/1293)) ([2aeb092](https://github.com/langchain-ai/deepagents/commit/2aeb092e027affd9eaa8a78b33101e1fd930d444))
+* **cli:** warn when ripgrep is not installed ([#1337](https://github.com/langchain-ai/deepagents/issues/1337)) ([0367efa](https://github.com/langchain-ai/deepagents/commit/0367efa323b7a29c015d6a3fbb5af8894dc724b8))
+* **infra:** ensure dep group version match for CLI ([#1316](https://github.com/langchain-ai/deepagents/issues/1316)) ([db05de1](https://github.com/langchain-ai/deepagents/commit/db05de1b0c92208b9752f3f03fa5fa54813ab4ef))
+* **sdk:** enable type checking in deepagents and resolve most linting issues ([#991](https://github.com/langchain-ai/deepagents/issues/991)) ([5c90376](https://github.com/langchain-ai/deepagents/commit/5c90376c02754c67d448908e55d1e953f54b8acd))
+
+
+### Bug Fixes
+
+* **cli:** handle `None` selection endpoint, `IndexError` in clipboard copy ([#1342](https://github.com/langchain-ai/deepagents/issues/1342)) ([5754031](https://github.com/langchain-ai/deepagents/commit/57540316cf928da3dcf4401fb54a5d0102045d67))
+
+
+### Performance Improvements
+
+* **cli:** defer heavy imports ([#1361](https://github.com/langchain-ai/deepagents/issues/1361)) ([dd992e4](https://github.com/langchain-ai/deepagents/commit/dd992e48feb3e3a9fc6fd93f56e9d8a9cb51c7bf))
+
 ## [0.0.21](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.20...deepagents-cli==0.0.21) (2026-02-11)
 
 ### Features

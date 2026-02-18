@@ -1,7 +1,12 @@
 """Unit tests for UI rendering utilities."""
 
 from deepagents_cli.config import get_glyphs
-from deepagents_cli.ui import _format_timeout, format_tool_display, truncate_value
+from deepagents_cli.tool_display import (
+    _format_timeout,
+    format_tool_display,
+    format_tool_message_content,
+    truncate_value,
+)
 
 
 class TestFormatTimeout:
@@ -137,3 +142,42 @@ class TestFormatToolDisplayOther:
         assert f"{prefix} custom_tool(" in result
         assert "arg1=" in result
         assert "arg2=" in result
+
+
+class TestFormatToolMessageContent:
+    """Tests for `format_tool_message_content`."""
+
+    def test_none_returns_empty_string(self) -> None:
+        """Test that None content returns empty string."""
+        assert format_tool_message_content(None) == ""
+
+    def test_plain_string_returned_as_is(self) -> None:
+        """Test that a plain string is returned unchanged."""
+        assert format_tool_message_content("hello") == "hello"
+
+    def test_list_of_strings_joined(self) -> None:
+        """Test that a list of strings is joined with newlines."""
+        assert format_tool_message_content(["a", "b"]) == "a\nb"
+
+    def test_list_with_dict_uses_json(self) -> None:
+        """Test that dicts in a list are serialized as JSON."""
+        result = format_tool_message_content([{"key": "val"}])
+        assert '"key"' in result
+        assert '"val"' in result
+
+    def test_list_mixed_types(self) -> None:
+        """Test a list with both strings and dicts."""
+        result = format_tool_message_content(["text", {"k": 1}])
+        lines = result.split("\n")
+        assert lines[0] == "text"
+        assert '"k"' in lines[1]
+
+    def test_non_serializable_falls_back_to_str(self) -> None:
+        """Test that non-JSON-serializable items fall back to str()."""
+        obj = object()
+        result = format_tool_message_content([obj])
+        assert "object" in result
+
+    def test_integer_content(self) -> None:
+        """Test that non-string, non-list content is stringified."""
+        assert format_tool_message_content(42) == "42"

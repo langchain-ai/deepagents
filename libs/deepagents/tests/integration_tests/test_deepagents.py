@@ -1,10 +1,16 @@
+from __future__ import annotations
+
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 from langchain.agents import create_agent
 from langchain.agents.structured_output import ToolStrategy
 from langchain_core.messages import HumanMessage
 from langgraph.store.memory import InMemoryStore
 from pydantic import BaseModel
+
+if TYPE_CHECKING:
+    from langchain.tools import ToolRuntime
 
 from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
 from deepagents.graph import create_deep_agent
@@ -13,8 +19,6 @@ from tests.utils import (
     TOY_BASKETBALL_RESEARCH,
     ResearchMiddleware,
     ResearchMiddlewareWithTools,
-    SampleMiddlewareWithTools,
-    SampleMiddlewareWithToolsAndState,
     WeatherToolMiddleware,
     assert_all_deepagent_qualities,
     get_soccer_scores,
@@ -24,26 +28,6 @@ from tests.utils import (
 
 
 class TestDeepAgents:
-    def test_base_deep_agent(self):
-        agent = create_deep_agent()
-        assert_all_deepagent_qualities(agent)
-
-    def test_deep_agent_with_tool(self):
-        agent = create_deep_agent(tools=[sample_tool])
-        assert_all_deepagent_qualities(agent)
-        assert "sample_tool" in agent.nodes["tools"].bound._tools_by_name.keys()
-
-    def test_deep_agent_with_middleware_with_tool(self):
-        agent = create_deep_agent(middleware=[SampleMiddlewareWithTools()])
-        assert_all_deepagent_qualities(agent)
-        assert "sample_tool" in agent.nodes["tools"].bound._tools_by_name.keys()
-
-    def test_deep_agent_with_middleware_with_tool_and_state(self):
-        agent = create_deep_agent(middleware=[SampleMiddlewareWithToolsAndState()])
-        assert_all_deepagent_qualities(agent)
-        assert "sample_tool" in agent.nodes["tools"].bound._tools_by_name.keys()
-        assert "sample_input" in agent.stream_channels
-
     def test_deep_agent_with_subagents(self):
         subagents = [
             {
@@ -59,7 +43,7 @@ class TestDeepAgents:
         result = agent.invoke({"messages": [HumanMessage(content="What is the weather in Tokyo?")]})
         agent_messages = [msg for msg in result.get("messages", []) if msg.type == "ai"]
         tool_calls = [tool_call for msg in agent_messages for tool_call in msg.tool_calls]
-        assert any([tool_call["name"] == "task" and tool_call["args"].get("subagent_type") == "weather_agent" for tool_call in tool_calls])
+        assert any(tool_call["name"] == "task" and tool_call["args"].get("subagent_type") == "weather_agent" for tool_call in tool_calls)
 
     def test_deep_agent_with_subagents_gen_purpose(self):
         subagents = [
@@ -76,7 +60,7 @@ class TestDeepAgents:
         result = agent.invoke({"messages": [HumanMessage(content="Use the general purpose subagent to call the sample tool")]})
         agent_messages = [msg for msg in result.get("messages", []) if msg.type == "ai"]
         tool_calls = [tool_call for msg in agent_messages for tool_call in msg.tool_calls]
-        assert any([tool_call["name"] == "task" and tool_call["args"].get("subagent_type") == "general-purpose" for tool_call in tool_calls])
+        assert any(tool_call["name"] == "task" and tool_call["args"].get("subagent_type") == "general-purpose" for tool_call in tool_calls)
 
     def test_deep_agent_with_subagents_with_middleware(self):
         subagents = [
@@ -94,7 +78,7 @@ class TestDeepAgents:
         result = agent.invoke({"messages": [HumanMessage(content="What is the weather in Tokyo?")]})
         agent_messages = [msg for msg in result.get("messages", []) if msg.type == "ai"]
         tool_calls = [tool_call for msg in agent_messages for tool_call in msg.tool_calls]
-        assert any([tool_call["name"] == "task" and tool_call["args"].get("subagent_type") == "weather_agent" for tool_call in tool_calls])
+        assert any(tool_call["name"] == "task" and tool_call["args"].get("subagent_type") == "weather_agent" for tool_call in tool_calls)
 
     def test_deep_agent_with_custom_subagents(self):
         subagents = [
@@ -120,8 +104,8 @@ class TestDeepAgents:
         result = agent.invoke({"messages": [HumanMessage(content="Look up the weather in Tokyo, and the latest scores for Manchester City!")]})
         agent_messages = [msg for msg in result.get("messages", []) if msg.type == "ai"]
         tool_calls = [tool_call for msg in agent_messages for tool_call in msg.tool_calls]
-        assert any([tool_call["name"] == "task" and tool_call["args"].get("subagent_type") == "weather_agent" for tool_call in tool_calls])
-        assert any([tool_call["name"] == "task" and tool_call["args"].get("subagent_type") == "soccer_agent" for tool_call in tool_calls])
+        assert any(tool_call["name"] == "task" and tool_call["args"].get("subagent_type") == "weather_agent" for tool_call in tool_calls)
+        assert any(tool_call["name"] == "task" and tool_call["args"].get("subagent_type") == "soccer_agent" for tool_call in tool_calls)
 
     def test_deep_agent_with_extended_state_and_subagents(self):
         subagents = [
@@ -138,7 +122,7 @@ class TestDeepAgents:
         result = agent.invoke({"messages": [HumanMessage(content="Get surface level info on lebron james")]}, config={"recursion_limit": 100})
         agent_messages = [msg for msg in result.get("messages", []) if msg.type == "ai"]
         tool_calls = [tool_call for msg in agent_messages for tool_call in msg.tool_calls]
-        assert any([tool_call["name"] == "task" and tool_call["args"].get("subagent_type") == "basketball_info_agent" for tool_call in tool_calls])
+        assert any(tool_call["name"] == "task" and tool_call["args"].get("subagent_type") == "basketball_info_agent" for tool_call in tool_calls)
         assert TOY_BASKETBALL_RESEARCH in result["research"]
 
     def test_deep_agent_with_subagents_no_tools(self):
@@ -156,7 +140,7 @@ class TestDeepAgents:
         )
         agent_messages = [msg for msg in result.get("messages", []) if msg.type == "ai"]
         tool_calls = [tool_call for msg in agent_messages for tool_call in msg.tool_calls]
-        assert any([tool_call["name"] == "task" and tool_call["args"].get("subagent_type") == "basketball_info_agent" for tool_call in tool_calls])
+        assert any(tool_call["name"] == "task" and tool_call["args"].get("subagent_type") == "basketball_info_agent" for tool_call in tool_calls)
 
     def test_response_format_tool_strategy(self):
         class StructuredOutput(BaseModel):
@@ -179,12 +163,15 @@ class TestDeepAgents:
                 "modified_at": now,
             },
         )
-        sample_backend = lambda rt: CompositeBackend(
-            default=StateBackend(rt),
-            routes={
-                "/memories/": StoreBackend(rt),
-            },
-        )
+
+        def sample_backend(rt: ToolRuntime) -> CompositeBackend:
+            return CompositeBackend(
+                default=StateBackend(rt),
+                routes={
+                    "/memories/": StoreBackend(rt),
+                },
+            )
+
         agent = create_deep_agent(
             backend=sample_backend,
             memory=["/memories/AGENTS.md"],

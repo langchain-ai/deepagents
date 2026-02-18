@@ -70,7 +70,7 @@ class TestAddMiddleware:
             )
         ]
         agent = create_agent(model="claude-sonnet-4-20250514", middleware=middleware, tools=[])
-        assert "task" in agent.nodes["tools"].bound._tools_by_name.keys()
+        assert "task" in agent.nodes["tools"].bound._tools_by_name
 
     def test_multiple_middleware(self):
         middleware = [
@@ -100,7 +100,9 @@ class TestFilesystemMiddleware:
         assert len(middleware.tools) == 7  # All tools including execute
 
     def test_init_with_composite_backend(self):
-        backend_factory = lambda rt: build_composite_state_backend(rt, routes={"/memories/": StoreBackend})
+        def backend_factory(rt):
+            return build_composite_state_backend(rt, routes={"/memories/": StoreBackend})
+
         middleware = FilesystemMiddleware(backend=backend_factory)
         assert callable(middleware.backend)
         assert middleware._custom_system_prompt is None
@@ -113,7 +115,9 @@ class TestFilesystemMiddleware:
         assert len(middleware.tools) == 7  # All tools including execute
 
     def test_init_custom_system_prompt_with_composite(self):
-        backend_factory = lambda rt: build_composite_state_backend(rt, routes={"/memories/": StoreBackend})
+        def backend_factory(rt):
+            return build_composite_state_backend(rt, routes={"/memories/": StoreBackend})
+
         middleware = FilesystemMiddleware(backend=backend_factory, system_prompt="Custom system prompt")
         assert callable(middleware.backend)
         assert middleware._custom_system_prompt == "Custom system prompt"
@@ -127,7 +131,9 @@ class TestFilesystemMiddleware:
         assert ls_tool.description == "Custom ls tool description"
 
     def test_init_custom_tool_descriptions_with_composite(self):
-        backend_factory = lambda rt: build_composite_state_backend(rt, routes={"/memories/": StoreBackend})
+        def backend_factory(rt):
+            return build_composite_state_backend(rt, routes={"/memories/": StoreBackend})
+
         middleware = FilesystemMiddleware(backend=backend_factory, custom_tool_descriptions={"ls": "Custom ls tool description"})
         assert callable(middleware.backend)
         assert middleware._custom_system_prompt is None
@@ -271,7 +277,6 @@ class TestFilesystemMiddleware:
         )
         middleware = FilesystemMiddleware()
         glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
-        print(glob_search_tool)
         result_raw = glob_search_tool.invoke(
             {
                 "pattern": "*.py",
@@ -404,7 +409,6 @@ class TestFilesystemMiddleware:
                 "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
             }
         )
-        print(glob_search_tool)
         assert result == str([])
 
     def test_glob_search_truncates_large_results(self):
@@ -603,7 +607,6 @@ class TestFilesystemMiddleware:
                 "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
             }
         )
-        print(result)
         assert "1: def hello():" in result
         assert "2: def world():" in result
         assert "x = 5" not in result

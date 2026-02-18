@@ -1,11 +1,14 @@
 """Unit tests for message widgets markup safety."""
 
 import pytest
+from rich.text import Text
 
+from deepagents_cli.config import COLORS
 from deepagents_cli.input import INPUT_HIGHLIGHT_PATTERN
 from deepagents_cli.widgets.messages import (
     AppMessage,
     ErrorMessage,
+    QueuedUserMessage,
     ToolCallMessage,
     UserMessage,
 )
@@ -237,3 +240,66 @@ class TestUserMessageHighlighting:
         content = "just some normal text here"
         matches = list(INPUT_HIGHLIGHT_PATTERN.finditer(content))
         assert len(matches) == 0
+
+
+def _compose_text(widget: UserMessage | QueuedUserMessage) -> Text:
+    """Extract the Rich `Text` object from a message widget's first yielded Static."""
+    statics = list(widget.compose())
+    assert statics, "compose() yielded no widgets"
+    content = statics[0]._Static__content  # type: ignore[attr-defined]
+    assert isinstance(content, Text)
+    return content
+
+
+class TestUserMessageModeRendering:
+    """Test `UserMessage` renders mode-specific prefix indicators and colors."""
+
+    def test_bash_prefix_renders_bang_indicator(self) -> None:
+        """`UserMessage('!ls')` should render with `'! '` prefix and bash body."""
+        text = _compose_text(UserMessage("!ls"))
+        assert text.plain == "! ls"
+        first_span = text._spans[0]
+        assert COLORS["mode_bash"] in str(first_span.style)
+
+    def test_command_prefix_renders_slash_indicator(self) -> None:
+        """`UserMessage('/help')` should render with `'/ '` prefix and body."""
+        text = _compose_text(UserMessage("/help"))
+        assert text.plain == "/ help"
+        first_span = text._spans[0]
+        assert COLORS["mode_command"] in str(first_span.style)
+
+    def test_normal_message_renders_angle_bracket(self) -> None:
+        """`UserMessage('hello')` should render with `'> '` prefix."""
+        text = _compose_text(UserMessage("hello"))
+        assert text.plain == "> hello"
+        first_span = text._spans[0]
+        assert COLORS["primary"] in str(first_span.style)
+
+    def test_empty_content_renders_angle_bracket(self) -> None:
+        """`UserMessage('')` should not crash and should render `'> '` prefix."""
+        text = _compose_text(UserMessage(""))
+        assert text.plain == "> "
+
+
+class TestQueuedUserMessageModeRendering:
+    """Test `QueuedUserMessage` renders mode-specific prefix indicators (dimmed)."""
+
+    def test_bash_prefix_renders_dimmed_bang(self) -> None:
+        """`QueuedUserMessage('!ls')` should render dimmed `'! '` prefix."""
+        text = _compose_text(QueuedUserMessage("!ls"))
+        assert text.plain == "! ls"
+
+    def test_command_prefix_renders_dimmed_slash(self) -> None:
+        """`QueuedUserMessage('/help')` should render dimmed `'/ '` prefix."""
+        text = _compose_text(QueuedUserMessage("/help"))
+        assert text.plain == "/ help"
+
+    def test_normal_message_renders_dimmed_angle_bracket(self) -> None:
+        """`QueuedUserMessage('hello')` should render dimmed `'> '` prefix."""
+        text = _compose_text(QueuedUserMessage("hello"))
+        assert text.plain == "> hello"
+
+    def test_empty_content_renders_angle_bracket(self) -> None:
+        """`QueuedUserMessage('')` should not crash and should render `'> '`."""
+        text = _compose_text(QueuedUserMessage(""))
+        assert text.plain == "> "

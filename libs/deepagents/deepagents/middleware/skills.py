@@ -99,21 +99,24 @@ import yaml
 from langchain.agents.middleware.types import PrivateStateAttr
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
+    from langchain_core.runnables import RunnableConfig
+    from langgraph.runtime import Runtime
+
     from deepagents.backends.protocol import BACKEND_TYPES, BackendProtocol
 
-from collections.abc import Awaitable, Callable
 from typing import NotRequired, TypedDict
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     AgentState,
+    ContextT,
     ModelRequest,
     ModelResponse,
+    ResponseT,
 )
-from langchain_core.runnables import RunnableConfig
-from langchain_core.tools import StructuredTool
 from langgraph.prebuilt import ToolRuntime
-from langgraph.runtime import Runtime
 
 from deepagents.middleware._utils import append_to_system_message
 
@@ -198,7 +201,7 @@ class SkillsState(AgentState):
 class SkillsStateUpdate(TypedDict):
     """State update for the skills middleware."""
 
-    skills_metadata: NotRequired[list[SkillMetadata]]
+    skills_metadata: list[SkillMetadata]
     """List of loaded skill metadata to merge into state."""
 
 
@@ -243,7 +246,7 @@ def _validate_skill_name(name: str, directory_name: str) -> tuple[bool, str]:
     return True, ""
 
 
-def _parse_skill_metadata(
+def _parse_skill_metadata(  # noqa: C901
     content: str,
     skill_path: str,
     directory_name: str,
@@ -374,19 +377,6 @@ def _validate_metadata(
             )
         return {}
     return {str(k): str(v) for k, v in raw.items()}
-
-
-def _extract_skill_body(content: str) -> str:
-    """Strip YAML frontmatter from SKILL.md content and return the body.
-
-    Args:
-        content: Full SKILL.md content with YAML frontmatter.
-
-    Returns:
-        The body content after the frontmatter, stripped of leading whitespace.
-    """
-    frontmatter_pattern = r"^---\s*\n.*?\n---\s*\n"
-    return re.sub(frontmatter_pattern, "", content, count=1, flags=re.DOTALL).strip()
 
 
 def _format_skill_annotations(skill: SkillMetadata) -> str:
@@ -568,17 +558,6 @@ async def _alist_skills(backend: BackendProtocol, source_path: str) -> list[Skil
     return skills
 
 
-SKILL_TOOL_DESCRIPTION = """Load a skill by name. Skills provide specialized capabilities and domain knowledge.
-
-How to invoke:
-- Use the `name` parameter with the skill name (e.g., name="web-research")
-
-Examples:
-- name="web-research" — load the web-research skill into the current context
-- name="code-review" — invoke the code-review skill
-
-Skills are loaded into the current conversation context for you to follow."""
-
 SKILLS_SYSTEM_PROMPT = """
 
 ## Skills System
@@ -593,12 +572,11 @@ You have access to a skills library that provides specialized capabilities and d
 
 **How to Use Skills (Progressive Disclosure):**
 
-Skills follow a **progressive disclosure** pattern - you see their name and description above, but only load full instructions when needed:
+Skills follow a **progressive disclosure** pattern - you see their name and description above, but only read full instructions when needed:
 
 1. **Recognize when a skill applies**: Check if the user's task matches a skill's description
-2. **Load the skill's full instructions**: Call the `skill` tool with the skill name (e.g., `name="web-research"`)
-3. **Follow the skill's instructions**: Once loaded, the skill's full instructions appear in your context with
-step-by-step workflows, best practices, and examples
+2. **Read the skill's full instructions**: Use the path shown in the skill list above
+3. **Follow the skill's instructions**: SKILL.md contains step-by-step workflows, best practices, and examples
 4. **Access supporting files**: Skills may include helper scripts, configs, or reference docs - use absolute paths
 
 **When to Use Skills:**
@@ -613,8 +591,8 @@ Skills may contain Python scripts or other executable files. Always use absolute
 
 User: "Can you research the latest developments in quantum computing?"
 
-1. Check available skills -> See "web-research" skill
-2. Call the `skill` tool with `name="web-research"` to load full instructions
+1. Check available skills -> See "web-research" skill with its path
+2. Read the skill using the path shown
 3. Follow the skill's research workflow (search -> organize -> synthesize)
 4. Use any helper scripts with absolute paths
 
@@ -622,7 +600,7 @@ Remember: Skills make you more capable and consistent. When in doubt, check if a
 """
 
 
-class SkillsMiddleware(AgentMiddleware):
+class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
     """Middleware for loading and exposing agent skills to the system prompt.
 
     Loads skills from backend sources and injects them into the system prompt
@@ -654,12 +632,7 @@ class SkillsMiddleware(AgentMiddleware):
 
     state_schema = SkillsState
 
-    def __init__(
-        self,
-        *,
-        backend: BACKEND_TYPES,
-        sources: list[str],
-    ) -> None:
+    def __init__(self, *, backend: BACKEND_TYPES, sources: list[str]) -> None:
         """Initialize the skills middleware.
 
         Args:
@@ -673,9 +646,6 @@ class SkillsMiddleware(AgentMiddleware):
         self._backend = backend
         self.sources = sources
         self.system_prompt_template = SKILLS_SYSTEM_PROMPT
-
-        skill_tool = self._create_skill_tool()
-        self.tools = [skill_tool]
 
     def _get_backend(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> BackendProtocol:
         """Resolve backend from instance or factory.
@@ -698,90 +668,13 @@ class SkillsMiddleware(AgentMiddleware):
                 config=config,
                 tool_call_id=None,
             )
-            backend = self._backend(tool_runtime)
+            backend = self._backend(tool_runtime)  # ty: ignore[invalid-argument-type]
             if backend is None:
-                raise AssertionError("SkillsMiddleware requires a valid backend instance")
+                msg = "SkillsMiddleware requires a valid backend instance"
+                raise AssertionError(msg)
             return backend
 
         return self._backend
-
-    def _get_backend_from_tool_runtime(self, runtime: ToolRuntime) -> BackendProtocol:
-        """Resolve backend from tool runtime context.
-
-        Args:
-            runtime: The tool runtime context.
-
-        Returns:
-            Resolved backend instance.
-        """
-        if callable(self._backend):
-            return self._backend(runtime)
-        return self._backend
-
-    def _create_skill_tool(self) -> StructuredTool:
-        """Create the `skill` tool for loading skills by name.
-
-        Returns:
-            A StructuredTool that loads skills by name.
-        """
-        middleware = self
-
-        def _lookup_skill_metadata(skill_name: str, runtime: ToolRuntime) -> SkillMetadata | None:
-            """Look up a skill by name from the already-loaded metadata in state."""
-            skills_metadata: list[SkillMetadata] = runtime.state.get("skills_metadata", [])
-            for skill in skills_metadata:
-                if skill["name"] == skill_name:
-                    return skill
-            return None
-
-        def skill_fn(
-            name: Annotated[str, "The name of the skill to load."],
-            runtime: ToolRuntime,
-        ) -> str:
-            skill_meta = _lookup_skill_metadata(name, runtime)
-            if skill_meta is None:
-                available = [s["name"] for s in runtime.state.get("skills_metadata", [])]
-                return f"Skill '{name}' not found. Available skills: {', '.join(available) or 'none'}"
-
-            backend = middleware._get_backend_from_tool_runtime(runtime)
-            responses = backend.download_files([skill_meta["path"]])
-            if responses[0].error or responses[0].content is None:
-                return f"Failed to load skill '{name}': could not download SKILL.md"
-            try:
-                content = responses[0].content.decode("utf-8")
-            except UnicodeDecodeError:
-                return f"Failed to load skill '{name}': could not decode SKILL.md"
-            body = _extract_skill_body(content)
-
-            return f'<skill name="{name}">\n{body}\n</skill>'
-
-        async def askill_fn(
-            name: Annotated[str, "The name of the skill to load."],
-            runtime: ToolRuntime,
-        ) -> str:
-            skill_meta = _lookup_skill_metadata(name, runtime)
-            if skill_meta is None:
-                available = [s["name"] for s in runtime.state.get("skills_metadata", [])]
-                return f"Skill '{name}' not found. Available skills: {', '.join(available) or 'none'}"
-
-            backend = middleware._get_backend_from_tool_runtime(runtime)
-            responses = await backend.adownload_files([skill_meta["path"]])
-            if responses[0].error or responses[0].content is None:
-                return f"Failed to load skill '{name}': could not download SKILL.md"
-            try:
-                content = responses[0].content.decode("utf-8")
-            except UnicodeDecodeError:
-                return f"Failed to load skill '{name}': could not decode SKILL.md"
-            body = _extract_skill_body(content)
-
-            return f'<skill name="{name}">\n{body}\n</skill>'
-
-        return StructuredTool.from_function(
-            name="skill",
-            func=skill_fn,
-            coroutine=askill_fn,
-            description=SKILL_TOOL_DESCRIPTION,
-        )
 
     def _format_skills_locations(self) -> str:
         """Format skills locations for display in system prompt."""
@@ -809,10 +702,11 @@ class SkillsMiddleware(AgentMiddleware):
             lines.append(desc_line)
             if skill["allowed_tools"]:
                 lines.append(f"  -> Allowed tools: {', '.join(skill['allowed_tools'])}")
+            lines.append(f"  -> Read `{skill['path']}` for full instructions")
 
         return "\n".join(lines)
 
-    def modify_request(self, request: ModelRequest) -> ModelRequest:
+    def modify_request(self, request: ModelRequest[ContextT]) -> ModelRequest[ContextT]:
         """Inject skills documentation into a model request's system message.
 
         Args:
@@ -834,7 +728,7 @@ class SkillsMiddleware(AgentMiddleware):
 
         return request.override(system_message=new_system_message)
 
-    def before_agent(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> SkillsStateUpdate | None:
+    def before_agent(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> SkillsStateUpdate | None:  # ty: ignore[invalid-method-override]
         """Load skills metadata before agent execution (synchronous).
 
         Runs before each agent interaction to discover available skills from all
@@ -869,7 +763,7 @@ class SkillsMiddleware(AgentMiddleware):
         skills = list(all_skills.values())
         return SkillsStateUpdate(skills_metadata=skills)
 
-    async def abefore_agent(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> SkillsStateUpdate | None:
+    async def abefore_agent(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> SkillsStateUpdate | None:  # ty: ignore[invalid-method-override]
         """Load skills metadata before agent execution (async).
 
         Runs before each agent interaction to discover available skills from all
@@ -906,9 +800,9 @@ class SkillsMiddleware(AgentMiddleware):
 
     def wrap_model_call(
         self,
-        request: ModelRequest,
-        handler: Callable[[ModelRequest], ModelResponse],
-    ) -> ModelResponse:
+        request: ModelRequest[ContextT],
+        handler: Callable[[ModelRequest[ContextT]], ModelResponse[ResponseT]],
+    ) -> ModelResponse[ResponseT]:
         """Inject skills documentation into the system prompt.
 
         Args:
@@ -923,9 +817,9 @@ class SkillsMiddleware(AgentMiddleware):
 
     async def awrap_model_call(
         self,
-        request: ModelRequest,
-        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
-    ) -> ModelResponse:
+        request: ModelRequest[ContextT],
+        handler: Callable[[ModelRequest[ContextT]], Awaitable[ModelResponse[ResponseT]]],
+    ) -> ModelResponse[ResponseT]:
         """Inject skills documentation into the system prompt (async version).
 
         Args:

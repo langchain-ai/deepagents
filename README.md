@@ -25,7 +25,7 @@ Deep Agents is an agent harness.  An opinionated, ready-to-run agent out of the 
 
 **What's included:**
 
-- **Planning** — `write_todos` / `read_todos` for task breakdown and progress tracking
+- **Planning** — `write_todos` for task breakdown and progress tracking
 - **Filesystem** — `read_file`, `write_file`, `edit_file`, `ls`, `glob`, `grep` for reading and writing context
 - **Shell access** — `execute` for running commands (with sandboxing)
 - **Sub-agents** — `task` for delegating work with isolated context windows

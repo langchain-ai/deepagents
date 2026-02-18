@@ -294,3 +294,48 @@ Clues: about programming readability; software craftsmanship.
         ),
     )
     assert trajectory.answer.strip() == "/quotes/q3.txt"
+
+
+@pytest.mark.langsmith
+def test_identify_quote_author_from_directory_unprompted_efficiency() -> None:
+    """Identifies which quote matches a target author without explicit efficiency instructions."""
+    agent = create_deep_agent()
+    trajectory = run_agent(
+        agent,
+        initial_files={
+            "/quotes/q1.txt": """Quote: The analytical engine weaves algebraic patterns.
+Clues: discusses an engine for computation and weaving patterns.
+""",
+            "/quotes/q2.txt": """Quote: I have always been more interested in the future than in the past.
+Clues: talks about anticipating the future; broad and general.
+""",
+            "/quotes/q3.txt": """Quote: The most dangerous phrase in the language is, 'We've always done it this way.'
+Clues: emphasizes changing established processes; often associated with early computing leadership.
+""",
+            "/quotes/q4.txt": """Quote: Sometimes it is the people no one can imagine anything of who do the things no one can imagine.
+Clues: about imagination and doing the impossible; inspirational.
+""",
+            "/quotes/q5.txt": """Quote: Programs must be written for people to read, and only incidentally for machines to execute.
+Clues: about programming readability; software craftsmanship.
+""",
+        },
+        query=(
+            "In the /quotes directory, there are a few small quote files. "
+            "Which file most likely contains a quote by Grace Hopper? Reply with the file path only."
+        ),
+        # 1st step: list the directory to discover files.
+        # 2nd step: read all quote files (ideally in parallel).
+        # 3rd step: answer with the selected path.
+        # 6 tool call requests: 1 ls + 5 read_file.
+        expect=(
+            TrajectoryExpectations(num_agent_steps=3, num_tool_call_requests=6)
+            .require_tool_call(step=1, name="ls", args_contains={"path": "/quotes"})
+            .require_tool_call(step=2, name="read_file", args_contains={"file_path": "/quotes/q1.txt"})
+            .require_tool_call(step=2, name="read_file", args_contains={"file_path": "/quotes/q2.txt"})
+            .require_tool_call(step=2, name="read_file", args_contains={"file_path": "/quotes/q3.txt"})
+            .require_tool_call(step=2, name="read_file", args_contains={"file_path": "/quotes/q4.txt"})
+            .require_tool_call(step=2, name="read_file", args_contains={"file_path": "/quotes/q5.txt"})
+            .require_final_text_contains("/quotes/q3.txt")
+        ),
+    )
+    assert trajectory.answer.strip() == "/quotes/q3.txt"

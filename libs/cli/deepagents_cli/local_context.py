@@ -265,17 +265,23 @@ fi"""
 
 
 def _section_makefile() -> str:
-    """First 20 lines of Makefile.
+    """First 20 lines of Makefile (falls back to git root in monorepos).
 
     Returns:
-        Bash snippet (standalone).
+        Bash snippet (requires `ROOT` from `_section_project`).
     """
     return r"""# --- Makefile ---
+MK=""
 if [ -f Makefile ]; then
-  echo "**Makefile** (first 20 lines):"
+  MK="Makefile"
+elif [ -n "$ROOT" ] && [ "$ROOT" != "$CWD" ] && [ -f "${ROOT}/Makefile" ]; then
+  MK="${ROOT}/Makefile"
+fi
+if [ -n "$MK" ]; then
+  echo "**Makefile** (\`${MK}\`, first 20 lines):"
   echo '```makefile'
-  head -20 Makefile
-  TL=$(wc -l < Makefile | tr -d ' ')
+  head -20 "$MK"
+  TL=$(wc -l < "$MK" | tr -d ' ')
   [ "$TL" -gt 20 ] && echo "... (truncated)"
   echo '```'
 fi"""
@@ -440,8 +446,4 @@ class LocalContextMiddleware(AgentMiddleware):
         return await handler(modified_request or request)
 
 
-__all__ = [
-    "DETECT_CONTEXT_SCRIPT",
-    "LocalContextMiddleware",
-    "build_detect_script",
-]
+__all__ = ["LocalContextMiddleware"]

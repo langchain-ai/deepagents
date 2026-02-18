@@ -570,21 +570,47 @@ class TestSectionMakefile:
     """Tests for _section_makefile."""
 
     def test_shows_makefile_contents(self, tmp_path: Path) -> None:
+        """Makefile in CWD is shown with path, header, and contents."""
         (tmp_path / "Makefile").write_text("all:\n\techo hello\n")
-        out = _run_section(_section_makefile(), tmp_path)
-        assert "**Makefile** (first 20 lines):" in out
+        out = _run_section(_section_makefile(), tmp_path, with_header=True)
+        assert "**Makefile** (`Makefile`, first 20 lines):" in out
         assert "```makefile" in out
         assert "echo hello" in out
 
     def test_truncation_note_for_long_makefile(self, tmp_path: Path) -> None:
+        """Makefiles longer than 20 lines show a truncation notice."""
         lines = [f"target{i}:\n\techo {i}\n" for i in range(30)]
         (tmp_path / "Makefile").write_text("".join(lines))
-        out = _run_section(_section_makefile(), tmp_path)
+        out = _run_section(_section_makefile(), tmp_path, with_header=True)
         assert "... (truncated)" in out
 
     def test_no_output_without_makefile(self, tmp_path: Path) -> None:
-        out = _run_section(_section_makefile(), tmp_path)
+        """No Makefile section is emitted when no Makefile exists."""
+        out = _run_section(_section_makefile(), tmp_path, with_header=True)
         assert "**Makefile**" not in out
+
+    def test_fallback_to_git_root_makefile(self, tmp_path: Path) -> None:
+        """Falls back to the git root Makefile when CWD is a subdirectory.
+
+        In a monorepo the user may be working in a nested package directory
+        that has no Makefile of its own. The script should discover the
+        Makefile at the git root and display it with its full path.
+
+        Example layout:
+
+            repo/           <- git root, contains Makefile
+            └── packages/
+                └── foo/    <- CWD (no Makefile here)
+        """
+        _git_init_commit(tmp_path, branch="main")
+        (tmp_path / "Makefile").write_text("test:\n\tpytest\n")
+        subdir = tmp_path / "packages" / "foo"
+        subdir.mkdir(parents=True)
+        # Need _section_project() to set ROOT before _section_makefile()
+        script = _section_project() + "\n" + _section_makefile()
+        out = _run_section(script, subdir, with_header=True)
+        assert f"`{tmp_path}/Makefile`" in out
+        assert "pytest" in out
 
 
 # ---------------------------------------------------------------------------

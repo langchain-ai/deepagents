@@ -2,6 +2,7 @@
 
 from deepagents_cli.config import get_glyphs
 from deepagents_cli.tool_display import (
+    _format_content_block,
     _format_timeout,
     format_tool_display,
     format_tool_message_content,
@@ -181,3 +182,47 @@ class TestFormatToolMessageContent:
     def test_integer_content(self) -> None:
         """Test that non-string, non-list content is stringified."""
         assert format_tool_message_content(42) == "42"
+
+    def test_image_block_shows_placeholder(self) -> None:
+        """Test that image content blocks show a placeholder instead of base64."""
+        content = [{"type": "image", "base64": "A" * 4000, "mime_type": "image/png"}]
+        result = format_tool_message_content(content)
+        assert "Image" in result
+        assert "image/png" in result
+        assert "KB" in result
+        # Must NOT contain raw base64
+        assert "AAAA" not in result
+
+    def test_image_block_without_mime_type(self) -> None:
+        """Test image block falls back to generic 'image' when mime_type missing."""
+        content = [{"type": "image", "base64": "data"}]
+        result = format_tool_message_content(content)
+        assert "Image" in result
+        assert "image" in result
+
+
+class TestFormatContentBlock:
+    """Tests for `_format_content_block`."""
+
+    def test_image_block_placeholder(self) -> None:
+        """Test image block returns a human-readable placeholder."""
+        block = {
+            "type": "image",
+            "base64": "A" * 40000,
+            "mime_type": "image/jpeg",
+        }
+        result = _format_content_block(block)
+        assert result == "[Image: image/jpeg, ~29KB]"
+
+    def test_non_image_dict_returns_json(self) -> None:
+        """Test that non-image dicts are still JSON-serialized."""
+        block = {"type": "text", "content": "hello"}
+        result = _format_content_block(block)
+        assert '"type"' in result
+        assert '"text"' in result
+
+    def test_image_block_without_base64_returns_json(self) -> None:
+        """Test that image blocks missing base64 key fall back to JSON."""
+        block = {"type": "image", "url": "https://example.com/img.png"}
+        result = _format_content_block(block)
+        assert '"url"' in result

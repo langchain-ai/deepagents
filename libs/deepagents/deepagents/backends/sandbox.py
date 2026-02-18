@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import shlex
 from abc import ABC, abstractmethod
 
@@ -24,6 +25,8 @@ from deepagents.backends.protocol import (
     SandboxBackendProtocol,
     WriteResult,
 )
+
+log = logging.getLogger("deepagents")
 
 _GLOB_COMMAND_TEMPLATE = """python3 -c "
 import glob
@@ -397,18 +400,258 @@ except PermissionError:
     def id(self) -> str:
         """Unique identifier for the sandbox backend."""
 
-    @abstractmethod
+    # -- File transfer via execute() -----------------------------------------
+    #
+    # Default implementations that use base64-encoded execute() calls.
+    # This works with any sandbox backend (Docker tmpfs, microsandbox, etc.)
+    # because execute() enters the sandbox's mount namespace.
+    #
+    # Subclasses may override these if the backend provides a more efficient
+    # native file transfer mechanism (e.g. SSH's SFTP, Daytona's REST API).
+
+    # Maximum base64 payload size for a single heredoc command.
+    # Linux ARG_MAX is ~2MB, but the full command includes the Python
+    # one-liner overhead. Stay well under that with 64KB chunks of raw
+    # bytes (~87KB after base64 encoding).
+    _UPLOAD_CHUNK_BYTES = 65_536
+
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
-        """Upload multiple files to the sandbox.
+        """Upload files via base64-encoded execute() calls.
 
-        Implementations must support partial success - catch exceptions per-file
-        and return errors in FileUploadResponse objects rather than raising.
+        Small files (under ``_UPLOAD_CHUNK_BYTES``) are written in a single
+        command. Larger files are split into base64 chunks that each fit
+        within the kernel's ARG_MAX limit, assembled into a temp file
+        inside the sandbox, then decoded to the final path.
+
+        Subclasses may override this if the backend provides a native file
+        transfer mechanism.
+
+        Args:
+            files: List of (absolute_path, content_bytes) tuples.
+
+        Returns:
+            List of FileUploadResponse objects (one per input file).
         """
+        responses: list[FileUploadResponse] = []
 
-    @abstractmethod
+        for path, content in files:
+            b64 = base64.b64encode(content).decode("ascii")
+
+            if len(b64) <= self._UPLOAD_CHUNK_BYTES:
+                result = self._upload_single(path, b64)
+            else:
+                result = self._upload_chunked(path, b64)
+
+            if result.exit_code == 0:
+                responses.append(FileUploadResponse(path=path))
+            else:
+                log.warning("Failed to upload %s: %s", path, result.output)
+                responses.append(
+                    FileUploadResponse(path=path, error="permission_denied")
+                )
+
+        return responses
+
+    def _upload_single(self, file_path: str, b64: str) -> ExecuteResponse:
+        """Upload a small file in one execute() call.
+
+        Args:
+            file_path: Absolute path inside the sandbox.
+            b64: Base64-encoded file content (must fit within ARG_MAX).
+
+        Returns:
+            ExecuteResponse from the sandbox.
+        """
+        cmd = (
+            "python3 -c \"\n"
+            "import base64, pathlib, sys\n"
+            "b64 = sys.stdin.read().strip()\n"
+            "p = pathlib.Path('" + file_path + "')\n"
+            "p.parent.mkdir(parents=True, exist_ok=True)\n"
+            "p.write_bytes(base64.b64decode(b64))\n"
+            "\" <<'__DEEPAGENTS_EOF__'\n"
+            + b64 + "\n"
+            "__DEEPAGENTS_EOF__"
+        )
+        return self.execute(cmd)
+
+    def _upload_chunked(self, file_path: str, b64: str) -> ExecuteResponse:
+        """Upload a large file by writing base64 chunks then decoding.
+
+        Splits the base64 string into chunks that each fit within ARG_MAX,
+        appends each chunk to a temp file inside the sandbox, then decodes
+        the assembled base64 to the final destination.
+
+        Args:
+            file_path: Absolute path inside the sandbox.
+            b64: Base64-encoded file content.
+
+        Returns:
+            ExecuteResponse from the final decode step.
+        """
+        tmp_b64 = file_path + ".__b64_tmp"
+
+        # Ensure parent directory exists.
+        result = self.execute(
+            "python3 -c \""
+            "import pathlib; "
+            "pathlib.Path('" + file_path + "').parent.mkdir(parents=True, exist_ok=True)"
+            "\""
+        )
+        if result.exit_code != 0:
+            return result
+
+        # Write base64 data in chunks that fit within ARG_MAX.
+        chunk_size = self._UPLOAD_CHUNK_BYTES
+        for i in range(0, len(b64), chunk_size):
+            chunk = b64[i : i + chunk_size]
+            append_cmd = (
+                "python3 -c \"\n"
+                "import sys\n"
+                "chunk = sys.stdin.read().strip()\n"
+                "with open('" + tmp_b64 + "', 'a') as f:\n"
+                "    f.write(chunk)\n"
+                "\" <<'__DEEPAGENTS_EOF__'\n"
+                + chunk + "\n"
+                "__DEEPAGENTS_EOF__"
+            )
+            result = self.execute(append_cmd)
+            if result.exit_code != 0:
+                self.execute("rm -f '" + tmp_b64 + "'")
+                return result
+
+        # Decode the assembled base64 file to the final path.
+        decode_cmd = (
+            "python3 -c \""
+            "import base64, pathlib; "
+            "b64 = pathlib.Path('" + tmp_b64 + "').read_text(); "
+            "pathlib.Path('" + file_path + "').write_bytes(base64.b64decode(b64)); "
+            "pathlib.Path('" + tmp_b64 + "').unlink()"
+            "\""
+        )
+        return self.execute(decode_cmd)
+
+    # Maximum raw bytes to read per chunk during download.
+    # Each chunk is base64-encoded in the sandbox and printed to stdout.
+    # 64KB raw -> ~87KB base64, well within typical output truncation limits.
+    _DOWNLOAD_CHUNK_BYTES = 65_536
+
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
-        """Download multiple files from the sandbox.
+        """Download files via base64-encoded execute() calls.
 
-        Implementations must support partial success - catch exceptions per-file
-        and return errors in FileDownloadResponse objects rather than raising.
+        Checks each file's size first. Small files are downloaded in a
+        single command. Larger files are read in chunks inside the sandbox,
+        each chunk base64-encoded and printed to stdout, then reassembled
+        on the host. This avoids output truncation by execute().
+
+        Subclasses may override this if the backend provides a native file
+        transfer mechanism.
+
+        Args:
+            paths: List of absolute file paths to download.
+
+        Returns:
+            List of FileDownloadResponse objects (one per input path).
         """
+        responses: list[FileDownloadResponse] = []
+
+        for path in paths:
+            # Get file size to decide between single and chunked download.
+            size_cmd = (
+                "python3 -c \""
+                "import os; "
+                "print(os.path.getsize('" + path + "'))"
+                "\""
+            )
+            size_result = self.execute(size_cmd)
+            if size_result.exit_code != 0:
+                responses.append(
+                    FileDownloadResponse(path=path, error="file_not_found")
+                )
+                continue
+
+            try:
+                file_size = int(size_result.output.strip())
+            except ValueError:
+                responses.append(
+                    FileDownloadResponse(path=path, error="file_not_found")
+                )
+                continue
+
+            # Small files can be downloaded in one shot.
+            if file_size <= self._DOWNLOAD_CHUNK_BYTES:
+                response = self._download_single(path)
+            else:
+                response = self._download_chunked(path, file_size)
+            responses.append(response)
+
+        return responses
+
+    def _download_single(self, file_path: str) -> FileDownloadResponse:
+        """Download a small file in one execute() call.
+
+        Args:
+            file_path: Absolute path inside the sandbox.
+
+        Returns:
+            FileDownloadResponse with content or error.
+        """
+        cmd = (
+            "python3 -c \""
+            "import base64; "
+            "print(base64.b64encode(open('" + file_path + "', 'rb').read()).decode())"
+            "\""
+        )
+        result = self.execute(cmd)
+        if result.exit_code == 0 and result.output.strip():
+            try:
+                content = base64.b64decode(result.output.strip())
+                return FileDownloadResponse(path=file_path, content=content)
+            except Exception:
+                return FileDownloadResponse(path=file_path, error="file_not_found")
+        return FileDownloadResponse(path=file_path, error="file_not_found")
+
+    def _download_chunked(
+        self, file_path: str, file_size: int
+    ) -> FileDownloadResponse:
+        """Download a large file in chunks to avoid output truncation.
+
+        Reads the file in fixed-size binary chunks inside the sandbox,
+        base64-encodes each chunk, and reassembles them on the host.
+
+        Args:
+            file_path: Absolute path inside the sandbox.
+            file_size: Total file size in bytes.
+
+        Returns:
+            FileDownloadResponse with content or error.
+        """
+        chunks: list[bytes] = []
+        offset = 0
+
+        while offset < file_size:
+            chunk_cmd = (
+                "python3 -c \""
+                "import base64; "
+                "f = open('" + file_path + "', 'rb'); "
+                "f.seek(" + str(offset) + "); "
+                "print(base64.b64encode(f.read(" + str(self._DOWNLOAD_CHUNK_BYTES) + ")).decode())"
+                "\""
+            )
+            result = self.execute(chunk_cmd)
+            if result.exit_code != 0 or not result.output.strip():
+                return FileDownloadResponse(path=file_path, error="file_not_found")
+
+            try:
+                chunk = base64.b64decode(result.output.strip())
+            except Exception:
+                return FileDownloadResponse(path=file_path, error="file_not_found")
+
+            chunks.append(chunk)
+            offset += len(chunk)
+
+            # Safety: if we got zero bytes, the file ended.
+            if not chunk:
+                break
+
+        return FileDownloadResponse(path=file_path, content=b"".join(chunks))

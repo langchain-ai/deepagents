@@ -11,8 +11,11 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal, NotRequired, TypeAlias
 
+from langchain.tools import ToolRuntime
+from typing_extensions import TypedDict
+
 FileFormat = Literal["v1", "v2"]
-"""File storage format version.
+r"""File storage format version.
 
 - ``"v1"``: Legacy format — ``content`` stored as ``list[str]`` (lines split
   on ``\\n``), no ``encoding`` field.
@@ -20,9 +23,6 @@ FileFormat = Literal["v1", "v2"]
   or base64-encoded binary), with an ``encoding`` field (``"utf-8"`` or
   ``"base64"``).
 """
-
-from langchain.tools import ToolRuntime
-from typing_extensions import TypedDict
 
 FileOperationError = Literal[
     "file_not_found",  # Download: file doesn't exist

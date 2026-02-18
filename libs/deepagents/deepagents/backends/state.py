@@ -47,7 +47,7 @@ class StateBackend(BackendProtocol):
         *,
         file_format: FileFormat = "v2",
     ) -> None:
-        """Initialize StateBackend with runtime.
+        r"""Initialize StateBackend with runtime.
 
         Args:
             runtime: The ToolRuntime instance providing store access and configuration.
@@ -67,7 +67,7 @@ class StateBackend(BackendProtocol):
         """
         if self._file_format == "v1":
             return _to_legacy_file_data(file_data)
-        return dict(file_data)
+        return {**file_data}
 
     def ls_info(self, path: str) -> list[FileInfo]:
         """List files and directories in the specified directory (non-recursive).

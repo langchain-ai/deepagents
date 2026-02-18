@@ -19,6 +19,7 @@ from langgraph.store.memory import InMemoryStore
 from deepagents.backends.state import StateBackend
 from deepagents.backends.store import StoreBackend
 from deepagents.backends.utils import (
+    _to_legacy_file_data,
     create_file_data,
     file_data_to_string,
     grep_matches_from_files,
@@ -385,8 +386,6 @@ def test_state_write_as_list():
 def test_state_edit_as_list():
     """StateBackend with file_format="v1" preserves list format after edit."""
     # Seed with a new-format file (as create_file_data produces)
-    from deepagents.backends.utils import _to_legacy_file_data, create_file_data
-
     legacy = _to_legacy_file_data(create_file_data("hello\nworld"))
     rt = _make_state_runtime(files={"/file.txt": legacy})
     be = StateBackend(rt, file_format="v1")

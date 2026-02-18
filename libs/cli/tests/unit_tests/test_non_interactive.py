@@ -193,7 +193,8 @@ class TestNonInteractiveVersionMetadata:
         metadata = captured_configs[0]["metadata"]
         versions = metadata["versions"]
         assert "deepagents-cli" in versions
-        assert "deepagents" in versions
+        # SDK version is set by create_deep_agent, not the CLI config
+        assert "deepagents" not in versions
 
 
 class TestBuildNonInteractiveHeader:

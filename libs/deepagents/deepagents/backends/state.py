@@ -234,11 +234,7 @@ class StateBackend(BackendProtocol):
             content_str = file_data_to_string(file_data)
 
             encoding = file_data.get("encoding", "utf-8")
-            if encoding == "base64":
-                content_bytes = base64.standard_b64decode(content_str)
-            else:
-                content_bytes = content_str.encode("utf-8")
-
+            content_bytes = content_str.encode("utf-8") if encoding == "utf-8" else base64.standard_b64decode(content_str)
             responses.append(FileDownloadResponse(path=path, content=content_bytes, error=None))
 
         return responses

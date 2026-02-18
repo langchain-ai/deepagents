@@ -1,7 +1,6 @@
 """StoreBackend: Adapter for LangGraph's BaseStore (persistent, cross-thread)."""
 
 import base64
-import mimetypes
 import re
 import warnings
 from collections.abc import Callable
@@ -18,6 +17,7 @@ from langgraph.typing import ContextT, StateT
 from deepagents.backends.protocol import (
     BackendProtocol,
     EditResult,
+    FileData,
     FileDownloadResponse,
     FileInfo,
     FileUploadResponse,
@@ -200,7 +200,7 @@ class StoreBackend(BackendProtocol):
             return (assistant_id, namespace)
         return (namespace,)
 
-    def _convert_store_item_to_file_data(self, store_item: Item) -> dict[str, Any]:
+    def _convert_store_item_to_file_data(self, store_item: Item) -> FileData:
         """Convert a store Item to FileData format.
 
         Args:
@@ -220,8 +220,7 @@ class StoreBackend(BackendProtocol):
         # BACKWARDS COMPAT: legacy list[str] format
         if isinstance(raw_content, list):
             warnings.warn(
-                "Store item with list[str] content is deprecated. "
-                "Content should be stored as a plain str.",
+                "Store item with list[str] content is deprecated. Content should be stored as a plain str.",
                 DeprecationWarning,
                 stacklevel=2,
             )
@@ -230,7 +229,7 @@ class StoreBackend(BackendProtocol):
             content = raw_content
         else:
             msg = f"Store item does not contain valid content field. Got: {store_item.value.keys()}"
-            raise ValueError(msg)
+            raise TypeError(msg)
 
         if "created_at" not in store_item.value or not isinstance(store_item.value["created_at"], str):
             msg = f"Store item does not contain valid created_at field. Got: {store_item.value.keys()}"
@@ -245,7 +244,7 @@ class StoreBackend(BackendProtocol):
             "modified_at": store_item.value["modified_at"],
         }
 
-    def _convert_file_data_to_store_value(self, file_data: dict[str, Any]) -> dict[str, Any]:
+    def _convert_file_data_to_store_value(self, file_data: FileData) -> dict[str, Any]:
         """Convert FileData to a dict suitable for store.put().
 
         Args:
@@ -616,20 +615,12 @@ class StoreBackend(BackendProtocol):
         responses: list[FileUploadResponse] = []
 
         for path, content in files:
-            mime_type, _ = mimetypes.guess_type(path)
-            is_binary = mime_type is not None and not mime_type.startswith("text/")
-
-            if is_binary:
+            try:
+                content_str = content.decode("utf-8")
+                encoding = "utf-8"
+            except UnicodeDecodeError:
                 content_str = base64.standard_b64encode(content).decode("ascii")
                 encoding = "base64"
-            else:
-                # Text or unknown — try utf-8, fallback to base64
-                try:
-                    content_str = content.decode("utf-8")
-                    encoding = "utf-8"
-                except UnicodeDecodeError:
-                    content_str = base64.standard_b64encode(content).decode("ascii")
-                    encoding = "base64"
 
             file_data = create_file_data(content_str, encoding=encoding)
             store_value = self._convert_file_data_to_store_value(file_data)
@@ -664,10 +655,7 @@ class StoreBackend(BackendProtocol):
             content_str = file_data_to_string(file_data)
 
             encoding = file_data.get("encoding", "utf-8")
-            if encoding == "base64":
-                content_bytes = base64.standard_b64decode(content_str)
-            else:
-                content_bytes = content_str.encode("utf-8")
+            content_bytes = base64.standard_b64decode(content_str) if encoding == "base64" else content_str.encode("utf-8")
 
             responses.append(FileDownloadResponse(path=path, content=content_bytes, error=None))
 

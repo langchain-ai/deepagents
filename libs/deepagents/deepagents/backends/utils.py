@@ -15,7 +15,7 @@ from typing import Any, Literal, overload
 
 import wcmatch.glob as wcglob
 
-from deepagents.backends.protocol import FileInfo as _FileInfo, GrepMatch as _GrepMatch
+from deepagents.backends.protocol import FileData, FileInfo as _FileInfo, GrepMatch as _GrepMatch
 
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
 MAX_LINE_LENGTH = 5000
@@ -28,7 +28,7 @@ FileInfo = _FileInfo
 GrepMatch = _GrepMatch
 
 
-def _normalize_content(file_data: dict[str, Any]) -> str:
+def _normalize_content(file_data: FileData) -> str:
     """Normalize file_data content to a plain string.
 
     This is the single backwards-compatibility conversion point for the
@@ -44,8 +44,7 @@ def _normalize_content(file_data: dict[str, Any]) -> str:
     content = file_data["content"]
     if isinstance(content, list):
         warnings.warn(
-            "FileData with list[str] content is deprecated. "
-            "Content should be stored as a plain str.",
+            "FileData with list[str] content is deprecated. Content should be stored as a plain str.",
             DeprecationWarning,
             stacklevel=2,
         )
@@ -121,7 +120,7 @@ def check_empty_content(content: str) -> str | None:
     return None
 
 
-def file_data_to_string(file_data: dict[str, Any]) -> str:
+def file_data_to_string(file_data: FileData) -> str:
     """Convert FileData to plain string content.
 
     Args:
@@ -137,7 +136,7 @@ def create_file_data(
     content: str,
     created_at: str | None = None,
     encoding: str = "utf-8",
-) -> dict[str, Any]:
+) -> FileData:
     """Create a FileData object with timestamps.
 
     Args:
@@ -158,7 +157,7 @@ def create_file_data(
     }
 
 
-def update_file_data(file_data: dict[str, Any], content: str) -> dict[str, Any]:
+def update_file_data(file_data: FileData, content: str) -> FileData:
     """Update FileData with new content, preserving creation timestamp.
 
     Args:
@@ -179,7 +178,7 @@ def update_file_data(file_data: dict[str, Any], content: str) -> dict[str, Any]:
 
 
 def format_read_response(
-    file_data: dict[str, Any],
+    file_data: FileData,
     offset: int,
     limit: int,
 ) -> str:
@@ -490,7 +489,7 @@ def _grep_search_files(
     glob: str | None = None,
     output_mode: Literal["files_with_matches", "content", "count"] = "files_with_matches",
 ) -> str:
-    """Search file contents for regex pattern.
+    r"""Search file contents for regex pattern.
 
     Args:
         files: Dictionary of file paths to FileData.
@@ -504,7 +503,7 @@ def _grep_search_files(
 
     Example:
         ```python
-        files = {"/file.py": FileData(content=["import os", "print('hi')"], ...)}
+        files = {"/file.py": FileData(content="import os\nprint('hi')", ...)}
         _grep_search_files(files, "import", "/")
         # Returns: "/file.py" (with output_mode="files_with_matches")
         ```

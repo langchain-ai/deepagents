@@ -7,26 +7,22 @@ Covers:
 - Store backend upload/download for binary and text
 - State backend legacy read
 - Grep with new and legacy formats
-- Encoding inference via mimetypes
+- Encoding inference via utf-8 decode attempt
 """
 
 import base64
-import mimetypes
 import warnings
 
-import pytest
 from langchain.tools import ToolRuntime
 from langgraph.store.memory import InMemoryStore
 
 from deepagents.backends.state import StateBackend
 from deepagents.backends.store import StoreBackend
 from deepagents.backends.utils import (
-    _normalize_content,
     create_file_data,
     file_data_to_string,
     grep_matches_from_files,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -294,37 +290,30 @@ def test_grep_legacy_format():
 
 
 # ---------------------------------------------------------------------------
-# 12. Encoding inference
+# 12. Encoding inference — utf-8 attempt, fallback to base64
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "filename,expected_text",
-    [
-        ("file.txt", True),
-        ("file.md", True),
-        ("file.py", True),
-        ("file.js", True),
-        ("file.html", True),
-        ("file.css", True),
-        ("file.json", True),
-        ("file.png", False),
-        ("file.jpg", False),
-        ("file.pdf", False),
-        ("file.gif", False),
-        ("file.zip", False),
-        ("file.mp3", False),
-    ],
-)
-def test_encoding_inference(filename, expected_text):
-    """Verify mimetypes correctly identifies binary vs text for common extensions."""
-    mime_type, _ = mimetypes.guess_type(filename)
-    if expected_text:
-        # Text files: mime is None (unknown) or starts with text/
-        assert mime_type is None or mime_type.startswith("text/") or mime_type in (
-            "application/json",
-            "application/javascript",
-        ), f"{filename}: expected text-like, got {mime_type}"
-    else:
-        # Binary files: mime is not None and does not start with text/
-        assert mime_type is not None and not mime_type.startswith("text/"), f"{filename}: expected binary, got {mime_type}"
+def test_store_upload_utf8_content_stored_as_text():
+    """Valid utf-8 bytes are stored with encoding='utf-8'."""
+    rt = _make_store_runtime()
+    be = StoreBackend(rt, namespace=lambda _ctx: ("filesystem",))
+
+    be.upload_files([("/docs/notes.txt", b"Hello, world!")])
+
+    item = rt.store.get(("filesystem",), "/docs/notes.txt")
+    assert item.value["encoding"] == "utf-8"
+    assert item.value["content"] == "Hello, world!"
+
+
+def test_store_upload_non_utf8_content_stored_as_base64():
+    """Non-utf-8 bytes are stored with encoding='base64'."""
+    rt = _make_store_runtime()
+    be = StoreBackend(rt, namespace=lambda _ctx: ("filesystem",))
+
+    raw = b"\x89PNG\r\n\x1a\n" + b"\xff\xfe" + b"\x00" * 20
+    be.upload_files([("/images/photo.png", raw)])
+
+    item = rt.store.get(("filesystem",), "/images/photo.png")
+    assert item.value["encoding"] == "base64"
+    assert base64.standard_b64decode(item.value["content"]) == raw

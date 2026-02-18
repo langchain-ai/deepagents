@@ -106,6 +106,22 @@ class GrepMatch(TypedDict):
     text: str
 
 
+class FileData(TypedDict):
+    """Data structure for storing file contents with metadata."""
+
+    content: str
+    """File content as a plain string (utf-8 text or base64-encoded binary)."""
+
+    encoding: NotRequired[str]
+    """Content encoding: ``"utf-8"`` (default) or ``"base64"``."""
+
+    created_at: str
+    """ISO 8601 timestamp of file creation."""
+
+    modified_at: str
+    """ISO 8601 timestamp of last modification."""
+
+
 @dataclass
 class WriteResult:
     """Result from backend write operations.
@@ -160,7 +176,7 @@ class EditResult:
 
 # @abstractmethod to avoid breaking subclasses that only implement a subset
 class BackendProtocol(abc.ABC):  # noqa: B024
-    """Protocol for pluggable memory backends (single, unified).
+    r"""Protocol for pluggable memory backends (single, unified).
 
     Backends can store files in different locations (state, filesystem, database, etc.)
     and provide a uniform interface for file operations.
@@ -168,10 +184,10 @@ class BackendProtocol(abc.ABC):  # noqa: B024
     All file data is represented as dicts with the following structure::
 
         {
-            "content": str,         # Text content (utf-8) or base64-encoded binary
-            "encoding": str,        # "utf-8" for text, "base64" for binary data
-            "created_at": str,      # ISO format timestamp
-            "modified_at": str,     # ISO format timestamp
+            "content": str,  # Text content (utf-8) or base64-encoded binary
+            "encoding": str,  # "utf-8" for text, "base64" for binary data
+            "created_at": str,  # ISO format timestamp
+            "modified_at": str,  # ISO format timestamp
         }
 
     .. note::

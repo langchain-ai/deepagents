@@ -3,11 +3,13 @@ from __future__ import annotations
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from langchain_core.messages import AIMessage, ToolMessage
-from langgraph.graph.state import CompiledStateGraph
 from langsmith import testing as t
+
+if TYPE_CHECKING:
+    from langgraph.graph.state import CompiledStateGraph
 
 from deepagents.backends.utils import create_file_data, file_data_to_string
 

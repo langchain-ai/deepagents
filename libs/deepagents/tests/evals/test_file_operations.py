@@ -34,3 +34,23 @@ def test_write_file_simple() -> None:
     )
     assert "Foo Bar" in trajectory.files["/foo.md"]
     assert "Foo Bar" in trajectory.steps[-1].action.text
+
+
+@pytest.mark.langsmith
+def test_write_files_in_parallel() -> None:
+    agent = create_deep_agent()
+    trajectory = run_agent(
+        agent,
+        query='Write "bar" to /a.md and "bar" to /b.md. Do the writes in parallel, then confirm you did it.',
+        # 1st step: request 2 write_file tool calls in parallel.
+        # 2nd step: confirm the writes.
+        # 2 tool call requests: write_file to /a.md and write_file to /b.md.
+        expect=TrajectoryExpectations(num_agent_steps=2, num_tool_call_requests=2),
+    )
+    assert trajectory.files["/a.md"] == "bar"
+    assert trajectory.files["/b.md"] == "bar"
+
+    step1_tool_calls = trajectory.steps[0].action.tool_calls
+    assert len(step1_tool_calls) == 2
+    assert {tc["name"] for tc in step1_tool_calls} == {"write_file"}
+    assert {tc["args"]["file_path"] for tc in step1_tool_calls} == {"/a.md", "/b.md"}

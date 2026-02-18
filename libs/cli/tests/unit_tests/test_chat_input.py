@@ -346,6 +346,204 @@ class TestHistoryNavigationFlag:
             assert controller is not None
 
 
+class TestHistoryBoundaryNavigation:
+    """Test that history navigation only triggers at input boundaries."""
+
+    @pytest.mark.asyncio
+    async def test_up_arrow_only_triggers_at_cursor_start(self) -> None:
+        """Up arrow should only navigate history when cursor is at (0, 0)."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._history._entries.append("previous entry")
+
+            # Type some text — cursor ends up at the end
+            chat._text_area.insert("hello")
+            await pilot.pause()
+            assert chat._text_area.cursor_location == (0, 5)
+
+            # Up arrow should NOT trigger history (cursor not at start)
+            await pilot.press("up")
+            await pilot.pause()
+            assert chat._text_area.text == "hello"
+
+    @pytest.mark.asyncio
+    async def test_up_arrow_triggers_at_cursor_zero(self) -> None:
+        """Up arrow should navigate history when cursor is at (0, 0)."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._history._entries.append("previous entry")
+
+            # Type text then move cursor to start
+            chat._text_area.insert("hello")
+            await pilot.pause()
+            chat._text_area.move_cursor((0, 0))
+            await pilot.pause()
+
+            # Up arrow should trigger history (cursor at start)
+            await pilot.press("up")
+            await pilot.pause()
+            assert chat._text_area.text == "previous entry"
+
+    @pytest.mark.asyncio
+    async def test_down_arrow_navigates_from_start_when_in_history(self) -> None:
+        """Down arrow at start navigates history when `_in_history` is True."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._history._entries.extend(["first", "second"])
+
+            # Navigate into history first (cursor at start on empty)
+            await pilot.press("up")
+            await pilot.pause()
+            assert chat._text_area.text == "second"
+
+            # Move cursor to start — still a boundary
+            chat._text_area.move_cursor((0, 0))
+            await pilot.pause()
+
+            # _in_history is True so down at start (boundary) still navigates
+            await pilot.press("down")
+            await pilot.pause()
+            assert chat._text_area.text == ""
+
+    @pytest.mark.asyncio
+    async def test_down_arrow_does_not_trigger_at_non_end(self) -> None:
+        """Down arrow should not navigate history when cursor is not at end."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._history._entries.append("previous entry")
+
+            # Type text — cursor ends up at the end
+            chat._text_area.insert("hello world")
+            await pilot.pause()
+
+            # Move cursor to middle (not at end)
+            chat._text_area.move_cursor((0, 5))
+            await pilot.pause()
+
+            # Down arrow should NOT trigger history
+            await pilot.press("down")
+            await pilot.pause()
+            assert chat._text_area.text == "hello world"
+
+    @pytest.mark.asyncio
+    async def test_down_arrow_at_end_triggers_history(self) -> None:
+        """Down arrow at end of text should navigate history forward."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._history._entries.extend(["first", "second"])
+
+            # Navigate up twice into history
+            await pilot.press("up")
+            await pilot.pause()
+            await pilot.press("up")
+            await pilot.pause()
+            assert chat._text_area.text == "first"
+
+            # Cursor should be at end after set_text_from_history
+            # Down arrow at end should navigate forward
+            await pilot.press("down")
+            await pilot.pause()
+            assert chat._text_area.text == "second"
+
+    @pytest.mark.asyncio
+    async def test_up_at_middle_of_multiline_does_not_trigger(self) -> None:
+        """Up arrow on a middle line should not navigate history."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._history._entries.append("previous entry")
+
+            # Insert multiline text and place cursor on line 1
+            chat._text_area.text = "line one\nline two\nline three"
+            await pilot.pause()
+            chat._text_area.move_cursor((1, 3))
+            await pilot.pause()
+
+            # Up arrow should move cursor, not navigate history
+            await pilot.press("up")
+            await pilot.pause()
+            assert chat._text_area.text == "line one\nline two\nline three"
+
+    @pytest.mark.asyncio
+    async def test_in_history_allows_up_from_end(self) -> None:
+        """When browsing history, up arrow at end should also navigate."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._history._entries.extend(["first", "second"])
+
+            # Navigate into history
+            await pilot.press("up")
+            await pilot.pause()
+            assert chat._text_area.text == "second"
+            assert chat._text_area._in_history is True
+
+            # Cursor is at end after set_text_from_history; up should
+            # still navigate because _in_history is True and at boundary
+            await pilot.press("up")
+            await pilot.pause()
+            assert chat._text_area.text == "first"
+
+    @pytest.mark.asyncio
+    async def test_in_history_resets_after_submission(self) -> None:
+        """Submitting should clear the _in_history flag."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._history._entries.append("recalled entry")
+
+            await pilot.press("up")
+            await pilot.pause()
+            assert chat._text_area._in_history is True
+
+            await pilot.press("enter")
+            await pilot.pause()
+            assert chat._text_area._in_history is False
+
+    @pytest.mark.asyncio
+    async def test_in_history_resets_after_navigating_past_end(self) -> None:
+        """Pressing down past history end should set `_in_history` to False."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._history._entries.append("only entry")
+
+            # Navigate up into history
+            await pilot.press("up")
+            await pilot.pause()
+            assert chat._text_area.text == "only entry"
+            assert chat._text_area._in_history is True
+
+            # Navigate down past the end — returns to original (empty) input
+            await pilot.press("down")
+            await pilot.pause()
+            assert chat._text_area.text == ""
+            assert chat._text_area._in_history is False
+
+
 class TestCompletionPopupClickBubbling:
     """Test that clicks on options bubble up through the popup."""
 

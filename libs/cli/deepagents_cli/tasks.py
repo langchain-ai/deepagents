@@ -669,7 +669,7 @@ class TaskMiddleware(AgentMiddleware):
 
     def before_model(
         self,
-        state: TaskState,  # noqa: ARG002
+        state: AgentState,  # noqa: ARG002
         runtime: Runtime,  # noqa: ARG002
     ) -> dict[str, Any] | None:
         """Check for task list updates from other sessions before each model call.
@@ -702,7 +702,7 @@ class TaskMiddleware(AgentMiddleware):
 
     async def abefore_model(
         self,
-        state: TaskState,
+        state: AgentState,
         runtime: Runtime,
     ) -> dict[str, Any] | None:
         """Async version of before_model.

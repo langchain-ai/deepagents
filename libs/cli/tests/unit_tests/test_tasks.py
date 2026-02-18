@@ -336,7 +336,7 @@ class TestTaskMiddlewareIntegration:
         task_list = storage.create("integration-test")
 
         # Add tasks
-        task_list["tasks"] = [
+        tasks: list[Task] = [
             {
                 "id": "t1",
                 "content": "First task",
@@ -353,6 +353,7 @@ class TestTaskMiddlewareIntegration:
                 "updated_at": "2025-01-01T00:00:00Z",
             },
         ]
+        task_list["tasks"] = tasks
         storage.save(task_list)
 
         # Reload and verify

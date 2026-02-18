@@ -320,3 +320,79 @@ def test_store_upload_non_utf8_content_stored_as_base64():
     item = rt.store.get(("filesystem",), "/images/photo.png")
     assert item.value["encoding"] == "base64"
     assert base64.standard_b64decode(item.value["content"]) == raw
+
+
+# ---------------------------------------------------------------------------
+# 13. store_files_as_list flag — StoreBackend
+# ---------------------------------------------------------------------------
+
+
+def test_store_write_as_list():
+    """StoreBackend with store_files_as_list stores content as list[str]."""
+    rt = _make_store_runtime()
+    be = StoreBackend(rt, namespace=lambda _ctx: ("filesystem",), store_files_as_list=True)
+
+    be.write("/docs/readme.txt", "line1\nline2\nline3")
+
+    item = rt.store.get(("filesystem",), "/docs/readme.txt")
+    assert item is not None
+    assert item.value["content"] == ["line1", "line2", "line3"]
+    assert "encoding" not in item.value
+
+
+def test_store_edit_as_list():
+    """StoreBackend with store_files_as_list preserves list format after edit."""
+    rt = _make_store_runtime()
+    be = StoreBackend(rt, namespace=lambda _ctx: ("filesystem",), store_files_as_list=True)
+
+    be.write("/docs/readme.txt", "hello\nworld")
+    result = be.edit("/docs/readme.txt", "world", "there")
+
+    assert result.error is None
+    item = rt.store.get(("filesystem",), "/docs/readme.txt")
+    assert item.value["content"] == ["hello", "there"]
+    assert "encoding" not in item.value
+
+
+def test_store_write_as_list_readable():
+    """Files stored as list[str] are still readable via the same backend."""
+    rt = _make_store_runtime()
+    be = StoreBackend(rt, namespace=lambda _ctx: ("filesystem",), store_files_as_list=True)
+
+    be.write("/file.txt", "aaa\nbbb")
+    result = be.read("/file.txt")
+    assert "aaa" in result
+    assert "bbb" in result
+
+
+# ---------------------------------------------------------------------------
+# 14. store_files_as_list flag — StateBackend
+# ---------------------------------------------------------------------------
+
+
+def test_state_write_as_list():
+    """StateBackend with store_files_as_list stores content as list[str]."""
+    rt = _make_state_runtime()
+    be = StateBackend(rt, store_files_as_list=True)
+
+    result = be.write("/docs/readme.txt", "alpha\nbeta")
+    assert result.error is None
+    fd = result.files_update["/docs/readme.txt"]
+    assert fd["content"] == ["alpha", "beta"]
+    assert "encoding" not in fd
+
+
+def test_state_edit_as_list():
+    """StateBackend with store_files_as_list preserves list format after edit."""
+    # Seed with a new-format file (as create_file_data produces)
+    from deepagents.backends.utils import _to_legacy_file_data, create_file_data
+
+    legacy = _to_legacy_file_data(create_file_data("hello\nworld"))
+    rt = _make_state_runtime(files={"/file.txt": legacy})
+    be = StateBackend(rt, store_files_as_list=True)
+
+    result = be.edit("/file.txt", "world", "there")
+    assert result.error is None
+    fd = result.files_update["/file.txt"]
+    assert fd["content"] == ["hello", "there"]
+    assert "encoding" not in fd

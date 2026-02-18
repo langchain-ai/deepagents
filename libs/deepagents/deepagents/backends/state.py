@@ -1,11 +1,12 @@
 """StateBackend: Store files in LangGraph agent state (ephemeral)."""
 
 import base64
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from deepagents.backends.protocol import (
     BackendProtocol,
     EditResult,
+    FileData,
     FileDownloadResponse,
     FileInfo,
     FileUploadResponse,
@@ -14,6 +15,7 @@ from deepagents.backends.protocol import (
 )
 from deepagents.backends.utils import (
     _glob_search_files,
+    _to_legacy_file_data,
     create_file_data,
     file_data_to_string,
     format_read_response,
@@ -38,9 +40,32 @@ class StateBackend(BackendProtocol):
     This is indicated by the uses_state=True flag.
     """
 
-    def __init__(self, runtime: "ToolRuntime") -> None:
-        """Initialize StateBackend with runtime."""
+    def __init__(
+        self,
+        runtime: "ToolRuntime",
+        *,
+        store_files_as_list: bool = False,
+    ) -> None:
+        """Initialize StateBackend with runtime.
+
+        Args:
+            runtime: The ToolRuntime instance providing store access and configuration.
+            store_files_as_list: If True, persist file content as ``list[str]``
+                (lines split on ``\\n``) instead of a plain ``str``.  This
+                preserves the legacy storage format for consumers that expect
+                it.  Default ``False`` (new format).
+        """
         self.runtime = runtime
+        self._store_files_as_list = store_files_as_list
+
+    def _prepare_for_storage(self, file_data: FileData) -> dict[str, Any]:
+        """Convert FileData to the format used for state storage.
+
+        When ``store_files_as_list`` is enabled, returns the legacy format.
+        """
+        if self._store_files_as_list:
+            return _to_legacy_file_data(file_data)
+        return dict(file_data)
 
     def ls_info(self, path: str) -> list[FileInfo]:
         """List files and directories in the specified directory (non-recursive).
@@ -132,7 +157,7 @@ class StateBackend(BackendProtocol):
             return WriteResult(error=f"Cannot write to {file_path} because it already exists. Read and then make an edit, or write to a new path.")
 
         new_file_data = create_file_data(content)
-        return WriteResult(path=file_path, files_update={file_path: new_file_data})
+        return WriteResult(path=file_path, files_update={file_path: self._prepare_for_storage(new_file_data)})
 
     def edit(
         self,
@@ -159,7 +184,7 @@ class StateBackend(BackendProtocol):
 
         new_content, occurrences = result
         new_file_data = update_file_data(file_data, new_content)
-        return EditResult(path=file_path, files_update={file_path: new_file_data}, occurrences=int(occurrences))
+        return EditResult(path=file_path, files_update={file_path: self._prepare_for_storage(new_file_data)}, occurrences=int(occurrences))
 
     def grep_raw(
         self,

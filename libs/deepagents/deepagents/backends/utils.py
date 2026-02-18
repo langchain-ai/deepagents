@@ -120,6 +120,29 @@ def check_empty_content(content: str) -> str | None:
     return None
 
 
+def _to_legacy_file_data(file_data: FileData) -> dict[str, Any]:
+    """Convert a FileData dict to the legacy storage format.
+
+    The legacy format stores content as ``list[str]`` (lines split on
+    ``\\n``) and omits the ``encoding`` field.  Use this when
+    ``store_files_as_list=True`` on a backend to preserve backwards
+    compatibility with consumers that expect ``list[str]`` content.
+
+    Args:
+        file_data: Modern FileData with ``content: str`` and ``encoding``.
+
+    Returns:
+        Dict with ``content`` as ``list[str]``, plus ``created_at`` /
+        ``modified_at`` timestamps.  No ``encoding`` key.
+    """
+    content = file_data["content"]
+    return {
+        "content": content.split("\n"),
+        "created_at": file_data["created_at"],
+        "modified_at": file_data["modified_at"],
+    }
+
+
 def file_data_to_string(file_data: FileData) -> str:
     """Convert FileData to plain string content.
 

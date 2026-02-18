@@ -26,6 +26,7 @@ from deepagents.backends.protocol import (
 )
 from deepagents.backends.utils import (
     _glob_search_files,
+    _to_legacy_file_data,
     create_file_data,
     file_data_to_string,
     format_read_response,
@@ -105,7 +106,13 @@ class StoreBackend(BackendProtocol):
     The namespace can include an optional assistant_id for multi-agent isolation.
     """
 
-    def __init__(self, runtime: "ToolRuntime", *, namespace: NamespaceFactory | None = None) -> None:
+    def __init__(
+        self,
+        runtime: "ToolRuntime",
+        *,
+        namespace: NamespaceFactory | None = None,
+        store_files_as_list: bool = False,
+    ) -> None:
         """Initialize StoreBackend with runtime.
 
         Args:
@@ -121,11 +128,17 @@ class StoreBackend(BackendProtocol):
                 .. warning::
                     This API is subject to change in a minor version.
 
+            store_files_as_list: If True, persist file content as ``list[str]``
+                (lines split on ``\\n``) instead of a plain ``str``.  This
+                preserves the legacy storage format for consumers that expect
+                it.  Default ``False`` (new format).
+
         Example:
                     namespace=lambda ctx: ("filesystem", ctx.runtime.context.user_id)
         """
         self.runtime = runtime
         self._namespace = namespace
+        self._store_files_as_list = store_files_as_list
 
     def _get_store(self) -> BaseStore:
         """Get the store instance.
@@ -247,12 +260,17 @@ class StoreBackend(BackendProtocol):
     def _convert_file_data_to_store_value(self, file_data: FileData) -> dict[str, Any]:
         """Convert FileData to a dict suitable for store.put().
 
+        When ``store_files_as_list`` is enabled, returns the legacy format
+        with ``content`` as ``list[str]`` and no ``encoding`` key.
+
         Args:
             file_data: The FileData to convert.
 
         Returns:
             Dictionary with content, encoding, created_at, and modified_at fields.
         """
+        if self._store_files_as_list:
+            return _to_legacy_file_data(file_data)
         return {
             "content": file_data["content"],
             "encoding": file_data["encoding"],

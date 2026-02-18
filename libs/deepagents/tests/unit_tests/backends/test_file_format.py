@@ -198,6 +198,7 @@ def test_store_legacy_list_content_read():
         "/legacy/file.txt",
         {
             "content": ["line1", "line2", "line3"],
+            "encoding": "utf-8",
             "created_at": "2025-01-01T00:00:00+00:00",
             "modified_at": "2025-01-01T00:00:00+00:00",
         },
@@ -227,6 +228,7 @@ def test_store_legacy_list_content_read():
 def test_state_legacy_list_content_read():
     legacy_fd = {
         "content": ["alpha", "beta"],
+        "encoding": "utf-8",
         "created_at": "2025-01-01T00:00:00+00:00",
         "modified_at": "2025-01-01T00:00:00+00:00",
     }
@@ -274,6 +276,7 @@ def test_grep_new_format():
 def test_grep_legacy_format():
     legacy_fd = {
         "content": ["def foo():", "    return 42", "def bar():", "    return 0"],
+        "encoding": "utf-8",
         "created_at": "2025-01-01T00:00:00+00:00",
         "modified_at": "2025-01-01T00:00:00+00:00",
     }

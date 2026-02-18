@@ -112,8 +112,8 @@ class FileData(TypedDict):
     content: str
     """File content as a plain string (utf-8 text or base64-encoded binary)."""
 
-    encoding: NotRequired[str]
-    """Content encoding: ``"utf-8"`` (default) or ``"base64"``."""
+    encoding: str
+    """Content encoding: `"utf-8"` for text, `"base64"` for binary."""
 
     created_at: str
     """ISO 8601 timestamp of file creation."""
@@ -191,9 +191,9 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         }
 
     .. note::
-        Legacy data may still contain ``"content": list[str]`` (lines split on
-        ``\\n``).  Backends accept this for backwards compatibility and emit a
-        ``DeprecationWarning``.
+        Legacy data may still contain `"content": list[str]` (lines split on
+        `\\n`).  Backends accept this for backwards compatibility and emit a
+        `DeprecationWarning`.
     """
 
     def ls_info(self, path: str) -> list["FileInfo"]:

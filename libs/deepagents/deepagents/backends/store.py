@@ -255,7 +255,7 @@ class StoreBackend(BackendProtocol):
         """
         return {
             "content": file_data["content"],
-            "encoding": file_data.get("encoding", "utf-8"),
+            "encoding": file_data["encoding"],
             "created_at": file_data["created_at"],
             "modified_at": file_data["modified_at"],
         }
@@ -654,7 +654,7 @@ class StoreBackend(BackendProtocol):
             file_data = self._convert_store_item_to_file_data(item)
             content_str = file_data_to_string(file_data)
 
-            encoding = file_data.get("encoding", "utf-8")
+            encoding = file_data["encoding"]
             content_bytes = base64.standard_b64decode(content_str) if encoding == "base64" else content_str.encode("utf-8")
 
             responses.append(FileDownloadResponse(path=path, content=content_bytes, error=None))

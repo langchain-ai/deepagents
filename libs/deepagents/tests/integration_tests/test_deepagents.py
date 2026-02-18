@@ -159,6 +159,7 @@ class TestDeepAgents:
             "/AGENTS.md",
             {
                 "content": ["Your name is Jackson"],
+                "encoding": "utf-8",
                 "created_at": now,
                 "modified_at": now,
             },

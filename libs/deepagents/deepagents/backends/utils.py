@@ -32,11 +32,11 @@ def _normalize_content(file_data: FileData) -> str:
     """Normalize file_data content to a plain string.
 
     This is the single backwards-compatibility conversion point for the
-    legacy ``list[str]`` file format.  New code stores ``content`` as a
-    plain ``str``; old data may still contain a list of lines.
+    legacy `list[str]` file format.  New code stores `content` as a
+    plain `str`; old data may still contain a list of lines.
 
     Args:
-        file_data: FileData dict with ``content`` key.
+        file_data: FileData dict with `content` key.
 
     Returns:
         Content as a single string.
@@ -142,7 +142,7 @@ def create_file_data(
     Args:
         content: File content as string (plain text or base64-encoded binary).
         created_at: Optional creation timestamp (ISO format).
-        encoding: Content encoding — ``"utf-8"`` for text, ``"base64"`` for binary.
+        encoding: Content encoding — `"utf-8"` for text, `"base64"` for binary.
 
     Returns:
         FileData dict with content, encoding, and timestamps.

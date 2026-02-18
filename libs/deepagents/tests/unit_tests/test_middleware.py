@@ -670,6 +670,7 @@ class TestFilesystemMiddleware:
                 f"/file{i}.txt",
                 {
                     "content": [f"content {i}"],
+                    "encoding": "utf-8",
                     "created_at": "2021-01-01",
                     "modified_at": "2021-01-01",
                 },
@@ -690,6 +691,7 @@ class TestFilesystemMiddleware:
                 f"/file{i}.txt",
                 {
                     "content": [f"content {i}"],
+                    "encoding": "utf-8",
                     "created_at": "2021-01-01",
                     "modified_at": "2021-01-01",
                 },
@@ -709,6 +711,7 @@ class TestFilesystemMiddleware:
                 f"/file{i}.txt",
                 {
                     "content": [f"content {i}"],
+                    "encoding": "utf-8",
                     "created_at": "2021-01-01",
                     "modified_at": "2021-01-01",
                 },
@@ -728,6 +731,7 @@ class TestFilesystemMiddleware:
                 f"/file{i}.txt",
                 {
                     "content": [f"content {i}"],
+                    "encoding": "utf-8",
                     "created_at": "2021-01-01",
                     "modified_at": "2021-01-01",
                     "type": "test" if i % 2 == 0 else "other",
@@ -751,6 +755,7 @@ class TestFilesystemMiddleware:
                 f"/file{i}.txt",
                 {
                     "content": [f"content {i}"],
+                    "encoding": "utf-8",
                     "created_at": "2021-01-01",
                     "modified_at": "2021-01-01",
                 },

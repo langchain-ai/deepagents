@@ -7,13 +7,14 @@ import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, NotRequired, TypedDict
+from typing import TYPE_CHECKING, NotRequired, TypedDict
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
     import aiosqlite
     from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+    from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +41,7 @@ def _patch_aiosqlite() -> None:
             Returns:
                 True if connection is alive, False otherwise.
             """
-            return self._connection is not None
+            return bool(self._running and self._connection is not None)
 
         # Dynamically adding a method to aiosqlite.Connection at runtime.
         # Type checkers can't understand this monkey-patch, so we suppress the
@@ -48,6 +49,24 @@ def _patch_aiosqlite() -> None:
         _aiosqlite.Connection.is_alive = _is_alive  # type: ignore[attr-defined]
 
     _aiosqlite_patched = True
+
+
+@asynccontextmanager
+async def _connect() -> AsyncIterator[aiosqlite.Connection]:
+    """Import aiosqlite, apply the compatibility patch, and connect.
+
+    Centralizes the deferred import + patch + connect sequence used by every
+    database function in this module.
+
+    Yields:
+        An open aiosqlite connection to the sessions database.
+    """
+    import aiosqlite as _aiosqlite
+
+    _patch_aiosqlite()
+
+    async with _aiosqlite.connect(str(get_db_path()), timeout=30.0) as conn:
+        yield conn
 
 
 class ThreadInfo(TypedDict):
@@ -141,12 +160,7 @@ async def list_threads(
         List of `ThreadInfo` dicts with `thread_id`, `agent_name`,
             `updated_at`, and optionally `message_count`.
     """
-    import aiosqlite as _aiosqlite
-
-    _patch_aiosqlite()
-
-    db_path = str(get_db_path())
-    async with _aiosqlite.connect(db_path, timeout=30.0) as conn:
+    async with _connect() as conn:
         # Return empty if table doesn't exist yet (fresh install)
         if not await _table_exists(conn, "checkpoints"):
             return []
@@ -248,12 +262,7 @@ async def get_most_recent(agent_name: str | None = None) -> str | None:
     Returns:
         Most recent thread_id or None if no threads exist.
     """
-    import aiosqlite as _aiosqlite
-
-    _patch_aiosqlite()
-
-    db_path = str(get_db_path())
-    async with _aiosqlite.connect(db_path, timeout=30.0) as conn:
+    async with _connect() as conn:
         if not await _table_exists(conn, "checkpoints"):
             return None
 
@@ -282,12 +291,7 @@ async def get_thread_agent(thread_id: str) -> str | None:
     Returns:
         Agent name associated with the thread, or None if not found.
     """
-    import aiosqlite as _aiosqlite
-
-    _patch_aiosqlite()
-
-    db_path = str(get_db_path())
-    async with _aiosqlite.connect(db_path, timeout=30.0) as conn:
+    async with _connect() as conn:
         if not await _table_exists(conn, "checkpoints"):
             return None
 
@@ -308,12 +312,7 @@ async def thread_exists(thread_id: str) -> bool:
     Returns:
         True if thread exists, False otherwise.
     """
-    import aiosqlite as _aiosqlite
-
-    _patch_aiosqlite()
-
-    db_path = str(get_db_path())
-    async with _aiosqlite.connect(db_path, timeout=30.0) as conn:
+    async with _connect() as conn:
         if not await _table_exists(conn, "checkpoints"):
             return False
 
@@ -333,12 +332,7 @@ async def find_similar_threads(thread_id: str, limit: int = 3) -> list[str]:
     Returns:
         List of thread IDs that begin with the given prefix.
     """
-    import aiosqlite as _aiosqlite
-
-    _patch_aiosqlite()
-
-    db_path = str(get_db_path())
-    async with _aiosqlite.connect(db_path, timeout=30.0) as conn:
+    async with _connect() as conn:
         if not await _table_exists(conn, "checkpoints"):
             return []
 
@@ -361,12 +355,7 @@ async def delete_thread(thread_id: str) -> bool:
     Returns:
         True if thread was deleted, False if not found.
     """
-    import aiosqlite as _aiosqlite
-
-    _patch_aiosqlite()
-
-    db_path = str(get_db_path())
-    async with _aiosqlite.connect(db_path, timeout=30.0) as conn:
+    async with _connect() as conn:
         if not await _table_exists(conn, "checkpoints"):
             return False
 
@@ -381,7 +370,7 @@ async def delete_thread(thread_id: str) -> bool:
 
 
 @asynccontextmanager
-async def get_checkpointer() -> AsyncIterator[Any]:
+async def get_checkpointer() -> AsyncIterator[AsyncSqliteSaver]:
     """Get AsyncSqliteSaver for the global database.
 
     Yields:

@@ -134,14 +134,21 @@ def web_search(  # noqa: ANN201  # Return type depends on dynamic tool configura
     4. Cite sources by mentioning the page titles or URLs
     5. NEVER show the raw JSON to the user - always provide a formatted response
     """
-    import requests
-    from tavily import (
-        BadRequestError,
-        InvalidAPIKeyError,
-        MissingAPIKeyError,
-        UsageLimitExceededError,
-    )
-    from tavily.errors import ForbiddenError, TimeoutError as TavilyTimeoutError
+    try:
+        import requests
+        from tavily import (
+            BadRequestError,
+            InvalidAPIKeyError,
+            MissingAPIKeyError,
+            UsageLimitExceededError,
+        )
+        from tavily.errors import ForbiddenError, TimeoutError as TavilyTimeoutError
+    except ImportError as exc:
+        return {
+            "error": f"Required package not installed: {exc.name}. "
+            "Install with: pip install 'deepagents[cli]'",
+            "query": query,
+        }
 
     client = _get_tavily_client()
     if client is None:
@@ -198,8 +205,15 @@ def fetch_url(url: str, timeout: int = 30) -> dict[str, Any]:
     3. Synthesize this into a clear, natural language response
     4. NEVER show the raw markdown to the user unless specifically requested
     """
-    import requests
-    from markdownify import markdownify
+    try:
+        import requests
+        from markdownify import markdownify
+    except ImportError as exc:
+        return {
+            "error": f"Required package not installed: {exc.name}. "
+            "Install with: pip install 'deepagents[cli]'",
+            "url": url,
+        }
 
     try:
         response = requests.get(

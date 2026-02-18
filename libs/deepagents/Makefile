@@ -1,4 +1,4 @@
-.PHONY: all format lint test tests integration_test integration_tests test_watch benchmark help run lint_package lint_tests check_imports coverage typecheck
+.PHONY: all format lint test tests evals integration_test integration_tests test_watch benchmark help run lint_package lint_tests check_imports coverage typecheck
 
 # Default target executed when no arguments are given to make.
 all: help
@@ -31,6 +31,9 @@ coverage:
 
 integration_test integration_tests:
 	uv run --group test pytest -n auto -vvv --timeout 30 $(TEST_FILE)
+
+evals:
+	LANGSMITH_TEST_SUITE=deepagents-evals uv run --group test pytest -n auto tests/evals 
 
 test_watch:
 	uv run --group test ptw --now . -- -vv $(TEST_FILE)
@@ -86,5 +89,6 @@ help:
 	@echo 'test TEST_FILE=<test_file>   - run all tests in file'
 	@echo 'integration_test             - run integration tests'
 	@echo 'integration_tests            - run integration tests'
+	@echo 'evals                        - run eval scenarios (LangSmith test suite: deepagents-evals)'
 	@echo 'test_watch                   - run tests in watch mode'
 	@echo 'benchmark                    - run benchmark tests'

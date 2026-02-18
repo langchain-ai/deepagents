@@ -8,6 +8,7 @@ from deepagents.backends.protocol import (
     EditResult,
     FileData,
     FileDownloadResponse,
+    FileFormat,
     FileInfo,
     FileUploadResponse,
     GrepMatch,
@@ -44,26 +45,27 @@ class StateBackend(BackendProtocol):
         self,
         runtime: "ToolRuntime",
         *,
-        store_files_as_list: bool = False,
+        file_format: FileFormat = "v2",
     ) -> None:
         """Initialize StateBackend with runtime.
 
         Args:
             runtime: The ToolRuntime instance providing store access and configuration.
-            store_files_as_list: If True, persist file content as ``list[str]``
-                (lines split on ``\\n``) instead of a plain ``str``.  This
-                preserves the legacy storage format for consumers that expect
-                it.  Default ``False`` (new format).
+            file_format: Storage format version. ``"v2"`` (default) stores
+                content as a plain ``str`` with an ``encoding`` field.
+                ``"v1"`` stores content as ``list[str]`` (lines split on
+                ``\\n``) without an ``encoding`` field, for consumers that
+                expect the legacy format.
         """
         self.runtime = runtime
-        self._store_files_as_list = store_files_as_list
+        self._file_format = file_format
 
     def _prepare_for_storage(self, file_data: FileData) -> dict[str, Any]:
         """Convert FileData to the format used for state storage.
 
-        When ``store_files_as_list`` is enabled, returns the legacy format.
+        When ``file_format="v1"``, returns the legacy format.
         """
-        if self._store_files_as_list:
+        if self._file_format == "v1":
             return _to_legacy_file_data(file_data)
         return dict(file_data)
 

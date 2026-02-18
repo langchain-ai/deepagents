@@ -323,14 +323,14 @@ def test_store_upload_non_utf8_content_stored_as_base64():
 
 
 # ---------------------------------------------------------------------------
-# 13. store_files_as_list flag — StoreBackend
+# 13. file_format="v1" flag — StoreBackend
 # ---------------------------------------------------------------------------
 
 
 def test_store_write_as_list():
-    """StoreBackend with store_files_as_list stores content as list[str]."""
+    """StoreBackend with file_format="v1" stores content as list[str]."""
     rt = _make_store_runtime()
-    be = StoreBackend(rt, namespace=lambda _ctx: ("filesystem",), store_files_as_list=True)
+    be = StoreBackend(rt, namespace=lambda _ctx: ("filesystem",), file_format="v1")
 
     be.write("/docs/readme.txt", "line1\nline2\nline3")
 
@@ -341,9 +341,9 @@ def test_store_write_as_list():
 
 
 def test_store_edit_as_list():
-    """StoreBackend with store_files_as_list preserves list format after edit."""
+    """StoreBackend with file_format="v1" preserves list format after edit."""
     rt = _make_store_runtime()
-    be = StoreBackend(rt, namespace=lambda _ctx: ("filesystem",), store_files_as_list=True)
+    be = StoreBackend(rt, namespace=lambda _ctx: ("filesystem",), file_format="v1")
 
     be.write("/docs/readme.txt", "hello\nworld")
     result = be.edit("/docs/readme.txt", "world", "there")
@@ -357,7 +357,7 @@ def test_store_edit_as_list():
 def test_store_write_as_list_readable():
     """Files stored as list[str] are still readable via the same backend."""
     rt = _make_store_runtime()
-    be = StoreBackend(rt, namespace=lambda _ctx: ("filesystem",), store_files_as_list=True)
+    be = StoreBackend(rt, namespace=lambda _ctx: ("filesystem",), file_format="v1")
 
     be.write("/file.txt", "aaa\nbbb")
     result = be.read("/file.txt")
@@ -366,14 +366,14 @@ def test_store_write_as_list_readable():
 
 
 # ---------------------------------------------------------------------------
-# 14. store_files_as_list flag — StateBackend
+# 14. file_format="v1" flag — StateBackend
 # ---------------------------------------------------------------------------
 
 
 def test_state_write_as_list():
-    """StateBackend with store_files_as_list stores content as list[str]."""
+    """StateBackend with file_format="v1" stores content as list[str]."""
     rt = _make_state_runtime()
-    be = StateBackend(rt, store_files_as_list=True)
+    be = StateBackend(rt, file_format="v1")
 
     result = be.write("/docs/readme.txt", "alpha\nbeta")
     assert result.error is None
@@ -383,13 +383,13 @@ def test_state_write_as_list():
 
 
 def test_state_edit_as_list():
-    """StateBackend with store_files_as_list preserves list format after edit."""
+    """StateBackend with file_format="v1" preserves list format after edit."""
     # Seed with a new-format file (as create_file_data produces)
     from deepagents.backends.utils import _to_legacy_file_data, create_file_data
 
     legacy = _to_legacy_file_data(create_file_data("hello\nworld"))
     rt = _make_state_runtime(files={"/file.txt": legacy})
-    be = StateBackend(rt, store_files_as_list=True)
+    be = StateBackend(rt, file_format="v1")
 
     result = be.edit("/file.txt", "world", "there")
     assert result.error is None

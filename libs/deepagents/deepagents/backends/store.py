@@ -19,6 +19,7 @@ from deepagents.backends.protocol import (
     EditResult,
     FileData,
     FileDownloadResponse,
+    FileFormat,
     FileInfo,
     FileUploadResponse,
     GrepMatch,
@@ -111,7 +112,7 @@ class StoreBackend(BackendProtocol):
         runtime: "ToolRuntime",
         *,
         namespace: NamespaceFactory | None = None,
-        store_files_as_list: bool = False,
+        file_format: FileFormat = "v2",
     ) -> None:
         """Initialize StoreBackend with runtime.
 
@@ -128,17 +129,18 @@ class StoreBackend(BackendProtocol):
                 .. warning::
                     This API is subject to change in a minor version.
 
-            store_files_as_list: If True, persist file content as ``list[str]``
-                (lines split on ``\\n``) instead of a plain ``str``.  This
-                preserves the legacy storage format for consumers that expect
-                it.  Default ``False`` (new format).
+            file_format: Storage format version. ``"v2"`` (default) stores
+                content as a plain ``str`` with an ``encoding`` field.
+                ``"v1"`` stores content as ``list[str]`` (lines split on
+                ``\\n``) without an ``encoding`` field, for consumers that
+                expect the legacy format.
 
         Example:
                     namespace=lambda ctx: ("filesystem", ctx.runtime.context.user_id)
         """
         self.runtime = runtime
         self._namespace = namespace
-        self._store_files_as_list = store_files_as_list
+        self._file_format = file_format
 
     def _get_store(self) -> BaseStore:
         """Get the store instance.
@@ -260,8 +262,8 @@ class StoreBackend(BackendProtocol):
     def _convert_file_data_to_store_value(self, file_data: FileData) -> dict[str, Any]:
         """Convert FileData to a dict suitable for store.put().
 
-        When ``store_files_as_list`` is enabled, returns the legacy format
-        with ``content`` as ``list[str]`` and no ``encoding`` key.
+        When ``file_format="v1"``, returns the legacy format with ``content``
+        as ``list[str]`` and no ``encoding`` key.
 
         Args:
             file_data: The FileData to convert.
@@ -269,7 +271,7 @@ class StoreBackend(BackendProtocol):
         Returns:
             Dictionary with content, encoding, created_at, and modified_at fields.
         """
-        if self._store_files_as_list:
+        if self._file_format == "v1":
             return _to_legacy_file_data(file_data)
         return {
             "content": file_data["content"],

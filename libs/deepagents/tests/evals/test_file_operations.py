@@ -186,12 +186,13 @@ def test_grep_finds_matching_paths() -> None:
         # 1st step: request a tool call to grep for 'needle'.
         # 2nd step: answer with the matching paths.
         # 1 tool call request: grep.
-        expect=TrajectoryExpectations(num_agent_steps=2, num_tool_call_requests=1),
+        expect=(
+            TrajectoryExpectations(num_agent_steps=2, num_tool_call_requests=1)
+            .require_final_text_contains("/a.txt")
+            .require_final_text_contains("/c.md")
+        ),
     )
-    answer = trajectory.steps[-1].action.text
-    assert "/a.txt" in answer
-    assert "/c.md" in answer
-    assert "/b.txt" not in answer
+    assert "/b.txt" not in trajectory.answer
 
 
 @pytest.mark.langsmith
@@ -209,9 +210,10 @@ def test_glob_lists_markdown_files() -> None:
         # 1st step: request a tool call to glob for markdown files.
         # 2nd step: answer with the matching paths.
         # 1 tool call request: glob.
-        expect=TrajectoryExpectations(num_agent_steps=2, num_tool_call_requests=1),
+        expect=(
+            TrajectoryExpectations(num_agent_steps=2, num_tool_call_requests=1)
+            .require_final_text_contains("/foo/a.md")
+            .require_final_text_contains("/foo/c.md")
+        ),
     )
-    answer = trajectory.steps[-1].action.text
-    assert "/foo/a.md" in answer
-    assert "/foo/c.md" in answer
-    assert "/foo/b.txt" not in answer
+    assert "/foo/b.txt" not in trajectory.answer

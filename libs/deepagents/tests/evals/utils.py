@@ -136,6 +136,10 @@ class AgentTrajectory:
     steps: list[AgentStep]
     files: dict[str, str]
 
+    @property
+    def answer(self) -> str:
+        return self.steps[-1].action.text
+
     def pretty(self) -> str:
         lines: list[str] = []
         for step in self.steps:

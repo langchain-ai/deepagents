@@ -52,14 +52,10 @@ class TrajectoryExpectations:
             This counts the number of `AIMessage` actions captured in the trajectory.
         num_tool_call_requests: Exact number of tool call requests.
             This is computed as the sum of `len(step.action.tool_calls)` across all steps.
-        max_agent_steps: Upper bound on the number of model/action steps.
-        max_tool_call_requests: Upper bound on the number of tool call requests.
     """
 
     num_agent_steps: int | None = None
     num_tool_call_requests: int | None = None
-    max_agent_steps: int | None = None
-    max_tool_call_requests: int | None = None
 
 
 @dataclass(frozen=True)
@@ -122,13 +118,19 @@ def _assert_expectations(trajectory: AgentTrajectory, expect: TrajectoryExpectat
     t.log_feedback(key="tool_call_requests", value=tool_call_requests)
 
     if expect.num_agent_steps is not None:
+        t.log_feedback(
+            key="match_num_agent_steps",
+            value=int(agent_steps == expect.num_agent_steps),
+        )
+        t.log_feedback(key="expected_num_agent_steps", value=expect.num_agent_steps)
         assert agent_steps == expect.num_agent_steps
     if expect.num_tool_call_requests is not None:
+        t.log_feedback(
+            key="match_num_tool_call_requests",
+            value=int(tool_call_requests == expect.num_tool_call_requests),
+        )
+        t.log_feedback(key="expected_num_tool_call_requests", value=expect.num_tool_call_requests)
         assert tool_call_requests == expect.num_tool_call_requests
-    if expect.max_agent_steps is not None:
-        assert agent_steps <= expect.max_agent_steps
-    if expect.max_tool_call_requests is not None:
-        assert tool_call_requests <= expect.max_tool_call_requests
 
 
 def run_agent(

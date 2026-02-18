@@ -217,3 +217,60 @@ def test_glob_lists_markdown_files() -> None:
         ),
     )
     assert "/foo/b.txt" not in trajectory.answer
+
+
+@pytest.mark.langsmith
+def test_find_magic_phrase_deep_nesting() -> None:
+    """Finds a magic phrase in a deeply nested directory efficiently."""
+    agent = create_deep_agent()
+    magic_phrase = "cobalt-otter-17"
+    trajectory = run_agent(
+        agent,
+        initial_files={
+            "/a/b/c/d/e/notes.txt": "just some notes\n",
+            "/a/b/c/d/e/readme.md": "project readme\n",
+            "/a/b/c/d/e/answer.txt": f"MAGIC_PHRASE: {magic_phrase}\n",
+            "/a/b/c/d/other.txt": "nothing here\n",
+            "/a/b/x/y/z/nope.txt": "still nothing\n",
+        },
+        query=(
+            "Find the file that contains the line starting with 'MAGIC_PHRASE:' and reply with the phrase value only. "
+            "Be efficient: use grep to locate it before reading."
+        ),
+        # 1st step: grep for MAGIC_PHRASE to locate the file.
+        # 2nd step: read the file (if needed) and answer with the phrase.
+        # 2 tool call requests: grep + read_file.
+        expect=(
+            TrajectoryExpectations(num_agent_steps=2, num_tool_call_requests=1)
+            .require_tool_call(step=1, name="grep", args_contains={"pattern": "MAGIC_PHRASE:"})
+            .require_final_text_contains(magic_phrase)
+        ),
+    )
+    assert "MAGIC_PHRASE" not in trajectory.answer
+
+
+@pytest.mark.langsmith
+def test_find_magic_phrase_across_five_files_efficiently() -> None:
+    """Finds a magic phrase across multiple files with an efficient strategy."""
+    agent = create_deep_agent()
+    magic_phrase = "cobalt-otter-17"
+    trajectory = run_agent(
+        agent,
+        initial_files={
+            "/f1.txt": "alpha\n",
+            "/f2.txt": "beta\n",
+            "/f3.txt": f"MAGIC_PHRASE: {magic_phrase}\n",
+            "/f4.txt": "delta\n",
+            "/f5.txt": "epsilon\n",
+        },
+        query=(
+            "You have five small files: /f1.txt, /f2.txt, /f3.txt, /f4.txt, /f5.txt. "
+            "Find which file contains the line starting with 'MAGIC_PHRASE:' and reply with the phrase value only. "
+            "Be efficient: prefer grep or parallel reads over reading files one-by-one."
+        ),
+        # 1st step: either grep or multiple read_file calls.
+        # 2nd step: answer with the phrase.
+        # Expect 2 steps; tool call count depends on strategy, so we only enforce step count here.
+        expect=TrajectoryExpectations(num_agent_steps=2).require_final_text_contains(magic_phrase),
+    )
+    assert "MAGIC_PHRASE" not in trajectory.answer

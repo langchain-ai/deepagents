@@ -223,5 +223,11 @@ omit = ["tests/*"]
 timeout = 30  # Default timeout for all tests (can be overridden per-test)
 
 addopts = "--strict-markers --strict-config --durations=5"
+# pytest-benchmark warns once per xdist worker that benchmarks are disabled
+# under parallel execution. Both plugins are needed: xdist for `make test`,
+# benchmark for `make benchmark`. Suppress the noise here.
+filterwarnings = [
+    "ignore::pytest_benchmark.logger.PytestBenchmarkWarning",
+]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"

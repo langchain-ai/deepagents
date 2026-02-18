@@ -269,7 +269,7 @@ async def test_state_backend_intercept_large_tool_result_async():
 
     assert isinstance(result, Command)
     assert "/large_tool_results/test_123" in result.update["files"]
-    assert result.update["files"]["/large_tool_results/test_123"]["content"] == [large_content]
+    assert result.update["files"]["/large_tool_results/test_123"]["content"] == large_content
     assert "Tool result too large" in result.update["messages"][0].content
 
 

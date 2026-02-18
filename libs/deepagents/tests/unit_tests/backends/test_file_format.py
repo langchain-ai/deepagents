@@ -1,0 +1,330 @@
+"""Tests for the new str-based file format with encoding support.
+
+Covers:
+- Text round-trip through create_file_data / file_data_to_string
+- Binary (base64) round-trip
+- Legacy list[str] backwards compatibility (with DeprecationWarning)
+- Store backend upload/download for binary and text
+- State backend legacy read
+- Grep with new and legacy formats
+- Encoding inference via mimetypes
+"""
+
+import base64
+import mimetypes
+import warnings
+
+import pytest
+from langchain.tools import ToolRuntime
+from langgraph.store.memory import InMemoryStore
+
+from deepagents.backends.state import StateBackend
+from deepagents.backends.store import StoreBackend
+from deepagents.backends.utils import (
+    _normalize_content,
+    create_file_data,
+    file_data_to_string,
+    grep_matches_from_files,
+)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _make_store_runtime():
+    return ToolRuntime(
+        state={"messages": []},
+        context=None,
+        tool_call_id="t1",
+        store=InMemoryStore(),
+        stream_writer=lambda _: None,
+        config={},
+    )
+
+
+def _make_state_runtime(files=None):
+    return ToolRuntime(
+        state={"messages": [], "files": files or {}},
+        context=None,
+        tool_call_id="t1",
+        store=None,
+        stream_writer=lambda _: None,
+        config={},
+    )
+
+
+# ---------------------------------------------------------------------------
+# 1. Text round-trip
+# ---------------------------------------------------------------------------
+
+
+def test_text_round_trip():
+    fd = create_file_data("hello\nworld")
+    assert isinstance(fd["content"], str)
+    assert fd["content"] == "hello\nworld"
+    assert fd["encoding"] == "utf-8"
+    assert file_data_to_string(fd) == "hello\nworld"
+
+
+# ---------------------------------------------------------------------------
+# 2. Binary round-trip
+# ---------------------------------------------------------------------------
+
+
+def test_binary_round_trip():
+    original = b"\x89PNG\r\n\x1a\n" + b"\x00" * 20
+    b64_str = base64.standard_b64encode(original).decode("ascii")
+    fd = create_file_data(b64_str, encoding="base64")
+    assert fd["content"] == b64_str
+    assert fd["encoding"] == "base64"
+    assert base64.standard_b64decode(fd["content"]) == original
+
+
+# ---------------------------------------------------------------------------
+# 3. Legacy backwards compat — emits DeprecationWarning
+# ---------------------------------------------------------------------------
+
+
+def test_legacy_list_content_emits_warning():
+    legacy_fd = {
+        "content": ["line1", "line2"],
+        "encoding": "utf-8",
+        "created_at": "2025-01-01T00:00:00+00:00",
+        "modified_at": "2025-01-01T00:00:00+00:00",
+    }
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        result = file_data_to_string(legacy_fd)
+        assert result == "line1\nline2"
+        assert len(w) == 1
+        assert issubclass(w[0].category, DeprecationWarning)
+        assert "list[str]" in str(w[0].message)
+
+
+# ---------------------------------------------------------------------------
+# 4. New format — no warning
+# ---------------------------------------------------------------------------
+
+
+def test_new_format_no_warning():
+    fd = {
+        "content": "hello",
+        "encoding": "utf-8",
+        "created_at": "2025-01-01T00:00:00+00:00",
+        "modified_at": "2025-01-01T00:00:00+00:00",
+    }
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        result = file_data_to_string(fd)
+        assert result == "hello"
+        deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
+        assert len(deprecation_warnings) == 0
+
+
+# ---------------------------------------------------------------------------
+# 5. Store backend upload binary
+# ---------------------------------------------------------------------------
+
+
+def test_store_upload_binary():
+    rt = _make_store_runtime()
+    be = StoreBackend(rt, namespace=lambda _ctx: ("filesystem",))
+
+    png_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 50
+    responses = be.upload_files([("/images/test.png", png_bytes)])
+
+    assert len(responses) == 1
+    assert responses[0].error is None
+
+    # Verify stored with base64 encoding
+    store = rt.store
+    item = store.get(("filesystem",), "/images/test.png")
+    assert item is not None
+    assert item.value["encoding"] == "base64"
+    assert isinstance(item.value["content"], str)
+
+
+# ---------------------------------------------------------------------------
+# 6. Store backend download binary round-trip
+# ---------------------------------------------------------------------------
+
+
+def test_store_upload_download_binary_round_trip():
+    rt = _make_store_runtime()
+    be = StoreBackend(rt, namespace=lambda _ctx: ("filesystem",))
+
+    original_bytes = b"\x89PNG\r\n\x1a\n" + bytes(range(256))
+    be.upload_files([("/images/photo.png", original_bytes)])
+
+    responses = be.download_files(["/images/photo.png"])
+    assert len(responses) == 1
+    assert responses[0].error is None
+    assert responses[0].content == original_bytes
+
+
+# ---------------------------------------------------------------------------
+# 7. Store backend upload text
+# ---------------------------------------------------------------------------
+
+
+def test_store_upload_text():
+    rt = _make_store_runtime()
+    be = StoreBackend(rt, namespace=lambda _ctx: ("filesystem",))
+
+    text_bytes = b"Hello, world!\nLine 2"
+    responses = be.upload_files([("/docs/readme.txt", text_bytes)])
+
+    assert len(responses) == 1
+    assert responses[0].error is None
+
+    store = rt.store
+    item = store.get(("filesystem",), "/docs/readme.txt")
+    assert item is not None
+    assert item.value["encoding"] == "utf-8"
+    assert item.value["content"] == "Hello, world!\nLine 2"
+
+
+# ---------------------------------------------------------------------------
+# 8. Store backend legacy read
+# ---------------------------------------------------------------------------
+
+
+def test_store_legacy_list_content_read():
+    rt = _make_store_runtime()
+    be = StoreBackend(rt, namespace=lambda _ctx: ("filesystem",))
+    store = rt.store
+
+    # Manually put legacy list[str] item
+    store.put(
+        ("filesystem",),
+        "/legacy/file.txt",
+        {
+            "content": ["line1", "line2", "line3"],
+            "created_at": "2025-01-01T00:00:00+00:00",
+            "modified_at": "2025-01-01T00:00:00+00:00",
+        },
+    )
+
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        result = be.read("/legacy/file.txt")
+        assert "line1" in result
+        assert "line2" in result
+        deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
+        assert len(deprecation_warnings) >= 1
+
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        responses = be.download_files(["/legacy/file.txt"])
+        assert responses[0].content == b"line1\nline2\nline3"
+        deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
+        assert len(deprecation_warnings) >= 1
+
+
+# ---------------------------------------------------------------------------
+# 9. State backend legacy read
+# ---------------------------------------------------------------------------
+
+
+def test_state_legacy_list_content_read():
+    legacy_fd = {
+        "content": ["alpha", "beta"],
+        "created_at": "2025-01-01T00:00:00+00:00",
+        "modified_at": "2025-01-01T00:00:00+00:00",
+    }
+    rt = _make_state_runtime(files={"/old/file.txt": legacy_fd})
+    be = StateBackend(rt)
+
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        result = be.read("/old/file.txt")
+        assert "alpha" in result
+        assert "beta" in result
+        deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
+        assert len(deprecation_warnings) >= 1
+
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        responses = be.download_files(["/old/file.txt"])
+        assert responses[0].content == b"alpha\nbeta"
+        deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
+        assert len(deprecation_warnings) >= 1
+
+
+# ---------------------------------------------------------------------------
+# 10. Grep with new format
+# ---------------------------------------------------------------------------
+
+
+def test_grep_new_format():
+    fd = create_file_data("import os\nprint('hello')\nimport sys")
+    files = {"/src/main.py": fd}
+    matches = grep_matches_from_files(files, "import", path="/")
+    assert isinstance(matches, list)
+    assert len(matches) == 2
+    assert matches[0]["line"] == 1
+    assert matches[0]["text"] == "import os"
+    assert matches[1]["line"] == 3
+    assert matches[1]["text"] == "import sys"
+
+
+# ---------------------------------------------------------------------------
+# 11. Grep with legacy format
+# ---------------------------------------------------------------------------
+
+
+def test_grep_legacy_format():
+    legacy_fd = {
+        "content": ["def foo():", "    return 42", "def bar():", "    return 0"],
+        "created_at": "2025-01-01T00:00:00+00:00",
+        "modified_at": "2025-01-01T00:00:00+00:00",
+    }
+    files = {"/src/funcs.py": legacy_fd}
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        matches = grep_matches_from_files(files, "def", path="/")
+        assert isinstance(matches, list)
+        assert len(matches) == 2
+        assert matches[0]["text"] == "def foo():"
+        assert matches[1]["text"] == "def bar():"
+        deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
+        assert len(deprecation_warnings) >= 1
+
+
+# ---------------------------------------------------------------------------
+# 12. Encoding inference
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "filename,expected_text",
+    [
+        ("file.txt", True),
+        ("file.md", True),
+        ("file.py", True),
+        ("file.js", True),
+        ("file.html", True),
+        ("file.css", True),
+        ("file.json", True),
+        ("file.png", False),
+        ("file.jpg", False),
+        ("file.pdf", False),
+        ("file.gif", False),
+        ("file.zip", False),
+        ("file.mp3", False),
+    ],
+)
+def test_encoding_inference(filename, expected_text):
+    """Verify mimetypes correctly identifies binary vs text for common extensions."""
+    mime_type, _ = mimetypes.guess_type(filename)
+    if expected_text:
+        # Text files: mime is None (unknown) or starts with text/
+        assert mime_type is None or mime_type.startswith("text/") or mime_type in (
+            "application/json",
+            "application/javascript",
+        ), f"{filename}: expected text-like, got {mime_type}"
+    else:
+        # Binary files: mime is not None and does not start with text/
+        assert mime_type is not None and not mime_type.startswith("text/"), f"{filename}: expected binary, got {mime_type}"

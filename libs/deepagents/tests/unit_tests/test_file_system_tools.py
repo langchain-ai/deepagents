@@ -65,8 +65,8 @@ def test_parallel_write_file_calls_trigger_list_reducer() -> None:
     assert "/test2.txt" in result["files"], "File /test2.txt should exist in the final state"
 
     # Verify the content of the files
-    assert result["files"]["/test1.txt"]["content"] == ["hello"], "Content of /test1.txt should be 'hello'"
-    assert result["files"]["/test2.txt"]["content"] == ["world"], "Content of /test2.txt should be 'world'"
+    assert result["files"]["/test1.txt"]["content"] == "hello", "Content of /test1.txt should be 'hello'"
+    assert result["files"]["/test2.txt"]["content"] == "world", "Content of /test2.txt should be 'world'"
 
 
 def test_edit_file_single_replacement() -> None:
@@ -118,10 +118,10 @@ def test_edit_file_single_replacement() -> None:
 
     # Verify the file was edited correctly
     assert "/code.py" in result["files"], "File /code.py should exist"
-    # Content is stored as a list of lines
-    content_list = result["files"]["/code.py"]["content"]
-    full_content = "\n".join(content_list)
-    assert "hello universe" in full_content, f"Content should be updated, got: {content_list}"
+    # Content is stored as a plain string
+    full_content = result["files"]["/code.py"]["content"]
+    assert isinstance(full_content, str)
+    assert "hello universe" in full_content, f"Content should be updated, got: {full_content}"
     assert "hello world" not in full_content, "Old content should be replaced"
 
 
@@ -178,7 +178,7 @@ def test_edit_file_replace_all() -> None:
 
     # Verify all occurrences were replaced
     assert "/data.txt" in result["files"], "File /data.txt should exist"
-    content = result["files"]["/data.txt"]["content"][0]
+    content = result["files"]["/data.txt"]["content"]
     assert content == "qux bar qux baz qux", "All occurrences of 'foo' should be replaced with 'qux'"
 
 

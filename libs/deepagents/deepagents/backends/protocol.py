@@ -165,12 +165,19 @@ class BackendProtocol(abc.ABC):  # noqa: B024
     Backends can store files in different locations (state, filesystem, database, etc.)
     and provide a uniform interface for file operations.
 
-    All file data is represented as dicts with the following structure:
-    {
-        "content": list[str], # Lines of text content
-        "created_at": str, # ISO format timestamp
-        "modified_at": str, # ISO format timestamp
-    }
+    All file data is represented as dicts with the following structure::
+
+        {
+            "content": str,         # Text content (utf-8) or base64-encoded binary
+            "encoding": str,        # "utf-8" for text, "base64" for binary data
+            "created_at": str,      # ISO format timestamp
+            "modified_at": str,     # ISO format timestamp
+        }
+
+    .. note::
+        Legacy data may still contain ``"content": list[str]`` (lines split on
+        ``\\n``).  Backends accept this for backwards compatibility and emit a
+        ``DeprecationWarning``.
     """
 
     def ls_info(self, path: str) -> list["FileInfo"]:

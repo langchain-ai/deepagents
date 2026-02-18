@@ -7,6 +7,7 @@ enable composition without fragile string parsing.
 
 import os
 import re
+import warnings
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -25,6 +26,31 @@ TRUNCATION_GUIDANCE = "... [results truncated, try being more specific with your
 # Re-export protocol types for backwards compatibility
 FileInfo = _FileInfo
 GrepMatch = _GrepMatch
+
+
+def _normalize_content(file_data: dict[str, Any]) -> str:
+    """Normalize file_data content to a plain string.
+
+    This is the single backwards-compatibility conversion point for the
+    legacy ``list[str]`` file format.  New code stores ``content`` as a
+    plain ``str``; old data may still contain a list of lines.
+
+    Args:
+        file_data: FileData dict with ``content`` key.
+
+    Returns:
+        Content as a single string.
+    """
+    content = file_data["content"]
+    if isinstance(content, list):
+        warnings.warn(
+            "FileData with list[str] content is deprecated. "
+            "Content should be stored as a plain str.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return "\n".join(content)
+    return content
 
 
 def sanitize_tool_call_id(tool_call_id: str) -> str:
@@ -102,26 +128,31 @@ def file_data_to_string(file_data: dict[str, Any]) -> str:
         file_data: FileData dict with 'content' key
 
     Returns:
-        Content as string with lines joined by newlines
+        Content as a single string.
     """
-    return "\n".join(file_data["content"])
+    return _normalize_content(file_data)
 
 
-def create_file_data(content: str, created_at: str | None = None) -> dict[str, Any]:
+def create_file_data(
+    content: str,
+    created_at: str | None = None,
+    encoding: str = "utf-8",
+) -> dict[str, Any]:
     """Create a FileData object with timestamps.
 
     Args:
-        content: File content as string
-        created_at: Optional creation timestamp (ISO format)
+        content: File content as string (plain text or base64-encoded binary).
+        created_at: Optional creation timestamp (ISO format).
+        encoding: Content encoding — ``"utf-8"`` for text, ``"base64"`` for binary.
 
     Returns:
-        FileData dict with content and timestamps
+        FileData dict with content, encoding, and timestamps.
     """
-    lines = content.split("\n") if isinstance(content, str) else content
     now = datetime.now(UTC).isoformat()
 
     return {
-        "content": lines,
+        "content": content,
+        "encoding": encoding,
         "created_at": created_at or now,
         "modified_at": now,
     }
@@ -137,11 +168,11 @@ def update_file_data(file_data: dict[str, Any], content: str) -> dict[str, Any]:
     Returns:
         Updated FileData dict
     """
-    lines = content.split("\n") if isinstance(content, str) else content
     now = datetime.now(UTC).isoformat()
 
     return {
-        "content": lines,
+        "content": content,
+        "encoding": file_data.get("encoding", "utf-8"),
         "created_at": file_data["created_at"],
         "modified_at": now,
     }
@@ -495,7 +526,8 @@ def _grep_search_files(
 
     results: dict[str, list[tuple[int, str]]] = {}
     for file_path, file_data in filtered.items():
-        for line_num, line in enumerate(file_data["content"], 1):
+        content_str = _normalize_content(file_data)
+        for line_num, line in enumerate(content_str.split("\n"), 1):
             if regex.search(line):
                 if file_path not in results:
                     results[file_path] = []
@@ -535,7 +567,8 @@ def grep_matches_from_files(
 
     matches: list[GrepMatch] = []
     for file_path, file_data in filtered.items():
-        for line_num, line in enumerate(file_data["content"], 1):
+        content_str = _normalize_content(file_data)
+        for line_num, line in enumerate(content_str.split("\n"), 1):
             if pattern in line:  # Simple substring search for literal matching
                 matches.append({"path": file_path, "line": int(line_num), "text": line})
     return matches

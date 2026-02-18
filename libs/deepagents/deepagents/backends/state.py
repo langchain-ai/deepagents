@@ -1,5 +1,6 @@
 """StateBackend: Store files in LangGraph agent state (ephemeral)."""
 
+import base64
 from typing import TYPE_CHECKING
 
 from deepagents.backends.protocol import (
@@ -74,7 +75,9 @@ class StateBackend(BackendProtocol):
                 continue
 
             # This is a file directly in the current directory
-            size = len("\n".join(fd.get("content", [])))
+            # BACKWARDS COMPAT: handle legacy list[str] content for size computation
+            raw = fd.get("content", "")
+            size = len("\n".join(raw)) if isinstance(raw, list) else len(raw)
             infos.append(
                 {
                     "path": k,
@@ -178,7 +181,12 @@ class StateBackend(BackendProtocol):
         infos: list[FileInfo] = []
         for p in paths:
             fd = files.get(p)
-            size = len("\n".join(fd.get("content", []))) if fd else 0
+            if fd:
+                # BACKWARDS COMPAT: handle legacy list[str] content for size computation
+                raw = fd.get("content", "")
+                size = len("\n".join(raw)) if isinstance(raw, list) else len(raw)
+            else:
+                size = 0
             infos.append(
                 {
                     "path": p,
@@ -223,9 +231,13 @@ class StateBackend(BackendProtocol):
                 responses.append(FileDownloadResponse(path=path, content=None, error="file_not_found"))
                 continue
 
-            # Convert file data to bytes
             content_str = file_data_to_string(file_data)
-            content_bytes = content_str.encode("utf-8")
+
+            encoding = file_data.get("encoding", "utf-8")
+            if encoding == "base64":
+                content_bytes = base64.standard_b64decode(content_str)
+            else:
+                content_bytes = content_str.encode("utf-8")
 
             responses.append(FileDownloadResponse(path=path, content=content_bytes, error=None))
 

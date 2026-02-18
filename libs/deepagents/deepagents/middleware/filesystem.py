@@ -73,8 +73,11 @@ NUM_CHARS_PER_TOKEN = 4
 class FileData(TypedDict):
     """Data structure for storing file contents with metadata."""
 
-    content: list[str]
-    """Lines of the file."""
+    content: str
+    """File content as a plain string (utf-8 text or base64-encoded binary)."""
+
+    encoding: NotRequired[str]
+    """Content encoding: ``"utf-8"`` (default) or ``"base64"``."""
 
     created_at: str
     """ISO 8601 timestamp of file creation."""

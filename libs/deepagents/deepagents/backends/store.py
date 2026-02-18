@@ -1,5 +1,7 @@
 """StoreBackend: Adapter for LangGraph's BaseStore (persistent, cross-thread)."""
 
+import base64
+import mimetypes
 import re
 import warnings
 from collections.abc import Callable
@@ -205,14 +207,31 @@ class StoreBackend(BackendProtocol):
             store_item: The store Item containing file data.
 
         Returns:
-            FileData dict with content, created_at, and modified_at fields.
+            FileData dict with content, encoding, created_at, and modified_at fields.
 
         Raises:
             ValueError: If required fields are missing or have incorrect types.
         """
-        if "content" not in store_item.value or not isinstance(store_item.value["content"], list):
+        raw_content = store_item.value.get("content")
+        if raw_content is None:
             msg = f"Store item does not contain valid content field. Got: {store_item.value.keys()}"
             raise ValueError(msg)
+
+        # BACKWARDS COMPAT: legacy list[str] format
+        if isinstance(raw_content, list):
+            warnings.warn(
+                "Store item with list[str] content is deprecated. "
+                "Content should be stored as a plain str.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            content = "\n".join(raw_content)
+        elif isinstance(raw_content, str):
+            content = raw_content
+        else:
+            msg = f"Store item does not contain valid content field. Got: {store_item.value.keys()}"
+            raise ValueError(msg)
+
         if "created_at" not in store_item.value or not isinstance(store_item.value["created_at"], str):
             msg = f"Store item does not contain valid created_at field. Got: {store_item.value.keys()}"
             raise ValueError(msg)
@@ -220,7 +239,8 @@ class StoreBackend(BackendProtocol):
             msg = f"Store item does not contain valid modified_at field. Got: {store_item.value.keys()}"
             raise ValueError(msg)
         return {
-            "content": store_item.value["content"],
+            "content": content,
+            "encoding": store_item.value.get("encoding", "utf-8"),
             "created_at": store_item.value["created_at"],
             "modified_at": store_item.value["modified_at"],
         }
@@ -232,10 +252,11 @@ class StoreBackend(BackendProtocol):
             file_data: The FileData to convert.
 
         Returns:
-            Dictionary with content, created_at, and modified_at fields.
+            Dictionary with content, encoding, created_at, and modified_at fields.
         """
         return {
             "content": file_data["content"],
+            "encoding": file_data.get("encoding", "utf-8"),
             "created_at": file_data["created_at"],
             "modified_at": file_data["modified_at"],
         }
@@ -329,7 +350,9 @@ class StoreBackend(BackendProtocol):
                 fd = self._convert_store_item_to_file_data(item)
             except ValueError:
                 continue
-            size = len("\n".join(fd.get("content", [])))
+            # BACKWARDS COMPAT: handle legacy list[str] content for size computation
+            raw = fd.get("content", "")
+            size = len("\n".join(raw)) if isinstance(raw, list) else len(raw)
             infos.append(
                 {
                     "path": item.key,
@@ -559,7 +582,12 @@ class StoreBackend(BackendProtocol):
         infos: list[FileInfo] = []
         for p in paths:
             fd = files.get(p)
-            size = len("\n".join(fd.get("content", []))) if fd else 0
+            if fd:
+                # BACKWARDS COMPAT: handle legacy list[str] content for size computation
+                raw = fd.get("content", "")
+                size = len("\n".join(raw)) if isinstance(raw, list) else len(raw)
+            else:
+                size = 0
             infos.append(
                 {
                     "path": p,
@@ -573,6 +601,9 @@ class StoreBackend(BackendProtocol):
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
         """Upload multiple files to the store.
 
+        Binary files (images, PDFs, etc.) are stored as base64-encoded strings.
+        Text files are stored as utf-8 strings.
+
         Args:
             files: List of (path, content) tuples where content is bytes.
 
@@ -585,12 +616,24 @@ class StoreBackend(BackendProtocol):
         responses: list[FileUploadResponse] = []
 
         for path, content in files:
-            content_str = content.decode("utf-8")
-            # Create file data
-            file_data = create_file_data(content_str)
+            mime_type, _ = mimetypes.guess_type(path)
+            is_binary = mime_type is not None and not mime_type.startswith("text/")
+
+            if is_binary:
+                content_str = base64.standard_b64encode(content).decode("ascii")
+                encoding = "base64"
+            else:
+                # Text or unknown — try utf-8, fallback to base64
+                try:
+                    content_str = content.decode("utf-8")
+                    encoding = "utf-8"
+                except UnicodeDecodeError:
+                    content_str = base64.standard_b64encode(content).decode("ascii")
+                    encoding = "base64"
+
+            file_data = create_file_data(content_str, encoding=encoding)
             store_value = self._convert_file_data_to_store_value(file_data)
 
-            # Store the file
             store.put(namespace, path, store_value)
             responses.append(FileUploadResponse(path=path, error=None))
 
@@ -618,9 +661,13 @@ class StoreBackend(BackendProtocol):
                 continue
 
             file_data = self._convert_store_item_to_file_data(item)
-            # Convert file data to bytes
             content_str = file_data_to_string(file_data)
-            content_bytes = content_str.encode("utf-8")
+
+            encoding = file_data.get("encoding", "utf-8")
+            if encoding == "base64":
+                content_bytes = base64.standard_b64decode(content_str)
+            else:
+                content_bytes = content_str.encode("utf-8")
 
             responses.append(FileDownloadResponse(path=path, content=content_bytes, error=None))
 

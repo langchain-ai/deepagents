@@ -389,7 +389,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--task-list",
         dest="task_list_id",
-        help="Task list ID to share across sessions. Also reads DEEPAGENTS_TASK_LIST_ID env var.",
+        help="Task list ID to share across sessions. "
+        "Also reads DEEPAGENTS_TASK_LIST_ID env var.",
     )
     parser.add_argument(
         "--shell-allow-list",

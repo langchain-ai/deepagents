@@ -172,7 +172,7 @@ def format_tool_display(tool_name: str, tool_args: dict) -> str:
             desc = truncate_value(desc, 100)
             return f'{prefix} {tool_name}("{desc}")'
 
-    elif tool_name in ("write_todos", "write_tasks"):
+    elif tool_name in {"write_todos", "write_tasks"}:
         # Todos/Tasks: show count of items
         items = tool_args.get("todos") or tool_args.get("tasks")
         if isinstance(items, list):

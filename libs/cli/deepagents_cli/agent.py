@@ -14,9 +14,8 @@ from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.middleware import MemoryMiddleware, SkillsMiddleware
 from langgraph.checkpoint.memory import InMemorySaver
 
-from deepagents_cli.tasks import TaskMiddleware
-
 from deepagents_cli.backends import CLIShellBackend, patch_filesystem_middleware
+from deepagents_cli.tasks import TaskMiddleware
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence

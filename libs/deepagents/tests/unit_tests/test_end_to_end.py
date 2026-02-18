@@ -1273,6 +1273,4 @@ class TestDeepAgentStructure:
         tool_node = agent.nodes.get("tools")
         if tool_node and hasattr(tool_node, "bound") and hasattr(tool_node.bound, "_tools_by_name"):
             tool_names = list(tool_node.bound._tools_by_name.keys())
-            assert "write_todos" not in tool_names, (
-                "write_todos should NOT be available when include_todo_middleware=False"
-            )
+            assert "write_todos" not in tool_names, "write_todos should NOT be available when include_todo_middleware=False"

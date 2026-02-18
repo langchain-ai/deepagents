@@ -39,7 +39,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Literal, cast
 
@@ -48,12 +48,9 @@ if TYPE_CHECKING:
 
     from langgraph.runtime import Runtime
 
-from filelock import FileLock
-from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
-from langchain_core.tools import tool
-from langgraph.types import Command
-from typing_extensions import NotRequired, TypedDict
+from typing import NotRequired
 
+from filelock import FileLock
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     AgentState,
@@ -63,6 +60,10 @@ from langchain.agents.middleware.types import (
     OmitFromInput,
 )
 from langchain.tools import InjectedToolCallId
+from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
+from langchain_core.tools import tool
+from langgraph.types import Command
+from typing_extensions import TypedDict
 
 logger = logging.getLogger(__name__)
 
@@ -131,11 +132,19 @@ class TaskStorage:
         self.tasks_dir.mkdir(parents=True, exist_ok=True)
 
     def _get_file_path(self, task_list_id: str) -> Path:
-        """Get the file path for a task list."""
+        """Get the file path for a task list.
+
+        Returns:
+            Path to the task list JSON file.
+        """
         return self.tasks_dir / f"{task_list_id}.json"
 
     def _get_lock_path(self, task_list_id: str) -> Path:
-        """Get the lock file path for a task list."""
+        """Get the lock file path for a task list.
+
+        Returns:
+            Path to the lock file.
+        """
         return self.tasks_dir / f"{task_list_id}.lock"
 
     def load(self, task_list_id: str) -> TaskList | None:
@@ -154,7 +163,7 @@ class TaskStorage:
         lock = FileLock(self._get_lock_path(task_list_id))
         with lock:
             content = file_path.read_text(encoding="utf-8")
-            return cast(TaskList, json.loads(content))
+            return cast("TaskList", json.loads(content))
 
     def save(self, task_list: TaskList) -> None:
         """Save task list to file with optimistic locking.
@@ -168,7 +177,7 @@ class TaskStorage:
         with lock:
             # Increment version
             task_list["version"] = task_list.get("version", 0) + 1
-            task_list["updated_at"] = datetime.now(timezone.utc).isoformat()
+            task_list["updated_at"] = datetime.now(UTC).isoformat()
 
             file_path.write_text(
                 json.dumps(task_list, indent=2, ensure_ascii=False),
@@ -184,7 +193,7 @@ class TaskStorage:
         Returns:
             The newly created TaskList.
         """
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         task_list: TaskList = {
             "id": task_list_id,
             "tasks": [],
@@ -197,11 +206,17 @@ class TaskStorage:
 
 
 def _now_iso() -> str:
-    """Get current UTC timestamp in ISO format."""
-    return datetime.now(timezone.utc).isoformat()
+    """Get current UTC timestamp in ISO format.
+
+    Returns:
+        ISO 8601 formatted UTC timestamp string.
+    """
+    return datetime.now(UTC).isoformat()
 
 
-def _compute_blocked_status(task: Task, all_tasks: list[Task]) -> Literal["pending", "in_progress", "completed", "blocked"]:
+def _compute_blocked_status(
+    task: Task, all_tasks: list[Task]
+) -> Literal["pending", "in_progress", "completed", "blocked"]:
     """Compute the effective status of a task based on dependencies.
 
     If a task has blocked_by dependencies that are not completed,
@@ -251,7 +266,9 @@ def _validate_dependencies(tasks: list[Task]) -> str | None:
         blocked_by = task.get("blocked_by", [])
         for dep_id in blocked_by:
             if dep_id not in task_ids:
-                return f"Task '{task['id']}' references non-existent dependency '{dep_id}'"
+                return (
+                    f"Task '{task['id']}' references non-existent dependency '{dep_id}'"
+                )
             if dep_id == task["id"]:
                 return f"Task '{task['id']}' cannot depend on itself"
 
@@ -276,9 +293,8 @@ def _validate_dependencies(tasks: list[Task]) -> str | None:
         return False
 
     for task in tasks:
-        if task["id"] not in visited:
-            if has_cycle(task["id"]):
-                return "Circular dependency detected in task list"
+        if task["id"] not in visited and has_cycle(task["id"]):
+            return "Circular dependency detected in task list"
 
     return None
 
@@ -408,7 +424,11 @@ class TaskMiddleware(AgentMiddleware):
             tasks: list[Task],
             tool_call_id: Annotated[str, InjectedToolCallId],
         ) -> Command:
-            """Create and manage a structured task list with dependencies."""
+            """Create and manage a structured task list with dependencies.
+
+            Returns:
+                Command with updated task state.
+            """
             now = _now_iso()
 
             # Ensure all tasks have IDs and timestamps
@@ -457,7 +477,11 @@ class TaskMiddleware(AgentMiddleware):
                     "completed": "[x]",
                     "blocked": "[!]",
                 }.get(t["status"], "[ ]")
-                deps = f" (blocked by: {', '.join(t.get('blocked_by', []))})" if t.get("blocked_by") else ""
+                deps = (
+                    f" (blocked by: {', '.join(t.get('blocked_by', []))})"
+                    if t.get("blocked_by")
+                    else ""
+                )
                 task_summary.append(f"{status_icon} {t['content']}{deps}")
 
             summary = "\n".join(task_summary)
@@ -474,11 +498,20 @@ class TaskMiddleware(AgentMiddleware):
                 }
             )
 
-        @tool(description="Refresh and return the current task list from storage. Use this to sync with updates from other sessions.")
+        @tool(
+            description=(
+                "Refresh and return the current task list from storage."
+                " Use this to sync with updates from other sessions."
+            )
+        )
         def get_tasks(
             tool_call_id: Annotated[str, InjectedToolCallId],
         ) -> Command:
-            """Refresh and return the current task list from storage."""
+            """Refresh and return the current task list from storage.
+
+            Returns:
+                Command with current task state.
+            """
             task_list = storage.load(list_id)
             if task_list is None:
                 return Command(
@@ -487,7 +520,7 @@ class TaskMiddleware(AgentMiddleware):
                         "task_list_id": list_id,
                         "messages": [
                             ToolMessage(
-                                content=f"Task list '{list_id}' is empty or does not exist.",
+                                content=f"Task list '{list_id}' is empty.",
                                 tool_call_id=tool_call_id,
                             )
                         ],
@@ -508,7 +541,11 @@ class TaskMiddleware(AgentMiddleware):
                         "completed": "[x]",
                         "blocked": "[!]",
                     }.get(t["status"], "[ ]")
-                    deps = f" (blocked by: {', '.join(t.get('blocked_by', []))})" if t.get("blocked_by") else ""
+                    deps = (
+                        f" (blocked by: {', '.join(t.get('blocked_by', []))})"
+                        if t.get("blocked_by")
+                        else ""
+                    )
                     task_summary.append(f"{status_icon} {t['content']}{deps}")
                 summary = "\n".join(task_summary)
 
@@ -532,7 +569,11 @@ class TaskMiddleware(AgentMiddleware):
         request: ModelRequest,
         handler: Callable[[ModelRequest], ModelResponse],
     ) -> ModelCallResult:
-        """Update the system message to include the task system prompt."""
+        """Update the system message to include the task system prompt.
+
+        Returns:
+            The model call result with updated system message.
+        """
         if request.system_message is not None:
             new_system_content = [
                 *request.system_message.content_blocks,
@@ -550,7 +591,11 @@ class TaskMiddleware(AgentMiddleware):
         request: ModelRequest,
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelCallResult:
-        """Update the system message to include the task system prompt (async version)."""
+        """Update system message to include task system prompt (async).
+
+        Returns:
+            The model call result with updated system message.
+        """
         if request.system_message is not None:
             new_system_content = [
                 *request.system_message.content_blocks,
@@ -563,7 +608,7 @@ class TaskMiddleware(AgentMiddleware):
         )
         return await handler(request.override(system_message=new_system_message))
 
-    def after_model(
+    def after_model(  # noqa: PLR6301
         self,
         state: AgentState,
         runtime: Runtime,  # noqa: ARG002
@@ -581,20 +626,26 @@ class TaskMiddleware(AgentMiddleware):
         if not messages:
             return None
 
-        last_ai_msg = next((msg for msg in reversed(messages) if isinstance(msg, AIMessage)), None)
+        last_ai_msg = next(
+            (msg for msg in reversed(messages) if isinstance(msg, AIMessage)), None
+        )
         if not last_ai_msg or not last_ai_msg.tool_calls:
             return None
 
         # Count write_tasks tool calls
-        write_tasks_calls = [tc for tc in last_ai_msg.tool_calls if tc["name"] == "write_tasks"]
+        write_tasks_calls = [
+            tc for tc in last_ai_msg.tool_calls if tc["name"] == "write_tasks"
+        ]
 
         if len(write_tasks_calls) > 1:
+            error_msg = (
+                "Error: The `write_tasks` tool should never be called "
+                "multiple times in parallel. "
+                "Please call it only once per model invocation."
+            )
             error_messages = [
                 ToolMessage(
-                    content=(
-                        "Error: The `write_tasks` tool should never be called multiple times "
-                        "in parallel. Please call it only once per model invocation."
-                    ),
+                    content=error_msg,
                     tool_call_id=tc["id"],
                     status="error",
                 )
@@ -609,12 +660,16 @@ class TaskMiddleware(AgentMiddleware):
         state: AgentState,
         runtime: Runtime,
     ) -> dict[str, Any] | None:
-        """Async version of after_model."""
+        """Async version of after_model.
+
+        Returns:
+            State update with error messages if parallel calls detected.
+        """
         return self.after_model(state, runtime)
 
     def before_model(
         self,
-        state: TaskState,
+        state: TaskState,  # noqa: ARG002
         runtime: Runtime,  # noqa: ARG002
     ) -> dict[str, Any] | None:
         """Check for task list updates from other sessions before each model call.
@@ -633,7 +688,11 @@ class TaskMiddleware(AgentMiddleware):
         current_version = task_list.get("version", 0)
         if current_version > self._last_known_version:
             self._last_known_version = current_version
-            logger.debug(f"Task list '{self._task_list_id}' updated by another session (v{current_version})")
+            logger.debug(
+                "Task list '%s' updated by another session (v%s)",
+                self._task_list_id,
+                current_version,
+            )
             return {
                 "tasks": task_list["tasks"],
                 "task_list_id": self._task_list_id,
@@ -646,7 +705,11 @@ class TaskMiddleware(AgentMiddleware):
         state: TaskState,
         runtime: Runtime,
     ) -> dict[str, Any] | None:
-        """Async version of before_model."""
+        """Async version of before_model.
+
+        Returns:
+            State update with refreshed tasks if the file was modified.
+        """
         return self.before_model(state, runtime)
 
     @property

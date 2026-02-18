@@ -90,8 +90,21 @@ class TestDependencyValidation:
     def test_valid_dependencies(self) -> None:
         """Test validation passes for valid dependencies."""
         tasks: list[Task] = [
-            {"id": "task-1", "content": "First", "status": "completed", "created_at": "", "updated_at": ""},
-            {"id": "task-2", "content": "Second", "status": "pending", "blocked_by": ["task-1"], "created_at": "", "updated_at": ""},
+            {
+                "id": "task-1",
+                "content": "First",
+                "status": "completed",
+                "created_at": "",
+                "updated_at": "",
+            },
+            {
+                "id": "task-2",
+                "content": "Second",
+                "status": "pending",
+                "blocked_by": ["task-1"],
+                "created_at": "",
+                "updated_at": "",
+            },
         ]
         result = _validate_dependencies(tasks)
         assert result is None
@@ -99,7 +112,14 @@ class TestDependencyValidation:
     def test_invalid_reference(self) -> None:
         """Test validation fails for invalid dependency reference."""
         tasks: list[Task] = [
-            {"id": "task-1", "content": "First", "status": "pending", "blocked_by": ["nonexistent"], "created_at": "", "updated_at": ""},
+            {
+                "id": "task-1",
+                "content": "First",
+                "status": "pending",
+                "blocked_by": ["nonexistent"],
+                "created_at": "",
+                "updated_at": "",
+            },
         ]
         result = _validate_dependencies(tasks)
         assert result is not None
@@ -108,7 +128,14 @@ class TestDependencyValidation:
     def test_self_reference(self) -> None:
         """Test validation fails for self-reference."""
         tasks: list[Task] = [
-            {"id": "task-1", "content": "First", "status": "pending", "blocked_by": ["task-1"], "created_at": "", "updated_at": ""},
+            {
+                "id": "task-1",
+                "content": "First",
+                "status": "pending",
+                "blocked_by": ["task-1"],
+                "created_at": "",
+                "updated_at": "",
+            },
         ]
         result = _validate_dependencies(tasks)
         assert result is not None
@@ -117,8 +144,22 @@ class TestDependencyValidation:
     def test_circular_dependency(self) -> None:
         """Test validation fails for circular dependencies."""
         tasks: list[Task] = [
-            {"id": "task-1", "content": "First", "status": "pending", "blocked_by": ["task-2"], "created_at": "", "updated_at": ""},
-            {"id": "task-2", "content": "Second", "status": "pending", "blocked_by": ["task-1"], "created_at": "", "updated_at": ""},
+            {
+                "id": "task-1",
+                "content": "First",
+                "status": "pending",
+                "blocked_by": ["task-2"],
+                "created_at": "",
+                "updated_at": "",
+            },
+            {
+                "id": "task-2",
+                "content": "Second",
+                "status": "pending",
+                "blocked_by": ["task-1"],
+                "created_at": "",
+                "updated_at": "",
+            },
         ]
         result = _validate_dependencies(tasks)
         assert result is not None
@@ -127,9 +168,30 @@ class TestDependencyValidation:
     def test_transitive_circular_dependency(self) -> None:
         """Test validation fails for transitive circular dependencies."""
         tasks: list[Task] = [
-            {"id": "task-1", "content": "First", "status": "pending", "blocked_by": ["task-3"], "created_at": "", "updated_at": ""},
-            {"id": "task-2", "content": "Second", "status": "pending", "blocked_by": ["task-1"], "created_at": "", "updated_at": ""},
-            {"id": "task-3", "content": "Third", "status": "pending", "blocked_by": ["task-2"], "created_at": "", "updated_at": ""},
+            {
+                "id": "task-1",
+                "content": "First",
+                "status": "pending",
+                "blocked_by": ["task-3"],
+                "created_at": "",
+                "updated_at": "",
+            },
+            {
+                "id": "task-2",
+                "content": "Second",
+                "status": "pending",
+                "blocked_by": ["task-1"],
+                "created_at": "",
+                "updated_at": "",
+            },
+            {
+                "id": "task-3",
+                "content": "Third",
+                "status": "pending",
+                "blocked_by": ["task-2"],
+                "created_at": "",
+                "updated_at": "",
+            },
         ]
         result = _validate_dependencies(tasks)
         assert result is not None
@@ -141,7 +203,13 @@ class TestBlockedStatusComputation:
 
     def test_no_dependencies(self) -> None:
         """Test status is unchanged when no dependencies."""
-        task: Task = {"id": "task-1", "content": "Test", "status": "pending", "created_at": "", "updated_at": ""}
+        task: Task = {
+            "id": "task-1",
+            "content": "Test",
+            "status": "pending",
+            "created_at": "",
+            "updated_at": "",
+        }
         all_tasks = [task]
         result = _compute_blocked_status(task, all_tasks)
         assert result == "pending"
@@ -149,8 +217,21 @@ class TestBlockedStatusComputation:
     def test_completed_dependencies(self) -> None:
         """Test status is unchanged when all dependencies completed."""
         tasks: list[Task] = [
-            {"id": "task-1", "content": "First", "status": "completed", "created_at": "", "updated_at": ""},
-            {"id": "task-2", "content": "Second", "status": "pending", "blocked_by": ["task-1"], "created_at": "", "updated_at": ""},
+            {
+                "id": "task-1",
+                "content": "First",
+                "status": "completed",
+                "created_at": "",
+                "updated_at": "",
+            },
+            {
+                "id": "task-2",
+                "content": "Second",
+                "status": "pending",
+                "blocked_by": ["task-1"],
+                "created_at": "",
+                "updated_at": "",
+            },
         ]
         result = _compute_blocked_status(tasks[1], tasks)
         assert result == "pending"
@@ -158,8 +239,21 @@ class TestBlockedStatusComputation:
     def test_incomplete_dependencies(self) -> None:
         """Test status becomes blocked when dependencies incomplete."""
         tasks: list[Task] = [
-            {"id": "task-1", "content": "First", "status": "in_progress", "created_at": "", "updated_at": ""},
-            {"id": "task-2", "content": "Second", "status": "pending", "blocked_by": ["task-1"], "created_at": "", "updated_at": ""},
+            {
+                "id": "task-1",
+                "content": "First",
+                "status": "in_progress",
+                "created_at": "",
+                "updated_at": "",
+            },
+            {
+                "id": "task-2",
+                "content": "Second",
+                "status": "pending",
+                "blocked_by": ["task-1"],
+                "created_at": "",
+                "updated_at": "",
+            },
         ]
         result = _compute_blocked_status(tasks[1], tasks)
         assert result == "blocked"
@@ -167,9 +261,28 @@ class TestBlockedStatusComputation:
     def test_partial_dependencies_completed(self) -> None:
         """Test status becomes blocked when some dependencies incomplete."""
         tasks: list[Task] = [
-            {"id": "task-1", "content": "First", "status": "completed", "created_at": "", "updated_at": ""},
-            {"id": "task-2", "content": "Second", "status": "pending", "created_at": "", "updated_at": ""},
-            {"id": "task-3", "content": "Third", "status": "pending", "blocked_by": ["task-1", "task-2"], "created_at": "", "updated_at": ""},
+            {
+                "id": "task-1",
+                "content": "First",
+                "status": "completed",
+                "created_at": "",
+                "updated_at": "",
+            },
+            {
+                "id": "task-2",
+                "content": "Second",
+                "status": "pending",
+                "created_at": "",
+                "updated_at": "",
+            },
+            {
+                "id": "task-3",
+                "content": "Third",
+                "status": "pending",
+                "blocked_by": ["task-1", "task-2"],
+                "created_at": "",
+                "updated_at": "",
+            },
         ]
         result = _compute_blocked_status(tasks[2], tasks)
         assert result == "blocked"
@@ -189,7 +302,9 @@ class TestTaskMiddleware:
         middleware = TaskMiddleware(task_list_id="my-tasks", tasks_dir=tmp_path)
         assert middleware.task_list_id == "my-tasks"
 
-    def test_init_uses_env_var(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_init_uses_env_var(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Test middleware uses environment variable."""
         monkeypatch.setenv("DEEPAGENTS_TASK_LIST_ID", "env-tasks")
         middleware = TaskMiddleware(tasks_dir=tmp_path)
@@ -250,19 +365,21 @@ class TestTaskMiddlewareIntegration:
     def test_concurrent_access_with_locking(self, tmp_path: Path) -> None:
         """Test that file locking prevents corruption."""
         storage = TaskStorage(tmp_path)
-        task_list = storage.create("concurrent-test")
+        storage.create("concurrent-test")
 
         # Simulate concurrent updates by saving multiple times
         for i in range(10):
             current = storage.load("concurrent-test")
             assert current is not None
-            current["tasks"].append({
-                "id": f"task-{i}",
-                "content": f"Task {i}",
-                "status": "pending",
-                "created_at": "2025-01-01T00:00:00Z",
-                "updated_at": "2025-01-01T00:00:00Z",
-            })
+            current["tasks"].append(
+                {
+                    "id": f"task-{i}",
+                    "content": f"Task {i}",
+                    "status": "pending",
+                    "created_at": "2025-01-01T00:00:00Z",
+                    "updated_at": "2025-01-01T00:00:00Z",
+                }
+            )
             storage.save(current)
 
         # Verify all tasks are present

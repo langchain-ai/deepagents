@@ -694,21 +694,7 @@ class ToolCallMessage(Vertical):
             return formatter(output, is_preview=is_preview)
 
         # Default: return as-is but escape markup
-        return FormattedOutput(content=self._escape_markup(output))
-
-    @staticmethod
-    def _escape_markup(text: str) -> str:
-        """Escape Rich markup characters.
-
-        Uses Rich's built-in `escape` which only targets actual markup
-        patterns (e.g. `[bold]`, `[red]`). Unlike a blanket bracket
-        replacement, this avoids rendering visible backslashes before `]`
-        in tool output.
-
-        Returns:
-            Escaped text safe for Rich rendering.
-        """
-        return escape_markup(text)
+        return FormattedOutput(content=escape_markup(output))
 
     def _prefix_output(self, content: str) -> str:  # noqa: PLR6301  # Grouped as method for widget cohesion
         """Prefix output with output marker and indent continuation lines.
@@ -738,7 +724,7 @@ class ToolCallMessage(Vertical):
         """
         items = self._parse_todo_items(output)
         if items is None:
-            return FormattedOutput(content=self._escape_markup(output))
+            return FormattedOutput(content=escape_markup(output))
 
         if not items:
             return FormattedOutput(content="    [dim]No todos[/dim]")
@@ -801,7 +787,7 @@ class ToolCallMessage(Vertical):
             parts.append(f"[green]{completed} done[/green]")
         return " | ".join(parts)
 
-    def _format_single_todo(self, item: dict | str) -> str:
+    def _format_single_todo(self, item: dict | str) -> str:  # noqa: PLR6301  # Grouped as method for widget cohesion
         """Format a single todo item.
 
         Returns:
@@ -818,14 +804,14 @@ class ToolCallMessage(Vertical):
             content = content[: _MAX_TODO_CONTENT_LEN - 3] + "..."
 
         glyphs = get_glyphs()
-        escaped = self._escape_markup(content)
+        escaped = escape_markup(content)
         if status == "completed":
             return f"    [green]{glyphs.checkmark} done[/green]   [dim]{escaped}[/dim]"
         if status == "in_progress":
             return f"    [yellow]{glyphs.circle_filled} active[/yellow] {escaped}"
         return f"    [dim]{glyphs.circle_empty} todo[/dim]   {escaped}"
 
-    def _format_ls_output(
+    def _format_ls_output(  # noqa: PLR6301  # Grouped as method for widget cohesion
         self, output: str, *, is_preview: bool = False
     ) -> FormattedOutput:
         """Format ls output as a clean directory listing.
@@ -864,9 +850,9 @@ class ToolCallMessage(Vertical):
             pass
 
         # Fallback: just escape and return
-        return FormattedOutput(content=self._escape_markup(output))
+        return FormattedOutput(content=escape_markup(output))
 
-    def _format_file_output(
+    def _format_file_output(  # noqa: PLR6301  # Grouped as method for widget cohesion
         self, output: str, *, is_preview: bool = False
     ) -> FormattedOutput:
         """Format file read/write output.
@@ -877,7 +863,7 @@ class ToolCallMessage(Vertical):
         lines = output.split("\n")
         max_lines = 4 if is_preview else len(lines)
 
-        formatted_lines = [self._escape_markup(line) for line in lines[:max_lines]]
+        formatted_lines = [escape_markup(line) for line in lines[:max_lines]]
         content = "\n".join(formatted_lines)
 
         truncation = None
@@ -886,7 +872,7 @@ class ToolCallMessage(Vertical):
 
         return FormattedOutput(content=content, truncation=truncation)
 
-    def _format_search_output(
+    def _format_search_output(  # noqa: PLR6301  # Grouped as method for widget cohesion
         self, output: str, *, is_preview: bool = False
     ) -> FormattedOutput:
         """Format grep/glob search output.
@@ -923,7 +909,7 @@ class ToolCallMessage(Vertical):
         max_lines = 5 if is_preview else len(lines)
 
         formatted_lines = [
-            f"    {self._escape_markup(raw_line.strip())}"
+            f"    {escape_markup(raw_line.strip())}"
             for raw_line in lines[:max_lines]
             if raw_line.strip()
         ]
@@ -935,7 +921,7 @@ class ToolCallMessage(Vertical):
 
         return FormattedOutput(content=content, truncation=truncation)
 
-    def _format_shell_output(
+    def _format_shell_output(  # noqa: PLR6301  # Grouped as method for widget cohesion
         self, output: str, *, is_preview: bool = False
     ) -> FormattedOutput:
         """Format shell command output.
@@ -948,7 +934,7 @@ class ToolCallMessage(Vertical):
 
         formatted_lines = []
         for i, line in enumerate(lines[:max_lines]):
-            escaped = self._escape_markup(line)
+            escaped = escape_markup(line)
             # Style only the first line (the command) in dim grey
             if i == 0 and escaped.startswith("$ "):
                 formatted_lines.append(f"[dim]{escaped}[/dim]")
@@ -1013,10 +999,10 @@ class ToolCallMessage(Vertical):
             content = str(data["content"])
             if is_preview and len(content) > _MAX_WEB_PREVIEW_LEN:
                 return FormattedOutput(
-                    content=self._escape_markup(content[:_MAX_WEB_PREVIEW_LEN]),
+                    content=escape_markup(content[:_MAX_WEB_PREVIEW_LEN]),
                     truncation="more",
                 )
-            return FormattedOutput(content=self._escape_markup(content))
+            return FormattedOutput(content=escape_markup(content))
 
         # Generic dict - show key fields
         lines = []
@@ -1025,13 +1011,13 @@ class ToolCallMessage(Vertical):
             v_str = str(v)
             if is_preview and len(v_str) > _MAX_WEB_CONTENT_LEN:
                 v_str = v_str[:_MAX_WEB_CONTENT_LEN] + "..."
-            lines.append(f"  {k}: {self._escape_markup(v_str)}")
+            lines.append(f"  {k}: {escape_markup(v_str)}")
         truncation = None
         if is_preview and len(data) > max_keys:
             truncation = f"{len(data) - max_keys} more"
         return FormattedOutput(content="\n".join(lines), truncation=truncation)
 
-    def _format_web_search_results(
+    def _format_web_search_results(  # noqa: PLR6301  # Grouped as method for widget cohesion
         self, results: list, *, is_preview: bool
     ) -> FormattedOutput:
         """Format web search results.
@@ -1048,8 +1034,8 @@ class ToolCallMessage(Vertical):
             url = r.get("url", "")
             lines.extend(
                 [
-                    f"  [bold]{self._escape_markup(title)}[/bold]",
-                    f"  [dim]{self._escape_markup(url)}[/dim]",
+                    f"  [bold]{escape_markup(title)}[/bold]",
+                    f"  [dim]{escape_markup(url)}[/dim]",
                 ]
             )
         truncation = None
@@ -1057,7 +1043,7 @@ class ToolCallMessage(Vertical):
             truncation = f"{len(results) - max_results} more results"
         return FormattedOutput(content="\n".join(lines), truncation=truncation)
 
-    def _format_lines_output(
+    def _format_lines_output(  # noqa: PLR6301  # Grouped as method for widget cohesion
         self, lines: list[str], *, is_preview: bool
     ) -> FormattedOutput:
         """Format a list of lines with optional preview truncation.
@@ -1066,13 +1052,13 @@ class ToolCallMessage(Vertical):
             FormattedOutput with lines content and optional truncation info.
         """
         max_lines = 4 if is_preview else len(lines)
-        content = "\n".join(self._escape_markup(line) for line in lines[:max_lines])
+        content = "\n".join(escape_markup(line) for line in lines[:max_lines])
         truncation = None
         if is_preview and len(lines) > max_lines:
             truncation = f"{len(lines) - max_lines} more lines"
         return FormattedOutput(content=content, truncation=truncation)
 
-    def _format_task_output(
+    def _format_task_output(  # noqa: PLR6301  # Grouped as method for widget cohesion
         self, output: str, *, is_preview: bool = False
     ) -> FormattedOutput:
         """Format task (subagent) output.
@@ -1083,7 +1069,7 @@ class ToolCallMessage(Vertical):
         lines = output.split("\n")
         max_lines = 4 if is_preview else len(lines)
 
-        formatted_lines = [self._escape_markup(line) for line in lines[:max_lines]]
+        formatted_lines = [escape_markup(line) for line in lines[:max_lines]]
         content = "\n".join(formatted_lines)
 
         truncation = None

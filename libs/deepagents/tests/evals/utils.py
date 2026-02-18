@@ -8,10 +8,19 @@ from typing import TYPE_CHECKING, Any
 from langchain_core.messages import AIMessage, ToolMessage
 from langsmith import testing as t
 
+from deepagents.backends.utils import create_file_data, file_data_to_string
+
+
+@dataclass(frozen=True)
+class ToolCallExpectation:
+    step: int
+    name: str
+    args_contains: dict[str, object] | None = None
+    args_equals: dict[str, object] | None = None
+
+
 if TYPE_CHECKING:
     from langgraph.graph.state import CompiledStateGraph
-
-from deepagents.backends.utils import create_file_data, file_data_to_string
 
 
 def _coerce_result_files_to_strings(raw_files: object) -> dict[str, str]:
@@ -56,6 +65,50 @@ class TrajectoryExpectations:
 
     num_agent_steps: int | None = None
     num_tool_call_requests: int | None = None
+    tool_calls: tuple[ToolCallExpectation, ...] = ()
+    final_text_contains: tuple[tuple[str, bool], ...] = ()
+
+    def require_tool_call(
+        self,
+        *,
+        step: int,
+        name: str,
+        args_contains: dict[str, object] | None = None,
+        args_equals: dict[str, object] | None = None,
+    ) -> TrajectoryExpectations:
+        if step <= 0:
+            msg = "step must be positive"
+            raise ValueError(msg)
+        if args_contains is not None and args_equals is not None:
+            msg = "Only one of args_contains or args_equals may be set"
+            raise ValueError(msg)
+        return TrajectoryExpectations(
+            num_agent_steps=self.num_agent_steps,
+            num_tool_call_requests=self.num_tool_call_requests,
+            final_text_contains=self.final_text_contains,
+            tool_calls=(
+                *self.tool_calls,
+                ToolCallExpectation(
+                    step=step,
+                    name=name,
+                    args_contains=args_contains,
+                    args_equals=args_equals,
+                ),
+            ),
+        )
+
+    def require_final_text_contains(
+        self,
+        text: str,
+        *,
+        case_insensitive: bool = False,
+    ) -> TrajectoryExpectations:
+        return TrajectoryExpectations(
+            num_agent_steps=self.num_agent_steps,
+            num_tool_call_requests=self.num_tool_call_requests,
+            tool_calls=self.tool_calls,
+            final_text_contains=(*self.final_text_contains, (text, case_insensitive)),
+        )
 
 
 @dataclass(frozen=True)
@@ -131,6 +184,39 @@ def _assert_expectations(trajectory: AgentTrajectory, expect: TrajectoryExpectat
         )
         t.log_feedback(key="expected_num_tool_call_requests", value=expect.num_tool_call_requests)
         assert tool_call_requests == expect.num_tool_call_requests
+
+    final_text = trajectory.steps[-1].action.text
+    for text, case_insensitive in expect.final_text_contains:
+        haystack = final_text.lower() if case_insensitive else final_text
+        needle = text.lower() if case_insensitive else text
+        if needle not in haystack:
+            msg = f"Expected final text to contain {text!r} (case_insensitive={case_insensitive}), got: {final_text!r}"
+            raise AssertionError(msg)
+
+    for requirement in expect.tool_calls:
+        if requirement.step > len(trajectory.steps):
+            msg = f"Expected at least {requirement.step} steps to validate tool call requirement, got {len(trajectory.steps)}"
+            raise AssertionError(msg)
+
+        step = trajectory.steps[requirement.step - 1]
+        step_tool_calls = step.action.tool_calls
+
+        matches: list[dict[str, object]] = [tc for tc in step_tool_calls if tc.get("name") == requirement.name]
+        if requirement.args_contains is not None:
+            matches = [
+                tc for tc in matches if isinstance(tc.get("args"), dict) and all(tc["args"].get(k) == v for k, v in requirement.args_contains.items())
+            ]
+        if requirement.args_equals is not None:
+            matches = [tc for tc in matches if tc.get("args") == requirement.args_equals]
+
+        if not matches:
+            msg = (
+                "Missing expected tool call in step "
+                f"{requirement.step}: name={requirement.name!r}, "
+                f"args_contains={requirement.args_contains!r}, args_equals={requirement.args_equals!r}. "
+                f"Actual tool calls: {step_tool_calls!r}"
+            )
+            raise AssertionError(msg)
 
 
 def run_agent(

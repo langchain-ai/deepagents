@@ -15,6 +15,7 @@ from deepagents_cli.local_context import (
     DETECT_CONTEXT_SCRIPT,
     LocalContextMiddleware,
     LocalContextState,
+    _ExecutableBackend,
     _section_files,
     _section_git,
     _section_header,
@@ -38,7 +39,7 @@ def _make_backend(output: str = "", exit_code: int = 0) -> Mock:
     return backend
 
 
-# Sample script output fragments for testing
+# Sample script output for testing
 SAMPLE_CONTEXT = (
     "## Local Context\n\n"
     "**Current Directory**: `/home/user/project`\n\n"
@@ -113,6 +114,21 @@ class TestLocalContextMiddleware:
         """Test before_agent returns None when backend.execute() raises."""
         backend = Mock()
         backend.execute.side_effect = RuntimeError("connection failed")
+        middleware = LocalContextMiddleware(backend=backend)
+        state: LocalContextState = {"messages": []}
+        runtime: Any = Mock()
+
+        result = middleware.before_agent(state, runtime)
+
+        assert result is None
+
+    def test_before_agent_handles_none_output(self) -> None:
+        """Test before_agent returns None when result.output is None."""
+        backend = Mock()
+        result_mock = Mock()
+        result_mock.output = None
+        result_mock.exit_code = 0
+        backend.execute.return_value = result_mock
         middleware = LocalContextMiddleware(backend=backend)
         state: LocalContextState = {"messages": []}
         runtime: Any = Mock()
@@ -245,7 +261,12 @@ class TestLocalContextMiddleware:
 
 
 def _run_section(section_bash: str, cwd: Path, *, with_header: bool = False) -> str:
-    """Run a bash section snippet and return stdout."""
+    """Run a bash section snippet and return stdout.
+
+    Note: bash scripts may return exit code 1 when their last conditional
+    evaluates to false (e.g., `[ -n "" ] && echo ...`). This is normal bash
+    behavior, not an error. We check stderr for real failures instead.
+    """
     script = (_section_header() + "\n" + section_bash) if with_header else section_bash
     result = subprocess.run(
         ["bash", "-c", script],
@@ -253,6 +274,11 @@ def _run_section(section_bash: str, cwd: Path, *, with_header: bool = False) -> 
         text=True,
         cwd=cwd,
         check=False,
+    )
+    # Fail on genuine bash errors (syntax errors, etc.) indicated by stderr
+    assert not result.stderr, (
+        f"Bash section produced stderr (exit code {result.returncode}).\n"
+        f"stderr: {result.stderr}\nstdout: {result.stdout}"
     )
     return result.stdout
 
@@ -394,7 +420,7 @@ class TestSectionRuntimes:
 
 
 def _git_env(tmp_path: Path) -> dict[str, str]:
-    """Minimal env for ``git commit`` in an isolated temp dir."""
+    """Minimal env for `git commit` in an isolated temp dir."""
     return {
         "GIT_AUTHOR_NAME": "t",
         "GIT_AUTHOR_EMAIL": "t@t",
@@ -405,7 +431,7 @@ def _git_env(tmp_path: Path) -> dict[str, str]:
 
 
 def _git_init_commit(tmp_path: Path, *, branch: str | None = None) -> None:
-    """``git init`` (optionally with *branch*) + empty commit."""
+    """`git init` (optionally with *branch*) + empty commit."""
     cmd = ["git", "init"]
     if branch:
         cmd += ["-b", branch]
@@ -559,3 +585,137 @@ class TestSectionMakefile:
     def test_no_output_without_makefile(self, tmp_path: Path) -> None:
         out = _run_section(_section_makefile(), tmp_path)
         assert "**Makefile**" not in out
+
+
+# ---------------------------------------------------------------------------
+# Protocol tests
+# ---------------------------------------------------------------------------
+
+
+class TestExecutableBackend:
+    """Tests for _ExecutableBackend runtime-checkable protocol."""
+
+    def test_object_with_execute_satisfies_protocol(self) -> None:
+        class HasExecute:
+            def execute(self, command: str) -> None: ...
+
+        assert isinstance(HasExecute(), _ExecutableBackend)
+
+    def test_object_without_execute_does_not_satisfy(self) -> None:
+        class NoExecute:
+            pass
+
+        assert not isinstance(NoExecute(), _ExecutableBackend)
+
+
+# ---------------------------------------------------------------------------
+# End-to-end script test
+# ---------------------------------------------------------------------------
+
+
+class TestFullScript:
+    """End-to-end tests for the assembled DETECT_CONTEXT_SCRIPT."""
+
+    def test_full_script_executes_successfully(self, tmp_path: Path) -> None:
+        """Full assembled script runs without errors."""
+        (tmp_path / "pyproject.toml").write_text("[tool.uv]\n")
+        (tmp_path / "uv.lock").write_text("")
+        result = subprocess.run(
+            ["bash", "-c", DETECT_CONTEXT_SCRIPT],
+            capture_output=True,
+            text=True,
+            cwd=tmp_path,
+            check=False,
+        )
+        assert result.returncode == 0
+        assert "## Local Context" in result.stdout
+        assert "Python: uv" in result.stdout
+
+    def test_full_script_in_git_repo(self, tmp_path: Path) -> None:
+        """Full script with git repo produces git section."""
+        _git_init_commit(tmp_path, branch="main")
+        result = subprocess.run(
+            ["bash", "-c", DETECT_CONTEXT_SCRIPT],
+            capture_output=True,
+            text=True,
+            cwd=tmp_path,
+            check=False,
+        )
+        assert result.returncode == 0
+        assert "Current branch `main`" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# Additional coverage tests
+# ---------------------------------------------------------------------------
+
+
+class TestSectionProjectExtended:
+    """Extended tests for _section_project."""
+
+    def test_go_project(self, tmp_path: Path) -> None:
+        (tmp_path / "go.mod").write_text("")
+        out = _run_section(_section_project(), tmp_path, with_header=True)
+        assert "Language: go" in out
+
+    def test_java_project_pom(self, tmp_path: Path) -> None:
+        (tmp_path / "pom.xml").write_text("")
+        out = _run_section(_section_project(), tmp_path, with_header=True)
+        assert "Language: java" in out
+
+    def test_java_project_gradle(self, tmp_path: Path) -> None:
+        (tmp_path / "build.gradle").write_text("")
+        out = _run_section(_section_project(), tmp_path, with_header=True)
+        assert "Language: java" in out
+
+    def test_node_modules_env(self, tmp_path: Path) -> None:
+        (tmp_path / "node_modules").mkdir()
+        out = _run_section(_section_project(), tmp_path, with_header=True)
+        assert "Environments: node_modules" in out
+
+    def test_project_root_shown_in_subdirectory(self, tmp_path: Path) -> None:
+        _git_init_commit(tmp_path, branch="main")
+        subdir = tmp_path / "packages" / "foo"
+        subdir.mkdir(parents=True)
+        out = _run_section(_section_project(), subdir, with_header=True)
+        assert f"Project root: `{tmp_path}`" in out
+
+
+class TestSectionPackageManagersExtended:
+    """Extended tests for _section_package_managers."""
+
+    def test_pipenv_via_pipfile(self, tmp_path: Path) -> None:
+        (tmp_path / "Pipfile").write_text("")
+        out = _run_section(_section_package_managers(), tmp_path)
+        assert "Python: pipenv" in out
+
+    def test_pipenv_via_pipfile_lock(self, tmp_path: Path) -> None:
+        (tmp_path / "Pipfile.lock").write_text("")
+        out = _run_section(_section_package_managers(), tmp_path)
+        assert "Python: pipenv" in out
+
+    def test_pnpm_lock(self, tmp_path: Path) -> None:
+        (tmp_path / "pnpm-lock.yaml").write_text("")
+        out = _run_section(_section_package_managers(), tmp_path)
+        assert "Node: pnpm" in out
+
+    def test_poetry_via_pyproject(self, tmp_path: Path) -> None:
+        (tmp_path / "pyproject.toml").write_text("[tool.poetry]\n")
+        out = _run_section(_section_package_managers(), tmp_path)
+        assert "Python: poetry" in out
+
+
+class TestSectionGitExtended:
+    """Extended tests for _section_git."""
+
+    def test_both_main_and_master_listed(self, tmp_path: Path) -> None:
+        _git_init_commit(tmp_path, branch="main")
+        subprocess.run(
+            ["git", "branch", "master"],
+            cwd=tmp_path,
+            capture_output=True,
+            check=False,
+        )
+        out = _run_section(_section_git(), tmp_path, with_header=True)
+        assert "`main`" in out
+        assert "`master`" in out

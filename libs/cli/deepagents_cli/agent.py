@@ -521,7 +521,7 @@ def create_cli_agent(
         # File operations and execute tool are provided by the sandbox backend
 
     # Local context middleware (git info, directory tree, etc.)
-    # Uses backend.execute() so it works in both local and sandbox modes.
+    # Uses backend.execute() so it works in both local shell and remote sandbox modes.
     # Only enabled when the backend supports shell execution.
     if isinstance(backend, _ExecutableBackend):
         agent_middleware.append(LocalContextMiddleware(backend=backend))

@@ -234,7 +234,6 @@ ignore-var-parameters = true
 ]
 "deepagents_cli/local_context.py" = [
     "ARG002",   # Unused method argument
-    "BLE001",   # Do not catch blind exception
 ]
 "deepagents_cli/project_utils.py" = [
     "ERA001",   # Found commented-out code

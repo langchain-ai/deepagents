@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 
 @runtime_checkable
 class _ExecutableBackend(Protocol):
-    """Any backend that supports ``execute(command) -> ExecuteResponse``."""
+    """Any backend that supports `execute(command) -> ExecuteResponse`."""
 
     def execute(self, command: str) -> ExecuteResponse: ...
 
@@ -37,9 +37,10 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Context detection script
 #
-# Outputs markdown describing the current working environment.  Each section
-# is guarded by command-existence checks so missing tools (git, python3,
-# node, tree) are silently skipped.
+# Outputs markdown describing the current working environment. Each section
+# is guarded so that missing tools or unsupported environments are silently
+# skipped -- external tools like git, tree, python3, and node are checked
+# with `command -v` before use.
 #
 # The script is built from section functions so each piece can be tested
 # independently.
@@ -50,7 +51,7 @@ def _section_header() -> str:
     """CWD line and IN_GIT flag (used by other sections).
 
     Returns:
-        Bash snippet that prints the header and sets ``CWD`` / ``IN_GIT``.
+        Bash snippet that prints the header and sets `CWD` / `IN_GIT`.
     """
     return r"""CWD="$(pwd)"
 echo "## Local Context"
@@ -70,15 +71,15 @@ def _section_project() -> str:
     """Language, monorepo, git root, virtual-env detection.
 
     Returns:
-        Bash snippet (requires ``CWD`` / ``IN_GIT`` from header).
+        Bash snippet (requires `CWD` / `IN_GIT` from header).
     """
     return r"""# --- Project ---
-LANG=""
-[ -f pyproject.toml ] || [ -f setup.py ] && LANG="python"
-[ -z "$LANG" ] && [ -f package.json ] && LANG="javascript/typescript"
-[ -z "$LANG" ] && [ -f Cargo.toml ] && LANG="rust"
-[ -z "$LANG" ] && [ -f go.mod ] && LANG="go"
-[ -z "$LANG" ] && { [ -f pom.xml ] || [ -f build.gradle ]; } && LANG="java"
+PROJ_LANG=""
+[ -f pyproject.toml ] || [ -f setup.py ] && PROJ_LANG="python"
+[ -z "$PROJ_LANG" ] && [ -f package.json ] && PROJ_LANG="javascript/typescript"
+[ -z "$PROJ_LANG" ] && [ -f Cargo.toml ] && PROJ_LANG="rust"
+[ -z "$PROJ_LANG" ] && [ -f go.mod ] && PROJ_LANG="go"
+[ -z "$PROJ_LANG" ] && { [ -f pom.xml ] || [ -f build.gradle ]; } && PROJ_LANG="java"
 
 MONOREPO=false
 { [ -f lerna.json ] || [ -f pnpm-workspace.yaml ] \
@@ -93,12 +94,12 @@ ENVS=""
 [ -d node_modules ] && ENVS="${ENVS:+${ENVS}, }node_modules"
 
 HAS_PROJECT=false
-{ [ -n "$LANG" ] || { [ -n "$ROOT" ] && [ "$ROOT" != "$CWD" ]; } \
+{ [ -n "$PROJ_LANG" ] || { [ -n "$ROOT" ] && [ "$ROOT" != "$CWD" ]; } \
   || $MONOREPO || [ -n "$ENVS" ]; } && HAS_PROJECT=true
 
 if $HAS_PROJECT; then
   echo "**Project**:"
-  [ -n "$LANG" ] && echo "- Language: ${LANG}"
+  [ -n "$PROJ_LANG" ] && echo "- Language: ${PROJ_LANG}"
   [ -n "$ROOT" ] && [ "$ROOT" != "$CWD" ] && echo "- Project root: \`${ROOT}\`"
   $MONOREPO && echo "- Monorepo: yes"
   [ -n "$ENVS" ] && echo "- Environments: ${ENVS}"
@@ -160,7 +161,7 @@ def _section_git() -> str:
     """Git branch, main branches, uncommitted changes.
 
     Returns:
-        Bash snippet (requires ``IN_GIT`` from header).
+        Bash snippet (requires `IN_GIT` from header).
     """
     return r"""# --- Git ---
 if $IN_GIT; then
@@ -241,7 +242,7 @@ fi"""
 
 
 def _section_tree() -> str:
-    """``tree -L 3`` output.
+    """`tree -L 3` output.
 
     Returns:
         Bash snippet (standalone).
@@ -284,7 +285,7 @@ def build_detect_script() -> str:
     """Concatenate all section functions into the full detection script.
 
     Returns:
-        Complete bash heredoc ready for ``backend.execute()``.
+        Complete bash heredoc ready for `backend.execute()`.
     """
     sections = [
         _section_header(),
@@ -312,7 +313,9 @@ class LocalContextState(AgentState):
     """State for local context middleware."""
 
     local_context: NotRequired[str]
-    """Formatted local context: git, cwd, files, tree."""
+    """Formatted local context: cwd, project, package managers,
+    runtimes, git, test command, files, tree, Makefile.
+    """
 
 
 # ---------------------------------------------------------------------------
@@ -323,16 +326,20 @@ class LocalContextState(AgentState):
 class LocalContextMiddleware(AgentMiddleware):
     """Inject local context (git state, project structure, etc.) into the system prompt.
 
-    Runs a bash detection script via ``backend.execute()`` on first interaction,
+    Runs a bash detection script via `backend.execute()` on first interaction,
     stores the result in state, and appends it to the system prompt on every
-    model call.  Because the script runs inside the backend, it works for both
+    model call. Because the script runs inside the backend, it works for both
     local shells and remote sandboxes.
     """
 
     state_schema = LocalContextState
 
     def __init__(self, backend: _ExecutableBackend) -> None:
-        """Initialize with a backend that supports shell execution."""
+        """Initialize with a backend that supports shell execution.
+
+        Args:
+            backend: Backend instance that provides shell command execution.
+        """
         self.backend = backend
 
     # override - state parameter is intentionally narrowed from
@@ -344,9 +351,13 @@ class LocalContextMiddleware(AgentMiddleware):
     ) -> dict[str, Any] | None:
         """Run context detection on first interaction.
 
+        Args:
+            state: Current agent state.
+            runtime: Runtime context.
+
         Returns:
-            State update with ``local_context`` populated, or ``None`` if
-            already set or detection fails.
+            State update with `local_context` populated, or `None` if already
+                set or detection fails.
         """
         if state.get("local_context"):
             return None
@@ -354,21 +365,35 @@ class LocalContextMiddleware(AgentMiddleware):
         try:
             result = self.backend.execute(DETECT_CONTEXT_SCRIPT)
         except Exception:
-            logger.debug("Local context detection failed", exc_info=True)
+            logger.warning(
+                "Local context detection failed; context will be omitted "
+                "from system prompt",
+                exc_info=True,
+            )
             return None
 
         output = result.output.strip() if result.output else ""
         if result.exit_code == 0 and output:
             return {"local_context": output}
 
+        if result.exit_code != 0:
+            logger.warning(
+                "Local context detection script exited with code %d; "
+                "context will be omitted. Output: %.200s",
+                result.exit_code,
+                output or "(empty)",
+            )
         return None
 
     @staticmethod
     def _get_modified_request(request: ModelRequest) -> ModelRequest | None:
         """Append local context to the system prompt if available.
 
+        Args:
+            request: The model request to potentially modify.
+
         Returns:
-            Modified request with context appended, or ``None``.
+            Modified request with context appended, or `None`.
         """
         state = cast("LocalContextState", request.state)
         local_context = state.get("local_context", "")
@@ -387,6 +412,10 @@ class LocalContextMiddleware(AgentMiddleware):
     ) -> ModelResponse:
         """Inject local context into system prompt.
 
+        Args:
+            request: The model request being processed.
+            handler: The handler function to call with the modified request.
+
         Returns:
             The model response from the handler.
         """
@@ -399,6 +428,10 @@ class LocalContextMiddleware(AgentMiddleware):
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelResponse:
         """Inject local context into system prompt (async).
+
+        Args:
+            request: The model request being processed.
+            handler: The async handler function to call with the modified request.
 
         Returns:
             The model response from the handler.

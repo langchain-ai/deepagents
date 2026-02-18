@@ -634,7 +634,7 @@ class TestFetchThreadUrl:
         import time
 
         def _blocking(_tid: str) -> str:
-            time.sleep(10)
+            time.sleep(3)
             return "https://example.com"
 
         with (

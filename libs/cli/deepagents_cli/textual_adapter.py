@@ -342,7 +342,7 @@ async def execute_task_textual(
                 # report back to the main agent
                 is_main_agent = ns_key == ()
 
-                # Handle UPDATES stream - for interrupts and todos
+                # Handle UPDATES stream - for interrupts and tasks
                 if current_stream_mode == "updates":
                     if not isinstance(data, dict):
                         continue
@@ -365,14 +365,14 @@ async def execute_task_textual(
                                 except ValidationError:  # noqa: TRY203  # Re-raise preserves exception context in handler
                                     raise
 
-                    # Check for todo updates (not yet implemented in Textual UI)
+                    # Check for task updates (not yet implemented in Textual UI)
                     chunk_data = next(iter(data.values())) if data else None
                     if (
                         chunk_data
                         and isinstance(chunk_data, dict)
-                        and "todos" in chunk_data
+                        and "tasks" in chunk_data
                     ):
-                        pass  # Future: render todo list widget
+                        pass  # Future: render task list widget
 
                 # Handle MESSAGES stream - for content and tool calls
                 elif current_stream_mode == "messages":

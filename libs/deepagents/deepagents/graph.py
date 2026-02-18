@@ -48,7 +48,7 @@ def get_default_model() -> ChatAnthropic:
     )
 
 
-def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic with many conditional branches
+def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly logic with many conditional branches
     model: str | BaseChatModel | None = None,
     tools: Sequence[BaseTool | Callable | dict[str, Any]] | None = None,
     *,
@@ -66,6 +66,7 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
     debug: bool = False,
     name: str | None = None,
     cache: BaseCache | None = None,
+    include_todo_middleware: bool = True,
 ) -> CompiledStateGraph:
     """Create a deep agent.
 
@@ -138,6 +139,10 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
         debug: Whether to enable debug mode. Passed through to `create_agent`.
         name: The name of the agent. Passed through to `create_agent`.
         cache: The cache to use for the agent. Passed through to `create_agent`.
+        include_todo_middleware: Whether to include `TodoListMiddleware` in the middleware
+            stack. When `True` (default), the agent has access to the `write_todos` tool.
+            Set to `False` when providing an alternative task management middleware
+            (e.g., `TaskMiddleware`) to avoid tool conflicts.
 
     Returns:
         A configured deep agent.
@@ -163,7 +168,7 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
 
     # Build general-purpose subagent with default middleware stack
     gp_middleware: list[AgentMiddleware[Any, Any, Any]] = [
-        TodoListMiddleware(),
+        *([] if not include_todo_middleware else [TodoListMiddleware()]),
         FilesystemMiddleware(backend=backend),
         SummarizationMiddleware(
             model=model,
@@ -203,7 +208,7 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
             # Build middleware: base stack + skills (if specified) + user's middleware
             subagent_summarization_defaults = _compute_summarization_defaults(subagent_model)
             subagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
-                TodoListMiddleware(),
+                *([] if not include_todo_middleware else [TodoListMiddleware()]),
                 FilesystemMiddleware(backend=backend),
                 SummarizationMiddleware(
                     model=subagent_model,
@@ -233,9 +238,9 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
     all_subagents: list[SubAgent | CompiledSubAgent] = [general_purpose_spec, *processed_subagents]
 
     # Build main agent middleware stack
-    deepagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
-        TodoListMiddleware(),
-    ]
+    deepagent_middleware: list[AgentMiddleware[Any, Any, Any]] = []
+    if include_todo_middleware:
+        deepagent_middleware.append(TodoListMiddleware())
     if memory is not None:
         deepagent_middleware.append(MemoryMiddleware(backend=backend, sources=memory))
     if skills is not None:

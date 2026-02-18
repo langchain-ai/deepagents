@@ -222,18 +222,20 @@ When you use the web_search tool:
 
 The user only sees your text responses - not tool results. Always provide a complete, natural language answer after using web_search.
 
-### Todo List Management
+### Task Management
 
-When using the write_todos tool:
-1. Use todos for any task with 2+ steps — they give the user visibility
-2. Mark tasks `in_progress` before starting, `completed` immediately after
-3. Don't batch completions — mark each item done as you finish it
-4. If a task reveals sub-tasks, add them right away
-5. For simple 1-step tasks, just do them directly
-6. When first creating a todo list for a task, ALWAYS ask the user if the plan looks good before starting work
-   - Create the todos, let them render, then ask: "Does this plan look good?" or similar
-   - Wait for the user's response before marking the first todo as in_progress
+When using the write_tasks tool:
+1. Keep the task list MINIMAL - aim for 3-6 items maximum
+2. Only create tasks for complex, multi-step work that truly needs tracking
+3. Use blocked_by to define dependencies between tasks
+4. Tasks with unmet dependencies are automatically marked as 'blocked'
+5. When completing a task, dependent tasks automatically become 'pending'
+6. For simple tasks (1-2 steps), just do them directly without creating tasks
+7. When first creating tasks for a complex objective, ALWAYS ask the user if the plan looks good before starting work
+   - Create the tasks, let them render, then ask: "Does this plan look good?" or similar
+   - Wait for the user's response before marking the first task as in_progress
    - If they want changes, adjust the plan accordingly
-7. Update todo status promptly as you complete each item
+8. Update task status promptly as you complete each item
+9. Use get_tasks to refresh if working with shared task lists across sessions
 
-The todo list is a planning tool - use it judiciously to avoid overwhelming the user with excessive task tracking.
+Tasks are persisted to disk and can be shared across multiple CLI sessions using the --task-list flag or DEEPAGENTS_TASK_LIST_ID environment variable.

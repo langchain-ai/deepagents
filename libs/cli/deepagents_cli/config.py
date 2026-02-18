@@ -654,6 +654,15 @@ class Settings:
         skills_dir.mkdir(parents=True, exist_ok=True)
         return skills_dir
 
+    @property
+    def tasks_dir(self) -> Path:
+        """Get the tasks directory path.
+
+        Returns:
+            Path to ~/.deepagents/tasks/
+        """
+        return Path.home() / ".deepagents" / "tasks"
+
     def get_project_skills_dir(self) -> Path | None:
         """Get project-level skills directory path.
 

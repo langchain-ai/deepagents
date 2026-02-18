@@ -15,6 +15,7 @@ from deepagents.middleware import MemoryMiddleware, SkillsMiddleware
 from langgraph.checkpoint.memory import InMemorySaver
 
 from deepagents_cli.backends import CLIShellBackend, patch_filesystem_middleware
+from deepagents_cli.tasks import TaskMiddleware
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -384,6 +385,7 @@ def create_cli_agent(
     enable_skills: bool = True,
     enable_shell: bool = True,
     checkpointer: BaseCheckpointSaver | None = None,
+    task_list_id: str | None = None,
 ) -> tuple[Pregel, CompositeBackend]:
     """Create a CLI-configured agent with flexible options.
 
@@ -418,6 +420,8 @@ def create_cli_agent(
 
             If `None`, uses `InMemorySaver` (no persistence across
             CLI invocations).
+        task_list_id: Optional task list ID for sharing tasks across sessions.
+            If None, checks DEEPAGENTS_TASK_LIST_ID env var, then auto-generates.
 
     Returns:
         2-tuple of `(agent_graph, backend)`
@@ -436,6 +440,13 @@ def create_cli_agent(
             # Create empty file for user customizations
             # Base instructions are loaded fresh from get_system_prompt()
             agent_md.touch()
+        else:
+            # Migrate existing AGENTS.md: replace write_todos with write_tasks
+            # This handles users upgrading from versions that used TodoListMiddleware
+            content = agent_md.read_text()
+            if "write_todos" in content:
+                migrated_content = content.replace("write_todos", "write_tasks")
+                agent_md.write_text(migrated_content)
 
     # Skills directories (if enabled)
     skills_dir = None
@@ -493,6 +504,19 @@ def create_cli_agent(
                 sources=sources,
             )
         )
+
+    # Add task middleware (file-based task management with dependencies)
+    tasks_dir = settings.tasks_dir
+    if isinstance(tasks_dir, (str, Path, os.PathLike)):
+        tasks_dir = Path(tasks_dir)
+    else:
+        tasks_dir = None
+    agent_middleware.append(
+        TaskMiddleware(
+            task_list_id=task_list_id,
+            tasks_dir=tasks_dir,
+        )
+    )
 
     # CONDITIONAL SETUP: Local vs Remote Sandbox
     if sandbox is None:
@@ -586,5 +610,6 @@ def create_cli_agent(
         interrupt_on=interrupt_on,
         checkpointer=final_checkpointer,
         subagents=custom_subagents or None,
+        include_todo_middleware=False,  # CLI uses TaskMiddleware instead
     ).with_config(config)
     return agent, composite_backend

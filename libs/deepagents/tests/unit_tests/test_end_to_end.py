@@ -1214,3 +1214,63 @@ class TestDeepAgentStructure:
         assert_all_deepagent_qualities(agent)
         assert "sample_tool" in agent.nodes["tools"].bound._tools_by_name
         assert "sample_input" in agent.stream_channels
+
+    def test_deep_agent_default_includes_todo_middleware(self) -> None:
+        """Test that create_deep_agent includes TodoListMiddleware by default.
+
+        This test verifies backward compatibility: when include_todo_middleware
+        is not specified, the agent should have access to the write_todos tool.
+        """
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "write_todos",
+                                "args": {"todos": []},
+                                "id": "call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        # Create agent with default settings (no include_todo_middleware specified)
+        agent = create_deep_agent(model=model)
+
+        # Verify write_todos tool is available by invoking the agent
+        result = agent.invoke({"messages": [HumanMessage(content="Test")]})
+
+        # Verify the write_todos call succeeded (not an error)
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert len(tool_messages) > 0
+        # The tool message should not indicate an error for unknown tool
+        assert not any("unknown tool" in msg.content.lower() for msg in tool_messages)
+
+    def test_deep_agent_exclude_todo_middleware(self) -> None:
+        """Test that create_deep_agent can exclude TodoListMiddleware.
+
+        This test verifies the include_todo_middleware=False parameter
+        properly excludes the write_todos tool.
+        """
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(content="Hello!"),
+                ]
+            )
+        )
+
+        # Create agent with include_todo_middleware=False
+        agent = create_deep_agent(model=model, include_todo_middleware=False)
+
+        # Get the tool node and check available tools
+        tool_node = agent.nodes.get("tools")
+        if tool_node and hasattr(tool_node, "bound") and hasattr(tool_node.bound, "_tools_by_name"):
+            tool_names = list(tool_node.bound._tools_by_name.keys())
+            assert "write_todos" not in tool_names, "write_todos should NOT be available when include_todo_middleware=False"

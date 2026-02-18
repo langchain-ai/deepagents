@@ -119,23 +119,30 @@ class TestBuildStreamConfig:
         assert "agent_name" not in config["metadata"]
         assert "updated_at" not in config["metadata"]
 
-    def test_cli_version_metadata_always_present(self) -> None:
-        """CLI version should be present regardless of `assistant_id`."""
+    def test_versions_dict_always_present(self) -> None:
+        """Nested `versions` dict should be present regardless of `assistant_id`."""
         from deepagents_cli._version import __version__
 
         config = build_stream_config("t-100", assistant_id=None)
-        assert config["metadata"]["deepagents_cli_version"] == __version__
+        versions = config["metadata"]["versions"]
+        assert versions["deepagents-cli"] == __version__
+        assert "deepagents" in versions
 
-    def test_cli_version_metadata_with_assistant(self) -> None:
-        """CLI version should coexist with assistant-specific metadata."""
+    def test_versions_dict_with_assistant(self) -> None:
+        """`versions` dict should coexist with assistant-specific metadata."""
         config = build_stream_config("t-200", assistant_id="my-agent")
-        assert "deepagents_cli_version" in config["metadata"]
+        assert "versions" in config["metadata"]
         assert config["metadata"]["assistant_id"] == "my-agent"
 
-    def test_sdk_version_not_set_by_cli(self) -> None:
-        """SDK version should not be set by the CLI; the SDK owns that key."""
+    def test_versions_uses_package_name_keys(self) -> None:
+        """Version keys should be PyPI package names, not suffixed variants."""
         config = build_stream_config("t-300", assistant_id=None)
+        versions = config["metadata"]["versions"]
+        # Keys are package names, not legacy flat keys
+        assert "deepagents" in versions
+        assert "deepagents-cli" in versions
         assert "deepagents_version" not in config["metadata"]
+        assert "deepagents_cli_version" not in config["metadata"]
 
     def test_configurable_thread_id(self) -> None:
         """`configurable.thread_id` should match the provided thread ID."""

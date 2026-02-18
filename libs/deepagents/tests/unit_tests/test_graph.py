@@ -9,8 +9,9 @@ from .chat_model import GenericFakeChatModel
 
 
 def test_create_deep_agent_includes_version_metadata() -> None:
-    """`create_deep_agent` should attach `deepagents_version` to graph config metadata."""
+    """`create_deep_agent` should nest SDK version under `metadata.versions`."""
     model = GenericFakeChatModel(messages=iter([AIMessage(content="hi")]))
     agent = create_deep_agent(model=model)
     assert agent.config is not None
-    assert agent.config["metadata"]["deepagents_version"] == __version__
+    versions = agent.config["metadata"]["versions"]
+    assert versions["deepagents"] == __version__

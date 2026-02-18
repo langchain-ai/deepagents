@@ -11,10 +11,12 @@ import shlex
 import sys
 import uuid
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from enum import StrEnum
 from importlib.metadata import (
     PackageNotFoundError,
     distribution,
+    version as pkg_version,
 )
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -25,6 +27,15 @@ from rich.console import Console
 from deepagents_cli._version import __version__
 
 logger = logging.getLogger(__name__)
+
+# Resolve installed SDK version for LangSmith trace metadata.
+# The CLI includes this in its metadata.versions dict because
+# LangChain's merge_configs does a shallow merge on metadata —
+# nested dicts (like versions) are overwritten, not deep-merged.
+try:
+    _sdk_version: str = pkg_version("deepagents")
+except PackageNotFoundError:
+    _sdk_version = "unknown"
 
 dotenv.load_dotenv()
 
@@ -325,13 +336,19 @@ def build_stream_config(
 ) -> RunnableConfig:
     """Build the LangGraph stream config dict.
 
-    Injects `deepagents_cli_version` into every config so LangSmith traces
-    can be filtered by CLI release. The SDK version (`deepagents_version`)
-    is attached separately by the SDK's `create_deep_agent` via `with_config`.
+    Package versions are grouped under `metadata["versions"]` so LangSmith
+    traces can be filtered by release. The dict uses PyPI package names as
+    keys (e.g. `deepagents`, `deepagents-cli`).
+
+    The CLI includes the SDK version here because LangChain's `merge_configs`
+    does a **shallow** merge on metadata — nested dicts like `versions` are
+    overwritten, not deep-merged.  Without this, the SDK's `versions` dict (set
+    via `with_config` in `create_deep_agent`) would be lost when the CLI passes
+    its own config to `astream`.
 
     The `thread_id` in `configurable` is automatically propagated as run
-    metadata by LangGraph, so it can be used for LangSmith filtering without
-    a separate metadata key.
+    metadata by LangGraph, so it can be used for LangSmith filtering without a
+    separate metadata key.
 
     Args:
         thread_id: The CLI session thread identifier.
@@ -340,10 +357,11 @@ def build_stream_config(
     Returns:
         Config dict with `configurable` and `metadata` keys.
     """
-    from datetime import UTC, datetime
-
-    metadata: dict[str, str] = {
-        "deepagents_cli_version": __version__,
+    metadata: dict[str, Any] = {
+        "versions": {
+            "deepagents": _sdk_version,
+            "deepagents-cli": __version__,
+        },
     }
     if assistant_id:
         metadata.update(

@@ -444,9 +444,7 @@ except PermissionError:
                 responses.append(FileUploadResponse(path=path))
             else:
                 log.warning("Failed to upload %s: %s", path, result.output)
-                responses.append(
-                    FileUploadResponse(path=path, error="permission_denied")
-                )
+                responses.append(FileUploadResponse(path=path, error="permission_denied"))
 
         return responses
 
@@ -467,8 +465,7 @@ except PermissionError:
             "p = pathlib.Path('" + file_path + "')\n"
             "p.parent.mkdir(parents=True, exist_ok=True)\n"
             "p.write_bytes(base64.b64decode(b64))\n"
-            "\" <<'__DEEPAGENTS_EOF__'\n"
-            + b64 + "\n"
+            "\" <<'__DEEPAGENTS_EOF__'\n" + b64 + "\n"
             "__DEEPAGENTS_EOF__"
         )
         return self.execute(cmd)
@@ -490,12 +487,7 @@ except PermissionError:
         tmp_b64 = file_path + ".__b64_tmp"
 
         # Ensure parent directory exists.
-        result = self.execute(
-            'python3 -c "'
-            "import pathlib; "
-            "pathlib.Path('" + file_path + "').parent.mkdir(parents=True, exist_ok=True)"
-            '"'
-        )
+        result = self.execute("python3 -c \"import pathlib; pathlib.Path('" + file_path + "').parent.mkdir(parents=True, exist_ok=True)\"")
         if result.exit_code != 0:
             return result
 
@@ -509,8 +501,7 @@ except PermissionError:
                 "chunk = sys.stdin.read().strip()\n"
                 "with open('" + tmp_b64 + "', 'a') as f:\n"
                 "    f.write(chunk)\n"
-                "\" <<'__DEEPAGENTS_EOF__'\n"
-                + chunk + "\n"
+                "\" <<'__DEEPAGENTS_EOF__'\n" + chunk + "\n"
                 "__DEEPAGENTS_EOF__"
             )
             result = self.execute(append_cmd)
@@ -555,25 +546,16 @@ except PermissionError:
 
         for path in paths:
             # Get file size to decide between single and chunked download.
-            size_cmd = (
-                'python3 -c "'
-                "import os; "
-                "print(os.path.getsize('" + path + "'))"
-                '"'
-            )
+            size_cmd = "python3 -c \"import os; print(os.path.getsize('" + path + "'))\""
             size_result = self.execute(size_cmd)
             if size_result.exit_code != 0:
-                responses.append(
-                    FileDownloadResponse(path=path, error="file_not_found")
-                )
+                responses.append(FileDownloadResponse(path=path, error="file_not_found"))
                 continue
 
             try:
                 file_size = int(size_result.output.strip())
             except ValueError:
-                responses.append(
-                    FileDownloadResponse(path=path, error="file_not_found")
-                )
+                responses.append(FileDownloadResponse(path=path, error="file_not_found"))
                 continue
 
             # Small files can be downloaded in one shot.
@@ -591,12 +573,7 @@ except PermissionError:
         Returns:
             FileDownloadResponse with content or error.
         """
-        cmd = (
-            'python3 -c "'
-            "import base64; "
-            "print(base64.b64encode(open('" + file_path + "', 'rb').read()).decode())"
-            '"'
-        )
+        cmd = "python3 -c \"import base64; print(base64.b64encode(open('" + file_path + "', 'rb').read()).decode())\""
         result = self.execute(cmd)
         if result.exit_code == 0 and result.output.strip():
             try:
@@ -606,9 +583,7 @@ except PermissionError:
                 return FileDownloadResponse(path=file_path, error="file_not_found")
         return FileDownloadResponse(path=file_path, error="file_not_found")
 
-    def _download_chunked(
-        self, file_path: str, file_size: int
-    ) -> FileDownloadResponse:
+    def _download_chunked(self, file_path: str, file_size: int) -> FileDownloadResponse:
         """Download a large file in chunks to avoid output truncation.
 
         Reads the file in fixed-size binary chunks inside the sandbox,

@@ -213,9 +213,7 @@ def test_upload_returns_error_on_failure() -> None:
 
     class FailingSandbox(MockSandbox):
         def execute(self, command: str) -> ExecuteResponse:
-            return ExecuteResponse(
-                output="some error", exit_code=1, truncated=False
-            )
+            return ExecuteResponse(output="some error", exit_code=1, truncated=False)
 
     sandbox = FailingSandbox()
     responses = sandbox.upload_files([("/fail.txt", b"content")])
@@ -235,12 +233,8 @@ def test_download_small_file() -> None:
             nonlocal call_count
             call_count += 1
             if "getsize" in command:
-                return ExecuteResponse(
-                    output=str(len(content)), exit_code=0, truncated=False
-                )
-            return ExecuteResponse(
-                output=b64_content, exit_code=0, truncated=False
-            )
+                return ExecuteResponse(output=str(len(content)), exit_code=0, truncated=False)
+            return ExecuteResponse(output=b64_content, exit_code=0, truncated=False)
 
     sandbox = DownloadSandbox()
     responses = sandbox.download_files(["/test.txt"])
@@ -275,9 +269,7 @@ def test_download_large_file_uses_chunks() -> None:
                 offset = int(offset_str)
                 chunk = full_content[offset : offset + chunk_size]
                 b64_chunk = base64.b64encode(chunk).decode("ascii")
-                return ExecuteResponse(
-                    output=b64_chunk, exit_code=0, truncated=False
-                )
+                return ExecuteResponse(output=b64_chunk, exit_code=0, truncated=False)
             return ExecuteResponse(output="", exit_code=0, truncated=False)
 
     sandbox = ChunkedDownloadSandbox()
@@ -295,9 +287,7 @@ def test_download_returns_error_for_missing_file() -> None:
 
     class MissingSandbox(MockSandbox):
         def execute(self, command: str) -> ExecuteResponse:
-            return ExecuteResponse(
-                output="FileNotFoundError", exit_code=1, truncated=False
-            )
+            return ExecuteResponse(output="FileNotFoundError", exit_code=1, truncated=False)
 
     sandbox = MissingSandbox()
     responses = sandbox.download_files(["/missing.txt"])

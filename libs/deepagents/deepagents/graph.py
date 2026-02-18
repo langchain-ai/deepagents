@@ -63,6 +63,7 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
     store: BaseStore | None = None,
     backend: BackendProtocol | BackendFactory | None = None,
     interrupt_on: dict[str, bool | InterruptOnConfig] | None = None,
+    tool_token_limit_before_evict: int | None = 20000,
     debug: bool = False,
     name: str | None = None,
     cache: BaseCache | None = None,
@@ -135,6 +136,10 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
             Pass to pause agent execution at specified tool calls for human approval or modification.
 
             Example: `interrupt_on={"edit_file": True}` pauses before every edit.
+        tool_token_limit_before_evict: Token limit before evicting a tool result to
+            the filesystem. When a tool result exceeds this limit, the content is
+            written to `/large_tool_results/` and replaced with a truncated preview
+            and file reference. Set to `None` to disable eviction. Defaults to 20,000.
         debug: Whether to enable debug mode. Passed through to `create_agent`.
         name: The name of the agent. Passed through to `create_agent`.
         cache: The cache to use for the agent. Passed through to `create_agent`.
@@ -164,7 +169,7 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
     # Build general-purpose subagent with default middleware stack
     gp_middleware: list[AgentMiddleware[Any, Any, Any]] = [
         TodoListMiddleware(),
-        FilesystemMiddleware(backend=backend),
+        FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=tool_token_limit_before_evict),
         SummarizationMiddleware(
             model=model,
             backend=backend,
@@ -204,7 +209,7 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
             subagent_summarization_defaults = _compute_summarization_defaults(subagent_model)
             subagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
                 TodoListMiddleware(),
-                FilesystemMiddleware(backend=backend),
+                FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=tool_token_limit_before_evict),
                 SummarizationMiddleware(
                     model=subagent_model,
                     backend=backend,
@@ -242,7 +247,7 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
         deepagent_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
     deepagent_middleware.extend(
         [
-            FilesystemMiddleware(backend=backend),
+            FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=tool_token_limit_before_evict),
             SubAgentMiddleware(
                 backend=backend,
                 subagents=all_subagents,

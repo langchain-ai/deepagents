@@ -15,7 +15,7 @@ TEST_FILE ?= tests/unit_tests/
 integration_test integration_tests: TEST_FILE=tests/integration_tests/
 
 test tests:
-	uv run --group test pytest -vvv --disable-socket --allow-unix-socket $(TEST_FILE)
+	uv run --group test pytest -n auto --disable-socket --allow-unix-socket $(TEST_FILE)
 
 coverage:
 	uv run --group test pytest --cov \

@@ -79,7 +79,7 @@ class ApprovalMenu(Container):
         self,
         action_requests: list[dict[str, Any]] | dict[str, Any],
         _assistant_id: str | None = None,
-        id: str | None = None,
+        id: str | None = None,  # noqa: A002  # Textual widget constructor uses `id` parameter
         **kwargs: Any,
     ) -> None:
         """Initialize the ApprovalMenu widget.
@@ -193,7 +193,7 @@ class ApprovalMenu(Container):
         # Options container at bottom
         with Container(classes="approval-options-container"):
             # Options - create 3 Static widgets
-            for i in range(3):
+            for i in range(3):  # noqa: B007  # Loop variable unused - iterating for count only
                 widget = Static("", classes="approval-option")
                 self._option_widgets.append(widget)
                 yield widget
@@ -326,6 +326,6 @@ class ApprovalMenu(Container):
         # Post message
         self.post_message(self.Decided(decision))
 
-    def on_blur(self, event: events.Blur) -> None:
+    def on_blur(self, event: events.Blur) -> None:  # noqa: ARG002  # Textual event handler signature
         """Re-focus on blur to keep focus trapped until decision is made."""
         self.call_after_refresh(self.focus)

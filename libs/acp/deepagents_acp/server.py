@@ -1,7 +1,10 @@
+"""ACP server implementation for Deep Agents."""
+
+from __future__ import annotations
+
 import json
-from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from acp import (
@@ -20,7 +23,6 @@ from acp import (
     update_tool_call,
 )
 from acp.exceptions import RequestError
-from acp.interfaces import Client
 from acp.schema import (
     AgentCapabilities,
     AgentPlanUpdate,
@@ -44,12 +46,17 @@ from acp.schema import (
 )
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, FilesystemBackend, StateBackend
-from deepagents.graph import Checkpointer
-from langchain.tools import ToolRuntime
-from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command, StateSnapshot
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from acp.interfaces import Client
+    from deepagents.graph import Checkpointer
+    from langchain.tools import ToolRuntime
+    from langchain_core.runnables import RunnableConfig
 
 from deepagents_acp.utils import (
     convert_audio_block_to_content_blocks,
@@ -65,11 +72,15 @@ from deepagents_acp.utils import (
 
 @dataclass(frozen=True, slots=True)
 class AgentSessionContext:
+    """Context for an agent session, including working directory and mode."""
+
     cwd: str
     mode: str
 
 
 class AgentServerACP(ACPAgent):
+    """ACP agent server that bridges Deep Agents with the Agent Client Protocol."""
+
     _conn: Client
 
     def __init__(
@@ -86,7 +97,8 @@ class AgentServerACP(ACPAgent):
 
         if isinstance(agent, CompiledStateGraph):
             if modes is not None:
-                raise ValueError("modes can only be provided when agent is a factory")
+                msg = "modes can only be provided when agent is a factory"
+                raise ValueError(msg)
             self._modes: SessionModeState | None = None
         else:
             self._modes = modes
@@ -97,25 +109,26 @@ class AgentServerACP(ACPAgent):
         self._session_plans: dict[str, list[dict[str, Any]]] = {}
         self._session_cwds: dict[str, str] = {}
         self._allowed_command_types: dict[
-            str, set[tuple[str, Optional[str]]]
+            str, set[tuple[str, str | None]]
         ] = {}  # Track allowed command types per session
 
     def on_connect(self, conn: Client) -> None:
+        """Store the client connection for sending session updates."""
         self._conn = conn
 
     async def initialize(
         self,
         protocol_version: int,
-        client_capabilities: ClientCapabilities | None = None,
-        client_info: Implementation | None = None,
-        **kwargs: Any,
+        client_capabilities: ClientCapabilities | None = None,  # noqa: ARG002  # ACP protocol interface parameter
+        client_info: Implementation | None = None,  # noqa: ARG002  # ACP protocol interface parameter
+        **kwargs: Any,  # noqa: ARG002  # ACP protocol interface parameter
     ) -> InitializeResponse:
+        """Return server capabilities to the ACP client."""
         return InitializeResponse(
             protocol_version=protocol_version,
             agent_capabilities=AgentCapabilities(
                 prompt_capabilities=PromptCapabilities(
                     image=True,
-                    # embedded_context=True,
                 )
             ),
         )
@@ -123,9 +136,12 @@ class AgentServerACP(ACPAgent):
     async def new_session(
         self,
         cwd: str,
-        mcp_servers: list[HttpMcpServer | SseMcpServer | McpServerStdio],
-        **kwargs: Any,
+        mcp_servers: list[HttpMcpServer | SseMcpServer | McpServerStdio] | None = None,
+        **kwargs: Any,  # noqa: ARG002  # ACP protocol interface parameter
     ) -> NewSessionResponse:
+        """Create a new agent session with the given working directory."""
+        if mcp_servers is None:
+            mcp_servers = []
         session_id = uuid4().hex
         self._session_cwds[session_id] = cwd
 
@@ -143,8 +159,9 @@ class AgentServerACP(ACPAgent):
         self,
         mode_id: str,
         session_id: str,
-        **kwargs: Any,
+        **kwargs: Any,  # noqa: ARG002  # ACP protocol interface parameter
     ) -> SetSessionModeResponse:
+        """Switch the session to a different mode, resetting the agent."""
         if self._modes is not None and session_id in self._session_mode_states:
             state = self._session_mode_states[session_id]
             self._session_modes[session_id] = mode_id
@@ -152,14 +169,15 @@ class AgentServerACP(ACPAgent):
                 available_modes=state.available_modes,
                 current_mode_id=mode_id,
             )
-        self._agent = None
+            self._reset_agent(session_id)
         return SetSessionModeResponse()
 
-    async def cancel(self, session_id: str, **kwargs: Any) -> None:
+    async def cancel(self, session_id: str, **kwargs: Any) -> None:  # noqa: ARG002  # ACP protocol interface parameters
         """Cancel the current execution."""
         self._cancelled = True
 
-    async def _log_text(self, session_id: str, text: str):
+    async def _log_text(self, session_id: str, text: str) -> None:
+        """Send a text message update to the client."""
         update = update_agent_message(text_block(text))
         await self._conn.session_update(session_id=session_id, update=update, source="DeepAgent")
 
@@ -199,6 +217,7 @@ class AgentServerACP(ACPAgent):
         self,
         session_id: str,
         todos: list[dict[str, Any]],
+        *,
         log_plan: bool = True,
     ) -> None:
         """Handle todo list updates from write_todos tool.
@@ -222,7 +241,7 @@ class AgentServerACP(ACPAgent):
             # Create PlanEntry with default priority of "medium"
             entry = PlanEntry(
                 content=content,
-                status=status,  # type: ignore
+                status=status,
                 priority="medium",
             )
             entries.append(entry)
@@ -267,26 +286,23 @@ class AgentServerACP(ACPAgent):
                 chunk_index = chunk.get("index", 0)
 
                 # Initialize accumulator for this index if we have id and name
-                if chunk_id and chunk_name:
-                    if chunk_index not in tool_call_accumulator:
-                        tool_call_accumulator[chunk_index] = {
-                            "id": chunk_id,
-                            "name": chunk_name,
-                            "args_str": "",
-                        }
-                    elif chunk_id != tool_call_accumulator[chunk_index].get("id"):
-                        tool_call_accumulator[chunk_index] = {
-                            "id": chunk_id,
-                            "name": chunk_name,
-                            "args_str": "",
-                        }
+                is_new_tool_call = (
+                    chunk_index not in tool_call_accumulator
+                    or chunk_id != tool_call_accumulator[chunk_index].get("id")
+                )
+                if chunk_id and chunk_name and is_new_tool_call:
+                    tool_call_accumulator[chunk_index] = {
+                        "id": chunk_id,
+                        "name": chunk_name,
+                        "args_str": "",
+                    }
 
                 # Accumulate args string chunks using index
                 if chunk_args and chunk_index in tool_call_accumulator:
                     tool_call_accumulator[chunk_index]["args_str"] += chunk_args
 
             # After processing chunks, try to start any tool calls with complete args
-            for index, acc in list(tool_call_accumulator.items()):
+            for _index, acc in list(tool_call_accumulator.items()):
                 tool_id = acc.get("id")
                 tool_name = acc.get("name")
                 args_str = acc.get("args_str", "")
@@ -302,8 +318,8 @@ class AgentServerACP(ACPAgent):
                             "args": tool_args,
                         }
 
-                        # Create the appropriate tool call update
-                        update = self._create_tool_call_update(tool_id, tool_name, tool_args)
+                        # Create the appropriate tool call start
+                        update = self._create_tool_call_start(tool_id, tool_name, tool_args)
 
                         await self._conn.session_update(
                             session_id=session_id,
@@ -318,7 +334,7 @@ class AgentServerACP(ACPAgent):
                     except json.JSONDecodeError:
                         pass
 
-    def _create_tool_call_update(
+    def _create_tool_call_start(
         self, tool_id: str, tool_name: str, tool_args: dict[str, Any]
     ) -> ToolCallStart:
         """Create a tool call update based on tool type and arguments."""
@@ -342,8 +358,9 @@ class AgentServerACP(ACPAgent):
                 title=title,
                 kind=tool_kind,
                 status="pending",
+                raw_input=tool_args,
             )
-        elif tool_name == "edit_file" and isinstance(tool_args, dict):
+        if tool_name == "edit_file" and isinstance(tool_args, dict):
             path = tool_args.get("file_path", "")
             old_string = tool_args.get("old_string", "")
             new_string = tool_args.get("new_string", "")
@@ -364,28 +381,7 @@ class AgentServerACP(ACPAgent):
                     # This is silly but for some reason content isn't passed through
                     extra_options=[diff_content],
                 )
-            else:
-                # Fallback to generic tool call if data incomplete
-                return start_tool_call(
-                    tool_call_id=tool_id,
-                    title=title,
-                    kind=tool_kind,
-                    status="pending",
-                )
-        elif tool_name == "write_file" and isinstance(tool_args, dict):
-            path = tool_args.get("file_path")
-            title = f"Write `{path}`" if path else tool_name
-            return start_tool_call(
-                tool_call_id=tool_id,
-                title=title,
-                kind=tool_kind,
-                status="pending",
-            )
-        elif tool_name == "execute" and isinstance(tool_args, dict):
-            command = tool_args.get("command", "")
-            # Truncate long commands for display
-            display_command = truncate_execute_command_for_display(command=command)
-            title = f"Execute: `{display_command}`" if command else "Execute command"
+            # Fallback to generic tool call if data incomplete
             return start_tool_call(
                 tool_call_id=tool_id,
                 title=title,
@@ -393,16 +389,47 @@ class AgentServerACP(ACPAgent):
                 status="pending",
                 raw_input=tool_args,
             )
-        else:
-            title = tool_name
+        if tool_name == "write_file" and isinstance(tool_args, dict):
+            path = tool_args.get("file_path")
+            title = f"Write `{path}`" if path else tool_name
             return start_tool_call(
                 tool_call_id=tool_id,
                 title=title,
                 kind=tool_kind,
                 status="pending",
+                raw_input=tool_args,
             )
+        if tool_name == "execute" and isinstance(tool_args, dict):
+            command = tool_args.get("command", "")
+            return start_tool_call(
+                tool_call_id=tool_id,
+                title=command or "Execute command",
+                kind=tool_kind,
+                status="pending",
+                raw_input=tool_args,
+            )
+        title = tool_name
+        return start_tool_call(
+            tool_call_id=tool_id,
+            title=title,
+            kind=tool_kind,
+            status="pending",
+            raw_input=tool_args,
+        )
 
-    async def prompt(
+    def _reset_agent(self, session_id: str) -> None:
+        """Reset the agent instance, re-creating it from the factory if applicable."""
+        if isinstance(self._agent_factory, CompiledStateGraph):
+            self._agent = self._agent_factory
+        else:
+            mode = self._session_modes.get(
+                session_id,
+                self._modes.current_mode_id if self._modes is not None else "auto",
+            )
+            context = AgentSessionContext(cwd=self._cwd, mode=mode)
+            self._agent = self._agent_factory(context)
+
+    async def prompt(  # noqa: C901, PLR0912, PLR0915  # Complex streaming protocol handler with many branches
         self,
         prompt: list[
             TextContentBlock
@@ -412,24 +439,17 @@ class AgentServerACP(ACPAgent):
             | EmbeddedResourceContentBlock
         ],
         session_id: str,
-        **kwargs: Any,
+        **kwargs: Any,  # noqa: ARG002  # ACP protocol interface parameter
     ) -> PromptResponse:
+        """Process a user prompt and stream the agent response."""
         if self._agent is None:
             cwd = self._session_cwds.get(session_id)
             if cwd is not None:
                 self._cwd = cwd
-            if isinstance(self._agent_factory, CompiledStateGraph):
-                self._agent = self._agent_factory
-            else:
-                mode = self._session_modes.get(
-                    session_id,
-                    self._modes.current_mode_id if self._modes is not None else "auto",
-                )
-                context = AgentSessionContext(cwd=self._cwd, mode=mode)
-                self._agent = self._agent_factory(context)
+            self._reset_agent(session_id)
 
             if getattr(self._agent, "checkpointer", None) is None:
-                self._agent.checkpointer = MemorySaver()
+                self._agent.checkpointer = MemorySaver()  # ty: ignore[unresolved-attribute]  # Guarded by getattr check above
 
         # Reset cancellation flag for new prompt
         self._cancelled = False
@@ -466,7 +486,7 @@ class AgentServerACP(ACPAgent):
                 self._cancelled = False  # Reset for next prompt
                 return PromptResponse(stop_reason="cancelled")
 
-            async for stream_chunk in self._agent.astream(
+            async for stream_chunk in self._agent.astream(  # ty: ignore[possibly-missing-attribute]  # _agent is set in new_session before prompt is called
                 Command(resume={"decisions": user_decisions})
                 if user_decisions
                 else {"messages": [{"role": "user", "content": content_blocks}]},
@@ -474,7 +494,8 @@ class AgentServerACP(ACPAgent):
                 stream_mode=["messages", "updates"],
                 subgraphs=True,
             ):
-                if not isinstance(stream_chunk, tuple) or len(stream_chunk) != 3:
+                _expected_len = 3  # (namespace, stream_mode, data)
+                if not isinstance(stream_chunk, tuple) or len(stream_chunk) != _expected_len:
                     continue
 
                 _namespace, stream_mode, data = stream_chunk
@@ -509,7 +530,7 @@ class AgentServerACP(ACPAgent):
                                         {"interrupt_value": interrupt_value},
                                     )
 
-                            current_state = await self._agent.aget_state(config)
+                            current_state = await self._agent.aget_state(config)  # ty: ignore[possibly-missing-attribute]  # _agent is set in new_session before prompt is called
                             user_decisions = await self._handle_interrupts(
                                 current_state=current_state,
                                 session_id=session_id,
@@ -524,7 +545,7 @@ class AgentServerACP(ACPAgent):
 
                     continue
 
-                message_chunk, metadata = data
+                message_chunk, _metadata = data
 
                 # Process tool call chunks
                 await self._process_tool_call_chunks(
@@ -541,30 +562,33 @@ class AgentServerACP(ACPAgent):
                 elif hasattr(message_chunk, "type") and message_chunk.type == "tool":
                     # This is a tool result message
                     tool_call_id = getattr(message_chunk, "tool_call_id", None)
-                    if tool_call_id and tool_call_id in active_tool_calls:
-                        if active_tool_calls[tool_call_id].get("name") != "edit_file":
-                            # Update the tool call with completion status and result
-                            content = getattr(message_chunk, "content", "")
-                            tool_info = active_tool_calls[tool_call_id]
-                            tool_name = tool_info.get("name")
+                    if (
+                        tool_call_id
+                        and tool_call_id in active_tool_calls
+                        and active_tool_calls[tool_call_id].get("name") != "edit_file"
+                    ):
+                        # Update the tool call with completion status and result
+                        content = getattr(message_chunk, "content", "")
+                        tool_info = active_tool_calls[tool_call_id]
+                        tool_name = tool_info.get("name")
 
-                            # Format execute tool results specially
-                            if tool_name == "execute":
-                                tool_args = tool_info.get("args", {})
-                                command = tool_args.get("command", "")
-                                formatted_content = format_execute_result(
-                                    command=command, result=str(content)
-                                )
-                            else:
-                                formatted_content = str(content)
-                            update = update_tool_call(
-                                tool_call_id=tool_call_id,
-                                status="completed",
-                                content=[tool_content(text_block(formatted_content))],
+                        # Format execute tool results specially
+                        if tool_name == "execute":
+                            tool_args = tool_info.get("args", {})
+                            command = tool_args.get("command", "")
+                            formatted_content = format_execute_result(
+                                command=command, result=str(content)
                             )
-                            await self._conn.session_update(
-                                session_id=session_id, update=update, source="DeepAgent"
-                            )
+                        else:
+                            formatted_content = str(content)
+                        update = update_tool_call(
+                            tool_call_id=tool_call_id,
+                            status="completed",
+                            content=[tool_content(text_block(formatted_content))],
+                        )
+                        await self._conn.session_update(
+                            session_id=session_id, update=update, source="DeepAgent"
+                        )
 
                 elif message_chunk.content:
                     # content can be a string or a list of content blocks
@@ -584,17 +608,23 @@ class AgentServerACP(ACPAgent):
                     if text and not _namespace:
                         await self._log_text(text=text, session_id=session_id)
 
-            # Check if the agent is interrupted (waiting for HITL approval)
-            current_state = await self._agent.aget_state(config)
-            user_decisions = await self._handle_interrupts(
-                current_state=current_state,
-                session_id=session_id,
-            )
+            # After streaming completes, check if we need to exit the loop
+            # The loop continues while there are interrupts (line 467)
+            # We get the current state to check the loop condition
+            current_state = await self._agent.aget_state(config)  # ty: ignore[possibly-missing-attribute]  # _agent is set in new_session before prompt is called
+            # Note: Interrupts are handled during streaming via __interrupt__ updates
+            # This state check is only for the while loop condition
 
         return PromptResponse(stop_reason="end_turn")
 
-    async def _handle_interrupts(self, *, current_state: StateSnapshot, session_id: str):
-        user_decisions = []
+    async def _handle_interrupts(  # noqa: C901, PLR0912, PLR0915  # Complex HITL permission handling with many branches
+        self,
+        *,
+        current_state: StateSnapshot,
+        session_id: str,
+    ) -> list[dict[str, Any]]:
+        """Handle agent interrupts by requesting permission from the client."""
+        user_decisions: list[dict[str, Any]] = []
         if current_state.next and current_state.interrupts:
             # Agent is interrupted, request permission from user
             for interrupt in current_state.interrupts:
@@ -644,10 +674,9 @@ class AgentServerACP(ACPAgent):
                                     # Auto-approve this command
                                     user_decisions.append({"type": "approve"})
                                     continue
-                        else:
-                            if (tool_name, None) in self._allowed_command_types[session_id]:
-                                user_decisions.append({"type": "approve"})
-                                continue
+                        elif (tool_name, None) in self._allowed_command_types[session_id]:
+                            user_decisions.append({"type": "approve"})
+                            continue
 
                     # Create a title for the permission request
                     if tool_name == "write_todos":
@@ -709,8 +738,7 @@ class AgentServerACP(ACPAgent):
 
                     # Request permission from the client
                     tool_call_update = ToolCallUpdate(
-                        tool_call_id=tool_call_id,
-                        title=title,
+                        tool_call_id=tool_call_id, title=title, raw_input=tool_args
                     )
                     response = await self._conn.request_permission(
                         session_id=session_id,
@@ -762,12 +790,12 @@ class AgentServerACP(ACPAgent):
                         # If cancelling a plan, clear it
                         if tool_name == "write_todos":
                             await self._clear_plan(session_id)
-            return user_decisions
+        return user_decisions
 
 
 async def _serve_test_agent() -> None:
     """Run test agent from the root of the repository with ACP integration."""
-    from dotenv import load_dotenv
+    from dotenv import load_dotenv  # noqa: PLC0415  # Lazy import for dev-only entry point
 
     load_dotenv()
 
@@ -775,13 +803,12 @@ async def _serve_test_agent() -> None:
 
     def build_agent(context: AgentSessionContext) -> CompiledStateGraph:
         """Agent factory based in the given root directory."""
-
-        _root_dir = context.cwd
+        agent_root_dir = context.cwd
 
         def create_backend(run_time: ToolRuntime) -> CompositeBackend:
             ephemeral_backend = StateBackend(run_time)
             return CompositeBackend(
-                default=FilesystemBackend(root_dir=_root_dir, virtual_mode=True),
+                default=FilesystemBackend(root_dir=agent_root_dir, virtual_mode=True),
                 routes={
                     "/memories/": ephemeral_backend,
                     "/conversation_history/": ephemeral_backend,

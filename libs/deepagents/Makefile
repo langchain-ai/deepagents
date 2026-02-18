@@ -1,4 +1,4 @@
-.PHONY: all format lint test tests integration_test integration_tests test_watch benchmark help run lint_package lint_tests check_imports coverage
+.PHONY: all format lint test tests integration_test integration_tests test_watch benchmark help run lint_package lint_tests check_imports coverage typecheck
 
 # Default target executed when no arguments are given to make.
 all: help
@@ -12,10 +12,15 @@ UV_FROZEN = true
 
 # Define a variable for the test file path.
 TEST_FILE ?= tests/unit_tests/
+SMOKE_TESTS ?= tests/unit_tests/smoke_tests/
 integration_test integration_tests: TEST_FILE=tests/integration_tests/
 
 test tests:
 	uv run --group test pytest -vvv --disable-socket --allow-unix-socket $(TEST_FILE)
+
+update-snapshots:
+	# update snapshots for smoke tests
+	uv run --group test pytest -vvv --disable-socket --allow-unix-socket --update-snapshots $(SMOKE_TESTS)
 
 coverage:
 	uv run --group test pytest --cov \
@@ -51,7 +56,10 @@ lint_tests: PYTHON_FILES=tests
 lint lint_diff lint_package lint_tests:
 	[ "$(PYTHON_FILES)" = "" ] || uv run --all-groups ruff check $(PYTHON_FILES)
 	[ "$(PYTHON_FILES)" = "" ] || uv run --all-groups ruff format $(PYTHON_FILES) --diff
-	# [ "$(PYTHON_FILES)" = "" ] || uv run --all-groups ty check $(PYTHON_FILES)
+	uv run --all-groups ty check deepagents
+
+typecheck:
+	uv run --all-groups ty check deepagents
 
 format format_diff:
 	[ "$(PYTHON_FILES)" = "" ] || uv run --all-groups ruff format $(PYTHON_FILES)
@@ -68,7 +76,8 @@ help:
 	@echo '----'
 	@echo 'coverage                     - run unit tests and generate coverage report'
 	@echo 'format                       - run code formatters'
-	@echo 'lint                         - run linters'
+	@echo 'lint                         - run linters and type checker'
+	@echo 'typecheck                    - run type checker (ty)'
 	@echo 'check_imports                - check imports'
 	@echo 'lint_package                 - lint only the package'
 	@echo 'lint_tests                   - lint only tests'

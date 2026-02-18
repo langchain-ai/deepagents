@@ -20,13 +20,14 @@ if TYPE_CHECKING:
     from textual.app import ComposeResult
     from textual.events import Click
 
+    from deepagents_cli.sessions import ThreadInfo
+
 from deepagents_cli.config import (
     CharsetMode,
     _detect_charset_mode,
     build_langsmith_thread_url,
     get_glyphs,
 )
-from deepagents_cli.sessions import ThreadInfo, format_timestamp, list_threads
 
 logger = logging.getLogger(__name__)
 
@@ -242,6 +243,8 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             container = self.query_one(Vertical)
             container.styles.border = ("ascii", "green")
 
+        from deepagents_cli.sessions import list_threads
+
         try:
             self._threads = await list_threads(limit=20, include_message_count=True)
         except (OSError, sqlite3.Error) as exc:
@@ -409,6 +412,8 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         Returns:
             Rich-markup label string.
         """
+        from deepagents_cli.sessions import format_timestamp
+
         glyphs = get_glyphs()
         cursor = f"{glyphs.cursor} " if selected else "  "
         tid = thread["thread_id"][:_COL_TID]

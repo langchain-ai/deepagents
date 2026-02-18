@@ -90,13 +90,12 @@ def test_ls_directory_missing_file_yes_no() -> None:
             "/foo/a.md": "a",
             "/foo/b.md": "b",
         },
-        query="Is there a file named c.md in /foo? Answer with YES or NO only.",
+        query="Is there a file named c.md in /foo? Answer with [YES] or [NO] only.",
         # 1st step: request a tool call to list /foo.
         # 2nd step: answer YES/NO.
         # 1 tool call request: ls.
-        expect=TrajectoryExpectations(num_agent_steps=2, num_tool_call_requests=1),
+        expect=TrajectoryExpectations(num_agent_steps=2, num_tool_call_requests=1).require_final_text_contains("[no]", case_insensitive=True),
     )
-    assert trajectory.steps[-1].action.text.strip().upper() == "NO"
 
 
 @pytest.mark.langsmith
@@ -106,7 +105,10 @@ def test_edit_file_replace_text() -> None:
     trajectory = run_agent(
         agent,
         initial_files={"/note.md": "cat cat cat\n"},
-        query="Replace all instances of 'cat' with 'dog' in /note.md, then tell me how many replacements you made.",
+        query=(
+            "Replace all instances of 'cat' with 'dog' in /note.md, then tell me "
+            "how many replacements you made. Do not read the file before editing it."
+        ),
         # 1st step: request a tool call to edit /note.md.
         # 2nd step: report completion.
         # 1 tool call request: edit_file.

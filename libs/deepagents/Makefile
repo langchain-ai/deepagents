@@ -33,7 +33,7 @@ integration_test integration_tests:
 	uv run --group test pytest -n auto -vvv --timeout 30 $(TEST_FILE)
 
 evals:
-	LANGSMITH_TEST_SUITE=deepagents-evals uv run --group test pytest tests/evals
+	LANGSMITH_TEST_SUITE=deepagents-evals uv run --group test pytest -n auto tests/evals 
 
 test_watch:
 	uv run --group test ptw --now . -- -vv $(TEST_FILE)

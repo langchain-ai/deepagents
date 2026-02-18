@@ -5,6 +5,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+import pytest
 from langchain_core.messages import AIMessage, ToolMessage
 from langsmith import testing as t
 
@@ -135,6 +136,22 @@ class AgentTrajectory:
     steps: list[AgentStep]
     files: dict[str, str]
 
+    def pretty(self) -> str:
+        lines: list[str] = []
+        for step in self.steps:
+            lines.append(f"step {step.index}:")
+            tool_calls = step.action.tool_calls
+            if tool_calls:
+                for tc in tool_calls:
+                    name = tc.get("name")
+                    args = tc.get("args")
+                    lines.append(f"  - {name} {args}")
+            else:
+                text = step.action.text
+                text_preview = text.strip().replace("\n", "\\n")
+                lines.append(f"  text: {text_preview}")
+        return "\n".join(lines)
+
 
 def _trajectory_from_result(result: Mapping[str, object]) -> AgentTrajectory:
     steps: list[AgentStep] = []
@@ -163,10 +180,9 @@ def _trajectory_from_result(result: Mapping[str, object]) -> AgentTrajectory:
     )
 
 
-def _assert_expectations(trajectory: AgentTrajectory, expect: TrajectoryExpectations) -> None:
+def _assert_counts(trajectory: AgentTrajectory, expect: TrajectoryExpectations) -> None:
     agent_steps = len(trajectory.steps)
     tool_call_requests = sum(len(step.action.tool_calls) for step in trajectory.steps)
-
     t.log_feedback(key="agent_steps", value=agent_steps)
     t.log_feedback(key="tool_call_requests", value=tool_call_requests)
 
@@ -176,15 +192,28 @@ def _assert_expectations(trajectory: AgentTrajectory, expect: TrajectoryExpectat
             value=int(agent_steps == expect.num_agent_steps),
         )
         t.log_feedback(key="expected_num_agent_steps", value=expect.num_agent_steps)
-        assert agent_steps == expect.num_agent_steps
+        if agent_steps != expect.num_agent_steps:
+            pytest.fail(
+                f"num_agent_steps mismatch: expected={expect.num_agent_steps}, actual={agent_steps}\n\ntrajectory:\n{trajectory.pretty()}",
+                pytrace=False,
+            )
+
     if expect.num_tool_call_requests is not None:
         t.log_feedback(
             key="match_num_tool_call_requests",
             value=int(tool_call_requests == expect.num_tool_call_requests),
         )
         t.log_feedback(key="expected_num_tool_call_requests", value=expect.num_tool_call_requests)
-        assert tool_call_requests == expect.num_tool_call_requests
+        if tool_call_requests != expect.num_tool_call_requests:
+            pytest.fail(
+                "num_tool_call_requests mismatch: "
+                f"expected={expect.num_tool_call_requests}, actual={tool_call_requests}\n\n"
+                f"trajectory:\n{trajectory.pretty()}",
+                pytrace=False,
+            )
 
+
+def _assert_final_text(trajectory: AgentTrajectory, expect: TrajectoryExpectations) -> None:
     final_text = trajectory.steps[-1].action.text
     for text, case_insensitive in expect.final_text_contains:
         haystack = final_text.lower() if case_insensitive else final_text
@@ -193,6 +222,8 @@ def _assert_expectations(trajectory: AgentTrajectory, expect: TrajectoryExpectat
             msg = f"Expected final text to contain {text!r} (case_insensitive={case_insensitive}), got: {final_text!r}"
             raise AssertionError(msg)
 
+
+def _assert_tool_calls(trajectory: AgentTrajectory, expect: TrajectoryExpectations) -> None:
     for requirement in expect.tool_calls:
         if requirement.step > len(trajectory.steps):
             msg = f"Expected at least {requirement.step} steps to validate tool call requirement, got {len(trajectory.steps)}"
@@ -217,6 +248,12 @@ def _assert_expectations(trajectory: AgentTrajectory, expect: TrajectoryExpectat
                 f"Actual tool calls: {step_tool_calls!r}"
             )
             raise AssertionError(msg)
+
+
+def _assert_expectations(trajectory: AgentTrajectory, expect: TrajectoryExpectations) -> None:
+    _assert_counts(trajectory, expect)
+    _assert_final_text(trajectory, expect)
+    _assert_tool_calls(trajectory, expect)
 
 
 def run_agent(

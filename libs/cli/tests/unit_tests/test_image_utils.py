@@ -216,10 +216,13 @@ class TestGetClipboardImage:
     """Tests for clipboard image detection."""
 
     @patch("deepagents_cli.image_utils.sys.platform", "linux")
-    def test_unsupported_platform_returns_none(self) -> None:
-        """Test that non-macOS platforms return None."""
-        result = get_clipboard_image()
-        assert result is None
+    def test_unsupported_platform_returns_none_and_warns(self) -> None:
+        """Test that non-macOS platforms return None and log a warning."""
+        with patch("deepagents_cli.image_utils.logger") as mock_logger:
+            result = get_clipboard_image()
+            assert result is None
+            mock_logger.warning.assert_called_once()
+            assert "linux" in mock_logger.warning.call_args[0][1]
 
     @patch("deepagents_cli.image_utils.sys.platform", "darwin")
     @patch("deepagents_cli.image_utils._get_macos_clipboard_image")

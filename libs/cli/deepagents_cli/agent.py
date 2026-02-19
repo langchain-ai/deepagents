@@ -133,7 +133,7 @@ def get_system_prompt(assistant_id: str, sandbox_type: str | None = None) -> str
     Args:
         assistant_id: The agent identifier for path references
         sandbox_type: Type of sandbox provider
-            (`'daytona'`, `'langsmith'`, `'modal'`, `'runloop'`).
+            (`'agentcore'`, `'daytona'`, `'langsmith'`, `'modal'`, `'runloop'`).
 
             If `None`, agent is operating in local mode.
 
@@ -397,7 +397,7 @@ def create_cli_agent(
 
             If `None`, uses local filesystem + shell.
         sandbox_type: Type of sandbox provider
-            (`'daytona'`, `'langsmith'`, `'modal'`, `'runloop'`).
+            (`'agentcore'`, `'daytona'`, `'langsmith'`, `'modal'`, `'runloop'`).
             Used for system prompt generation.
         system_prompt: Override the default system prompt.
 

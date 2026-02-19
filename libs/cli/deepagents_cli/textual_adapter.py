@@ -177,6 +177,23 @@ class TextualUIAdapter:
         """Set the token tracker for usage tracking."""
         self._token_tracker = tracker
 
+    def finalize_pending_tools_with_error(self, error: str) -> None:
+        """Mark all pending/running tool widgets as error and clear tracking.
+
+        This is used as a safety net when an unexpected exception aborts
+        streaming before matching `ToolMessage` results are received.
+
+        Args:
+            error: Error text to display in each pending tool widget.
+        """
+        for tool_msg in list(self._current_tool_messages.values()):
+            tool_msg.set_error(error)
+        self._current_tool_messages.clear()
+
+        # Clear active streaming message to avoid stale "active" state in the store.
+        if self._set_active_message:
+            self._set_active_message(None)
+
 
 def _build_interrupted_ai_message(
     pending_text_by_namespace: dict[tuple, str],

@@ -681,6 +681,31 @@ class TestRunAgentTaskImageTracker:
             assert mock_execute.await_args is not None
             assert mock_execute.await_args.kwargs["image_tracker"] is app._image_tracker
 
+    @pytest.mark.asyncio
+    async def test_run_agent_task_finalizes_pending_tools_on_error(self) -> None:
+        """Unexpected agent errors should stop/clear in-flight tool widgets."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._ui_adapter is not None
+
+            pending_tool = MagicMock()
+            app._ui_adapter._current_tool_messages = {"tool-1": pending_tool}
+
+            with patch(
+                "deepagents_cli.app.execute_task_textual",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("boom"),
+            ):
+                await app._run_agent_task("hello")
+                await pilot.pause()
+
+            pending_tool.set_error.assert_called_once_with("Agent error: boom")
+            assert app._ui_adapter._current_tool_messages == {}
+
+            errors = app.query(ErrorMessage)
+            assert any("Agent error: boom" in str(w._content) for w in errors)
+
 
 class TestPasteRouting:
     """Tests app-level paste routing when chat input focus lags."""

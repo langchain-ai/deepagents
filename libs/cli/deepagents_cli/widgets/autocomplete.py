@@ -108,6 +108,13 @@ SLASH_COMMANDS: list[tuple[str, str]] = [
 ]
 """Built-in slash commands with descriptions."""
 
+SLASH_COMMAND_KEYWORDS: dict[str, list[str]] = {
+    "/clear": ["new"],
+    "/feedback": ["report"],
+    "/quit": ["exit"],
+}
+"""Keywords that map to slash commands for improved discoverability."""
+
 MAX_SUGGESTIONS = 10
 
 
@@ -118,15 +125,18 @@ class SlashCommandController:
         self,
         commands: list[tuple[str, str]],
         view: CompletionView,
+        keywords: dict[str, list[str]] | None = None,
     ) -> None:
         """Initialize the slash command controller.
 
         Args:
             commands: List of (command, description) tuples
             view: View to render suggestions to
+            keywords: Optional mapping of command -> list of keyword aliases
         """
         self._commands = commands
         self._view = view
+        self._keywords = keywords or {}
         self._suggestions: list[tuple[str, str]] = []
         self._selected_index = 0
 
@@ -146,6 +156,23 @@ class SlashCommandController:
             self._selected_index = 0
             self._view.clear_completion_suggestions()
 
+    def _match_keywords(self, search: str) -> set[str]:
+        """Find commands whose keywords match the search string.
+
+        Args:
+            search: The search text (without leading /).
+
+        Returns:
+            Set of command strings that match via keywords.
+        """
+        matched: set[str] = set()
+        for cmd, kws in self._keywords.items():
+            for kw in kws:
+                if kw.startswith(search):
+                    matched.add(cmd)
+                    break
+        return matched
+
     def on_text_changed(self, text: str, cursor_index: int) -> None:
         """Update suggestions when text changes."""
         if cursor_index < 0 or cursor_index > len(text):
@@ -159,11 +186,14 @@ class SlashCommandController:
         # Get the search string (text after /)
         search = text[1:cursor_index].lower()
 
-        # Filter commands that match
+        # Find commands matching by keyword
+        keyword_matches = self._match_keywords(search) if search else set()
+
+        # Filter commands that match by prefix or keyword
         suggestions = [
             (cmd, desc)
             for cmd, desc in self._commands
-            if cmd.lower().startswith("/" + search)
+            if cmd.lower().startswith("/" + search) or cmd in keyword_matches
         ]
 
         if suggestions:

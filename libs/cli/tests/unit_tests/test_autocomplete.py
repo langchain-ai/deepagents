@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from deepagents_cli.widgets.autocomplete import (
+    SLASH_COMMAND_KEYWORDS,
     SLASH_COMMANDS,
     CompletionController,
     FuzzyFileController,
@@ -276,6 +277,79 @@ class TestSlashCommandController:
         controller.reset()
         # Second reset should be a no-op (suggestions already empty)
         controller.reset()
+
+
+class TestSlashCommandKeywords:
+    """Tests for keyword matching in SlashCommandController."""
+
+    @pytest.fixture
+    def mock_view(self):
+        """Create a mock CompletionView."""
+        return MagicMock()
+
+    @pytest.fixture
+    def controller(self, mock_view):
+        """Create a SlashCommandController with keywords."""
+        return SlashCommandController(SLASH_COMMANDS, mock_view, SLASH_COMMAND_KEYWORDS)
+
+    def test_exit_matches_quit(self, controller, mock_view):
+        """Typing /exit should suggest /quit."""
+        controller.on_text_changed("/exit", 5)
+
+        mock_view.render_completion_suggestions.assert_called()
+        suggestions = mock_view.render_completion_suggestions.call_args[0][0]
+        cmds = [s[0] for s in suggestions]
+        assert "/quit" in cmds
+
+    def test_new_matches_clear(self, controller, mock_view):
+        """Typing /new should suggest /clear."""
+        controller.on_text_changed("/new", 4)
+
+        mock_view.render_completion_suggestions.assert_called()
+        suggestions = mock_view.render_completion_suggestions.call_args[0][0]
+        cmds = [s[0] for s in suggestions]
+        assert "/clear" in cmds
+
+    def test_report_matches_feedback(self, controller, mock_view):
+        """Typing /report should suggest /feedback."""
+        controller.on_text_changed("/report", 7)
+
+        mock_view.render_completion_suggestions.assert_called()
+        suggestions = mock_view.render_completion_suggestions.call_args[0][0]
+        cmds = [s[0] for s in suggestions]
+        assert "/feedback" in cmds
+
+    def test_partial_keyword_matches(self, controller, mock_view):
+        """Partial keyword matches (e.g. /ex -> exit -> /quit)."""
+        controller.on_text_changed("/ex", 3)
+
+        mock_view.render_completion_suggestions.assert_called()
+        suggestions = mock_view.render_completion_suggestions.call_args[0][0]
+        cmds = [s[0] for s in suggestions]
+        assert "/quit" in cmds
+
+    def test_no_keyword_match_no_suggestions(self, controller, mock_view):
+        """No match clears suggestions."""
+        controller.on_text_changed("/h", 2)
+        mock_view.render_completion_suggestions.assert_called()
+
+        controller.on_text_changed("/zzzzz", 6)
+        mock_view.clear_completion_suggestions.assert_called()
+
+    def test_slash_only_shows_all_commands(self, controller, mock_view):
+        """Typing just / shows all commands (keywords not involved)."""
+        controller.on_text_changed("/", 1)
+
+        mock_view.render_completion_suggestions.assert_called()
+        suggestions = mock_view.render_completion_suggestions.call_args[0][0]
+        assert len(suggestions) == len(SLASH_COMMANDS)
+
+    def test_without_keywords_no_keyword_matching(self, mock_view):
+        """Controller without keywords does not match on keywords."""
+        controller = SlashCommandController(SLASH_COMMANDS, mock_view)
+        controller.on_text_changed("/exit", 5)
+
+        mock_view.render_completion_suggestions.assert_not_called()
 
 
 class TestFuzzyFileControllerCanHandle:

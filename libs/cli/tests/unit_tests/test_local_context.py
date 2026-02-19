@@ -384,6 +384,44 @@ class TestLocalContextMiddleware:
         assert result_c is None
         backend.execute.assert_not_called()
 
+    def test_before_agent_refresh_exception_records_cutoff(self) -> None:
+        """Test exception during refresh records cutoff and keeps context."""
+        backend = Mock()
+        backend.execute.side_effect = RuntimeError("sandbox unreachable")
+        middleware = LocalContextMiddleware(backend=backend)
+        event = _make_summarization_event(7)
+        state: dict[str, Any] = {
+            "messages": [],
+            "local_context": "keep this",
+            "_summarization_event": event,
+        }
+        runtime: Any = Mock()
+
+        result = middleware.before_agent(state, runtime)  # type: ignore[invalid-argument-type]
+
+        assert result is not None
+        assert result["_local_context_refreshed_at_cutoff"] == 7
+        assert "local_context" not in result
+        backend.execute.assert_called_once()
+
+    def test_before_agent_missing_cutoff_index_skips_refresh(self) -> None:
+        """Test that a summarization event missing cutoff_index skips refresh."""
+        backend = _make_backend(output="anything")
+        middleware = LocalContextMiddleware(backend=backend)
+        state: dict[str, Any] = {
+            "messages": [],
+            "local_context": "existing",
+            "_summarization_event": {"summary_message": None, "file_path": None},
+        }
+        runtime: Any = Mock()
+
+        result = middleware.before_agent(state, runtime)  # type: ignore[invalid-argument-type]
+
+        # Both cutoff and refreshed_cutoff are None, so cutoff != refreshed_cutoff
+        # is False. Falls through to initial-detection guard; local_context set.
+        assert result is None
+        backend.execute.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # Section-level bash tests

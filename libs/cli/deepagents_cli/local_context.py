@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
     from deepagents.backends.protocol import ExecuteResponse
+    from deepagents.middleware.summarization import SummarizationEvent
     from langgraph.runtime import Runtime
 
 
@@ -332,14 +333,12 @@ class LocalContextState(AgentState):
     runtimes, git, test command, files, tree, Makefile.
     """
 
-    _local_context_refreshed_at_cutoff: Annotated[
-        NotRequired[int | None], PrivateStateAttr
-    ]
+    _local_context_refreshed_at_cutoff: NotRequired[Annotated[int, PrivateStateAttr]]
     """Cutoff index of the summarization event we last refreshed for.
 
-    Thread-scoped (lives in LangGraph checkpointed state) and private (not
-    exposed to subagents). Used to avoid redundant re-runs of the detection
-    script for the same summarization event.
+    Stored in LangGraph checkpointed state (isolated per thread) and private
+    (not exposed to subagents via `PrivateStateAttr`). Used to avoid redundant
+    re-runs of the detection script for the same summarization event.
     """
 
 
@@ -379,21 +378,28 @@ class LocalContextMiddleware(AgentMiddleware):
             result = self.backend.execute(DETECT_CONTEXT_SCRIPT)
         except Exception:
             logger.warning(
-                "Local context detection failed; context will be omitted "
-                "from system prompt",
+                "Local context detection failed (backend: %s); context will "
+                "be omitted from system prompt",
+                type(self.backend).__name__,
                 exc_info=True,
             )
             return None
 
         output = result.output.strip() if result.output else ""
-        if result.exit_code != 0:
+        if result.exit_code is None or result.exit_code != 0:
             logger.warning(
-                "Local context detection script exited with code %s; "
+                "Local context detection script %s; "
                 "context will be omitted. Output: %.200s",
-                result.exit_code,
+                f"exited with code {result.exit_code}"
+                if result.exit_code is not None
+                else "did not report an exit code",
                 output or "(empty)",
             )
             return None
+        if not output:
+            logger.debug(
+                "Local context detection script succeeded but produced no output"
+            )
         return output or None
 
     # override - state parameter is intentionally narrowed from
@@ -415,14 +421,22 @@ class LocalContextMiddleware(AgentMiddleware):
             runtime: Runtime context.
 
         Returns:
-            State update with `local_context` populated, or `None` if
-                already set (and no refresh needed) or detection fails.
+            State update with `local_context` populated on success. On a
+                post-summarization refresh failure, returns a state update
+                recording the cutoff (without `local_context`) to prevent
+                retry loops.
+
+                Returns `None` if context is already set and no refresh is
+                needed, or if initial detection fails.
         """
         # --- Post-summarization refresh ---
         # _summarization_event is a private field from SummarizationState.
-        # At runtime the merged state dict contains all middleware fields.
-        event = state.get("_summarization_event")
-        if event is not None:
+        # At runtime the merged state dict contains all middleware fields;
+        # accessed as untyped dict value because LocalContextState does not
+        # (and should not) redeclare it.
+        raw_event = state.get("_summarization_event")
+        if raw_event is not None:
+            event: SummarizationEvent = raw_event  # type: ignore[assignment]
             cutoff = event.get("cutoff_index")
             refreshed_cutoff = state.get("_local_context_refreshed_at_cutoff")
             if cutoff != refreshed_cutoff:

@@ -7,11 +7,12 @@ from tests.evals.utils import TrajectoryExpectations, run_agent
 
 
 @pytest.mark.langsmith
-def test_read_file_seeded_state_backend_file() -> None:
+def test_read_file_seeded_state_backend_file(model: str) -> None:
     """Reads a seeded file and answers a question."""
-    agent = create_deep_agent()
+    agent = create_deep_agent(model=model)
     run_agent(
         agent,
+        model=model,
         initial_files={"/foo.md": "alpha beta gamma\none two three four\n"},
         query="Read /foo.md and tell me the 3rd word on the 2nd line.",
         # 1st step: request a tool call to read /foo.md.
@@ -25,11 +26,12 @@ def test_read_file_seeded_state_backend_file() -> None:
 
 
 @pytest.mark.langsmith
-def test_write_file_simple() -> None:
+def test_write_file_simple(model: str) -> None:
     """Writes a file then answers a follow-up."""
-    agent = create_deep_agent(system_prompt="Your name is Foo Bar.")
+    agent = create_deep_agent(model=model, system_prompt="Your name is Foo Bar.")
     trajectory = run_agent(
         agent,
+        model=model,
         query="Write your name to a file called /foo.md and then tell me your name.",
         # 1st step: request a tool call to write /foo.md.
         # 2nd step: tell the user the name.
@@ -41,11 +43,12 @@ def test_write_file_simple() -> None:
 
 
 @pytest.mark.langsmith
-def test_write_files_in_parallel() -> None:
+def test_write_files_in_parallel(model: str) -> None:
     """Writes two files in parallel then confirms."""
-    agent = create_deep_agent()
+    agent = create_deep_agent(model=model)
     trajectory = run_agent(
         agent,
+        model=model,
         query='Write "bar" to /a.md and "bar" to /b.md. Do the writes in parallel, then confirm you did it.',
         # 1st step: request 2 write_file tool calls in parallel.
         # 2nd step: confirm the writes.
@@ -61,11 +64,12 @@ def test_write_files_in_parallel() -> None:
 
 
 @pytest.mark.langsmith
-def test_ls_directory_contains_file_yes_no() -> None:
+def test_ls_directory_contains_file_yes_no(model: str) -> None:
     """Uses ls then answers YES/NO about a directory entry."""
-    agent = create_deep_agent()
+    agent = create_deep_agent(model=model)
     run_agent(
         agent,
+        model=model,
         initial_files={
             "/foo/a.md": "a",
             "/foo/b.md": "b",
@@ -82,11 +86,12 @@ def test_ls_directory_contains_file_yes_no() -> None:
 
 
 @pytest.mark.langsmith
-def test_ls_directory_missing_file_yes_no() -> None:
+def test_ls_directory_missing_file_yes_no(model: str) -> None:
     """Uses ls then answers YES/NO about a missing directory entry."""
-    agent = create_deep_agent()
+    agent = create_deep_agent(model=model)
     run_agent(
         agent,
+        model=model,
         initial_files={
             "/foo/a.md": "a",
             "/foo/b.md": "b",
@@ -100,12 +105,13 @@ def test_ls_directory_missing_file_yes_no() -> None:
 
 
 @pytest.mark.langsmith
-def test_edit_file_replace_text() -> None:
+def test_edit_file_replace_text(model: str) -> None:
     """Edits a file by replacing text, then validates the edit."""
-    agent = create_deep_agent()
+    agent = create_deep_agent(model=model)
     trajectory = run_agent(
         agent,
         initial_files={"/note.md": "cat cat cat\n"},
+        model=model,
         query=(
             "Replace all instances of 'cat' with 'dog' in /note.md, then tell me "
             "how many replacements you made. Do not read the file before editing it."
@@ -119,11 +125,12 @@ def test_edit_file_replace_text() -> None:
 
 
 @pytest.mark.langsmith
-def test_read_then_write_derived_output() -> None:
+def test_read_then_write_derived_output(model: str) -> None:
     """Reads a file and writes a derived output file."""
-    agent = create_deep_agent()
+    agent = create_deep_agent(model=model)
     trajectory = run_agent(
         agent,
+        model=model,
         initial_files={"/data.txt": "alpha\nbeta\ngamma\n"},
         query="Read /data.txt and write the lines reversed (line order) to /out.txt.",
         # 1st step: request a tool call to read /data.txt.
@@ -135,12 +142,13 @@ def test_read_then_write_derived_output() -> None:
 
 
 @pytest.mark.langsmith
-def test_avoid_unnecessary_tool_calls() -> None:
+def test_avoid_unnecessary_tool_calls(model: str) -> None:
     """Answers a trivial question without using tools."""
-    agent = create_deep_agent()
+    agent = create_deep_agent(model=model)
     trajectory = run_agent(
         agent,
         query="What is 2+2? Answer with just the number.",
+        model=model,
         # 1 step: answer directly.
         # 0 tool calls: no files/tools needed.
         expect=TrajectoryExpectations(num_agent_steps=1, num_tool_call_requests=0),
@@ -149,11 +157,12 @@ def test_avoid_unnecessary_tool_calls() -> None:
 
 
 @pytest.mark.langsmith
-def test_read_files_in_parallel() -> None:
+def test_read_files_in_parallel(model: str) -> None:
     """Performs two independent read_file calls in a single agent step."""
-    agent = create_deep_agent()
+    agent = create_deep_agent(model=model)
     run_agent(
         agent,
+        model=model,
         initial_files={
             "/a.md": "same",
             "/b.md": "same",
@@ -172,11 +181,12 @@ def test_read_files_in_parallel() -> None:
 
 
 @pytest.mark.langsmith
-def test_grep_finds_matching_paths() -> None:
+def test_grep_finds_matching_paths(model: str) -> None:
     """Uses grep to find matching files and reports the matching paths."""
-    agent = create_deep_agent()
+    agent = create_deep_agent(model=model)
     trajectory = run_agent(
         agent,
+        model=model,
         initial_files={
             "/a.txt": "haystack\nneedle\n",
             "/b.txt": "haystack\n",
@@ -195,11 +205,12 @@ def test_grep_finds_matching_paths() -> None:
 
 
 @pytest.mark.langsmith
-def test_glob_lists_markdown_files() -> None:
+def test_glob_lists_markdown_files(model: str) -> None:
     """Uses glob to list files matching a pattern."""
-    agent = create_deep_agent()
+    agent = create_deep_agent(model=model)
     trajectory = run_agent(
         agent,
+        model=model,
         initial_files={
             "/foo/a.md": "a",
             "/foo/b.txt": "b",

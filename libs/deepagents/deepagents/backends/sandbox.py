@@ -195,14 +195,19 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
     def execute(
         self,
         command: str,
+        *,
+        timeout: int | None = None,
     ) -> ExecuteResponse:
         """Execute a command in the sandbox and return ExecuteResponse.
 
         Args:
             command: Full shell command string to execute.
+            timeout: Maximum time in seconds to wait for the command to complete.
+
+                If None, uses the backend's default timeout.
 
         Returns:
-            ExecuteResponse with combined output, exit code, optional signal, and truncation flag.
+            ExecuteResponse with combined output, exit code, and truncation flag.
         """
 
     def ls_info(self, path: str) -> list[FileInfo]:

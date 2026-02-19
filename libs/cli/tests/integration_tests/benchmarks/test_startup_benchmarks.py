@@ -296,9 +296,9 @@ class TestDeferredImportsWork:
             f"Cannot import `deepagents_cli.sessions`:\n{result.stderr}"
         )
 
-    def test_tool_display_loads_backends(self) -> None:
-        """`deepagents_cli.tool_display` should load backends module."""
+    def test_tool_display_loads_sdk_backends(self) -> None:
+        """`tool_display` should load SDK backends."""
         loaded = _get_loaded_modules("import deepagents_cli.tool_display")
-        assert "deepagents_cli.backends" in loaded, (
-            "`tool_display` should import `backends` for `DEFAULT_EXECUTE_TIMEOUT`"
+        assert "deepagents.backends" in loaded, (
+            "`tool_display` should import SDK `backends` for `DEFAULT_EXECUTE_TIMEOUT`"
         )

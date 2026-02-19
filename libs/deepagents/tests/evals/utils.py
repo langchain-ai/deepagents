@@ -259,7 +259,7 @@ def _assert_expectations(trajectory: AgentTrajectory, expect: TrajectoryExpectat
         _assert_counts(trajectory, expect)
         _assert_final_text(trajectory, expect)
         _assert_tool_calls(trajectory, expect)
-    except BaseException as e:
+    except Exception as e:  # noqa: BLE001
         pytest.fail(f"expectations failed: {e}\n\ntrajectory:\n{trajectory.pretty()}", pytrace=False)
 
 

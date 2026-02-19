@@ -260,11 +260,14 @@ def run_agent(
     agent: CompiledStateGraph[Any, Any],
     *,
     query: str,
+    model: str | None = None,
     initial_files: dict[str, str] | None = None,
     expect: TrajectoryExpectations | None = None,
 ) -> AgentTrajectory:
     """Run agent eval against the given query."""
     inputs: dict[str, object] = {"messages": [{"role": "user", "content": query}]}
+    if model is not None:
+        inputs["model"] = model
     if initial_files is not None:
         inputs["files"] = {path: create_file_data(content) for path, content in initial_files.items()}
     thread_id = uuid.uuid4()

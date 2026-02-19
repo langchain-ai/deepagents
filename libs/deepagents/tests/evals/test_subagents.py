@@ -14,9 +14,10 @@ def get_weather_fake(location: str) -> str:  # noqa: ARG001
 
 
 @pytest.mark.langsmith
-def test_task_calls_weather_subagent() -> None:
+def test_task_calls_weather_subagent(model: str) -> None:
     """Requests a named subagent via task."""
     agent = create_deep_agent(
+        model=model,
         subagents=[
             {
                 "name": "weather_agent",
@@ -25,11 +26,12 @@ def test_task_calls_weather_subagent() -> None:
                 "tools": [get_weather_fake],
                 "model": "anthropic:claude-sonnet-4-5-20250929",
             }
-        ]
+        ],
     )
     run_agent(
         agent,
         query="Use the weather_agent subagent to get the weather in Tokyo.",
+        model=model,
         # 1st step: request a subagent via the task tool.
         # 2nd step: answer using the subagent's tool result.
         # 1 tool call request: task.
@@ -42,12 +44,13 @@ def test_task_calls_weather_subagent() -> None:
 
 
 @pytest.mark.langsmith
-def test_task_calls_general_purpose_subagent() -> None:
+def test_task_calls_general_purpose_subagent(model: str) -> None:
     """Requests the general-purpose subagent via task."""
-    agent = create_deep_agent(tools=[get_weather_fake])
+    agent = create_deep_agent(model=model, tools=[get_weather_fake])
     run_agent(
         agent,
         query="Use the general purpose subagent to get the weather in Tokyo.",
+        model=model,
         # 1st step: request a subagent via the task tool.
         # 2nd step: answer using the subagent's tool result.
         # 1 tool call request: task.

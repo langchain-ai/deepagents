@@ -677,7 +677,9 @@ class ChatInput(Vertical):
         self._completion_view = _CompletionViewAdapter(self)
         self._completion_manager = MultiCompletionManager(
             [
-                SlashCommandController(SLASH_COMMANDS, self._completion_view, SLASH_COMMAND_KEYWORDS),
+                SlashCommandController(
+                    SLASH_COMMANDS, self._completion_view, SLASH_COMMAND_KEYWORDS
+                ),
                 FuzzyFileController(self._completion_view, cwd=self._cwd),
             ]  # type: ignore[list-item]  # Controller types are compatible at runtime
         )

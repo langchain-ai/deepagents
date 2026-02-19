@@ -116,9 +116,9 @@ class AgentCoreBackend(BaseSandbox):
         from bedrock_agentcore.tools.code_interpreter_client import CodeInterpreter
 
         interpreter = CodeInterpreter(
-                    region=self._region,
-                    integration_source="deepagents-cli",
-                )
+            region=self._region,
+            integration_source="deepagents-cli",
+        )
         interpreter.start()
 
         backend = AgentCoreBackend(interpreter)
@@ -154,11 +154,11 @@ class AgentCoreBackend(BaseSandbox):
         return self._interpreter.session_id
 
     def execute(
-            self,
-            command: str,
-            *,
-            timeout: int | None = None,  # noqa: ARG002
-        ) -> ExecuteResponse:
+        self,
+        command: str,
+        *,
+        timeout: int | None = None,  # noqa: ARG002
+    ) -> ExecuteResponse:
         """Execute a shell command in the sandbox.
 
         Args:
@@ -203,8 +203,8 @@ class AgentCoreBackend(BaseSandbox):
         """
         try:
             response = self._interpreter.invoke(
-                            method="readFiles", params={"paths": paths}
-                        )
+                method="readFiles", params={"paths": paths}
+            )
 
             # Parse structured JSON response
             file_contents = _extract_files_from_stream(response)
@@ -253,17 +253,17 @@ class AgentCoreBackend(BaseSandbox):
         try:
             if file_list:
                 self._interpreter.invoke(
-                                    method="writeFiles", params={"content": file_list}
-                                )
+                    method="writeFiles", params={"content": file_list}
+                )
             # All files uploaded successfully
             return [FileUploadResponse(path=path, error=None) for path, _ in files]
 
         except Exception:
             logger.exception("Error uploading files")
             return [
-                            FileUploadResponse(path=path, error="permission_denied")
-                            for path, _ in files
-                        ]
+                FileUploadResponse(path=path, error="permission_denied")
+                for path, _ in files
+            ]
 
 
 class AgentCoreProvider(SandboxProvider):
@@ -330,6 +330,6 @@ class AgentCoreProvider(SandboxProvider):
             **kwargs: Additional parameters (unused).
         """
         logger.info(
-                    "AgentCore session %s cleanup requested (sessions auto-expire)",
-                    sandbox_id,
-                )
+            "AgentCore session %s cleanup requested (sessions auto-expire)",
+            sandbox_id,
+        )

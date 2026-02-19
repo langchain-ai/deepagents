@@ -27,9 +27,7 @@ _CREATE_MODEL_PATH = "deepagents_cli.config.create_model"
 _COMPUTE_DEFAULTS_PATH = (
     "deepagents.middleware.summarization._compute_summarization_defaults"
 )
-_LC_MIDDLEWARE_PATH = (
-    "langchain.agents.middleware.summarization.SummarizationMiddleware"
-)
+_LC_MIDDLEWARE_PATH = "deepagents.middleware.summarization.SummarizationMiddleware"
 
 # Patch targets for offload and summary helpers inside compact_tool
 _OFFLOAD_PATH = "deepagents_cli.compact_tool._offload"

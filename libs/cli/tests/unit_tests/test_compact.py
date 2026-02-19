@@ -23,9 +23,7 @@ _CREATE_MODEL_PATH = "deepagents_cli.app.create_model"
 _COMPUTE_DEFAULTS_PATH = (
     "deepagents.middleware.summarization._compute_summarization_defaults"
 )
-_LC_MIDDLEWARE_PATH = (
-    "langchain.agents.middleware.summarization.SummarizationMiddleware"
-)
+_LC_MIDDLEWARE_PATH = "deepagents.middleware.summarization.SummarizationMiddleware"
 
 
 @contextmanager
@@ -102,6 +100,7 @@ class TestCompactGuards:
         async with app.run_test() as pilot:
             await pilot.pause()
             app._agent = MagicMock()
+            app._backend = MagicMock()
             app._lc_thread_id = "test-thread"
             app._agent_running = True
 
@@ -135,6 +134,7 @@ class TestCompactGuards:
         async with app.run_test() as pilot:
             await pilot.pause()
             app._agent = MagicMock()
+            app._backend = MagicMock()
             app._lc_thread_id = "test-thread"
             app._agent_running = False
 
@@ -155,6 +155,7 @@ class TestCompactGuards:
         async with app.run_test() as pilot:
             await pilot.pause()
             app._agent = MagicMock()
+            app._backend = MagicMock()
             app._lc_thread_id = "test-thread"
             app._agent_running = False
 
@@ -201,6 +202,7 @@ def _setup_compact_app(
     app._agent = MagicMock()
     app._agent.aget_state = AsyncMock(return_value=mock_state)
     app._agent.aupdate_state = AsyncMock()
+    app._backend = MagicMock()
     app._lc_thread_id = "test-thread"
     app._agent_running = False
     return messages

@@ -200,14 +200,21 @@ def _generate_summary(
 
     Returns:
         Summary text.
+
+    Raises:
+        RuntimeError: If the model returns an empty summary.
     """
-    from langchain.agents.middleware.summarization import DEFAULT_SUMMARY_PROMPT
+    from deepagents.middleware.summarization import DEFAULT_SUMMARY_PROMPT
     from langchain_core.messages import HumanMessage, get_buffer_string
 
     conversation_text = get_buffer_string(messages)
     prompt = DEFAULT_SUMMARY_PROMPT.format(conversation=conversation_text)
     response = model.invoke([HumanMessage(content=prompt)])
-    return _extract_summary_text(response)
+    text = response.text
+    if not text:
+        msg = "Model returned empty summary"
+        raise RuntimeError(msg)
+    return text
 
 
 async def _agenerate_summary(
@@ -222,45 +229,21 @@ async def _agenerate_summary(
 
     Returns:
         Summary text.
+
+    Raises:
+        RuntimeError: If the model returns an empty summary.
     """
-    from langchain.agents.middleware.summarization import DEFAULT_SUMMARY_PROMPT
+    from deepagents.middleware.summarization import DEFAULT_SUMMARY_PROMPT
     from langchain_core.messages import HumanMessage, get_buffer_string
 
     conversation_text = get_buffer_string(messages)
     prompt = DEFAULT_SUMMARY_PROMPT.format(conversation=conversation_text)
     response = await model.ainvoke([HumanMessage(content=prompt)])
-    return _extract_summary_text(response)
-
-
-def _extract_summary_text(
-    response: Any,  # noqa: ANN401
-) -> str:
-    """Extract text from a model response, handling content block lists.
-
-    Args:
-        response: The model response object.
-
-    Returns:
-        Extracted summary text.
-
-    Raises:
-        RuntimeError: If the response contains no usable text.
-    """
-    content = response.content
-    if isinstance(content, list):
-        parts = []
-        for block in content:
-            if isinstance(block, dict) and block.get("type") == "text":
-                parts.append(block.get("text", ""))
-            elif isinstance(block, str):
-                parts.append(block)
-        content = "".join(parts)
-
-    if not isinstance(content, str) or not content.strip():
+    text = response.text
+    if not text:
         msg = "Model returned empty summary"
         raise RuntimeError(msg)
-
-    return content.strip()
+    return text
 
 
 class CompactToolMiddleware(AgentMiddleware):
@@ -364,10 +347,8 @@ def _run_compact(
     """
     from deepagents.middleware.summarization import (
         SummarizationEvent,
+        SummarizationMiddleware,
         _compute_summarization_defaults,  # noqa: PLC2701
-    )
-    from langchain.agents.middleware.summarization import (
-        SummarizationMiddleware as LCSummarizationMiddleware,
     )
     from langchain_core.messages import ToolMessage
     from langgraph.types import Command
@@ -382,9 +363,11 @@ def _run_compact(
     model = result.model
 
     defaults = _compute_summarization_defaults(model)
-    mw = LCSummarizationMiddleware(model=model, keep=defaults["keep"])
+    mw = SummarizationMiddleware(model=model, backend=backend, keep=defaults["keep"])
     cutoff = mw._determine_cutoff_index(effective)
 
+    # cutoff == 0 means the conversation fits within the token budget;
+    # there are no messages old enough to evict.
     if cutoff == 0:
         return Command(
             update={
@@ -461,10 +444,8 @@ async def _arun_compact(
     """
     from deepagents.middleware.summarization import (
         SummarizationEvent,
+        SummarizationMiddleware,
         _compute_summarization_defaults,  # noqa: PLC2701
-    )
-    from langchain.agents.middleware.summarization import (
-        SummarizationMiddleware as LCSummarizationMiddleware,
     )
     from langchain_core.messages import ToolMessage
     from langgraph.types import Command
@@ -479,9 +460,11 @@ async def _arun_compact(
     model = result.model
 
     defaults = _compute_summarization_defaults(model)
-    mw = LCSummarizationMiddleware(model=model, keep=defaults["keep"])
+    mw = SummarizationMiddleware(model=model, backend=backend, keep=defaults["keep"])
     cutoff = mw._determine_cutoff_index(effective)
 
+    # cutoff == 0 means the conversation fits within the token budget;
+    # there are no messages old enough to evict.
     if cutoff == 0:
         return Command(
             update={

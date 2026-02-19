@@ -1265,7 +1265,7 @@ class DeepAgentsApp(App):
         old messages to backend storage, removes them with `RemoveMessage`, and
         inserts a summary `HumanMessage` in their place.
         """
-        if not self._agent or not self._lc_thread_id:
+        if not self._agent or not self._lc_thread_id or not self._backend:
             await self._mount_message(AppMessage("No active session to compact"))
             return
 
@@ -1296,17 +1296,17 @@ class DeepAgentsApp(App):
             await self._set_spinner("Compacting")
 
             from deepagents.middleware.summarization import (
+                SummarizationMiddleware,
                 _compute_summarization_defaults,  # noqa: PLC2701
-            )
-            from langchain.agents.middleware.summarization import (
-                SummarizationMiddleware as LCSummarizationMiddleware,
             )
 
             result = create_model()
             model = result.model
 
             defaults = _compute_summarization_defaults(model)
-            middleware = LCSummarizationMiddleware(model=model, keep=defaults["keep"])
+            middleware = SummarizationMiddleware(
+                model=model, backend=self._backend, keep=defaults["keep"]
+            )
             cutoff = middleware._determine_cutoff_index(messages)
 
             if cutoff == 0:
@@ -1489,7 +1489,7 @@ class DeepAgentsApp(App):
             `ModelConfigError` from `create_model()` and network/auth errors
             from model invocation propagate to the caller.
         """
-        from langchain.agents.middleware.summarization import DEFAULT_SUMMARY_PROMPT
+        from deepagents.middleware.summarization import DEFAULT_SUMMARY_PROMPT
         from langchain_core.messages import HumanMessage, get_buffer_string
 
         if model is None:
@@ -1500,22 +1500,12 @@ class DeepAgentsApp(App):
 
         response = await model.ainvoke([HumanMessage(content=prompt)])
 
-        content = response.content
-        if isinstance(content, list):
-            # Handle content block lists (e.g. from Anthropic)
-            text_parts = []
-            for block in content:
-                if isinstance(block, dict) and block.get("type") == "text":
-                    text_parts.append(block.get("text", ""))
-                elif isinstance(block, str):
-                    text_parts.append(block)
-            content = "".join(text_parts)
-
-        if not isinstance(content, str) or not content.strip():
+        text = response.text
+        if not text:
             msg = "Model returned empty summary"
             raise RuntimeError(msg)
 
-        return content.strip()
+        return text
 
     async def _handle_user_message(self, message: str) -> None:
         """Handle a user message to send to the agent.

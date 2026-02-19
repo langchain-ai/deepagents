@@ -322,10 +322,12 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
             )
 
         except subprocess.TimeoutExpired:
+            if timeout is not None:
+                msg = f"Error: Command timed out after {effective_timeout} seconds (custom timeout). The command may be stuck or require more time."
+            else:
+                msg = f"Error: Command timed out after {effective_timeout} seconds. For long-running commands, re-run using the timeout parameter."
             return ExecuteResponse(
-                output=(
-                    f"Error: Command timed out after {effective_timeout} seconds. For long-running commands, re-run using the timeout parameter."
-                ),
+                output=msg,
                 exit_code=124,  # Standard timeout exit code
                 truncated=False,
             )
@@ -333,7 +335,7 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
             # Broad exception catch is intentional: we want to catch all execution errors
             # and return a consistent ExecuteResponse rather than propagating exceptions
             return ExecuteResponse(
-                output=f"Error executing command: {e}",
+                output=f"Error executing command ({type(e).__name__}): {e}",
                 exit_code=1,
                 truncated=False,
             )

@@ -99,4 +99,5 @@ class TestTimeoutErrorMessage:
         with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("cmd", 5)):
             result = backend.execute("sleep 10", timeout=5)
             assert "5" in result.output
-            assert "timeout parameter" in result.output.lower()
+            assert "custom timeout" in result.output.lower()
+            assert "may be stuck" in result.output.lower()

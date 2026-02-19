@@ -502,8 +502,8 @@ class CompositeBackend(BackendProtocol):
         self,
         command: str,
         *,
-        # ASYNC109 - timeout is a semantic parameter forwarded to the sync
-        # implementation, not an asyncio.timeout() contract.
+        # ASYNC109 - timeout is a semantic parameter forwarded to the underlying
+        # backend's implementation, not an asyncio.timeout() contract.
         timeout: int | None = None,  # noqa: ASYNC109
     ) -> ExecuteResponse:
         """Async version of execute.

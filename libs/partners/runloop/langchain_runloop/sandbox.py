@@ -33,9 +33,20 @@ class RunloopSandbox(BaseSandbox):
         """Return the devbox id."""
         return self._devbox_id
 
-    def execute(self, command: str) -> ExecuteResponse:
-        """Execute a shell command inside the devbox."""
-        result = self._devbox.cmd.exec(command)
+    def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+        """Execute a shell command inside the devbox.
+
+        Args:
+            command: Shell command string to execute.
+            timeout: Maximum time in seconds to wait for this command.
+
+                If None, uses the backend's default timeout.
+
+        Returns:
+            ExecuteResponse containing output, exit code, and truncation flag.
+        """
+        effective_timeout = timeout if timeout is not None else self._timeout
+        result = self._devbox.cmd.exec(command, timeout=effective_timeout)
 
         output = result.stdout() if result.stdout() is not None else ""
         stderr = result.stderr() if result.stderr() is not None else ""

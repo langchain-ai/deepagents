@@ -452,7 +452,7 @@ class SandboxBackendProtocol(BackendProtocol):
         *,
         timeout: int | None = None,
     ) -> ExecuteResponse:
-        """Execute a command in the process.
+        """Execute a shell command in the sandbox environment.
 
         Simplified interface optimized for LLM consumption.
 

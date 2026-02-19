@@ -186,6 +186,29 @@ def format_tool_display(tool_name: str, tool_args: dict) -> str:
     return f"{prefix} {tool_name}({args_str})"
 
 
+def _format_content_block(block: dict) -> str:
+    """Format a single content block dict for display.
+
+    Replaces large binary payloads (e.g. base64 image data) with a
+    human-readable placeholder so they don't flood the terminal.
+
+    Args:
+        block: An `ImageContentBlock` dictionary.
+
+    Returns:
+        A display-friendly string for the block.
+    """
+    if block.get("type") == "image" and isinstance(block.get("base64"), str):
+        b64 = block["base64"]
+        size_kb = len(b64) * 3 // 4 // 1024  # approximate decoded size
+        mime = block.get("mime_type", "image")
+        return f"[Image: {mime}, ~{size_kb}KB]"
+    try:
+        return json.dumps(block)
+    except (TypeError, ValueError):
+        return str(block)
+
+
 def format_tool_message_content(content: Any) -> str:  # noqa: ANN401  # Content can be str, list, or dict
     """Convert `ToolMessage` content into a printable string.
 
@@ -199,6 +222,8 @@ def format_tool_message_content(content: Any) -> str:  # noqa: ANN401  # Content
         for item in content:
             if isinstance(item, str):
                 parts.append(item)
+            elif isinstance(item, dict):
+                parts.append(_format_content_block(item))
             else:
                 try:
                     parts.append(json.dumps(item))

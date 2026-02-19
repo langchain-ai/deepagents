@@ -45,8 +45,8 @@ if TYPE_CHECKING:
     from langchain_core.runnables import RunnableConfig
 
 DOCS_URL = "https://docs.langchain.com/oss/python/deepagents/cli"
+"""URL for deepagents-cli documentation."""
 
-# Color scheme
 COLORS = {
     "primary": "#10b981",
     "primary_dev": "#f97316",
@@ -55,7 +55,16 @@ COLORS = {
     "agent": "#10b981",
     "thinking": "#34d399",
     "tool": "#fbbf24",
+    "mode_bash": "#ff1493",
+    "mode_command": "#8b5cf6",
 }
+"""App color scheme."""
+
+MODE_PREFIXES: dict[str, str] = {
+    "bash": "!",
+    "command": "/",
+}
+"""Maps each non-normal mode to its trigger character."""
 
 
 # Charset mode configuration

@@ -66,7 +66,7 @@ if TYPE_CHECKING:
     from langgraph.checkpoint.base import BaseCheckpointSaver
     from langgraph.pregel import Pregel
     from textual.app import ComposeResult
-    from textual.events import Click, MouseUp, Resize
+    from textual.events import Click, MouseUp, Paste, Resize
     from textual.scrollbar import ScrollUp
     from textual.widget import Widget
     from textual.worker import Worker
@@ -443,6 +443,11 @@ class DeepAgentsApp(App):
         self._processing_pending = False
         # Message virtualization store
         self._message_store = MessageStore()
+        # Lazily imported here to avoid pulling image dependencies into
+        # argument parsing paths.
+        from deepagents_cli.input import ImageTracker
+
+        self._image_tracker = ImageTracker()
 
     def compose(self) -> ComposeResult:
         """Compose the application layout.
@@ -456,7 +461,11 @@ class DeepAgentsApp(App):
             yield WelcomeBanner(thread_id=self._lc_thread_id, id="welcome-banner")
             yield Container(id="messages")
             with Container(id="bottom-app-container"):
-                yield ChatInput(cwd=self._cwd, id="input-area")
+                yield ChatInput(
+                    cwd=self._cwd,
+                    image_tracker=self._image_tracker,
+                    id="input-area",
+                )
             yield Static(id="chat-spacer")  # Fills remaining space below input
 
         # Status bar at bottom
@@ -1116,15 +1125,34 @@ class DeepAgentsApp(App):
             await self._open_url_command(command, cmd)
         elif cmd == "/version":
             await self._mount_message(UserMessage(command))
-            # Show CLI package version
+            # Show CLI and SDK package versions
             try:
-                from deepagents_cli._version import __version__
-
-                await self._mount_message(
-                    AppMessage(f"deepagents version: {__version__}")
+                from deepagents_cli._version import (
+                    __version__ as cli_version,
                 )
-            except Exception:  # noqa: BLE001  # Resilient model selector error handling
-                await self._mount_message(AppMessage("deepagents version: unknown"))
+
+                cli_line = f"deepagents-cli version: {cli_version}"
+            except ImportError:
+                logger.debug("deepagents_cli._version module not found")
+                cli_line = "deepagents-cli version: unknown"
+            except Exception:
+                logger.warning("Unexpected error looking up CLI version", exc_info=True)
+                cli_line = "deepagents-cli version: unknown"
+            try:
+                from importlib.metadata import (
+                    PackageNotFoundError,
+                    version as _pkg_version,
+                )
+
+                sdk_version = _pkg_version("deepagents")
+                sdk_line = f"deepagents (SDK) version: {sdk_version}"
+            except PackageNotFoundError:
+                logger.debug("deepagents SDK package not found in environment")
+                sdk_line = "deepagents (SDK) version: unknown"
+            except Exception:
+                logger.warning("Unexpected error looking up SDK version", exc_info=True)
+                sdk_line = "deepagents (SDK) version: unknown"
+            await self._mount_message(AppMessage(f"{cli_line}\n{sdk_line}"))
         elif cmd == "/clear":
             self._pending_messages.clear()
             self._queued_widgets.clear()
@@ -1280,6 +1308,7 @@ class DeepAgentsApp(App):
                 session_state=self._session_state,
                 adapter=self._ui_adapter,
                 backend=self._backend,
+                image_tracker=self._image_tracker,
             )
         except Exception as e:  # noqa: BLE001  # Resilient tool rendering
             await self._mount_message(ErrorMessage(f"Agent error: {e}"))
@@ -1611,13 +1640,19 @@ class DeepAgentsApp(App):
             self.notify("Press Ctrl+C again to quit", timeout=3)
 
     def action_interrupt(self) -> None:
-        """Handle escape key - interrupt agent, reject approval, or dismiss modal.
+        """Handle escape key.
 
-        This is the primary way to stop a running agent.
+        Dismiss completion popup, dismiss modal, interrupt agent,
+        or reject approval. This is the primary way to stop a
+        running agent.
         """
         # If a modal screen is active, dismiss it
         if isinstance(self.screen, ModalScreen):
             self.screen.dismiss(None)
+            return
+
+        # Close completion popup before interrupting the agent
+        if self._chat_input and self._chat_input.dismiss_completion():
             return
 
         # If agent is running, interrupt it and discard queued messages
@@ -1736,6 +1771,16 @@ class DeepAgentsApp(App):
         """Handle escape in approval menu - reject."""
         if self._pending_approval_widget:
             self._pending_approval_widget.action_select_reject()
+
+    def on_paste(self, event: Paste) -> None:
+        """Route unfocused paste events to chat input for drag/drop reliability."""
+        if not self._chat_input:
+            return
+        if self._pending_approval_widget or self._is_input_focused():
+            return
+        if self._chat_input.handle_external_paste(event.text):
+            event.prevent_default()
+            event.stop()
 
     def on_click(self, _event: Click) -> None:
         """Handle clicks anywhere in the terminal to focus on the command line."""

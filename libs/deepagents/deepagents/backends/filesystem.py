@@ -1,6 +1,7 @@
 """`FilesystemBackend`: Read and write files directly from the filesystem."""
 
 import json
+import logging
 import os
 import re
 import subprocess
@@ -23,6 +24,8 @@ from deepagents.backends.utils import (
     format_content_with_line_numbers,
     perform_string_replacement,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class FilesystemBackend(BackendProtocol):
@@ -147,7 +150,22 @@ class FilesystemBackend(BackendProtocol):
             return path
         return (self.cwd / path).resolve()
 
-    def ls_info(self, path: str) -> list[FileInfo]:  # noqa: C901, PLR0912  # Complex virtual_mode logic
+    def _to_virtual_path(self, path: Path) -> str:
+        """Convert a filesystem path to a virtual path relative to cwd.
+
+        Args:
+            path: Filesystem path to convert.
+
+        Returns:
+            Forward-slash relative path string prefixed with `/`.
+
+        Raises:
+            ValueError: If path is outside cwd.
+            OSError: If path cannot be resolved (broken symlink, permission denied).
+        """
+        return "/" + path.resolve().relative_to(self.cwd).as_posix()
+
+    def ls_info(self, path: str) -> list[FileInfo]:  # noqa: C901, PLR0912, PLR0915  # Complex virtual_mode logic
         """List files and directories in the specified directory (non-recursive).
 
         Args:
@@ -209,17 +227,15 @@ class FilesystemBackend(BackendProtocol):
                         except OSError:
                             results.append({"path": abs_path + "/", "is_dir": True})
                 else:
-                    # Virtual mode: strip cwd prefix
-                    if abs_path.startswith(cwd_str):
-                        relative_path = abs_path[len(cwd_str) :]
-                    elif abs_path.startswith(str(self.cwd)):
-                        # Handle case where cwd doesn't end with /
-                        relative_path = abs_path[len(str(self.cwd)) :].lstrip("/")
-                    else:
-                        # Path is outside cwd, return as-is or skip
-                        relative_path = abs_path
-
-                    virt_path = "/" + relative_path
+                    # Virtual mode: strip cwd prefix using Path for cross-platform support
+                    try:
+                        virt_path = self._to_virtual_path(child_path)
+                    except ValueError:
+                        logger.debug("Skipping path outside root: %s", child_path)
+                        continue
+                    except OSError:
+                        logger.warning("Could not resolve path: %s", child_path, exc_info=True)
+                        continue
 
                     if is_file:
                         try:
@@ -423,7 +439,7 @@ class FilesystemBackend(BackendProtocol):
                 matches.append({"path": fpath, "line": int(line_num), "text": line_text})
         return matches
 
-    def _ripgrep_search(self, pattern: str, base_full: Path, include_glob: str | None) -> dict[str, list[tuple[int, str]]] | None:
+    def _ripgrep_search(self, pattern: str, base_full: Path, include_glob: str | None) -> dict[str, list[tuple[int, str]]] | None:  # noqa: C901  # Split except clauses for logging
         """Search using ripgrep with fixed-string (literal) mode.
 
         Args:
@@ -466,8 +482,12 @@ class FilesystemBackend(BackendProtocol):
             p = Path(ftext)
             if self.virtual_mode:
                 try:
-                    virt = "/" + str(p.resolve().relative_to(self.cwd))
-                except Exception:  # noqa: BLE001, S112  # Intentional skip of unresolvable paths
+                    virt = self._to_virtual_path(p)
+                except ValueError:
+                    logger.debug("Skipping grep result outside root: %s", p)
+                    continue
+                except OSError:
+                    logger.warning("Could not resolve grep result path: %s", p, exc_info=True)
                     continue
             else:
                 virt = str(p)
@@ -479,7 +499,7 @@ class FilesystemBackend(BackendProtocol):
 
         return results
 
-    def _python_search(self, pattern: str, base_full: Path, include_glob: str | None) -> dict[str, list[tuple[int, str]]]:  # noqa: C901
+    def _python_search(self, pattern: str, base_full: Path, include_glob: str | None) -> dict[str, list[tuple[int, str]]]:  # noqa: C901, PLR0912
         """Fallback search using Python when ripgrep is unavailable.
 
         Recursively searches files, respecting `max_file_size_bytes` limit.
@@ -519,8 +539,12 @@ class FilesystemBackend(BackendProtocol):
                 if regex.search(line):
                     if self.virtual_mode:
                         try:
-                            virt_path = "/" + str(fp.resolve().relative_to(self.cwd))
-                        except Exception:  # noqa: BLE001, S112  # Intentional skip of unresolvable paths
+                            virt_path = self._to_virtual_path(fp)
+                        except ValueError:
+                            logger.debug("Skipping grep result outside root: %s", fp)
+                            continue
+                        except OSError:
+                            logger.warning("Could not resolve grep result path: %s", fp, exc_info=True)
                             continue
                     else:
                         virt_path = str(fp)
@@ -580,16 +604,15 @@ class FilesystemBackend(BackendProtocol):
                     except OSError:
                         results.append({"path": abs_path, "is_dir": False})
                 else:
-                    cwd_str = str(self.cwd)
-                    if not cwd_str.endswith("/"):
-                        cwd_str += "/"
-                    if abs_path.startswith(cwd_str):
-                        relative_path = abs_path[len(cwd_str) :]
-                    elif abs_path.startswith(str(self.cwd)):
-                        relative_path = abs_path[len(str(self.cwd)) :].lstrip("/")
-                    else:
-                        relative_path = abs_path
-                    virt = "/" + relative_path
+                    # Virtual mode: use Path for cross-platform support
+                    try:
+                        virt = self._to_virtual_path(matched_path)
+                    except ValueError:
+                        logger.debug("Skipping glob result outside root: %s", matched_path)
+                        continue
+                    except OSError:
+                        logger.warning("Could not resolve glob result path: %s", matched_path, exc_info=True)
+                        continue
                     try:
                         st = matched_path.stat()
                         results.append(

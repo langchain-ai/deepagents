@@ -598,7 +598,7 @@ def _delete(
     # Deferred: skills.load imports the deepagents SDK. This module is
     # imported at CLI startup for setup_skills_parser(), so a top-level
     # import here would penalize every command (e.g. `--help`).
-    from deepagents_cli.skills.load import list_skills  # noqa: PLC0415
+    from deepagents_cli.skills.load import list_skills
 
     settings = Settings.from_environment()
     user_skills_dir = settings.get_user_skills_dir(agent)

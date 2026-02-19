@@ -417,7 +417,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         system_prompt: str | None = None,
         custom_tool_descriptions: dict[str, str] | None = None,
         tool_token_limit_before_evict: int | None = 20000,
-        max_timeout: int = 3600,
+        max_execute_timeout: int = 3600,
     ) -> None:
         """Initialize the filesystem middleware.
 
@@ -427,17 +427,17 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             system_prompt: Optional custom system prompt override.
             custom_tool_descriptions: Optional custom tool descriptions override.
             tool_token_limit_before_evict: Optional token limit before evicting a tool result to the filesystem.
-            max_timeout: Maximum allowed value in seconds for per-command timeout
+            max_execute_timeout: Maximum allowed value in seconds for per-command timeout
                 overrides on the execute tool.
 
                 Defaults to 3600 seconds (1 hour). Any per-command timeout
                 exceeding this value will be rejected with an error message.
 
         Raises:
-            ValueError: If `max_timeout` is not positive.
+            ValueError: If `max_execute_timeout` is not positive.
         """
-        if max_timeout <= 0:
-            msg = f"max_timeout must be positive, got {max_timeout}"
+        if max_execute_timeout <= 0:
+            msg = f"max_execute_timeout must be positive, got {max_execute_timeout}"
             raise ValueError(msg)
         # Use provided backend or default to StateBackend factory
         self.backend = backend if backend is not None else (StateBackend)
@@ -446,7 +446,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         self._custom_system_prompt = system_prompt
         self._custom_tool_descriptions = custom_tool_descriptions or {}
         self._tool_token_limit_before_evict = tool_token_limit_before_evict
-        self._max_timeout = max_timeout
+        self._max_execute_timeout = max_execute_timeout
 
         self.tools = [
             self._create_ls_tool(),
@@ -869,8 +869,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             if timeout is not None and timeout <= 0:
                 return f"Error: timeout must be positive, got {timeout}."
 
-            if timeout is not None and timeout > self._max_timeout:
-                return f"Error: timeout {timeout}s exceeds maximum allowed ({self._max_timeout}s)."
+            if timeout is not None and timeout > self._max_execute_timeout:
+                return f"Error: timeout {timeout}s exceeds maximum allowed ({self._max_execute_timeout}s)."
 
             resolved_backend = self._get_backend(runtime)
 
@@ -918,8 +918,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             if timeout is not None and timeout <= 0:
                 return f"Error: timeout must be positive, got {timeout}."
 
-            if timeout is not None and timeout > self._max_timeout:
-                return f"Error: timeout {timeout}s exceeds maximum allowed ({self._max_timeout}s)."
+            if timeout is not None and timeout > self._max_execute_timeout:
+                return f"Error: timeout {timeout}s exceeds maximum allowed ({self._max_execute_timeout}s)."
 
             resolved_backend = self._get_backend(runtime)
 

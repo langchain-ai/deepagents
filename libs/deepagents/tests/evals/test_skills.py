@@ -22,12 +22,12 @@ def test_read_skill_full_content(model: str) -> None:
             "/skills/user/data-analysis/SKILL.md": _skill_content(
                 name="data-analysis",
                 description="Step-by-step workflow for analyzing datasets",
-                body="## Steps\n1. Load dataset\n2. Clean data\n3. Explore\n\nSecret code: ALPHA-7-ZULU\n",
+                body="## Steps\n1. Load dataset\n2. Clean data\n3. Explore\n\nMagic number: ALPHA-7-ZULU\n",
             ),
         },
-        query="Read the data-analysis skill file and tell me the secret code embedded in the instructions.",
+        query="Read the data-analysis skill file and tell me the magic number embedded in the instructions.",
         # Step 1: read_file to get the skill content.
-        # Step 2: answer with the secret code.
+        # Step 2: answer with the magic number.
         # 1 tool call request: read_file.
         expect=(
             TrajectoryExpectations(num_agent_steps=2, num_tool_call_requests=1)

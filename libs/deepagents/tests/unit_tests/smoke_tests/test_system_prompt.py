@@ -79,7 +79,7 @@ def test_custom_system_message_snapshot(snapshots_dir: Path, *, update_snapshots
     agent = create_deep_agent(
         model=model,
         backend=backend,
-        system_prompt="You are Bobby a virtual assistant for comany X",
+        system_prompt="You are Bobby a virtual assistant for company X",
     )
 
     agent.invoke({"messages": [HumanMessage(content="hi")]})

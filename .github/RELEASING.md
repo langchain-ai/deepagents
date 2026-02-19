@@ -256,6 +256,8 @@ This means the CLI's pinned `deepagents` dependency in `libs/cli/pyproject.toml`
 
 3. **Publish the draft release** once the workflow completes
 
+4. **Fix the `autorelease: pending` label** if the original automated release left it on the merged release PR. The failed workflow skipped the `mark-release` job, so the label was never swapped. See [Release PR Stuck with "autorelease: pending" Label](#release-pr-stuck-with-autorelease-pending-label) for the fix. **If you skip this step, release-please will not create new release PRs.**
+
 ### Re-releasing a Version
 
 PyPI does not allow re-uploading the same version. If a release failed partway:

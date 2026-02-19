@@ -1,4 +1,4 @@
-.PHONY: all format lint test tests evals integration_test integration_tests test_watch benchmark help run lint_package lint_tests check_imports coverage typecheck
+.PHONY: all format lint test tests evals integration_test integration_tests test_watch benchmark help run lint_package lint_tests check_imports coverage typecheck update-snapshots
 
 # Default target executed when no arguments are given to make.
 all: help

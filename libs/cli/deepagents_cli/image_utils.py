@@ -58,7 +58,12 @@ def get_clipboard_image() -> ImageData | None:
     """
     if sys.platform == "darwin":
         return _get_macos_clipboard_image()
-    # Linux/Windows support could be added here
+    logger.warning(
+        "Clipboard image paste is not supported on %s. "
+        "Only macOS is currently supported. "
+        "You can still attach images by dragging and dropping file paths.",
+        sys.platform,
+    )
     return None
 
 

@@ -449,7 +449,7 @@ class ToolCallMessage(Vertical):
         Yields:
             Widgets for header, arguments, status, and output display.
         """
-        tool_label = format_tool_display(self._tool_name, self._args)
+        tool_label = escape_markup(format_tool_display(self._tool_name, self._args))
         yield Static(
             f"[bold #f59e0b]{tool_label}[/bold #f59e0b]",
             classes="tool-header",
@@ -463,7 +463,10 @@ class ToolCallMessage(Vertical):
                 )
                 if len(args) > _MAX_INLINE_ARGS:
                     args_str += ", ..."
-                yield Static(f"[dim]({args_str})[/dim]", classes="tool-args")
+                yield Static(
+                    f"[dim]({escape_markup(args_str)})[/dim]",
+                    classes="tool-args",
+                )
         # Status - shows running animation while pending, then final status
         yield Static("", classes="tool-status", id="status")
         # Output area - hidden initially, shown when output is set
@@ -1223,7 +1226,10 @@ class DiffMessage(Static):
             Widgets displaying the diff header and formatted content.
         """
         if self._file_path:
-            yield Static(f"[bold]File: {self._file_path}[/bold]", classes="diff-header")
+            yield Static(
+                f"[bold]File: {escape_markup(self._file_path)}[/bold]",
+                classes="diff-header",
+            )
 
         # Render the diff with enhanced formatting
         rendered = format_diff_textual(self._diff_content, max_lines=100)

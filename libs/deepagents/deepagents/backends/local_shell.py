@@ -19,6 +19,10 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
+DEFAULT_EXECUTE_TIMEOUT = 120
+"""Default timeout in seconds for shell command execution."""
+
+
 class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
     """Filesystem backend with unrestricted local shell command execution.
 
@@ -101,7 +105,7 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
         root_dir: str | Path | None = None,
         *,
         virtual_mode: bool = False,
-        timeout: float = 120.0,
+        timeout: int = DEFAULT_EXECUTE_TIMEOUT,
         max_output_bytes: int = 100_000,
         env: dict[str, str] | None = None,
         inherit_env: bool = False,
@@ -135,8 +139,13 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
                 **Important:** This only affects filesystem operations. Shell commands
                 executed via `execute()` are NOT restricted and can access any path.
 
-            timeout: Maximum time in seconds to wait for shell command execution.
-                Commands exceeding this timeout will be terminated. Defaults to 120 seconds.
+            timeout: Default maximum time in seconds to wait for shell command execution.
+
+                Defaults to 120 seconds (2 minutes).
+
+                Commands exceeding this timeout will be terminated.
+
+                Can be overridden per-command via the `timeout` parameter on `execute()`.
 
             max_output_bytes: Maximum number of bytes to capture from command output.
                 Output exceeding this limit will be truncated. Defaults to 100,000 bytes.
@@ -147,7 +156,14 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
             inherit_env: Whether to inherit the parent process's environment variables.
                 When False (default), only variables in `env` dict are available.
                 When True, inherits all `os.environ` variables and applies `env` overrides.
+
+        Raises:
+            ValueError: If timeout is not positive.
         """
+        if timeout <= 0:
+            msg = f"timeout must be positive, got {timeout}"
+            raise ValueError(msg)
+
         # Initialize parent FilesystemBackend
         super().__init__(
             root_dir=root_dir,
@@ -156,7 +172,7 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
         )
 
         # Store execution parameters
-        self._timeout = timeout
+        self._default_timeout = timeout
         self._max_output_bytes = max_output_bytes
 
         # Build environment based on inherit_env setting
@@ -182,10 +198,13 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
     def execute(
         self,
         command: str,
+        *,
+        timeout: int | None = None,
     ) -> ExecuteResponse:
         r"""Execute a shell command directly on the host system.
 
         !!! danger "Unrestricted Execution"
+
             Commands are executed directly on your host system using `subprocess.run()`
             with `shell=True`. There is **no sandboxing, isolation, or security
             restrictions**. The command runs with your user's full permissions and can:
@@ -210,12 +229,20 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
                 **Security:** This string is passed directly to the shell. Agents can
                 execute arbitrary commands including pipes, redirects, command
                 substitution, etc.
+            timeout: Maximum time in seconds to wait for this command.
+
+                Overrides the default timeout set at init.
+
+                If None, uses the default.
 
         Returns:
             ExecuteResponse containing:
                 - output: Combined stdout and stderr (stderr lines prefixed with [stderr])
                 - exit_code: Process exit code (0 for success, non-zero for failure)
                 - truncated: True if output was truncated due to size limits
+
+        Raises:
+            ValueError: If per-command timeout is not positive.
 
         Examples:
             ```python
@@ -234,6 +261,9 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
             if result.truncated:
                 print("Output was truncated")
 
+            # Override timeout for long-running commands
+            result = backend.execute("make build", timeout=300)
+
             # Commands run in root_dir, but can access any path
             result = backend.execute("cat /etc/passwd")  # Can read system files!
             ```
@@ -245,6 +275,11 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
                 truncated=False,
             )
 
+        effective_timeout = timeout if timeout is not None else self._default_timeout
+        if effective_timeout <= 0:
+            msg = f"timeout must be positive, got {effective_timeout}"
+            raise ValueError(msg)
+
         try:
             result = subprocess.run(  # noqa: S602
                 command,
@@ -252,7 +287,7 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
                 shell=True,  # Intentional: designed for LLM-controlled shell execution
                 capture_output=True,
                 text=True,
-                timeout=self._timeout,
+                timeout=effective_timeout,
                 env=self._env,
                 cwd=str(self.cwd),  # Use the root_dir from FilesystemBackend
             )
@@ -287,8 +322,12 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
             )
 
         except subprocess.TimeoutExpired:
+            if timeout is not None:
+                msg = f"Error: Command timed out after {effective_timeout} seconds (custom timeout). The command may be stuck or require more time."
+            else:
+                msg = f"Error: Command timed out after {effective_timeout} seconds. For long-running commands, re-run using the timeout parameter."
             return ExecuteResponse(
-                output=f"Error: Command timed out after {self._timeout:.1f} seconds.",
+                output=msg,
                 exit_code=124,  # Standard timeout exit code
                 truncated=False,
             )
@@ -296,10 +335,10 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
             # Broad exception catch is intentional: we want to catch all execution errors
             # and return a consistent ExecuteResponse rather than propagating exceptions
             return ExecuteResponse(
-                output=f"Error executing command: {e}",
+                output=f"Error executing command ({type(e).__name__}): {e}",
                 exit_code=1,
                 truncated=False,
             )
 
 
-__all__ = ["LocalShellBackend"]
+__all__ = ["DEFAULT_EXECUTE_TIMEOUT", "LocalShellBackend"]

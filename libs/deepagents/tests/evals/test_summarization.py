@@ -14,7 +14,7 @@ from deepagents.backends.filesystem import FilesystemBackend
 from tests.evals.utils import run_agent
 
 # URL for a large file that will trigger summarization
-LARGE_FILE_URL = "https://raw.githubusercontent.com/langchain-ai/langchain/3356d0555725c3e0bbb9408c2b3f554cad2a6ee2/libs/partners/openai/langchain_openai/chat_models/base.py"
+LARGE_FILE_URL = "https://raw.githubusercontent.com/langchain-ai/deepagents/refs/heads/main/libs/deepagents/deepagents/middleware/summarization.py"
 
 SYSTEM_PROMPT = dedent(
     """
@@ -55,7 +55,7 @@ def _setup_summarization_test(tmp_path: Path, model_name: str) -> tuple[Any, Fil
     response.raise_for_status()
 
     root = tmp_path
-    fp = root / "base.py"
+    fp = root / "summarization.py"
     _write_file(fp, response.text)
 
     backend = FilesystemBackend(root_dir=str(root), virtual_mode=True)
@@ -65,7 +65,7 @@ def _setup_summarization_test(tmp_path: Path, model_name: str) -> tuple[Any, Fil
     if model.profile is None:
         model.profile = {}
     # Lower artificially to trigger summarization more easily
-    model.profile["max_input_tokens"] = 30_000
+    model.profile["max_input_tokens"] = 15_000
 
     agent = create_deep_agent(
         model=model,
@@ -87,7 +87,7 @@ def test_summarize_continues_task(tmp_path: Path, model: str) -> None:
     trajectory = run_agent(
         agent,
         model=model,
-        query="Can you read the entirety of base.py, 500 lines at a time, and summarize it?",
+        query="Can you read the entirety of summarization.py, 500 lines at a time, and summarize it?",
         thread_id=thread_id,
     )
 
@@ -112,7 +112,7 @@ def test_summarize_continues_task(tmp_path: Path, model: str) -> None:
             if line_numbers:
                 max_line_seen = max(max_line_seen, *[int(n) for n in line_numbers])
 
-    assert max_line_seen >= 4609 or reached_eof, (
+    assert max_line_seen >= 959 or reached_eof, (
         f"Expected agent to make substantial progress reading file. Max line seen: {max_line_seen}, reached EOF: {reached_eof}"
     )
 
@@ -127,10 +127,10 @@ def test_summarization_offloads_to_filesystem(tmp_path: Path, model: str) -> Non
     agent, _, root = _setup_summarization_test(tmp_path, model)
     thread_id = uuid.uuid4().hex[:8]
 
-    trajectory = run_agent(
+    _ = run_agent(
         agent,
         model=model,
-        query="Can you read the entirety of base.py, 500 lines at a time, and summarize it?",
+        query="Can you read the entirety of summarization.py, 500 lines at a time, and summarize it?",
         thread_id=thread_id,
     )
 
@@ -164,11 +164,14 @@ def test_summarization_offloads_to_filesystem(tmp_path: Path, model: str) -> Non
     # --- Needle in the haystack follow-up ---
     # Ask about a specific detail from the beginning of the file that was read
     # before summarization. The agent should read the conversation history to find it.
-    # The first standard library import in base.py (after `from __future__`) is `import base64`.
+    # The first standard library import in summarization.py (after `from __future__`) is `import base64`.
     followup_trajectory = run_agent(
         agent,
         model=model,
-        query="What is the first standard library import in base.py? (After the `from __future__` import.) Check the conversation history if needed.",
+        query=(
+            "What is the first standard library import in summarization.py? (After "
+            "the `from __future__` import.) Check the conversation history if needed."
+        ),
         thread_id=thread_id,
     )
 
@@ -176,4 +179,4 @@ def test_summarization_offloads_to_filesystem(tmp_path: Path, model: str) -> Non
     final_answer = followup_trajectory.answer
 
     # Check that the answer mentions "base64" (the first standard library import)
-    assert "base64" in final_answer.lower(), f"Expected agent to find 'base64' as the first import. Got: {final_answer}"
+    assert "logging" in final_answer.lower(), f"Expected agent to find 'logging' as the first import. Got: {final_answer}"

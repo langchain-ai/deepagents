@@ -63,7 +63,7 @@ Example: config_database.txt, config_settings.txt
             args_contains={"file_path": "/config_api.txt"},
         ),
     )
-    assert "config_api.txt" in trajectory.files
+    assert "/config_api.txt" in trajectory.files
     assert "API_KEY=secret" in trajectory.files["/config_api.txt"]
 
 

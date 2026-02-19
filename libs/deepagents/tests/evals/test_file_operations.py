@@ -196,12 +196,13 @@ def test_grep_finds_matching_paths(model: str) -> None:
         # 1st step: request a tool call to grep for 'needle'.
         # 2nd step: answer with the matching paths.
         # 1 tool call request: grep.
-        expect=TrajectoryExpectations(num_agent_steps=2, num_tool_call_requests=1),
+        expect=(
+            TrajectoryExpectations(num_agent_steps=2, num_tool_call_requests=1)
+            .require_final_text_contains("/a.txt")
+            .require_final_text_contains("/c.md")
+        ),
     )
-    answer = trajectory.steps[-1].action.text
-    assert "/a.txt" in answer
-    assert "/c.md" in answer
-    assert "/b.txt" not in answer
+    assert "/b.txt" not in trajectory.answer
 
 
 @pytest.mark.langsmith
@@ -220,9 +221,135 @@ def test_glob_lists_markdown_files(model: str) -> None:
         # 1st step: request a tool call to glob for markdown files.
         # 2nd step: answer with the matching paths.
         # 1 tool call request: glob.
-        expect=TrajectoryExpectations(num_agent_steps=2, num_tool_call_requests=1),
+        expect=(
+            TrajectoryExpectations(num_agent_steps=2, num_tool_call_requests=1)
+            .require_final_text_contains("/foo/a.md")
+            .require_final_text_contains("/foo/c.md")
+        ),
     )
-    answer = trajectory.steps[-1].action.text
-    assert "/foo/a.md" in answer
-    assert "/foo/c.md" in answer
-    assert "/foo/b.txt" not in answer
+    assert "/foo/b.txt" not in trajectory.answer
+
+
+@pytest.mark.langsmith
+def test_find_magic_phrase_deep_nesting(model: str) -> None:
+    """Finds a magic phrase in a deeply nested directory efficiently."""
+    agent = create_deep_agent(model=model)
+    magic_phrase = "cobalt-otter-17"
+    trajectory = run_agent(
+        agent,
+        model=model,
+        initial_files={
+            "/a/b/c/d/e/notes.txt": "just some notes\n",
+            "/a/b/c/d/e/readme.md": "project readme\n",
+            "/a/b/c/d/e/answer.txt": f"MAGIC_PHRASE: {magic_phrase}\n",
+            "/a/b/c/d/other.txt": "nothing here\n",
+            "/a/b/x/y/z/nope.txt": "still nothing\n",
+        },
+        query=(
+            "Find the file that contains the line starting with 'MAGIC_PHRASE:' and reply with the phrase value only. "
+            "Be efficient: use grep to locate it before reading."
+        ),
+        # 1st step: grep for MAGIC_PHRASE to locate the file.
+        # 2nd step: read the file (if needed) and answer with the phrase.
+        # 1 tool call requests: grep
+        expect=(
+            TrajectoryExpectations(num_agent_steps=2, num_tool_call_requests=1)
+            .require_tool_call(step=1, name="grep", args_contains={"pattern": "MAGIC_PHRASE:"})
+            .require_final_text_contains(magic_phrase)
+        ),
+    )
+    assert "MAGIC_PHRASE" not in trajectory.answer
+
+
+@pytest.mark.langsmith
+def test_identify_quote_author_from_directory_parallel_reads(model: str) -> None:
+    """Identifies which quote matches a target author by reading a directory efficiently."""
+    agent = create_deep_agent(model=model)
+    trajectory = run_agent(
+        agent,
+        model=model,
+        initial_files={
+            "/quotes/q1.txt": """Quote: The analytical engine weaves algebraic patterns.
+Clues: discusses an engine for computation and weaving patterns.
+""",
+            "/quotes/q2.txt": """Quote: I have always been more interested in the future than in the past.
+Clues: talks about anticipating the future; broad and general.
+""",
+            "/quotes/q3.txt": """Quote: The most dangerous phrase in the language is, 'We've always done it this way.'
+Clues: emphasizes changing established processes; often associated with early computing leadership.
+""",
+            "/quotes/q4.txt": """Quote: Sometimes it is the people no one can imagine anything of who do the things no one can imagine.
+Clues: about imagination and doing the impossible; inspirational.
+""",
+            "/quotes/q5.txt": """Quote: Programs must be written for people to read, and only incidentally for machines to execute.
+Clues: about programming readability; software craftsmanship.
+""",
+        },
+        query=(
+            "In the /quotes directory, there are several small quote files. "
+            "Which file most likely contains a quote by Grace Hopper? Reply with the file path only. "
+            "Be efficient: list the directory, then read the quote files in parallel to decide. "
+            "Do not use grep."
+        ),
+        # 1st step: list the directory to discover files.
+        # 2nd step: read all quote files in parallel.
+        # 3rd step: answer with the selected path.
+        # 6 tool call requests: 1 ls + 5 read_file.
+        expect=(
+            TrajectoryExpectations(num_agent_steps=3, num_tool_call_requests=6)
+            .require_tool_call(step=1, name="ls", args_contains={"path": "/quotes"})
+            .require_tool_call(step=2, name="read_file", args_contains={"file_path": "/quotes/q1.txt"})
+            .require_tool_call(step=2, name="read_file", args_contains={"file_path": "/quotes/q2.txt"})
+            .require_tool_call(step=2, name="read_file", args_contains={"file_path": "/quotes/q3.txt"})
+            .require_tool_call(step=2, name="read_file", args_contains={"file_path": "/quotes/q4.txt"})
+            .require_tool_call(step=2, name="read_file", args_contains={"file_path": "/quotes/q5.txt"})
+            .require_final_text_contains("/quotes/q3.txt")
+        ),
+    )
+    assert trajectory.answer.strip() == "/quotes/q3.txt"
+
+
+@pytest.mark.langsmith
+def test_identify_quote_author_from_directory_unprompted_efficiency(model: str) -> None:
+    """Identifies which quote matches a target author without explicit efficiency instructions."""
+    agent = create_deep_agent(model=model)
+    trajectory = run_agent(
+        agent,
+        model=model,
+        initial_files={
+            "/quotes/q1.txt": """Quote: The analytical engine weaves algebraic patterns.
+Clues: discusses an engine for computation and weaving patterns.
+""",
+            "/quotes/q2.txt": """Quote: I have always been more interested in the future than in the past.
+Clues: talks about anticipating the future; broad and general.
+""",
+            "/quotes/q3.txt": """Quote: The most dangerous phrase in the language is, 'We've always done it this way.'
+Clues: emphasizes changing established processes; often associated with early computing leadership.
+""",
+            "/quotes/q4.txt": """Quote: Sometimes it is the people no one can imagine anything of who do the things no one can imagine.
+Clues: about imagination and doing the impossible; inspirational.
+""",
+            "/quotes/q5.txt": """Quote: Programs must be written for people to read, and only incidentally for machines to execute.
+Clues: about programming readability; software craftsmanship.
+""",
+        },
+        query=(
+            "In the /quotes directory, there are a few small quote files. "
+            "Which file most likely contains a quote by Grace Hopper? Reply with the file path only."
+        ),
+        # 1st step: list the directory to discover files.
+        # 2nd step: read all quote files (ideally in parallel).
+        # 3rd step: answer with the selected path.
+        # 6 tool call requests: 1 ls + 5 read_file.
+        expect=(
+            TrajectoryExpectations(num_agent_steps=3, num_tool_call_requests=6)
+            .require_tool_call(step=1, name="ls", args_contains={"path": "/quotes"})
+            .require_tool_call(step=2, name="read_file", args_contains={"file_path": "/quotes/q1.txt"})
+            .require_tool_call(step=2, name="read_file", args_contains={"file_path": "/quotes/q2.txt"})
+            .require_tool_call(step=2, name="read_file", args_contains={"file_path": "/quotes/q3.txt"})
+            .require_tool_call(step=2, name="read_file", args_contains={"file_path": "/quotes/q4.txt"})
+            .require_tool_call(step=2, name="read_file", args_contains={"file_path": "/quotes/q5.txt"})
+            .require_final_text_contains("/quotes/q3.txt")
+        ),
+    )
+    assert trajectory.answer.strip() == "/quotes/q3.txt"

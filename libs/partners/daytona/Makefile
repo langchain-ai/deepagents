@@ -34,6 +34,7 @@ benchmark: ## Run benchmark tests
 PYTHON_FILES=.
 lint format: PYTHON_FILES=.
 lint_diff format_diff: PYTHON_FILES=$(shell git diff --relative=libs/partners/daytona --name-only --diff-filter=d main | grep -E '\.py$$|\.ipynb$$')
+lint_package: ## Lint only the package
 lint_package: PYTHON_FILES=langchain_daytona
 
 lint: ## Run linters and type checker
@@ -52,7 +53,7 @@ format format_diff:
 ######################
 
 help: ## Show this help message
-	@echo "Usage: make [target]"
+	@echo "Usage: make [target] [TEST_FILE=path/to/tests/]"
 	@echo ""
 	@echo "Targets:"
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z_-]+:.*##/ {printf "  %-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)

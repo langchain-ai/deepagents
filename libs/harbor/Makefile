@@ -72,7 +72,7 @@ format_unsafe: ## Run formatters with unsafe fixes
 ######################
 
 help: ## Show this help message
-	@echo "Usage: make [target]"
+	@echo "Usage: make [target] [TEST_FILE=path/to/tests/]"
 	@echo ""
 	@echo "Targets:"
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z_-]+:.*##/ {printf "  %-28s %s\n", $$1, $$2}' $(MAKEFILE_LIST)

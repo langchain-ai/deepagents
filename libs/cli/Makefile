@@ -46,7 +46,9 @@ run: ## Reinstall and run package
 PYTHON_FILES=.
 lint format: PYTHON_FILES=.
 lint_diff format_diff: PYTHON_FILES=$(shell git diff --relative=libs/cli --name-only --diff-filter=d main | grep -E '\.py$$|\.ipynb$$')
+lint_package: ## Lint only the package
 lint_package: PYTHON_FILES=deepagents_cli
+lint_tests: ## Lint only tests
 lint_tests: PYTHON_FILES=tests
 
 lint: ## Run linters and type checker
@@ -72,7 +74,7 @@ check_imports: $(shell find deepagents_cli -name '*.py')
 ######################
 
 help: ## Show this help message
-	@echo "Usage: make [target]"
+	@echo "Usage: make [target] [TEST_FILE=path/to/tests/]"
 	@echo ""
 	@echo "Targets:"
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z_-]+:.*##/ {printf "  %-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)

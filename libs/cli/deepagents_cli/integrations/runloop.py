@@ -174,7 +174,7 @@ class RunloopProvider(SandboxProvider):
         *,
         sandbox_id: str | None = None,
         timeout: int = 180,
-        **kwargs: Any,  # noqa: ARG002
+        **kwargs: Any,  # noqa: ARG002  # Required by SandboxFactory interface
     ) -> SandboxBackendProtocol:
         """Get existing or create new Runloop devbox.
 
@@ -211,7 +211,7 @@ class RunloopProvider(SandboxProvider):
 
         return RunloopBackend(devbox_id=devbox.id, client=self._client)
 
-    def delete(self, *, sandbox_id: str, **kwargs: Any) -> None:  # noqa: ARG002
+    def delete(self, *, sandbox_id: str, **kwargs: Any) -> None:  # noqa: ARG002  # Required by SandboxFactory interface
         """Delete a Runloop devbox.
 
         Args:

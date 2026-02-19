@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, ClassVar
 
+from rich.markup import escape as escape_markup
 from textual.binding import Binding, BindingType
 from textual.containers import Container, Vertical, VerticalScroll
 from textual.message import Message
@@ -79,7 +80,7 @@ class ApprovalMenu(Container):
         self,
         action_requests: list[dict[str, Any]] | dict[str, Any],
         _assistant_id: str | None = None,
-        id: str | None = None,
+        id: str | None = None,  # noqa: A002  # Textual widget constructor uses `id` parameter
         **kwargs: Any,
     ) -> None:
         """Initialize the ApprovalMenu widget.
@@ -149,10 +150,12 @@ class ApprovalMenu(Container):
         req = self._action_requests[0]
         command = str(req.get("args", {}).get("command", ""))
         if expanded or len(command) <= _SHELL_COMMAND_TRUNCATE_LENGTH:
-            return f"[bold #f59e0b]{command}[/bold #f59e0b]"
+            return f"[bold #f59e0b]{escape_markup(command)}[/bold #f59e0b]"
         truncated = command[:_SHELL_COMMAND_TRUNCATE_LENGTH] + get_glyphs().ellipsis
+        escaped_truncated = escape_markup(truncated)
         return (
-            f"[bold #f59e0b]{truncated}[/bold #f59e0b] [dim](press 'e' to expand)[/dim]"
+            f"[bold #f59e0b]{escaped_truncated}[/bold #f59e0b] "
+            "[dim](press 'e' to expand)[/dim]"
         )
 
     def compose(self) -> ComposeResult:
@@ -193,7 +196,7 @@ class ApprovalMenu(Container):
         # Options container at bottom
         with Container(classes="approval-options-container"):
             # Options - create 3 Static widgets
-            for i in range(3):
+            for i in range(3):  # noqa: B007  # Loop variable unused - iterating for count only
                 widget = Static("", classes="approval-option")
                 self._option_widgets.append(widget)
                 yield widget
@@ -326,6 +329,6 @@ class ApprovalMenu(Container):
         # Post message
         self.post_message(self.Decided(decision))
 
-    def on_blur(self, event: events.Blur) -> None:
+    def on_blur(self, event: events.Blur) -> None:  # noqa: ARG002  # Textual event handler signature
         """Re-focus on blur to keep focus trapped until decision is made."""
         self.call_after_refresh(self.focus)

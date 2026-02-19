@@ -2,6 +2,7 @@
 
 from deepagents_cli.config import get_glyphs
 from deepagents_cli.tool_display import (
+    _format_content_block,
     _format_timeout,
     format_tool_display,
     format_tool_message_content,
@@ -181,3 +182,87 @@ class TestFormatToolMessageContent:
     def test_integer_content(self) -> None:
         """Test that non-string, non-list content is stringified."""
         assert format_tool_message_content(42) == "42"
+
+    def test_image_block_shows_placeholder(self) -> None:
+        """Test that image content blocks show a placeholder instead of base64."""
+        content = [{"type": "image", "base64": "A" * 4000, "mime_type": "image/png"}]
+        result = format_tool_message_content(content)
+        assert "Image" in result
+        assert "image/png" in result
+        assert "KB" in result
+        # Must NOT contain raw base64
+        assert "AAAA" not in result
+
+    def test_image_block_without_mime_type(self) -> None:
+        """Test image block falls back to generic 'image' when mime_type missing."""
+        content = [{"type": "image", "base64": "data"}]
+        result = format_tool_message_content(content)
+        assert "Image" in result
+        assert "image" in result
+
+    def test_mixed_list_with_strings_and_image_blocks(self) -> None:
+        """Test that mixed string/image list preserves ordering."""
+        content = [
+            "Here is the screenshot:",
+            {"type": "image", "base64": "A" * 4000, "mime_type": "image/png"},
+            "Analysis complete.",
+        ]
+        result = format_tool_message_content(content)
+        lines = result.split("\n")
+        assert lines[0] == "Here is the screenshot:"
+        assert "Image" in lines[1]
+        assert "AAAA" not in lines[1]
+        assert lines[2] == "Analysis complete."
+
+
+class TestFormatContentBlock:
+    """Tests for `_format_content_block`."""
+
+    def test_image_block_placeholder(self) -> None:
+        """Test image block returns a human-readable placeholder."""
+        block = {
+            "type": "image",
+            "base64": "A" * 40000,
+            "mime_type": "image/jpeg",
+        }
+        result = _format_content_block(block)
+        assert result == "[Image: image/jpeg, ~29KB]"
+
+    def test_non_image_dict_returns_json(self) -> None:
+        """Test that non-image dicts are still JSON-serialized."""
+        block = {"type": "text", "content": "hello"}
+        result = _format_content_block(block)
+        assert '"type"' in result
+        assert '"text"' in result
+
+    def test_image_block_without_base64_returns_json(self) -> None:
+        """Test that image blocks missing base64 key fall back to JSON."""
+        block = {"type": "image", "url": "https://example.com/img.png"}
+        result = _format_content_block(block)
+        assert '"url"' in result
+
+    def test_image_block_none_base64_returns_json(self) -> None:
+        """Test that image block with None base64 falls through to JSON."""
+        block = {"type": "image", "base64": None, "mime_type": "image/png"}
+        result = _format_content_block(block)
+        assert '"type"' in result
+        assert "Image" not in result
+
+    def test_image_block_non_string_base64_returns_json(self) -> None:
+        """Test that image block with non-string base64 falls through to JSON."""
+        block = {"type": "image", "base64": 12345}
+        result = _format_content_block(block)
+        assert "12345" in result
+        assert "Image" not in result
+
+    def test_image_block_empty_base64(self) -> None:
+        """Test that empty base64 string produces a 0KB placeholder."""
+        block = {"type": "image", "base64": "", "mime_type": "image/png"}
+        result = _format_content_block(block)
+        assert result == "[Image: image/png, ~0KB]"
+
+    def test_non_serializable_dict_falls_back_to_str(self) -> None:
+        """Test that dicts with non-serializable values fall back to str()."""
+        block = {"type": "data", "value": object()}
+        result = _format_content_block(block)
+        assert "type" in result

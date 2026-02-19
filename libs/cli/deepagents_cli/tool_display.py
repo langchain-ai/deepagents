@@ -24,9 +24,9 @@ def _format_timeout(seconds: int) -> str:
     Returns:
         Human-readable timeout string (e.g., '5m', '1h', '300s').
     """
-    if seconds < 60:  # noqa: PLR2004
+    if seconds < 60:  # noqa: PLR2004  # Time unit boundary
         return f"{seconds}s"
-    if seconds < 3600 and seconds % 60 == 0:  # noqa: PLR2004
+    if seconds < 3600 and seconds % 60 == 0:  # noqa: PLR2004  # Time unit boundaries
         return f"{seconds // 60}m"
     if seconds % 3600 == 0:
         return f"{seconds // 3600}h"
@@ -91,8 +91,7 @@ def format_tool_display(tool_name: str, tool_args: dict) -> str:
             # If absolute path is reasonable length, use it
             if len(path_str) <= max_length:
                 return path_str
-        except Exception:  # noqa: BLE001
-            # Fallback to original string if any error
+        except Exception:  # noqa: BLE001  # Fallback to original string on any path resolution error
             return truncate_value(path_str, max_length)
         else:
             # Otherwise, just show basename (filename only)
@@ -187,7 +186,30 @@ def format_tool_display(tool_name: str, tool_args: dict) -> str:
     return f"{prefix} {tool_name}({args_str})"
 
 
-def format_tool_message_content(content: Any) -> str:  # noqa: ANN401
+def _format_content_block(block: dict) -> str:
+    """Format a single content block dict for display.
+
+    Replaces large binary payloads (e.g. base64 image data) with a
+    human-readable placeholder so they don't flood the terminal.
+
+    Args:
+        block: An `ImageContentBlock` dictionary.
+
+    Returns:
+        A display-friendly string for the block.
+    """
+    if block.get("type") == "image" and isinstance(block.get("base64"), str):
+        b64 = block["base64"]
+        size_kb = len(b64) * 3 // 4 // 1024  # approximate decoded size
+        mime = block.get("mime_type", "image")
+        return f"[Image: {mime}, ~{size_kb}KB]"
+    try:
+        return json.dumps(block)
+    except (TypeError, ValueError):
+        return str(block)
+
+
+def format_tool_message_content(content: Any) -> str:  # noqa: ANN401  # Content can be str, list, or dict
     """Convert `ToolMessage` content into a printable string.
 
     Returns:
@@ -200,6 +222,8 @@ def format_tool_message_content(content: Any) -> str:  # noqa: ANN401
         for item in content:
             if isinstance(item, str):
                 parts.append(item)
+            elif isinstance(item, dict):
+                parts.append(_format_content_block(item))
             else:
                 try:
                     parts.append(json.dumps(item))

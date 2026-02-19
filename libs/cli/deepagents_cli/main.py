@@ -52,14 +52,14 @@ def check_cli_dependencies() -> None:
         missing.append("textual")
 
     if missing:
-        print("\n❌ Missing required CLI dependencies!")
-        print("\nThe following packages are required to use the deepagents CLI:")
+        print("\n❌ Missing required CLI dependencies!")  # noqa: T201  # CLI output for missing dependencies
+        print("\nThe following packages are required to use the deepagents CLI:")  # noqa: T201  # CLI output for missing dependencies
         for pkg in missing:
-            print(f"  - {pkg}")
-        print("\nPlease install them with:")
-        print("  pip install deepagents[cli]")
-        print("\nOr install all dependencies:")
-        print("  pip install 'deepagents[cli]'")
+            print(f"  - {pkg}")  # noqa: T201  # CLI output for missing dependencies
+        print("\nPlease install them with:")  # noqa: T201  # CLI output for missing dependencies
+        print("  pip install deepagents[cli]")  # noqa: T201  # CLI output for missing dependencies
+        print("\nOr install all dependencies:")  # noqa: T201  # CLI output for missing dependencies
+        print("  pip install 'deepagents[cli]'")  # noqa: T201  # CLI output for missing dependencies
         sys.exit(1)
 
 
@@ -187,9 +187,9 @@ def parse_args() -> argparse.Namespace:
             def __call__(
                 self,
                 parser: argparse.ArgumentParser,
-                namespace: argparse.Namespace,  # noqa: ARG002
-                values: str | Sequence[Any] | None,  # noqa: ARG002
-                option_string: str | None = None,  # noqa: ARG002
+                namespace: argparse.Namespace,  # noqa: ARG002  # Required by argparse Action interface
+                values: str | Sequence[Any] | None,  # noqa: ARG002  # Required by argparse Action interface
+                option_string: str | None = None,  # noqa: ARG002  # Required by argparse Action interface
             ) -> None:
                 with contextlib.suppress(BrokenPipeError):
                     help_fn()
@@ -394,11 +394,24 @@ def parse_args() -> argparse.Namespace:
         "Applies to both -n and interactive modes.",
     )
 
+    try:
+        from importlib.metadata import (
+            PackageNotFoundError,
+            version as _pkg_version,
+        )
+
+        sdk_version = _pkg_version("deepagents")
+    except PackageNotFoundError:
+        logger.debug("deepagents SDK package not found in environment")
+        sdk_version = "unknown"
+    except Exception:
+        logger.warning("Unexpected error looking up SDK version", exc_info=True)
+        sdk_version = "unknown"
     parser.add_argument(
         "-v",
         "--version",
         action="version",
-        version=f"deepagents-cli {__version__}",
+        version=f"deepagents-cli {__version__}\ndeepagents (SDK) {sdk_version}",
     )
     parser.add_argument(
         "-h",
@@ -496,7 +509,7 @@ async def run_textual_cli_async(
                     sandbox_id=sandbox_id,
                     setup_script_path=sandbox_setup,
                 )
-                sandbox_backend = sandbox_cm.__enter__()  # noqa: PLC2801
+                sandbox_backend = sandbox_cm.__enter__()  # noqa: PLC2801  # Context manager used without `with` for long-lived sandbox lifecycle
             except (ImportError, ValueError, RuntimeError, NotImplementedError) as e:
                 console.print()
                 console.print("[red]❌ Sandbox creation failed[/red]")
@@ -513,7 +526,7 @@ async def run_textual_cli_async(
                 auto_approve=auto_approve,
                 checkpointer=checkpointer,
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001  # CLI needs robust error handling to show friendly error messages
             error_text = Text("❌ Failed to create agent: ", style="red")
             error_text.append(str(e))
             console.print(error_text)
@@ -639,7 +652,7 @@ def apply_stdin_pipe(args: argparse.Namespace) -> None:
     try:
         os.dup2(tty_fd, 0)
         os.close(tty_fd)
-        sys.stdin = open(0, encoding="utf-8", closefd=False)  # noqa: SIM115
+        sys.stdin = open(0, encoding="utf-8", closefd=False)  # noqa: SIM115  # fd 0 requires open() for TTY restoration
     except OSError:
         console.print(
             "[yellow]Warning:[/yellow] TTY restoration failed. "
@@ -670,6 +683,23 @@ def cli_main() -> None:
     # (before LangChain imports). This ensures agent traces use
     # DEEPAGENTS_LANGSMITH_PROJECT while shell commands use the
     # user's original LANGSMITH_PROJECT (via LocalShellBackend env).
+
+    # Fast path: print version without loading heavy dependencies
+    if len(sys.argv) == 2 and sys.argv[1] in {"-v", "--version"}:  # noqa: PLR2004  # argv length check for fast-path
+        try:
+            from importlib.metadata import (
+                PackageNotFoundError,
+                version as _pkg_version,
+            )
+
+            sdk_version = _pkg_version("deepagents")
+        except PackageNotFoundError:
+            sdk_version = "unknown"
+        except Exception:  # Best-effort SDK version lookup
+            logger.debug("Unexpected error looking up SDK version", exc_info=True)
+            sdk_version = "unknown"
+        print(f"deepagents-cli {__version__}\ndeepagents (SDK) {sdk_version}")  # noqa: T201  # CLI version output
+        sys.exit(0)
 
     # Check dependencies first
     check_cli_dependencies()
@@ -939,7 +969,7 @@ def cli_main() -> None:
                         initial_prompt=getattr(args, "initial_prompt", None),
                     )
                 )
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001  # Top-level error handler for the application
                 error_msg = Text("\nApplication error: ", style="red")
                 error_msg.append(str(e))
                 console.print(error_msg)

@@ -8,7 +8,7 @@ from typing import Annotated, Any, NotRequired, TypedDict, Unpack, cast
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig
-from langchain.agents.middleware.types import AgentMiddleware, ModelRequest, ModelResponse
+from langchain.agents.middleware.types import AgentMiddleware, ContextT, ModelRequest, ModelResponse, ResponseT
 from langchain.chat_models import init_chat_model
 from langchain.tools import BaseTool, ToolRuntime
 from langchain_core.language_models import BaseChatModel
@@ -387,7 +387,7 @@ def _get_subagents_legacy(
     return specs
 
 
-def _build_task_tool(
+def _build_task_tool(  # noqa: C901
     subagents: list[_SubagentSpec],
     task_description: str | None = None,
 ) -> BaseTool:
@@ -649,7 +649,7 @@ class _DeprecatedKwargs(TypedDict, total=False):
     """
 
 
-class SubAgentMiddleware(AgentMiddleware):
+class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
     """Middleware for providing subagents to an agent via a `task` tool.
 
     This middleware adds a `task` tool to the agent that can be used to invoke subagents.
@@ -759,7 +759,7 @@ class SubAgentMiddleware(AgentMiddleware):
         if using_old_api and not using_new_api:
             # Legacy API - build subagents from deprecated args
             subagent_specs = _get_subagents_legacy(
-                default_model=default_model,
+                default_model=default_model,  # ty: ignore[invalid-argument-type]
                 default_tools=default_tools or [],
                 default_middleware=default_middleware,
                 default_interrupt_on=default_interrupt_on,
@@ -842,9 +842,9 @@ class SubAgentMiddleware(AgentMiddleware):
 
     def wrap_model_call(
         self,
-        request: ModelRequest,
-        handler: Callable[[ModelRequest], ModelResponse],
-    ) -> ModelResponse:
+        request: ModelRequest[ContextT],
+        handler: Callable[[ModelRequest[ContextT]], ModelResponse[ResponseT]],
+    ) -> ModelResponse[ResponseT]:
         """Update the system message to include instructions on using subagents."""
         if self.system_prompt is not None:
             new_system_message = append_to_system_message(request.system_message, self.system_prompt)
@@ -853,9 +853,9 @@ class SubAgentMiddleware(AgentMiddleware):
 
     async def awrap_model_call(
         self,
-        request: ModelRequest,
-        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
-    ) -> ModelResponse:
+        request: ModelRequest[ContextT],
+        handler: Callable[[ModelRequest[ContextT]], Awaitable[ModelResponse[ResponseT]]],
+    ) -> ModelResponse[ResponseT]:
         """(async) Update the system message to include instructions on using subagents."""
         if self.system_prompt is not None:
             new_system_message = append_to_system_message(request.system_message, self.system_prompt)

@@ -159,7 +159,7 @@ class ModalProvider(SandboxProvider):
         sandbox_id: str | None = None,
         workdir: str = "/workspace",
         timeout: int = 180,
-        **kwargs: Any,  # noqa: ARG002
+        **kwargs: Any,  # noqa: ARG002  # Required by SandboxFactory interface
     ) -> SandboxBackendProtocol:
         """Get existing or create new Modal sandbox.
 
@@ -178,7 +178,7 @@ class ModalProvider(SandboxProvider):
         import modal
 
         if sandbox_id:
-            sandbox = modal.Sandbox.from_id(sandbox_id=sandbox_id, app=self.app)  # type: ignore[call-arg]
+            sandbox = modal.Sandbox.from_id(sandbox_id=sandbox_id, app=self.app)  # type: ignore[call-arg]  # Modal SDK typing incomplete
         else:
             sandbox = modal.Sandbox.create(app=self.app, workdir=workdir)
 
@@ -192,8 +192,7 @@ class ModalProvider(SandboxProvider):
                     process.wait()
                     if process.returncode == 0:
                         break
-                except Exception:  # noqa: S110, BLE001
-                    # Sandbox not ready yet, continue polling
+                except Exception:  # noqa: S110, BLE001  # Sandbox not ready yet, continue polling
                     pass
                 time.sleep(2)
             else:
@@ -203,7 +202,7 @@ class ModalProvider(SandboxProvider):
 
         return ModalBackend(sandbox)
 
-    def delete(self, *, sandbox_id: str, **kwargs: Any) -> None:  # noqa: ARG002
+    def delete(self, *, sandbox_id: str, **kwargs: Any) -> None:  # noqa: ARG002  # Required by SandboxFactory interface
         """Delete a Modal sandbox.
 
         Args:
@@ -212,5 +211,5 @@ class ModalProvider(SandboxProvider):
         """
         import modal
 
-        sandbox = modal.Sandbox.from_id(sandbox_id=sandbox_id, app=self.app)  # type: ignore[call-arg]
+        sandbox = modal.Sandbox.from_id(sandbox_id=sandbox_id, app=self.app)  # type: ignore[call-arg]  # Modal SDK typing incomplete
         sandbox.terminate()

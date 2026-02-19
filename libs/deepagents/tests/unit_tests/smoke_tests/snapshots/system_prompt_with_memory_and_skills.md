@@ -55,6 +55,13 @@ Writing todos takes time and tokens, use it when it is helpful for managing comp
 - Always use Python type hints
 - Prefer functional programming patterns
 
+
+/memory/user/AGENTS.md
+# User Memory
+
+- Preferred language: Python
+- Always add docstrings to public functions
+
 </agent_memory>
 
 <memory_guidelines>

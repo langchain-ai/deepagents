@@ -105,7 +105,7 @@ def test_system_prompt_with_memory_and_skills(snapshots_dir: Path, *, update_sna
 
     agent = create_deep_agent(
         model=model,
-        memory=["/memory/AGENTS.md"],
+        memory=["/memory/AGENTS.md", "/memory/user/AGENTS.md"],
         skills=["/skills/user/", "/skills/project/"],
     )
 
@@ -142,10 +142,18 @@ description: Systematic code review process following best practices and style g
 - Prefer functional programming patterns
 """
 
+    user_memory_content = """\
+# User Memory
+
+- Preferred language: Python
+- Always add docstrings to public functions
+"""
+
     files = {
         "/skills/user/web-research/SKILL.md": create_file_data(user_skill_content),
         "/skills/project/code-review/SKILL.md": create_file_data(project_skill_content),
         "/memory/AGENTS.md": create_file_data(memory_content),
+        "/memory/user/AGENTS.md": create_file_data(user_memory_content),
     }
 
     agent.invoke({"messages": [HumanMessage(content="hi")], "files": files})

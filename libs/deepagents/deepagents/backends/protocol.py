@@ -158,7 +158,8 @@ class EditResult:
     occurrences: int | None = None
 
 
-class BackendProtocol(abc.ABC):
+# @abstractmethod to avoid breaking subclasses that only implement a subset
+class BackendProtocol(abc.ABC):  # noqa: B024
     """Protocol for pluggable memory backends (single, unified).
 
     Backends can store files in different locations (state, filesystem, database, etc.)
@@ -332,7 +333,7 @@ class BackendProtocol(abc.ABC):
         file_path: str,
         old_string: str,
         new_string: str,
-        replace_all: bool = False,
+        replace_all: bool = False,  # noqa: FBT001, FBT002
     ) -> EditResult:
         """Perform exact string replacements in an existing file.
 
@@ -355,7 +356,7 @@ class BackendProtocol(abc.ABC):
         file_path: str,
         old_string: str,
         new_string: str,
-        replace_all: bool = False,
+        replace_all: bool = False,  # noqa: FBT001, FBT002
     ) -> EditResult:
         """Async version of edit."""
         return await asyncio.to_thread(self.edit, file_path, old_string, new_string, replace_all)
@@ -448,25 +449,37 @@ class SandboxBackendProtocol(BackendProtocol):
     def execute(
         self,
         command: str,
+        *,
+        timeout: int | None = None,
     ) -> ExecuteResponse:
-        """Execute a command in the process.
+        """Execute a shell command in the sandbox environment.
 
         Simplified interface optimized for LLM consumption.
 
         Args:
             command: Full shell command string to execute.
+            timeout: Maximum time in seconds to wait for the command to complete.
+
+                If None, uses the backend's default timeout.
+
+                Callers should provide positive integer values for portable
+                behavior across backends.
 
         Returns:
-            ExecuteResponse with combined output, exit code, optional signal, and truncation flag.
+            ExecuteResponse with combined output, exit code, and truncation flag.
         """
         raise NotImplementedError
 
     async def aexecute(
         self,
         command: str,
+        *,
+        # ASYNC109 - timeout is a semantic parameter forwarded to the sync
+        # implementation, not an asyncio.timeout() contract.
+        timeout: int | None = None,  # noqa: ASYNC109
     ) -> ExecuteResponse:
         """Async version of execute."""
-        return await asyncio.to_thread(self.execute, command)
+        return await asyncio.to_thread(self.execute, command, timeout=timeout)
 
 
 BackendFactory: TypeAlias = Callable[[ToolRuntime], BackendProtocol]

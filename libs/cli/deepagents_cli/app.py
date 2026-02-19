@@ -16,7 +16,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from rich.text import Text
 from textual.app import App
 from textual.binding import Binding, BindingType
@@ -25,7 +24,6 @@ from textual.css.query import NoMatches
 from textual.screen import ModalScreen
 from textual.widgets import Static
 
-from deepagents_cli.agent import create_cli_agent
 from deepagents_cli.clipboard import copy_selection_to_clipboard
 from deepagents_cli.config import (
     DOCS_URL,
@@ -38,15 +36,7 @@ from deepagents_cli.config import (
     is_shell_command_allowed,
     settings,
 )
-from deepagents_cli.model_config import (
-    ModelConfigError,
-    ModelSpec,
-    clear_default_model,
-    get_credential_env_var,
-    has_provider_credentials,
-    save_default_model,
-    save_recent_model,
-)
+from deepagents_cli.model_config import ModelSpec, save_recent_model
 from deepagents_cli.textual_adapter import TextualUIAdapter, execute_task_textual
 from deepagents_cli.widgets.approval import ApprovalMenu
 from deepagents_cli.widgets.autocomplete import SLASH_COMMAND_KEYWORDS
@@ -77,7 +67,7 @@ if TYPE_CHECKING:
     from langgraph.checkpoint.base import BaseCheckpointSaver
     from langgraph.pregel import Pregel
     from textual.app import ComposeResult
-    from textual.events import Click, MouseUp, Resize
+    from textual.events import Click, MouseUp, Paste, Resize
     from textual.scrollbar import ScrollUp
     from textual.widget import Widget
     from textual.worker import Worker
@@ -454,6 +444,11 @@ class DeepAgentsApp(App):
         self._processing_pending = False
         # Message virtualization store
         self._message_store = MessageStore()
+        # Lazily imported here to avoid pulling image dependencies into
+        # argument parsing paths.
+        from deepagents_cli.input import ImageTracker
+
+        self._image_tracker = ImageTracker()
 
     def compose(self) -> ComposeResult:
         """Compose the application layout.
@@ -467,7 +462,11 @@ class DeepAgentsApp(App):
             yield WelcomeBanner(thread_id=self._lc_thread_id, id="welcome-banner")
             yield Container(id="messages")
             with Container(id="bottom-app-container"):
-                yield ChatInput(cwd=self._cwd, id="input-area")
+                yield ChatInput(
+                    cwd=self._cwd,
+                    image_tracker=self._image_tracker,
+                    id="input-area",
+                )
             yield Static(id="chat-spacer")  # Fills remaining space below input
 
         # Status bar at bottom
@@ -513,6 +512,28 @@ class DeepAgentsApp(App):
 
         # Focus the input (autocomplete is now built into ChatInput)
         self._chat_input.focus_input()
+
+        # Warn about missing optional tools (advisory only — never block startup)
+        try:
+            from deepagents_cli.main import (
+                check_optional_tools,
+                format_tool_warning_tui,
+            )
+        except ImportError:
+            logger.warning(
+                "Could not import optional tools checker; skipping tool warnings",
+                exc_info=True,
+            )
+        else:
+            try:
+                for tool in check_optional_tools():
+                    self.notify(
+                        format_tool_warning_tui(tool),
+                        severity="warning",
+                        timeout=15,
+                    )
+            except Exception:
+                logger.debug("Failed to check for optional tools", exc_info=True)
 
         # Size the spacer to fill remaining viewport below input
         self.call_after_refresh(self._size_initial_spacer)
@@ -577,7 +598,7 @@ class DeepAgentsApp(App):
         # Sticky scroll: only scroll to bottom if user is near the bottom
         # "Near" means within 100 pixels of the bottom (about 6-7 lines)
         distance_from_bottom = chat.max_scroll_y - chat.scroll_y
-        if distance_from_bottom < 100:
+        if distance_from_bottom < 100:  # noqa: PLR2004  # Token count threshold
             chat.scroll_end(animate=False)
 
     def _check_hydration_needed(self) -> None:
@@ -778,7 +799,7 @@ class DeepAgentsApp(App):
 
     async def _request_approval(
         self,
-        action_requests: Any,
+        action_requests: Any,  # noqa: ANN401  # ActionRequest uses dynamic typing
         assistant_id: str | None,
     ) -> asyncio.Future:
         """Request user approval inline in the messages area.
@@ -831,14 +852,14 @@ class DeepAgentsApp(App):
                         )
                         await self._mount_before_queued(messages, auto_msg)
                     self._scroll_chat_to_bottom()
-                except Exception:  # noqa: S110
+                except Exception:  # noqa: S110, BLE001  # Resilient auto-message display
                     pass  # Don't fail if we can't show the message
 
                 return result_future
 
         # If there's already a pending approval, wait for it to complete first
         if self._pending_approval_widget is not None:
-            while self._pending_approval_widget is not None:
+            while self._pending_approval_widget is not None:  # noqa: ASYNC110  # Simple polling is sufficient here
                 await asyncio.sleep(0.1)
 
         # Create menu with unique ID to avoid conflicts
@@ -902,7 +923,7 @@ class DeepAgentsApp(App):
     async def on_chat_input_submitted(self, event: ChatInput.Submitted) -> None:
         """Handle submitted input from ChatInput widget."""
         value = event.value
-        mode: InputMode = event.mode  # type: ignore[assignment]
+        mode: InputMode = event.mode  # type: ignore[assignment]  # Textual event mode is str at type level but InputMode at runtime
 
         # Reset quit pending state on any input
         self._quit_pending = False
@@ -924,7 +945,7 @@ class DeepAgentsApp(App):
 
     async def on_approval_menu_decided(
         self,
-        event: Any,
+        event: Any,  # noqa: ARG002, ANN401  # Textual event handler signature
     ) -> None:
         """Handle approval menu decision - remove from messages and refocus input."""
         # Remove ApprovalMenu using stored reference
@@ -1024,7 +1045,7 @@ class DeepAgentsApp(App):
                 asyncio.to_thread(build_langsmith_thread_url, thread_id),
                 timeout=2.0,
             )
-        except (TimeoutError, Exception):
+        except (TimeoutError, Exception):  # noqa: BLE001  # Resilient non-interactive mode error handling
             url = None
 
         if url:
@@ -1114,15 +1135,34 @@ class DeepAgentsApp(App):
             await self._open_url_command(command, cmd)
         elif cmd == "/version":
             await self._mount_message(UserMessage(command))
-            # Show CLI package version
+            # Show CLI and SDK package versions
             try:
-                from deepagents_cli._version import __version__
-
-                await self._mount_message(
-                    AppMessage(f"deepagents version: {__version__}")
+                from deepagents_cli._version import (
+                    __version__ as cli_version,
                 )
+
+                cli_line = f"deepagents-cli version: {cli_version}"
+            except ImportError:
+                logger.debug("deepagents_cli._version module not found")
+                cli_line = "deepagents-cli version: unknown"
             except Exception:
-                await self._mount_message(AppMessage("deepagents version: unknown"))
+                logger.warning("Unexpected error looking up CLI version", exc_info=True)
+                cli_line = "deepagents-cli version: unknown"
+            try:
+                from importlib.metadata import (
+                    PackageNotFoundError,
+                    version as _pkg_version,
+                )
+
+                sdk_version = _pkg_version("deepagents")
+                sdk_line = f"deepagents (SDK) version: {sdk_version}"
+            except PackageNotFoundError:
+                logger.debug("deepagents SDK package not found in environment")
+                sdk_line = "deepagents (SDK) version: unknown"
+            except Exception:
+                logger.warning("Unexpected error looking up SDK version", exc_info=True)
+                sdk_line = "deepagents (SDK) version: unknown"
+            await self._mount_message(AppMessage(f"{cli_line}\n{sdk_line}"))
         elif cmd == "/clear":
             self._pending_messages.clear()
             self._queued_widgets.clear()
@@ -1150,7 +1190,7 @@ class DeepAgentsApp(App):
             await self._mount_message(UserMessage(command))
             if self._token_tracker and self._token_tracker.current_context > 0:
                 count = self._token_tracker.current_context
-                if count >= 1000:
+                if count >= 1000:  # noqa: SIM108, PLR2004  # Readability over ternary for count formatting
                     formatted = f"{count / 1000:.1f}K"
                 else:
                     formatted = str(count)
@@ -1278,8 +1318,13 @@ class DeepAgentsApp(App):
                 session_state=self._session_state,
                 adapter=self._ui_adapter,
                 backend=self._backend,
+                image_tracker=self._image_tracker,
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001  # Resilient tool rendering
+            # Ensure any in-flight tool calls don't remain stuck in "Running..."
+            # when streaming aborts before tool results arrive.
+            if self._ui_adapter:
+                self._ui_adapter.finalize_pending_tools_with_error(f"Agent error: {e}")
             await self._mount_message(ErrorMessage(f"Agent error: {e}"))
         finally:
             # Clean up loading widget and agent state
@@ -1344,6 +1389,12 @@ class DeepAgentsApp(App):
         """
         if not self._agent or not self._lc_thread_id:
             return
+
+        from langchain_core.messages import (
+            AIMessage,
+            HumanMessage,
+            ToolMessage,
+        )
 
         config: RunnableConfig = {"configurable": {"thread_id": self._lc_thread_id}}
 
@@ -1450,7 +1501,7 @@ class DeepAgentsApp(App):
 
             self.set_timer(0.1, scroll_to_end)
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001  # Resilient scroll-to-bottom
             # Don't fail the app if history loading fails
             await self._mount_message(AppMessage(f"Could not load history: {e}"))
 
@@ -1603,13 +1654,19 @@ class DeepAgentsApp(App):
             self.notify("Press Ctrl+C again to quit", timeout=3)
 
     def action_interrupt(self) -> None:
-        """Handle escape key - interrupt agent, reject approval, or dismiss modal.
+        """Handle escape key.
 
-        This is the primary way to stop a running agent.
+        Dismiss completion popup, dismiss modal, interrupt agent,
+        or reject approval. This is the primary way to stop a
+        running agent.
         """
         # If a modal screen is active, dismiss it
         if isinstance(self.screen, ModalScreen):
             self.screen.dismiss(None)
+            return
+
+        # Close completion popup before interrupting the agent
+        if self._chat_input and self._chat_input.dismiss_completion():
             return
 
         # If agent is running, interrupt it and discard queued messages
@@ -1631,9 +1688,9 @@ class DeepAgentsApp(App):
 
     def exit(
         self,
-        result: Any = None,
+        result: Any = None,  # noqa: ANN401  # Dynamic LangGraph stream result type
         return_code: int = 0,
-        message: Any = None,
+        message: Any = None,  # noqa: ANN401  # Dynamic LangGraph message type
     ) -> None:
         """Exit the app, restoring iTerm2 cursor guide if applicable.
 
@@ -1729,6 +1786,16 @@ class DeepAgentsApp(App):
         if self._pending_approval_widget:
             self._pending_approval_widget.action_select_reject()
 
+    def on_paste(self, event: Paste) -> None:
+        """Route unfocused paste events to chat input for drag/drop reliability."""
+        if not self._chat_input:
+            return
+        if self._pending_approval_widget or self._is_input_focused():
+            return
+        if self._chat_input.handle_external_paste(event.text):
+            event.prevent_default()
+            event.stop()
+
     def on_click(self, _event: Click) -> None:
         """Handle clicks anywhere in the terminal to focus on the command line."""
         if not self._chat_input:
@@ -1738,7 +1805,7 @@ class DeepAgentsApp(App):
             return
         self.call_after_refresh(self._chat_input.focus_input)
 
-    def on_mouse_up(self, event: MouseUp) -> None:
+    def on_mouse_up(self, event: MouseUp) -> None:  # noqa: ARG002  # Textual event handler signature
         """Copy selection to clipboard on mouse release."""
         copy_selection_to_clipboard(self)
 
@@ -1851,7 +1918,7 @@ class DeepAgentsApp(App):
             # Attempt to restore the previous thread's visible history
             try:
                 await self._load_thread_history()
-            except Exception:
+            except Exception:  # noqa: BLE001  # Resilient session state saving
                 logger.debug(
                     "Could not restore previous thread history after "
                     "failed switch to %s",
@@ -1875,6 +1942,13 @@ class DeepAgentsApp(App):
                 for auto-detection.
         """
         logger.info("Switching model to %s", model_spec)
+
+        from deepagents_cli.agent import create_cli_agent
+        from deepagents_cli.model_config import (
+            ModelConfigError,
+            get_credential_env_var,
+            has_provider_credentials,
+        )
 
         # Strip leading colon — treat ":claude-opus-4-6" as "claude-opus-4-6"
         model_spec = model_spec.removeprefix(":")
@@ -2010,6 +2084,8 @@ class DeepAgentsApp(App):
         Args:
             model_spec: The model specification (e.g., `'anthropic:claude-opus-4-6'`).
         """
+        from deepagents_cli.model_config import save_default_model
+
         model_spec = model_spec.removeprefix(":")
 
         parsed = ModelSpec.try_parse(model_spec)
@@ -2033,6 +2109,8 @@ class DeepAgentsApp(App):
         After clearing, future launches fall back to `[models].recent` or
         environment auto-detection.
         """
+        from deepagents_cli.model_config import clear_default_model
+
         if clear_default_model():
             await self._mount_message(
                 AppMessage(

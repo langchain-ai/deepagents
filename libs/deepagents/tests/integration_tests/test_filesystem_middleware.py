@@ -12,7 +12,6 @@ from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
 from deepagents.backends.protocol import ExecuteResponse
 from deepagents.graph import create_deep_agent
 from deepagents.middleware.filesystem import (
-    WRITE_FILE_TOOL_DESCRIPTION,
     FileData,
     FilesystemMiddleware,
     _supports_execution,
@@ -47,7 +46,9 @@ class TestFilesystem:
         assert "pokemon" in response["messages"][1].text.lower()
 
     def test_filesystem_system_prompt_override_with_composite_backend(self):
-        backend = lambda rt: build_composite_state_backend(rt, routes={"/memories/": (StoreBackend)})
+        def backend(rt):
+            return build_composite_state_backend(rt, routes={"/memories/": (StoreBackend)})
+
         agent = create_agent(
             model=ChatAnthropic(model="claude-sonnet-4-20250514"),
             middleware=[
@@ -60,55 +61,6 @@ class TestFilesystem:
         )
         response = agent.invoke({"messages": [HumanMessage(content="What do you like?")]})
         assert "pizza" in response["messages"][1].text.lower()
-
-    def test_filesystem_tool_prompt_override(self):
-        agent = create_agent(
-            model=ChatAnthropic(model="claude-sonnet-4-20250514"),
-            middleware=[
-                FilesystemMiddleware(
-                    backend=StateBackend,
-                    custom_tool_descriptions={
-                        "ls": "Charmander",
-                        "read_file": "Bulbasaur",
-                        "edit_file": "Squirtle",
-                    },
-                )
-            ],
-        )
-        tools = agent.nodes["tools"].bound._tools_by_name
-        assert "ls" in tools
-        assert tools["ls"].description == "Charmander"
-        assert "read_file" in tools
-        assert tools["read_file"].description == "Bulbasaur"
-        assert "write_file" in tools
-        assert tools["write_file"].description == WRITE_FILE_TOOL_DESCRIPTION
-        assert "edit_file" in tools
-        assert tools["edit_file"].description == "Squirtle"
-
-    def test_filesystem_tool_prompt_override_with_longterm_memory(self):
-        agent = create_agent(
-            model=ChatAnthropic(model="claude-sonnet-4-20250514"),
-            middleware=[
-                FilesystemMiddleware(
-                    backend=(lambda rt: build_composite_state_backend(rt, routes={"/memories/": (StoreBackend)})),
-                    custom_tool_descriptions={
-                        "ls": "Charmander",
-                        "read_file": "Bulbasaur",
-                        "edit_file": "Squirtle",
-                    },
-                )
-            ],
-            store=InMemoryStore(),
-        )
-        tools = agent.nodes["tools"].bound._tools_by_name
-        assert "ls" in tools
-        assert tools["ls"].description == "Charmander"
-        assert "read_file" in tools
-        assert tools["read_file"].description == "Bulbasaur"
-        assert "write_file" in tools
-        assert tools["write_file"].description == WRITE_FILE_TOOL_DESCRIPTION
-        assert "edit_file" in tools
-        assert tools["edit_file"].description == "Squirtle"
 
     def test_ls_longterm_without_path(self):
         checkpointer = MemorySaver()
@@ -509,7 +461,10 @@ class TestFilesystem:
     def test_longterm_memory_multiple_tools_deepagent(self):
         checkpointer = MemorySaver()
         store = InMemoryStore()
-        backend = lambda rt: build_composite_state_backend(rt, routes={"/memories/": (StoreBackend)})
+
+        def backend(rt):
+            return build_composite_state_backend(rt, routes={"/memories/": (StoreBackend)})
+
         agent = create_deep_agent(backend=backend, checkpointer=checkpointer, store=store)
         assert_longterm_mem_tools(agent, store)
 
@@ -535,7 +490,7 @@ class TestFilesystem:
         assert response["messages"][2].type == "tool"
         assert len(response["messages"][2].content) < 10000
         assert len(response["files"].keys()) == 1
-        assert any("large_tool_results" in key for key in response["files"].keys())
+        assert any("large_tool_results" in key for key in response["files"])
 
     def test_tool_call_with_tokens_exceeding_custom_limit(self):
         agent = create_agent(
@@ -554,7 +509,7 @@ class TestFilesystem:
         assert response["messages"][2].type == "tool"
         assert len(response["messages"][2].content) < 1500
         assert len(response["files"].keys()) == 1
-        assert any("large_tool_results" in key for key in response["files"].keys())
+        assert any("large_tool_results" in key for key in response["files"])
 
     def test_command_with_tool_call(self):
         agent = create_agent(
@@ -573,7 +528,7 @@ class TestFilesystem:
         assert response["messages"][2].type == "tool"
         assert len(response["messages"][2].content) < 1500
         assert len(response["files"].keys()) == 1
-        assert any("large_tool_results" in key for key in response["files"].keys())
+        assert any("large_tool_results" in key for key in response["files"])
 
     def test_command_with_tool_call_existing_state(self):
         agent = create_agent(
@@ -597,8 +552,8 @@ class TestFilesystem:
         assert response["messages"][2].type == "tool"
         assert len(response["messages"][2].content) < 1500
         assert len(response["files"].keys()) == 2
-        assert any("large_tool_results" in key for key in response["files"].keys())
-        assert "/test.txt" in response["files"].keys()
+        assert any("large_tool_results" in key for key in response["files"])
+        assert "/test.txt" in response["files"]
         assert "research" in response
 
     def test_glob_search_shortterm_only(self):
@@ -900,7 +855,6 @@ class TestFilesystem:
         )
         messages = response["messages"]
         grep_message = next(message for message in messages if message.type == "tool" and message.name == "grep")
-        print(grep_message.content)
         assert "/shortterm_config.py" in grep_message.content
         assert "/memories/longterm_config.py" in grep_message.content
         assert "/shortterm_main.py" not in grep_message.content
@@ -963,7 +917,7 @@ class TestFilesystem:
 
         # Test with sandbox backend (has execution support)
         class MockSandboxBackend(StateBackend):
-            def execute(self, command: str) -> ExecuteResponse:
+            def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
                 return ExecuteResponse(output="test", exit_code=0, truncated=False)
 
         agent_with_sandbox = create_agent(
@@ -1011,7 +965,7 @@ class TestFilesystem:
 
         # Test with sandbox backend (has execution support)
         class MockSandboxBackend(StateBackend):
-            def execute(self, command: str) -> ExecuteResponse:
+            def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
                 return ExecuteResponse(output="test", exit_code=0, truncated=False)
 
         agent_with_sandbox = create_agent(
@@ -1035,7 +989,7 @@ class TestFilesystem:
 
         # Mock sandbox backend
         class MockSandboxBackend(StateBackend):
-            def execute(self, command: str) -> ExecuteResponse:
+            def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
                 return ExecuteResponse(output="test", exit_code=0, truncated=False)
 
         # Create runtimes

@@ -22,7 +22,7 @@ on:
       package:
         required: true
         type: choice
-        description: "Package to release"
+        description: "Package to release (⚠️ For CLI releases, use the release-please flow — see .github/RELEASING.md)"
         options:
           - deepagents
           - deepagents-cli

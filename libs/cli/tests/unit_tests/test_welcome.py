@@ -83,7 +83,7 @@ class TestBuildBannerThreadLink:
         thread_id_end = thread_id_start + len("99999")
         links = _extract_links(banner, thread_id_start, thread_id_end)
         assert links, "Expected a link style on the thread ID text"
-        assert links[0] == f"{project_url}/t/99999"
+        assert links[0] == f"{project_url}/t/99999?utm_source=deepagents-cli"
 
     def test_no_thread_line_when_thread_id_is_none(self) -> None:
         """Banner should not contain a thread line when `thread_id` is `None`."""
@@ -126,7 +126,7 @@ class TestBuildBannerThreadLink:
         thread_id_end = thread_id_start + len("77777")
         links = _extract_links(banner, thread_id_start, thread_id_end)
         assert links
-        assert links[0] == f"{project_url}/t/77777"
+        assert links[0] == f"{project_url}/t/77777?utm_source=deepagents-cli"
 
 
 class TestUpdateThreadId:
@@ -162,7 +162,7 @@ class TestUpdateThreadId:
         thread_end = thread_start + len("new_id")
         links = _extract_links(banner, thread_start, thread_end)
         assert links
-        assert links[0] == f"{project_url}/t/new_id"
+        assert links[0] == f"{project_url}/t/new_id?utm_source=deepagents-cli"
 
 
 class TestBuildBannerReturnType:

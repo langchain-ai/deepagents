@@ -21,7 +21,9 @@ from deepagents_cli.model_config import (
     clear_default_model,
     get_available_models,
     has_provider_credentials,
+    is_warning_suppressed,
     save_recent_model,
+    suppress_warning,
 )
 
 
@@ -134,6 +136,7 @@ class TestProviderApiKeyEnv:
         assert PROVIDER_API_KEY_ENV["mistralai"] == "MISTRAL_API_KEY"
         assert PROVIDER_API_KEY_ENV["nvidia"] == "NVIDIA_API_KEY"
         assert PROVIDER_API_KEY_ENV["openai"] == "OPENAI_API_KEY"
+        assert PROVIDER_API_KEY_ENV["openrouter"] == "OPENROUTER_API_KEY"
         assert PROVIDER_API_KEY_ENV["perplexity"] == "PPLX_API_KEY"
         assert PROVIDER_API_KEY_ENV["together"] == "TOGETHER_API_KEY"
         assert PROVIDER_API_KEY_ENV["xai"] == "XAI_API_KEY"
@@ -1559,3 +1562,93 @@ recent = "openai:gpt-5.2"
             result = _get_default_model_spec()
 
         assert result == "anthropic:claude-sonnet-4-5-20250929"
+
+
+class TestIsWarningSuppressed:
+    """Tests for is_warning_suppressed() function."""
+
+    def test_returns_true_when_key_present(self, tmp_path) -> None:
+        """Returns True when key is in [warnings].suppress list."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[warnings]\nsuppress = ["ripgrep"]\n')
+
+        assert is_warning_suppressed("ripgrep", config_path) is True
+
+    def test_returns_false_when_key_absent(self, tmp_path) -> None:
+        """Returns False when key is not in [warnings].suppress list."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[warnings]\nsuppress = ["other"]\n')
+
+        assert is_warning_suppressed("ripgrep", config_path) is False
+
+    def test_returns_false_when_file_missing(self, tmp_path) -> None:
+        """Returns False when config file does not exist."""
+        config_path = tmp_path / "nonexistent.toml"
+
+        assert is_warning_suppressed("ripgrep", config_path) is False
+
+    def test_returns_false_on_corrupt_toml(self, tmp_path) -> None:
+        """Returns False when config file has invalid TOML."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[[invalid toml")
+
+        assert is_warning_suppressed("ripgrep", config_path) is False
+
+    def test_returns_false_when_no_warnings_section(self, tmp_path) -> None:
+        """Returns False when config has no [warnings] section."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[models]\ndefault = "some:model"\n')
+
+        assert is_warning_suppressed("ripgrep", config_path) is False
+
+
+class TestSuppressWarning:
+    """Tests for suppress_warning() function."""
+
+    def test_creates_file_with_key(self, tmp_path) -> None:
+        """Creates config file with [warnings].suppress list."""
+        config_path = tmp_path / "config.toml"
+
+        result = suppress_warning("ripgrep", config_path)
+
+        assert result is True
+        assert config_path.exists()
+        assert is_warning_suppressed("ripgrep", config_path) is True
+
+    def test_adds_to_existing_list(self, tmp_path) -> None:
+        """Adds key to existing [warnings].suppress list."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[warnings]\nsuppress = ["other"]\n')
+
+        result = suppress_warning("ripgrep", config_path)
+
+        assert result is True
+        assert is_warning_suppressed("other", config_path) is True
+        assert is_warning_suppressed("ripgrep", config_path) is True
+
+    def test_deduplicates(self, tmp_path) -> None:
+        """Does not add duplicate entries."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[warnings]\nsuppress = ["ripgrep"]\n')
+
+        suppress_warning("ripgrep", config_path)
+
+        import tomllib
+
+        with config_path.open("rb") as f:
+            data = tomllib.load(f)
+        assert data["warnings"]["suppress"].count("ripgrep") == 1
+
+    def test_preserves_other_config(self, tmp_path) -> None:
+        """Preserves existing config sections when adding suppression."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[models]\ndefault = "some:model"\n')
+
+        suppress_warning("ripgrep", config_path)
+
+        import tomllib
+
+        with config_path.open("rb") as f:
+            data = tomllib.load(f)
+        assert data["models"]["default"] == "some:model"
+        assert "ripgrep" in data["warnings"]["suppress"]

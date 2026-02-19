@@ -14,6 +14,8 @@ from acp.schema import (
     PermissionOption,
     RequestPermissionResponse,
     ResourceContentBlock,
+    SessionMode,
+    SessionModeState,
     TextContentBlock,
     TextResourceContents,
     ToolCallUpdate,
@@ -22,12 +24,13 @@ from deepagents import create_deep_agent
 from langchain.agents import create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware
 from langchain.tools import ToolRuntime
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 from langchain_core.tools import tool
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import interrupt
 
-from deepagents_acp.server import AgentServerACP
+from deepagents_acp.server import AgentServerACP, AgentSessionContext
 from tests.chat_model import GenericFakeChatModel
 
 
@@ -290,23 +293,24 @@ async def test_acp_agent_tool_call_chunk_starts_tool_call() -> None:
 
     session = await agent.new_session(cwd="/tmp", mcp_servers=[])
 
-    class ToolChunkCarrier:
-        tool_call_chunks = [
+    msg = AIMessageChunk(
+        content="",
+        tool_call_chunks=[
             {
                 "id": "call_123",
                 "name": "read_file",
                 "args": '{"file_path": "/tmp/x.txt"}',
                 "index": 0,
             }
-        ]
-        content = ""
+        ],
+    )
 
     active_tool_calls: dict[str, Any] = {}
     tool_call_accumulator: dict[int, Any] = {}
 
     await agent._process_tool_call_chunks(
         session_id=session.session_id,
-        message_chunk=ToolChunkCarrier(),
+        message_chunk=msg,
         active_tool_calls=active_tool_calls,
         tool_call_accumulator=tool_call_accumulator,
     )
@@ -326,14 +330,28 @@ async def test_acp_agent_tool_result_completes_tool_call() -> None:
 
     session = await agent.new_session(cwd="/tmp", mcp_servers=[])
 
-    msg = ToolMessage(content="result", tool_call_id="call_1")
-    agent._cancelled = True
+    tool_start = AIMessageChunk(
+        content="",
+        tool_call_chunks=[
+            {
+                "id": "call_1",
+                "name": "execute",
+                "args": '{"command": "echo hi"}',
+                "index": 0,
+            }
+        ],
+    )
+    tool_result = ToolMessage(
+        content="hi\n[Command succeeded with exit code 0]",
+        tool_call_id="call_1",
+    )
 
-    async def one_chunk(*args: Any, **kwargs: Any):
-        yield ((), "messages", (msg, {}))
+    async def graph_astream(*args: Any, **kwargs: Any):
+        yield ((), "messages", (tool_start, {}))
+        yield ((), "messages", (tool_result, {}))
 
     class Graph:
-        astream = one_chunk
+        astream = graph_astream
 
         async def aget_state(self, config: Any) -> Any:
             class S:
@@ -348,6 +366,13 @@ async def test_acp_agent_tool_result_completes_tool_call() -> None:
         [TextContentBlock(type="text", text="hi")], session_id=session.session_id
     )
     assert resp.stop_reason == "end_turn"
+
+    tool_call_events = [
+        e
+        for e in client.events
+        if e["type"] == "session_update" and getattr(e["update"], "tool_call_id", None) == "call_1"
+    ]
+    assert tool_call_events
 
 
 async def test_acp_agent_multimodal_prompt_blocks_do_not_error() -> None:
@@ -439,6 +464,169 @@ async def test_acp_agent_end_to_end_clears_plan() -> None:
 
     plan_clear_updates = [u for u in plan_updates if getattr(u, "entries", None) == []]
     assert plan_clear_updates
+
+
+async def test_acp_agent_hitl_approve_always_execute_auto_approves_next_time() -> None:
+    model = GenericFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "execute",
+                            "args": {"command": "python -m pytest -q"},
+                            "id": "call_1",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="done"),
+            ]
+        ),
+        stream_delimiter=None,
+    )
+    graph = create_deep_agent(
+        model=model,
+        middleware=[HumanInTheLoopMiddleware(interrupt_on={"execute": True})],
+        checkpointer=MemorySaver(),
+    )
+
+    agent = AgentServerACP(agent=graph)
+    client = FakeACPClient(permission_outcomes=["approve_always"])
+    agent.on_connect(client)  # type: ignore[arg-type]
+
+    session = await agent.new_session(cwd="/tmp", mcp_servers=[])
+
+    resp = await agent.prompt(
+        [TextContentBlock(type="text", text="hi")], session_id=session.session_id
+    )
+    assert resp.stop_reason == "end_turn"
+
+    permission_requests = [e for e in client.events if e["type"] == "request_permission"]
+    assert len(permission_requests) == 1
+    assert permission_requests[0]["tool_call"].title.startswith("Execute:")
+
+    assert session.session_id in agent._allowed_command_types
+    assert ("execute", "python -m pytest") in agent._allowed_command_types[session.session_id]
+
+    client.events = []
+    state = type("S", (), {"next": ("x",), "interrupts": []})()
+    interrupt = type(
+        "I",
+        (),
+        {
+            "id": "int_2",
+            "value": {
+                "action_requests": [{"name": "execute", "args": {"command": "python -m pytest -q"}}]
+            },
+        },
+    )()
+    state.interrupts = [interrupt]
+    decisions = await agent._handle_interrupts(current_state=state, session_id=session.session_id)
+    assert decisions == [{"type": "approve"}]
+    assert [e for e in client.events if e["type"] == "request_permission"] == []
+
+
+async def test_acp_agent_hitl_approve_always_tool_auto_approves_next_time() -> None:
+    model = GenericFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "write_file",
+                            "args": {"file_path": "/tmp/x.txt", "content": "hi"},
+                            "id": "call_1",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="done"),
+            ]
+        ),
+        stream_delimiter=None,
+    )
+    graph = create_deep_agent(
+        model=model,
+        middleware=[HumanInTheLoopMiddleware(interrupt_on={"write_file": True})],
+        checkpointer=MemorySaver(),
+    )
+
+    agent = AgentServerACP(agent=graph)
+    client = FakeACPClient(permission_outcomes=["approve_always"])
+    agent.on_connect(client)  # type: ignore[arg-type]
+
+    session = await agent.new_session(cwd="/tmp", mcp_servers=[])
+
+    resp = await agent.prompt(
+        [TextContentBlock(type="text", text="hi")], session_id=session.session_id
+    )
+    assert resp.stop_reason == "end_turn"
+
+    assert session.session_id in agent._allowed_command_types
+    assert ("write_file", None) in agent._allowed_command_types[session.session_id]
+
+    client.events = []
+    state = type("S", (), {"next": ("x",), "interrupts": []})()
+    interrupt = type(
+        "I",
+        (),
+        {"id": "int_2", "value": {"action_requests": [{"name": "write_file", "args": {}}]}},
+    )()
+    state.interrupts = [interrupt]
+    decisions = await agent._handle_interrupts(current_state=state, session_id=session.session_id)
+    assert decisions == [{"type": "approve"}]
+    assert [e for e in client.events if e["type"] == "request_permission"] == []
+
+
+async def test_acp_agent_hitl_client_cancel_raises_request_error() -> None:
+    model = GenericFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "write_todos",
+                            "args": {
+                                "todos": [
+                                    {"content": "a", "status": "in_progress"},
+                                    {"content": "b", "status": "pending"},
+                                ]
+                            },
+                            "id": "call_1",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="done"),
+            ]
+        ),
+        stream_delimiter=None,
+    )
+    graph = create_deep_agent(
+        model=model,
+        middleware=[HumanInTheLoopMiddleware(interrupt_on={"write_todos": True})],
+        checkpointer=MemorySaver(),
+    )
+
+    agent = AgentServerACP(agent=graph)
+    client = FakeACPClient(permission_outcomes=[])
+
+    async def request_permission_cancel(*args: Any, **kwargs: Any) -> RequestPermissionResponse:
+        raise RequestError(400, "cancelled")
+
+    client.request_permission = request_permission_cancel  # type: ignore[assignment]
+    agent.on_connect(client)  # type: ignore[arg-type]
+
+    session = await agent.new_session(cwd="/tmp", mcp_servers=[])
+
+    with pytest.raises(RequestError):
+        await agent.prompt(
+            [TextContentBlock(type="text", text="hi")], session_id=session.session_id
+        )
 
 
 async def test_acp_agent_nested_agent_tool_call_returns_final_text() -> None:
@@ -577,3 +765,182 @@ async def test_acp_langchain_create_agent_nested_agent_tool_call_messages() -> N
         await agent.prompt(
             [TextContentBlock(type="text", text="hi")], session_id=session.session_id
         )
+
+
+async def test_set_session_mode_resets_agent_with_new_mode() -> None:
+    """Test that changing session mode properly resets the agent with the new mode context."""
+    # Track which mode was used to create each agent instance
+    created_agents: list[dict[str, Any]] = []
+
+    def agent_factory(context: AgentSessionContext) -> CompiledStateGraph:
+        """Factory that tracks the mode used to create each agent instance."""
+        model = GenericFakeChatModel(
+            messages=iter([AIMessage(content=f"Response in {context.mode} mode")]),
+            stream_delimiter=None,
+        )
+        agent = create_deep_agent(model=model, checkpointer=MemorySaver())
+        created_agents.append({"mode": context.mode, "cwd": context.cwd, "agent": agent})
+        return agent
+
+    modes = SessionModeState(
+        current_mode_id="mode_a",
+        available_modes=[
+            SessionMode(id="mode_a", name="Mode A", description="First mode"),
+            SessionMode(id="mode_b", name="Mode B", description="Second mode"),
+        ],
+    )
+
+    agent_server = AgentServerACP(agent=agent_factory, modes=modes)
+    client = FakeACPClient()
+    agent_server.on_connect(client)  # type: ignore[arg-type]
+
+    # Create a new session - should use default mode "mode_a"
+    session = await agent_server.new_session(cwd="/tmp", mcp_servers=[])
+    session_id = session.session_id
+    assert session.modes is not None
+    assert session.modes.current_mode_id == "mode_a"
+
+    # Trigger agent creation with first prompt
+    await agent_server.prompt(
+        [TextContentBlock(type="text", text="Test in mode A")], session_id=session_id
+    )
+
+    # Verify first agent was created with mode_a
+    assert len(created_agents) == 1
+    assert created_agents[0]["mode"] == "mode_a"
+    assert created_agents[0]["cwd"] == "/tmp"
+
+    # Change the session mode to mode_b
+    await agent_server.set_session_mode(mode_id="mode_b", session_id=session_id)
+
+    # Verify that changing mode created a new agent instance with mode_b
+    assert len(created_agents) == 2
+    assert created_agents[1]["mode"] == "mode_b"
+    assert created_agents[1]["cwd"] == "/tmp"
+
+    # Verify the agent was actually reset (not the same instance)
+    assert created_agents[0]["agent"] is not created_agents[1]["agent"]
+
+    # Make another prompt to ensure the new agent is being used
+    await agent_server.prompt(
+        [TextContentBlock(type="text", text="Test in mode B")], session_id=session_id
+    )
+
+    # Should still be 2 agents (no new one created, just using the existing mode_b agent)
+    assert len(created_agents) == 2
+
+
+async def test_reset_agent_with_compiled_state_graph() -> None:
+    """Test that _reset_agent works correctly when agent_factory is a CompiledStateGraph."""
+    model = GenericFakeChatModel(messages=iter([AIMessage(content="Hello")]), stream_delimiter=None)
+    compiled_graph = create_deep_agent(model=model, checkpointer=MemorySaver())
+
+    agent_server = AgentServerACP(agent=compiled_graph)
+    client = FakeACPClient()
+    agent_server.on_connect(client)  # type: ignore[arg-type]
+
+    session = await agent_server.new_session(cwd="/tmp", mcp_servers=[])
+    session_id = session.session_id
+
+    # Initially agent is None
+    assert agent_server._agent is None
+
+    # Call _reset_agent
+    agent_server._reset_agent(session_id)
+
+    # Agent should now be set to the compiled graph
+    assert agent_server._agent is compiled_graph
+
+
+async def test_reset_agent_preserves_session_cwd() -> None:
+    """Test that _reset_agent uses the correct cwd from session context."""
+    created_cwds: list[str] = []
+
+    def agent_factory(context: AgentSessionContext) -> CompiledStateGraph:
+        """Factory that tracks the cwd used to create each agent instance."""
+        created_cwds.append(context.cwd)
+        model = GenericFakeChatModel(
+            messages=iter([AIMessage(content="OK")]), stream_delimiter=None
+        )
+        return create_deep_agent(model=model, checkpointer=MemorySaver())
+
+    modes = SessionModeState(
+        current_mode_id="default",
+        available_modes=[SessionMode(id="default", name="Default", description="Default mode")],
+    )
+
+    agent_server = AgentServerACP(agent=agent_factory, modes=modes)
+    client = FakeACPClient()
+    agent_server.on_connect(client)  # type: ignore[arg-type]
+
+    # Create session with custom cwd
+    session = await agent_server.new_session(cwd="/custom/path", mcp_servers=[])
+    session_id = session.session_id
+
+    # Trigger agent creation
+    await agent_server.prompt([TextContentBlock(type="text", text="Test")], session_id=session_id)
+
+    # Verify the agent was created with the correct cwd
+    assert len(created_cwds) == 1
+    assert created_cwds[0] == "/custom/path"
+
+    # Change mode (which calls _reset_agent)
+    await agent_server.set_session_mode(mode_id="default", session_id=session_id)
+
+    # Verify the new agent was also created with the same cwd
+    assert len(created_cwds) == 2
+    assert created_cwds[1] == "/custom/path"
+
+
+async def test_acp_agent_hitl_requests_permission_only_once() -> None:
+    """Test that tools requiring approval only prompt the user once, not twice.
+
+    This is a regression test for a bug where _handle_interrupts was called twice
+    for the same interrupt: once during streaming when an __interrupt__ update was
+    detected (line ~515), and again after the stream ended (line ~593). The fix
+    removes the redundant post-stream call since all interrupts are properly handled
+    during streaming via __interrupt__ updates.
+    """
+    model = GenericFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "write_file",
+                            "args": {"file_path": "/tmp/test.txt", "content": "hello"},
+                            "id": "call_1",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="File written successfully"),
+            ]
+        ),
+        stream_delimiter=None,
+    )
+    graph = create_deep_agent(
+        model=model,
+        middleware=[HumanInTheLoopMiddleware(interrupt_on={"write_file": True})],
+        checkpointer=MemorySaver(),
+    )
+
+    agent = AgentServerACP(agent=graph)
+    client = FakeACPClient(permission_outcomes=["approve"])
+    agent.on_connect(client)  # type: ignore[arg-type]
+
+    session = await agent.new_session(cwd="/tmp", mcp_servers=[])
+
+    resp = await agent.prompt(
+        [TextContentBlock(type="text", text="Write a test file")], session_id=session.session_id
+    )
+    assert resp.stop_reason == "end_turn"
+
+    # Count permission requests - should be exactly 1, not 2
+    permission_requests = [e for e in client.events if e["type"] == "request_permission"]
+    assert len(permission_requests) == 1, (
+        f"Expected exactly 1 permission request, got {len(permission_requests)}. "
+        "This indicates the double approval bug has regressed."
+    )
+    assert permission_requests[0]["tool_call"].title == "Write `/tmp/test.txt`"

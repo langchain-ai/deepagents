@@ -62,6 +62,7 @@ if TYPE_CHECKING:
 
     from deepagents.backends import CompositeBackend
     from deepagents.backends.sandbox import SandboxBackendProtocol
+    from langchain_core.language_models import BaseChatModel
     from langchain_core.runnables import RunnableConfig
     from langgraph.checkpoint.base import BaseCheckpointSaver
     from langgraph.pregel import Pregel
@@ -1106,7 +1107,7 @@ class DeepAgentsApp(App):
         elif cmd == "/help":
             await self._mount_message(UserMessage(command))
             help_text = Text(
-                "Commands: /quit, /clear, /model [--default], /remember, "
+                "Commands: /quit, /clear, /compact, /model [--default], /remember, "
                 "/tokens, /threads, /trace, /changelog, /docs, /feedback, /help\n\n"
                 "Interactive Features:\n"
                 "  Enter           Submit your message\n"
@@ -1172,6 +1173,9 @@ class DeepAgentsApp(App):
                 await self._mount_message(
                     AppMessage(f"Started new thread: {new_thread_id}")
                 )
+        elif cmd == "/compact":
+            await self._mount_message(UserMessage(command))
+            await self._handle_compact()
         elif cmd == "/threads":
             await self._show_thread_selector()
         elif cmd == "/trace":
@@ -1253,6 +1257,265 @@ class DeepAgentsApp(App):
                 pass
 
         self.call_after_refresh(_scroll_after_command)
+
+    async def _handle_compact(self) -> None:
+        """Compact the conversation by summarizing old messages.
+
+        Reads messages from agent state, generates a summary via LLM, offloads
+        old messages to backend storage, removes them with `RemoveMessage`, and
+        inserts a summary `HumanMessage` in their place.
+        """
+        if not self._agent or not self._lc_thread_id:
+            await self._mount_message(AppMessage("No active session to compact"))
+            return
+
+        if self._agent_running:
+            await self._mount_message(
+                AppMessage("Cannot compact while agent is running")
+            )
+            return
+
+        from langchain_core.messages import HumanMessage, RemoveMessage
+        from langchain_core.messages.utils import count_tokens_approximately
+
+        config: RunnableConfig = {"configurable": {"thread_id": self._lc_thread_id}}
+
+        try:
+            state = await self._agent.aget_state(config)
+        except Exception as exc:  # noqa: BLE001
+            await self._mount_message(ErrorMessage(f"Failed to read state: {exc}"))
+            return
+
+        if not state or not state.values:
+            await self._mount_message(AppMessage("No active session to compact"))
+            return
+
+        messages = state.values.get("messages", [])
+
+        try:
+            await self._set_spinner("Compacting")
+
+            from deepagents.middleware.summarization import (
+                _compute_summarization_defaults,  # noqa: PLC2701
+            )
+            from langchain.agents.middleware.summarization import (
+                SummarizationMiddleware as LCSummarizationMiddleware,
+            )
+
+            result = create_model()
+            model = result.model
+
+            defaults = _compute_summarization_defaults(model)
+            middleware = LCSummarizationMiddleware(model=model, keep=defaults["keep"])
+            cutoff = middleware._determine_cutoff_index(messages)
+
+            if cutoff == 0:
+                await self._mount_message(
+                    AppMessage(
+                        "Nothing to compact yet"
+                        " \u2014 conversation is within the token budget"
+                    )
+                )
+                return
+
+            to_summarize, to_keep = middleware._partition_messages(messages, cutoff)
+
+            tokens_before = count_tokens_approximately(messages)
+
+            # Generate summary first so no side effects occur if the LLM fails
+            summary = await self._generate_compact_summary(to_summarize, model=model)
+
+            file_path = await self._offload_messages_for_compact(to_summarize)
+
+            # Build summary HumanMessage using the same format as
+            # SummarizationMiddleware._build_new_messages_with_path so the
+            # middleware can recognize and filter it in future events.
+            # If that template changes, this must be updated to match.
+            if file_path is not None:
+                content = (
+                    "You are in the middle of a conversation "
+                    "that has been summarized.\n\n"
+                    "The full conversation history has been "
+                    f"saved to {file_path} "
+                    "should you need to refer back to it "
+                    "for details.\n\n"
+                    "A condensed summary follows:\n\n"
+                    f"<summary>\n{summary}\n</summary>"
+                )
+            else:
+                content = "Here is a summary of the conversation to date:\n\n" + summary
+
+            summary_msg = HumanMessage(
+                content=content,
+                additional_kwargs={"lc_source": "summarization"},
+            )
+
+            remove_ops = [RemoveMessage(id=msg.id) for msg in to_summarize if msg.id]
+            skipped = len(to_summarize) - len(remove_ops)
+            if skipped:
+                logger.warning(
+                    "Skipped %d messages without IDs during compaction", skipped
+                )
+            await self._agent.aupdate_state(
+                config, {"messages": [*remove_ops, summary_msg]}
+            )
+
+            # Clear any existing middleware summarization state so it doesn't
+            # apply a stale cutoff index on the next model invocation.
+            await self._agent.aupdate_state(config, {"_summarization_event": None})
+
+            await self._clear_messages()
+            await self._load_thread_history()
+
+            tokens_after = count_tokens_approximately([summary_msg, *to_keep])
+
+            def _fmt_tokens(n: int) -> str:
+                if n >= 1000:  # noqa: PLR2004
+                    return f"{n / 1000:.1f}K"
+                return str(n)
+
+            before = _fmt_tokens(tokens_before)
+            after = _fmt_tokens(tokens_after)
+            await self._mount_message(
+                AppMessage(
+                    f"Compacted {len(remove_ops)} messages "
+                    f"({before} \u2192 {after} tokens)"
+                )
+            )
+
+            # Approximate token count from message content only (does not
+            # include system prompts or tool definitions). The next agent
+            # turn will set the real count from usage_metadata.
+            if self._token_tracker:
+                self._token_tracker.add(tokens_after)
+
+        except Exception as exc:
+            logger.exception("Compaction failed")
+            await self._mount_message(ErrorMessage(f"Compaction failed: {exc}"))
+        finally:
+            with suppress(Exception):
+                await self._set_spinner(None)
+
+    async def _offload_messages_for_compact(self, messages: list[Any]) -> str | None:
+        """Write messages to backend storage before compaction.
+
+        Appends messages as a timestamped markdown section to the conversation
+        history file, matching the `SummarizationMiddleware` offload pattern.
+
+        Args:
+            messages: Messages to offload.
+
+        Returns:
+            File path where history was stored, or `None` if there were no
+            non-summary messages to offload or the write failed.
+        """
+        from datetime import UTC, datetime
+
+        from langchain_core.messages import HumanMessage, get_buffer_string
+
+        path = f"/conversation_history/{self._lc_thread_id}.md"
+
+        # Filter out previous summary messages
+        filtered = [
+            m
+            for m in messages
+            if not (
+                isinstance(m, HumanMessage)
+                and m.additional_kwargs.get("lc_source") == "summarization"
+            )
+        ]
+        if not filtered:
+            return None
+
+        timestamp = datetime.now(UTC).isoformat()
+        buf = get_buffer_string(filtered)
+        new_section = f"## Compacted at {timestamp}\n\n{buf}\n\n"
+
+        try:
+            existing_content = ""
+            responses = await self._backend.adownload_files([path])
+            resp = responses[0] if responses else None
+            if resp and resp.content is not None and resp.error is None:
+                existing_content = resp.content.decode("utf-8")
+        except Exception:
+            logger.warning(
+                "Failed to read existing history at %s; proceeding with empty base",
+                path,
+                exc_info=True,
+            )
+
+        combined = existing_content + new_section
+
+        try:
+            result = (
+                await self._backend.aedit(path, existing_content, combined)
+                if existing_content
+                else await self._backend.awrite(path, combined)
+            )
+            if result is None or result.error:
+                logger.warning("Failed to offload compact history to %s", path)
+                return None
+        except Exception:
+            logger.warning(
+                "Exception offloading compact history to %s",
+                path,
+                exc_info=True,
+            )
+            return None
+
+        logger.debug("Offloaded %d messages to %s", len(filtered), path)
+        return path
+
+    async def _generate_compact_summary(  # noqa: PLR6301
+        self,
+        messages: list[Any],
+        *,
+        model: BaseChatModel | None = None,
+    ) -> str:
+        """Generate a summary of messages using the configured default model.
+
+        Args:
+            messages: Messages to summarize.
+            model: Pre-created model instance. If not provided, a new model
+                is created via `create_model()`.
+
+        Returns:
+            Summary text from the LLM.
+
+        Raises:
+            RuntimeError: If the model returns an empty or non-text summary.
+
+        Note:
+            `ModelConfigError` from `create_model()` and network/auth errors
+            from model invocation propagate to the caller.
+        """
+        from langchain.agents.middleware.summarization import DEFAULT_SUMMARY_PROMPT
+        from langchain_core.messages import HumanMessage, get_buffer_string
+
+        if model is None:
+            model = create_model().model
+
+        conversation_text = get_buffer_string(messages)
+        prompt = DEFAULT_SUMMARY_PROMPT.format(conversation=conversation_text)
+
+        response = await model.ainvoke([HumanMessage(content=prompt)])
+
+        content = response.content
+        if isinstance(content, list):
+            # Handle content block lists (e.g. from Anthropic)
+            text_parts = []
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    text_parts.append(block.get("text", ""))
+                elif isinstance(block, str):
+                    text_parts.append(block)
+            content = "".join(text_parts)
+
+        if not isinstance(content, str) or not content.strip():
+            msg = "Model returned empty summary"
+            raise RuntimeError(msg)
+
+        return content.strip()
 
     async def _handle_user_message(self, message: str) -> None:
         """Handle a user message to send to the agent.

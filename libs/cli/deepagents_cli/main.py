@@ -526,10 +526,14 @@ async def run_textual_cli_async(
                 auto_approve=auto_approve,
                 checkpointer=checkpointer,
             )
-        except Exception as e:  # noqa: BLE001  # CLI needs robust error handling to show friendly error messages
+        except Exception as e:
+            logger.debug("Failed to create agent", exc_info=True)
             error_text = Text("❌ Failed to create agent: ", style="red")
             error_text.append(str(e))
             console.print(error_text)
+            console.print(
+                Text(traceback.format_exc(), style="dim"),
+            )
             sys.exit(1)
 
         # Run Textual app - errors propagate to caller

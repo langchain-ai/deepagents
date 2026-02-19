@@ -43,6 +43,9 @@ from deepagents_cli.subagents import list_subagents
 DEFAULT_AGENT_NAME = "agent"
 """The default agent name used when no `-a` flag is provided."""
 
+REQUIRE_COMPACT_TOOL_APPROVAL: bool = False
+"""When `True`, `compact_conversation` requires HITL approval like other gated tools."""
+
 
 def list_agents() -> None:
     """List all available agents."""
@@ -318,6 +321,17 @@ def _format_execute_description(
     return f"Execute Command: {command}\nWorking Directory: {Path.cwd()}"
 
 
+def _format_compact_description(
+    _tool_call: ToolCall, _state: AgentState[Any], _runtime: Runtime[Any]
+) -> str:
+    """Format compact_conversation tool call for approval prompt.
+
+    Returns:
+        Formatted description string for the `compact_conversation` tool call.
+    """
+    return "Action: Compact conversation by summarizing older messages"
+
+
 def _add_interrupt_on() -> dict[str, InterruptOnConfig]:
     """Configure human-in-the-loop interrupt settings for all gated tools.
 
@@ -359,7 +373,7 @@ def _add_interrupt_on() -> dict[str, InterruptOnConfig]:
         "description": _format_task_description,  # type: ignore[typeddict-item]  # Callable description narrower than TypedDict expects
     }
 
-    return {
+    interrupt_map: dict[str, InterruptOnConfig] = {
         "execute": execute_interrupt_config,
         "write_file": write_file_interrupt_config,
         "edit_file": edit_file_interrupt_config,
@@ -367,6 +381,14 @@ def _add_interrupt_on() -> dict[str, InterruptOnConfig]:
         "fetch_url": fetch_url_interrupt_config,
         "task": task_interrupt_config,
     }
+
+    if REQUIRE_COMPACT_TOOL_APPROVAL:
+        interrupt_map["compact_conversation"] = {  # type: ignore[invalid-assignment]
+            "allowed_decisions": ["approve", "reject"],
+            "description": _format_compact_description,  # type: ignore[typeddict-item]  # Callable description narrower than TypedDict expects
+        }
+
+    return interrupt_map
 
 
 def create_cli_agent(
@@ -566,6 +588,11 @@ def create_cli_agent(
             default=backend,
             routes={},
         )
+
+    # Add compact tool middleware (agent-initiated compaction)
+    from deepagents_cli.compact_tool import CompactToolMiddleware
+
+    agent_middleware.append(CompactToolMiddleware(backend=composite_backend))
 
     # Create the agent
     # Use provided checkpointer or fallback to InMemorySaver

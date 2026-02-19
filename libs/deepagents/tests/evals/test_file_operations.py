@@ -111,6 +111,7 @@ def test_edit_file_replace_text(model: str) -> None:
     trajectory = run_agent(
         agent,
         initial_files={"/note.md": "cat cat cat\n"},
+        model=model,
         query=(
             "Replace all instances of 'cat' with 'dog' in /note.md, then tell me "
             "how many replacements you made. Do not read the file before editing it."
@@ -147,6 +148,7 @@ def test_avoid_unnecessary_tool_calls(model: str) -> None:
     trajectory = run_agent(
         agent,
         query="What is 2+2? Answer with just the number.",
+        model=model,
         # 1 step: answer directly.
         # 0 tool calls: no files/tools needed.
         expect=TrajectoryExpectations(num_agent_steps=1, num_tool_call_requests=0),

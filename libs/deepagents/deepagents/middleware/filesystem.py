@@ -234,7 +234,16 @@ Examples:
 Note: This tool is only available if the backend supports execution (SandboxBackendProtocol).
 If execution is not supported, the tool will return an error message."""
 
-FILESYSTEM_SYSTEM_PROMPT = """## Filesystem Tools `ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`
+FILESYSTEM_SYSTEM_PROMPT = """## Following Conventions
+
+- Read files before editing — understand existing content before making changes
+- Mimic existing style, naming conventions, and patterns
+
+## Tool Usage and File Reading
+
+Follow the tool docs for the available tools. In particular, for filesystem tools, use pagination (offset/limit) when reading large files.
+
+## Filesystem Tools `ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`
 
 You have access to a filesystem which you can interact with using these tools.
 All file paths must start with a /.
@@ -952,7 +961,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             if has_execute_tool and backend_supports_execution:
                 prompt_parts.append(EXECUTION_SYSTEM_PROMPT)
 
-            system_prompt = "\n\n".join(prompt_parts)
+            system_prompt = "\n\n".join(prompt_parts).strip()
 
         if system_prompt:
             new_system_message = append_to_system_message(request.system_message, system_prompt)
@@ -1000,7 +1009,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             if has_execute_tool and backend_supports_execution:
                 prompt_parts.append(EXECUTION_SYSTEM_PROMPT)
 
-            system_prompt = "\n\n".join(prompt_parts)
+            system_prompt = "\n\n".join(prompt_parts).strip()
 
         if system_prompt:
             new_system_message = append_to_system_message(request.system_message, system_prompt)

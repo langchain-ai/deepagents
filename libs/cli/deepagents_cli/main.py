@@ -52,7 +52,7 @@ def check_cli_dependencies() -> None:
         missing.append("textual")
 
     if missing:
-        print("\n❌ Missing required CLI dependencies!")  # noqa: T201  # CLI output for missing dependencies
+        print("\nMissing required CLI dependencies!")  # noqa: T201  # CLI output for missing dependencies
         print("\nThe following packages are required to use the deepagents CLI:")  # noqa: T201  # CLI output for missing dependencies
         for pkg in missing:
             print(f"  - {pkg}")  # noqa: T201  # CLI output for missing dependencies
@@ -512,7 +512,7 @@ async def run_textual_cli_async(
                 sandbox_backend = sandbox_cm.__enter__()  # noqa: PLC2801  # Context manager used without `with` for long-lived sandbox lifecycle
             except (ImportError, ValueError, RuntimeError, NotImplementedError) as e:
                 console.print()
-                console.print("[red]❌ Sandbox creation failed[/red]")
+                console.print("[red]Sandbox creation failed[/red]")
                 console.print(Text(str(e), style="dim"))
                 sys.exit(1)
 
@@ -527,7 +527,7 @@ async def run_textual_cli_async(
                 checkpointer=checkpointer,
             )
         except Exception as e:  # noqa: BLE001  # CLI needs robust error handling to show friendly error messages
-            error_text = Text("❌ Failed to create agent: ", style="red")
+            error_text = Text("Failed to create agent: ", style="red")
             error_text.append(str(e))
             console.print(error_text)
             sys.exit(1)

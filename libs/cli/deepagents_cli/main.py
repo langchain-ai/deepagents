@@ -526,7 +526,7 @@ async def run_textual_cli_async(
                 auto_approve=auto_approve,
                 checkpointer=checkpointer,
             )
-        except Exception as e:
+        except Exception as e:  # broad catch for friendly CLI errors
             logger.debug("Failed to create agent", exc_info=True)
             error_text = Text("Failed to create agent: ", style="red")
             error_text.append(str(e))

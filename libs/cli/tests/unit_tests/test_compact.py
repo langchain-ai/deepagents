@@ -223,19 +223,25 @@ def _make_messages(n: int) -> list[MagicMock]:
 def _setup_compact_app(
     app: DeepAgentsApp,
     n_messages: int = 10,
+    *,
+    prior_event: dict[str, Any] | None = None,
 ) -> list[MagicMock]:
     """Set up app state for a successful compaction test.
 
     Args:
         app: The app instance to configure.
         n_messages: Number of mock messages to create.
+        prior_event: Optional prior `_summarization_event` to include in state.
 
     Returns:
         The list of mock messages.
     """
     messages = _make_messages(n_messages)
     mock_state = MagicMock()
-    mock_state.values = {"messages": messages}
+    values: dict[str, Any] = {"messages": messages}
+    if prior_event is not None:
+        values["_summarization_event"] = prior_event
+    mock_state.values = values
 
     app._agent = MagicMock()
     app._agent.aget_state = AsyncMock(return_value=mock_state)
@@ -437,6 +443,104 @@ class TestCompactEdgeCases:
             # cutoff called with effective messages (same as raw when no event)
             mock_mw._determine_cutoff_index.assert_called_once_with(messages)
             mock_mw._partition_messages.assert_called_once_with(messages, 4)
+
+
+class TestReCompaction:
+    """Test compaction when a prior _summarization_event already exists."""
+
+    @pytest.mark.asyncio
+    async def test_recompact_calculates_absolute_cutoff(self) -> None:
+        """Re-compaction should compute state_cutoff = old_cutoff + new_cutoff - 1."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            prior_summary = MagicMock()
+            prior_summary.content = "Old summary."
+            prior_summary.additional_kwargs = {"lc_source": "summarization"}
+            prior_event = {
+                "cutoff_index": 5,
+                "summary_message": prior_summary,
+                "file_path": None,
+            }
+            _setup_compact_app(app, n_messages=15, prior_event=prior_event)
+
+            with (
+                _mock_middleware(cutoff=3, summary="New summary."),
+                patch.object(
+                    app,
+                    "_offload_messages_for_compact",
+                    new_callable=AsyncMock,
+                    return_value=None,
+                ),
+                patch(_TOKEN_COUNT_PATH, return_value=500),
+            ):
+                await app._handle_compact()
+                await pilot.pause()
+
+            mock_agent = app._agent
+            assert mock_agent.aupdate_state.call_count == 1  # type: ignore[union-attr]
+
+            update_values = mock_agent.aupdate_state.call_args_list[0][0][1]  # type: ignore[union-attr]
+            event = update_values["_summarization_event"]
+            # old_cutoff(5) + new_cutoff(3) - 1 = 7
+            assert event["cutoff_index"] == 7
+
+
+class TestAgentRunningGuard:
+    """Test that _handle_compact sets _agent_running to prevent races."""
+
+    @pytest.mark.asyncio
+    async def test_agent_running_set_during_compaction(self) -> None:
+        """Should set _agent_running=True during compaction and reset after."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _setup_compact_app(app)
+
+            running_during_compact = []
+
+            original_acreate = AsyncMock(return_value="Summary.")
+
+            async def capture_running(*args: Any, **kwargs: Any) -> str:
+                running_during_compact.append(app._agent_running)
+                return await original_acreate(*args, **kwargs)
+
+            with (
+                _mock_middleware(cutoff=4) as mock_mw,
+                patch.object(
+                    app,
+                    "_offload_messages_for_compact",
+                    new_callable=AsyncMock,
+                    return_value=None,
+                ),
+                patch(_TOKEN_COUNT_PATH, return_value=500),
+            ):
+                mock_mw._acreate_summary = AsyncMock(side_effect=capture_running)
+                await app._handle_compact()
+                await pilot.pause()
+
+            # _agent_running should have been True during summary generation
+            assert running_during_compact == [True]
+            # And reset after completion
+            assert app._agent_running is False
+
+    @pytest.mark.asyncio
+    async def test_agent_running_reset_after_failure(self) -> None:
+        """Should reset _agent_running=False even when compaction fails."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _setup_compact_app(app)
+
+            with _mock_middleware(cutoff=4) as mock_mw:
+                mock_mw._acreate_summary = AsyncMock(
+                    side_effect=RuntimeError("model down")
+                )
+                await app._handle_compact()
+                await pilot.pause()
+
+            assert app._agent_running is False
 
 
 class TestCompactErrorHandling:

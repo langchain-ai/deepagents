@@ -1260,9 +1260,9 @@ class DeepAgentsApp(App):
     async def _handle_compact(self) -> None:
         """Compact the conversation by summarizing old messages.
 
-        Sets a `_summarization_event` in state so that `SummarizationMiddleware`
-        virtually hides old messages on the next model call. Messages stay in
-        state but are replaced by a summary from the model's perspective.
+        Writes a `_summarization_event` into the agent's checkpointed state.
+        On the next model call, `SummarizationMiddleware.wrap_model_call` reads
+        this event and replaces older messages with the summary.
         """
         if not self._agent or not self._lc_thread_id or not self._backend:
             await self._mount_message(AppMessage("No active session to compact"))
@@ -1290,6 +1290,8 @@ class DeepAgentsApp(App):
 
         messages = state.values.get("messages", [])
 
+        # Prevent concurrent user input while compaction modifies state
+        self._agent_running = True
         try:
             await self._set_spinner("Compacting")
 
@@ -1307,7 +1309,8 @@ class DeepAgentsApp(App):
                 model=model, backend=self._backend, keep=defaults["keep"]
             )
 
-            # Apply existing event to get effective messages
+            # Rebuild the message list the model would see, accounting for
+            # any prior compaction
             event = state.values.get("_summarization_event")
             effective = middleware._apply_event_to_messages(messages, event)
 
@@ -1335,7 +1338,10 @@ class DeepAgentsApp(App):
                 0
             ]
 
-            # Calculate state cutoff accounting for prior events
+            # The cutoff is relative to the effective message list. When a
+            # prior event exists, translate back to an absolute index by
+            # adding the old cutoff and subtracting 1 (the summary message
+            # at index 0 of the effective list replaces the old prefix).
             state_cutoff = (
                 event["cutoff_index"] + cutoff - 1 if event is not None else cutoff
             )
@@ -1364,9 +1370,9 @@ class DeepAgentsApp(App):
                 )
             )
 
-            # Approximate token count from message content only (does not
-            # include system prompts or tool definitions). The next agent
-            # turn will set the real count from usage_metadata.
+            # Approximate token count via count_tokens_approximately (content
+            # tokens only; excludes system prompts and tool schemas). The next
+            # agent turn replaces this with the real count from usage_metadata.
             if self._token_tracker:
                 self._token_tracker.add(tokens_after)
 
@@ -1374,14 +1380,23 @@ class DeepAgentsApp(App):
             logger.exception("Compaction failed")
             await self._mount_message(ErrorMessage(f"Compaction failed: {exc}"))
         finally:
-            with suppress(Exception):
+            self._agent_running = False
+            try:
                 await self._set_spinner(None)
+            except Exception:
+                logger.debug(
+                    "Failed to dismiss spinner after compaction", exc_info=True
+                )
 
     async def _offload_messages_for_compact(self, messages: list[Any]) -> str | None:
         """Write messages to backend storage before compaction.
 
         Appends messages as a timestamped markdown section to the conversation
         history file, matching the `SummarizationMiddleware` offload pattern.
+
+        Filters out prior summary messages (identified by
+        `lc_source == 'summarization'` in `additional_kwargs`) to avoid
+        storing summaries-of-summaries in the history file.
 
         Args:
             messages: Messages to offload.
@@ -1396,7 +1411,8 @@ class DeepAgentsApp(App):
 
         path = f"/conversation_history/{self._lc_thread_id}.md"
 
-        # Filter out previous summary messages
+        # Exclude prior summaries so the offloaded history contains only
+        # original messages
         filtered = [
             m
             for m in messages
@@ -1412,18 +1428,26 @@ class DeepAgentsApp(App):
         buf = get_buffer_string(filtered)
         new_section = f"## Compacted at {timestamp}\n\n{buf}\n\n"
 
+        existing_content = ""
+        read_failed = False
         try:
-            existing_content = ""
             responses = await self._backend.adownload_files([path])
             resp = responses[0] if responses else None
             if resp and resp.content is not None and resp.error is None:
                 existing_content = resp.content.decode("utf-8")
         except Exception:
             logger.warning(
-                "Failed to read existing history at %s; proceeding with empty base",
+                "Failed to read existing history at %s; aborting offload to "
+                "avoid overwriting prior history",
                 path,
                 exc_info=True,
             )
+            read_failed = True
+
+        # If we failed to read an existing file, don't write — we might
+        # overwrite prior compaction history with only the new section.
+        if read_failed:
+            return None
 
         combined = existing_content + new_section
 
@@ -1434,7 +1458,12 @@ class DeepAgentsApp(App):
                 else await self._backend.awrite(path, combined)
             )
             if result is None or result.error:
-                logger.warning("Failed to offload compact history to %s", path)
+                error_detail = result.error if result else "backend returned None"
+                logger.warning(
+                    "Failed to offload compact history to %s: %s",
+                    path,
+                    error_detail,
+                )
                 return None
         except Exception:
             logger.warning(

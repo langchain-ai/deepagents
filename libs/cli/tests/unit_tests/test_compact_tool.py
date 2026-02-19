@@ -22,6 +22,14 @@ class TestHITLGating:
             result = _add_interrupt_on()
             assert "compact_conversation" in result
 
+    def test_hitl_gating_when_disabled(self) -> None:
+        """With REQUIRE_COMPACT_TOOL_APPROVAL=False, tool should NOT be gated."""
+        with patch("deepagents_cli.agent.REQUIRE_COMPACT_TOOL_APPROVAL", False):
+            from deepagents_cli.agent import _add_interrupt_on
+
+            result = _add_interrupt_on()
+            assert "compact_conversation" not in result
+
 
 class TestDisplayFormatting:
     """Test tool display formatting for compact_conversation."""

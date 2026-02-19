@@ -479,8 +479,23 @@ A condensed summary follows:
         """
         if event is None:
             return list(messages)
-        result: list[AnyMessage] = [event["summary_message"]]
-        result.extend(messages[event["cutoff_index"] :])
+
+        try:
+            summary_msg = event["summary_message"]
+            cutoff_idx = event["cutoff_index"]
+        except (KeyError, TypeError) as exc:
+            logger.warning("Malformed _summarization_event (missing keys): %s", exc)
+            return list(messages)
+
+        if cutoff_idx > len(messages):
+            logger.warning(
+                "Summarization cutoff_index %d exceeds message count %d; returning summary only",
+                cutoff_idx,
+                len(messages),
+            )
+
+        result: list[AnyMessage] = [summary_msg]
+        result.extend(messages[cutoff_idx:])
         return result
 
     def _resolve_backend_for_tool(self, runtime: ToolRuntime) -> BackendProtocol:
@@ -493,7 +508,7 @@ A condensed summary follows:
             Resolved backend instance.
         """
         if callable(self._backend):
-            return self._backend(runtime)  # ty: ignore[invalid-argument-type]
+            return self._backend(runtime)
         return self._backend
 
     def _create_compact_tool(self) -> BaseTool:
@@ -524,6 +539,105 @@ A condensed summary follows:
             coroutine=async_compact,
         )
 
+    def _build_compact_result(
+        self,
+        runtime: ToolRuntime,
+        to_summarize: list[AnyMessage],
+        summary: str,
+        file_path: str | None,
+        event: SummarizationEvent | None,
+        cutoff: int,
+    ) -> Command:
+        """Build the `Command` result for a successful compact operation.
+
+        Shared by both sync and async compact paths to avoid duplicating
+        the event construction and cutoff arithmetic.
+
+        Args:
+            runtime: The tool runtime context.
+            to_summarize: Messages that were summarized.
+            summary: The generated summary text.
+            file_path: Backend path where history was offloaded, or `None`.
+            event: The prior `_summarization_event`, or `None`.
+            cutoff: The cutoff index within the effective message list.
+
+        Returns:
+            A `Command` with `_summarization_event` state update.
+        """
+        summary_msg = self._build_new_messages_with_path(summary, file_path)[0]
+
+        # The cutoff is relative to the effective message list. When a prior
+        # event exists, translate back to an absolute index by adding the old
+        # cutoff and subtracting 1 (the summary message at index 0 of the
+        # effective list replaces the entire old prefix).
+        state_cutoff = event["cutoff_index"] + cutoff - 1 if event is not None else cutoff
+
+        new_event: SummarizationEvent = {
+            "cutoff_index": state_cutoff,
+            "summary_message": summary_msg,  # ty: ignore[invalid-argument-type]
+            "file_path": file_path,
+        }
+
+        return Command(
+            update={
+                "_summarization_event": new_event,
+                "messages": [
+                    ToolMessage(
+                        content=(f"Conversation compacted. Summarized {len(to_summarize)} messages into a concise summary."),
+                        tool_call_id=runtime.tool_call_id,
+                    )
+                ],
+            }
+        )
+
+    @staticmethod
+    def _nothing_to_compact(tool_call_id: str) -> Command:
+        """Return a "nothing to compact" result for the compact tool.
+
+        Args:
+            tool_call_id: The originating tool call ID.
+
+        Returns:
+            A `Command` with a descriptive `ToolMessage`.
+        """
+        return Command(
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=("Nothing to compact yet \u2014 conversation is within the token budget."),
+                        tool_call_id=tool_call_id,
+                    )
+                ],
+            }
+        )
+
+    @staticmethod
+    def _compact_error(tool_call_id: str, exc: BaseException) -> Command:
+        """Return an error result for the compact tool.
+
+        Args:
+            tool_call_id: The originating tool call ID.
+            exc: The exception that caused the failure.
+
+        Returns:
+            A `Command` with an error `ToolMessage`.
+        """
+        return Command(
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=(
+                            "Compaction failed: an error occurred while "
+                            f"generating the summary ({type(exc).__name__}: "
+                            f"{exc}). The conversation state has not been "
+                            "modified."
+                        ),
+                        tool_call_id=tool_call_id,
+                    )
+                ],
+            }
+        )
+
     def _run_compact(self, runtime: ToolRuntime) -> Command:
         """Synchronous compact implementation called by the compact tool.
 
@@ -532,107 +646,57 @@ A condensed summary follows:
 
         Returns:
             A `Command` with `_summarization_event` state update, or a
-                `Command` with a "nothing to compact" `ToolMessage`.
+                `Command` with a "nothing to compact" or error `ToolMessage`.
         """
+        tool_call_id = runtime.tool_call_id or ""
         messages = runtime.state.get("messages", [])
         event = runtime.state.get("_summarization_event")
         effective = self._apply_event_to_messages(messages, event)
 
         cutoff = self._determine_cutoff_index(effective)
         if cutoff == 0:
-            return Command(
-                update={
-                    "messages": [
-                        ToolMessage(
-                            content=("Nothing to compact yet \u2014 conversation is within the token budget."),
-                            tool_call_id=runtime.tool_call_id,
-                        )
-                    ],
-                }
-            )
+            return self._nothing_to_compact(tool_call_id)
 
-        to_summarize, _ = self._partition_messages(effective, cutoff)
+        try:
+            to_summarize, _ = self._partition_messages(effective, cutoff)
+            backend = self._resolve_backend_for_tool(runtime)
+            file_path = self._offload_to_backend(backend, to_summarize)
+            summary = self._create_summary(to_summarize)
+        except Exception as exc:
+            logger.exception("compact_conversation tool failed")
+            return self._compact_error(tool_call_id, exc)
 
-        backend = self._resolve_backend_for_tool(runtime)
-        file_path = self._offload_to_backend(backend, to_summarize)
-
-        summary = self._create_summary(to_summarize)
-        summary_msg = self._build_new_messages_with_path(summary, file_path)[0]
-
-        state_cutoff = event["cutoff_index"] + cutoff - 1 if event is not None else cutoff
-
-        new_event: SummarizationEvent = {
-            "cutoff_index": state_cutoff,
-            "summary_message": summary_msg,  # ty: ignore[invalid-argument-type]
-            "file_path": file_path,
-        }
-
-        return Command(
-            update={
-                "_summarization_event": new_event,
-                "messages": [
-                    ToolMessage(
-                        content=(f"Conversation compacted. Summarized {len(to_summarize)} messages into a concise summary."),
-                        tool_call_id=runtime.tool_call_id,
-                    )
-                ],
-            }
-        )
+        return self._build_compact_result(runtime, to_summarize, summary, file_path, event, cutoff)
 
     async def _arun_compact(self, runtime: ToolRuntime) -> Command:
-        """Asynchronous compact implementation called by the compact tool.
+        """Async variant of `_run_compact`. See that method for details.
 
         Args:
             runtime: The `ToolRuntime` injected by the tool node.
 
         Returns:
             A `Command` with `_summarization_event` state update, or a
-                `Command` with a "nothing to compact" `ToolMessage`.
+                `Command` with a "nothing to compact" or error `ToolMessage`.
         """
+        tool_call_id = runtime.tool_call_id or ""
         messages = runtime.state.get("messages", [])
         event = runtime.state.get("_summarization_event")
         effective = self._apply_event_to_messages(messages, event)
 
         cutoff = self._determine_cutoff_index(effective)
         if cutoff == 0:
-            return Command(
-                update={
-                    "messages": [
-                        ToolMessage(
-                            content=("Nothing to compact yet \u2014 conversation is within the token budget."),
-                            tool_call_id=runtime.tool_call_id,
-                        )
-                    ],
-                }
-            )
+            return self._nothing_to_compact(tool_call_id)
 
-        to_summarize, _ = self._partition_messages(effective, cutoff)
+        try:
+            to_summarize, _ = self._partition_messages(effective, cutoff)
+            backend = self._resolve_backend_for_tool(runtime)
+            file_path = await self._aoffload_to_backend(backend, to_summarize)
+            summary = await self._acreate_summary(to_summarize)
+        except Exception as exc:
+            logger.exception("compact_conversation tool failed")
+            return self._compact_error(tool_call_id, exc)
 
-        backend = self._resolve_backend_for_tool(runtime)
-        file_path = await self._aoffload_to_backend(backend, to_summarize)
-
-        summary = await self._acreate_summary(to_summarize)
-        summary_msg = self._build_new_messages_with_path(summary, file_path)[0]
-
-        state_cutoff = event["cutoff_index"] + cutoff - 1 if event is not None else cutoff
-
-        new_event: SummarizationEvent = {
-            "cutoff_index": state_cutoff,
-            "summary_message": summary_msg,  # ty: ignore[invalid-argument-type]
-            "file_path": file_path,
-        }
-
-        return Command(
-            update={
-                "_summarization_event": new_event,
-                "messages": [
-                    ToolMessage(
-                        content=(f"Conversation compacted. Summarized {len(to_summarize)} messages into a concise summary."),
-                        tool_call_id=runtime.tool_call_id,
-                    )
-                ],
-            }
-        )
+        return self._build_compact_result(runtime, to_summarize, summary, file_path, event, cutoff)
 
     def _should_truncate_args(self, messages: list[AnyMessage], total_tokens: int) -> bool:
         """Check if argument truncation should be triggered.

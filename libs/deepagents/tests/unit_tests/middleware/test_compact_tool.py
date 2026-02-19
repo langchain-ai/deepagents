@@ -139,7 +139,7 @@ class TestNotEnoughMessages:
     """Test behavior when there are not enough messages to compact."""
 
     def test_not_enough_messages_sync(self) -> None:
-        """Should return Command with 'not enough' ToolMessage when cutoff is 0."""
+        """Should return Command with a 'nothing to compact' ToolMessage when cutoff is 0."""
         mw = _make_middleware()
         messages = _make_messages(3)
         runtime = _make_runtime(messages)
@@ -155,7 +155,7 @@ class TestNotEnoughMessages:
 
     @pytest.mark.asyncio
     async def test_not_enough_messages_async(self) -> None:
-        """Async: return Command with 'not enough' ToolMessage when cutoff is 0."""
+        """Async: return Command with a 'nothing to compact' ToolMessage when cutoff is 0."""
         mw = _make_middleware()
         messages = _make_messages(3)
         runtime = _make_runtime(messages)
@@ -326,6 +326,113 @@ class TestOffloadFailure:
         event = result.update["_summarization_event"]
         assert event["file_path"] is None
         assert "Summarized 4 messages" in result.update["messages"][0].content
+
+
+class TestCompactErrorHandling:
+    """Test that compact gracefully handles errors during summarization."""
+
+    def test_sync_summary_failure_returns_error_tool_message(self) -> None:
+        """Sync: LLM failure should return an error ToolMessage, not raise."""
+        mw = _make_middleware()
+        messages = _make_messages(10)
+        runtime = _make_runtime(messages)
+
+        with (
+            patch.object(mw, "_determine_cutoff_index", return_value=4),
+            patch.object(
+                mw,
+                "_partition_messages",
+                side_effect=lambda msgs, idx: (msgs[:idx], msgs[idx:]),
+            ),
+            patch.object(mw, "_offload_to_backend", return_value=None),
+            patch.object(mw, "_create_summary", side_effect=RuntimeError("model unavailable")),
+        ):
+            result = mw._run_compact(runtime)
+
+        assert isinstance(result, Command)
+        assert result.update is not None
+        msg = result.update["messages"][0]
+        assert "Compaction failed" in msg.content
+        assert "model unavailable" in msg.content
+        # Should NOT have a _summarization_event (state not modified)
+        assert "_summarization_event" not in result.update
+
+    @pytest.mark.asyncio
+    async def test_async_summary_failure_returns_error_tool_message(self) -> None:
+        """Async: LLM failure should return an error ToolMessage, not raise."""
+        mw = _make_middleware()
+        messages = _make_messages(10)
+        runtime = _make_runtime(messages)
+
+        with (
+            patch.object(mw, "_determine_cutoff_index", return_value=4),
+            patch.object(
+                mw,
+                "_partition_messages",
+                side_effect=lambda msgs, idx: (msgs[:idx], msgs[idx:]),
+            ),
+            patch.object(mw, "_aoffload_to_backend", return_value=None),
+            patch.object(
+                mw,
+                "_acreate_summary",
+                side_effect=RuntimeError("model unavailable"),
+            ),
+        ):
+            result = await mw._arun_compact(runtime)
+
+        assert isinstance(result, Command)
+        assert result.update is not None
+        msg = result.update["messages"][0]
+        assert "Compaction failed" in msg.content
+        assert "_summarization_event" not in result.update
+
+    def test_backend_resolve_failure_returns_error_tool_message(self) -> None:
+        """Backend factory failure should return an error ToolMessage."""
+        mw = _make_middleware()
+        messages = _make_messages(10)
+        runtime = _make_runtime(messages)
+
+        with (
+            patch.object(mw, "_determine_cutoff_index", return_value=4),
+            patch.object(
+                mw,
+                "_partition_messages",
+                side_effect=lambda msgs, idx: (msgs[:idx], msgs[idx:]),
+            ),
+            patch.object(
+                mw,
+                "_resolve_backend_for_tool",
+                side_effect=ConnectionError("sandbox unreachable"),
+            ),
+        ):
+            result = mw._run_compact(runtime)
+
+        assert isinstance(result, Command)
+        assert result.update is not None
+        msg = result.update["messages"][0]
+        assert "Compaction failed" in msg.content
+        assert "_summarization_event" not in result.update
+
+
+class TestMalformedEvent:
+    """Test handling of corrupted _summarization_event state."""
+
+    def test_malformed_event_falls_back_to_raw_messages(self) -> None:
+        """Should fall back to raw messages when event keys are missing."""
+        mw = _make_middleware()
+        messages = _make_messages(5)
+        # Event missing required keys
+        bad_event: dict[str, Any] = {"unexpected_key": 42}
+        result = mw._apply_event_to_messages(messages, bad_event)
+        assert result == messages
+
+    def test_none_event_returns_message_copy(self) -> None:
+        """Should return a copy of messages when event is None."""
+        mw = _make_middleware()
+        messages = _make_messages(5)
+        result = mw._apply_event_to_messages(messages, None)
+        assert result == messages
+        assert result is not messages
 
 
 class TestResolveBackendForTool:

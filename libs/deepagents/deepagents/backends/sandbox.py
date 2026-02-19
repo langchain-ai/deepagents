@@ -207,7 +207,7 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
                 If None, uses the backend's default timeout.
 
         Returns:
-            ExecuteResponse with combined output, exit code, optional signal, and truncation flag.
+            ExecuteResponse with combined output, exit code, and truncation flag.
         """
 
     def ls_info(self, path: str) -> list[FileInfo]:

@@ -36,7 +36,7 @@ class DaytonaBackend(BaseSandbox):
             sandbox: Daytona sandbox instance
         """
         self._sandbox = sandbox
-        self._timeout: int = 30 * 60  # 30 mins
+        self._default_timeout: int = 30 * 60  # 30 mins
 
     @property
     def id(self) -> str:
@@ -61,10 +61,9 @@ class DaytonaBackend(BaseSandbox):
                 "wait indefinitely".
 
         Returns:
-            ExecuteResponse with combined output, exit code, optional signal, and
-                truncation flag.
+            ExecuteResponse with combined output, exit code, and truncation flag.
         """
-        effective_timeout = timeout if timeout is not None else self._timeout
+        effective_timeout = timeout if timeout is not None else self._default_timeout
         result = self._sandbox.process.exec(command, timeout=effective_timeout)
 
         return ExecuteResponse(

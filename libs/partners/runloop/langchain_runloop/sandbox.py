@@ -26,7 +26,7 @@ class RunloopSandbox(BaseSandbox):
         """Create a sandbox backend connected to an existing Runloop devbox."""
         self._devbox = devbox
         self._devbox_id = devbox.id
-        self._timeout = 30 * 60
+        self._default_timeout = 30 * 60
 
     @property
     def id(self) -> str:
@@ -45,7 +45,7 @@ class RunloopSandbox(BaseSandbox):
         Returns:
             ExecuteResponse containing output, exit code, and truncation flag.
         """
-        effective_timeout = timeout if timeout is not None else self._timeout
+        effective_timeout = timeout if timeout is not None else self._default_timeout
         result = self._devbox.cmd.exec(command, timeout=effective_timeout)
 
         output = result.stdout() if result.stdout() is not None else ""

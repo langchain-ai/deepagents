@@ -35,7 +35,7 @@ class ModalBackend(BaseSandbox):
             sandbox: Active Modal Sandbox instance
         """
         self._sandbox = sandbox
-        self._timeout = 30 * 60
+        self._default_timeout = 30 * 60
 
     @property
     def id(self) -> str:
@@ -63,7 +63,7 @@ class ModalBackend(BaseSandbox):
             ExecuteResponse with combined output, exit code, and truncation flag.
         """
         # Execute command using Modal's exec API
-        effective_timeout = timeout if timeout is not None else self._timeout
+        effective_timeout = timeout if timeout is not None else self._default_timeout
         process = self._sandbox.exec("bash", "-c", command, timeout=effective_timeout)
 
         # Wait for process to complete

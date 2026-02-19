@@ -40,7 +40,7 @@ class LangSmithBackend(BaseSandbox):
             sandbox: LangSmith Sandbox instance
         """
         self._sandbox = sandbox
-        self._timeout: int = 30 * 60  # 30 mins default
+        self._default_timeout: int = 30 * 60  # 30 mins default
 
     @property
     def id(self) -> str:
@@ -59,7 +59,7 @@ class LangSmithBackend(BaseSandbox):
         Returns:
             ExecuteResponse with combined output, exit code, and truncation flag.
         """
-        effective_timeout = timeout if timeout is not None else self._timeout
+        effective_timeout = timeout if timeout is not None else self._default_timeout
         result = self._sandbox.run(command, timeout=effective_timeout)
 
         # Combine stdout and stderr (matching other backends' approach)

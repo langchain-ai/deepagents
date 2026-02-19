@@ -867,7 +867,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         ) -> str:
             """Synchronous wrapper for execute tool."""
             if timeout is not None and timeout <= 0:
-                return f"Error: timeout must be a positive integer, got {timeout}."
+                return f"Error: timeout must be positive, got {timeout}."
 
             if timeout is not None and timeout > self._max_timeout:
                 return f"Error: timeout {timeout}s exceeds maximum allowed ({self._max_timeout}s)."
@@ -908,13 +908,15 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         async def async_execute(
             command: Annotated[str, "Shell command to execute in the sandbox environment."],
             runtime: ToolRuntime[None, FilesystemState],
+            # ASYNC109 - timeout is a semantic parameter forwarded to the
+            # backend's implementation, not an asyncio.timeout() contract.
             timeout: Annotated[  # noqa: ASYNC109
                 int | None, "Optional timeout in seconds for this command. Overrides the default timeout. Use for long-running commands."
             ] = None,
         ) -> str:
             """Asynchronous wrapper for execute tool."""
             if timeout is not None and timeout <= 0:
-                return f"Error: timeout must be a positive integer, got {timeout}."
+                return f"Error: timeout must be positive, got {timeout}."
 
             if timeout is not None and timeout > self._max_timeout:
                 return f"Error: timeout {timeout}s exceeds maximum allowed ({self._max_timeout}s)."

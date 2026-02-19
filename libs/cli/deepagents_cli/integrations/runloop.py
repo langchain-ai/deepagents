@@ -66,7 +66,7 @@ class RunloopBackend(BaseSandbox):
 
         self._client = client
         self._devbox_id = devbox_id
-        self._timeout = 30 * 60
+        self._default_timeout = 30 * 60
 
     @property
     def id(self) -> str:
@@ -88,10 +88,9 @@ class RunloopBackend(BaseSandbox):
                 If None, uses the backend's default timeout.
 
         Returns:
-            ExecuteResponse with combined output, exit code, optional signal,
-                and truncation flag.
+            ExecuteResponse with combined output, exit code, and truncation flag.
         """
-        effective_timeout = timeout if timeout is not None else self._timeout
+        effective_timeout = timeout if timeout is not None else self._default_timeout
         result = self._client.devboxes.execute_and_await_completion(
             devbox_id=self._devbox_id,
             command=command,

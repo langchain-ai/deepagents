@@ -22,7 +22,7 @@ class DaytonaSandbox(BaseSandbox):
     def __init__(self, *, sandbox: daytona.Sandbox) -> None:
         """Create a backend wrapping an existing Daytona sandbox."""
         self._sandbox = sandbox
-        self._timeout: int = 30 * 60
+        self._default_timeout: int = 30 * 60
 
     @property
     def id(self) -> str:
@@ -46,7 +46,7 @@ class DaytonaSandbox(BaseSandbox):
                 Note that in Daytona's implementation, a timeout of 0 means
                 "wait indefinitely".
         """
-        effective_timeout = timeout if timeout is not None else self._timeout
+        effective_timeout = timeout if timeout is not None else self._default_timeout
         result = self._sandbox.process.exec(command, timeout=effective_timeout)
 
         return ExecuteResponse(

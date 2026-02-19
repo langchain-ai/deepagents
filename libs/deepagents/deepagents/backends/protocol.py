@@ -466,7 +466,7 @@ class SandboxBackendProtocol(BackendProtocol):
                 behavior across backends.
 
         Returns:
-            ExecuteResponse with combined output, exit code, optional signal, and truncation flag.
+            ExecuteResponse with combined output, exit code, and truncation flag.
         """
         raise NotImplementedError
 

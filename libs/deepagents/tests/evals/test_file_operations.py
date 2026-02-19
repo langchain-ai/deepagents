@@ -231,12 +231,13 @@ def test_glob_lists_markdown_files(model: str) -> None:
 
 
 @pytest.mark.langsmith
-def test_find_magic_phrase_deep_nesting() -> None:
+def test_find_magic_phrase_deep_nesting(model: str) -> None:
     """Finds a magic phrase in a deeply nested directory efficiently."""
-    agent = create_deep_agent()
+    agent = create_deep_agent(model=model)
     magic_phrase = "cobalt-otter-17"
     trajectory = run_agent(
         agent,
+        model=model,
         initial_files={
             "/a/b/c/d/e/notes.txt": "just some notes\n",
             "/a/b/c/d/e/readme.md": "project readme\n",
@@ -261,11 +262,12 @@ def test_find_magic_phrase_deep_nesting() -> None:
 
 
 @pytest.mark.langsmith
-def test_identify_quote_author_from_directory_parallel_reads() -> None:
+def test_identify_quote_author_from_directory_parallel_reads(model: str) -> None:
     """Identifies which quote matches a target author by reading a directory efficiently."""
-    agent = create_deep_agent()
+    agent = create_deep_agent(model=model)
     trajectory = run_agent(
         agent,
+        model=model,
         initial_files={
             "/quotes/q1.txt": """Quote: The analytical engine weaves algebraic patterns.
 Clues: discusses an engine for computation and weaving patterns.
@@ -308,11 +310,12 @@ Clues: about programming readability; software craftsmanship.
 
 
 @pytest.mark.langsmith
-def test_identify_quote_author_from_directory_unprompted_efficiency() -> None:
+def test_identify_quote_author_from_directory_unprompted_efficiency(model: str) -> None:
     """Identifies which quote matches a target author without explicit efficiency instructions."""
-    agent = create_deep_agent()
+    agent = create_deep_agent(model=model)
     trajectory = run_agent(
         agent,
+        model=model,
         initial_files={
             "/quotes/q1.txt": """Quote: The analytical engine weaves algebraic patterns.
 Clues: discusses an engine for computation and weaving patterns.

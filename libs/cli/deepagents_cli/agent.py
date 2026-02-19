@@ -9,12 +9,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from deepagents import create_deep_agent
-from deepagents.backends import CompositeBackend
+from deepagents.backends import CompositeBackend, LocalShellBackend
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.middleware import MemoryMiddleware, SkillsMiddleware
 from langgraph.checkpoint.memory import InMemorySaver
-
-from deepagents_cli.backends import CLIShellBackend, patch_filesystem_middleware
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -412,7 +410,7 @@ def create_cli_agent(
             See `_add_interrupt_on` for the full list of gated tools.
         enable_memory: Enable `MemoryMiddleware` for persistent memory
         enable_skills: Enable `SkillsMiddleware` for custom agent skills
-        enable_shell: Enable shell execution via `CLIShellBackend`
+        enable_shell: Enable shell execution via `LocalShellBackend`
             (only in local mode). When enabled, the `execute` tool is available.
         checkpointer: Optional checkpointer for session persistence.
 
@@ -504,10 +502,10 @@ def create_cli_agent(
             if settings.user_langchain_project:
                 shell_env["LANGSMITH_PROJECT"] = settings.user_langchain_project
 
-            # Use CLIShellBackend for filesystem + shell execution.
-            # Provides `execute` tool via FilesystemMiddleware with per-command
-            # timeout support.
-            backend = CLIShellBackend(
+            # Use LocalShellBackend for filesystem + shell execution.
+            # The SDK's FilesystemMiddleware exposes per-command timeout
+            # on the execute tool natively.
+            backend = LocalShellBackend(
                 root_dir=Path.cwd(),
                 inherit_env=True,
                 env=shell_env,
@@ -571,11 +569,6 @@ def create_cli_agent(
 
     # Create the agent
     # Use provided checkpointer or fallback to InMemorySaver
-    if sandbox is None and enable_shell:
-        # Patch FilesystemMiddleware so the SDK constructs our subclass with
-        # per-command timeout support on the execute tool. Only needed in local
-        # shell mode -- remote sandbox backends do not accept the timeout kwarg.
-        patch_filesystem_middleware()
     final_checkpointer = checkpointer if checkpointer is not None else InMemorySaver()
     agent = create_deep_agent(
         model=model,

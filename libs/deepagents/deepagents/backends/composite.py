@@ -466,27 +466,29 @@ class CompositeBackend(BackendProtocol):
     def execute(
         self,
         command: str,
+        *,
+        timeout: int | None = None,
     ) -> ExecuteResponse:
-        """Execute shell command via default backend.
+        """Execute a shell command via the default backend.
+
+        Unlike file operations, execution is not path-routable — it always
+        delegates to the default backend.
 
         Args:
             command: Shell command to execute.
+            timeout: Maximum time in seconds to wait for the command to complete.
+
+                If None, uses the backend's default timeout.
 
         Returns:
             ExecuteResponse with output, exit code, and truncation flag.
 
         Raises:
-            NotImplementedError: If default backend doesn't implement SandboxBackendProtocol.
-
-        Examples:
-            ```python
-            composite = CompositeBackend(default=FilesystemBackend(root_dir="/tmp"), routes={"/memories/": StoreBackend(runtime)})
-
-            result = composite.execute("ls -la")
-            ```
+            NotImplementedError: If the default backend is not a
+                `SandboxBackendProtocol` (i.e., it doesn't support execution).
         """
         if isinstance(self.default, SandboxBackendProtocol):
-            return self.default.execute(command)
+            return self.default.execute(command, timeout=timeout)
 
         # This shouldn't be reached if the runtime check in the execute tool works correctly,
         # but we include it as a safety fallback.
@@ -499,10 +501,17 @@ class CompositeBackend(BackendProtocol):
     async def aexecute(
         self,
         command: str,
+        *,
+        # ASYNC109 - timeout is a semantic parameter forwarded to the underlying
+        # backend's implementation, not an asyncio.timeout() contract.
+        timeout: int | None = None,  # noqa: ASYNC109
     ) -> ExecuteResponse:
-        """Async version of execute."""
+        """Async version of execute.
+
+        See `execute()` for detailed documentation on parameters and behavior.
+        """
         if isinstance(self.default, SandboxBackendProtocol):
-            return await self.default.aexecute(command)
+            return await self.default.aexecute(command, timeout=timeout)
 
         # This shouldn't be reached if the runtime check in the execute tool works correctly,
         # but we include it as a safety fallback.

@@ -1311,6 +1311,10 @@ class DeepAgentsApp(App):
                 image_tracker=self._image_tracker,
             )
         except Exception as e:  # noqa: BLE001  # Resilient tool rendering
+            # Ensure any in-flight tool calls don't remain stuck in "Running..."
+            # when streaming aborts before tool results arrive.
+            if self._ui_adapter:
+                self._ui_adapter.finalize_pending_tools_with_error(f"Agent error: {e}")
             await self._mount_message(ErrorMessage(f"Agent error: {e}"))
         finally:
             # Clean up loading widget and agent state
@@ -1322,7 +1326,7 @@ class DeepAgentsApp(App):
         Dequeues and processes the next pending message in FIFO order.
         Uses the `_processing_pending` flag to prevent reentrant execution.
         """
-        if self._processing_pending or not self._pending_messages:
+        if self._processing_pending or not self._pending_messages or self._exit:
             return
 
         self._processing_pending = True
@@ -1689,6 +1693,13 @@ class DeepAgentsApp(App):
             return_code: Exit code (non-zero for errors).
             message: Optional message to display on exit.
         """
+        # Discard queued messages so _cleanup_agent_task won't try to
+        # process them after the event loop is torn down.
+        self._pending_messages.clear()
+        for w in self._queued_widgets:
+            w.remove()
+        self._queued_widgets.clear()
+
         _write_iterm_escape(_ITERM_CURSOR_GUIDE_ON)
         super().exit(result=result, return_code=return_code, message=message)
 

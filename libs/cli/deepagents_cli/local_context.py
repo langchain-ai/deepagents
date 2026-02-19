@@ -9,19 +9,29 @@ same detection logic works regardless of where the agent runs.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, NotRequired, Protocol, cast, runtime_checkable
+from typing import (
+    TYPE_CHECKING,
+    Annotated,
+    Any,
+    NotRequired,
+    Protocol,
+    cast,
+    runtime_checkable,
+)
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     AgentState,
     ModelRequest,
     ModelResponse,
+    PrivateStateAttr,
 )
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
     from deepagents.backends.protocol import ExecuteResponse
+    from deepagents.middleware.summarization import SummarizationEvent
     from langgraph.runtime import Runtime
 
 
@@ -323,6 +333,14 @@ class LocalContextState(AgentState):
     runtimes, git, test command, files, tree, Makefile.
     """
 
+    _local_context_refreshed_at_cutoff: NotRequired[Annotated[int, PrivateStateAttr]]
+    """Cutoff index of the summarization event we last refreshed for.
+
+    Stored in LangGraph checkpointed state (isolated per thread) and private
+    (not exposed to subagents via `PrivateStateAttr`). Used to avoid redundant
+    re-runs of the detection script for the same summarization event.
+    """
+
 
 # ---------------------------------------------------------------------------
 # Middleware
@@ -332,10 +350,12 @@ class LocalContextState(AgentState):
 class LocalContextMiddleware(AgentMiddleware):
     """Inject local context (git state, project structure, etc.) into the system prompt.
 
-    Runs a bash detection script via `backend.execute()` on first interaction,
-    stores the result in state, and appends it to the system prompt on every
-    model call. Because the script runs inside the backend, it works for both
-    local shells and remote sandboxes.
+    Runs a bash detection script via `backend.execute()` on first interaction
+    and again after each summarization event, stores the result in state, and
+    appends it to the system prompt on every model call.
+
+    Because the script runs inside the backend, it works for both local shells
+    and remote sandboxes.
     """
 
     state_schema = LocalContextState
@@ -348,6 +368,40 @@ class LocalContextMiddleware(AgentMiddleware):
         """
         self.backend = backend
 
+    def _run_detect_script(self) -> str | None:
+        """Run the environment detection script.
+
+        Returns:
+            Stripped script output, or `None` on failure/empty output.
+        """
+        try:
+            result = self.backend.execute(DETECT_CONTEXT_SCRIPT)
+        except Exception:
+            logger.warning(
+                "Local context detection failed (backend: %s); context will "
+                "be omitted from system prompt",
+                type(self.backend).__name__,
+                exc_info=True,
+            )
+            return None
+
+        output = result.output.strip() if result.output else ""
+        if result.exit_code is None or result.exit_code != 0:
+            logger.warning(
+                "Local context detection script %s; "
+                "context will be omitted. Output: %.200s",
+                f"exited with code {result.exit_code}"
+                if result.exit_code is not None
+                else "did not report an exit code",
+                output or "(empty)",
+            )
+            return None
+        if not output:
+            logger.debug(
+                "Local context detection script succeeded but produced no output"
+            )
+        return output or None
+
     # override - state parameter is intentionally narrowed from
     # AgentState to LocalContextState for type safety within this middleware.
     def before_agent(  # type: ignore[override]
@@ -355,40 +409,54 @@ class LocalContextMiddleware(AgentMiddleware):
         state: LocalContextState,
         runtime: Runtime,  # noqa: ARG002  # Required by interface but not used in local context
     ) -> dict[str, Any] | None:
-        """Run context detection on first interaction.
+        """Run context detection on first interaction and refresh after summarization.
+
+        On the first invocation, runs the detection script and stores the result.
+        After a summarization event (indicated by a new `_summarization_event`
+        in state), re-runs the script to capture any environment changes that
+        occurred during the session.
 
         Args:
             state: Current agent state.
             runtime: Runtime context.
 
         Returns:
-            State update with `local_context` populated, or `None` if already
-                set or detection fails.
+            State update with `local_context` populated on success. On a
+                post-summarization refresh failure, returns a state update
+                recording the cutoff (without `local_context`) to prevent
+                retry loops.
+
+                Returns `None` if context is already set and no refresh is
+                needed, or if initial detection fails.
         """
+        # --- Post-summarization refresh ---
+        # _summarization_event is a private field from SummarizationState.
+        # At runtime the merged state dict contains all middleware fields;
+        # accessed as untyped dict value because LocalContextState does not
+        # (and should not) redeclare it.
+        raw_event = state.get("_summarization_event")
+        if raw_event is not None:
+            event: SummarizationEvent = raw_event  # type: ignore[assignment]
+            cutoff = event.get("cutoff_index")
+            refreshed_cutoff = state.get("_local_context_refreshed_at_cutoff")
+            if cutoff != refreshed_cutoff:
+                output = self._run_detect_script()
+                if output:
+                    return {
+                        "local_context": output,
+                        "_local_context_refreshed_at_cutoff": cutoff,
+                    }
+                # Script failed — record cutoff to avoid retry loop,
+                # keep existing local_context.
+                return {"_local_context_refreshed_at_cutoff": cutoff}
+
+        # --- Initial detection (first invocation) ---
         if state.get("local_context"):
             return None
 
-        try:
-            result = self.backend.execute(DETECT_CONTEXT_SCRIPT)
-        except Exception:
-            logger.warning(
-                "Local context detection failed; context will be omitted "
-                "from system prompt",
-                exc_info=True,
-            )
-            return None
-
-        output = result.output.strip() if result.output else ""
-        if result.exit_code == 0 and output:
+        output = self._run_detect_script()
+        if output:
             return {"local_context": output}
-
-        if result.exit_code != 0:
-            logger.warning(
-                "Local context detection script exited with code %d; "
-                "context will be omitted. Output: %.200s",
-                result.exit_code,
-                output or "(empty)",
-            )
         return None
 
     @staticmethod

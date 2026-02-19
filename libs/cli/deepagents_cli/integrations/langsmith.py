@@ -40,23 +40,27 @@ class LangSmithBackend(BaseSandbox):
             sandbox: LangSmith Sandbox instance
         """
         self._sandbox = sandbox
-        self._timeout: int = 30 * 60  # 30 mins default
+        self._default_timeout: int = 30 * 60  # 30 mins default
 
     @property
     def id(self) -> str:
         """Unique identifier for the sandbox backend."""
         return self._sandbox.name
 
-    def execute(self, command: str) -> ExecuteResponse:
+    def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
         """Execute a command in the sandbox and return ExecuteResponse.
 
         Args:
             command: Full shell command string to execute.
+            timeout: Maximum time in seconds to wait for the command to complete.
+
+                If None, uses the backend's default timeout.
 
         Returns:
             ExecuteResponse with combined output, exit code, and truncation flag.
         """
-        result = self._sandbox.run(command, timeout=self._timeout)
+        effective_timeout = timeout if timeout is not None else self._default_timeout
+        result = self._sandbox.run(command, timeout=effective_timeout)
 
         # Combine stdout and stderr (matching other backends' approach)
         output = result.stdout or ""

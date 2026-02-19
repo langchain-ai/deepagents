@@ -43,7 +43,7 @@ def build_composite_state_backend(runtime: ToolRuntime, *, routes):
 class MockSandboxBackend(SandboxBackendProtocol, StateBackend):
     """Mock sandbox backend that implements SandboxBackendProtocol."""
 
-    def execute(self, command: str, *, timeout: int = 30 * 60) -> ExecuteResponse:
+    def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
         """Mock execute that returns the command as output."""
         return ExecuteResponse(
             output=f"Executed: {command}",
@@ -51,7 +51,7 @@ class MockSandboxBackend(SandboxBackendProtocol, StateBackend):
             truncated=False,
         )
 
-    async def aexecute(self, command: str) -> ExecuteResponse:
+    async def aexecute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:  # noqa: ASYNC109
         """Async mock execute that returns the command as output."""
         return ExecuteResponse(
             output=f"Async Executed: {command}",
@@ -363,6 +363,36 @@ async def test_composite_backend_aexecute_with_sandbox_default_async():
     assert result.output == "Async Executed: ls -la"
     assert result.exit_code == 0
     assert result.truncated is False
+
+
+async def test_composite_backend_aexecute_forwards_timeout_async():
+    """CompositeBackend should forward timeout to the default backend."""
+    rt = make_runtime("t_exec_timeout")
+    sandbox = MockSandboxBackend(rt)
+    store = StoreBackend(rt)
+
+    comp = CompositeBackend(default=sandbox, routes={"/memories/": store})
+
+    captured: dict[str, int | None] = {}
+    original_aexecute = sandbox.aexecute
+
+    async def capturing_aexecute(
+        command: str,
+        *,
+        timeout: int | None = None,  # noqa: ASYNC109
+    ) -> ExecuteResponse:
+        captured["timeout"] = timeout
+        return await original_aexecute(command, timeout=timeout)
+
+    sandbox.aexecute = capturing_aexecute  # type: ignore[assignment]
+
+    await comp.aexecute("ls", timeout=42)
+    assert captured["timeout"] == 42
+
+    # Also verify None is forwarded when timeout is omitted
+    captured.clear()
+    await comp.aexecute("ls")
+    assert captured["timeout"] is None
 
 
 async def test_composite_backend_aexecute_without_sandbox_default_async():

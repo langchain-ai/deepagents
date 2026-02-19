@@ -39,6 +39,19 @@ def _make_backend(output: str = "", exit_code: int = 0) -> Mock:
     return backend
 
 
+def _make_summarization_event(cutoff: int) -> dict[str, Any]:
+    """Create a minimal summarization event dict for testing.
+
+    Only `cutoff_index` is used by the refresh logic; other fields
+    are set to `None` for simplicity.
+    """
+    return {
+        "cutoff_index": cutoff,
+        "summary_message": None,
+        "file_path": None,
+    }
+
+
 # Sample script output for testing
 SAMPLE_CONTEXT = (
     "## Local Context\n\n"
@@ -253,6 +266,161 @@ class TestLocalContextMiddleware:
         request.override.assert_not_called()
         handler.assert_called_once_with(request)
         assert result == "async response"
+
+    def test_before_agent_refreshes_on_summarization(self) -> None:
+        """Test that a new summarization event triggers a context refresh."""
+        ctx = "## Local Context\n\n**Current Directory**: `/new/path`\n"
+        backend = _make_backend(output=ctx)
+        middleware = LocalContextMiddleware(backend=backend)
+        event = _make_summarization_event(5)
+        state: dict[str, Any] = {
+            "messages": [],
+            "local_context": "stale context",
+            "_summarization_event": event,
+        }
+        runtime: Any = Mock()
+
+        result = middleware.before_agent(state, runtime)  # type: ignore[invalid-argument-type]
+
+        assert result is not None
+        assert result["local_context"] == ctx.strip()
+        assert result["_local_context_refreshed_at_cutoff"] == 5
+        backend.execute.assert_called_once()
+
+    def test_before_agent_no_rerun_same_cutoff(self) -> None:
+        """Test no re-run when cutoff matches last refreshed cutoff."""
+        backend = _make_backend(output="anything")
+        middleware = LocalContextMiddleware(backend=backend)
+        event = _make_summarization_event(5)
+        state: dict[str, Any] = {
+            "messages": [],
+            "local_context": "existing context",
+            "_summarization_event": event,
+            "_local_context_refreshed_at_cutoff": 5,
+        }
+        runtime: Any = Mock()
+
+        result = middleware.before_agent(state, runtime)  # type: ignore[invalid-argument-type]
+
+        # Falls through to initial-detection guard; local_context set.
+        assert result is None
+        backend.execute.assert_not_called()
+
+    def test_before_agent_refresh_failure_records_cutoff(self) -> None:
+        """Test failed refresh records cutoff but keeps existing context."""
+        backend = _make_backend(output="", exit_code=1)
+        middleware = LocalContextMiddleware(backend=backend)
+        event = _make_summarization_event(10)
+        state: dict[str, Any] = {
+            "messages": [],
+            "local_context": "keep this",
+            "_summarization_event": event,
+        }
+        runtime: Any = Mock()
+
+        result = middleware.before_agent(state, runtime)  # type: ignore[invalid-argument-type]
+
+        assert result is not None
+        # Cutoff recorded to prevent retry loop.
+        assert result["_local_context_refreshed_at_cutoff"] == 10
+        # local_context NOT overwritten.
+        assert "local_context" not in result
+        backend.execute.assert_called_once()
+
+    def test_before_agent_second_summarization_refreshes(self) -> None:
+        """Test a second summarization with different cutoff triggers re-run."""
+        backend = _make_backend(output="refreshed again")
+        middleware = LocalContextMiddleware(backend=backend)
+        event = _make_summarization_event(20)
+        state: dict[str, Any] = {
+            "messages": [],
+            "local_context": "first refresh",
+            "_summarization_event": event,
+            "_local_context_refreshed_at_cutoff": 10,
+        }
+        runtime: Any = Mock()
+
+        result = middleware.before_agent(state, runtime)  # type: ignore[invalid-argument-type]
+
+        assert result is not None
+        assert result["local_context"] == "refreshed again"
+        assert result["_local_context_refreshed_at_cutoff"] == 20
+
+    def test_before_agent_cross_thread_isolation(self) -> None:
+        """Test shared middleware produces independent results per thread."""
+        backend = _make_backend(output="thread output")
+        middleware = LocalContextMiddleware(backend=backend)
+        runtime: Any = Mock()
+
+        # Thread A: summarization at cutoff 5, not yet refreshed.
+        state_a: dict[str, Any] = {
+            "messages": [],
+            "local_context": "old A",
+            "_summarization_event": _make_summarization_event(5),
+        }
+        result_a = middleware.before_agent(state_a, runtime)  # type: ignore[invalid-argument-type]
+        assert result_a is not None
+        assert result_a["_local_context_refreshed_at_cutoff"] == 5
+
+        backend.reset_mock()
+
+        # Thread B: already refreshed at cutoff 5 — no re-run.
+        state_b: dict[str, Any] = {
+            "messages": [],
+            "local_context": "old B",
+            "_summarization_event": _make_summarization_event(5),
+            "_local_context_refreshed_at_cutoff": 5,
+        }
+        result_b = middleware.before_agent(state_b, runtime)  # type: ignore[invalid-argument-type]
+        assert result_b is None
+        backend.execute.assert_not_called()
+
+        # Thread C: no summarization event, context already set.
+        state_c: dict[str, Any] = {
+            "messages": [],
+            "local_context": "existing C",
+        }
+        result_c = middleware.before_agent(state_c, runtime)  # type: ignore[invalid-argument-type]
+        assert result_c is None
+        backend.execute.assert_not_called()
+
+    def test_before_agent_refresh_exception_records_cutoff(self) -> None:
+        """Test exception during refresh records cutoff and keeps context."""
+        backend = Mock()
+        backend.execute.side_effect = RuntimeError("sandbox unreachable")
+        middleware = LocalContextMiddleware(backend=backend)
+        event = _make_summarization_event(7)
+        state: dict[str, Any] = {
+            "messages": [],
+            "local_context": "keep this",
+            "_summarization_event": event,
+        }
+        runtime: Any = Mock()
+
+        result = middleware.before_agent(state, runtime)  # type: ignore[invalid-argument-type]
+
+        assert result is not None
+        assert result["_local_context_refreshed_at_cutoff"] == 7
+        assert "local_context" not in result
+        backend.execute.assert_called_once()
+
+    def test_before_agent_missing_cutoff_index_skips_refresh(self) -> None:
+        """Test that a summarization event missing cutoff_index skips refresh."""
+        backend = _make_backend(output="anything")
+        middleware = LocalContextMiddleware(backend=backend)
+        state: dict[str, Any] = {
+            "messages": [],
+            "local_context": "existing",
+            "_summarization_event": {"summary_message": None, "file_path": None},
+        }
+        runtime: Any = Mock()
+
+        result = middleware.before_agent(state, runtime)  # type: ignore[invalid-argument-type]
+
+        # Both cutoff and refreshed_cutoff are None, so cutoff != refreshed_cutoff
+        # is False. Falls through to initial-detection guard; local_context set.
+        assert result is None
+        backend.execute.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

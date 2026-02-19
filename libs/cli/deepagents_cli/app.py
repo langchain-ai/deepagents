@@ -1424,7 +1424,7 @@ class DeepAgentsApp(App):
                 and m.additional_kwargs.get("lc_source") == "summarization"
             )
         ]
-        if not filtered:
+        if not filtered or self._backend is None:
             return None
 
         timestamp = datetime.now(UTC).isoformat()

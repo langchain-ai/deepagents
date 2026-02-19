@@ -239,10 +239,11 @@ class TestCompactSuccess:
                 await pilot.pause()
 
             # aupdate_state called twice: remove+summary, then event reset
-            assert app._agent.aupdate_state.call_count == 2
+            mock_agent = app._agent  # MagicMock at runtime
+            assert mock_agent.aupdate_state.call_count == 2  # type: ignore[union-attr]
 
             # First call: remove ops + summary message
-            first_values = app._agent.aupdate_state.call_args_list[0][0][1]
+            first_values = mock_agent.aupdate_state.call_args_list[0][0][1]  # type: ignore[union-attr]
             update_messages = first_values["messages"]
             from langchain_core.messages import HumanMessage, RemoveMessage
 
@@ -259,7 +260,7 @@ class TestCompactSuccess:
             assert "Summary of the conversation." in summaries[0].content
 
             # Second call: reset _summarization_event
-            second_values = app._agent.aupdate_state.call_args_list[1][0][1]
+            second_values = mock_agent.aupdate_state.call_args_list[1][0][1]  # type: ignore[union-attr]
             assert second_values == {"_summarization_event": None}
 
     @pytest.mark.asyncio
@@ -380,7 +381,7 @@ class TestCompactEdgeCases:
 
             msgs = app.query(AppMessage)
             assert any("Nothing to compact yet" in str(w._content) for w in msgs)
-            app._agent.aupdate_state.assert_not_called()
+            app._agent.aupdate_state.assert_not_called()  # type: ignore[union-attr]
 
     @pytest.mark.asyncio
     async def test_cutoff_one_compacts_single_message(self) -> None:
@@ -413,7 +414,8 @@ class TestCompactEdgeCases:
 
             from langchain_core.messages import RemoveMessage
 
-            first_values = app._agent.aupdate_state.call_args_list[0][0][1]
+            mock_agent = app._agent  # MagicMock at runtime
+            first_values = mock_agent.aupdate_state.call_args_list[0][0][1]  # type: ignore[union-attr]
             remove_ops = [
                 m for m in first_values["messages"] if isinstance(m, RemoveMessage)
             ]
@@ -485,12 +487,13 @@ class TestCompactErrorHandling:
                 await pilot.pause()
 
             # Should still have called aupdate_state successfully
-            assert app._agent.aupdate_state.call_count == 2
+            mock_agent = app._agent  # MagicMock at runtime
+            assert mock_agent.aupdate_state.call_count == 2  # type: ignore[union-attr]
 
             # Summary should NOT have file path reference
             from langchain_core.messages import HumanMessage
 
-            first_values = app._agent.aupdate_state.call_args_list[0][0][1]
+            first_values = mock_agent.aupdate_state.call_args_list[0][0][1]  # type: ignore[union-attr]
             summaries = [
                 m for m in first_values["messages"] if isinstance(m, HumanMessage)
             ]
@@ -518,7 +521,7 @@ class TestCompactErrorHandling:
                 await pilot.pause()
 
             # State should not have been updated
-            app._agent.aupdate_state.assert_not_called()
+            app._agent.aupdate_state.assert_not_called()  # type: ignore[union-attr]
 
             error_msgs = app.query(ErrorMessage)
             assert any("Compaction failed" in str(w._content) for w in error_msgs)

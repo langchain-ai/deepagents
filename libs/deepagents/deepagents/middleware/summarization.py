@@ -489,10 +489,11 @@ A condensed summary follows:
 
         if cutoff_idx > len(messages):
             logger.warning(
-                "Summarization cutoff_index %d exceeds message count %d; returning summary only",
+                "Summarization cutoff_index %d exceeds message count %d; remaining slice will be empty",
                 cutoff_idx,
                 len(messages),
             )
+            return [summary_msg]
 
         result: list[AnyMessage] = [summary_msg]
         result.extend(messages[cutoff_idx:])
@@ -583,7 +584,7 @@ A condensed summary follows:
                 "_summarization_event": new_event,
                 "messages": [
                     ToolMessage(
-                        content=(f"Conversation compacted. Summarized {len(to_summarize)} messages into a concise summary."),
+                        content=f"Conversation compacted. Summarized {len(to_summarize)} messages into a concise summary.",
                         tool_call_id=runtime.tool_call_id,
                     )
                 ],
@@ -604,7 +605,7 @@ A condensed summary follows:
             update={
                 "messages": [
                     ToolMessage(
-                        content=("Nothing to compact yet \u2014 conversation is within the token budget."),
+                        content="Nothing to compact yet \u2014 conversation is within the token budget.",
                         tool_call_id=tool_call_id,
                     )
                 ],
@@ -659,14 +660,13 @@ A condensed summary follows:
 
         try:
             to_summarize, _ = self._partition_messages(effective, cutoff)
+            summary = self._create_summary(to_summarize)
             backend = self._resolve_backend_for_tool(runtime)
             file_path = self._offload_to_backend(backend, to_summarize)
-            summary = self._create_summary(to_summarize)
+            return self._build_compact_result(runtime, to_summarize, summary, file_path, event, cutoff)
         except Exception as exc:
             logger.exception("compact_conversation tool failed")
             return self._compact_error(tool_call_id, exc)
-
-        return self._build_compact_result(runtime, to_summarize, summary, file_path, event, cutoff)
 
     async def _arun_compact(self, runtime: ToolRuntime) -> Command:
         """Async variant of `_run_compact`. See that method for details.
@@ -689,14 +689,13 @@ A condensed summary follows:
 
         try:
             to_summarize, _ = self._partition_messages(effective, cutoff)
+            summary = await self._acreate_summary(to_summarize)
             backend = self._resolve_backend_for_tool(runtime)
             file_path = await self._aoffload_to_backend(backend, to_summarize)
-            summary = await self._acreate_summary(to_summarize)
+            return self._build_compact_result(runtime, to_summarize, summary, file_path, event, cutoff)
         except Exception as exc:
             logger.exception("compact_conversation tool failed")
             return self._compact_error(tool_call_id, exc)
-
-        return self._build_compact_result(runtime, to_summarize, summary, file_path, event, cutoff)
 
     def _should_truncate_args(self, messages: list[AnyMessage], total_tokens: int) -> bool:
         """Check if argument truncation should be triggered.
@@ -898,18 +897,24 @@ A condensed summary follows:
         # Note: We use download_files() instead of read() because read() returns
         # line-numbered content (for LLM consumption), but edit() expects raw content.
         existing_content = ""
+        read_failed = False
         try:
             responses = backend.download_files([path])
             if responses and responses[0].content is not None and responses[0].error is None:
                 existing_content = responses[0].content.decode("utf-8")
         except Exception as e:  # noqa: BLE001
-            # File likely doesn't exist yet, but log for observability
-            logger.debug(
-                "Exception reading existing history from %s (treating as new file): %s: %s",
+            logger.warning(
+                "Failed to read existing history at %s; aborting offload to avoid overwriting prior history: %s: %s",
                 path,
                 type(e).__name__,
                 e,
             )
+            read_failed = True
+
+        # If we failed to read an existing file, don't write — we might
+        # overwrite prior history with only the new section.
+        if read_failed:
+            return None
 
         combined_content = existing_content + new_section
 
@@ -969,18 +974,24 @@ A condensed summary follows:
         # Note: We use adownload_files() instead of aread() because read() returns
         # line-numbered content (for LLM consumption), but edit() expects raw content.
         existing_content = ""
+        read_failed = False
         try:
             responses = await backend.adownload_files([path])
             if responses and responses[0].content is not None and responses[0].error is None:
                 existing_content = responses[0].content.decode("utf-8")
         except Exception as e:  # noqa: BLE001
-            # File likely doesn't exist yet, but log for observability
-            logger.debug(
-                "Exception reading existing history from %s (treating as new file): %s: %s",
+            logger.warning(
+                "Failed to read existing history at %s; aborting offload to avoid overwriting prior history: %s: %s",
                 path,
                 type(e).__name__,
                 e,
             )
+            read_failed = True
+
+        # If we failed to read an existing file, don't write — we might
+        # overwrite prior history with only the new section.
+        if read_failed:
+            return None
 
         combined_content = existing_content + new_section
 
@@ -1066,7 +1077,8 @@ A condensed summary follows:
 
         messages_to_summarize, preserved_messages = self._partition_messages(truncated_messages, cutoff_index)
 
-        # Offload to backend first - abort summarization if this fails to prevent data loss
+        # Offload to backend first so history is preserved before summarization.
+        # If offload fails, summarization still proceeds (with file_path=None).
         backend = self._get_backend(request.state, request.runtime)
         file_path = self._offload_to_backend(backend, messages_to_summarize)
         if file_path is None:
@@ -1161,7 +1173,8 @@ A condensed summary follows:
 
         messages_to_summarize, preserved_messages = self._partition_messages(truncated_messages, cutoff_index)
 
-        # Offload to backend first - abort summarization if this fails to prevent data loss
+        # Offload to backend first so history is preserved before summarization.
+        # If offload fails, summarization still proceeds (with file_path=None).
         backend = self._get_backend(request.state, request.runtime)
         file_path = await self._aoffload_to_backend(backend, messages_to_summarize)
         if file_path is None:

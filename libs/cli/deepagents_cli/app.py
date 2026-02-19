@@ -337,6 +337,20 @@ List what you captured and where you stored it:
 """  # noqa: E501
 
 
+def _fmt_tokens(n: int) -> str:
+    """Format a token count for display (e.g., 1500 -> '1.5K').
+
+    Args:
+        n: The token count.
+
+    Returns:
+        Formatted string with K suffix for values >= 1000.
+    """
+    if n >= 1000:  # noqa: PLR2004
+        return f"{n / 1000:.1f}K"
+    return str(n)
+
+
 class DeepAgentsApp(App):
     """Main Textual application for deepagents-cli."""
 
@@ -1301,8 +1315,16 @@ class DeepAgentsApp(App):
                 _compute_summarization_defaults,  # noqa: PLC2701
             )
 
-            result = create_model()
-            model = result.model
+            try:
+                result = create_model()
+                model = result.model
+            except Exception as exc:  # noqa: BLE001
+                await self._mount_message(
+                    ErrorMessage(
+                        f"Compaction requires a working model configuration: {exc}"
+                    )
+                )
+                return
 
             defaults = _compute_summarization_defaults(model)
             middleware = SummarizationMiddleware(
@@ -1333,6 +1355,13 @@ class DeepAgentsApp(App):
             summary = await middleware._acreate_summary(to_summarize)
 
             file_path = await self._offload_messages_for_compact(to_summarize)
+            if file_path is None:
+                await self._mount_message(
+                    AppMessage(
+                        "Warning: conversation history could not be saved to "
+                        "storage. Older messages will not be recoverable."
+                    )
+                )
 
             summary_msg = middleware._build_new_messages_with_path(summary, file_path)[
                 0
@@ -1355,11 +1384,6 @@ class DeepAgentsApp(App):
             await self._agent.aupdate_state(config, {"_summarization_event": new_event})
 
             tokens_after = count_tokens_approximately([summary_msg, *to_keep])
-
-            def _fmt_tokens(n: int) -> str:
-                if n >= 1000:  # noqa: PLR2004
-                    return f"{n / 1000:.1f}K"
-                return str(n)
 
             before = _fmt_tokens(tokens_before)
             after = _fmt_tokens(tokens_after)
@@ -1384,7 +1408,7 @@ class DeepAgentsApp(App):
             try:
                 await self._set_spinner(None)
             except Exception:
-                logger.debug(
+                logger.warning(
                     "Failed to dismiss spinner after compaction", exc_info=True
                 )
 
@@ -1435,11 +1459,12 @@ class DeepAgentsApp(App):
             resp = responses[0] if responses else None
             if resp and resp.content is not None and resp.error is None:
                 existing_content = resp.content.decode("utf-8")
-        except Exception:
+        except Exception as exc:
             logger.warning(
                 "Failed to read existing history at %s; aborting offload to "
-                "avoid overwriting prior history",
+                "avoid overwriting prior history: %s",
                 path,
+                exc,
                 exc_info=True,
             )
             read_failed = True
@@ -1465,10 +1490,11 @@ class DeepAgentsApp(App):
                     error_detail,
                 )
                 return None
-        except Exception:
+        except Exception as exc:
             logger.warning(
-                "Exception offloading compact history to %s",
+                "Exception offloading compact history to %s: %s",
                 path,
+                exc,
                 exc_info=True,
             )
             return None

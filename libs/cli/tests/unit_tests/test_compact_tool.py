@@ -336,13 +336,6 @@ class TestBuildSummaryMessage:
 class TestHITLGating:
     """Test that compact_conversation HITL gating respects the constant."""
 
-    def test_hitl_gating_default_off(self) -> None:
-        """compact_conversation should NOT be in interrupt_on by default."""
-        from deepagents_cli.agent import _add_interrupt_on
-
-        result = _add_interrupt_on()
-        assert "compact_conversation" not in result
-
     def test_hitl_gating_when_enabled(self) -> None:
         """With REQUIRE_COMPACT_TOOL_APPROVAL=True, tool should be gated."""
         with patch("deepagents_cli.agent.REQUIRE_COMPACT_TOOL_APPROVAL", True):

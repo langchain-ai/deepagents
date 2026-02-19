@@ -45,7 +45,7 @@ from deepagents_cli.subagents import list_subagents
 DEFAULT_AGENT_NAME = "agent"
 """The default agent name used when no `-a` flag is provided."""
 
-REQUIRE_COMPACT_TOOL_APPROVAL: bool = False
+REQUIRE_COMPACT_TOOL_APPROVAL: bool = True
 """When `True`, `compact_conversation` requires HITL approval like other gated tools."""
 
 

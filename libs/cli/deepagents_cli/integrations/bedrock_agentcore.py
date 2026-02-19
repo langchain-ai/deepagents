@@ -151,7 +151,7 @@ class AgentCoreBackend(BaseSandbox):
     @property
     def id(self) -> str:
         """Unique identifier for the sandbox backend (session ID)."""
-        return self._interpreter.session_id
+        return self._interpreter.session_id or ""
 
     def execute(
         self,

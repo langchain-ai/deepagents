@@ -77,7 +77,7 @@ uv tool install deepagents-cli
 deepagents
 ```
 
-The CLI adds conversation resume, web search, remote sandboxes (Modal, Runloop, Daytona), persistent memory, custom skills, and human-in-the-loop approval. See the [CLI documentation](https://docs.langchain.com/oss/python/deepagents/cli) for more.  Using the Deep Agents CLI requires setting an API Key before running (ex: `ANTHROPIC_API_KEY`).
+The CLI adds conversation resume, web search, remote sandboxes (Modal, Runloop, Daytona), persistent memory, custom skills, human-in-the-loop approval, and [step-into mode for subagents](libs/cli/STEP_INTO.md). See the [CLI documentation](https://docs.langchain.com/oss/python/deepagents/cli) for more.  Using the Deep Agents CLI requires setting an API Key before running (ex: `ANTHROPIC_API_KEY`).
 
 ## LangGraph Native
 

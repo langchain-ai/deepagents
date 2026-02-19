@@ -897,24 +897,18 @@ A condensed summary follows:
         # Note: We use download_files() instead of read() because read() returns
         # line-numbered content (for LLM consumption), but edit() expects raw content.
         existing_content = ""
-        read_failed = False
         try:
             responses = backend.download_files([path])
             if responses and responses[0].content is not None and responses[0].error is None:
                 existing_content = responses[0].content.decode("utf-8")
         except Exception as e:  # noqa: BLE001
-            logger.warning(
-                "Failed to read existing history at %s; aborting offload to avoid overwriting prior history: %s: %s",
+            # File likely doesn't exist yet, but log for observability
+            logger.debug(
+                "Exception reading existing history from %s (treating as new file): %s: %s",
                 path,
                 type(e).__name__,
                 e,
             )
-            read_failed = True
-
-        # If we failed to read an existing file, don't write — we might
-        # overwrite prior history with only the new section.
-        if read_failed:
-            return None
 
         combined_content = existing_content + new_section
 
@@ -974,24 +968,18 @@ A condensed summary follows:
         # Note: We use adownload_files() instead of aread() because read() returns
         # line-numbered content (for LLM consumption), but edit() expects raw content.
         existing_content = ""
-        read_failed = False
         try:
             responses = await backend.adownload_files([path])
             if responses and responses[0].content is not None and responses[0].error is None:
                 existing_content = responses[0].content.decode("utf-8")
         except Exception as e:  # noqa: BLE001
-            logger.warning(
-                "Failed to read existing history at %s; aborting offload to avoid overwriting prior history: %s: %s",
+            # File likely doesn't exist yet, but log for observability
+            logger.debug(
+                "Exception reading existing history from %s (treating as new file): %s: %s",
                 path,
                 type(e).__name__,
                 e,
             )
-            read_failed = True
-
-        # If we failed to read an existing file, don't write — we might
-        # overwrite prior history with only the new section.
-        if read_failed:
-            return None
 
         combined_content = existing_content + new_section
 

@@ -37,6 +37,7 @@ lint_package: PYTHON_FILES=langchain_daytona
 lint lint_diff lint_package:
 	[ "$(PYTHON_FILES)" = "" ] || uv run --all-groups ruff check $(PYTHON_FILES)
 	[ "$(PYTHON_FILES)" = "" ] || uv run --all-groups ruff format $(PYTHON_FILES) --diff
+	uv run --all-groups ty check langchain_daytona
 
 format format_diff:
 	[ "$(PYTHON_FILES)" = "" ] || uv run --all-groups ruff format $(PYTHON_FILES)

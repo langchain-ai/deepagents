@@ -89,7 +89,7 @@ class DaytonaSandbox(BaseSandbox):
                 mapped_responses.append(
                     FileDownloadResponse(
                         path=resp.source,
-                        content=content,
+                        content=content,  # ty: ignore[invalid-argument-type]  # Daytona SDK returns bytes for file content
                         error=None,
                     )
                 )

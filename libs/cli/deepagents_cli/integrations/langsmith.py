@@ -212,8 +212,7 @@ class LangSmithProvider(SandboxProvider):
                 result = sandbox.run("echo ready", timeout=5)
                 if result.exit_code == 0:
                     break
-            except Exception:  # noqa: S110, BLE001
-                # Sandbox not ready yet, continue polling
+            except Exception:  # noqa: S110, BLE001  # Sandbox not ready yet, continue polling
                 pass
             time.sleep(2)
         else:
@@ -225,7 +224,7 @@ class LangSmithProvider(SandboxProvider):
 
         return LangSmithBackend(sandbox)
 
-    def delete(self, *, sandbox_id: str, **kwargs: Any) -> None:  # noqa: ARG002
+    def delete(self, *, sandbox_id: str, **kwargs: Any) -> None:  # noqa: ARG002  # Required by SandboxFactory interface
         """Delete a LangSmith sandbox.
 
         Args:

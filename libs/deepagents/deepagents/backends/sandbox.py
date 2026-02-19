@@ -294,7 +294,7 @@ except PermissionError:
         file_path: str,
         old_string: str,
         new_string: str,
-        replace_all: bool = False,
+        replace_all: bool = False,  # noqa: FBT001, FBT002
     ) -> EditResult:
         """Edit a file by replacing string occurrences. Returns EditResult."""
         # Create JSON payload with file path, old string, and new string
@@ -357,7 +357,7 @@ except PermissionError:
         for line in output.split("\n"):
             # Format is: path:line_number:text
             parts = line.split(":", 2)
-            if len(parts) >= 3:
+            if len(parts) >= 3:  # noqa: PLR2004  # Grep output field count
                 matches.append(
                     {
                         "path": parts[0],

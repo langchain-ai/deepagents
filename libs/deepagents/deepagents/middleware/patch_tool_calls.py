@@ -24,7 +24,7 @@ class PatchToolCallsMiddleware(AgentMiddleware):
             if msg.type == "ai" and msg.tool_calls:
                 for tool_call in msg.tool_calls:
                     corresponding_tool_msg = next(
-                        (msg for msg in messages[i:] if msg.type == "tool" and msg.tool_call_id == tool_call["id"]),
+                        (msg for msg in messages[i:] if msg.type == "tool" and msg.tool_call_id == tool_call["id"]),  # ty: ignore[possibly-missing-attribute]
                         None,
                     )
                     if corresponding_tool_msg is None:

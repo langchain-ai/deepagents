@@ -129,7 +129,7 @@ async def test_alist_skills_from_backend_missing_skill_md(tmp_path: Path) -> Non
 
     valid_content = make_skill_content("valid-skill", "Valid skill")
 
-    responses = backend.upload_files(
+    backend.upload_files(
         [
             (valid_skill_path, valid_content.encode("utf-8")),
             (invalid_dir_file, b"Not a skill file"),
@@ -169,7 +169,7 @@ description: [unclosed yaml
 Content
 """
 
-    responses = backend.upload_files(
+    backend.upload_files(
         [
             (valid_skill_path, valid_content.encode("utf-8")),
             (invalid_skill_path, invalid_content.encode("utf-8")),
@@ -218,7 +218,7 @@ async def test_abefore_agent_loads_skills(tmp_path: Path) -> None:
     )
 
     # Call abefore_agent
-    result = await middleware.abefore_agent({}, None, {})  # type: ignore
+    result = await middleware.abefore_agent({}, None, {})  # type: ignore[arg-type]
 
     assert result is not None
     assert "skills_metadata" in result
@@ -259,7 +259,7 @@ async def test_abefore_agent_skill_override(tmp_path: Path) -> None:
     )
 
     # Call abefore_agent
-    result = await middleware.abefore_agent({}, None, {})  # type: ignore
+    result = await middleware.abefore_agent({}, None, {})  # type: ignore[arg-type]
 
     assert result is not None
     assert len(result["skills_metadata"]) == 1
@@ -290,7 +290,7 @@ async def test_abefore_agent_empty_sources(tmp_path: Path) -> None:
         sources=sources,
     )
 
-    result = await middleware.abefore_agent({}, None, {})  # type: ignore
+    result = await middleware.abefore_agent({}, None, {})  # type: ignore[arg-type]
 
     assert result is not None
     assert result["skills_metadata"] == []
@@ -315,7 +315,7 @@ async def test_abefore_agent_skips_loading_if_metadata_present(tmp_path: Path) -
 
     # State has skills_metadata already
     state_with_metadata = {"skills_metadata": []}
-    result = await middleware.abefore_agent(state_with_metadata, None, {})  # type: ignore
+    result = await middleware.abefore_agent(state_with_metadata, None, {})  # type: ignore[arg-type]
 
     # Should return None, not load new skills
     assert result is None

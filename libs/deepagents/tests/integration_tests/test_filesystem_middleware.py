@@ -917,7 +917,7 @@ class TestFilesystem:
 
         # Test with sandbox backend (has execution support)
         class MockSandboxBackend(StateBackend):
-            def execute(self, command: str) -> ExecuteResponse:
+            def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
                 return ExecuteResponse(output="test", exit_code=0, truncated=False)
 
         agent_with_sandbox = create_agent(
@@ -965,7 +965,7 @@ class TestFilesystem:
 
         # Test with sandbox backend (has execution support)
         class MockSandboxBackend(StateBackend):
-            def execute(self, command: str) -> ExecuteResponse:
+            def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
                 return ExecuteResponse(output="test", exit_code=0, truncated=False)
 
         agent_with_sandbox = create_agent(
@@ -989,7 +989,7 @@ class TestFilesystem:
 
         # Mock sandbox backend
         class MockSandboxBackend(StateBackend):
-            def execute(self, command: str) -> ExecuteResponse:
+            def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
                 return ExecuteResponse(output="test", exit_code=0, truncated=False)
 
         # Create runtimes

@@ -327,11 +327,12 @@ class TestLangSmithIntegration(BaseSandboxIntegrationTest):
         with create_sandbox("langsmith") as sandbox:
             yield sandbox
 
+
 class TestAgentCoreIntegration(BaseSandboxIntegrationTest):
     """Test AgentCore Code Interpreter backend integration."""
 
-    @pytest.fixture()
-    def sandbox(self) -> Generator[SandboxBackendProtocol, None, None]:
+    @pytest.fixture(scope="class")
+    def sandbox(self) -> Iterator[BaseSandbox]:
         """Provide an AgentCore sandbox instance."""
         with create_sandbox("agentcore") as sandbox:
             yield sandbox

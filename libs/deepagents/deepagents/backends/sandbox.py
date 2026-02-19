@@ -52,12 +52,12 @@ for m in matches:
     print(json.dumps(result))
 " 2>/dev/null"""
 
-# Use heredoc to pass content via stdin to avoid ARG_MAX limits on large files.
-# ARG_MAX limits the total size of command-line arguments.
-# Previously, base64-encoded content was interpolated directly into the command
-# string, which would fail for files larger than ~100KB after base64 expansion.
-# Heredocs bypass this by passing data through stdin rather than as arguments.
-# Stdin format: first line is base64-encoded file path, second line is base64-encoded content.
+# Use heredoc to pass content via stdin to avoid MAX_ARG_STRLEN limits.
+# When used inside `bash -c`, the heredoc content is part of the single
+# argument string passed to execve(), limited by MAX_ARG_STRLEN (~128KB).
+# Heredocs keep the data out of the Python one-liner arguments, but the
+# total command (script + heredoc) must still fit within that limit.
+# Stdin format: base64-encoded JSON with {"path": str, "content": base64(str)}.
 _WRITE_COMMAND_TEMPLATE = """python3 -c "
 import os
 import sys
@@ -94,7 +94,7 @@ with open(file_path, 'w') as f:
 {payload_b64}
 __DEEPAGENTS_EOF__"""
 
-# Use heredoc to pass edit parameters via stdin to avoid ARG_MAX limits.
+# Use heredoc to pass edit parameters via stdin to avoid MAX_ARG_STRLEN limits.
 # Stdin format: base64-encoded JSON with {"path": str, "old": str, "new": str}.
 # JSON bundles all parameters; base64 ensures safe transport of arbitrary content
 # (special chars, newlines, etc.) through the heredoc without escaping issues.
@@ -186,6 +186,187 @@ for i, line in enumerate(selected_lines):
     line_content = line.rstrip('\\n')
     print(f'{{line_num:6d}}\\t{{line_content}}')
 " 2>&1"""
+
+# -- File transfer command templates --------------------------------------
+#
+# Used by BaseSandbox.upload_files() and download_files() to transfer
+# binary content through execute() using base64 encoding.
+#
+# These templates follow the same security patterns as the other templates:
+# - Pattern A (base64 format params): paths encoded as base64 in format string
+# - Pattern B (heredoc stdin): large data passed via heredoc to avoid
+#   MAX_ARG_STRLEN limits (128KB single-argument limit on Linux)
+
+# Upload a single small file via heredoc stdin.
+# Stdin format: base64-encoded JSON with {"path": str, "content": str}.
+# The "content" value is base64-encoded binary file content.
+# Unlike _WRITE_COMMAND_TEMPLATE, this overwrites existing files (upload semantics)
+# and writes binary content, not text.
+_UPLOAD_COMMAND_TEMPLATE = """python3 -c "
+import os
+import sys
+import base64
+import json
+
+# Read JSON payload from stdin containing file path and base64-encoded binary content.
+payload_b64 = sys.stdin.read().strip()
+if not payload_b64:
+    print('Error: No payload received for upload operation', file=sys.stderr)
+    sys.exit(1)
+
+try:
+    payload = base64.b64decode(payload_b64).decode('utf-8')
+    data = json.loads(payload)
+    file_path = data['path']
+    content = base64.b64decode(data['content'])
+except Exception as e:
+    print(f'Error: Failed to decode upload payload: {{e}}', file=sys.stderr)
+    sys.exit(1)
+
+# Create parent directory if needed.
+parent_dir = os.path.dirname(file_path) or '.'
+os.makedirs(parent_dir, exist_ok=True)
+
+# Write binary content (overwrites if file exists).
+with open(file_path, 'wb') as f:
+    f.write(content)
+" <<'__DEEPAGENTS_EOF__'
+{payload_b64}
+__DEEPAGENTS_EOF__"""
+
+# Append a base64 chunk to a temporary file during chunked upload.
+# The temp file path is base64-encoded in the format string (Pattern A).
+# The chunk data is passed via heredoc stdin (Pattern B).
+_UPLOAD_CHUNK_COMMAND_TEMPLATE = """python3 -c "
+import os
+import sys
+import base64
+
+# Decode the temp file path from base64-encoded format parameter.
+tmp_path = base64.b64decode('{tmp_path_b64}').decode('utf-8')
+
+# Read the base64 chunk data from stdin.
+chunk = sys.stdin.read().strip()
+if not chunk:
+    print('Error: No chunk data received', file=sys.stderr)
+    sys.exit(1)
+
+# Create parent directory if needed and append chunk to the temp file.
+parent_dir = os.path.dirname(tmp_path) or '.'
+os.makedirs(parent_dir, exist_ok=True)
+with open(tmp_path, 'a') as f:
+    f.write(chunk)
+" <<'__DEEPAGENTS_EOF__'
+{chunk_b64}
+__DEEPAGENTS_EOF__"""
+
+# Decode an assembled base64 temp file to the final binary path and clean up.
+# Both paths are base64-encoded in the format string to avoid shell injection.
+_UPLOAD_DECODE_COMMAND_TEMPLATE = """python3 -c "
+import os
+import sys
+import base64
+
+# Decode both paths from base64-encoded format parameters.
+tmp_path = base64.b64decode('{tmp_path_b64}').decode('utf-8')
+final_path = base64.b64decode('{final_path_b64}').decode('utf-8')
+
+try:
+    # Read the assembled base64 data.
+    with open(tmp_path, 'r') as f:
+        b64_data = f.read()
+
+    # Create parent directory if needed.
+    parent_dir = os.path.dirname(final_path) or '.'
+    os.makedirs(parent_dir, exist_ok=True)
+
+    # Decode and write the final binary file.
+    with open(final_path, 'wb') as f:
+        f.write(base64.b64decode(b64_data))
+
+    # Clean up temp file.
+    os.remove(tmp_path)
+except Exception as e:
+    print(f'Error: Failed to decode upload: {{e}}', file=sys.stderr)
+    # Attempt cleanup on failure.
+    try:
+        os.remove(tmp_path)
+    except OSError:
+        pass
+    sys.exit(1)
+" 2>/dev/null"""
+
+# Remove a file by base64-encoded path. Used for cleanup during chunked upload failure.
+_REMOVE_COMMAND_TEMPLATE = """python3 -c "
+import os
+import base64
+
+path = base64.b64decode('{path_b64}').decode('utf-8')
+try:
+    os.remove(path)
+except OSError:
+    pass
+" 2>/dev/null"""
+
+# Get the size of a file in bytes. Path is base64-encoded to avoid shell injection.
+_DOWNLOAD_SIZE_COMMAND_TEMPLATE = """python3 -c "
+import os
+import sys
+import base64
+
+file_path = base64.b64decode('{path_b64}').decode('utf-8')
+
+try:
+    print(os.path.getsize(file_path))
+except FileNotFoundError:
+    print('Error: File not found', file=sys.stderr)
+    sys.exit(1)
+except OSError as e:
+    print(f'Error: {{e}}', file=sys.stderr)
+    sys.exit(1)
+" 2>/dev/null"""
+
+# Download a small file by base64-encoding its content to stdout.
+# Path is base64-encoded in the format string to avoid shell injection.
+_DOWNLOAD_COMMAND_TEMPLATE = """python3 -c "
+import sys
+import base64
+
+file_path = base64.b64decode('{path_b64}').decode('utf-8')
+
+try:
+    with open(file_path, 'rb') as f:
+        print(base64.b64encode(f.read()).decode('ascii'))
+except FileNotFoundError:
+    print('Error: File not found', file=sys.stderr)
+    sys.exit(1)
+except OSError as e:
+    print(f'Error: {{e}}', file=sys.stderr)
+    sys.exit(1)
+" 2>/dev/null"""
+
+# Download a chunk of a file at a given byte offset.
+# Path is base64-encoded; offset and chunk_size are integer format parameters.
+_DOWNLOAD_CHUNK_COMMAND_TEMPLATE = """python3 -c "
+import sys
+import base64
+
+file_path = base64.b64decode('{path_b64}').decode('utf-8')
+offset = {offset}
+chunk_size = {chunk_size}
+
+try:
+    with open(file_path, 'rb') as f:
+        f.seek(offset)
+        chunk = f.read(chunk_size)
+    print(base64.b64encode(chunk).decode('ascii'))
+except FileNotFoundError:
+    print('Error: File not found', file=sys.stderr)
+    sys.exit(1)
+except OSError as e:
+    print(f'Error: {{e}}', file=sys.stderr)
+    sys.exit(1)
+" 2>/dev/null"""
 
 
 class BaseSandbox(SandboxBackendProtocol, ABC):
@@ -411,9 +592,14 @@ except PermissionError:
     # native file transfer mechanism (e.g. SSH's SFTP, Daytona's REST API).
 
     # Maximum base64 payload size for a single heredoc command.
-    # Linux ARG_MAX is ~2MB, but the full command includes the Python
-    # one-liner overhead. Stay well under that with 64KB chunks of raw
-    # bytes (~87KB after base64 encoding).
+    #
+    # When a heredoc is used inside `bash -c '...'`, the entire script
+    # including heredoc content is passed as a single argument to execve().
+    # On Linux, MAX_ARG_STRLEN (typically PAGE_SIZE * 32 = 128KB) limits
+    # any single argument string. This is more restrictive than ARG_MAX
+    # (~2MB), which limits the total of all arguments plus environment.
+    #
+    # 64KB raw bytes -> ~87KB after base64 encoding, safely under 128KB.
     _UPLOAD_CHUNK_BYTES = 65_536
 
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
@@ -421,8 +607,8 @@ except PermissionError:
 
         Small files (under ``_UPLOAD_CHUNK_BYTES``) are written in a single
         command. Larger files are split into base64 chunks that each fit
-        within the kernel's ARG_MAX limit, assembled into a temp file
-        inside the sandbox, then decoded to the final path.
+        within MAX_ARG_STRLEN, assembled into a temp file inside the
+        sandbox, then decoded to the final path.
 
         Subclasses may override this if the backend provides a native file
         transfer mechanism.
@@ -451,31 +637,27 @@ except PermissionError:
     def _upload_single(self, file_path: str, b64: str) -> ExecuteResponse:
         """Upload a small file in one execute() call.
 
+        Uses _UPLOAD_COMMAND_TEMPLATE with a JSON payload containing the
+        file path and base64-encoded binary content via heredoc stdin.
+
         Args:
             file_path: Absolute path inside the sandbox.
-            b64: Base64-encoded file content (must fit within ARG_MAX).
+            b64: Base64-encoded file content (must fit within MAX_ARG_STRLEN).
 
         Returns:
             ExecuteResponse from the sandbox.
         """
-        cmd = (
-            'python3 -c "\n'
-            "import base64, pathlib, sys\n"
-            "b64 = sys.stdin.read().strip()\n"
-            "p = pathlib.Path('" + file_path + "')\n"
-            "p.parent.mkdir(parents=True, exist_ok=True)\n"
-            "p.write_bytes(base64.b64decode(b64))\n"
-            "\" <<'__DEEPAGENTS_EOF__'\n" + b64 + "\n"
-            "__DEEPAGENTS_EOF__"
-        )
+        payload = json.dumps({"path": file_path, "content": b64})
+        payload_b64 = base64.b64encode(payload.encode("utf-8")).decode("ascii")
+        cmd = _UPLOAD_COMMAND_TEMPLATE.format(payload_b64=payload_b64)
         return self.execute(cmd)
 
     def _upload_chunked(self, file_path: str, b64: str) -> ExecuteResponse:
         """Upload a large file by writing base64 chunks then decoding.
 
-        Splits the base64 string into chunks that each fit within ARG_MAX,
-        appends each chunk to a temp file inside the sandbox, then decodes
-        the assembled base64 to the final destination.
+        Splits the base64 string into chunks that each fit within
+        MAX_ARG_STRLEN, appends each chunk to a temp file inside the
+        sandbox, then decodes the assembled base64 to the final path.
 
         Args:
             file_path: Absolute path inside the sandbox.
@@ -486,39 +668,24 @@ except PermissionError:
         """
         tmp_b64 = file_path + ".__b64_tmp"
 
-        # Ensure parent directory exists.
-        result = self.execute("python3 -c \"import pathlib; pathlib.Path('" + file_path + "').parent.mkdir(parents=True, exist_ok=True)\"")
-        if result.exit_code != 0:
-            return result
+        # Base64-encode paths for safe interpolation into templates.
+        tmp_path_b64 = base64.b64encode(tmp_b64.encode("utf-8")).decode("ascii")
+        final_path_b64 = base64.b64encode(file_path.encode("utf-8")).decode("ascii")
 
-        # Write base64 data in chunks that fit within ARG_MAX.
+        # Write base64 data in chunks that fit within MAX_ARG_STRLEN.
         chunk_size = self._UPLOAD_CHUNK_BYTES
         for i in range(0, len(b64), chunk_size):
             chunk = b64[i : i + chunk_size]
-            append_cmd = (
-                'python3 -c "\n'
-                "import sys\n"
-                "chunk = sys.stdin.read().strip()\n"
-                "with open('" + tmp_b64 + "', 'a') as f:\n"
-                "    f.write(chunk)\n"
-                "\" <<'__DEEPAGENTS_EOF__'\n" + chunk + "\n"
-                "__DEEPAGENTS_EOF__"
-            )
-            result = self.execute(append_cmd)
+            cmd = _UPLOAD_CHUNK_COMMAND_TEMPLATE.format(tmp_path_b64=tmp_path_b64, chunk_b64=chunk)
+            result = self.execute(cmd)
             if result.exit_code != 0:
-                self.execute("rm -f '" + tmp_b64 + "'")
+                # Clean up temp file on failure.
+                self.execute(_REMOVE_COMMAND_TEMPLATE.format(path_b64=tmp_path_b64))
                 return result
 
         # Decode the assembled base64 file to the final path.
-        decode_cmd = (
-            'python3 -c "'
-            "import base64, pathlib; "
-            "b64 = pathlib.Path('" + tmp_b64 + "').read_text(); "
-            "pathlib.Path('" + file_path + "').write_bytes(base64.b64decode(b64)); "
-            "pathlib.Path('" + tmp_b64 + "').unlink()"
-            '"'
-        )
-        return self.execute(decode_cmd)
+        cmd = _UPLOAD_DECODE_COMMAND_TEMPLATE.format(tmp_path_b64=tmp_path_b64, final_path_b64=final_path_b64)
+        return self.execute(cmd)
 
     # Maximum raw bytes to read per chunk during download.
     # Each chunk is base64-encoded in the sandbox and printed to stdout.
@@ -546,7 +713,8 @@ except PermissionError:
 
         for path in paths:
             # Get file size to decide between single and chunked download.
-            size_cmd = "python3 -c \"import os; print(os.path.getsize('" + path + "'))\""
+            path_b64 = base64.b64encode(path.encode("utf-8")).decode("ascii")
+            size_cmd = _DOWNLOAD_SIZE_COMMAND_TEMPLATE.format(path_b64=path_b64)
             size_result = self.execute(size_cmd)
             if size_result.exit_code != 0:
                 responses.append(FileDownloadResponse(path=path, error="file_not_found"))
@@ -573,7 +741,8 @@ except PermissionError:
         Returns:
             FileDownloadResponse with content or error.
         """
-        cmd = "python3 -c \"import base64; print(base64.b64encode(open('" + file_path + "', 'rb').read()).decode())\""
+        path_b64 = base64.b64encode(file_path.encode("utf-8")).decode("ascii")
+        cmd = _DOWNLOAD_COMMAND_TEMPLATE.format(path_b64=path_b64)
         result = self.execute(cmd)
         if result.exit_code == 0 and result.output.strip():
             try:
@@ -596,19 +765,13 @@ except PermissionError:
         Returns:
             FileDownloadResponse with content or error.
         """
+        path_b64 = base64.b64encode(file_path.encode("utf-8")).decode("ascii")
         chunks: list[bytes] = []
         offset = 0
 
         while offset < file_size:
-            chunk_cmd = (
-                'python3 -c "'
-                "import base64; "
-                "f = open('" + file_path + "', 'rb'); "
-                "f.seek(" + str(offset) + "); "
-                "print(base64.b64encode(f.read(" + str(self._DOWNLOAD_CHUNK_BYTES) + ")).decode())"
-                '"'
-            )
-            result = self.execute(chunk_cmd)
+            cmd = _DOWNLOAD_CHUNK_COMMAND_TEMPLATE.format(path_b64=path_b64, offset=offset, chunk_size=self._DOWNLOAD_CHUNK_BYTES)
+            result = self.execute(cmd)
             if result.exit_code != 0 or not result.output.strip():
                 return FileDownloadResponse(path=file_path, error="file_not_found")
 

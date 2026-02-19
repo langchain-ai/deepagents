@@ -1,6 +1,6 @@
-.PHONY: all format lint test tests integration_test integration_tests test_watch benchmark help
+.PHONY: format lint test tests integration_test integration_tests test_watch benchmark help lint_package
 
-all: help
+.DEFAULT_GOAL := help
 
 .EXPORT_ALL_VARIABLES:
 UV_FROZEN = true
@@ -13,16 +13,18 @@ TEST_FILE ?= tests/unit_tests/
 
 integration_test integration_tests: TEST_FILE=tests/integration_tests/
 
+test: ## Run unit tests
 test tests:
 	uv run --group test pytest -vvv --disable-socket --allow-unix-socket $(TEST_FILE)
 
+integration_test: ## Run integration tests
 integration_test integration_tests:
 	uv run --group test pytest -vvv --timeout 30 $(TEST_FILE)
 
-test_watch:
+test_watch: ## Run tests in watch mode
 	uv run --group test ptw --now . -- -vv $(TEST_FILE)
 
-benchmark:
+benchmark: ## Run benchmark tests
 	uv run --group test pytest ./tests -m benchmark
 
 ######################
@@ -32,13 +34,16 @@ benchmark:
 PYTHON_FILES=.
 lint format: PYTHON_FILES=.
 lint_diff format_diff: PYTHON_FILES=$(shell git diff --relative=libs/partners/runloop --name-only --diff-filter=d main | grep -E '\.py$$|\.ipynb$$')
+lint_package: ## Lint only the package
 lint_package: PYTHON_FILES=langchain_runloop
 
+lint: ## Run linters and type checker
 lint lint_diff lint_package:
 	[ "$(PYTHON_FILES)" = "" ] || uv run --all-groups ruff check $(PYTHON_FILES)
 	[ "$(PYTHON_FILES)" = "" ] || uv run --all-groups ruff format $(PYTHON_FILES) --diff
 	uv run --all-groups ty check langchain_runloop
 
+format: ## Run code formatters
 format format_diff:
 	[ "$(PYTHON_FILES)" = "" ] || uv run --all-groups ruff format $(PYTHON_FILES)
 	[ "$(PYTHON_FILES)" = "" ] || uv run --all-groups ruff check --fix $(PYTHON_FILES)
@@ -47,12 +52,8 @@ format format_diff:
 # HELP
 ######################
 
-help:
-	@echo '----'
-	@echo 'format                       - run code formatters'
-	@echo 'lint                         - run linters'
-	@echo 'lint_package                 - lint only the package'
-	@echo 'test                         - run unit tests'
-	@echo 'integration_test             - run integration tests'
-	@echo 'test_watch                   - run tests in watch mode'
-	@echo 'benchmark                    - run benchmark tests'
+help: ## Show this help message
+	@echo "Usage: make [target] [TEST_FILE=path/to/tests/]"
+	@echo ""
+	@echo "Targets:"
+	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z_-]+:.*##/ {printf "  %-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)

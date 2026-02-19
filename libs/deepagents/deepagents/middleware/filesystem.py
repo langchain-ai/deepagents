@@ -231,6 +231,10 @@ Examples:
     - execute(command="find . -name '*.py'")  # Use glob tool instead
     - execute(command="grep -r 'pattern' .")  # Use grep tool instead
 
+Timeout:
+- If execution is available, you may pass `timeout` (in seconds) to control how long the command is allowed to run.
+- `timeout` must be non-negative and must not exceed 7200 seconds (2 hours).
+
 Note: This tool is only available if the backend supports execution (SandboxBackendProtocol).
 If execution is not supported, the tool will return an error message."""
 
@@ -423,6 +427,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         self._custom_system_prompt = system_prompt
         self._custom_tool_descriptions = custom_tool_descriptions or {}
         self._tool_token_limit_before_evict = tool_token_limit_before_evict
+        self._max_execute_timeout_seconds = 2 * 60 * 60
 
         self.tools = [
             self._create_ls_tool(),
@@ -837,6 +842,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         def sync_execute(
             command: Annotated[str, "Shell command to execute in the sandbox environment."],
             runtime: ToolRuntime[None, FilesystemState],
+            timeout: Annotated[
+                int,
+                "Optional timeout in seconds. Defaults to 120. Must be non-negative and at most 7200 (2 hours).",
+            ] = 120,
         ) -> str:
             """Synchronous wrapper for execute tool."""
             resolved_backend = self._get_backend(runtime)
@@ -849,11 +858,21 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     "To use the execute tool, provide a backend that implements SandboxBackendProtocol."
                 )
 
+            if timeout < 0:
+                return f"Error: timeout must be non-negative, got {timeout}."
+            if timeout > self._max_execute_timeout_seconds:
+                return ToolMessage(
+                    name="execute",
+                    tool_call_id=sanitize_tool_call_id(runtime.tool_call_id),
+                    content=f"Error: The maximum allowed timeout is {self._max_execute_timeout_seconds} seconds.",
+                    status="error",
+                ).text
+
             # Safe cast: _supports_execution validates that execute()/aexecute() exist
             # (either SandboxBackendProtocol or CompositeBackend with sandbox default)
             executable = cast("SandboxBackendProtocol", resolved_backend)
             try:
-                result = executable.execute(command)
+                result = executable.execute(command, timeout=timeout)
             except NotImplementedError as e:
                 # Handle case where execute() exists but raises NotImplementedError
                 return f"Error: Execution not available. {e}"
@@ -873,6 +892,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         async def async_execute(
             command: Annotated[str, "Shell command to execute in the sandbox environment."],
             runtime: ToolRuntime[None, FilesystemState],
+            timeout: Annotated[
+                int,
+                "Optional timeout in seconds. Defaults to 120. Must be non-negative and at most 7200 (2 hours).",
+            ] = 120,
         ) -> str:
             """Asynchronous wrapper for execute tool."""
             resolved_backend = self._get_backend(runtime)
@@ -885,10 +908,20 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     "To use the execute tool, provide a backend that implements SandboxBackendProtocol."
                 )
 
+            if timeout < 0:
+                return f"Error: timeout must be non-negative, got {timeout}."
+            if timeout > self._max_execute_timeout_seconds:
+                return ToolMessage(
+                    name="execute",
+                    tool_call_id=sanitize_tool_call_id(runtime.tool_call_id),
+                    content=f"Error: The maximum allowed timeout is {self._max_execute_timeout_seconds} seconds.",
+                    status="error",
+                ).text
+
             # Safe cast: _supports_execution validates that execute()/aexecute() exist
             executable = cast("SandboxBackendProtocol", resolved_backend)
             try:
-                result = await executable.aexecute(command)
+                result = await executable.aexecute(command, timeout=timeout)
             except NotImplementedError as e:
                 # Handle case where execute() exists but raises NotImplementedError
                 return f"Error: Execution not available. {e}"

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, ClassVar
 
+from rich.markup import escape as escape_markup
 from textual.binding import Binding, BindingType
 from textual.containers import Container, Vertical, VerticalScroll
 from textual.message import Message
@@ -149,10 +150,12 @@ class ApprovalMenu(Container):
         req = self._action_requests[0]
         command = str(req.get("args", {}).get("command", ""))
         if expanded or len(command) <= _SHELL_COMMAND_TRUNCATE_LENGTH:
-            return f"[bold #f59e0b]{command}[/bold #f59e0b]"
+            return f"[bold #f59e0b]{escape_markup(command)}[/bold #f59e0b]"
         truncated = command[:_SHELL_COMMAND_TRUNCATE_LENGTH] + get_glyphs().ellipsis
+        escaped_truncated = escape_markup(truncated)
         return (
-            f"[bold #f59e0b]{truncated}[/bold #f59e0b] [dim](press 'e' to expand)[/dim]"
+            f"[bold #f59e0b]{escaped_truncated}[/bold #f59e0b] "
+            "[dim](press 'e' to expand)[/dim]"
         )
 
     def compose(self) -> ComposeResult:

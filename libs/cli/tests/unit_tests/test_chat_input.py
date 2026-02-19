@@ -5,10 +5,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import pytest
+from textual import events
 from textual.app import App, ComposeResult
 from textual.containers import Container
 from textual.widgets import Static
 
+from deepagents_cli.input import ImageTracker
 from deepagents_cli.widgets.autocomplete import SLASH_COMMANDS
 from deepagents_cli.widgets.chat_input import (
     ChatInput,
@@ -220,6 +222,32 @@ class _RecordingApp(App[None]):
         self.submitted.append(event)
 
 
+class _ImagePasteApp(App[None]):
+    """App that wires a shared tracker into ChatInput for paste tests."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.tracker = ImageTracker()
+
+    def compose(self) -> ComposeResult:
+        yield ChatInput(id="chat-input", image_tracker=self.tracker)
+
+
+class _ImagePasteRecordingApp(App[None]):
+    """App that records submitted values while using image tracker wiring."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.tracker = ImageTracker()
+        self.submitted: list[ChatInput.Submitted] = []
+
+    def compose(self) -> ComposeResult:
+        yield ChatInput(id="chat-input", image_tracker=self.tracker)
+
+    def on_chat_input_submitted(self, event: ChatInput.Submitted) -> None:
+        self.submitted.append(event)
+
+
 async def _pause_for_strip(pilot: Pilot[None]) -> None:
     """Wait two frames so the prefix-strip text-change event propagates."""
     await pilot.pause()
@@ -344,6 +372,204 @@ class TestHistoryNavigationFlag:
             assert chat_input._completion_manager is not None
             controller = chat_input._completion_manager._active
             assert controller is not None
+
+
+class TestHistoryBoundaryNavigation:
+    """Test that history navigation only triggers at input boundaries."""
+
+    @pytest.mark.asyncio
+    async def test_up_arrow_only_triggers_at_cursor_start(self) -> None:
+        """Up arrow should only navigate history when cursor is at (0, 0)."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._history._entries.append("previous entry")
+
+            # Type some text — cursor ends up at the end
+            chat._text_area.insert("hello")
+            await pilot.pause()
+            assert chat._text_area.cursor_location == (0, 5)
+
+            # Up arrow should NOT trigger history (cursor not at start)
+            await pilot.press("up")
+            await pilot.pause()
+            assert chat._text_area.text == "hello"
+
+    @pytest.mark.asyncio
+    async def test_up_arrow_triggers_at_cursor_zero(self) -> None:
+        """Up arrow should navigate history when cursor is at (0, 0)."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._history._entries.append("previous entry")
+
+            # Type text then move cursor to start
+            chat._text_area.insert("hello")
+            await pilot.pause()
+            chat._text_area.move_cursor((0, 0))
+            await pilot.pause()
+
+            # Up arrow should trigger history (cursor at start)
+            await pilot.press("up")
+            await pilot.pause()
+            assert chat._text_area.text == "previous entry"
+
+    @pytest.mark.asyncio
+    async def test_down_arrow_navigates_from_start_when_in_history(self) -> None:
+        """Down arrow at start navigates history when `_in_history` is True."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._history._entries.extend(["first", "second"])
+
+            # Navigate into history first (cursor at start on empty)
+            await pilot.press("up")
+            await pilot.pause()
+            assert chat._text_area.text == "second"
+
+            # Move cursor to start — still a boundary
+            chat._text_area.move_cursor((0, 0))
+            await pilot.pause()
+
+            # _in_history is True so down at start (boundary) still navigates
+            await pilot.press("down")
+            await pilot.pause()
+            assert chat._text_area.text == ""
+
+    @pytest.mark.asyncio
+    async def test_down_arrow_does_not_trigger_at_non_end(self) -> None:
+        """Down arrow should not navigate history when cursor is not at end."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._history._entries.append("previous entry")
+
+            # Type text — cursor ends up at the end
+            chat._text_area.insert("hello world")
+            await pilot.pause()
+
+            # Move cursor to middle (not at end)
+            chat._text_area.move_cursor((0, 5))
+            await pilot.pause()
+
+            # Down arrow should NOT trigger history
+            await pilot.press("down")
+            await pilot.pause()
+            assert chat._text_area.text == "hello world"
+
+    @pytest.mark.asyncio
+    async def test_down_arrow_at_end_triggers_history(self) -> None:
+        """Down arrow at end of text should navigate history forward."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._history._entries.extend(["first", "second"])
+
+            # Navigate up twice into history
+            await pilot.press("up")
+            await pilot.pause()
+            await pilot.press("up")
+            await pilot.pause()
+            assert chat._text_area.text == "first"
+
+            # Cursor should be at end after set_text_from_history
+            # Down arrow at end should navigate forward
+            await pilot.press("down")
+            await pilot.pause()
+            assert chat._text_area.text == "second"
+
+    @pytest.mark.asyncio
+    async def test_up_at_middle_of_multiline_does_not_trigger(self) -> None:
+        """Up arrow on a middle line should not navigate history."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._history._entries.append("previous entry")
+
+            # Insert multiline text and place cursor on line 1
+            chat._text_area.text = "line one\nline two\nline three"
+            await pilot.pause()
+            chat._text_area.move_cursor((1, 3))
+            await pilot.pause()
+
+            # Up arrow should move cursor, not navigate history
+            await pilot.press("up")
+            await pilot.pause()
+            assert chat._text_area.text == "line one\nline two\nline three"
+
+    @pytest.mark.asyncio
+    async def test_in_history_allows_up_from_end(self) -> None:
+        """When browsing history, up arrow at end should also navigate."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._history._entries.extend(["first", "second"])
+
+            # Navigate into history
+            await pilot.press("up")
+            await pilot.pause()
+            assert chat._text_area.text == "second"
+            assert chat._text_area._in_history is True
+
+            # Cursor is at end after set_text_from_history; up should
+            # still navigate because _in_history is True and at boundary
+            await pilot.press("up")
+            await pilot.pause()
+            assert chat._text_area.text == "first"
+
+    @pytest.mark.asyncio
+    async def test_in_history_resets_after_submission(self) -> None:
+        """Submitting should clear the _in_history flag."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._history._entries.append("recalled entry")
+
+            await pilot.press("up")
+            await pilot.pause()
+            assert chat._text_area._in_history is True
+
+            await pilot.press("enter")
+            await pilot.pause()
+            assert chat._text_area._in_history is False
+
+    @pytest.mark.asyncio
+    async def test_in_history_resets_after_navigating_past_end(self) -> None:
+        """Pressing down past history end should set `_in_history` to False."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._history._entries.append("only entry")
+
+            # Navigate up into history
+            await pilot.press("up")
+            await pilot.pause()
+            assert chat._text_area.text == "only entry"
+            assert chat._text_area._in_history is True
+
+            # Navigate down past the end — returns to original (empty) input
+            await pilot.press("down")
+            await pilot.pause()
+            assert chat._text_area.text == ""
+            assert chat._text_area._in_history is False
 
 
 class TestCompletionPopupClickBubbling:
@@ -963,3 +1189,253 @@ class TestHistoryRecallSuppressesCompletions:
 
             assert chat._text_area.text == "tell me about @package.json"
             assert chat._current_suggestions == []
+
+
+class TestDroppedImagePaste:
+    """Tests for drag/drop image-path handling via paste events."""
+
+    @pytest.mark.asyncio
+    async def test_forward_delete_removes_placeholder(self, tmp_path) -> None:
+        """Forward-delete should remove `[image N]` as a single token."""
+        img_path = tmp_path / "fwddelete.png"
+        from PIL import Image
+
+        image = Image.new("RGB", (4, 4), color="magenta")
+        image.save(img_path, format="PNG")
+
+        app = _ImagePasteApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste(str(img_path))
+            await pilot.pause()
+            assert chat._text_area.text == "[image 1] "
+
+            # Move cursor to start and press forward-delete
+            chat._text_area.move_cursor((0, 0))
+            await pilot.pause()
+            await pilot.press("delete")
+            await pilot.pause()
+
+            # Forward-delete removes the placeholder token but not the
+            # trailing space (unlike backspace which catches it).
+            assert "[image" not in chat._text_area.text
+            assert app.tracker.get_images() == []
+            assert app.tracker.next_id == 1
+
+    @pytest.mark.asyncio
+    async def test_backspace_removes_full_image_placeholder(self, tmp_path) -> None:
+        """Backspace should remove `[image N]` as a single token."""
+        img_path = tmp_path / "backspace.png"
+        from PIL import Image
+
+        image = Image.new("RGB", (4, 4), color="cyan")
+        image.save(img_path, format="PNG")
+
+        app = _ImagePasteApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste(str(img_path))
+            await pilot.pause()
+            assert chat._text_area.text == "[image 1] "
+
+            await pilot.press("backspace")
+            await pilot.pause()
+
+            assert chat._text_area.text == ""
+            assert app.tracker.get_images() == []
+            assert app.tracker.next_id == 1
+
+    @pytest.mark.asyncio
+    async def test_readding_after_delete_restarts_image_counter(self, tmp_path) -> None:
+        """Re-adding after deleting all placeholders should restart at `[image 1]`."""
+        img_path = tmp_path / "readd.png"
+        from PIL import Image
+
+        image = Image.new("RGB", (4, 4), color="red")
+        image.save(img_path, format="PNG")
+
+        app = _ImagePasteApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste(str(img_path))
+            await pilot.pause()
+            assert chat._text_area.text == "[image 1] "
+
+            await pilot.press("backspace")
+            await pilot.pause()
+            assert app.tracker.next_id == 1
+
+            chat.handle_external_paste(str(img_path))
+            await pilot.pause()
+            assert chat._text_area.text == "[image 1] "
+            assert len(app.tracker.get_images()) == 1
+            assert app.tracker.next_id == 2
+
+    @pytest.mark.asyncio
+    async def test_handle_external_paste_attaches_dropped_image(self, tmp_path) -> None:
+        """External paste routing should attach dropped images."""
+        img_path = tmp_path / "external.png"
+        from PIL import Image
+
+        image = Image.new("RGB", (4, 4), color="blue")
+        image.save(img_path, format="PNG")
+
+        app = _ImagePasteApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            assert chat.handle_external_paste(str(img_path))
+            await pilot.pause()
+
+            assert chat._text_area.text.strip() == "[image 1]"
+            assert len(app.tracker.get_images()) == 1
+
+    @pytest.mark.asyncio
+    async def test_handle_external_paste_inserts_plain_text(self) -> None:
+        """External paste should insert text when payload is not a file path."""
+        app = _ImagePasteApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            assert chat.handle_external_paste("hello world")
+            await pilot.pause()
+
+            assert chat._text_area.text == "hello world"
+            assert app.tracker.get_images() == []
+
+    @pytest.mark.asyncio
+    async def test_paste_image_path_attaches_image_and_inserts_placeholder(
+        self, tmp_path
+    ) -> None:
+        """Pasting a dropped image path should attach and insert `[image N]`."""
+        img_path = tmp_path / "drop.png"
+        from PIL import Image
+
+        image = Image.new("RGB", (4, 4), color="blue")
+        image.save(img_path, format="PNG")
+
+        app = _ImagePasteApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            await chat._text_area._on_paste(events.Paste(str(img_path)))
+            await pilot.pause()
+
+            assert chat._text_area.text.strip() == "[image 1]"
+            assert len(app.tracker.get_images()) == 1
+
+    @pytest.mark.asyncio
+    async def test_paste_non_image_path_keeps_original_text(self, tmp_path) -> None:
+        """Non-image dropped paths should keep the default path paste behavior."""
+        file_path = tmp_path / "notes.txt"
+        file_path.write_text("hello")
+
+        app = _ImagePasteApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            await chat._text_area._on_paste(events.Paste(str(file_path)))
+            await pilot.pause()
+
+            assert chat._text_area.text.endswith(str(file_path).lstrip("/"))
+            assert app.tracker.get_images() == []
+
+    @pytest.mark.asyncio
+    async def test_submit_absolute_path_without_paste_event_attaches_image(
+        self, tmp_path
+    ) -> None:
+        """Submission should still attach when terminal inserts path as plain text."""
+        img_path = tmp_path / "dragged.png"
+        from PIL import Image
+
+        image = Image.new("RGB", (3, 3), color="green")
+        image.save(img_path, format="PNG")
+
+        app = _ImagePasteRecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            # Simulate terminals that insert dropped paths as regular text.
+            chat._text_area.text = str(img_path)
+            await pilot.pause()
+
+            assert chat.mode == "normal"
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(app.submitted) == 1
+            assert app.submitted[0].value == "[image 1]"
+            assert app.submitted[0].mode == "normal"
+            assert len(app.tracker.get_images()) == 1
+
+    @pytest.mark.asyncio
+    async def test_sync_resumes_after_submit_skip(self, tmp_path) -> None:
+        """Image tracker sync should resume after the post-submit skip event."""
+        img_path = tmp_path / "sync_resume.png"
+        from PIL import Image
+
+        image = Image.new("RGB", (4, 4), color="yellow")
+        image.save(img_path, format="PNG")
+
+        app = _ImagePasteRecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            # Paste an image and submit
+            chat.handle_external_paste(str(img_path))
+            await pilot.pause()
+            assert chat._text_area.text == "[image 1] "
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            # After submit, the skip counter fires for the clear_text event.
+            # Typing new text should now sync normally (tracker is cleared).
+            chat._text_area.insert("hello")
+            await pilot.pause()
+
+            # The tracker should have synced and cleared images since
+            # the new text has no placeholders.
+            assert app.tracker.get_images() == []
+            assert app.tracker.next_id == 1
+
+    @pytest.mark.asyncio
+    async def test_submit_recovers_if_command_mode_already_stripped_path(
+        self, tmp_path
+    ) -> None:
+        """If slash mode stripped a dropped path, submission should recover it."""
+        img_path = tmp_path / "recover.png"
+        from PIL import Image
+
+        image = Image.new("RGB", (2, 2), color="purple")
+        image.save(img_path, format="PNG")
+
+        app = _ImagePasteRecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            # Simulate previously stripped leading slash.
+            chat.mode = "command"
+            chat._text_area.text = str(img_path).lstrip("/")
+            await pilot.pause()
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(app.submitted) == 1
+            assert app.submitted[0].value == "[image 1]"
+            assert app.submitted[0].mode == "normal"
+            assert len(app.tracker.get_images()) == 1

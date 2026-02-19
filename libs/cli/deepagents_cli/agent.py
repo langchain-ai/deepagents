@@ -14,6 +14,8 @@ from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.middleware import MemoryMiddleware, SkillsMiddleware
 from langgraph.checkpoint.memory import InMemorySaver
 
+from deepagents_cli.compact_tool import CompactToolMiddleware
+
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
@@ -321,17 +323,6 @@ def _format_execute_description(
     return f"Execute Command: {command}\nWorking Directory: {Path.cwd()}"
 
 
-def _format_compact_description(
-    _tool_call: ToolCall, _state: AgentState[Any], _runtime: Runtime[Any]
-) -> str:
-    """Format compact_conversation tool call for approval prompt.
-
-    Returns:
-        Formatted description string for the `compact_conversation` tool call.
-    """
-    return "Action: Compact conversation by summarizing older messages"
-
-
 def _add_interrupt_on() -> dict[str, InterruptOnConfig]:
     """Configure human-in-the-loop interrupt settings for all gated tools.
 
@@ -383,9 +374,9 @@ def _add_interrupt_on() -> dict[str, InterruptOnConfig]:
     }
 
     if REQUIRE_COMPACT_TOOL_APPROVAL:
-        interrupt_map["compact_conversation"] = {  # type: ignore[invalid-assignment]
+        interrupt_map["compact_conversation"] = {
             "allowed_decisions": ["approve", "reject"],
-            "description": _format_compact_description,  # type: ignore[typeddict-item]  # Callable description narrower than TypedDict expects
+            "description": "Action: Compact conversation by summarizing older messages",
         }
 
     return interrupt_map
@@ -588,9 +579,6 @@ def create_cli_agent(
             default=backend,
             routes={},
         )
-
-    # Add compact tool middleware (agent-initiated compaction)
-    from deepagents_cli.compact_tool import CompactToolMiddleware
 
     agent_middleware.append(CompactToolMiddleware(backend=composite_backend))
 

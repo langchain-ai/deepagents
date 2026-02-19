@@ -369,7 +369,7 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument(
         "--sandbox",
-        choices=["none", "modal", "daytona", "runloop", "langsmith"],
+        choices=["none", "modal", "daytona", "runloop", "langsmith", "agentcore"],
         default="none",
         metavar="TYPE",
         help="Remote sandbox for code execution (default: none - local only)",

@@ -11,15 +11,18 @@ that need to be escaped as {{e}} for Python's .format() method.
 import base64
 import json
 
-from deepagents.backends.protocol import (
-    ExecuteResponse,
-    FileDownloadResponse,
-    FileUploadResponse,
-)
+from deepagents.backends.protocol import ExecuteResponse
 from deepagents.backends.sandbox import (
+    _DOWNLOAD_CHUNK_COMMAND_TEMPLATE,
+    _DOWNLOAD_COMMAND_TEMPLATE,
+    _DOWNLOAD_SIZE_COMMAND_TEMPLATE,
     _EDIT_COMMAND_TEMPLATE,
     _GLOB_COMMAND_TEMPLATE,
     _READ_COMMAND_TEMPLATE,
+    _REMOVE_COMMAND_TEMPLATE,
+    _UPLOAD_CHUNK_COMMAND_TEMPLATE,
+    _UPLOAD_COMMAND_TEMPLATE,
+    _UPLOAD_DECODE_COMMAND_TEMPLATE,
     _WRITE_COMMAND_TEMPLATE,
     BaseSandbox,
 )
@@ -39,12 +42,6 @@ class MockSandbox(BaseSandbox):
         self.last_command = command
         # Return "1" for edit commands (simulates 1 occurrence replaced)
         return ExecuteResponse(output="1", exit_code=0, truncated=False)
-
-    def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
-        return [FileUploadResponse(path=f[0], error=None) for f in files]
-
-    def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
-        return [FileDownloadResponse(path=p, content=None, error="not_implemented") for p in paths]
 
 
 def test_write_command_template_format() -> None:
@@ -174,3 +171,221 @@ def test_sandbox_grep_literal_search() -> None:
     # Verify the command uses grep -rHnF for literal search (combined flags)
     assert sandbox.last_command is not None
     assert "grep -rHnF" in sandbox.last_command
+
+
+# -- Upload/download tests ------------------------------------------------
+
+
+def test_upload_small_file_uses_single_command() -> None:
+    """Test that small files are uploaded in a single execute() call."""
+    commands: list[str] = []
+
+    class TrackingSandbox(MockSandbox):
+        def execute(self, command: str) -> ExecuteResponse:
+            commands.append(command)
+            return ExecuteResponse(output="", exit_code=0, truncated=False)
+
+    sandbox = TrackingSandbox()
+    small_content = b"hello world"
+    sandbox.upload_files([("/test.txt", small_content)])
+
+    # Should be exactly one command (no chunking).
+    assert len(commands) == 1
+    assert "__DEEPAGENTS_EOF__" in commands[0]
+
+
+def test_upload_large_file_uses_chunked_commands() -> None:
+    """Test that large files are split into multiple execute() calls."""
+    commands: list[str] = []
+
+    class TrackingSandbox(MockSandbox):
+        def execute(self, command: str) -> ExecuteResponse:
+            commands.append(command)
+            return ExecuteResponse(output="", exit_code=0, truncated=False)
+
+    sandbox = TrackingSandbox()
+    # Create content larger than _UPLOAD_CHUNK_BYTES (64KB).
+    large_content = b"x" * 100_000
+    sandbox.upload_files([("/large.bin", large_content)])
+
+    # Should have: N chunk appends + 1 decode = more than 1 command.
+    assert len(commands) > 1
+    # Last command should be the decode step.
+    assert "base64.b64decode" in commands[-1]
+    assert "os.remove" in commands[-1]
+
+
+def test_upload_returns_error_on_failure() -> None:
+    """Test that upload returns error when execute() fails."""
+
+    class FailingSandbox(MockSandbox):
+        def execute(self, command: str) -> ExecuteResponse:
+            return ExecuteResponse(output="some error", exit_code=1, truncated=False)
+
+    sandbox = FailingSandbox()
+    responses = sandbox.upload_files([("/fail.txt", b"content")])
+
+    assert len(responses) == 1
+    assert responses[0].error == "permission_denied"
+
+
+def test_download_small_file() -> None:
+    """Test downloading a small file in a single command."""
+    content = b"hello world"
+    b64_content = base64.b64encode(content).decode("ascii")
+    call_count = 0
+
+    class DownloadSandbox(MockSandbox):
+        def execute(self, command: str) -> ExecuteResponse:
+            nonlocal call_count
+            call_count += 1
+            if "getsize" in command:
+                return ExecuteResponse(output=str(len(content)), exit_code=0, truncated=False)
+            return ExecuteResponse(output=b64_content, exit_code=0, truncated=False)
+
+    sandbox = DownloadSandbox()
+    responses = sandbox.download_files(["/test.txt"])
+
+    assert len(responses) == 1
+    assert responses[0].content == content
+    assert responses[0].error is None
+    # 1 size check + 1 download = 2 calls.
+    assert call_count == 2
+
+
+def test_download_large_file_uses_chunks() -> None:
+    """Test that large files are downloaded in multiple chunks."""
+    # 100KB file — larger than _DOWNLOAD_CHUNK_BYTES (64KB).
+    full_content = b"A" * 100_000
+    chunk_size = BaseSandbox._DOWNLOAD_CHUNK_BYTES
+    call_count = 0
+
+    class ChunkedDownloadSandbox(MockSandbox):
+        def execute(self, command: str) -> ExecuteResponse:
+            nonlocal call_count
+            call_count += 1
+            if "getsize" in command:
+                return ExecuteResponse(
+                    output=str(len(full_content)),
+                    exit_code=0,
+                    truncated=False,
+                )
+            if "f.seek" in command:
+                # Parse offset from the "offset = N" assignment in the template.
+                offset_str = command.split("offset = ")[1].split("\n")[0]
+                offset = int(offset_str)
+                chunk = full_content[offset : offset + chunk_size]
+                b64_chunk = base64.b64encode(chunk).decode("ascii")
+                return ExecuteResponse(output=b64_chunk, exit_code=0, truncated=False)
+            return ExecuteResponse(output="", exit_code=0, truncated=False)
+
+    sandbox = ChunkedDownloadSandbox()
+    responses = sandbox.download_files(["/large.bin"])
+
+    assert len(responses) == 1
+    assert responses[0].content == full_content
+    assert responses[0].error is None
+    # 1 size check + 2 chunk downloads = 3 calls.
+    assert call_count == 3
+
+
+def test_download_returns_error_for_missing_file() -> None:
+    """Test that download returns error when file does not exist."""
+
+    class MissingSandbox(MockSandbox):
+        def execute(self, command: str) -> ExecuteResponse:
+            return ExecuteResponse(output="FileNotFoundError", exit_code=1, truncated=False)
+
+    sandbox = MissingSandbox()
+    responses = sandbox.download_files(["/missing.txt"])
+
+    assert len(responses) == 1
+    assert responses[0].error == "file_not_found"
+    assert responses[0].content is None
+
+
+# -- File transfer template format tests ----------------------------------
+
+
+def test_upload_command_template_format() -> None:
+    """Test that _UPLOAD_COMMAND_TEMPLATE can be formatted without KeyError."""
+    content = b"binary \x00\xff content"
+    content_b64 = base64.b64encode(content).decode("ascii")
+    payload = json.dumps({"path": "/test/file.bin", "content": content_b64})
+    payload_b64 = base64.b64encode(payload.encode("utf-8")).decode("ascii")
+
+    cmd = _UPLOAD_COMMAND_TEMPLATE.format(payload_b64=payload_b64)
+
+    assert "python3 -c" in cmd
+    assert payload_b64 in cmd
+    assert "__DEEPAGENTS_EOF__" in cmd
+
+
+def test_upload_chunk_command_template_format() -> None:
+    """Test that _UPLOAD_CHUNK_COMMAND_TEMPLATE can be formatted without KeyError."""
+    tmp_path_b64 = base64.b64encode(b"/tmp/file.__b64_tmp").decode("ascii")
+    chunk_b64 = "AQID"  # base64 for bytes [1,2,3]
+
+    cmd = _UPLOAD_CHUNK_COMMAND_TEMPLATE.format(tmp_path_b64=tmp_path_b64, chunk_b64=chunk_b64)
+
+    assert "python3 -c" in cmd
+    assert tmp_path_b64 in cmd
+    assert chunk_b64 in cmd
+    assert "__DEEPAGENTS_EOF__" in cmd
+
+
+def test_upload_decode_command_template_format() -> None:
+    """Test that _UPLOAD_DECODE_COMMAND_TEMPLATE can be formatted without KeyError."""
+    tmp_path_b64 = base64.b64encode(b"/tmp/file.__b64_tmp").decode("ascii")
+    final_path_b64 = base64.b64encode(b"/dest/file.bin").decode("ascii")
+
+    cmd = _UPLOAD_DECODE_COMMAND_TEMPLATE.format(tmp_path_b64=tmp_path_b64, final_path_b64=final_path_b64)
+
+    assert "python3 -c" in cmd
+    assert tmp_path_b64 in cmd
+    assert final_path_b64 in cmd
+
+
+def test_remove_command_template_format() -> None:
+    """Test that _REMOVE_COMMAND_TEMPLATE can be formatted without KeyError."""
+    path_b64 = base64.b64encode(b"/tmp/file.__b64_tmp").decode("ascii")
+
+    cmd = _REMOVE_COMMAND_TEMPLATE.format(path_b64=path_b64)
+
+    assert "python3 -c" in cmd
+    assert path_b64 in cmd
+    assert "os.remove" in cmd
+
+
+def test_download_size_command_template_format() -> None:
+    """Test that _DOWNLOAD_SIZE_COMMAND_TEMPLATE can be formatted without KeyError."""
+    path_b64 = base64.b64encode(b"/test/file.txt").decode("ascii")
+
+    cmd = _DOWNLOAD_SIZE_COMMAND_TEMPLATE.format(path_b64=path_b64)
+
+    assert "python3 -c" in cmd
+    assert path_b64 in cmd
+    assert "getsize" in cmd
+
+
+def test_download_command_template_format() -> None:
+    """Test that _DOWNLOAD_COMMAND_TEMPLATE can be formatted without KeyError."""
+    path_b64 = base64.b64encode(b"/test/file.txt").decode("ascii")
+
+    cmd = _DOWNLOAD_COMMAND_TEMPLATE.format(path_b64=path_b64)
+
+    assert "python3 -c" in cmd
+    assert path_b64 in cmd
+    assert "b64encode" in cmd
+
+
+def test_download_chunk_command_template_format() -> None:
+    """Test that _DOWNLOAD_CHUNK_COMMAND_TEMPLATE can be formatted without KeyError."""
+    path_b64 = base64.b64encode(b"/test/large.bin").decode("ascii")
+
+    cmd = _DOWNLOAD_CHUNK_COMMAND_TEMPLATE.format(path_b64=path_b64, offset=65536, chunk_size=65536)
+
+    assert "python3 -c" in cmd
+    assert path_b64 in cmd
+    assert "65536" in cmd
+    assert "f.seek" in cmd

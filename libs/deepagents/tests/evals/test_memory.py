@@ -14,14 +14,6 @@ if TYPE_CHECKING:
     from langchain.tools import ToolRuntime
 
 
-from __future__ import annotations
-
-import pytest
-
-from deepagents import create_deep_agent
-from tests.evals.utils import TrajectoryExpectations, run_agent
-
-
 @pytest.mark.langsmith
 def test_memory_basic_recall(model: str) -> None:
     """Agent recalls project context from memory."""

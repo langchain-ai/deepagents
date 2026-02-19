@@ -49,7 +49,7 @@ from langchain.agents.middleware.summarization import (
 from langchain.agents.middleware.types import AgentMiddleware, AgentState, ExtendedModelResponse, PrivateStateAttr
 from langchain.tools import ToolRuntime
 from langchain_core.exceptions import ContextOverflowError
-from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage, get_buffer_string
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage, ToolMessage, get_buffer_string
 from langchain_core.messages.utils import count_tokens_approximately
 from langgraph.config import get_config
 from langgraph.types import Command
@@ -173,6 +173,7 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
         trim_tokens_to_summarize: int | None = _DEFAULT_TRIM_TOKEN_LIMIT,
         history_path_prefix: str = "/conversation_history",
         truncate_args_settings: TruncateArgsSettings | None = None,
+        enable_compact_tool: bool = False,
         **deprecated_kwargs: Any,
     ) -> None:
         """Initialize summarization middleware with backend support.
@@ -204,6 +205,8 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
                     # Truncate when 50% of context window reached, ignoring messages in last 10% of window
                     {"trigger": ("fraction", 0.5), "keep": ("fraction", 0.1), "max_length": 2000, "truncation_text": "...(truncated)"}
             history_path_prefix: Path prefix for storing conversation history.
+            enable_compact_tool: If `True`, register a `compact_conversation` tool
+                that allows the agent to trigger conversation compaction on its own.
 
         Example:
             ```python
@@ -244,6 +247,11 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
             self._truncate_args_keep = truncate_args_settings.get("keep", ("messages", 20))
             self._max_arg_length = truncate_args_settings.get("max_length", 2000)
             self._truncation_text = truncate_args_settings.get("truncation_text", "...(argument truncated)")
+
+        # Compact tool
+        self.tools: list[BaseTool] = []
+        if enable_compact_tool:
+            self.tools.append(self._create_compact_tool())
 
     # Delegated properties and methods from langchain helper
     @property
@@ -451,6 +459,180 @@ A condensed summary follows:
         result.extend(messages[event["cutoff_index"] :])
 
         return result
+
+    @staticmethod
+    def _apply_event_to_messages(
+        messages: list[AnyMessage],
+        event: SummarizationEvent | None,
+    ) -> list[AnyMessage]:
+        """Reconstruct effective messages from raw state messages and a summarization event.
+
+        When a prior summarization event exists, the effective conversation is
+        the summary message followed by all messages from `cutoff_index` onward.
+
+        Args:
+            messages: Full message list from state.
+            event: The `_summarization_event` dict, or `None`.
+
+        Returns:
+            The effective message list the model would see.
+        """
+        if event is None:
+            return list(messages)
+        result: list[AnyMessage] = [event["summary_message"]]
+        result.extend(messages[event["cutoff_index"] :])
+        return result
+
+    def _resolve_backend_for_tool(self, runtime: ToolRuntime) -> BackendProtocol:
+        """Resolve backend from instance or factory using a `ToolRuntime`.
+
+        Args:
+            runtime: The tool runtime context.
+
+        Returns:
+            Resolved backend instance.
+        """
+        if callable(self._backend):
+            return self._backend(runtime)  # ty: ignore[invalid-argument-type]
+        return self._backend
+
+    def _create_compact_tool(self) -> BaseTool:
+        """Create the `compact_conversation` structured tool.
+
+        Returns:
+            A `StructuredTool` with both sync and async implementations.
+        """
+        from langchain_core.tools import StructuredTool  # noqa: PLC0415
+
+        mw = self
+
+        def sync_compact(runtime: ToolRuntime) -> Command:
+            return mw._run_compact(runtime)
+
+        async def async_compact(runtime: ToolRuntime) -> Command:
+            return await mw._arun_compact(runtime)
+
+        return StructuredTool.from_function(
+            name="compact_conversation",
+            description=(
+                "Compact the conversation by summarizing older messages "
+                "into a concise summary. Use this proactively when the "
+                "conversation is getting long to free up context window "
+                "space. This tool takes no arguments."
+            ),
+            func=sync_compact,
+            coroutine=async_compact,
+        )
+
+    def _run_compact(self, runtime: ToolRuntime) -> Command:
+        """Synchronous compact implementation called by the compact tool.
+
+        Args:
+            runtime: The `ToolRuntime` injected by the tool node.
+
+        Returns:
+            A `Command` with `_summarization_event` state update, or a
+                `Command` with a "nothing to compact" `ToolMessage`.
+        """
+        messages = runtime.state.get("messages", [])
+        event = runtime.state.get("_summarization_event")
+        effective = self._apply_event_to_messages(messages, event)
+
+        cutoff = self._determine_cutoff_index(effective)
+        if cutoff == 0:
+            return Command(
+                update={
+                    "messages": [
+                        ToolMessage(
+                            content=("Nothing to compact yet \u2014 conversation is within the token budget."),
+                            tool_call_id=runtime.tool_call_id,
+                        )
+                    ],
+                }
+            )
+
+        to_summarize, _ = self._partition_messages(effective, cutoff)
+
+        backend = self._resolve_backend_for_tool(runtime)
+        file_path = self._offload_to_backend(backend, to_summarize)
+
+        summary = self._create_summary(to_summarize)
+        summary_msg = self._build_new_messages_with_path(summary, file_path)[0]
+
+        state_cutoff = event["cutoff_index"] + cutoff - 1 if event is not None else cutoff
+
+        new_event: SummarizationEvent = {
+            "cutoff_index": state_cutoff,
+            "summary_message": summary_msg,  # ty: ignore[invalid-argument-type]
+            "file_path": file_path,
+        }
+
+        return Command(
+            update={
+                "_summarization_event": new_event,
+                "messages": [
+                    ToolMessage(
+                        content=(f"Conversation compacted. Summarized {len(to_summarize)} messages into a concise summary."),
+                        tool_call_id=runtime.tool_call_id,
+                    )
+                ],
+            }
+        )
+
+    async def _arun_compact(self, runtime: ToolRuntime) -> Command:
+        """Asynchronous compact implementation called by the compact tool.
+
+        Args:
+            runtime: The `ToolRuntime` injected by the tool node.
+
+        Returns:
+            A `Command` with `_summarization_event` state update, or a
+                `Command` with a "nothing to compact" `ToolMessage`.
+        """
+        messages = runtime.state.get("messages", [])
+        event = runtime.state.get("_summarization_event")
+        effective = self._apply_event_to_messages(messages, event)
+
+        cutoff = self._determine_cutoff_index(effective)
+        if cutoff == 0:
+            return Command(
+                update={
+                    "messages": [
+                        ToolMessage(
+                            content=("Nothing to compact yet \u2014 conversation is within the token budget."),
+                            tool_call_id=runtime.tool_call_id,
+                        )
+                    ],
+                }
+            )
+
+        to_summarize, _ = self._partition_messages(effective, cutoff)
+
+        backend = self._resolve_backend_for_tool(runtime)
+        file_path = await self._aoffload_to_backend(backend, to_summarize)
+
+        summary = await self._acreate_summary(to_summarize)
+        summary_msg = self._build_new_messages_with_path(summary, file_path)[0]
+
+        state_cutoff = event["cutoff_index"] + cutoff - 1 if event is not None else cutoff
+
+        new_event: SummarizationEvent = {
+            "cutoff_index": state_cutoff,
+            "summary_message": summary_msg,  # ty: ignore[invalid-argument-type]
+            "file_path": file_path,
+        }
+
+        return Command(
+            update={
+                "_summarization_event": new_event,
+                "messages": [
+                    ToolMessage(
+                        content=(f"Conversation compacted. Summarized {len(to_summarize)} messages into a concise summary."),
+                        tool_call_id=runtime.tool_call_id,
+                    )
+                ],
+            }
+        )
 
     def _should_truncate_args(self, messages: list[AnyMessage], total_tokens: int) -> bool:
         """Check if argument truncation should be triggered.

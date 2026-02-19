@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -26,12 +26,43 @@ _COMPUTE_DEFAULTS_PATH = (
 _LC_MIDDLEWARE_PATH = "deepagents.middleware.summarization.SummarizationMiddleware"
 
 
+def _real_build_summary_msg(summary: str, file_path: str | None) -> list[Any]:
+    """Build a real HumanMessage matching SummarizationMiddleware format."""
+    from langchain_core.messages import HumanMessage
+
+    if file_path is not None:
+        content = (
+            "You are in the middle of a conversation "
+            "that has been summarized.\n\n"
+            "The full conversation history has been "
+            f"saved to {file_path} "
+            "should you need to refer back to it "
+            "for details.\n\n"
+            "A condensed summary follows:\n\n"
+            f"<summary>\n{summary}\n</summary>"
+        )
+    else:
+        content = "Here is a summary of the conversation to date:\n\n" + summary
+
+    return [
+        HumanMessage(
+            content=content,
+            additional_kwargs={"lc_source": "summarization"},
+        )
+    ]
+
+
 @contextmanager
-def _mock_middleware(*, cutoff: int) -> Generator[MagicMock, None, None]:
-    """Patch `create_model`, defaults, and `LCSummarizationMiddleware`.
+def _mock_middleware(
+    *,
+    cutoff: int,
+    summary: str = "Summary of the conversation.",
+) -> Generator[MagicMock, None, None]:
+    """Patch `create_model`, defaults, and `SummarizationMiddleware`.
 
     Args:
         cutoff: Value returned by `_determine_cutoff_index`.
+        summary: Text returned by `_acreate_summary`.
 
     Yields:
         The mock middleware instance.
@@ -45,6 +76,13 @@ def _mock_middleware(*, cutoff: int) -> Generator[MagicMock, None, None]:
     mock_mw._partition_messages.side_effect = lambda msgs, idx: (
         msgs[:idx],
         msgs[idx:],
+    )
+    mock_mw._acreate_summary = AsyncMock(return_value=summary)
+    mock_mw._build_new_messages_with_path.side_effect = _real_build_summary_msg
+    mock_mw._apply_event_to_messages.side_effect = lambda msgs, event: (
+        list(msgs)
+        if event is None
+        else [event["summary_message"], *msgs[event["cutoff_index"] :]]
     )
 
     with (
@@ -212,8 +250,8 @@ class TestCompactSuccess:
     """Test successful compaction flow."""
 
     @pytest.mark.asyncio
-    async def test_successful_compaction(self) -> None:
-        """Should remove old messages, add summary, and refresh UI."""
+    async def test_successful_compaction_sets_event(self) -> None:
+        """Should set _summarization_event with cutoff and summary message."""
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -227,43 +265,27 @@ class TestCompactSuccess:
                     new_callable=AsyncMock,
                     return_value="/conversation_history/test-thread.md",
                 ),
-                patch.object(
-                    app,
-                    "_generate_compact_summary",
-                    new_callable=AsyncMock,
-                    return_value="Summary of the conversation.",
-                ),
-                patch.object(app, "_clear_messages", new_callable=AsyncMock),
-                patch.object(app, "_load_thread_history", new_callable=AsyncMock),
                 patch(_TOKEN_COUNT_PATH, return_value=500),
             ):
                 await app._handle_compact()
                 await pilot.pause()
 
-            # aupdate_state called twice: remove+summary, then event reset
-            mock_agent = app._agent  # MagicMock at runtime
-            assert mock_agent.aupdate_state.call_count == 2  # type: ignore[union-attr]
+            mock_agent = app._agent
+            # Single aupdate_state call to set the event
+            assert mock_agent.aupdate_state.call_count == 1  # type: ignore[union-attr]
 
-            # First call: remove ops + summary message
-            first_values = mock_agent.aupdate_state.call_args_list[0][0][1]  # type: ignore[union-attr]
-            update_messages = first_values["messages"]
-            from langchain_core.messages import HumanMessage, RemoveMessage
+            update_values = mock_agent.aupdate_state.call_args_list[0][0][1]  # type: ignore[union-attr]
+            event = update_values["_summarization_event"]
+            assert event["cutoff_index"] == 4
+            assert event["summary_message"] is not None
+            assert event["file_path"] == "/conversation_history/test-thread.md"
 
-            remove_ops = [m for m in update_messages if isinstance(m, RemoveMessage)]
-            summaries = [m for m in update_messages if isinstance(m, HumanMessage)]
-            # Middleware cutoff=4 → summarize first 4 messages
-            assert len(remove_ops) == 4
-            assert len(summaries) == 1
-            assert summaries[0].additional_kwargs.get("lc_source") == "summarization"
-
-            # Verify file path and summary content are embedded
-            assert "/conversation_history/test-thread.md" in summaries[0].content
-            assert "<summary>" in summaries[0].content
-            assert "Summary of the conversation." in summaries[0].content
-
-            # Second call: reset _summarization_event
-            second_values = mock_agent.aupdate_state.call_args_list[1][0][1]  # type: ignore[union-attr]
-            assert second_values == {"_summarization_event": None}
+            # Summary message should have correct content
+            summary_msg = event["summary_message"]
+            assert summary_msg.additional_kwargs.get("lc_source") == "summarization"
+            assert "/conversation_history/test-thread.md" in summary_msg.content
+            assert "<summary>" in summary_msg.content
+            assert "Summary of the conversation." in summary_msg.content
 
     @pytest.mark.asyncio
     async def test_compaction_shows_feedback_message(self) -> None:
@@ -274,21 +296,13 @@ class TestCompactSuccess:
             _setup_compact_app(app)
 
             with (
-                _mock_middleware(cutoff=4),
+                _mock_middleware(cutoff=4, summary="Summary."),
                 patch.object(
                     app,
                     "_offload_messages_for_compact",
                     new_callable=AsyncMock,
                     return_value=None,
                 ),
-                patch.object(
-                    app,
-                    "_generate_compact_summary",
-                    new_callable=AsyncMock,
-                    return_value="Summary.",
-                ),
-                patch.object(app, "_clear_messages", new_callable=AsyncMock),
-                patch.object(app, "_load_thread_history", new_callable=AsyncMock),
                 patch(_TOKEN_COUNT_PATH, return_value=500),
             ):
                 await app._handle_compact()
@@ -307,21 +321,13 @@ class TestCompactSuccess:
             app._token_tracker = MagicMock()
 
             with (
-                _mock_middleware(cutoff=4),
+                _mock_middleware(cutoff=4, summary="Summary."),
                 patch.object(
                     app,
                     "_offload_messages_for_compact",
                     new_callable=AsyncMock,
                     return_value=None,
                 ),
-                patch.object(
-                    app,
-                    "_generate_compact_summary",
-                    new_callable=AsyncMock,
-                    return_value="Summary.",
-                ),
-                patch.object(app, "_clear_messages", new_callable=AsyncMock),
-                patch.object(app, "_load_thread_history", new_callable=AsyncMock),
                 patch(_TOKEN_COUNT_PATH, return_value=500),
             ):
                 await app._handle_compact()
@@ -330,26 +336,20 @@ class TestCompactSuccess:
             app._token_tracker.add.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_compaction_clears_and_reloads_ui(self) -> None:
-        """Should clear messages and reload thread history."""
+    async def test_no_ui_clear_reload(self) -> None:
+        """Should NOT clear/reload UI since messages stay in state."""
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
             _setup_compact_app(app)
 
             with (
-                _mock_middleware(cutoff=4),
+                _mock_middleware(cutoff=4, summary="Summary."),
                 patch.object(
                     app,
                     "_offload_messages_for_compact",
                     new_callable=AsyncMock,
                     return_value=None,
-                ),
-                patch.object(
-                    app,
-                    "_generate_compact_summary",
-                    new_callable=AsyncMock,
-                    return_value="Summary.",
                 ),
                 patch.object(
                     app, "_clear_messages", new_callable=AsyncMock
@@ -362,8 +362,8 @@ class TestCompactSuccess:
                 await app._handle_compact()
                 await pilot.pause()
 
-            mock_clear.assert_called_once()
-            mock_load.assert_called_once()
+            mock_clear.assert_not_called()
+            mock_load.assert_not_called()
 
 
 class TestCompactEdgeCases:
@@ -387,71 +387,54 @@ class TestCompactEdgeCases:
 
     @pytest.mark.asyncio
     async def test_cutoff_one_compacts_single_message(self) -> None:
-        """With cutoff=1, only the first message should be summarized."""
+        """With cutoff=1, event should have cutoff_index=1."""
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
             _setup_compact_app(app, n_messages=7)
 
             with (
-                _mock_middleware(cutoff=1),
+                _mock_middleware(cutoff=1, summary="Summary."),
                 patch.object(
                     app,
                     "_offload_messages_for_compact",
                     new_callable=AsyncMock,
                     return_value=None,
                 ),
-                patch.object(
-                    app,
-                    "_generate_compact_summary",
-                    new_callable=AsyncMock,
-                    return_value="Summary.",
-                ),
-                patch.object(app, "_clear_messages", new_callable=AsyncMock),
-                patch.object(app, "_load_thread_history", new_callable=AsyncMock),
                 patch(_TOKEN_COUNT_PATH, return_value=100),
             ):
                 await app._handle_compact()
                 await pilot.pause()
 
-            from langchain_core.messages import RemoveMessage
-
-            mock_agent = app._agent  # MagicMock at runtime
-            first_values = mock_agent.aupdate_state.call_args_list[0][0][1]  # type: ignore[union-attr]
-            remove_ops = [
-                m for m in first_values["messages"] if isinstance(m, RemoveMessage)
-            ]
-            assert len(remove_ops) == 1
+            mock_agent = app._agent
+            update_values = mock_agent.aupdate_state.call_args_list[0][0][1]  # type: ignore[union-attr]
+            event = update_values["_summarization_event"]
+            assert event["cutoff_index"] == 1
 
     @pytest.mark.asyncio
-    async def test_middleware_cutoff_called_with_messages(self) -> None:
-        """Should pass the full message list to middleware cutoff logic."""
+    async def test_middleware_cutoff_called_with_effective_messages(self) -> None:
+        """Should pass effective messages to middleware cutoff logic."""
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
             messages = _setup_compact_app(app, n_messages=10)
 
             with (
-                _mock_middleware(cutoff=4) as mock_mw,
+                _mock_middleware(cutoff=4, summary="Summary.") as mock_mw,
                 patch.object(
                     app,
                     "_offload_messages_for_compact",
                     new_callable=AsyncMock,
                     return_value=None,
                 ),
-                patch.object(
-                    app,
-                    "_generate_compact_summary",
-                    new_callable=AsyncMock,
-                    return_value="Summary.",
-                ),
-                patch.object(app, "_clear_messages", new_callable=AsyncMock),
-                patch.object(app, "_load_thread_history", new_callable=AsyncMock),
                 patch(_TOKEN_COUNT_PATH, return_value=500),
             ):
                 await app._handle_compact()
                 await pilot.pause()
 
+            # _apply_event_to_messages should be called
+            mock_mw._apply_event_to_messages.assert_called_once_with(messages, None)
+            # cutoff called with effective messages (same as raw when no event)
             mock_mw._determine_cutoff_index.assert_called_once_with(messages)
             mock_mw._partition_messages.assert_called_once_with(messages, 4)
 
@@ -468,39 +451,28 @@ class TestCompactErrorHandling:
             _setup_compact_app(app)
 
             with (
-                _mock_middleware(cutoff=4),
+                _mock_middleware(cutoff=4, summary="Summary."),
                 patch.object(
                     app,
                     "_offload_messages_for_compact",
                     new_callable=AsyncMock,
                     return_value=None,
                 ),
-                patch.object(
-                    app,
-                    "_generate_compact_summary",
-                    new_callable=AsyncMock,
-                    return_value="Summary.",
-                ),
-                patch.object(app, "_clear_messages", new_callable=AsyncMock),
-                patch.object(app, "_load_thread_history", new_callable=AsyncMock),
                 patch(_TOKEN_COUNT_PATH, return_value=500),
             ):
                 await app._handle_compact()
                 await pilot.pause()
 
-            # Should still have called aupdate_state successfully
-            mock_agent = app._agent  # MagicMock at runtime
-            assert mock_agent.aupdate_state.call_count == 2  # type: ignore[union-attr]
+            mock_agent = app._agent
+            assert mock_agent.aupdate_state.call_count == 1  # type: ignore[union-attr]
+
+            update_values = mock_agent.aupdate_state.call_args_list[0][0][1]  # type: ignore[union-attr]
+            event = update_values["_summarization_event"]
+            assert event["file_path"] is None
 
             # Summary should NOT have file path reference
-            from langchain_core.messages import HumanMessage
-
-            first_values = mock_agent.aupdate_state.call_args_list[0][0][1]  # type: ignore[union-attr]
-            summaries = [
-                m for m in first_values["messages"] if isinstance(m, HumanMessage)
-            ]
-            assert len(summaries) == 1
-            assert "conversation history has been saved" not in summaries[0].content
+            summary_content = event["summary_message"].content
+            assert "conversation history has been saved" not in summary_content
 
     @pytest.mark.asyncio
     async def test_summary_generation_failure_shows_error(self) -> None:
@@ -510,15 +482,10 @@ class TestCompactErrorHandling:
             await pilot.pause()
             _setup_compact_app(app)
 
-            with (
-                _mock_middleware(cutoff=4),
-                patch.object(
-                    app,
-                    "_generate_compact_summary",
-                    new_callable=AsyncMock,
-                    side_effect=RuntimeError("model unavailable"),
-                ),
-            ):
+            with _mock_middleware(cutoff=4) as mock_mw:
+                mock_mw._acreate_summary = AsyncMock(
+                    side_effect=RuntimeError("model unavailable")
+                )
                 await app._handle_compact()
                 await pilot.pause()
 
@@ -540,18 +507,12 @@ class TestCompactErrorHandling:
             )
 
             with (
-                _mock_middleware(cutoff=4),
+                _mock_middleware(cutoff=4, summary="Summary."),
                 patch.object(
                     app,
                     "_offload_messages_for_compact",
                     new_callable=AsyncMock,
                     return_value=None,
-                ),
-                patch.object(
-                    app,
-                    "_generate_compact_summary",
-                    new_callable=AsyncMock,
-                    return_value="Summary.",
                 ),
                 patch(_TOKEN_COUNT_PATH, return_value=500),
             ):
@@ -570,18 +531,12 @@ class TestCompactErrorHandling:
             _setup_compact_app(app)
 
             with (
-                _mock_middleware(cutoff=4),
+                _mock_middleware(cutoff=4, summary="Summary."),
                 patch.object(
                     app,
                     "_offload_messages_for_compact",
                     new_callable=AsyncMock,
                     side_effect=RuntimeError("backend down"),
-                ),
-                patch.object(
-                    app,
-                    "_generate_compact_summary",
-                    new_callable=AsyncMock,
-                    return_value="Summary.",
                 ),
                 patch.object(
                     app, "_set_spinner", new_callable=AsyncMock

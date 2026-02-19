@@ -62,7 +62,6 @@ if TYPE_CHECKING:
 
     from deepagents.backends import CompositeBackend
     from deepagents.backends.sandbox import SandboxBackendProtocol
-    from langchain_core.language_models import BaseChatModel
     from langchain_core.runnables import RunnableConfig
     from langgraph.checkpoint.base import BaseCheckpointSaver
     from langgraph.pregel import Pregel
@@ -1261,9 +1260,9 @@ class DeepAgentsApp(App):
     async def _handle_compact(self) -> None:
         """Compact the conversation by summarizing old messages.
 
-        Reads messages from agent state, generates a summary via LLM, offloads
-        old messages to backend storage, removes them with `RemoveMessage`, and
-        inserts a summary `HumanMessage` in their place.
+        Sets a `_summarization_event` in state so that `SummarizationMiddleware`
+        virtually hides old messages on the next model call. Messages stay in
+        state but are replaced by a summary from the model's perspective.
         """
         if not self._agent or not self._lc_thread_id or not self._backend:
             await self._mount_message(AppMessage("No active session to compact"))
@@ -1275,7 +1274,6 @@ class DeepAgentsApp(App):
             )
             return
 
-        from langchain_core.messages import HumanMessage, RemoveMessage
         from langchain_core.messages.utils import count_tokens_approximately
 
         config: RunnableConfig = {"configurable": {"thread_id": self._lc_thread_id}}
@@ -1296,6 +1294,7 @@ class DeepAgentsApp(App):
             await self._set_spinner("Compacting")
 
             from deepagents.middleware.summarization import (
+                SummarizationEvent,
                 SummarizationMiddleware,
                 _compute_summarization_defaults,  # noqa: PLC2701
             )
@@ -1307,7 +1306,12 @@ class DeepAgentsApp(App):
             middleware = SummarizationMiddleware(
                 model=model, backend=self._backend, keep=defaults["keep"]
             )
-            cutoff = middleware._determine_cutoff_index(messages)
+
+            # Apply existing event to get effective messages
+            event = state.values.get("_summarization_event")
+            effective = middleware._apply_event_to_messages(messages, event)
+
+            cutoff = middleware._determine_cutoff_index(effective)
 
             if cutoff == 0:
                 await self._mount_message(
@@ -1318,54 +1322,31 @@ class DeepAgentsApp(App):
                 )
                 return
 
-            to_summarize, to_keep = middleware._partition_messages(messages, cutoff)
+            to_summarize, to_keep = middleware._partition_messages(effective, cutoff)
 
-            tokens_before = count_tokens_approximately(messages)
+            tokens_before = count_tokens_approximately(effective)
 
             # Generate summary first so no side effects occur if the LLM fails
-            summary = await self._generate_compact_summary(to_summarize, model=model)
+            summary = await middleware._acreate_summary(to_summarize)
 
             file_path = await self._offload_messages_for_compact(to_summarize)
 
-            # Build summary HumanMessage using the same format as
-            # SummarizationMiddleware._build_new_messages_with_path so the
-            # middleware can recognize and filter it in future events.
-            # If that template changes, this must be updated to match.
-            if file_path is not None:
-                content = (
-                    "You are in the middle of a conversation "
-                    "that has been summarized.\n\n"
-                    "The full conversation history has been "
-                    f"saved to {file_path} "
-                    "should you need to refer back to it "
-                    "for details.\n\n"
-                    "A condensed summary follows:\n\n"
-                    f"<summary>\n{summary}\n</summary>"
-                )
-            else:
-                content = "Here is a summary of the conversation to date:\n\n" + summary
+            summary_msg = middleware._build_new_messages_with_path(summary, file_path)[
+                0
+            ]
 
-            summary_msg = HumanMessage(
-                content=content,
-                additional_kwargs={"lc_source": "summarization"},
+            # Calculate state cutoff accounting for prior events
+            state_cutoff = (
+                event["cutoff_index"] + cutoff - 1 if event is not None else cutoff
             )
 
-            remove_ops = [RemoveMessage(id=msg.id) for msg in to_summarize if msg.id]
-            skipped = len(to_summarize) - len(remove_ops)
-            if skipped:
-                logger.warning(
-                    "Skipped %d messages without IDs during compaction", skipped
-                )
-            await self._agent.aupdate_state(
-                config, {"messages": [*remove_ops, summary_msg]}
-            )
+            new_event: SummarizationEvent = {
+                "cutoff_index": state_cutoff,
+                "summary_message": summary_msg,  # ty: ignore[invalid-argument-type]
+                "file_path": file_path,
+            }
 
-            # Clear any existing middleware summarization state so it doesn't
-            # apply a stale cutoff index on the next model invocation.
-            await self._agent.aupdate_state(config, {"_summarization_event": None})
-
-            await self._clear_messages()
-            await self._load_thread_history()
+            await self._agent.aupdate_state(config, {"_summarization_event": new_event})
 
             tokens_after = count_tokens_approximately([summary_msg, *to_keep])
 
@@ -1378,7 +1359,7 @@ class DeepAgentsApp(App):
             after = _fmt_tokens(tokens_after)
             await self._mount_message(
                 AppMessage(
-                    f"Compacted {len(remove_ops)} messages "
+                    f"Compacted {len(to_summarize)} messages "
                     f"({before} \u2192 {after} tokens)"
                 )
             )
@@ -1465,47 +1446,6 @@ class DeepAgentsApp(App):
 
         logger.debug("Offloaded %d messages to %s", len(filtered), path)
         return path
-
-    async def _generate_compact_summary(  # noqa: PLR6301
-        self,
-        messages: list[Any],
-        *,
-        model: BaseChatModel | None = None,
-    ) -> str:
-        """Generate a summary of messages using the configured default model.
-
-        Args:
-            messages: Messages to summarize.
-            model: Pre-created model instance. If not provided, a new model
-                is created via `create_model()`.
-
-        Returns:
-            Summary text from the LLM.
-
-        Raises:
-            RuntimeError: If the model returns an empty or non-text summary.
-
-        Note:
-            `ModelConfigError` from `create_model()` and network/auth errors
-            from model invocation propagate to the caller.
-        """
-        from deepagents.middleware.summarization import DEFAULT_SUMMARY_PROMPT
-        from langchain_core.messages import HumanMessage, get_buffer_string
-
-        if model is None:
-            model = create_model().model
-
-        conversation_text = get_buffer_string(messages)
-        prompt = DEFAULT_SUMMARY_PROMPT.format(conversation=conversation_text)
-
-        response = await model.ainvoke([HumanMessage(content=prompt)])
-
-        text = response.text
-        if not text:
-            msg = "Model returned empty summary"
-            raise RuntimeError(msg)
-
-        return text
 
     async def _handle_user_message(self, message: str) -> None:
         """Handle a user message to send to the agent.

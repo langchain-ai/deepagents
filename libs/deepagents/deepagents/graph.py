@@ -97,6 +97,7 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
     debug: bool = False,
     name: str | None = None,
     cache: BaseCache | None = None,
+    enable_compact_tool: bool = False,
 ) -> CompiledStateGraph:
     """Create a deep agent.
 
@@ -169,6 +170,8 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
         debug: Whether to enable debug mode. Passed through to `create_agent`.
         name: The name of the agent. Passed through to `create_agent`.
         cache: The cache to use for the agent. Passed through to `create_agent`.
+        enable_compact_tool: If `True`, register a `compact_conversation` tool
+            on `SummarizationMiddleware` that lets the agent trigger compaction.
 
     Returns:
         A configured deep agent.
@@ -203,6 +206,7 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
             keep=summarization_defaults["keep"],
             trim_tokens_to_summarize=None,
             truncate_args_settings=summarization_defaults["truncate_args_settings"],
+            enable_compact_tool=enable_compact_tool,
         ),
         AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
         PatchToolCallsMiddleware(),
@@ -243,6 +247,7 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
                     keep=subagent_summarization_defaults["keep"],
                     trim_tokens_to_summarize=None,
                     truncate_args_settings=subagent_summarization_defaults["truncate_args_settings"],
+                    enable_compact_tool=enable_compact_tool,
                 ),
                 AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
                 PatchToolCallsMiddleware(),
@@ -285,6 +290,7 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
                 keep=summarization_defaults["keep"],
                 trim_tokens_to_summarize=None,
                 truncate_args_settings=summarization_defaults["truncate_args_settings"],
+                enable_compact_tool=enable_compact_tool,
             ),
             AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
             PatchToolCallsMiddleware(),

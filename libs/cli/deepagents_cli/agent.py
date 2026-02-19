@@ -14,8 +14,6 @@ from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.middleware import MemoryMiddleware, SkillsMiddleware
 from langgraph.checkpoint.memory import InMemorySaver
 
-from deepagents_cli.compact_tool import CompactToolMiddleware
-
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
@@ -580,8 +578,6 @@ def create_cli_agent(
             routes={},
         )
 
-    agent_middleware.append(CompactToolMiddleware(backend=composite_backend))
-
     # Create the agent
     # Use provided checkpointer or fallback to InMemorySaver
     final_checkpointer = checkpointer if checkpointer is not None else InMemorySaver()
@@ -594,5 +590,6 @@ def create_cli_agent(
         interrupt_on=interrupt_on,
         checkpointer=final_checkpointer,
         subagents=custom_subagents or None,
+        enable_compact_tool=True,
     ).with_config(config)
     return agent, composite_backend

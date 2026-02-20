@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from textual import events
     from textual.app import ComposeResult
 
+from deepagents_cli import theme
 from deepagents_cli.config import (
     SHELL_TOOL_NAMES,
     CharsetMode,
@@ -149,12 +150,13 @@ class ApprovalMenu(Container):
             raise RuntimeError(msg)
         req = self._action_requests[0]
         command = str(req.get("args", {}).get("command", ""))
+        hdr = theme.TOOL_HEADER
         if expanded or len(command) <= _SHELL_COMMAND_TRUNCATE_LENGTH:
-            return f"[bold #f59e0b]{escape_markup(command)}[/bold #f59e0b]"
+            return f"[bold {hdr}]{escape_markup(command)}[/bold {hdr}]"
         truncated = command[:_SHELL_COMMAND_TRUNCATE_LENGTH] + get_glyphs().ellipsis
         escaped_truncated = escape_markup(truncated)
         return (
-            f"[bold #f59e0b]{escaped_truncated}[/bold #f59e0b] "
+            f"[bold {hdr}]{escaped_truncated}[/bold {hdr}] "
             "[dim](press 'e' to expand)[/dim]"
         )
 

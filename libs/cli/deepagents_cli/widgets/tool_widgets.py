@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING, Any
 from textual.containers import Vertical
 from textual.widgets import Markdown, Static
 
+from deepagents_cli import theme
+
 if TYPE_CHECKING:
     from textual.app import ComposeResult
 
@@ -214,11 +216,14 @@ class EditFileApprovalWidget(ToolApprovalWidget):
         content = _escape_markup(line[1:] if len(line) > 1 else "")
 
         if line.startswith("-"):
-            return Static(f"[on #4a2020][#ff8787]- {content}[/#ff8787][/on #4a2020]")
+            bg, fg = theme.DIFF_REMOVE_BG, theme.DIFF_REMOVE_FG
+            return Static(f"[on {bg}][{fg}]- {content}[/{fg}][/on {bg}]")
         if line.startswith("+"):
-            return Static(f"[on #1e4620][#8ce99a]+ {content}[/#8ce99a][/on #1e4620]")
+            bg, fg = theme.DIFF_ADD_BG, theme.DIFF_ADD_FG
+            return Static(f"[on {bg}][{fg}]+ {content}[/{fg}][/on {bg}]")
         if line.startswith(" "):
-            return Static(f"[#aaaaaa]  {content}[/#aaaaaa]")
+            c = theme.DIFF_CONTEXT
+            return Static(f"[{c}]  {content}[/{c}]")
         if line.strip():
             return Static(line, markup=False)
         return None
@@ -231,10 +236,12 @@ class EditFileApprovalWidget(ToolApprovalWidget):
             Static widgets for each line with addition or deletion styling.
         """
         lines = text.split("\n")
-        style = "[on #1e4620][#8ce99a]+" if is_addition else "[on #4a2020][#ff8787]-"
-        end_style = (
-            "[/#8ce99a][/on #1e4620]" if is_addition else "[/#ff8787][/on #4a2020]"
-        )
+        if is_addition:
+            bg, fg, sign = theme.DIFF_ADD_BG, theme.DIFF_ADD_FG, "+"
+        else:
+            bg, fg, sign = theme.DIFF_REMOVE_BG, theme.DIFF_REMOVE_FG, "-"
+        style = f"[on {bg}][{fg}]{sign}"
+        end_style = f"[/{fg}][/on {bg}]"
 
         for line in lines[:_MAX_PREVIEW_LINES]:
             escaped = _escape_markup(line)

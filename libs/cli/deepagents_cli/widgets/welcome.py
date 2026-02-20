@@ -12,8 +12,8 @@ from textual.widgets import Static
 if TYPE_CHECKING:
     from textual.events import Click
 
+from deepagents_cli import theme
 from deepagents_cli.config import (
-    COLORS,
     _is_editable_install,
     fetch_langsmith_project_url,
     get_banner,
@@ -102,9 +102,7 @@ class WelcomeBanner(Static):
         """
         banner = Text()
         # Use orange for local, green for production
-        banner_color = (
-            COLORS["primary_dev"] if _is_editable_install() else COLORS["primary"]
-        )
+        banner_color = theme.PRIMARY_DEV if _is_editable_install() else theme.PRIMARY
         banner.append(get_banner() + "\n", style=Style(bold=True, color=banner_color))
 
         if self._project_name:
@@ -138,7 +136,7 @@ class WelcomeBanner(Static):
                 banner.append(f"Thread: {self._cli_thread_id}\n", style="dim")
 
         banner.append(
-            "Ready to code! What would you like to build?\n", style=COLORS["primary"]
+            "Ready to code! What would you like to build?\n", style=theme.PRIMARY
         )
         bullet = get_glyphs().bullet
         banner.append(

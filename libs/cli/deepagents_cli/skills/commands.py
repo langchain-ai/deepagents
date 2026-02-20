@@ -20,7 +20,8 @@ if TYPE_CHECKING:
 
     from deepagents.middleware.skills import SkillMetadata
 
-from deepagents_cli.config import COLORS, Settings, console, get_glyphs
+from deepagents_cli import theme
+from deepagents_cli.config import Settings, console, get_glyphs
 from deepagents_cli.ui import (
     build_help_parent,
     show_skills_create_help,
@@ -173,7 +174,7 @@ def _list(agent: str, *, project: bool = False) -> None:
             console.print(
                 "[dim]Project skills require a .git directory "
                 "in the project root.[/dim]",
-                style=COLORS["dim"],
+                style=theme.MUTED,
             )
             return
 
@@ -192,12 +193,12 @@ def _list(agent: str, *, project: bool = False) -> None:
             console.print(
                 f"[dim]Project skills will be created in {project_skills_dir}/ "
                 "when you add them.[/dim]",
-                style=COLORS["dim"],
+                style=theme.MUTED,
             )
             console.print(
                 "\n[dim]Create a project skill:\n"
                 "  deepagents skills create my-skill --project[/dim]",
-                style=COLORS["dim"],
+                style=theme.MUTED,
             )
             return
 
@@ -207,7 +208,7 @@ def _list(agent: str, *, project: bool = False) -> None:
             user_agent_skills_dir=None,
             project_agent_skills_dir=project_agent_skills_dir,
         )
-        console.print("\n[bold]Project Skills:[/bold]\n", style=COLORS["primary"])
+        console.print("\n[bold]Project Skills:[/bold]\n", style=theme.PRIMARY)
     else:
         # Load skills from all directories (including built-in)
         skills = list_skills(
@@ -230,16 +231,16 @@ def _list(agent: str, *, project: bool = False) -> None:
                 "  3. ~/.agents/skills/               user skills\n"
                 "  4. ~/.deepagents/<agent>/skills/   user skills (alias)\n"
                 "  5. <package>/built_in_skills/      built-in skills[/dim]",
-                style=COLORS["dim"],
+                style=theme.MUTED,
             )
             console.print(
                 "\n[dim]Create your first skill:\n"
                 "  deepagents skills create my-skill[/dim]",
-                style=COLORS["dim"],
+                style=theme.MUTED,
             )
             return
 
-        console.print("\n[bold]Available Skills:[/bold]\n", style=COLORS["primary"])
+        console.print("\n[bold]Available Skills:[/bold]\n", style=theme.PRIMARY)
 
     # Group skills by source
     user_skills = [s for s in skills if s["source"] == "user"]
@@ -248,32 +249,30 @@ def _list(agent: str, *, project: bool = False) -> None:
 
     # Show user skills
     if user_skills and not project:
-        console.print("[bold cyan]User Skills:[/bold cyan]", style=COLORS["primary"])
+        console.print("[bold cyan]User Skills:[/bold cyan]", style=theme.PRIMARY)
         bullet = get_glyphs().bullet
         for skill in user_skills:
             skill_path = Path(skill["path"])
             name = skill["name"]
-            console.print(f"  {bullet} [bold]{name}[/bold]", style=COLORS["primary"])
-            console.print(f"    {skill_path.parent}/", style=COLORS["dim"])
+            console.print(f"  {bullet} [bold]{name}[/bold]", style=theme.PRIMARY)
+            console.print(f"    {skill_path.parent}/", style=theme.MUTED)
             console.print()
-            console.print(f"    {skill['description']}", style=COLORS["dim"])
+            console.print(f"    {skill['description']}", style=theme.MUTED)
             console.print()
 
     # Show project skills
     if project_skills_list:
         if not project and user_skills:
             console.print()
-        console.print(
-            "[bold green]Project Skills:[/bold green]", style=COLORS["primary"]
-        )
+        console.print("[bold green]Project Skills:[/bold green]", style=theme.PRIMARY)
         bullet = get_glyphs().bullet
         for skill in project_skills_list:
             skill_path = Path(skill["path"])
             name = skill["name"]
-            console.print(f"  {bullet} [bold]{name}[/bold]", style=COLORS["primary"])
-            console.print(f"    {skill_path.parent}/", style=COLORS["dim"])
+            console.print(f"  {bullet} [bold]{name}[/bold]", style=theme.PRIMARY)
+            console.print(f"    {skill_path.parent}/", style=theme.MUTED)
             console.print()
-            console.print(f"    {skill['description']}", style=COLORS["dim"])
+            console.print(f"    {skill['description']}", style=theme.MUTED)
             console.print()
 
     # Show built-in skills
@@ -281,14 +280,14 @@ def _list(agent: str, *, project: bool = False) -> None:
         if user_skills or project_skills_list:
             console.print()
         console.print(
-            "[bold magenta]Built-in Skills:[/bold magenta]", style=COLORS["primary"]
+            "[bold magenta]Built-in Skills:[/bold magenta]", style=theme.PRIMARY
         )
         bullet = get_glyphs().bullet
         for skill in built_in_skills_list:
             name = skill["name"]
-            console.print(f"  {bullet} [bold]{name}[/bold]", style=COLORS["primary"])
+            console.print(f"  {bullet} [bold]{name}[/bold]", style=theme.PRIMARY)
             console.print()
-            console.print(f"    {skill['description']}", style=COLORS["dim"])
+            console.print(f"    {skill['description']}", style=theme.MUTED)
             console.print()
 
 
@@ -381,7 +380,7 @@ def _create(skill_name: str, agent: str, project: bool = False) -> None:
             "[dim]Per Agent Skills spec: names must be lowercase alphanumeric "
             "with hyphens only.\n"
             "Examples: web-research, code-review, data-analysis[/dim]",
-            style=COLORS["dim"],
+            style=theme.MUTED,
         )
         return
 
@@ -393,7 +392,7 @@ def _create(skill_name: str, agent: str, project: bool = False) -> None:
             console.print(
                 "[dim]Project skills require a .git directory "
                 "in the project root.[/dim]",
-                style=COLORS["dim"],
+                style=theme.MUTED,
             )
             return
         skills_dir = settings.ensure_project_skills_dir()
@@ -430,9 +429,9 @@ def _create(skill_name: str, agent: str, project: bool = False) -> None:
     checkmark = get_glyphs().checkmark
     console.print(
         f"\n[bold]{checkmark} Skill '{skill_name}' created successfully![/bold]",
-        style=COLORS["primary"],
+        style=theme.PRIMARY,
     )
-    console.print(f"Location: {skill_dir}\n", style=COLORS["dim"])
+    console.print(f"Location: {skill_dir}\n", style=theme.MUTED)
     console.print(
         "[dim]Edit the SKILL.md file to customize:\n"
         "  1. Update the description in YAML frontmatter\n"
@@ -447,7 +446,7 @@ def _create(skill_name: str, agent: str, project: bool = False) -> None:
         "\n"
         "   Copy an example:\n"
         "   cp -r examples/skills/web-research ~/.deepagents/agent/skills/\n",
-        style=COLORS["dim"],
+        style=theme.MUTED,
     )
 
 
@@ -496,9 +495,9 @@ def _info(skill_name: str, *, agent: str = "agent", project: bool = False) -> No
 
     if not skill:
         console.print(f"[bold red]Error:[/bold red] Skill '{skill_name}' not found.")
-        console.print("\n[dim]Available skills:[/dim]", style=COLORS["dim"])
+        console.print("\n[dim]Available skills:[/dim]", style=theme.MUTED)
         for s in skills:
-            console.print(f"  - {s['name']}", style=COLORS["dim"])
+            console.print(f"  - {s['name']}", style=theme.MUTED)
         return
 
     # Read the full SKILL.md file
@@ -533,35 +532,35 @@ def _info(skill_name: str, *, agent: str = "agent", project: bool = False) -> No
     console.print(
         f"\n[bold]Skill: {skill['name']}[/bold] "
         f"[bold {source_color}]({source_label})[/bold {source_color}]\n",
-        style=COLORS["primary"],
+        style=theme.PRIMARY,
     )
     if shadowed_user_skill:
         console.print(
             f"[yellow]Note: Overrides user skill '{skill_name}' "
             "of the same name[/yellow]\n"
         )
-    console.print(f"[bold]Location:[/bold] {skill_path.parent}/\n", style=COLORS["dim"])
+    console.print(f"[bold]Location:[/bold] {skill_path.parent}/\n", style=theme.MUTED)
     console.print(
-        f"[bold]Description:[/bold] {skill['description']}\n", style=COLORS["dim"]
+        f"[bold]Description:[/bold] {skill['description']}\n", style=theme.MUTED
     )
 
     # Show optional metadata fields
     for label, value in _format_info_fields(skill):
-        console.print(f"[bold]{label}:[/bold] {value}\n", style=COLORS["dim"])
+        console.print(f"[bold]{label}:[/bold] {value}\n", style=theme.MUTED)
 
     # List supporting files
     skill_dir = skill_path.parent
     supporting_files = [f for f in skill_dir.iterdir() if f.name != "SKILL.md"]
 
     if supporting_files:
-        console.print("[bold]Supporting Files:[/bold]", style=COLORS["dim"])
+        console.print("[bold]Supporting Files:[/bold]", style=theme.MUTED)
         for file in supporting_files:
-            console.print(f"  - {file.name}", style=COLORS["dim"])
+            console.print(f"  - {file.name}", style=theme.MUTED)
         console.print()
 
     # Show the full SKILL.md content
-    console.print("[bold]Full SKILL.md Content:[/bold]\n", style=COLORS["primary"])
-    console.print(skill_content, style=COLORS["dim"])
+    console.print("[bold]Full SKILL.md Content:[/bold]\n", style=theme.PRIMARY)
+    console.print(skill_content, style=theme.MUTED)
     console.print()
 
 
@@ -630,10 +629,10 @@ def _delete(
 
     if not skill:
         console.print(f"[bold red]Error:[/bold red] Skill '{skill_name}' not found.")
-        console.print("\n[dim]Available skills:[/dim]", style=COLORS["dim"])
+        console.print("\n[dim]Available skills:[/dim]", style=theme.MUTED)
         for s in skills:
             source_tag = "[project]" if s["source"] == "project" else "[user]"
-            console.print(f"  - {s['name']} {source_tag}", style=COLORS["dim"])
+            console.print(f"  - {s['name']} {source_tag}", style=theme.MUTED)
         return
 
     skill_path = Path(skill["path"])
@@ -666,21 +665,21 @@ def _delete(
     console.print(
         f"\n[bold]Skill:[/bold] {skill_name}"
         f" [bold {source_color}]({source_label})[/bold {source_color}]",
-        style=COLORS["primary"],
+        style=theme.PRIMARY,
     )
     console.print(
         f"[bold]Location:[/bold] {skill_dir}/",
-        style=COLORS["dim"],
+        style=theme.MUTED,
     )
     if file_count >= 0:
         console.print(
             f"[bold]Files:[/bold] {file_count} file(s) will be deleted\n",
-            style=COLORS["dim"],
+            style=theme.MUTED,
         )
     else:
         console.print(
             "[bold]Files:[/bold] (unable to count files)\n",
-            style=COLORS["dim"],
+            style=theme.MUTED,
         )
 
     # Confirmation
@@ -719,7 +718,7 @@ def _delete(
         checkmark = get_glyphs().checkmark
         console.print(
             f"{checkmark} Skill '{skill_name}' deleted successfully!",
-            style=COLORS["primary"],
+            style=theme.PRIMARY,
         )
     except OSError as e:
         console.print(
@@ -880,7 +879,7 @@ def execute_skills_command(args: argparse.Namespace) -> None:
             console.print(
                 "[dim]Agent names must only contain letters, numbers, "
                 "hyphens, and underscores.[/dim]",
-                style=COLORS["dim"],
+                style=theme.MUTED,
             )
             return
 

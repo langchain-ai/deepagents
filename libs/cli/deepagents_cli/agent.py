@@ -28,8 +28,8 @@ if TYPE_CHECKING:
     from langgraph.pregel import Pregel
     from langgraph.runtime import Runtime
 
+from deepagents_cli import theme
 from deepagents_cli.config import (
-    COLORS,
     config,
     console,
     get_default_coding_instructions,
@@ -53,11 +53,11 @@ def list_agents() -> None:
         console.print(
             "[dim]Agents will be created in ~/.deepagents/ "
             "when you first use them.[/dim]",
-            style=COLORS["dim"],
+            style=theme.MUTED,
         )
         return
 
-    console.print("\n[bold]Available Agents:[/bold]\n", style=COLORS["primary"])
+    console.print("\n[bold]Available Agents:[/bold]\n", style=theme.PRIMARY)
 
     for agent_path in sorted(agents_dir.iterdir()):
         if agent_path.is_dir():
@@ -70,16 +70,16 @@ def list_agents() -> None:
             if agent_md.exists():
                 console.print(
                     f"  {bullet} [bold]{agent_name}[/bold]{default_label}",
-                    style=COLORS["primary"],
+                    style=theme.PRIMARY,
                 )
-                console.print(f"    {agent_path}", style=COLORS["dim"])
+                console.print(f"    {agent_path}", style=theme.MUTED)
             else:
                 console.print(
                     f"  {bullet} [bold]{agent_name}[/bold]{default_label}"
                     " [dim](incomplete)[/dim]",
-                    style=COLORS["tool"],
+                    style=theme.WARNING,
                 )
-                console.print(f"    {agent_path}", style=COLORS["dim"])
+                console.print(f"    {agent_path}", style=theme.MUTED)
 
     console.print()
 
@@ -109,7 +109,7 @@ def reset_agent(agent_name: str, source_agent: str | None = None) -> None:
     if agent_dir.exists():
         shutil.rmtree(agent_dir)
         console.print(
-            f"Removed existing agent directory: {agent_dir}", style=COLORS["tool"]
+            f"Removed existing agent directory: {agent_dir}", style=theme.WARNING
         )
 
     agent_dir.mkdir(parents=True, exist_ok=True)
@@ -118,9 +118,9 @@ def reset_agent(agent_name: str, source_agent: str | None = None) -> None:
 
     console.print(
         f"{get_glyphs().checkmark} Agent '{agent_name}' reset to {action_desc}",
-        style=COLORS["primary"],
+        style=theme.PRIMARY,
     )
-    console.print(f"Location: {agent_dir}\n", style=COLORS["dim"])
+    console.print(f"Location: {agent_dir}\n", style=theme.MUTED)
 
 
 def get_system_prompt(assistant_id: str, sandbox_type: str | None = None) -> str:

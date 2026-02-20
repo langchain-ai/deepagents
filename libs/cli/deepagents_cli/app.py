@@ -22,8 +22,10 @@ from textual.binding import Binding, BindingType
 from textual.containers import Container, VerticalScroll
 from textual.css.query import NoMatches
 from textual.screen import ModalScreen
+from textual.theme import Theme
 from textual.widgets import Static
 
+from deepagents_cli import theme as theme_colors
 from deepagents_cli.clipboard import copy_selection_to_clipboard
 from deepagents_cli.config import (
     DOCS_URL,
@@ -418,6 +420,27 @@ class DeepAgentsApp(App):
             **kwargs: Additional arguments passed to parent
         """
         super().__init__(**kwargs)
+
+        # Register LangChain brand theme
+        self.register_theme(
+            Theme(
+                name="langchain",
+                primary=theme_colors.PRIMARY,
+                secondary=theme_colors.LC_LAVENDER,
+                background=theme_colors.LC_DARK,
+                surface=theme_colors.LC_CARD,
+                warning=theme_colors.WARNING,
+                error=theme_colors.ERROR,
+                success=theme_colors.SUCCESS,
+                dark=True,
+                variables={
+                    "text": theme_colors.LC_BODY,
+                    "text-muted": theme_colors.MUTED,
+                },
+            )
+        )
+        self.theme = "langchain"
+
         self._agent = agent
         self._assistant_id = assistant_id
         self._backend = backend

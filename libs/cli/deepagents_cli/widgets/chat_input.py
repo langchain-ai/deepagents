@@ -15,8 +15,8 @@ from textual.reactive import reactive
 from textual.widgets import Static, TextArea
 from textual.widgets.text_area import Selection
 
+from deepagents_cli import theme
 from deepagents_cli.config import (
-    COLORS,
     MODE_PREFIXES,
     CharsetMode,
     _detect_charset_mode,
@@ -579,8 +579,8 @@ class ChatInput(Vertical):
     ChatInput ChatTextArea:focus {
         border: none;
     }
-    """.replace("__MODE_BASH__", COLORS["mode_bash"]).replace(
-        "__MODE_CMD__", COLORS["mode_command"]
+    """.replace("__MODE_BASH__", theme.MODE_BASH).replace(
+        "__MODE_CMD__", theme.MODE_COMMAND
     )
 
     class Submitted(Message):

@@ -11,7 +11,8 @@ from textual.css.query import NoMatches
 from textual.reactive import reactive
 from textual.widgets import Static
 
-from deepagents_cli.config import COLORS, settings
+from deepagents_cli import theme
+from deepagents_cli.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +23,8 @@ if TYPE_CHECKING:
 class StatusBar(Horizontal):
     """Status bar showing mode, auto-approve status, and working directory."""
 
-    DEFAULT_CSS = """
+    DEFAULT_CSS = (
+        """
     StatusBar {
         height: 1;
         dock: bottom;
@@ -56,12 +58,12 @@ class StatusBar(Horizontal):
     }
 
     StatusBar .status-auto-approve.on {
-        background: #10b981;
+        background: __SUCCESS__;
         color: black;
     }
 
     StatusBar .status-auto-approve.off {
-        background: #f59e0b;
+        background: __WARNING__;
         color: black;
     }
 
@@ -92,8 +94,10 @@ class StatusBar(Horizontal):
         padding: 0 1;
         color: $text-muted;
     }
-    """.replace("__MODE_BASH__", COLORS["mode_bash"]).replace(
-        "__MODE_CMD__", COLORS["mode_command"]
+    """.replace("__MODE_BASH__", theme.MODE_BASH)
+        .replace("__MODE_CMD__", theme.MODE_COMMAND)
+        .replace("__SUCCESS__", theme.SUCCESS)
+        .replace("__WARNING__", theme.WARNING)
     )
 
     mode: reactive[str] = reactive("normal", init=False)

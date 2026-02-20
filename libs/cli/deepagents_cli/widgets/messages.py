@@ -16,8 +16,8 @@ from rich.text import Text
 from textual.containers import Vertical
 from textual.widgets import Markdown, Static
 
+from deepagents_cli import theme
 from deepagents_cli.config import (
-    COLORS,
     MODE_PREFIXES,
     CharsetMode,
     _detect_charset_mode,
@@ -40,6 +40,13 @@ _PREFIX_TO_MODE: dict[str, str] = {v: k for k, v in MODE_PREFIXES.items()}
 """Reverse lookup: trigger character -> mode name."""
 
 
+_MODE_COLORS: dict[str, str] = {
+    "bash": theme.MODE_BASH,
+    "command": theme.MODE_COMMAND,
+}
+"""Map mode name to its color constant."""
+
+
 def _mode_color(mode: str | None) -> str:
     """Return the color string for a mode, falling back to primary.
 
@@ -47,16 +54,14 @@ def _mode_color(mode: str | None) -> str:
         mode: Mode name (e.g. `'bash'`, `'command'`) or `None`.
 
     Returns:
-        Hex color string from `COLORS`.
+        Hex color string from theme.
     """
     if not mode:
-        return COLORS["primary"]
-    color = COLORS.get(f"mode_{mode}")
+        return theme.PRIMARY
+    color = _MODE_COLORS.get(mode)
     if color is None:
-        logger.warning(
-            "Missing color key 'mode_%s' in COLORS; falling back to primary.", mode
-        )
-        return COLORS["primary"]
+        logger.warning("Missing color for mode '%s'; falling back to primary.", mode)
+        return theme.PRIMARY
     return color
 
 
@@ -113,7 +118,7 @@ class UserMessage(Static):
         padding: 0 1;
         margin: 1 0 0 0;
         background: transparent;
-        border-left: wide #10b981;
+        border-left: wide $primary;
     }
     """
 
@@ -150,7 +155,7 @@ class UserMessage(Static):
             text.append(f"{content[0]} ", style=f"bold {_mode_color(mode)}")
             content = content[1:]
         else:
-            text.append("> ", style=f"bold {COLORS['primary']}")
+            text.append("> ", style=f"bold {theme.PRIMARY}")
 
         # Highlight @mentions and /commands in the content
         last_end = 0
@@ -170,11 +175,11 @@ class UserMessage(Static):
 
             # The regex only matches tokens starting with / or @
             if token.startswith("/") and start == 0:
-                # /command at start - yellow/gold
-                text.append(token, style="bold #fbbf24")
+                # /command at start
+                text.append(token, style=f"bold {theme.TOOL_HEADER}")
             elif token.startswith("@"):
-                # @file mention - green
-                text.append(token, style="bold #10b981")
+                # @file mention
+                text.append(token, style=f"bold {theme.PRIMARY}")
             last_end = end
 
         # Add remaining text after last match
@@ -190,15 +195,15 @@ class QueuedUserMessage(Static):
     This is an ephemeral widget that gets removed when the message is dequeued.
     """
 
-    DEFAULT_CSS = """
-    QueuedUserMessage {
+    DEFAULT_CSS = f"""
+    QueuedUserMessage {{
         height: auto;
         padding: 0 1;
         margin: 1 0 0 0;
         background: transparent;
-        border-left: wide #6b7280;
+        border-left: wide {theme.MUTED};
         opacity: 0.6;
-    }
+    }}
     """
 
     def __init__(self, content: str, **kwargs: Any) -> None:
@@ -214,7 +219,7 @@ class QueuedUserMessage(Static):
     def on_mount(self) -> None:
         """Set border style based on charset mode."""
         if _detect_charset_mode() == CharsetMode.ASCII:
-            self.styles.border_left = ("ascii", "#6b7280")
+            self.styles.border_left = ("ascii", theme.MUTED)
 
     def compose(self) -> ComposeResult:
         """Compose the queued user message layout.
@@ -226,11 +231,11 @@ class QueuedUserMessage(Static):
         content = self._content
         mode = _PREFIX_TO_MODE.get(content[:1]) if content else None
         if mode:
-            text.append(f"{content[0]} ", style=f"bold {COLORS['dim']}")
+            text.append(f"{content[0]} ", style=f"bold {theme.MUTED}")
             content = content[1:]
         else:
-            text.append("> ", style=f"bold {COLORS['dim']}")
-        text.append(content, style="#9ca3af")
+            text.append("> ", style=f"bold {theme.MUTED}")
+        text.append(content, style=theme.MUTED)
         yield Static(text)
 
 
@@ -347,64 +352,64 @@ class ToolCallMessage(Vertical):
     Shows an animated "Running..." indicator while the tool is executing.
     """
 
-    DEFAULT_CSS = """
-    ToolCallMessage {
+    DEFAULT_CSS = f"""
+    ToolCallMessage {{
         height: auto;
         padding: 0 1;
         margin: 0 0 1 0;
         background: transparent;
-        border-left: wide #3b3b3b;
-    }
+        border-left: wide {theme.TOOL_BORDER};
+    }}
 
-    ToolCallMessage .tool-header {
+    ToolCallMessage .tool-header {{
         height: auto;
-    }
+    }}
 
-    ToolCallMessage .tool-args {
-        color: #6b7280;
+    ToolCallMessage .tool-args {{
+        color: {theme.MUTED};
         margin-left: 3;
-    }
+    }}
 
-    ToolCallMessage .tool-status {
+    ToolCallMessage .tool-status {{
         margin-left: 3;
-    }
+    }}
 
-    ToolCallMessage .tool-status.pending {
-        color: #f59e0b;
-    }
+    ToolCallMessage .tool-status.pending {{
+        color: {theme.TOOL_PENDING};
+    }}
 
-    ToolCallMessage .tool-status.success {
-        color: #10b981;
-    }
+    ToolCallMessage .tool-status.success {{
+        color: {theme.TOOL_SUCCESS};
+    }}
 
-    ToolCallMessage .tool-status.error {
-        color: #ef4444;
-    }
+    ToolCallMessage .tool-status.error {{
+        color: {theme.TOOL_ERROR};
+    }}
 
-    ToolCallMessage .tool-status.rejected {
-        color: #f59e0b;
-    }
+    ToolCallMessage .tool-status.rejected {{
+        color: {theme.TOOL_PENDING};
+    }}
 
-    ToolCallMessage .tool-output {
+    ToolCallMessage .tool-output {{
         margin-left: 0;
         margin-top: 0;
         padding: 0;
         height: auto;
-    }
+    }}
 
-    ToolCallMessage .tool-output-preview {
+    ToolCallMessage .tool-output-preview {{
         margin-left: 0;
         margin-top: 0;
-    }
+    }}
 
-    ToolCallMessage .tool-output-hint {
+    ToolCallMessage .tool-output-hint {{
         margin-left: 0;
-        color: #6b7280;
-    }
+        color: {theme.MUTED};
+    }}
 
-    ToolCallMessage:hover {
-        border-left: wide #525252;
-    }
+    ToolCallMessage:hover {{
+        border-left: wide {theme.TOOL_BORDER_HVR};
+    }}
     """
 
     # Max lines/chars to show in preview mode
@@ -452,7 +457,7 @@ class ToolCallMessage(Vertical):
         """
         tool_label = escape_markup(format_tool_display(self._tool_name, self._args))
         yield Static(
-            f"[bold #f59e0b]{tool_label}[/bold #f59e0b]",
+            f"[bold {theme.TOOL_HEADER}]{tool_label}[/bold {theme.TOOL_HEADER}]",
             classes="tool-header",
         )
         # Only show args for tools where header doesn't capture the key info
@@ -478,7 +483,7 @@ class ToolCallMessage(Vertical):
     def on_mount(self) -> None:
         """Cache widget references and hide all status/output areas initially."""
         if _detect_charset_mode() == CharsetMode.ASCII:
-            self.styles.border_left = ("ascii", "#3b3b3b")
+            self.styles.border_left = ("ascii", theme.TOOL_BORDER)
 
         self._status_widget = self.query_one("#status", Static)
         self._preview_widget = self.query_one("#output-preview", Static)
@@ -834,14 +839,16 @@ class ToolCallMessage(Vertical):
                     name = path.name
                     # Color by file type
                     if path.suffix in {".py", ".pyx"}:
-                        lines.append(f"    [#3b82f6]{name}[/#3b82f6]")
+                        c = theme.FILE_PYTHON
+                        lines.append(f"    [{c}]{name}[/{c}]")
                     elif path.suffix in {".md", ".txt", ".rst"}:
                         lines.append(f"    {name}")
                     elif path.suffix in {".json", ".yaml", ".yml", ".toml"}:
-                        lines.append(f"    [#f59e0b]{name}[/#f59e0b]")
+                        c = theme.FILE_CONFIG
+                        lines.append(f"    [{c}]{name}[/{c}]")
                     elif not path.suffix:
-                        # Likely a directory or no extension
-                        lines.append(f"    [#10b981]{name}/[/#10b981]")
+                        c = theme.FILE_DIR
+                        lines.append(f"    [{c}]{name}/[/{c}]")
                     else:
                         lines.append(f"    {name}")
 
@@ -1174,38 +1181,38 @@ class ToolCallMessage(Vertical):
 class DiffMessage(Static):
     """Widget displaying a diff with syntax highlighting."""
 
-    DEFAULT_CSS = """
-    DiffMessage {
+    DEFAULT_CSS = f"""
+    DiffMessage {{
         height: auto;
         padding: 1;
         margin: 1 0;
         background: $surface;
         border: solid $primary;
-    }
+    }}
 
-    DiffMessage .diff-header {
+    DiffMessage .diff-header {{
         text-style: bold;
         margin-bottom: 1;
-    }
+    }}
 
-    DiffMessage .diff-add {
-        color: #10b981;
-        background: #10b98120;
-    }
+    DiffMessage .diff-add {{
+        color: {theme.DIFF_ADD_FG};
+        background: {theme.DIFF_ADD_BG};
+    }}
 
-    DiffMessage .diff-remove {
-        color: #ef4444;
-        background: #ef444420;
-    }
+    DiffMessage .diff-remove {{
+        color: {theme.DIFF_REMOVE_FG};
+        background: {theme.DIFF_REMOVE_BG};
+    }}
 
-    DiffMessage .diff-context {
+    DiffMessage .diff-context {{
         color: $text-muted;
-    }
+    }}
 
-    DiffMessage .diff-hunk {
+    DiffMessage .diff-hunk {{
         color: $secondary;
         text-style: bold;
-    }
+    }}
     """
 
     def __init__(self, diff_content: str, file_path: str = "", **kwargs: Any) -> None:
@@ -1245,15 +1252,15 @@ class DiffMessage(Static):
 class ErrorMessage(Static):
     """Widget displaying an error message."""
 
-    DEFAULT_CSS = """
-    ErrorMessage {
+    DEFAULT_CSS = f"""
+    ErrorMessage {{
         height: auto;
         padding: 1;
         margin: 1 0;
-        background: #7f1d1d;
+        background: {theme.ERROR_BG};
         color: white;
         border-left: thick $error;
-    }
+    }}
     """
 
     def __init__(self, error: str, **kwargs: Any) -> None:

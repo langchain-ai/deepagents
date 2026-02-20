@@ -7,9 +7,9 @@ argparse tree.  It must stay lightweight — no SDK or langchain imports.
 import argparse
 from collections.abc import Callable
 
+from deepagents_cli import theme
 from deepagents_cli._version import __version__
 from deepagents_cli.config import (
-    COLORS,
     DOCS_URL,
     _is_editable_install,
     console,
@@ -43,9 +43,7 @@ def build_help_parent(
 def show_help() -> None:
     """Show top-level help information for the deepagents CLI."""
     install_type = " (local)" if _is_editable_install() else ""
-    banner_color = (
-        COLORS["primary_dev"] if _is_editable_install() else COLORS["primary"]
-    )
+    banner_color = theme.PRIMARY_DEV if _is_editable_install() else theme.PRIMARY
     console.print()
     console.print(
         f"[bold {banner_color}]deepagents-cli[/bold {banner_color}]"
@@ -54,10 +52,10 @@ def show_help() -> None:
     console.print()
     console.print(
         f"Docs: [link={DOCS_URL}]{DOCS_URL}[/link]",
-        style=COLORS["dim"],
+        style=theme.MUTED,
     )
     console.print()
-    console.print("[bold]Usage:[/bold]", style=COLORS["primary"])
+    console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
     console.print(
         "  deepagents [OPTIONS]                           Start interactive thread"
     )
@@ -75,7 +73,7 @@ def show_help() -> None:
     )
     console.print()
 
-    console.print("[bold]Options:[/bold]", style=COLORS["primary"])
+    console.print("[bold]Options:[/bold]", style=theme.PRIMARY)
     console.print(
         "  -r, --resume [ID]          Resume thread: -r for most recent, -r ID for specific"  # noqa: E501
     )
@@ -102,18 +100,18 @@ def show_help() -> None:
     console.print("  -h, --help                 Show this help message and exit")
     console.print()
 
-    console.print("[bold]Non-Interactive Mode:[/bold]", style=COLORS["primary"])
+    console.print("[bold]Non-Interactive Mode:[/bold]", style=theme.PRIMARY)
     console.print(
         "  deepagents -n 'Summarize README.md'     # Run task (no local shell access)",
-        style=COLORS["dim"],
+        style=theme.MUTED,
     )
     console.print(
         "  deepagents -n 'List files' --shell-allow-list recommended  # Use safe commands",  # noqa: E501
-        style=COLORS["dim"],
+        style=theme.MUTED,
     )
     console.print(
         "  deepagents -n 'Search logs' --shell-allow-list ls,cat,grep # Specify list",
-        style=COLORS["dim"],
+        style=theme.MUTED,
     )
     console.print()
 
@@ -124,7 +122,7 @@ def show_list_help() -> None:
     Invoked via the `-h` argparse action or directly from `cli_main`.
     """
     console.print()
-    console.print("[bold]Usage:[/bold]", style=COLORS["primary"])
+    console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
     console.print("  deepagents list")
     console.print()
     console.print(
@@ -134,7 +132,7 @@ def show_list_help() -> None:
         "AGENTS.md system prompt and separate thread history.",
     )
     console.print()
-    console.print("[bold]Options:[/bold]", style=COLORS["primary"])
+    console.print("[bold]Options:[/bold]", style=theme.PRIMARY)
     console.print("  -h, --help        Show this help message")
     console.print()
 
@@ -142,7 +140,7 @@ def show_list_help() -> None:
 def show_reset_help() -> None:
     """Show help information for the `reset` subcommand."""
     console.print()
-    console.print("[bold]Usage:[/bold]", style=COLORS["primary"])
+    console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
     console.print("  deepagents reset --agent NAME [--target SRC]")
     console.print()
     console.print(
@@ -155,12 +153,12 @@ def show_reset_help() -> None:
         "and recreates it with the new prompt.",
     )
     console.print()
-    console.print("[bold]Options:[/bold]", style=COLORS["primary"])
+    console.print("[bold]Options:[/bold]", style=theme.PRIMARY)
     console.print("  --agent NAME      Agent to reset (required)")
     console.print("  --target SRC      Copy AGENTS.md from another agent instead")
     console.print("  -h, --help        Show this help message")
     console.print()
-    console.print("[bold]Examples:[/bold]", style=COLORS["primary"])
+    console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
     console.print("  deepagents reset --agent coder")
     console.print("  deepagents reset --agent coder --target researcher")
     console.print()
@@ -173,21 +171,21 @@ def show_skills_help() -> None:
     `execute_skills_command` when no subcommand is given.
     """
     console.print()
-    console.print("[bold]Usage:[/bold]", style=COLORS["primary"])
+    console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
     console.print("  deepagents skills <command> [options]")
     console.print()
-    console.print("[bold]Commands:[/bold]", style=COLORS["primary"])
+    console.print("[bold]Commands:[/bold]", style=theme.PRIMARY)
     console.print("  list|ls           List all available skills")
     console.print("  create <name>     Create a new skill")
     console.print("  info <name>       Show detailed information about a skill")
     console.print("  delete <name>     Delete a skill")
     console.print()
-    console.print("[bold]Common options:[/bold]", style=COLORS["primary"])
+    console.print("[bold]Common options:[/bold]", style=theme.PRIMARY)
     console.print("  --agent <name>    Specify agent identifier (default: agent)")
     console.print("  --project         Use project-level skills instead of user-level")
     console.print("  -h, --help        Show this help message")
     console.print()
-    console.print("[bold]Examples:[/bold]", style=COLORS["primary"])
+    console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
     console.print("  deepagents skills list")
     console.print("  deepagents skills list --project")
     console.print("  deepagents skills create my-skill")
@@ -199,7 +197,7 @@ def show_skills_help() -> None:
     console.print()
     console.print(
         "[bold]Skill directories (highest precedence first):[/bold]",
-        style=COLORS["primary"],
+        style=theme.PRIMARY,
     )
     console.print(
         "[dim]  1. .agents/skills/                 project skills\n"
@@ -207,7 +205,7 @@ def show_skills_help() -> None:
         "  3. ~/.agents/skills/               user skills\n"
         "  4. ~/.deepagents/<agent>/skills/   user skills (alias)\n"
         "  5. <package>/built_in_skills/      built-in skills[/dim]",
-        style=COLORS["dim"],
+        style=theme.MUTED,
     )
     console.print()
 
@@ -215,10 +213,10 @@ def show_skills_help() -> None:
 def show_skills_list_help() -> None:
     """Show help information for the `skills list` subcommand."""
     console.print()
-    console.print("[bold]Usage:[/bold]", style=COLORS["primary"])
+    console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
     console.print("  deepagents skills list [options]")
     console.print()
-    console.print("[bold]Options:[/bold]", style=COLORS["primary"])
+    console.print("[bold]Options:[/bold]", style=theme.PRIMARY)
     console.print("  --agent NAME      Agent identifier (default: agent)")
     console.print("  --project         Show only project-level skills")
     console.print("  -h, --help        Show this help message")
@@ -228,17 +226,17 @@ def show_skills_list_help() -> None:
 def show_skills_create_help() -> None:
     """Show help information for the `skills create` subcommand."""
     console.print()
-    console.print("[bold]Usage:[/bold]", style=COLORS["primary"])
+    console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
     console.print("  deepagents skills create <name> [options]")
     console.print()
-    console.print("[bold]Options:[/bold]", style=COLORS["primary"])
+    console.print("[bold]Options:[/bold]", style=theme.PRIMARY)
     console.print("  --agent NAME      Agent identifier (default: agent)")
     console.print(
         "  --project         Create in project directory instead of user directory"
     )
     console.print("  -h, --help        Show this help message")
     console.print()
-    console.print("[bold]Examples:[/bold]", style=COLORS["primary"])
+    console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
     console.print("  deepagents skills create web-research")
     console.print("  deepagents skills create my-skill --project")
     console.print()
@@ -247,10 +245,10 @@ def show_skills_create_help() -> None:
 def show_skills_info_help() -> None:
     """Show help information for the `skills info` subcommand."""
     console.print()
-    console.print("[bold]Usage:[/bold]", style=COLORS["primary"])
+    console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
     console.print("  deepagents skills info <name> [options]")
     console.print()
-    console.print("[bold]Options:[/bold]", style=COLORS["primary"])
+    console.print("[bold]Options:[/bold]", style=theme.PRIMARY)
     console.print("  --agent NAME      Agent identifier (default: agent)")
     console.print("  --project         Search only in project skills")
     console.print("  -h, --help        Show this help message")
@@ -260,16 +258,16 @@ def show_skills_info_help() -> None:
 def show_skills_delete_help() -> None:
     """Show help information for the `skills delete` subcommand."""
     console.print()
-    console.print("[bold]Usage:[/bold]", style=COLORS["primary"])
+    console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
     console.print("  deepagents skills delete <name> [options]")
     console.print()
-    console.print("[bold]Options:[/bold]", style=COLORS["primary"])
+    console.print("[bold]Options:[/bold]", style=theme.PRIMARY)
     console.print("  --agent NAME      Agent identifier (default: agent)")
     console.print("  --project         Search only in project skills")
     console.print("  -f, --force       Skip confirmation prompt")
     console.print("  -h, --help        Show this help message")
     console.print()
-    console.print("[bold]Examples:[/bold]", style=COLORS["primary"])
+    console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
     console.print("  deepagents skills delete old-skill")
     console.print("  deepagents skills delete old-skill --force")
     console.print("  deepagents skills delete old-skill --project")
@@ -283,17 +281,17 @@ def show_threads_help() -> None:
     when no threads subcommand is given.
     """
     console.print()
-    console.print("[bold]Usage:[/bold]", style=COLORS["primary"])
+    console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
     console.print("  deepagents threads <command> [options]")
     console.print()
-    console.print("[bold]Commands:[/bold]", style=COLORS["primary"])
+    console.print("[bold]Commands:[/bold]", style=theme.PRIMARY)
     console.print("  list|ls           List all threads")
     console.print("  delete <ID>       Delete a thread")
     console.print()
-    console.print("[bold]Options:[/bold]", style=COLORS["primary"])
+    console.print("[bold]Options:[/bold]", style=theme.PRIMARY)
     console.print("  -h, --help        Show this help message")
     console.print()
-    console.print("[bold]Examples:[/bold]", style=COLORS["primary"])
+    console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
     console.print("  deepagents threads list")
     console.print("  deepagents threads delete abc123")
     console.print()
@@ -302,13 +300,13 @@ def show_threads_help() -> None:
 def show_threads_delete_help() -> None:
     """Show help information for the `threads delete` subcommand."""
     console.print()
-    console.print("[bold]Usage:[/bold]", style=COLORS["primary"])
+    console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
     console.print("  deepagents threads delete <ID>")
     console.print()
-    console.print("[bold]Options:[/bold]", style=COLORS["primary"])
+    console.print("[bold]Options:[/bold]", style=theme.PRIMARY)
     console.print("  -h, --help        Show this help message")
     console.print()
-    console.print("[bold]Examples:[/bold]", style=COLORS["primary"])
+    console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
     console.print("  deepagents threads delete abc123")
     console.print()
 
@@ -316,15 +314,15 @@ def show_threads_delete_help() -> None:
 def show_threads_list_help() -> None:
     """Show help information for the `threads list` subcommand."""
     console.print()
-    console.print("[bold]Usage:[/bold]", style=COLORS["primary"])
+    console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
     console.print("  deepagents threads list [options]")
     console.print()
-    console.print("[bold]Options:[/bold]", style=COLORS["primary"])
+    console.print("[bold]Options:[/bold]", style=theme.PRIMARY)
     console.print("  --agent NAME      Filter by agent name")
     console.print("  --limit N         Maximum threads to display (default: 20)")
     console.print("  -h, --help        Show this help message")
     console.print()
-    console.print("[bold]Examples:[/bold]", style=COLORS["primary"])
+    console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
     console.print("  deepagents threads list")
     console.print("  deepagents threads list --agent mybot")
     console.print("  deepagents threads list --limit 50")

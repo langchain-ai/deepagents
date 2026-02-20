@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 from textual.containers import Vertical
 from textual.widgets import Static
 
+from deepagents_cli import theme
 from deepagents_cli.config import CharsetMode, _detect_charset_mode, get_glyphs
 
 if TYPE_CHECKING:
@@ -94,7 +95,8 @@ def format_diff_textual(diff: str, max_lines: int | None = 100) -> str:
             # Deletion - red gutter bar, subtle red background
             gutter = f"[red bold]{glyphs.gutter_bar}[/red bold]"
             line_num = f"[dim]{old_num:>{width}}[/dim]"
-            content = f"[on #2d1515]{escaped_content}[/on #2d1515]"
+            bg = theme.DIFF_REMOVE_BG
+            content = f"[on {bg}]{escaped_content}[/on {bg}]"
             formatted.append(f"{gutter}{line_num} {content}")
             old_num += 1
             line_count += 1
@@ -102,7 +104,8 @@ def format_diff_textual(diff: str, max_lines: int | None = 100) -> str:
             # Addition - green gutter bar, subtle green background
             gutter = f"[green bold]{glyphs.gutter_bar}[/green bold]"
             line_num = f"[dim]{new_num:>{width}}[/dim]"
-            content = f"[on #152d15]{escaped_content}[/on #152d15]"
+            bg = theme.DIFF_ADD_BG
+            content = f"[on {bg}]{escaped_content}[/on {bg}]"
             formatted.append(f"{gutter}{line_num} {content}")
             new_num += 1
             line_count += 1

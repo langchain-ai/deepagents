@@ -119,14 +119,14 @@ Screen {
 .diff-removed {
     height: auto;
     color: #ff8787;
-    background: #4a2020;
+    background: #2a1018;
     padding: 0 1;
 }
 
 .diff-added {
     height: auto;
     color: #8ce99a;
-    background: #1e4620;
+    background: #0f2818;
     padding: 0 1;
 }
 

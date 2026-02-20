@@ -7,7 +7,7 @@ from rich.markup import render
 from rich.style import Style
 from rich.text import Text
 
-from deepagents_cli.config import COLORS
+from deepagents_cli import theme
 from deepagents_cli.input import INPUT_HIGHLIGHT_PATTERN
 from deepagents_cli.widgets.messages import (
     AppMessage,
@@ -293,21 +293,21 @@ class TestUserMessageModeRendering:
         text = _compose_text(UserMessage("!ls"))
         assert text.plain == "! ls"
         first_span = text._spans[0]
-        assert COLORS["mode_bash"] in str(first_span.style)
+        assert theme.MODE_BASH in str(first_span.style)
 
     def test_command_prefix_renders_slash_indicator(self) -> None:
         """`UserMessage('/help')` should render with `'/ '` prefix and body."""
         text = _compose_text(UserMessage("/help"))
         assert text.plain == "/ help"
         first_span = text._spans[0]
-        assert COLORS["mode_command"] in str(first_span.style)
+        assert theme.MODE_COMMAND in str(first_span.style)
 
     def test_normal_message_renders_angle_bracket(self) -> None:
         """`UserMessage('hello')` should render with `'> '` prefix."""
         text = _compose_text(UserMessage("hello"))
         assert text.plain == "> hello"
         first_span = text._spans[0]
-        assert COLORS["primary"] in str(first_span.style)
+        assert theme.PRIMARY in str(first_span.style)
 
     def test_empty_content_renders_angle_bracket(self) -> None:
         """`UserMessage('')` should not crash and should render `'> '` prefix."""

@@ -432,7 +432,8 @@ async def list_threads_command(
     """
     from rich.table import Table
 
-    from deepagents_cli.config import COLORS, console
+    from deepagents_cli import theme
+    from deepagents_cli.config import console
 
     limit = get_thread_limit() if limit is None else max(1, limit)
 
@@ -454,9 +455,7 @@ async def list_threads_command(
         else f"Recent Threads (last {limit})"
     )
 
-    table = Table(
-        title=title, show_header=True, header_style=f"bold {COLORS['primary']}"
-    )
+    table = Table(title=title, show_header=True, header_style=f"bold {theme.PRIMARY}")
     table.add_column("Thread ID", style="bold")
     table.add_column("Agent")
     table.add_column("Messages", justify="right")

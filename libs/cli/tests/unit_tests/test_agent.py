@@ -467,7 +467,7 @@ class TestCreateCliAgentSkillsSources:
         mock_settings.get_project_skills_dir.return_value = None
         mock_settings.get_built_in_skills_dir.return_value = built_in_dir
         mock_settings.get_user_agent_md_path.return_value = agent_dir / "AGENTS.md"
-        mock_settings.get_project_agent_md_path.return_value = None
+        mock_settings.get_project_agent_md_path.return_value = []
         mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
         mock_settings.get_project_agents_dir.return_value = None
         # Needed by get_system_prompt() which formats model identity
@@ -507,3 +507,131 @@ class TestCreateCliAgentSkillsSources:
         assert sources[0] == str(built_in_dir)
         # User skills dir should follow
         assert sources[1] == str(skills_dir)
+
+
+class TestCreateCliAgentMemorySources:
+    """Test that `create_cli_agent` wires project AGENTS.md into memory sources."""
+
+    def test_project_agent_md_paths_in_memory_sources(self, tmp_path: Path) -> None:
+        """Project AGENTS.md paths should be passed to MemoryMiddleware sources."""
+        agent_dir = tmp_path / "agent"
+        agent_dir.mkdir()
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+
+        project_inner = tmp_path / ".deepagents" / "AGENTS.md"
+        project_root = tmp_path / "AGENTS.md"
+
+        mock_settings = Mock()
+        mock_settings.ensure_agent_dir.return_value = agent_dir
+        mock_settings.ensure_user_skills_dir.return_value = skills_dir
+        mock_settings.get_project_skills_dir.return_value = None
+        mock_settings.get_built_in_skills_dir.return_value = (
+            Settings.get_built_in_skills_dir()
+        )
+        mock_settings.get_user_agent_md_path.return_value = agent_dir / "AGENTS.md"
+        mock_settings.get_project_agent_md_path.return_value = [
+            project_inner,
+            project_root,
+        ]
+        mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
+        mock_settings.get_project_agents_dir.return_value = None
+        mock_settings.model_name = None
+        mock_settings.model_provider = None
+        mock_settings.model_context_limit = None
+        mock_settings.project_root = tmp_path
+
+        captured: list[list[str]] = []
+
+        class FakeMemoryMiddleware:
+            """Capture the sources arg passed to MemoryMiddleware."""
+
+            def __init__(self, **kwargs: Any) -> None:
+                captured.append(kwargs.get("sources", []))
+
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+
+        with (
+            patch("deepagents_cli.agent.settings", mock_settings),
+            patch("deepagents_cli.agent.SkillsMiddleware"),
+            patch("deepagents_cli.agent.MemoryMiddleware", FakeMemoryMiddleware),
+            patch("deepagents_cli.agent.FilesystemBackend"),
+            patch(
+                "deepagents_cli.agent.create_deep_agent",
+                return_value=mock_agent,
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=True,
+                enable_skills=False,
+                enable_shell=False,
+            )
+
+        assert len(captured) == 1
+        sources = captured[0]
+        # User AGENTS.md is always first
+        assert sources[0] == str(agent_dir / "AGENTS.md")
+        # Both project paths follow
+        assert sources[1] == str(project_inner)
+        assert sources[2] == str(project_root)
+        assert len(sources) == 3
+
+    def test_empty_project_paths_no_extra_sources(self, tmp_path: Path) -> None:
+        """Empty project path list should not add extra memory sources."""
+        agent_dir = tmp_path / "agent"
+        agent_dir.mkdir()
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+
+        mock_settings = Mock()
+        mock_settings.ensure_agent_dir.return_value = agent_dir
+        mock_settings.ensure_user_skills_dir.return_value = skills_dir
+        mock_settings.get_project_skills_dir.return_value = None
+        mock_settings.get_built_in_skills_dir.return_value = (
+            Settings.get_built_in_skills_dir()
+        )
+        mock_settings.get_user_agent_md_path.return_value = agent_dir / "AGENTS.md"
+        mock_settings.get_project_agent_md_path.return_value = []
+        mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
+        mock_settings.get_project_agents_dir.return_value = None
+        mock_settings.model_name = None
+        mock_settings.model_provider = None
+        mock_settings.model_context_limit = None
+        mock_settings.project_root = None
+
+        captured: list[list[str]] = []
+
+        class FakeMemoryMiddleware:
+            """Capture the sources arg passed to MemoryMiddleware."""
+
+            def __init__(self, **kwargs: Any) -> None:
+                captured.append(kwargs.get("sources", []))
+
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+
+        with (
+            patch("deepagents_cli.agent.settings", mock_settings),
+            patch("deepagents_cli.agent.SkillsMiddleware"),
+            patch("deepagents_cli.agent.MemoryMiddleware", FakeMemoryMiddleware),
+            patch("deepagents_cli.agent.FilesystemBackend"),
+            patch(
+                "deepagents_cli.agent.create_deep_agent",
+                return_value=mock_agent,
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=True,
+                enable_skills=False,
+                enable_shell=False,
+            )
+
+        assert len(captured) == 1
+        sources = captured[0]
+        # Only user AGENTS.md, no project paths
+        assert sources == [str(agent_dir / "AGENTS.md")]

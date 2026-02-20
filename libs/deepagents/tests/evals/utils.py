@@ -255,9 +255,12 @@ def _assert_tool_calls(trajectory: AgentTrajectory, expect: TrajectoryExpectatio
 
 
 def _assert_expectations(trajectory: AgentTrajectory, expect: TrajectoryExpectations) -> None:
-    _assert_counts(trajectory, expect)
-    _assert_final_text(trajectory, expect)
-    _assert_tool_calls(trajectory, expect)
+    try:
+        _assert_counts(trajectory, expect)
+        _assert_final_text(trajectory, expect)
+        _assert_tool_calls(trajectory, expect)
+    except Exception as e:  # noqa: BLE001
+        pytest.fail(f"expectations failed: {e}\n\ntrajectory:\n{trajectory.pretty()}", pytrace=False)
 
 
 def run_agent(
@@ -267,13 +270,15 @@ def run_agent(
     model: str,
     initial_files: dict[str, str] | None = None,
     expect: TrajectoryExpectations | None = None,
+    thread_id: str | None = None,
 ) -> AgentTrajectory:
     """Run agent eval against the given query."""
     invoke_inputs: dict[str, object] = {"messages": [{"role": "user", "content": query}]}
     if initial_files is not None:
         invoke_inputs["files"] = {path: create_file_data(content) for path, content in initial_files.items()}
 
-    thread_id = uuid.uuid4()
+    if thread_id is None:
+        thread_id = str(uuid.uuid4())
     config = {"configurable": {"thread_id": thread_id}}
 
     logged_inputs = dict(invoke_inputs)

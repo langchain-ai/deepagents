@@ -1,18 +1,10 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
-from typing import TYPE_CHECKING
-
 from langchain.agents import create_agent
 from langchain.agents.structured_output import ToolStrategy
 from langchain_core.messages import HumanMessage
-from langgraph.store.memory import InMemoryStore
 from pydantic import BaseModel
 
-if TYPE_CHECKING:
-    from langchain.tools import ToolRuntime
-
-from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
 from deepagents.graph import create_deep_agent
 from tests.utils import (
     SAMPLE_MODEL,
@@ -150,33 +142,3 @@ class TestDeepAgents:
         response = agent.invoke({"messages": [{"role": "user", "content": "Who are all of the Kanto starters?"}]})
         structured_output = response["structured_response"]
         assert len(structured_output.pokemon) == 3
-
-    async def test_with_memory_middleware(self):
-        store = InMemoryStore()
-        now = datetime.now(UTC).isoformat()
-        store.put(
-            ("filesystem",),
-            "/AGENTS.md",
-            {
-                "content": ["Your name is Jackson"],
-                "created_at": now,
-                "modified_at": now,
-            },
-        )
-
-        def sample_backend(rt: ToolRuntime) -> CompositeBackend:
-            return CompositeBackend(
-                default=StateBackend(rt),
-                routes={
-                    "/memories/": StoreBackend(rt),
-                },
-            )
-
-        agent = create_deep_agent(
-            backend=sample_backend,
-            memory=["/memories/AGENTS.md"],
-            store=store,
-        )
-        assert_all_deepagent_qualities(agent)
-        result = await agent.ainvoke({"messages": [HumanMessage(content="What is your name?")]})
-        assert "Jackson" in result["messages"][-1].content

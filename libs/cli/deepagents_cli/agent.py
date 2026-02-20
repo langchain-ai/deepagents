@@ -466,9 +466,7 @@ def create_cli_agent(
     # Add memory middleware
     if enable_memory:
         memory_sources = [str(settings.get_user_agent_md_path(assistant_id))]
-        project_agent_md = settings.get_project_agent_md_path()
-        if project_agent_md:
-            memory_sources.append(str(project_agent_md))
+        memory_sources.extend(str(p) for p in settings.get_project_agent_md_path())
 
         agent_middleware.append(
             MemoryMiddleware(

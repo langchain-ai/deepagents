@@ -21,11 +21,11 @@ def test_read_skill_full_content(model: str) -> None:
         initial_files={
             "/skills/user/data-analysis/SKILL.md": _skill_content(
                 name="data-analysis",
-                description="Step-by-step workflow for analyzing datasets",
+                description="Step-by-step workflow for analyzing datasets using Lunar tool",
                 body="## Steps\n1. Load dataset\n2. Clean data\n3. Explore\n\nMagic number: ALPHA-7-ZULU\n",
             ),
         },
-        query="Read the data-analysis skill file and tell me the magic number embedded in the instructions.",
+        query="What magic number do i need for explore analysing using lunar?",
         # Step 1: read_file to get the skill content.
         # Step 2: answer with the magic number.
         # 1 tool call request: read_file.
@@ -88,9 +88,7 @@ def test_combine_two_skills(model: str) -> None:
                 body="## Steps\n1. Build Docker image\n2. Push to registry\n\nBackend port: 8080\n",
             ),
         },
-        query=(
-            "Read both the frontend-deploy and backend-deploy skills in parallel. What ports do they use? List them as 'frontend: X, backend: Y'."
-        ),
+        query=("What ports do the front and backend deploys use? List them as 'frontend: X, backend: Y'."),
         # Step 1: read_file for both skills in parallel.
         # Step 2: answer combining both ports.
         # 2 tool call requests: read_file (frontend-deploy) + read_file (backend-deploy).
@@ -105,8 +103,8 @@ def test_combine_two_skills(model: str) -> None:
 
 
 @pytest.mark.langsmith
-def test_update_skill(model: str) -> None:
-    """Agent edits a skill's SKILL.md to add new instructions."""
+def test_update_skill_typo_fix_no_read(model: str) -> None:
+    """Agent fixes a known typo with a single direct edit, without reading first."""
     agent = create_deep_agent(model=model, skills=["/skills/user/"])
     trajectory = run_agent(
         agent,
@@ -115,23 +113,46 @@ def test_update_skill(model: str) -> None:
             "/skills/user/testing/SKILL.md": _skill_content(
                 name="testing",
                 description="Guidelines for writing and running tests",
-                body="## Steps\n1. Write unit tests\n2. Run test suite\n3. Check coverage\n",
+                body="## Steps\n1. Write unit tests\n2. Run test suiet\n3. Check coverage\n",
             ),
         },
         query=(
-            "Update the testing skill by adding step 4 to the existing steps: 'Update snapshot tests'. "
-            "Edit /skills/user/testing/SKILL.md directly. Do not read the file before editing it."
+            "Fix the typo in /skills/user/testing/SKILL.md: replace the exact string 'test suiet' with 'test suite'. "
+            "Do not read the file before editing it. Edit the file directly."
         ),
-        # Step 1: edit_file to add the new step.
-        # Step 2: confirm the update.
-        # 1 tool call request: edit_file.
         expect=(
             TrajectoryExpectations(num_agent_steps=2, num_tool_call_requests=1).require_tool_call(
                 step=1, name="edit_file", args_contains={"file_path": "/skills/user/testing/SKILL.md"}
             )
         ),
     )
-    assert "Update snapshot tests" in trajectory.files["/skills/user/testing/SKILL.md"]
+    assert "test suiet" not in trajectory.files["/skills/user/testing/SKILL.md"]
+    assert "test suite" in trajectory.files["/skills/user/testing/SKILL.md"]
+
+
+@pytest.mark.langsmith
+def test_update_skill_typo_fix_requires_read(model: str) -> None:
+    """Agent must read a skill file to find and fix an unknown typo."""
+    agent = create_deep_agent(model=model, skills=["/skills/user/"])
+    trajectory = run_agent(
+        agent,
+        model=model,
+        initial_files={
+            "/skills/user/testing/SKILL.md": _skill_content(
+                name="testing",
+                description="Guidelines for writing and running tests",
+                body="## Steps\n1. Write unit tests\n2. Run test suite\n3. Check covreage\n",
+            ),
+        },
+        query=("Fix the typo in /skills/user/testing/SKILL.md: replace the misspelled word 'covreage' with 'coverage'. Edit the file directly."),
+        expect=(
+            TrajectoryExpectations(num_agent_steps=3, num_tool_call_requests=2)
+            .require_tool_call(step=1, name="read_file", args_contains={"file_path": "/skills/user/testing/SKILL.md"})
+            .require_tool_call(step=2, name="edit_file", args_contains={"file_path": "/skills/user/testing/SKILL.md"})
+        ),
+    )
+    assert "covreage" not in trajectory.files["/skills/user/testing/SKILL.md"]
+    assert "coverage" in trajectory.files["/skills/user/testing/SKILL.md"]
 
 
 @pytest.mark.langsmith
@@ -162,17 +183,11 @@ def test_find_skill_in_correct_path(model: str) -> None:
             "Update the deployment skill to add a new final step: 'Send Slack notification after deploy'. "
             "The skill path is shown in your system prompt. Edit the file directly."
         ),
-        # Step 1: edit_file for the deployment skill (in /skills/project/, not /skills/base/).
-        # Step 2: confirm the update.
-        # 1 tool call request: edit_file.
         expect=(
-            TrajectoryExpectations(num_agent_steps=2, num_tool_call_requests=1).require_tool_call(
-                step=1,
-                name="edit_file",
-                args_contains={"file_path": "/skills/project/deployment/SKILL.md"},
-            )
+            TrajectoryExpectations(num_agent_steps=3, num_tool_call_requests=2)
+            .require_tool_call(step=1, name="read_file", args_contains={"file_path": "/skills/project/deployment/SKILL.md"})
+            .require_tool_call(step=2, name="edit_file", args_contains={"file_path": "/skills/project/deployment/SKILL.md"})
         ),
     )
     assert "Slack notification" in trajectory.files["/skills/project/deployment/SKILL.md"]
-    # The logging skill in /skills/base/ must remain untouched.
     assert "Slack notification" not in trajectory.files.get("/skills/base/logging/SKILL.md", "")

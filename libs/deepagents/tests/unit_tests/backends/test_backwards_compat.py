@@ -15,7 +15,7 @@ from langgraph.store.memory import InMemoryStore
 
 from deepagents.backends.state import StateBackend
 from deepagents.backends.store import StoreBackend
-from deepagents.backends.utils import create_file_data, _to_legacy_file_data
+from deepagents.backends.utils import _to_legacy_file_data, create_file_data
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -597,11 +597,15 @@ class TestBareV1DataNoEncodingField:
         ns = ("fs",)
 
         # Manually insert bare v1 data (no encoding key)
-        rt.store.put(ns, "/legacy.txt", {
-            "content": ["line1", "line2", "line3"],
-            "created_at": "2024-06-01T00:00:00+00:00",
-            "modified_at": "2024-06-01T00:00:00+00:00",
-        })
+        rt.store.put(
+            ns,
+            "/legacy.txt",
+            {
+                "content": ["line1", "line2", "line3"],
+                "created_at": "2024-06-01T00:00:00+00:00",
+                "modified_at": "2024-06-01T00:00:00+00:00",
+            },
+        )
 
         be = StoreBackend(rt, namespace=lambda _ctx: ns)
 
@@ -656,11 +660,15 @@ class TestBareV1DataNoEncodingField:
         rt = _make_store_runtime()
         ns = ("fs",)
 
-        rt.store.put(ns, "/legacy.txt", {
-            "content": ["hello", "world"],
-            "created_at": "2024-06-01T00:00:00+00:00",
-            "modified_at": "2024-06-01T00:00:00+00:00",
-        })
+        rt.store.put(
+            ns,
+            "/legacy.txt",
+            {
+                "content": ["hello", "world"],
+                "created_at": "2024-06-01T00:00:00+00:00",
+                "modified_at": "2024-06-01T00:00:00+00:00",
+            },
+        )
 
         be = StoreBackend(rt, namespace=lambda _ctx: ns)
 

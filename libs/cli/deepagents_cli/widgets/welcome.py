@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+import webbrowser
+from typing import TYPE_CHECKING, Any
 
 from rich.style import Style
 from rich.text import Text
 from textual.widgets import Static
+
+if TYPE_CHECKING:
+    from textual.events import Click
 
 from deepagents_cli.config import (
     COLORS,
@@ -21,6 +25,13 @@ from deepagents_cli.config import (
 
 class WelcomeBanner(Static):
     """Welcome banner displayed at startup."""
+
+    # Disable Textual's auto_links to prevent a flicker cycle. When auto_links
+    # is enabled, hovering over a link combines styles via Rich's
+    # Style.__add__, which generates a new random link ID each time. Textual
+    # sees the new ID as a style change, repaints, and the cycle repeats on
+    # every mouse event — causing visible flicker.
+    auto_links = False
 
     DEFAULT_CSS = """
     WelcomeBanner {
@@ -72,6 +83,18 @@ class WelcomeBanner(Static):
         """
         self._cli_thread_id = thread_id
         self.update(self._build_banner(self._project_url))
+
+    def on_click(self, event: Click) -> None:  # noqa: PLR6301  # Textual event handler
+        """Open Rich-style hyperlinks on single click.
+
+        Rich `Style(link=...)` produces OSC 8 terminal hyperlinks that require
+        Ctrl+Click in most terminals. By intercepting the Textual click event we
+        open the URL directly, matching the single-click behavior of links
+        rendered by the Markdown widget.
+        """
+        if event.style.link:
+            webbrowser.open(event.style.link)
+            event.stop()
 
     def _build_banner(self, project_url: str | None = None) -> Text:
         """Build the banner rich text.

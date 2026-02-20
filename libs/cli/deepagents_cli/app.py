@@ -1793,6 +1793,21 @@ class DeepAgentsApp(App):
             event.prevent_default()
             event.stop()
 
+    def on_app_focus(self) -> None:
+        """Restore chat input focus when the terminal regains OS focus.
+
+        When the user opens a link via `webbrowser.open`, OS focus shifts to
+        the browser. On returning (e.g. Alt+Tab), Textual fires `AppFocus`.
+        Re-focusing the chat input here keeps the input ready for typing.
+        """
+        if not self._chat_input:
+            return
+        if isinstance(self.screen, ModalScreen):
+            return
+        if self._pending_approval_widget:
+            return
+        self._chat_input.focus_input()
+
     def on_click(self, _event: Click) -> None:
         """Handle clicks anywhere in the terminal to focus on the command line."""
         if not self._chat_input:

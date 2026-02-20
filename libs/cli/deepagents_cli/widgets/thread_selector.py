@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import sqlite3
+import webbrowser
 from typing import TYPE_CHECKING, ClassVar
 
 from rich.style import Style
@@ -534,6 +535,16 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         if self._threads:
             thread_id = self._threads[self._selected_index]["thread_id"]
             self.dismiss(thread_id)
+
+    def on_click(self, event: Click) -> None:  # noqa: PLR6301  # Textual event handler
+        """Open Rich-style hyperlinks on single click.
+
+        `ThreadOption` clicks are already stopped before bubbling here, so this
+        only fires for non-option widgets such as the title.
+        """
+        if event.style.link:
+            webbrowser.open(event.style.link)
+            event.stop()
 
     def on_thread_option_clicked(self, event: ThreadOption.Clicked) -> None:
         """Handle click on a thread option.

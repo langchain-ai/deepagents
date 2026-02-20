@@ -123,10 +123,9 @@ class StoreBackend(BackendProtocol):
                 We forbid * which is a wild card for now.
                 If None, uses legacy assistant_id detection from metadata (deprecated).
 
-                Note:
+                !!! Note:
                     This parameter will be **required** in version 0.5.0.
-
-                Warning:
+                !!!! Warning:
                     This API is subject to change in a minor version.
 
             file_format: Storage format version. `"v2"` (default) stores

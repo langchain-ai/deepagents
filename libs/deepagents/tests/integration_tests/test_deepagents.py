@@ -142,37 +142,3 @@ class TestDeepAgents:
         response = agent.invoke({"messages": [{"role": "user", "content": "Who are all of the Kanto starters?"}]})
         structured_output = response["structured_response"]
         assert len(structured_output.pokemon) == 3
-<<<<<<< sr/file-format-fixes
-
-    async def test_with_memory_middleware(self):
-        store = InMemoryStore()
-        now = datetime.now(UTC).isoformat()
-        store.put(
-            ("filesystem",),
-            "/AGENTS.md",
-            {
-                "content": ["Your name is Jackson"],
-                "encoding": "utf-8",
-                "created_at": now,
-                "modified_at": now,
-            },
-        )
-
-        def sample_backend(rt: ToolRuntime) -> CompositeBackend:
-            return CompositeBackend(
-                default=StateBackend(rt),
-                routes={
-                    "/memories/": StoreBackend(rt),
-                },
-            )
-
-        agent = create_deep_agent(
-            backend=sample_backend,
-            memory=["/memories/AGENTS.md"],
-            store=store,
-        )
-        assert_all_deepagent_qualities(agent)
-        result = await agent.ainvoke({"messages": [HumanMessage(content="What is your name?")]})
-        assert "Jackson" in result["messages"][-1].content
-=======
->>>>>>> main

@@ -19,6 +19,7 @@ from deepagents_cli.config import (
     get_banner,
     get_glyphs,
     get_langsmith_project_name,
+    is_ascii_fallback,
 )
 from deepagents_cli.widgets._links import open_style_link
 
@@ -134,6 +135,13 @@ class WelcomeBanner(Static):
                 banner.append_text(thread_line)
             else:
                 banner.append(f"Thread: {self._cli_thread_id}\n", style="dim")
+
+        if is_ascii_fallback():
+            banner.append(
+                f"{get_glyphs().warning} UTF-8 not detected, using ASCII theme"
+                " (set UI_CHARSET_MODE=unicode to override)\n",
+                style="dim yellow",
+            )
 
         banner.append(
             "Ready to code! What would you like to build?\n", style=theme.PRIMARY

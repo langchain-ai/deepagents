@@ -16,6 +16,7 @@ from deepagents_cli.config import (
     _detect_charset_mode,
     get_banner,
     get_glyphs,
+    is_ascii_fallback,
     reset_glyphs_cache,
 )
 
@@ -362,3 +363,53 @@ class TestGetBanner:
         """Test that ASCII banner contains only ASCII characters."""
         for char in _ASCII_BANNER:
             assert ord(char) < 128, f"Non-ASCII character found: {char!r}"
+
+
+class TestIsAsciiFallback:
+    """Tests for is_ascii_fallback function."""
+
+    def setup_method(self) -> None:
+        """Reset glyphs cache before each test."""
+        reset_glyphs_cache()
+
+    @patch.dict("os.environ", {"UI_CHARSET_MODE": "ascii"}, clear=False)
+    def test_explicit_ascii_is_not_fallback(self) -> None:
+        """Test that explicit ASCII mode is not considered a fallback."""
+        assert is_ascii_fallback() is False
+
+    @patch.dict("os.environ", {"UI_CHARSET_MODE": "unicode"}, clear=False)
+    def test_unicode_mode_is_not_fallback(self) -> None:
+        """Test that unicode mode is not a fallback."""
+        assert is_ascii_fallback() is False
+
+    @patch.dict(
+        "os.environ",
+        {"UI_CHARSET_MODE": "auto", "LANG": "C", "LC_ALL": ""},
+        clear=False,
+    )
+    def test_auto_with_no_utf_is_fallback(self) -> None:
+        """Test that auto mode without UTF-8 support is a fallback."""
+        mock_stdout = Mock()
+        mock_stdout.encoding = "ascii"
+        with patch.object(sys, "stdout", mock_stdout):
+            assert is_ascii_fallback() is True
+
+    @patch.dict(
+        "os.environ",
+        {"UI_CHARSET_MODE": "auto", "LANG": "en_US.UTF-8"},
+        clear=False,
+    )
+    def test_auto_with_utf_lang_is_not_fallback(self) -> None:
+        """Test that auto mode with UTF-8 LANG is not a fallback."""
+        assert is_ascii_fallback() is False
+
+    def test_default_env_with_utf_stdout_is_not_fallback(self) -> None:
+        """Test that default (no env var) with UTF-8 stdout is not a fallback."""
+        with (
+            patch.dict("os.environ", {"LANG": "C", "LC_ALL": ""}, clear=False),
+            patch.dict("os.environ", {}, clear=False),
+        ):
+            mock_stdout = Mock()
+            mock_stdout.encoding = "utf-8"
+            with patch.object(sys, "stdout", mock_stdout):
+                assert is_ascii_fallback() is False

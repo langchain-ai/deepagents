@@ -210,6 +210,22 @@ def _detect_charset_mode() -> CharsetMode:
     return CharsetMode.ASCII
 
 
+def is_ascii_fallback() -> bool:
+    """Check if ASCII mode was activated due to auto-detection fallback.
+
+    Returns `True` only when charset mode is ASCII **and** the user did not
+    explicitly request it via `UI_CHARSET_MODE=ascii`. This is useful for
+    showing a one-time notice that the terminal lacks UTF-8 support.
+
+    Returns:
+        `True` if ASCII mode is an auto-detected fallback, `False` otherwise.
+    """
+    env_mode = os.environ.get("UI_CHARSET_MODE", "auto").lower()
+    if env_mode != "auto":
+        return False
+    return _detect_charset_mode() == CharsetMode.ASCII
+
+
 def get_glyphs() -> Glyphs:
     """Get the glyph set for the current charset mode.
 

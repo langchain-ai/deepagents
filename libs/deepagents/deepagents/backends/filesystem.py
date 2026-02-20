@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import subprocess
+import warnings
 from datetime import datetime
 from pathlib import Path
 
@@ -72,7 +73,7 @@ class FilesystemBackend(BackendProtocol):
     def __init__(
         self,
         root_dir: str | Path | None = None,
-        virtual_mode: bool = False,  # noqa: FBT001, FBT002  # Boolean arg is part of BackendProtocol API
+        virtual_mode: bool | None = None,  # noqa: FBT001
         max_file_size_mb: int = 10,
     ) -> None:
         """Initialize filesystem backend.
@@ -109,6 +110,16 @@ class FilesystemBackend(BackendProtocol):
                 Files exceeding this limit are skipped during search. Defaults to 10 MB.
         """
         self.cwd = Path(root_dir).resolve() if root_dir else Path.cwd()
+        if virtual_mode is None:
+            warnings.warn(
+                "FilesystemBackend virtual_mode default will change in deepagents 0.5.0; "
+                "please specify virtual_mode explicitly. "
+                "Security note: leaving virtual_mode=False allows absolute paths and '..' to bypass root_dir. "
+                "Consult the API reference for details.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            virtual_mode = False
         self.virtual_mode = virtual_mode
         self.max_file_size_bytes = max_file_size_mb * 1024 * 1024
 

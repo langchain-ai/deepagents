@@ -169,6 +169,8 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
             warnings.warn(
                 "LocalShellBackend virtual_mode default will change in deepagents 0.5.0; "
                 "please specify virtual_mode explicitly. "
+                "Note: virtual_mode is for virtual path semantics (e.g., CompositeBackend routing) and optional path-based guardrails; "
+                "it does not provide sandboxing or process isolation. "
                 "Security note: leaving virtual_mode=False allows absolute paths and '..' to bypass root_dir, "
                 "and LocalShellBackend provides no sandboxing (execute runs commands on the host; virtual_mode does not restrict shell execution). "
                 "Please consult the API reference for usage guidelines.",

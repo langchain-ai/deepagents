@@ -840,6 +840,27 @@ class TestThreadSelectorErrorHandling:
                 assert app.result is None
 
 
+class TestThreadSelectorLimit:
+    """Tests for thread limit via get_thread_limit()."""
+
+    @pytest.mark.asyncio
+    async def test_custom_limit_is_forwarded(self) -> None:
+        """get_thread_limit() return value should be forwarded to list_threads."""
+        with (
+            patch(
+                "deepagents_cli.sessions.get_thread_limit",
+                return_value=5,
+            ),
+            _patch_list_threads() as mock_lt,
+        ):
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                mock_lt.assert_awaited_once_with(limit=5, include_message_count=True)
+
+
 def _get_widget_text(widget: Static) -> str:
     """Extract text content from a message widget.
 
@@ -1038,3 +1059,165 @@ class TestBuildThreadMessage:
 
         assert isinstance(result, str)
         assert result == "Resumed thread: t-1"
+
+
+class TestConvertMessagesToData:
+    """Tests for DeepAgentsApp._convert_messages_to_data."""
+
+    def _make_human(self, content: str) -> object:
+        """Create a HumanMessage."""
+        from langchain_core.messages import HumanMessage
+
+        return HumanMessage(content=content)
+
+    def _make_ai(
+        self,
+        content: str | list[dict[str, str]] = "",
+        tool_calls: list[dict[str, Any]] | None = None,
+    ) -> object:
+        """Create an AIMessage."""
+        from langchain_core.messages import AIMessage
+
+        return AIMessage(content=content, tool_calls=tool_calls or [])  # type: ignore[no-matching-overload]
+
+    def _make_tool(
+        self,
+        content: str,
+        tool_call_id: str,
+        status: str = "success",
+    ) -> object:
+        """Create a ToolMessage."""
+        from langchain_core.messages import ToolMessage
+
+        return ToolMessage(content=content, tool_call_id=tool_call_id, status=status)
+
+    def test_human_message_conversion(self) -> None:
+        """HumanMessage should become a USER MessageData."""
+        from deepagents_cli.widgets.message_store import MessageType
+
+        msgs = [self._make_human("Hello")]
+        result = DeepAgentsApp._convert_messages_to_data(msgs)
+
+        assert len(result) == 1
+        assert result[0].type == MessageType.USER
+        assert result[0].content == "Hello"
+
+    def test_system_prefix_skipped(self) -> None:
+        """HumanMessages starting with [SYSTEM] should be skipped."""
+        msgs = [
+            self._make_human("[SYSTEM] Auto-injected context"),
+            self._make_human("Real user message"),
+        ]
+        result = DeepAgentsApp._convert_messages_to_data(msgs)
+
+        assert len(result) == 1
+        assert result[0].content == "Real user message"
+
+    def test_ai_message_text_content(self) -> None:
+        """AIMessage with string content should become ASSISTANT MessageData."""
+        from deepagents_cli.widgets.message_store import MessageType
+
+        msgs = [self._make_ai("Here is the answer.")]
+        result = DeepAgentsApp._convert_messages_to_data(msgs)
+
+        assert len(result) == 1
+        assert result[0].type == MessageType.ASSISTANT
+        assert result[0].content == "Here is the answer."
+
+    def test_ai_message_content_block_list(self) -> None:
+        """AIMessage with list-of-blocks content should extract text."""
+        from deepagents_cli.widgets.message_store import MessageType
+
+        blocks: list[dict[str, str]] = [
+            {"type": "text", "text": "Part 1. "},
+            {"type": "text", "text": "Part 2."},
+        ]
+        msgs = [self._make_ai(blocks)]
+        result = DeepAgentsApp._convert_messages_to_data(msgs)
+
+        assert len(result) == 1
+        assert result[0].type == MessageType.ASSISTANT
+        assert result[0].content == "Part 1. Part 2."
+
+    def test_ai_message_empty_text_skipped(self) -> None:
+        """AIMessage with empty text should not produce an ASSISTANT entry."""
+        msgs = [self._make_ai("   ")]
+        result = DeepAgentsApp._convert_messages_to_data(msgs)
+
+        assert len(result) == 0
+
+    def test_tool_call_matching(self) -> None:
+        """ToolMessage should be matched to its AIMessage tool call by ID."""
+        from deepagents_cli.widgets.message_store import MessageType, ToolStatus
+
+        msgs = [
+            self._make_ai(
+                tool_calls=[
+                    {"id": "tc-1", "name": "read_file", "args": {"path": "/a.py"}}
+                ]
+            ),
+            self._make_tool("file contents", tool_call_id="tc-1"),
+        ]
+        result = DeepAgentsApp._convert_messages_to_data(msgs)
+
+        assert len(result) == 1
+        assert result[0].type == MessageType.TOOL
+        assert result[0].tool_name == "read_file"
+        assert result[0].tool_status == ToolStatus.SUCCESS
+        assert result[0].tool_output == "file contents"
+
+    def test_tool_call_error_status(self) -> None:
+        """ToolMessage with error status should set ERROR on the tool data."""
+        from deepagents_cli.widgets.message_store import ToolStatus
+
+        msgs = [
+            self._make_ai(
+                tool_calls=[{"id": "tc-2", "name": "bash", "args": {"cmd": "fail"}}]
+            ),
+            self._make_tool("command failed", tool_call_id="tc-2", status="error"),
+        ]
+        result = DeepAgentsApp._convert_messages_to_data(msgs)
+
+        assert result[0].tool_status == ToolStatus.ERROR
+        assert result[0].tool_output == "command failed"
+
+    def test_unmatched_tool_call_rejected(self) -> None:
+        """Tool calls with no matching ToolMessage should be REJECTED."""
+        from deepagents_cli.widgets.message_store import ToolStatus
+
+        msgs = [
+            self._make_ai(tool_calls=[{"id": "tc-3", "name": "bash", "args": {}}]),
+        ]
+        result = DeepAgentsApp._convert_messages_to_data(msgs)
+
+        assert len(result) == 1
+        assert result[0].tool_status == ToolStatus.REJECTED
+
+    def test_mixed_message_sequence(self) -> None:
+        """Full conversation with mixed message types should convert correctly."""
+        from deepagents_cli.widgets.message_store import MessageType, ToolStatus
+
+        msgs = [
+            self._make_human("What files are here?"),
+            self._make_ai(
+                "Let me check.",
+                tool_calls=[{"id": "tc-a", "name": "list_files", "args": {"dir": "."}}],
+            ),
+            self._make_tool("file1.py\nfile2.py", tool_call_id="tc-a"),
+            self._make_ai("I found 2 files."),
+        ]
+        result = DeepAgentsApp._convert_messages_to_data(msgs)
+
+        assert len(result) == 4
+        assert result[0].type == MessageType.USER
+        assert result[1].type == MessageType.ASSISTANT
+        assert result[1].content == "Let me check."
+        assert result[2].type == MessageType.TOOL
+        assert result[2].tool_status == ToolStatus.SUCCESS
+        assert result[3].type == MessageType.ASSISTANT
+        assert result[3].content == "I found 2 files."
+
+    def test_empty_messages(self) -> None:
+        """Empty input should return empty output."""
+        result = DeepAgentsApp._convert_messages_to_data([])
+        assert result == []

@@ -244,10 +244,12 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             container = self.query_one(Vertical)
             container.styles.border = ("ascii", "green")
 
-        from deepagents_cli.sessions import list_threads
+        from deepagents_cli.sessions import get_thread_limit, list_threads
 
         try:
-            self._threads = await list_threads(limit=20, include_message_count=True)
+            self._threads = await list_threads(
+                limit=get_thread_limit(), include_message_count=True
+            )
         except (OSError, sqlite3.Error) as exc:
             logger.exception("Failed to load threads for thread selector")
             await self._show_mount_error(str(exc))

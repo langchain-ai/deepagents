@@ -65,31 +65,49 @@ def _extract_text_from_stream(response: dict[str, Any]) -> tuple[str, int | None
     return "\n".join(output_parts), exit_code
 
 
-def _extract_files_from_stream(response: dict[str, Any]) -> dict[str, bytes]:
+def _extract_files_from_stream(
+    response: dict, requested_paths: list[str]
+) -> dict[str, bytes]:
     """Extract file contents from code interpreter response stream.
 
-    Parses the structured JSON response to extract file paths and contents.
-
     Args:
-        response: Response dict from code interpreter readFiles invocation
+        response: Response dict from code interpreter readFiles invocation.
+        requested_paths: The original paths requested, used to match URIs.
 
     Returns:
-        Dict mapping file paths to their contents as bytes
+        Dict mapping original requested paths to their contents as bytes.
     """
+    # Build a lookup from normalized URI to original requested path
+    path_lookup: dict[str, str] = {}
+    for path in requested_paths:
+        # The API returns URIs like file:///path or file:///relative
+        # Normalize to match: strip leading slashes for comparison
+        stripped = path.lstrip("/")
+        path_lookup[stripped] = path
+
     files: dict[str, bytes] = {}
 
     for event in response.get("stream", []):
-        if "result" in event:
-            for content_item in event["result"].get("content", []):
-                if content_item.get("type") == "resource":
-                    resource = content_item.get("resource", {})
-                    uri = resource.get("uri", "")
-                    file_path = uri.replace("file://", "")
+        if "result" not in event:
+            continue
+        for item in event["result"].get("content", []):
+            if item.get("type") != "resource":
+                continue
+            resource = item.get("resource", {})
+            uri = resource.get("uri", "")
+            # file:///cwd_test.txt -> cwd_test.txt
+            file_path = uri.replace("file://", "").lstrip("/")
 
-                    if "text" in resource:
-                        files[file_path] = resource["text"].encode("utf-8")
-                    elif "blob" in resource:
-                        files[file_path] = base64.b64decode(resource["blob"])
+            content: bytes | None = None
+            if "text" in resource:
+                content = resource["text"].encode("utf-8")
+            elif "blob" in resource:
+                content = base64.b64decode(resource["blob"])
+
+            if content is not None:
+                # Match back to original requested path
+                original_path = path_lookup.get(file_path, file_path)
+                files[original_path] = content
 
     return files
 
@@ -148,6 +166,18 @@ class AgentCoreBackend(BaseSandbox):
         self._interpreter = interpreter
         self._timeout: int = DEFAULT_TIMEOUT  # 15 minutes
 
+    @staticmethod
+    def _to_relative_path(path: str) -> str:
+        """Convert absolute path to relative for AgentCore file APIs.
+
+        Args:
+            path: File path (absolute or relative).
+
+        Returns:
+            Relative path string.
+        """
+        return path.lstrip("/")
+
     @property
     def id(self) -> str:
         """Unique identifier for the sandbox backend (session ID)."""
@@ -202,12 +232,11 @@ class AgentCoreBackend(BaseSandbox):
             List of FileDownloadResponse objects in same order as input paths
         """
         try:
+            relative_paths = [self._to_relative_path(p) for p in paths]
             response = self._interpreter.invoke(
-                method="readFiles", params={"paths": paths}
+                method="readFiles", params={"paths": relative_paths}
             )
-
-            # Parse structured JSON response
-            file_contents = _extract_files_from_stream(response)
+            file_contents = _extract_files_from_stream(response, paths)
 
             # Build responses in order of input paths
             return [
@@ -241,14 +270,13 @@ class AgentCoreBackend(BaseSandbox):
         file_list: list[dict[str, str]] = []
 
         for path, content in files:
+            rel_path = self._to_relative_path(path)
             try:
-                # Try to decode as text first
                 text_content = content.decode("utf-8")
-                file_list.append({"path": path, "text": text_content})
+                file_list.append({"path": rel_path, "text": text_content})
             except UnicodeDecodeError:
-                # Binary content - base64 encode
                 encoded = base64.b64encode(content).decode("ascii")
-                file_list.append({"path": path, "blob": encoded})
+                file_list.append({"path": rel_path, "blob": encoded})
 
         try:
             if file_list:

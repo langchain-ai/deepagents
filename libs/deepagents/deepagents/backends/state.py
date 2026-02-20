@@ -61,7 +61,11 @@ class StateBackend(BackendProtocol):
         self.runtime = runtime
         self._file_format = file_format
 
-    def _to_storage_format(self, file_data: FileData) -> dict[str, Any]:
+    def _prepare_for_storage(self, file_data: FileData) -> dict[str, Any]:
+        """Convert FileData to the format used for state storage.
+
+        When `file_format="v1"`, returns the legacy format.
+        """
         if self._file_format == "v1":
             return _to_legacy_file_data(file_data)
         return {**file_data}
@@ -151,7 +155,7 @@ class StateBackend(BackendProtocol):
             return WriteResult(error=f"Cannot write to {file_path} because it already exists. Read and then make an edit, or write to a new path.")
 
         new_file_data = create_file_data(content)
-        return WriteResult(path=file_path, files_update={file_path: self._to_storage_format(new_file_data)})
+        return WriteResult(path=file_path, files_update={file_path: self._prepare_for_storage(new_file_data)})
 
     def edit(
         self,
@@ -178,7 +182,7 @@ class StateBackend(BackendProtocol):
 
         new_content, occurrences = result
         new_file_data = update_file_data(file_data, new_content)
-        return EditResult(path=file_path, files_update={file_path: self._to_storage_format(new_file_data)}, occurrences=int(occurrences))
+        return EditResult(path=file_path, files_update={file_path: self._prepare_for_storage(new_file_data)}, occurrences=int(occurrences))
 
     def grep_raw(
         self,

@@ -292,6 +292,7 @@ class FilesystemBackend(BackendProtocol):
             return ReadResult(error=f"File '{file_path}' not found")
 
         try:
+            # Open with O_NOFOLLOW where available to avoid symlink traversal
             fd = os.open(resolved_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
             with os.fdopen(fd, "rb") as f:
                 raw_bytes = f.read()

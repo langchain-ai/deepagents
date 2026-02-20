@@ -485,6 +485,9 @@ class SandboxBackendProtocol(BackendProtocol):
         return await asyncio.to_thread(self.execute, command)
 
 
+_timeout_support_cache: dict[type, bool] = {}
+
+
 def _execute_accepts_timeout(backend: SandboxBackendProtocol) -> bool:
     """Check whether a backend's `execute` method accepts a `timeout` kwarg.
 
@@ -492,14 +495,20 @@ def _execute_accepts_timeout(backend: SandboxBackendProtocol) -> bool:
     backend may not accept the timeout keyword (added in `deepagents>=0.4.3`).
 
     Introspecting the signature lets callers skip the keyword rather than
-    raising a `TypeError` at runtime.
+    raising a `TypeError` at runtime. Results are cached per backend class
+    since the method signature is stable across instances.
     """
+    cls = type(backend)
+    if cls in _timeout_support_cache:
+        return _timeout_support_cache[cls]
+
     try:
         sig = inspect.signature(backend.execute)
     except (ValueError, TypeError):
-        return False
+        _timeout_support_cache[cls] = False
     else:
-        return "timeout" in sig.parameters
+        _timeout_support_cache[cls] = "timeout" in sig.parameters
+    return _timeout_support_cache[cls]
 
 
 BackendFactory: TypeAlias = Callable[[ToolRuntime], BackendProtocol]

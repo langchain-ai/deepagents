@@ -102,6 +102,22 @@ _ITERM_CURSOR_GUIDE_OFF = "\x1b]1337;HighlightCursorLine=no\x1b\\"
 _ITERM_CURSOR_GUIDE_ON = "\x1b]1337;HighlightCursorLine=yes\x1b\\"
 
 
+def _format_token_count(count: int) -> str:
+    """Format a token count into a human-readable short string.
+
+    Args:
+        count: Number of tokens.
+
+    Returns:
+        Formatted string like `"12.5K"`, `"1.2M"`, or `"500"`.
+    """
+    if count >= 1_000_000:  # noqa: PLR2004
+        return f"{count / 1_000_000:.1f}M"
+    if count >= 1000:  # noqa: PLR2004
+        return f"{count / 1000:.1f}K"
+    return str(count)
+
+
 def _write_iterm_escape(sequence: str) -> None:
     """Write an iTerm2 escape sequence to stderr.
 
@@ -1188,13 +1204,21 @@ class DeepAgentsApp(App):
             await self._mount_message(UserMessage(command))
             if self._token_tracker and self._token_tracker.current_context > 0:
                 count = self._token_tracker.current_context
-                if count >= 1000:  # noqa: SIM108, PLR2004  # Readability over ternary for count formatting
-                    formatted = f"{count / 1000:.1f}K"
+                formatted = _format_token_count(count)
+
+                model_name = settings.model_name
+                context_limit = settings.model_context_limit
+
+                if context_limit is not None:
+                    limit_str = _format_token_count(context_limit)
+                    pct = count / context_limit * 100
+                    usage = f"{formatted} / {limit_str} tokens ({pct:.0f}%)"
                 else:
-                    formatted = str(count)
-                await self._mount_message(
-                    AppMessage(f"Current context: {formatted} tokens")
-                )
+                    usage = f"{formatted} tokens used"
+
+                msg = f"{usage} · {model_name}" if model_name else usage
+
+                await self._mount_message(AppMessage(msg))
             else:
                 await self._mount_message(AppMessage("No token usage yet"))
         elif cmd == "/remember" or cmd.startswith("/remember "):

@@ -707,6 +707,67 @@ class TestRunAgentTaskImageTracker:
             assert any("Agent error: boom" in str(w._content) for w in errors)
 
 
+class TestAppFocusRestoresChatInput:
+    """Test `on_app_focus` restores chat input focus after terminal regains focus."""
+
+    @pytest.mark.asyncio
+    async def test_app_focus_restores_chat_input(self) -> None:
+        """Regaining terminal focus should re-focus the chat input."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._chat_input is not None
+            assert app._chat_input._text_area is not None
+
+            # Blur the input to simulate focus loss from webbrowser.open
+            app._chat_input._text_area.blur()
+            await pilot.pause()
+
+            app.on_app_focus()
+            await pilot.pause()
+
+            # chat_input.focus_input should have been called
+            assert app._chat_input._text_area.has_focus
+
+    @pytest.mark.asyncio
+    async def test_app_focus_skips_when_modal_open(self) -> None:
+        """Regaining focus should not steal focus from an open modal."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            # Push a modal screen
+            from deepagents_cli.widgets.thread_selector import ThreadSelectorScreen
+
+            screen = ThreadSelectorScreen(current_thread=None)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            assert isinstance(app.screen, ModalScreen)
+
+            # on_app_focus should be a no-op with modal open
+            with patch.object(app._chat_input, "focus_input") as mock_focus:
+                app.on_app_focus()
+
+            mock_focus.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_app_focus_skips_when_approval_pending(self) -> None:
+        """Regaining focus should not steal focus from the approval widget."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._chat_input is not None
+
+            # Simulate a pending approval widget
+            app._pending_approval_widget = MagicMock()
+
+            with patch.object(app._chat_input, "focus_input") as mock_focus:
+                app.on_app_focus()
+
+            mock_focus.assert_not_called()
+
+
 class TestPasteRouting:
     """Tests app-level paste routing when chat input focus lags."""
 

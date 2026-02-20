@@ -571,5 +571,108 @@ class TestVirtualizationFlow:
         assert retrieved.is_streaming is False
 
 
+class TestBulkLoad:
+    """Tests for MessageStore.bulk_load."""
+
+    def test_bulk_load_under_window_size(self):
+        """All messages should be visible when count <= WINDOW_SIZE."""
+        store = MessageStore()
+        store.WINDOW_SIZE = 50
+
+        data = [
+            MessageData(type=MessageType.USER, content=f"msg{i}", id=f"id-{i}")
+            for i in range(10)
+        ]
+        archived, visible = store.bulk_load(data)
+
+        assert len(archived) == 0
+        assert len(visible) == 10
+        assert store.total_count == 10
+        assert store.visible_count == 10
+        assert store._visible_start == 0
+        assert store._visible_end == 10
+
+    def test_bulk_load_over_window_size(self):
+        """Only the tail WINDOW_SIZE messages should be visible."""
+        store = MessageStore()
+        store.WINDOW_SIZE = 5
+
+        data = [
+            MessageData(type=MessageType.USER, content=f"msg{i}", id=f"id-{i}")
+            for i in range(20)
+        ]
+        archived, visible = store.bulk_load(data)
+
+        assert len(archived) == 15
+        assert len(visible) == 5
+        assert store.total_count == 20
+        assert store.visible_count == 5
+        assert store._visible_start == 15
+        assert store._visible_end == 20
+        assert visible[0].id == "id-15"
+        assert visible[-1].id == "id-19"
+
+    def test_bulk_load_exact_window_size(self):
+        """Edge case: count == WINDOW_SIZE means all visible, none archived."""
+        store = MessageStore()
+        store.WINDOW_SIZE = 10
+
+        data = [
+            MessageData(type=MessageType.USER, content=f"msg{i}", id=f"id-{i}")
+            for i in range(10)
+        ]
+        archived, visible = store.bulk_load(data)
+
+        assert len(archived) == 0
+        assert len(visible) == 10
+        assert store._visible_start == 0
+        assert store._visible_end == 10
+
+    def test_bulk_load_then_hydrate(self):
+        """Archived messages should be accessible via get_messages_to_hydrate."""
+        store = MessageStore()
+        store.WINDOW_SIZE = 5
+        store.HYDRATE_BUFFER = 3
+
+        data = [
+            MessageData(type=MessageType.USER, content=f"msg{i}", id=f"id-{i}")
+            for i in range(20)
+        ]
+        store.bulk_load(data)
+
+        assert store.has_messages_above
+        to_hydrate = store.get_messages_to_hydrate()
+        assert len(to_hydrate) == 3
+        assert to_hydrate[0].id == "id-12"
+        assert to_hydrate[1].id == "id-13"
+        assert to_hydrate[2].id == "id-14"
+
+    def test_bulk_load_empty(self):
+        """Bulk loading an empty list should be a no-op."""
+        store = MessageStore()
+        archived, visible = store.bulk_load([])
+
+        assert len(archived) == 0
+        assert len(visible) == 0
+        assert store.total_count == 0
+
+    def test_bulk_load_preserves_existing_messages(self):
+        """Bulk load should extend, not replace, existing messages."""
+        store = MessageStore()
+        store.WINDOW_SIZE = 5
+
+        store.append(MessageData(type=MessageType.USER, content="pre", id="pre-0"))
+        data = [
+            MessageData(type=MessageType.USER, content=f"msg{i}", id=f"id-{i}")
+            for i in range(6)
+        ]
+        archived, _visible = store.bulk_load(data)
+
+        assert store.total_count == 7
+        assert store.visible_count == 5
+        assert store._visible_start == 2
+        assert archived[0].id == "pre-0"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

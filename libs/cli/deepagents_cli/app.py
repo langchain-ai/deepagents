@@ -1374,7 +1374,9 @@ class DeepAgentsApp(App):
 
             to_summarize, to_keep = middleware._partition_messages(effective, cutoff)
 
-            tokens_before = count_tokens_approximately(effective)
+            tokens_summarized = count_tokens_approximately(to_summarize)
+            tokens_kept = count_tokens_approximately(to_keep)
+            tokens_before = tokens_summarized + tokens_kept
 
             # Generate summary first so no side effects occur if the LLM fails
             summary = await middleware._acreate_summary(to_summarize)
@@ -1399,7 +1401,8 @@ class DeepAgentsApp(App):
 
             # Compute token savings and append to the summary message so the
             # model is aware of how much context was reclaimed.
-            tokens_after = count_tokens_approximately([summary_msg, *to_keep])
+            tokens_summary = count_tokens_approximately([summary_msg])
+            tokens_after = tokens_summary + tokens_kept
             before = _format_token_count(tokens_before)
             after = _format_token_count(tokens_after)
             pct = (
@@ -1407,11 +1410,16 @@ class DeepAgentsApp(App):
                 if tokens_before > 0
                 else 0
             )
+            summarized_before = _format_token_count(tokens_summarized)
+            summarized_after = _format_token_count(tokens_summary)
             savings_note = (
                 f"\n\n{len(to_summarize)} messages were compacted "
-                f"({before} \u2192 {after} tokens, {pct}% decrease)."
+                f"({summarized_before} \u2192 {summarized_after} tokens). "
+                f"Total context: {before} \u2192 {after} tokens "
+                f"({pct}% decrease), "
+                f"{len(to_keep)} messages unchanged."
             )
-            summary_msg.content += savings_note
+            summary_msg.content += savings_note  # type: ignore[operator]
 
             state_cutoff = middleware._compute_state_cutoff(event, cutoff)
 
@@ -1426,7 +1434,10 @@ class DeepAgentsApp(App):
             await self._mount_message(
                 AppMessage(
                     f"Compacted {len(to_summarize)} messages "
-                    f"({before} \u2192 {after} tokens, {pct}% decrease)"
+                    f"({summarized_before} \u2192 {summarized_after} tokens)\n"
+                    f"  total context: {before} \u2192 {after} "
+                    f"({pct}% decrease) "
+                    f"\u00b7 {len(to_keep)} messages unchanged"
                 )
             )
 

@@ -2,6 +2,7 @@
 
 from deepagents.backends.composite import CompositeBackend
 from deepagents.backends.filesystem import FilesystemBackend
+from deepagents.backends.langsmith import LangSmithBackend, LangSmithProvider
 from deepagents.backends.local_shell import LocalShellBackend
 from deepagents.backends.protocol import BackendProtocol
 from deepagents.backends.state import StateBackend
@@ -11,6 +12,8 @@ __all__ = [
     "BackendProtocol",
     "CompositeBackend",
     "FilesystemBackend",
+    "LangSmithBackend",
+    "LangSmithProvider",
     "LocalShellBackend",
     "StateBackend",
     "StoreBackend",

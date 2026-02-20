@@ -1139,17 +1139,13 @@ def _get_default_model_spec() -> str:
         return config.recent_model
 
     if settings.has_openai:
-        model = os.environ.get("OPENAI_MODEL", "gpt-5.2")
-        return f"openai:{model}"
+        return "openai:gpt-5.2"
     if settings.has_anthropic:
-        model = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-5-20250929")
-        return f"anthropic:{model}"
+        return "anthropic:claude-sonnet-4-5-20250929"
     if settings.has_google:
-        model = os.environ.get("GOOGLE_MODEL", "gemini-3.1-pro-preview")
-        return f"google_genai:{model}"
+        return "google_genai:gemini-3.1-pro-preview"
     if settings.has_vertex_ai:
-        model = os.environ.get("VERTEX_AI_MODEL", "gemini-3.1-pro-preview")
-        return f"google_vertexai:{model}"
+        return "google_vertexai:gemini-3.1-pro-preview"
 
     msg = (
         "No credentials configured. Please set one of: "

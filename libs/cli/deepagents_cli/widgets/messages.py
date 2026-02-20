@@ -97,7 +97,6 @@ _TOOLS_WITH_HEADER_INFO: set[str] = {
     # Web tools
     "web_search",
     "fetch_url",
-    "http_request",
     # Agent tools
     "task",
     "write_todos",
@@ -689,7 +688,6 @@ class ToolCallMessage(Vertical):
             "execute": self._format_shell_output,
             "web_search": self._format_web_output,
             "fetch_url": self._format_web_output,
-            "http_request": self._format_web_output,
             "task": self._format_task_output,
         }
 
@@ -956,7 +954,7 @@ class ToolCallMessage(Vertical):
     def _format_web_output(
         self, output: str, *, is_preview: bool = False
     ) -> FormattedOutput:
-        """Format web_search/fetch_url/http_request output.
+        """Format web_search/fetch_url output.
 
         Returns:
             FormattedOutput with web response and optional truncation info.
@@ -994,7 +992,7 @@ class ToolCallMessage(Vertical):
                 data.get("results", []), is_preview=is_preview
             )
 
-        # Handle fetch_url/http_request response
+        # Handle fetch_url response
         if "markdown_content" in data:
             lines = data["markdown_content"].split("\n")
             return self._format_lines_output(lines, is_preview=is_preview)

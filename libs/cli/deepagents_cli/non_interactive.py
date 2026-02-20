@@ -46,7 +46,7 @@ from deepagents_cli.config import (
 from deepagents_cli.file_ops import FileOpTracker
 from deepagents_cli.model_config import ModelConfigError
 from deepagents_cli.sessions import generate_thread_id, get_checkpointer
-from deepagents_cli.tools import fetch_url, http_request, web_search
+from deepagents_cli.tools import fetch_url, web_search
 
 if TYPE_CHECKING:
     from langchain_core.runnables import RunnableConfig
@@ -627,7 +627,7 @@ async def run_non_interactive(
 
     try:
         async with get_checkpointer() as checkpointer:
-            tools = [http_request, fetch_url]
+            tools = [fetch_url]
             if settings.has_tavily:
                 tools.append(web_search)
 

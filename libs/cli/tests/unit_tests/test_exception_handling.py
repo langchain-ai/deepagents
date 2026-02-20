@@ -13,8 +13,6 @@ import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
-import requests
 from tavily import BadRequestError, InvalidAPIKeyError, UsageLimitExceededError
 from tavily.errors import TimeoutError as TavilyTimeoutError
 
@@ -28,47 +26,11 @@ from deepagents_cli.image_utils import (
     _get_macos_clipboard_image,
     logger as image_utils_logger,
 )
-from deepagents_cli.tools import http_request, web_search
+from deepagents_cli.tools import web_search
 
 
 class TestToolsExceptionHandling:
     """Test exception handling in CLI tools."""
-
-    def test_http_request_handles_json_decode_error(self):
-        """Test that http_request catches JSONDecodeError properly."""
-        # Mock a response that returns invalid JSON
-        with patch("requests.request") as mock_request:
-            mock_response = MagicMock()
-            mock_response.status_code = 200
-            mock_response.headers = {}
-            mock_response.url = "http://example.com"
-            mock_response.text = "not valid json"
-            mock_response.json.side_effect = ValueError("Invalid JSON")
-            mock_request.return_value = mock_response
-
-            result = http_request("http://example.com")
-
-        # Should succeed and return text content
-        assert result["success"] is True
-        assert result["content"] == "not valid json"
-
-    def test_http_request_handles_requests_json_decode_error(self):
-        """Test that http_request also catches requests.exceptions.JSONDecodeError."""
-        with patch("requests.request") as mock_request:
-            mock_response = MagicMock()
-            mock_response.status_code = 200
-            mock_response.headers = {}
-            mock_response.url = "http://example.com"
-            mock_response.text = "plain text response"
-            mock_response.json.side_effect = requests.exceptions.JSONDecodeError(
-                "Expecting value", "doc", 0
-            )
-            mock_request.return_value = mock_response
-
-            result = http_request("http://example.com")
-
-        assert result["success"] is True
-        assert result["content"] == "plain text response"
 
     def test_web_search_handles_tavily_usage_limit_error(self):
         """Test that web_search catches Tavily UsageLimitExceededError."""

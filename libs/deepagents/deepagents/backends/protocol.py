@@ -7,12 +7,17 @@ database, etc.) and provide a uniform interface for file operations.
 
 import abc
 import asyncio
+import inspect
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any, Literal, NotRequired, TypeAlias
 
 from langchain.tools import ToolRuntime
 from typing_extensions import TypedDict
+
+logger = logging.getLogger(__name__)
 
 FileOperationError = Literal[
     "file_not_found",  # Download: file doesn't exist
@@ -479,7 +484,33 @@ class SandboxBackendProtocol(BackendProtocol):
         timeout: int | None = None,  # noqa: ASYNC109
     ) -> ExecuteResponse:
         """Async version of execute."""
-        return await asyncio.to_thread(self.execute, command, timeout=timeout)
+        # The middleware layer validates timeout support before calling, so
+        # this guard only protects direct callers bypassing the middleware.
+        if timeout is not None and execute_accepts_timeout(type(self)):
+            return await asyncio.to_thread(self.execute, command, timeout=timeout)
+        return await asyncio.to_thread(self.execute, command)
+
+
+@lru_cache(maxsize=128)
+def execute_accepts_timeout(cls: type[SandboxBackendProtocol]) -> bool:
+    """Check whether a backend class's `execute` accepts a `timeout` kwarg.
+
+    Older backend packages didn't lower-bound their SDK dependency, so they
+    may not accept the `timeout` keyword added to `SandboxBackendProtocol`.
+
+    Results are cached per class to avoid repeated introspection overhead.
+    """
+    try:
+        sig = inspect.signature(cls.execute)
+    except (ValueError, TypeError):
+        logger.warning(
+            "Could not inspect signature of %s.execute; assuming timeout is not supported. This may indicate a backend packaging issue.",
+            cls.__qualname__,
+            exc_info=True,
+        )
+        return False
+    else:
+        return "timeout" in sig.parameters
 
 
 BackendFactory: TypeAlias = Callable[[ToolRuntime], BackendProtocol]

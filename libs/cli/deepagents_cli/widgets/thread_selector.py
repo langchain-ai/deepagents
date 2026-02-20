@@ -28,6 +28,7 @@ from deepagents_cli.config import (
     build_langsmith_thread_url,
     get_glyphs,
 )
+from deepagents_cli.widgets._links import open_style_link
 
 logger = logging.getLogger(__name__)
 
@@ -534,6 +535,15 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         if self._threads:
             thread_id = self._threads[self._selected_index]["thread_id"]
             self.dismiss(thread_id)
+
+    def on_click(self, event: Click) -> None:  # noqa: PLR6301  # Textual event handler
+        """Open Rich-style hyperlinks on single click.
+
+        `ThreadOption` clicks are already stopped before bubbling here, so this
+        only fires for non-option widgets such as the title. Non-link clicks
+        bubble normally.
+        """
+        open_style_link(event)
 
     def on_thread_option_clicked(self, event: ThreadOption.Clicked) -> None:
         """Handle click on a thread option.

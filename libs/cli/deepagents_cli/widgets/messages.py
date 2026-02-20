@@ -25,6 +25,7 @@ from deepagents_cli.config import (
 )
 from deepagents_cli.input import EMAIL_PREFIX_PATTERN, INPUT_HIGHLIGHT_PATTERN
 from deepagents_cli.tool_display import format_tool_display
+from deepagents_cli.widgets._links import open_style_link
 from deepagents_cli.widgets.diff import format_diff_textual
 
 if TYPE_CHECKING:
@@ -1278,6 +1279,12 @@ class ErrorMessage(Static):
 class AppMessage(Static):
     """Widget displaying an app message."""
 
+    # Disable Textual's auto_links to prevent a flicker cycle: Style.__add__
+    # calls .copy() for linked styles, generating a fresh random _link_id on
+    # each render. This means highlight_link_id never stabilizes, causing an
+    # infinite hover-refresh loop.
+    auto_links = False
+
     DEFAULT_CSS = """
     AppMessage {
         height: auto;
@@ -1302,3 +1309,7 @@ class AppMessage(Static):
             message if isinstance(message, Text) else Text(message, style="dim italic")
         )
         super().__init__(content, **kwargs)
+
+    def on_click(self, event: Click) -> None:  # noqa: PLR6301  # Textual event handler
+        """Open Rich-style hyperlinks on single click."""
+        open_style_link(event)

@@ -235,9 +235,9 @@ jobs:
                 PR_BODY=$(echo "$PR_DATA" | jq -r '.body // empty')
 
                 # Skip bots and automated accounts
-                EXCLUDED_USERS="github-actions[bot] dependabot[bot] release-please[bot]"
-                if echo "$EXCLUDED_USERS" | grep -qwF "$GH_USER"; then
-                  echo "Skipping excluded user: $GH_USER (PR #$PR_NUM)"
+                IS_BOT=$(echo "$PR_DATA" | jq -r '.author.is_bot // false')
+                if [ "$IS_BOT" = "true" ]; then
+                  echo "Skipping bot account: $GH_USER (PR #$PR_NUM)"
                   continue
                 fi
 

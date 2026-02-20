@@ -79,6 +79,19 @@ deepagents
 
 The CLI adds conversation resume, web search, remote sandboxes (Modal, Runloop, Daytona), persistent memory, custom skills, and human-in-the-loop approval. See the [CLI documentation](https://docs.langchain.com/oss/python/deepagents/cli) for more.  Using the Deep Agents CLI requires setting an API Key before running (ex: `ANTHROPIC_API_KEY`).
 
+### Common CLI Commands
+
+Once the CLI is running, you can use slash commands to control the session:
+
+- `/help` — Show available commands and shortcuts  
+- `/clear` — Clear the current conversation  
+- `/tokens` — Show the current context usage and model context window size  
+- `/threads` — Switch or select conversation threads  
+- `/trace` — Open the current trace in LangSmith (if configured)  
+- `/quit` — Exit the CLI  
+
+These commands help you manage long-running sessions, inspect token usage, and navigate conversations efficiently.
+
 ## LangGraph Native
 
 `create_deep_agent` returns a compiled [LangGraph](https://docs.langchain.com/oss/python/langgraph/overview) graph. Use it with streaming, Studio, checkpointers, or any LangGraph feature.

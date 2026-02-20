@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import subprocess
+import warnings
 from datetime import datetime
 from pathlib import Path
 
@@ -61,18 +62,25 @@ class FilesystemBackend(BackendProtocol):
 
         1. Enable Human-in-the-Loop (HITL) middleware to review sensitive operations
         2. Exclude secrets from accessible filesystem paths (especially in CI/CD)
-        3. Use `SandboxBackend` for production environments requiring filesystem
-            interaction
-        4. **Always** use `virtual_mode=True` with `root_dir` to enable path-based
-            access restrictions (blocks `..`, `~`, and absolute paths outside root).
-            Note that the default (`virtual_mode=False`) provides no security even with
-            `root_dir` set.
+        3. For production environments, prefer `StateBackend`, `StoreBackend` or `SandboxBackend`
+
+        In general, we expect this backend to be used with Human-in-the-Loop (HITL)
+        middleware, or within a properly sandboxed environment if you need to run
+        untrusted workloads.
+
+        !!! note
+
+            `virtual_mode=True` is primarily for virtual path semantics (for example with
+            `CompositeBackend`). It can also provide path-based guardrails by blocking
+            traversal (`..`, `~`) and absolute paths outside `root_dir`, but it does not
+            provide sandboxing or process isolation. The default (`virtual_mode=False`)
+            provides no security even with `root_dir` set.
     """
 
     def __init__(
         self,
         root_dir: str | Path | None = None,
-        virtual_mode: bool = False,  # noqa: FBT001, FBT002  # Boolean arg is part of BackendProtocol API
+        virtual_mode: bool | None = None,  # noqa: FBT001
         max_file_size_mb: int = 10,
     ) -> None:
         """Initialize filesystem backend.
@@ -80,28 +88,28 @@ class FilesystemBackend(BackendProtocol):
         Args:
             root_dir: Optional root directory for file operations.
 
-                - If not provided, defaults to the current working directory.
-                - When `virtual_mode=False` (default): Only affects relative path
-                    resolution. Provides **no security** - agents can access any file
-                    using absolute paths or `..` sequences.
-                - When `virtual_mode=True`: All paths are restricted to this
-                    directory with traversal protection enabled.
+                Defaults to the current working directory.
 
-            virtual_mode: Enable path-based access restrictions.
+                - When `virtual_mode=False` (default): Only affects relative path resolution.
+                - When `virtual_mode=True`: Acts as a virtual root for filesystem operations.
+
+            virtual_mode: Enable virtual path mode.
+
+                **Primary use case:** stable, backend-independent path semantics when
+                used with `CompositeBackend`, which strips route prefixes and forwards
+                normalized paths to the routed backend.
 
                 When `True`, all paths are treated as virtual paths anchored to
                 `root_dir`. Path traversal (`..`, `~`) is blocked and all resolved paths
                 are verified to remain within `root_dir`.
 
-                When `False` (default), **no security is provided**:
+                When `False` (default), absolute paths are used as-is and relative paths
+                are resolved under `root_dir`. This provides no security against an agent
+                choosing paths outside `root_dir`.
 
                 - Absolute paths (e.g., `/etc/passwd`) bypass `root_dir` entirely
                 - Relative paths with `..` can escape `root_dir`
                 - Agents have unrestricted filesystem access
-
-                **Security note:** `virtual_mode=True` provides path-based access
-                control, not process isolation. It restricts which files can be
-                accessed via paths, but does not sandbox the Python process itself.
 
             max_file_size_mb: Maximum file size in megabytes for operations like
                 grep's Python fallback search.
@@ -109,6 +117,18 @@ class FilesystemBackend(BackendProtocol):
                 Files exceeding this limit are skipped during search. Defaults to 10 MB.
         """
         self.cwd = Path(root_dir).resolve() if root_dir else Path.cwd()
+        if virtual_mode is None:
+            warnings.warn(
+                "FilesystemBackend virtual_mode default will change in deepagents 0.5.0; "
+                "please specify virtual_mode explicitly. "
+                "Note: virtual_mode is for virtual path semantics (e.g., CompositeBackend routing) and optional path-based guardrails; "
+                "it does not provide sandboxing or process isolation. "
+                "Security note: leaving virtual_mode=False allows absolute paths and '..' to bypass root_dir. "
+                "Consult the API reference for details.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            virtual_mode = False
         self.virtual_mode = virtual_mode
         self.max_file_size_bytes = max_file_size_mb * 1024 * 1024
 

@@ -823,6 +823,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         ) -> str:
             """Synchronous wrapper for grep tool."""
             resolved_backend = self._get_backend(runtime)
+            if path is not None:
+                try:
+                    path = _validate_path(path)
+                except ValueError as e:
+                    return f"Error: {e}"
             raw = resolved_backend.grep_raw(pattern, path=path, glob=glob)
             if isinstance(raw, str):
                 return raw
@@ -841,6 +846,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         ) -> str:
             """Asynchronous wrapper for grep tool."""
             resolved_backend = self._get_backend(runtime)
+            if path is not None:
+                try:
+                    path = _validate_path(path)
+                except ValueError as e:
+                    return f"Error: {e}"
             raw = await resolved_backend.agrep_raw(pattern, path=path, glob=glob)
             if isinstance(raw, str):
                 return raw

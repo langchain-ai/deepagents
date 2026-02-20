@@ -15,10 +15,9 @@ from typing import Any, Literal, overload
 
 import wcmatch.glob as wcglob
 
-from deepagents.backends.protocol import FileData, FileInfo as _FileInfo, GrepMatch as _GrepMatch
+from deepagents.backends.protocol import FileData, FileInfo as _FileInfo, GrepMatch as _GrepMatch, ReadResult
 
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
-MAX_LINE_LENGTH = 5000
 LINE_NUMBER_WIDTH = 6
 TOOL_RESULT_TOKEN_LIMIT = 20000  # Same threshold as eviction
 TRUNCATION_GUIDANCE = "... [results truncated, try being more specific with your parameters]"
@@ -58,52 +57,6 @@ def sanitize_tool_call_id(tool_call_id: str) -> str:
     Replaces dangerous characters (., /, \) with underscores.
     """
     return tool_call_id.replace(".", "_").replace("/", "_").replace("\\", "_")
-
-
-def format_content_with_line_numbers(
-    content: str | list[str],
-    start_line: int = 1,
-) -> str:
-    """Format file content with line numbers (cat -n style).
-
-    Chunks lines longer than MAX_LINE_LENGTH with continuation markers (e.g., 5.1, 5.2).
-
-    Args:
-        content: File content as string or list of lines
-        start_line: Starting line number (default: 1)
-
-    Returns:
-        Formatted content with line numbers and continuation markers
-    """
-    if isinstance(content, str):
-        lines = content.split("\n")
-        if lines and lines[-1] == "":
-            lines = lines[:-1]
-    else:
-        lines = content
-
-    result_lines = []
-    for i, line in enumerate(lines):
-        line_num = i + start_line
-
-        if len(line) <= MAX_LINE_LENGTH:
-            result_lines.append(f"{line_num:{LINE_NUMBER_WIDTH}d}\t{line}")
-        else:
-            # Split long line into chunks with continuation markers
-            num_chunks = (len(line) + MAX_LINE_LENGTH - 1) // MAX_LINE_LENGTH
-            for chunk_idx in range(num_chunks):
-                start = chunk_idx * MAX_LINE_LENGTH
-                end = min(start + MAX_LINE_LENGTH, len(line))
-                chunk = line[start:end]
-                if chunk_idx == 0:
-                    # First chunk: use normal line number
-                    result_lines.append(f"{line_num:{LINE_NUMBER_WIDTH}d}\t{chunk}")
-                else:
-                    # Continuation chunks: use decimal notation (e.g., 5.1, 5.2)
-                    continuation_marker = f"{line_num}.{chunk_idx}"
-                    result_lines.append(f"{continuation_marker:>{LINE_NUMBER_WIDTH}}\t{chunk}")
-
-    return "\n".join(result_lines)
 
 
 def check_empty_content(content: str) -> str | None:
@@ -200,20 +153,78 @@ def update_file_data(file_data: FileData, content: str) -> FileData:
     }
 
 
-def _paginate_content(content: str, offset: int = 0, limit: int = 2000) -> str:
-    """Apply line-based pagination and line-number formatting to raw UTF-8 content.
+def _apply_read_pagination(result: ReadResult, offset: int, limit: int) -> ReadResult:
+    """Apply line-based offset/limit pagination to a ReadResult.
 
-    Only appropriate for UTF-8 text content (splits on newlines).
-    Reuses format_content_with_line_numbers for the actual formatting.
+    Only paginates UTF-8 text content (splits on newlines).  Binary
+    (base64) content is returned unchanged.
 
     Args:
-        content: Raw UTF-8 text content.
-        offset: Line offset (0-indexed). Default: 0.
-        limit: Maximum number of lines. Default: 2000.
+        result: ReadResult from a backend read operation.
+        offset: Line offset (0-indexed).
+        limit: Maximum number of lines to return.
 
     Returns:
-        Formatted content with line numbers, or error/warning message.
+        ReadResult with paginated content, or original result for
+        binary/error cases.
     """
+    if result.error or result.file_data is None:
+        return result
+
+    encoding = result.file_data.get("encoding", "utf-8")
+    if encoding != "utf-8":
+        return result  # No pagination for binary content
+
+    content = _normalize_content(result.file_data)
+
+    if not content or content.strip() == "":
+        return result  # Empty file, return as-is
+
+    lines = content.splitlines()
+
+    if offset >= len(lines):
+        return ReadResult(error=f"Line offset {offset} exceeds file length ({len(lines)} lines)")
+
+    end = min(offset + limit, len(lines))
+    sliced = lines[offset:end]
+    sliced_content = "\n".join(sliced)
+
+    sliced_file_data: FileData = {
+        "content": sliced_content,
+        "encoding": result.file_data.get("encoding", "utf-8"),
+        "created_at": result.file_data["created_at"],
+        "modified_at": result.file_data["modified_at"],
+    }
+    return ReadResult(file_data=sliced_file_data)
+
+
+def format_read_response(
+    file_data: FileData,
+    offset: int,
+    limit: int,
+) -> str:
+    """Format file data for read response with line numbers.
+
+    .. deprecated::
+        Formatting has moved to the tool layer
+        (``middleware.filesystem._paginate_content``).
+        This function will be removed in a future version.
+
+    Args:
+        file_data: FileData dict
+        offset: Line offset (0-indexed)
+        limit: Maximum number of lines
+
+    Returns:
+        Formatted content or error message
+    """
+    warnings.warn(
+        "format_read_response is deprecated. Use middleware.filesystem._paginate_content instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    content = file_data_to_string(file_data)
+
     empty_msg = check_empty_content(content)
     if empty_msg:
         return empty_msg
@@ -225,31 +236,13 @@ def _paginate_content(content: str, offset: int = 0, limit: int = 2000) -> str:
     if start_idx >= len(lines):
         return f"Error: Line offset {offset} exceeds file length ({len(lines)} lines)"
 
-    selected_lines = lines[start_idx:end_idx]
-    return format_content_with_line_numbers(selected_lines, start_line=start_idx + 1)
-
-
-def format_read_response(
-    file_data: FileData,
-    offset: int,
-    limit: int,
-) -> str:
-    """Format file data for read response with line numbers.
-
-    .. deprecated::
-        Use :func:`_paginate_content` instead. This function will be removed
-        in a future version.
-
-    Args:
-        file_data: FileData dict
-        offset: Line offset (0-indexed)
-        limit: Maximum number of lines
-
-    Returns:
-        Formatted content or error message
-    """
-    content = file_data_to_string(file_data)
-    return _paginate_content(content, offset, limit)
+    # Inline simple line-number formatting for backwards compat
+    selected = lines[start_idx:end_idx]
+    result_lines = []
+    for i, line in enumerate(selected):
+        line_num = i + start_idx + 1
+        result_lines.append(f"{line_num:{LINE_NUMBER_WIDTH}d}\t{line}")
+    return "\n".join(result_lines)
 
 
 def perform_string_replacement(

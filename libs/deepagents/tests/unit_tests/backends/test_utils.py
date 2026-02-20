@@ -7,9 +7,9 @@ import pytest
 from deepagents.backends.utils import (
     EMPTY_CONTENT_WARNING,
     _glob_search_files,
-    _paginate_content,
     validate_path,
 )
+from deepagents.middleware.filesystem import _paginate_content
 
 
 class TestValidatePath:

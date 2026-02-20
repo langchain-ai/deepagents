@@ -22,6 +22,7 @@ from deepagents.backends.protocol import (
     WriteResult,
 )
 from deepagents.backends.utils import (
+    _apply_read_pagination,
     create_file_data,
     perform_string_replacement,
 )
@@ -271,14 +272,16 @@ class FilesystemBackend(BackendProtocol):
         results.sort(key=lambda x: x.get("path", ""))
         return results
 
-    def read(self, file_path: str) -> ReadResult:
-        """Read raw file data.
+    def read(self, file_path: str, offset: int = 0, limit: int = 2000) -> ReadResult:
+        """Read file data with optional line-based pagination.
 
         Reads the file in binary mode, attempts UTF-8 decode, and falls back
         to base64 encoding for binary files.
 
         Args:
             file_path: Absolute or relative file path.
+            offset: Line offset (0-indexed) for UTF-8 text files.
+            limit: Maximum number of lines for UTF-8 text files.
 
         Returns:
             ReadResult with file_data on success, or error on failure.
@@ -300,7 +303,8 @@ class FilesystemBackend(BackendProtocol):
                 content = base64.standard_b64encode(raw_bytes).decode("ascii")
                 encoding = "base64"
 
-            return ReadResult(file_data=create_file_data(content, encoding=encoding))
+            result = ReadResult(file_data=create_file_data(content, encoding=encoding))
+            return _apply_read_pagination(result, offset, limit)
         except OSError as e:
             return ReadResult(error=f"Error reading file '{file_path}': {e}")
 

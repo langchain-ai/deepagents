@@ -242,33 +242,38 @@ class BackendProtocol(abc.ABC):  # noqa: B024
     def read(
         self,
         file_path: str,
+        offset: int = 0,
+        limit: int = 2000,
     ) -> "ReadResult":
         """Read raw file data.
 
         Returns a ``ReadResult`` containing the file's ``FileData`` on success
-        (including encoding info), or an error message on failure.  Pagination
-        and line-number formatting are handled by the tool layer.
+        (including encoding info), or an error message on failure.
+
+        The ``offset`` and ``limit`` parameters are accepted for backwards
+        compatibility but pagination and line-number formatting are handled
+        by the tool layer.  Backend implementations may ignore these values.
 
         Args:
             file_path: Absolute path to the file to read. Must start with '/'.
+            offset: Line offset (0-indexed). Accepted for compatibility;
+                pagination is handled by the tool layer.
+            limit: Maximum number of lines. Accepted for compatibility;
+                pagination is handled by the tool layer.
 
         Returns:
             ReadResult with ``file_data`` on success or ``error`` on failure.
-
-        .. deprecated::
-            ``offset`` and ``limit`` parameters have been removed from the
-            backend protocol.  Third-party integrations that previously passed
-            these arguments should update to call ``read(file_path)`` and
-            handle pagination in the tool / presentation layer instead.
         """
         raise NotImplementedError
 
     async def aread(
         self,
         file_path: str,
+        offset: int = 0,
+        limit: int = 2000,
     ) -> "ReadResult":
         """Async version of read."""
-        return await asyncio.to_thread(self.read, file_path)
+        return await asyncio.to_thread(self.read, file_path, offset, limit)
 
     def grep_raw(
         self,

@@ -25,7 +25,7 @@ from deepagents.backends.protocol import (
     SandboxBackendProtocol,
     WriteResult,
 )
-from deepagents.backends.utils import create_file_data
+from deepagents.backends.utils import _apply_read_pagination, create_file_data
 
 _GLOB_COMMAND_TEMPLATE = """python3 -c "
 import glob
@@ -241,8 +241,8 @@ except PermissionError:
 
         return file_infos
 
-    def read(self, file_path: str) -> ReadResult:
-        """Read raw file data using a single shell command."""
+    def read(self, file_path: str, offset: int = 0, limit: int = 2000) -> ReadResult:
+        """Read file data with optional line-based pagination."""
         cmd = _READ_COMMAND_TEMPLATE.format(file_path=file_path)
         result = self.execute(cmd)
 
@@ -256,7 +256,8 @@ except PermissionError:
         if "error" in data:
             return ReadResult(error=data["error"])
 
-        return ReadResult(file_data=create_file_data(data["content"], encoding=data["encoding"]))
+        read_result = ReadResult(file_data=create_file_data(data["content"], encoding=data["encoding"]))
+        return _apply_read_pagination(read_result, offset, limit)
 
     def write(
         self,

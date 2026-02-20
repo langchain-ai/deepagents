@@ -33,10 +33,9 @@ from deepagents.backends.protocol import (
     WriteResult,
 )
 from deepagents.backends.utils import (
-    _paginate_content,
+    check_empty_content,
     create_file_data,
     file_data_to_string,
-    format_content_with_line_numbers,
     format_grep_matches,
     sanitize_tool_call_id,
     truncate_if_too_long,
@@ -44,7 +43,7 @@ from deepagents.backends.utils import (
 )
 from deepagents.middleware._utils import append_to_system_message
 
-EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
+MAX_LINE_LENGTH = 5000
 LINE_NUMBER_WIDTH = 6
 DEFAULT_READ_OFFSET = 0
 DEFAULT_READ_LIMIT = 100
@@ -72,6 +71,80 @@ READ_FILE_TRUNCATION_MSG = (
 # Using 4 chars per token as a conservative approximation (actual ratio varies by content)
 # This errs on the high side to avoid premature eviction of content that might fit
 NUM_CHARS_PER_TOKEN = 4
+
+
+def format_content_with_line_numbers(
+    content: str | list[str],
+    start_line: int = 1,
+) -> str:
+    """Format file content with line numbers (cat -n style).
+
+    Chunks lines longer than MAX_LINE_LENGTH with continuation markers (e.g., 5.1, 5.2).
+
+    Args:
+        content: File content as string or list of lines
+        start_line: Starting line number (default: 1)
+
+    Returns:
+        Formatted content with line numbers and continuation markers
+    """
+    if isinstance(content, str):
+        lines = content.split("\n")
+        if lines and lines[-1] == "":
+            lines = lines[:-1]
+    else:
+        lines = content
+
+    result_lines = []
+    for i, line in enumerate(lines):
+        line_num = i + start_line
+
+        if len(line) <= MAX_LINE_LENGTH:
+            result_lines.append(f"{line_num:{LINE_NUMBER_WIDTH}d}\t{line}")
+        else:
+            # Split long line into chunks with continuation markers
+            num_chunks = (len(line) + MAX_LINE_LENGTH - 1) // MAX_LINE_LENGTH
+            for chunk_idx in range(num_chunks):
+                start = chunk_idx * MAX_LINE_LENGTH
+                end = min(start + MAX_LINE_LENGTH, len(line))
+                chunk = line[start:end]
+                if chunk_idx == 0:
+                    # First chunk: use normal line number
+                    result_lines.append(f"{line_num:{LINE_NUMBER_WIDTH}d}\t{chunk}")
+                else:
+                    # Continuation chunks: use decimal notation (e.g., 5.1, 5.2)
+                    continuation_marker = f"{line_num}.{chunk_idx}"
+                    result_lines.append(f"{continuation_marker:>{LINE_NUMBER_WIDTH}}\t{chunk}")
+
+    return "\n".join(result_lines)
+
+
+def _paginate_content(content: str, offset: int = 0, limit: int = 2000) -> str:
+    """Apply line-based pagination and line-number formatting to raw UTF-8 content.
+
+    Only appropriate for UTF-8 text content (splits on newlines).
+
+    Args:
+        content: Raw UTF-8 text content.
+        offset: Line offset (0-indexed). Default: 0.
+        limit: Maximum number of lines. Default: 2000.
+
+    Returns:
+        Formatted content with line numbers, or error/warning message.
+    """
+    empty_msg = check_empty_content(content)
+    if empty_msg:
+        return empty_msg
+
+    lines = content.splitlines()
+    start_idx = offset
+    end_idx = min(start_idx + limit, len(lines))
+
+    if start_idx >= len(lines):
+        return f"Error: Line offset {offset} exceeds file length ({len(lines)} lines)"
+
+    selected_lines = lines[start_idx:end_idx]
+    return format_content_with_line_numbers(selected_lines, start_line=start_idx + 1)
 
 
 def _coerce_read_result(raw: ReadResult | str) -> ReadResult:
@@ -157,6 +230,7 @@ Usage:
   - Read more sections: read_file(path, offset=100, limit=200) for next 200 lines
   - Only omit limit (read full file) when necessary for editing
 - Specify offset and limit: read_file(path, offset=0, limit=100) reads first 100 lines
+- `offset` and `limit` are only supported for text files — they are ignored for binary/image files
 - Results are returned using cat -n format, with line numbers starting at 1
 - Lines longer than 5,000 characters will be split into multiple lines with continuation markers (e.g., 5.1, 5.2, etc.). When you specify a limit, these continuation lines count towards the limit.
 - You have the capability to call multiple tools in a single response. It is always better to speculatively read multiple files as a batch that are potentially useful.
@@ -535,8 +609,12 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         def sync_read_file(
             file_path: Annotated[str, "Absolute path to the file to read. Must be absolute, not relative."],
             runtime: ToolRuntime[None, FilesystemState],
-            offset: Annotated[int, "Line number to start reading from (0-indexed). Use for pagination of large files."] = DEFAULT_READ_OFFSET,
-            limit: Annotated[int, "Maximum number of lines to read. Use for pagination of large files."] = DEFAULT_READ_LIMIT,
+            offset: Annotated[
+                int, "Line number to start reading from (0-indexed). Only supported for text files. Use for pagination of large files."
+            ] = DEFAULT_READ_OFFSET,
+            limit: Annotated[
+                int, "Maximum number of lines to read. Only supported for text files. Use for pagination of large files."
+            ] = DEFAULT_READ_LIMIT,
         ) -> ToolMessage | str:
             """Synchronous wrapper for read_file tool."""
             resolved_backend = self._get_backend(runtime)
@@ -545,9 +623,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             except ValueError as e:
                 return f"Error: {e}"
 
-            read_result = _coerce_read_result(resolved_backend.read(validated_path))
+            read_result = _coerce_read_result(resolved_backend.read(validated_path, offset=offset, limit=limit))
 
-            if read_result.error:
+            if read_result.error or read_result.file_data is None:
                 return f"Error: {read_result.error}"
 
             file_data = read_result.file_data
@@ -569,23 +647,31 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     )
                 return f"Error: Cannot display binary file '{validated_path}'"
 
-            # UTF-8 text — apply pagination
+            # UTF-8 text — backend already paginated, apply line-number formatting
             content = file_data_to_string(file_data)
-            paginated = _paginate_content(content, offset, limit)
+            empty_msg = check_empty_content(content)
+            if empty_msg:
+                return empty_msg
+
+            formatted = format_content_with_line_numbers(content, start_line=offset + 1)
 
             # Token truncation
-            if token_limit and len(paginated) >= NUM_CHARS_PER_TOKEN * token_limit:
+            if token_limit and len(formatted) >= NUM_CHARS_PER_TOKEN * token_limit:
                 truncation_msg = READ_FILE_TRUNCATION_MSG.format(file_path=validated_path)
                 max_content_length = NUM_CHARS_PER_TOKEN * token_limit - len(truncation_msg)
-                paginated = paginated[:max_content_length] + truncation_msg
+                formatted = formatted[:max_content_length] + truncation_msg
 
-            return paginated
+            return formatted
 
         async def async_read_file(
             file_path: Annotated[str, "Absolute path to the file to read. Must be absolute, not relative."],
             runtime: ToolRuntime[None, FilesystemState],
-            offset: Annotated[int, "Line number to start reading from (0-indexed). Use for pagination of large files."] = DEFAULT_READ_OFFSET,
-            limit: Annotated[int, "Maximum number of lines to read. Use for pagination of large files."] = DEFAULT_READ_LIMIT,
+            offset: Annotated[
+                int, "Line number to start reading from (0-indexed). Only supported for text files. Use for pagination of large files."
+            ] = DEFAULT_READ_OFFSET,
+            limit: Annotated[
+                int, "Maximum number of lines to read. Only supported for text files. Use for pagination of large files."
+            ] = DEFAULT_READ_LIMIT,
         ) -> ToolMessage | str:
             """Asynchronous wrapper for read_file tool."""
             resolved_backend = self._get_backend(runtime)
@@ -594,9 +680,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             except ValueError as e:
                 return f"Error: {e}"
 
-            read_result = _coerce_read_result(await resolved_backend.aread(validated_path))
+            read_result = _coerce_read_result(await resolved_backend.aread(validated_path, offset=offset, limit=limit))
 
-            if read_result.error:
+            if read_result.error or read_result.file_data is None:
                 return f"Error: {read_result.error}"
 
             file_data = read_result.file_data
@@ -618,17 +704,21 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     )
                 return f"Error: Cannot display binary file '{validated_path}'"
 
-            # UTF-8 text — apply pagination
+            # UTF-8 text — backend already paginated, apply line-number formatting
             content = file_data_to_string(file_data)
-            paginated = _paginate_content(content, offset, limit)
+            empty_msg = check_empty_content(content)
+            if empty_msg:
+                return empty_msg
+
+            formatted = format_content_with_line_numbers(content, start_line=offset + 1)
 
             # Token truncation
-            if token_limit and len(paginated) >= NUM_CHARS_PER_TOKEN * token_limit:
+            if token_limit and len(formatted) >= NUM_CHARS_PER_TOKEN * token_limit:
                 truncation_msg = READ_FILE_TRUNCATION_MSG.format(file_path=validated_path)
                 max_content_length = NUM_CHARS_PER_TOKEN * token_limit - len(truncation_msg)
-                paginated = paginated[:max_content_length] + truncation_msg
+                formatted = formatted[:max_content_length] + truncation_msg
 
-            return paginated
+            return formatted
 
         return StructuredTool.from_function(
             name="read_file",

@@ -237,12 +237,11 @@ def test_state_legacy_list_content_read():
     rt = _make_state_runtime(files={"/old/file.txt": legacy_fd})
     be = StateBackend(rt)
 
-    # read() now returns ReadResult with raw file_data (no deprecation warning
-    # since it doesn't normalize content)
+    # read() returns ReadResult with content normalized to str by pagination
     result = be.read("/old/file.txt")
     assert result.error is None
     assert result.file_data is not None
-    assert result.file_data["content"] == ["alpha", "beta"]
+    assert result.file_data["content"] == "alpha\nbeta"
 
     with warnings.catch_warnings(record=True) as w:
         warnings.simplefilter("always")

@@ -23,8 +23,6 @@ from deepagents.backends.protocol import (
 from deepagents.backends.utils import (
     TRUNCATION_GUIDANCE,
     create_file_data,
-    format_content_with_line_numbers,
-    format_read_response,
     sanitize_tool_call_id,
     truncate_if_too_long,
     update_file_data,
@@ -34,7 +32,9 @@ from deepagents.middleware.filesystem import (
     FilesystemMiddleware,
     FilesystemState,
     _create_content_preview,
+    _paginate_content,
     _supports_execution,
+    format_content_with_line_numbers,
 )
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT, SubAgentMiddleware
@@ -866,8 +866,7 @@ class TestFilesystemMiddleware:
         """Test that read_file displays long lines with continuation markers."""
         long_line = "z" * 15000
         content = f"first line\n{long_line}\nthird line"
-        file_data = create_file_data(content)
-        result = format_read_response(file_data, offset=0, limit=100)
+        result = _paginate_content(content, offset=0, limit=100)
         lines = result.split("\n")
         assert len(lines) == 5  # 1 first + 3 continuation (2, 2.1, 2.2) + 1 third
         assert "     1\tfirst line" in lines[0]
@@ -883,8 +882,7 @@ class TestFilesystemMiddleware:
         """Test that read_file with offset handles long lines correctly."""
         long_line = "m" * 12000
         content = f"line1\nline2\n{long_line}\nline4"
-        file_data = create_file_data(content)
-        result = format_read_response(file_data, offset=2, limit=10)
+        result = _paginate_content(content, offset=2, limit=10)
         lines = result.split("\n")
         assert len(lines) == 4  # 3 continuation (3, 3.1, 3.2) + 1 line4
         assert "     3\t" in lines[0]
@@ -1191,7 +1189,7 @@ class TestFilesystemMiddleware:
         class LegacyBackend(StateBackend):
             """Backend that returns str from read() (old API)."""
 
-            def read(self, file_path: str) -> str:  # type: ignore[override]
+            def read(self, file_path: str, offset: int = 0, limit: int = 2000) -> str:  # type: ignore[override]
                 return "     1\tlegacy content line 1\n     2\tlegacy content line 2"
 
         middleware = FilesystemMiddleware(backend=lambda rt: LegacyBackend(rt))  # noqa: PLW0108
@@ -1221,7 +1219,7 @@ class TestFilesystemMiddleware:
         """Third-party backends returning 'Error:' str from read() are coerced properly."""
 
         class LegacyErrorBackend(StateBackend):
-            def read(self, file_path: str) -> str:  # type: ignore[override]
+            def read(self, file_path: str, offset: int = 0, limit: int = 2000) -> str:  # type: ignore[override]
                 return "Error: file not found"
 
         middleware = FilesystemMiddleware(backend=lambda rt: LegacyErrorBackend(rt))  # noqa: PLW0108

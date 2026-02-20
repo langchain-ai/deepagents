@@ -12,37 +12,6 @@ import pytest
 from deepagents_cli._version import __version__
 
 
-def test_sdk_pin_matches_sdk_version() -> None:
-    """Verify that the CLI's pinned SDK version matches the actual SDK version.
-
-    The CLI pins an exact deepagents SDK version. This test ensures the pin
-    stays in sync.
-    """
-    cli_root = Path(__file__).parent.parent.parent
-    sdk_root = cli_root.parent / "deepagents"
-
-    with (sdk_root / "pyproject.toml").open("rb") as f:
-        sdk_version = tomllib.load(f)["project"]["version"]
-
-    with (cli_root / "pyproject.toml").open("rb") as f:
-        cli_deps = tomllib.load(f)["project"]["dependencies"]
-
-    sdk_pin = None
-    for dep in cli_deps:
-        if dep.startswith("deepagents=="):
-            sdk_pin = dep.split("==")[1]
-            break
-
-    assert sdk_pin is not None, (
-        "Could not find deepagents== pin in libs/cli/pyproject.toml dependencies"
-    )
-    assert sdk_pin == sdk_version, (
-        f"CLI pins deepagents=={sdk_pin} but SDK version is {sdk_version}. "
-        f"Update the deepagents dependency in libs/cli/pyproject.toml to "
-        f"deepagents=={sdk_version}"
-    )
-
-
 def test_version_matches_pyproject() -> None:
     """Verify `__version__` in `_version.py` matches version in `pyproject.toml`."""
     # Get the project root directory

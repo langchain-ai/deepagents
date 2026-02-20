@@ -7,6 +7,7 @@ database, etc.) and provide a uniform interface for file operations.
 
 import abc
 import asyncio
+import inspect
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal, NotRequired, TypeAlias
@@ -479,7 +480,26 @@ class SandboxBackendProtocol(BackendProtocol):
         timeout: int | None = None,  # noqa: ASYNC109
     ) -> ExecuteResponse:
         """Async version of execute."""
-        return await asyncio.to_thread(self.execute, command, timeout=timeout)
+        if timeout is not None and _execute_accepts_timeout(self):
+            return await asyncio.to_thread(self.execute, command, timeout=timeout)
+        return await asyncio.to_thread(self.execute, command)
+
+
+def _execute_accepts_timeout(backend: SandboxBackendProtocol) -> bool:
+    """Check whether a backend's `execute` method accepts a `timeout` kwarg.
+
+    Backend packages didn't lower-bound their SDK dependency, so an older
+    backend may not accept the timeout keyword (added in `deepagents>=0.4.3`).
+
+    Introspecting the signature lets callers skip the keyword rather than
+    raising a `TypeError` at runtime.
+    """
+    try:
+        sig = inspect.signature(backend.execute)
+    except (ValueError, TypeError):
+        return False
+    else:
+        return "timeout" in sig.parameters
 
 
 BackendFactory: TypeAlias = Callable[[ToolRuntime], BackendProtocol]

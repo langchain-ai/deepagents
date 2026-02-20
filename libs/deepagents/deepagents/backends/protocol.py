@@ -10,6 +10,7 @@ import asyncio
 import inspect
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import cache
 from typing import Any, Literal, NotRequired, TypeAlias
 
 from langchain.tools import ToolRuntime
@@ -485,30 +486,37 @@ class SandboxBackendProtocol(BackendProtocol):
         return await asyncio.to_thread(self.execute, command)
 
 
-_timeout_support_cache: dict[type, bool] = {}
+@cache
+def _cls_execute_accepts_timeout(cls: type[SandboxBackendProtocol]) -> bool:
+    """Check whether a backend class's `execute` accepts a `timeout` kwarg.
+
+    Backend packages didn't lower-bound their SDK dependency, so an older
+    backend may not accept the timeout keyword (added in `deepagents>=0.4.3`).
+
+    `inspect.signature` runs at most once per backend class.
+    """
+    try:
+        sig = inspect.signature(cls.execute)
+    except (ValueError, TypeError):
+        return False
+    else:
+        return "timeout" in sig.parameters
 
 
 def _execute_accepts_timeout(backend: SandboxBackendProtocol) -> bool:
     """Check whether a backend's `execute` method accepts a `timeout` kwarg.
 
-    Backend packages didn't lower-bound their SDK dependency, so an older
-    backend may not accept the timeout keyword (added in `deepagents>=0.4.3`).
-
-    Introspecting the signature lets callers skip the keyword rather than
-    raising a `TypeError` at runtime. Results are cached per backend class
-    since the method signature is stable across instances.
+    For composite backends that delegate to an inner default, this recurses
+    to check the actual executor so callers get an accurate answer.
     """
-    cls = type(backend)
-    if cls in _timeout_support_cache:
-        return _timeout_support_cache[cls]
+    # Composite backends delegate execution to their inner default backend.
+    # Check the actual executor, not the wrapper. Can't import
+    # CompositeBackend here (circular), so use duck-typing.
+    default = getattr(backend, "default", None)
+    if default is not None and isinstance(default, SandboxBackendProtocol):
+        return _execute_accepts_timeout(default)
 
-    try:
-        sig = inspect.signature(backend.execute)
-    except (ValueError, TypeError):
-        _timeout_support_cache[cls] = False
-    else:
-        _timeout_support_cache[cls] = "timeout" in sig.parameters
-    return _timeout_support_cache[cls]
+    return _cls_execute_accepts_timeout(type(backend))
 
 
 BackendFactory: TypeAlias = Callable[[ToolRuntime], BackendProtocol]

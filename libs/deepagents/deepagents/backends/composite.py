@@ -31,7 +31,6 @@ from deepagents.backends.protocol import (
     GrepMatch,
     SandboxBackendProtocol,
     WriteResult,
-    _execute_accepts_timeout,
 )
 from deepagents.backends.state import StateBackend
 
@@ -489,7 +488,7 @@ class CompositeBackend(BackendProtocol):
                 `SandboxBackendProtocol` (i.e., it doesn't support execution).
         """
         if isinstance(self.default, SandboxBackendProtocol):
-            if timeout is not None and _execute_accepts_timeout(self.default):
+            if timeout is not None:
                 return self.default.execute(command, timeout=timeout)
             return self.default.execute(command)
 
@@ -514,7 +513,7 @@ class CompositeBackend(BackendProtocol):
         See `execute()` for detailed documentation on parameters and behavior.
         """
         if isinstance(self.default, SandboxBackendProtocol):
-            if timeout is not None and _execute_accepts_timeout(self.default):
+            if timeout is not None:
                 return await self.default.aexecute(command, timeout=timeout)
             return await self.default.aexecute(command)
 

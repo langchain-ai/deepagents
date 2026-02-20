@@ -1297,6 +1297,11 @@ class DeepAgentsApp(App):
         On the next model call, `SummarizationMiddleware.wrap_model_call` reads
         this event and presents the summary plus recent messages to the model
         instead of the full history.
+
+        Compaction is a no-op when the conversation's total token count is
+        within the `keep` budget (by default 10% of the model's
+        `max_input_tokens`). Until that threshold is exceeded the user sees
+        "Nothing to compact yet".
         """
         if not self._agent or not self._lc_thread_id or not self._backend:
             await self._mount_message(

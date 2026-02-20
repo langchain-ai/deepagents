@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.0.24](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.23...deepagents-cli==0.0.24) (2026-02-20)
+
+
+### Features
+
+* **cli:** add single-click link opening for rich-style hyperlinks ([#1433](https://github.com/langchain-ai/deepagents/issues/1433)) ([ef1fd31](https://github.com/langchain-ai/deepagents/commit/ef1fd3115d77cd769e664d2ad0345623f9ce4019))
+* **cli:** display model name and context window size using `/tokens` ([#1441](https://github.com/langchain-ai/deepagents/issues/1441)) ([ff7ef0f](https://github.com/langchain-ai/deepagents/commit/ff7ef0f87e6dfc6c581edb34b1a57be7ff6e059c))
+* **cli:** refresh local context after summarization events ([#1384](https://github.com/langchain-ai/deepagents/issues/1384)) ([dcb9583](https://github.com/langchain-ai/deepagents/commit/dcb95839de360f03d2fc30c9144096874b24006f))
+* **cli:** windowed thread hydration and configurable thread limit ([#1435](https://github.com/langchain-ai/deepagents/issues/1435)) ([9da8d0b](https://github.com/langchain-ai/deepagents/commit/9da8d0b5c86441e87b85ee6f8db1d23848a823ed))
+* **sdk:** add per-command `timeout` override to `execute()` ([#1154](https://github.com/langchain-ai/deepagents/issues/1154)) ([49277d4](https://github.com/langchain-ai/deepagents/commit/49277d45a026c86b5bf176142dcb1dfc2c7643ae))
+
+
+### Bug Fixes
+
+* **cli:** escape `Rich` markup in shell command display ([#1413](https://github.com/langchain-ai/deepagents/issues/1413)) ([c330290](https://github.com/langchain-ai/deepagents/commit/c33029032a1e2072dab2d06e93953f2acaa6d400))
+* **cli:** load root-level `AGENTS.md` into agent system prompt ([#1445](https://github.com/langchain-ai/deepagents/issues/1445)) ([047fa2c](https://github.com/langchain-ai/deepagents/commit/047fa2cadfb9f005410c21a6e1e3b3d59eadda7d))
+* **cli:** prevent crash when quitting with queued messages ([#1421](https://github.com/langchain-ai/deepagents/issues/1421)) ([a3c9ae6](https://github.com/langchain-ai/deepagents/commit/a3c9ae681501cd3efca82573a8d20a0dc8c9b338))
+
 ## [0.0.23](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.22...deepagents-cli==0.0.23) (2026-02-18)
 
 

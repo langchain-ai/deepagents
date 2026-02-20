@@ -347,6 +347,9 @@ class TestAppMessageAutoLinksDisabled:
         assert AppMessage.auto_links is False
 
 
+_WEBBROWSER_OPEN = "deepagents_cli.widgets._links.webbrowser.open"
+
+
 class TestAppMessageOnClickOpensLink:
     """Tests for `AppMessage.on_click` opening Rich-style hyperlinks."""
 
@@ -356,7 +359,7 @@ class TestAppMessageOnClickOpensLink:
         event = MagicMock()
         event.style = Style(link="https://example.com")
 
-        with patch("webbrowser.open") as mock_open:
+        with patch(_WEBBROWSER_OPEN) as mock_open:
             msg.on_click(event)
 
         mock_open.assert_called_once_with("https://example.com")
@@ -368,8 +371,19 @@ class TestAppMessageOnClickOpensLink:
         event = MagicMock()
         event.style = Style()
 
-        with patch("webbrowser.open") as mock_open:
+        with patch(_WEBBROWSER_OPEN) as mock_open:
             msg.on_click(event)
 
         mock_open.assert_not_called()
+        event.stop.assert_not_called()
+
+    def test_click_with_browser_error_is_graceful(self) -> None:
+        """Browser failure should not crash the widget."""
+        msg = AppMessage("test")
+        event = MagicMock()
+        event.style = Style(link="https://example.com")
+
+        with patch(_WEBBROWSER_OPEN, side_effect=OSError("no display")):
+            msg.on_click(event)  # should not raise
+
         event.stop.assert_not_called()

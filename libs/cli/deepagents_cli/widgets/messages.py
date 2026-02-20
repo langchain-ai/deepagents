@@ -6,7 +6,6 @@ import ast
 import json
 import logging
 import re
-import webbrowser
 from dataclasses import dataclass
 from pathlib import Path
 from time import time
@@ -26,6 +25,7 @@ from deepagents_cli.config import (
 )
 from deepagents_cli.input import EMAIL_PREFIX_PATTERN, INPUT_HIGHLIGHT_PATTERN
 from deepagents_cli.tool_display import format_tool_display
+from deepagents_cli.widgets._links import open_style_link
 from deepagents_cli.widgets.diff import format_diff_textual
 
 if TYPE_CHECKING:
@@ -1279,11 +1279,10 @@ class ErrorMessage(Static):
 class AppMessage(Static):
     """Widget displaying an app message."""
 
-    # Disable Textual's auto_links to prevent a flicker cycle. When auto_links
-    # is enabled, hovering over a link combines styles via Rich's
-    # Style.__add__, which generates a new random link ID each time. Textual
-    # sees the new ID as a style change, repaints, and the cycle repeats on
-    # every mouse event — causing visible flicker.
+    # Disable Textual's auto_links to prevent a flicker cycle: Style.__add__
+    # calls .copy() for linked styles, generating a fresh random _link_id on
+    # each render. This means highlight_link_id never stabilizes, causing an
+    # infinite hover-refresh loop.
     auto_links = False
 
     DEFAULT_CSS = """
@@ -1312,13 +1311,5 @@ class AppMessage(Static):
         super().__init__(content, **kwargs)
 
     def on_click(self, event: Click) -> None:  # noqa: PLR6301  # Textual event handler
-        """Open Rich-style hyperlinks on single click.
-
-        Rich `Style(link=...)` produces OSC 8 terminal hyperlinks that require
-        Ctrl+Click in most terminals. By intercepting the Textual click event we
-        open the URL directly, matching the single-click behavior of links
-        rendered by the Markdown widget.
-        """
-        if event.style.link:
-            webbrowser.open(event.style.link)
-            event.stop()
+        """Open Rich-style hyperlinks on single click."""
+        open_style_link(event)

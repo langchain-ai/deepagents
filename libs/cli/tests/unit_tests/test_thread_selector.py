@@ -4,6 +4,7 @@ from typing import Any, ClassVar
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from rich.style import Style
 from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Container, Vertical
@@ -477,6 +478,48 @@ class TestThreadSelectorClickHandling:
 
                 assert app.dismissed is True
                 assert app.result == "def67890"
+
+
+_WEBBROWSER_OPEN = "deepagents_cli.widgets._links.webbrowser.open"
+
+
+class TestThreadSelectorOnClickOpensLink:
+    """Tests for `ThreadSelectorScreen.on_click` opening Rich-style hyperlinks."""
+
+    def test_click_on_link_opens_browser(self) -> None:
+        """Clicking a Rich link should call `webbrowser.open`."""
+        screen = ThreadSelectorScreen(current_thread=None)
+        event = MagicMock()
+        event.style = Style(link="https://example.com")
+
+        with patch(_WEBBROWSER_OPEN) as mock_open:
+            screen.on_click(event)
+
+        mock_open.assert_called_once_with("https://example.com")
+        event.stop.assert_called_once()
+
+    def test_click_without_link_is_noop(self) -> None:
+        """Clicking on non-link text should not open the browser."""
+        screen = ThreadSelectorScreen(current_thread=None)
+        event = MagicMock()
+        event.style = Style()
+
+        with patch(_WEBBROWSER_OPEN) as mock_open:
+            screen.on_click(event)
+
+        mock_open.assert_not_called()
+        event.stop.assert_not_called()
+
+    def test_click_with_browser_error_is_graceful(self) -> None:
+        """Browser failure should not crash the widget."""
+        screen = ThreadSelectorScreen(current_thread=None)
+        event = MagicMock()
+        event.style = Style(link="https://example.com")
+
+        with patch(_WEBBROWSER_OPEN, side_effect=OSError("no display")):
+            screen.on_click(event)  # should not raise
+
+        event.stop.assert_not_called()
 
 
 class TestThreadSelectorFormatLabel:

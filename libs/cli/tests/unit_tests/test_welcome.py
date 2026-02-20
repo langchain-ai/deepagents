@@ -183,6 +183,9 @@ class TestAutoLinksDisabled:
         assert WelcomeBanner.auto_links is False
 
 
+_WEBBROWSER_OPEN = "deepagents_cli.widgets._links.webbrowser.open"
+
+
 class TestOnClickOpensLink:
     """Tests for `WelcomeBanner.on_click` opening Rich-style hyperlinks."""
 
@@ -192,7 +195,7 @@ class TestOnClickOpensLink:
         event = MagicMock()
         event.style = Style(link="https://example.com")
 
-        with patch("deepagents_cli.widgets.welcome.webbrowser.open") as mock_open:
+        with patch(_WEBBROWSER_OPEN) as mock_open:
             widget.on_click(event)
 
         mock_open.assert_called_once_with("https://example.com")
@@ -204,8 +207,19 @@ class TestOnClickOpensLink:
         event = MagicMock()
         event.style = Style()
 
-        with patch("deepagents_cli.widgets.welcome.webbrowser.open") as mock_open:
+        with patch(_WEBBROWSER_OPEN) as mock_open:
             widget.on_click(event)
 
         mock_open.assert_not_called()
+        event.stop.assert_not_called()
+
+    def test_click_with_browser_error_is_graceful(self) -> None:
+        """Browser failure should not crash the widget."""
+        widget = _make_banner(thread_id="abc")
+        event = MagicMock()
+        event.style = Style(link="https://example.com")
+
+        with patch(_WEBBROWSER_OPEN, side_effect=OSError("no display")):
+            widget.on_click(event)  # should not raise
+
         event.stop.assert_not_called()

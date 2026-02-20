@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import sqlite3
-import webbrowser
 from typing import TYPE_CHECKING, ClassVar
 
 from rich.style import Style
@@ -29,6 +28,7 @@ from deepagents_cli.config import (
     build_langsmith_thread_url,
     get_glyphs,
 )
+from deepagents_cli.widgets._links import open_style_link
 
 logger = logging.getLogger(__name__)
 
@@ -540,11 +540,10 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         """Open Rich-style hyperlinks on single click.
 
         `ThreadOption` clicks are already stopped before bubbling here, so this
-        only fires for non-option widgets such as the title.
+        only fires for non-option widgets such as the title. Non-link clicks
+        bubble normally.
         """
-        if event.style.link:
-            webbrowser.open(event.style.link)
-            event.stop()
+        open_style_link(event)
 
     def on_thread_option_clicked(self, event: ThreadOption.Clicked) -> None:
         """Handle click on a thread option.

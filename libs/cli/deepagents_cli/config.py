@@ -564,17 +564,18 @@ class Settings:
         """
         return Path.home() / ".deepagents" / agent_name / "AGENTS.md"
 
-    def get_project_agent_md_path(self) -> Path | None:
-        """Get project-level AGENTS.md path.
+    def get_project_agent_md_path(self) -> list[Path]:
+        """Get project-level AGENTS.md paths.
 
-        Returns path regardless of whether the file exists.
+        Checks both `{project_root}/.deepagents/AGENTS.md` and
+        `{project_root}/AGENTS.md`, returning all that exist.
 
         Returns:
-            Path to {project_root}/.deepagents/AGENTS.md, or None if not in a project
+            List of paths to project AGENTS.md files (may contain 0, 1, or 2 paths).
         """
         if not self.project_root:
-            return None
-        return self.project_root / ".deepagents" / "AGENTS.md"
+            return []
+        return _find_project_agent_md(self.project_root)
 
     @staticmethod
     def _is_valid_agent_name(agent_name: str) -> bool:

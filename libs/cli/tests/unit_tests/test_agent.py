@@ -467,7 +467,7 @@ class TestCreateCliAgentSkillsSources:
         mock_settings.get_project_skills_dir.return_value = None
         mock_settings.get_built_in_skills_dir.return_value = built_in_dir
         mock_settings.get_user_agent_md_path.return_value = agent_dir / "AGENTS.md"
-        mock_settings.get_project_agent_md_path.return_value = None
+        mock_settings.get_project_agent_md_path.return_value = []
         mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
         mock_settings.get_project_agents_dir.return_value = None
         # Needed by get_system_prompt() which formats model identity

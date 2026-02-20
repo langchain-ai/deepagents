@@ -30,7 +30,7 @@ from deepagents.backends.protocol import (
     EditResult,
     SandboxBackendProtocol,
     WriteResult,
-    _execute_accepts_timeout,
+    execute_accepts_timeout,
 )
 from deepagents.backends.utils import (
     format_content_with_line_numbers,
@@ -886,7 +886,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             # Safe cast: _supports_execution validates that execute()/aexecute() exist
             # (either SandboxBackendProtocol or CompositeBackend with sandbox default)
             executable = cast("SandboxBackendProtocol", resolved_backend)
-            if timeout is not None and not _execute_accepts_timeout(executable):
+            if timeout is not None and not execute_accepts_timeout(executable):
                 return (
                     "Error: This sandbox backend does not support per-command "
                     "timeout overrides. Update your sandbox package to the "
@@ -912,7 +912,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
             return "".join(parts)
 
-        async def async_execute(  # noqa: PLR0911,C901 - early returns for distinct error conditions
+        async def async_execute(  # noqa: PLR0911 - early returns for distinct error conditions
             command: Annotated[str, "Shell command to execute in the sandbox environment."],
             runtime: ToolRuntime[None, FilesystemState],
             # ASYNC109 - timeout is a semantic parameter forwarded to the
@@ -940,17 +940,14 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
             # Safe cast: _supports_execution validates that execute()/aexecute() exist
             executable = cast("SandboxBackendProtocol", resolved_backend)
-            if timeout is not None and not _execute_accepts_timeout(executable):
+            if timeout is not None and not execute_accepts_timeout(executable):
                 return (
                     "Error: This sandbox backend does not support per-command "
                     "timeout overrides. Update your sandbox package to the "
                     "latest version, or omit the timeout parameter."
                 )
             try:
-                if timeout is not None:
-                    result = await executable.aexecute(command, timeout=timeout)
-                else:
-                    result = await executable.aexecute(command)
+                result = await executable.aexecute(command, timeout=timeout) if timeout is not None else await executable.aexecute(command)
             except NotImplementedError as e:
                 # Handle case where execute() exists but raises NotImplementedError
                 return f"Error: Execution not available. {e}"

@@ -8,13 +8,16 @@ database, etc.) and provide a uniform interface for file operations.
 import abc
 import asyncio
 import inspect
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
-from functools import cache
+from functools import lru_cache
 from typing import Any, Literal, NotRequired, TypeAlias
 
 from langchain.tools import ToolRuntime
 from typing_extensions import TypedDict
+
+logger = logging.getLogger(__name__)
 
 FileOperationError = Literal[
     "file_not_found",  # Download: file doesn't exist
@@ -481,42 +484,58 @@ class SandboxBackendProtocol(BackendProtocol):
         timeout: int | None = None,  # noqa: ASYNC109
     ) -> ExecuteResponse:
         """Async version of execute."""
-        if timeout is not None and _execute_accepts_timeout(self):
+        # The middleware layer validates timeout support before calling, so
+        # this guard only protects direct callers bypassing the middleware.
+        if timeout is not None and execute_accepts_timeout(self):
             return await asyncio.to_thread(self.execute, command, timeout=timeout)
         return await asyncio.to_thread(self.execute, command)
 
 
-@cache
+@lru_cache(maxsize=128)
 def _cls_execute_accepts_timeout(cls: type[SandboxBackendProtocol]) -> bool:
     """Check whether a backend class's `execute` accepts a `timeout` kwarg.
 
-    Backend packages didn't lower-bound their SDK dependency, so an older
-    backend may not accept the timeout keyword (added in `deepagents>=0.4.3`).
+    Older backend packages didn't lower-bound their SDK dependency, so they
+    may not accept the `timeout` keyword added to `SandboxBackendProtocol`.
 
-    `inspect.signature` runs at most once per backend class.
+    Results are cached per class to avoid repeated introspection overhead.
     """
     try:
         sig = inspect.signature(cls.execute)
     except (ValueError, TypeError):
+        logger.warning(
+            "Could not inspect signature of %s.execute; assuming timeout is not supported. This may indicate a backend packaging issue.",
+            cls.__qualname__,
+            exc_info=True,
+        )
         return False
     else:
         return "timeout" in sig.parameters
 
 
-def _execute_accepts_timeout(backend: SandboxBackendProtocol) -> bool:
+def execute_accepts_timeout(backend: SandboxBackendProtocol) -> bool:
     """Check whether a backend's `execute` method accepts a `timeout` kwarg.
 
-    For composite backends that delegate to an inner default, this recurses
-    to check the actual executor so callers get an accurate answer.
+    For composite backends that delegate to an inner default, this unwraps
+    the chain to check the actual executor. Uses duck-typing (checking for
+    a `default` attribute) rather than importing `CompositeBackend` to avoid
+    a circular import.
     """
-    # Composite backends delegate execution to their inner default backend.
-    # Check the actual executor, not the wrapper. Can't import
-    # CompositeBackend here (circular), so use duck-typing.
-    default = getattr(backend, "default", None)
-    if default is not None and isinstance(default, SandboxBackendProtocol):
-        return _execute_accepts_timeout(default)
-
-    return _cls_execute_accepts_timeout(type(backend))
+    seen: set[int] = set()
+    current = backend
+    while True:
+        backend_id = id(current)
+        if backend_id in seen:
+            break
+        seen.add(backend_id)
+        # Composite backends delegate execution to their inner default.
+        # Can't import CompositeBackend here (circular), so use duck-typing.
+        default = getattr(current, "default", None)
+        if default is not None and isinstance(default, SandboxBackendProtocol):
+            current = default
+        else:
+            break
+    return _cls_execute_accepts_timeout(type(current))
 
 
 BackendFactory: TypeAlias = Callable[[ToolRuntime], BackendProtocol]

@@ -22,9 +22,10 @@ on:
       package:
         required: true
         type: choice
-        description: "Package to release (⚠️ For CLI releases, use the release-please flow — see .github/RELEASING.md)"
+        description: "Package to release (⚠️ For deepagents-cli, use release-please by default; manual dispatch is exception-only for recovery/hotfix scenarios — see .github/RELEASING.md)"
         options:
           - deepagents
+          - deepagents-cli
           - deepagents-acp
           - deepagents-harbor
           - langchain-daytona

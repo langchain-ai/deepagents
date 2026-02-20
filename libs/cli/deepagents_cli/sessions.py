@@ -1,39 +1,95 @@
 """Thread management using LangGraph's built-in checkpoint persistence."""
 
+from __future__ import annotations
+
+import logging
 import uuid
-from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING, NotRequired, TypedDict
 
-import aiosqlite
-from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
-from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
-from rich.table import Table
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
 
-from deepagents_cli.config import COLORS, console
+    import aiosqlite
+    from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+    from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
-# Patch aiosqlite.Connection to add is_alive() method required by
-# langgraph-checkpoint>=2.1.0
-# See: https://github.com/langchain-ai/langgraph/issues/6583
-if not hasattr(aiosqlite.Connection, "is_alive"):
+logger = logging.getLogger(__name__)
 
-    def _is_alive(self: aiosqlite.Connection) -> bool:
-        """Check if the connection is still alive.
-
-        Returns:
-            True if connection is alive, False otherwise.
-        """
-        return self._connection is not None
-
-    # Dynamically adding a method to aiosqlite.Connection at runtime.
-    # Type checkers can't understand this monkey-patch, so we suppress the
-    # "attr-defined" error that would otherwise be raised.
-    aiosqlite.Connection.is_alive = _is_alive  # type: ignore[attr-defined]
+_aiosqlite_patched = False
 
 
-def _format_timestamp(iso_timestamp: str | None) -> str:
+def _patch_aiosqlite() -> None:
+    """Patch aiosqlite.Connection with `is_alive()` if missing.
+
+    Required by langgraph-checkpoint>=2.1.0.
+    See: https://github.com/langchain-ai/langgraph/issues/6583
+    """
+    global _aiosqlite_patched  # noqa: PLW0603  # Module-level flag requires global statement
+    if _aiosqlite_patched:
+        return
+
+    import aiosqlite as _aiosqlite
+
+    if not hasattr(_aiosqlite.Connection, "is_alive"):
+
+        def _is_alive(self: _aiosqlite.Connection) -> bool:
+            """Check if the connection is still alive.
+
+            Returns:
+                True if connection is alive, False otherwise.
+            """
+            return bool(self._running and self._connection is not None)
+
+        # Dynamically adding a method to aiosqlite.Connection at runtime.
+        # Type checkers can't understand this monkey-patch, so we suppress the
+        # "attr-defined" error that would otherwise be raised.
+        _aiosqlite.Connection.is_alive = _is_alive  # type: ignore[attr-defined]
+
+    _aiosqlite_patched = True
+
+
+@asynccontextmanager
+async def _connect() -> AsyncIterator[aiosqlite.Connection]:
+    """Import aiosqlite, apply the compatibility patch, and connect.
+
+    Centralizes the deferred import + patch + connect sequence used by every
+    database function in this module.
+
+    Yields:
+        An open aiosqlite connection to the sessions database.
+    """
+    import aiosqlite as _aiosqlite
+
+    _patch_aiosqlite()
+
+    async with _aiosqlite.connect(str(get_db_path()), timeout=30.0) as conn:
+        yield conn
+
+
+class ThreadInfo(TypedDict):
+    """Thread metadata returned by `list_threads`."""
+
+    thread_id: str
+    """Unique identifier for the thread."""
+
+    agent_name: str | None
+    """Name of the agent that owns the thread."""
+
+    updated_at: str | None
+    """ISO timestamp of the last update."""
+
+    message_count: NotRequired[int]
+    """Number of messages in the thread."""
+
+
+def format_timestamp(iso_timestamp: str | None) -> str:
     """Format ISO timestamp for display (e.g., 'Dec 30, 6:10pm').
+
+    Args:
+        iso_timestamp: ISO 8601 timestamp string, or `None`.
 
     Returns:
         Formatted timestamp string or empty string if invalid.
@@ -49,6 +105,11 @@ def _format_timestamp(iso_timestamp: str | None) -> str:
             .replace("pm", "pm")
         )
     except (ValueError, TypeError):
+        logger.debug(
+            "Failed to parse timestamp %r; displaying as blank",
+            iso_timestamp,
+            exc_info=True,
+        )
         return ""
 
 
@@ -87,7 +148,7 @@ async def list_threads(
     agent_name: str | None = None,
     limit: int = 20,
     include_message_count: bool = False,
-) -> list[dict]:
+) -> list[ThreadInfo]:
     """List threads from checkpoints table.
 
     Args:
@@ -96,11 +157,10 @@ async def list_threads(
         include_message_count: Whether to include message counts.
 
     Returns:
-        List of thread dicts with `thread_id`, `agent_name`, `updated_at`,
-            and optionally `message_count`.
+        List of `ThreadInfo` dicts with `thread_id`, `agent_name`,
+            `updated_at`, and optionally `message_count`.
     """
-    db_path = str(get_db_path())
-    async with aiosqlite.connect(db_path, timeout=30.0) as conn:
+    async with _connect() as conn:
         # Return empty if table doesn't exist yet (fresh install)
         if not await _table_exists(conn, "checkpoints"):
             return []
@@ -131,13 +191,15 @@ async def list_threads(
 
         async with conn.execute(query, params) as cursor:
             rows = await cursor.fetchall()
-            threads = [
-                {"thread_id": r[0], "agent_name": r[1], "updated_at": r[2]}
+            threads: list[ThreadInfo] = [
+                ThreadInfo(thread_id=r[0], agent_name=r[1], updated_at=r[2])
                 for r in rows
             ]
 
         # Fetch message counts if requested
         if include_message_count and threads:
+            from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+
             serde = JsonPlusSerializer()
             for thread in threads:
                 thread["message_count"] = await _count_messages_from_checkpoint(
@@ -185,7 +247,12 @@ async def _count_messages_from_checkpoint(
             messages = channel_values.get("messages", [])
             return len(messages)
         except (ValueError, TypeError, KeyError):
-            # If deserialization fails, fall back to 0
+            logger.warning(
+                "Failed to deserialize checkpoint for thread %s; "
+                "message count will show as 0",
+                thread_id,
+                exc_info=True,
+            )
             return 0
 
 
@@ -195,8 +262,7 @@ async def get_most_recent(agent_name: str | None = None) -> str | None:
     Returns:
         Most recent thread_id or None if no threads exist.
     """
-    db_path = str(get_db_path())
-    async with aiosqlite.connect(db_path, timeout=30.0) as conn:
+    async with _connect() as conn:
         if not await _table_exists(conn, "checkpoints"):
             return None
 
@@ -225,8 +291,7 @@ async def get_thread_agent(thread_id: str) -> str | None:
     Returns:
         Agent name associated with the thread, or None if not found.
     """
-    db_path = str(get_db_path())
-    async with aiosqlite.connect(db_path, timeout=30.0) as conn:
+    async with _connect() as conn:
         if not await _table_exists(conn, "checkpoints"):
             return None
 
@@ -247,8 +312,7 @@ async def thread_exists(thread_id: str) -> bool:
     Returns:
         True if thread exists, False otherwise.
     """
-    db_path = str(get_db_path())
-    async with aiosqlite.connect(db_path, timeout=30.0) as conn:
+    async with _connect() as conn:
         if not await _table_exists(conn, "checkpoints"):
             return False
 
@@ -268,8 +332,7 @@ async def find_similar_threads(thread_id: str, limit: int = 3) -> list[str]:
     Returns:
         List of thread IDs that begin with the given prefix.
     """
-    db_path = str(get_db_path())
-    async with aiosqlite.connect(db_path, timeout=30.0) as conn:
+    async with _connect() as conn:
         if not await _table_exists(conn, "checkpoints"):
             return []
 
@@ -292,8 +355,7 @@ async def delete_thread(thread_id: str) -> bool:
     Returns:
         True if thread was deleted, False if not found.
     """
-    db_path = str(get_db_path())
-    async with aiosqlite.connect(db_path, timeout=30.0) as conn:
+    async with _connect() as conn:
         if not await _table_exists(conn, "checkpoints"):
             return False
 
@@ -314,15 +376,66 @@ async def get_checkpointer() -> AsyncIterator[AsyncSqliteSaver]:
     Yields:
         AsyncSqliteSaver instance for checkpoint persistence.
     """
+    from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
+    _patch_aiosqlite()
+
     async with AsyncSqliteSaver.from_conn_string(str(get_db_path())) as checkpointer:
         yield checkpointer
 
 
+_DEFAULT_THREAD_LIMIT = 20
+
+
+def get_thread_limit() -> int:
+    """Read the thread listing limit from `DA_CLI_RECENT_THREADS`.
+
+    Falls back to `_DEFAULT_THREAD_LIMIT` when the variable is unset or contains
+    a non-integer value. The result is clamped to a minimum of 1.
+
+    Returns:
+        Number of threads to display.
+    """
+    import os
+
+    raw = os.environ.get("DA_CLI_RECENT_THREADS")
+    if raw is None:
+        return _DEFAULT_THREAD_LIMIT
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        logger.warning(
+            "Invalid DA_CLI_RECENT_THREADS value %r, using default %d",
+            raw,
+            _DEFAULT_THREAD_LIMIT,
+        )
+        return _DEFAULT_THREAD_LIMIT
+
+
 async def list_threads_command(
     agent_name: str | None = None,
-    limit: int = 20,
+    limit: int | None = None,
 ) -> None:
-    """CLI handler for: deepagents threads list."""
+    """CLI handler for `deepagents threads list`.
+
+    Fetches and displays a table of recent conversation threads, optionally
+    filtered by agent name.
+
+    Args:
+        agent_name: Only show threads belonging to this agent.
+
+            When `None`, threads for all agents are shown.
+        limit: Maximum number of threads to display.
+
+            When `None`, reads from `DA_CLI_RECENT_THREADS` or falls back to
+            the default.
+    """
+    from rich.table import Table
+
+    from deepagents_cli.config import COLORS, console
+
+    limit = get_thread_limit() if limit is None else max(1, limit)
+
     threads = await list_threads(agent_name, limit=limit, include_message_count=True)
 
     if not threads:
@@ -335,7 +448,11 @@ async def list_threads_command(
         console.print("[dim]Start a conversation with: deepagents[/dim]")
         return
 
-    title = f"Threads for '{agent_name}'" if agent_name else "All Threads"
+    title = (
+        f"Recent threads for '{agent_name}' (last {limit})"
+        if agent_name
+        else f"Recent Threads (last {limit})"
+    )
 
     table = Table(
         title=title, show_header=True, header_style=f"bold {COLORS['primary']}"
@@ -350,7 +467,7 @@ async def list_threads_command(
             t["thread_id"],
             t["agent_name"] or "unknown",
             str(t.get("message_count", 0)),
-            _format_timestamp(t.get("updated_at")),
+            format_timestamp(t.get("updated_at")),
         )
 
     console.print()
@@ -360,6 +477,8 @@ async def list_threads_command(
 
 async def delete_thread_command(thread_id: str) -> None:
     """CLI handler for: deepagents threads delete."""
+    from deepagents_cli.config import console
+
     deleted = await delete_thread(thread_id)
 
     if deleted:

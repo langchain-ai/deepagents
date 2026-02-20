@@ -2,7 +2,9 @@ from pathlib import Path
 
 import pytest
 from langchain.tools import ToolRuntime
+from langchain_core.messages import ToolMessage
 from langgraph.store.memory import InMemoryStore
+from langgraph.types import Command
 
 from deepagents.backends.composite import CompositeBackend
 from deepagents.backends.filesystem import FilesystemBackend
@@ -13,6 +15,7 @@ from deepagents.backends.protocol import (
 )
 from deepagents.backends.state import StateBackend
 from deepagents.backends.store import StoreBackend
+from deepagents.middleware.filesystem import FilesystemMiddleware
 
 
 def make_runtime(tid: str = "tc"):
@@ -37,10 +40,10 @@ def build_composite_state_backend(runtime: ToolRuntime, *, routes):
     return CompositeBackend(default=default_state, routes=built_routes)
 
 
-def test_composite_state_backend_routes_and_search(tmp_path: Path):
+def test_composite_state_backend_routes_and_search(tmp_path: Path):  # noqa: ARG001  # Pytest fixture
     rt = make_runtime("t3")
     # route /memories/ to store
-    be = build_composite_state_backend(rt, routes={"/memories/": (lambda r: StoreBackend(r))})
+    be = build_composite_state_backend(rt, routes={"/memories/": (StoreBackend)})
 
     # write to default (state)
     res = be.write("/file.txt", "alpha")
@@ -144,9 +147,9 @@ def test_composite_backend_multiple_routes():
     comp = build_composite_state_backend(
         rt,
         routes={
-            "/memories/": (lambda r: StoreBackend(r)),
-            "/archive/": (lambda r: StoreBackend(r)),
-            "/cache/": (lambda r: StoreBackend(r)),
+            "/memories/": (StoreBackend),
+            "/archive/": (StoreBackend),
+            "/cache/": (StoreBackend),
         },
     )
 
@@ -291,8 +294,8 @@ def test_composite_backend_ls_multiple_routes_nested():
     comp = build_composite_state_backend(
         rt,
         routes={
-            "/memories/": (lambda r: StoreBackend(r)),
-            "/archive/": (lambda r: StoreBackend(r)),
+            "/memories/": (StoreBackend),
+            "/archive/": (StoreBackend),
         },
     )
 
@@ -380,15 +383,10 @@ def test_composite_backend_ls_trailing_slash(tmp_path: Path):
 
 
 def test_composite_backend_intercept_large_tool_result():
-    from langchain_core.messages import ToolMessage
-    from langgraph.types import Command
-
-    from deepagents.middleware.filesystem import FilesystemMiddleware
-
     rt = make_runtime("t10")
 
     middleware = FilesystemMiddleware(
-        backend=lambda r: build_composite_state_backend(r, routes={"/memories/": (lambda x: StoreBackend(x))}), tool_token_limit_before_evict=1000
+        backend=lambda r: build_composite_state_backend(r, routes={"/memories/": (StoreBackend)}), tool_token_limit_before_evict=1000
     )
     large_content = "z" * 5000
     tool_message = ToolMessage(content=large_content, tool_call_id="test_789")
@@ -402,14 +400,10 @@ def test_composite_backend_intercept_large_tool_result():
 
 def test_composite_backend_intercept_large_tool_result_routed_to_store():
     """Test that large tool results can be routed to a specific backend like StoreBackend."""
-    from langchain_core.messages import ToolMessage
-
-    from deepagents.middleware.filesystem import FilesystemMiddleware
-
     rt = make_runtime("t11")
 
     middleware = FilesystemMiddleware(
-        backend=lambda r: build_composite_state_backend(r, routes={"/large_tool_results/": (lambda x: StoreBackend(x))}),
+        backend=lambda r: build_composite_state_backend(r, routes={"/large_tool_results/": (StoreBackend)}),
         tool_token_limit_before_evict=1000,
     )
 
@@ -579,7 +573,7 @@ def test_composite_download_routing(tmp_path: Path):
 
 def test_composite_upload_download_roundtrip(tmp_path: Path):
     """Test upload and download roundtrip through composite backend."""
-    rt = make_runtime("t_roundtrip1")
+    _rt = make_runtime("t_roundtrip1")
     root = tmp_path
 
     fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
@@ -598,7 +592,7 @@ def test_composite_upload_download_roundtrip(tmp_path: Path):
 
 def test_composite_partial_success_upload(tmp_path: Path):
     """Test partial success in batch upload with mixed valid/invalid paths."""
-    rt = make_runtime("t_partial_upload")
+    _rt = make_runtime("t_partial_upload")
     root = tmp_path
 
     fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
@@ -627,7 +621,7 @@ def test_composite_partial_success_upload(tmp_path: Path):
 
 def test_composite_partial_success_download(tmp_path: Path):
     """Test partial success in batch download with mixed valid/invalid paths."""
-    rt = make_runtime("t_partial_download")
+    _rt = make_runtime("t_partial_download")
     root = tmp_path
 
     fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
@@ -683,7 +677,7 @@ def test_composite_upload_download_multiple_routes(tmp_path: Path):
 
 def test_composite_download_preserves_original_paths(tmp_path: Path):
     """Test that download responses preserve original composite paths."""
-    rt = make_runtime("t_path_preserve")
+    _rt = make_runtime("t_path_preserve")
     root = tmp_path
 
     fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
@@ -826,7 +820,7 @@ def test_composite_grep_with_path_none(tmp_path: Path) -> None:
 
 def test_composite_grep_invalid_regex(tmp_path: Path) -> None:
     """Test grep with special characters (literal search, not regex)."""
-    rt = make_runtime("t_grep5")
+    _rt = make_runtime("t_grep5")
     root = tmp_path
 
     fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
@@ -924,7 +918,7 @@ def test_composite_grep_route_prefix_restoration(tmp_path: Path) -> None:
 
 def test_composite_grep_multiple_matches_per_file(tmp_path: Path) -> None:
     """Test grep returns multiple matches from same file."""
-    rt = make_runtime("t_grep9")
+    _rt = make_runtime("t_grep9")
     root = tmp_path
 
     # File with multiple matching lines

@@ -3,12 +3,16 @@
 import asyncio
 import json
 import sqlite3
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 
 from deepagents_cli import sessions
+from deepagents_cli.app import TextualSessionState
+from deepagents_cli.sessions import get_thread_limit
 
 
 class TestGenerateThreadId:
@@ -68,8 +72,6 @@ class TestThreadFunctions:
         """)
 
         # Insert test threads with metadata as JSON
-        from datetime import UTC, datetime
-
         now = datetime.now(UTC).isoformat()
         earlier = "2024-01-01T10:00:00+00:00"
 
@@ -216,22 +218,22 @@ class TestGetCheckpointer:
 
 
 class TestFormatTimestamp:
-    """Tests for _format_timestamp helper."""
+    """Tests for format_timestamp helper."""
 
     def test_valid_timestamp(self):
         """Formats valid ISO timestamp."""
-        result = sessions._format_timestamp("2024-12-30T21:18:00+00:00")
+        result = sessions.format_timestamp("2024-12-30T21:18:00+00:00")
         assert result  # Non-empty string
         assert "dec" in result.lower()
 
     def test_none(self):
         """Returns empty for None."""
-        result = sessions._format_timestamp(None)
+        result = sessions.format_timestamp(None)
         assert result == ""
 
     def test_invalid(self):
         """Returns empty for invalid timestamp."""
-        result = sessions._format_timestamp("not a timestamp")
+        result = sessions.format_timestamp("not a timestamp")
         assert result == ""
 
 
@@ -240,24 +242,18 @@ class TestTextualSessionState:
 
     def test_stores_provided_thread_id(self):
         """TextualSessionState stores provided thread_id."""
-        from deepagents_cli.app import TextualSessionState
-
         tid = sessions.generate_thread_id()
         state = TextualSessionState(thread_id=tid)
         assert state.thread_id == tid
 
     def test_generates_id_if_none(self):
         """TextualSessionState generates ID if none provided."""
-        from deepagents_cli.app import TextualSessionState
-
         state = TextualSessionState(thread_id=None)
         assert state.thread_id is not None
         assert len(state.thread_id) == 8
 
     def test_reset_thread(self):
         """reset_thread generates a new thread ID."""
-        from deepagents_cli.app import TextualSessionState
-
         state = TextualSessionState(thread_id="original")
         old_id = state.thread_id
         new_id = state.reset_thread()
@@ -334,8 +330,6 @@ class TestListThreadsWithMessageCount:
     @pytest.fixture
     def temp_db_with_messages(self, tmp_path: Path) -> Path:
         """Create a temporary database with threads and messages in checkpoint blob."""
-        from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
-
         db_path = tmp_path / "test_sessions.db"
         conn = sqlite3.connect(str(db_path))
         conn.execute("""
@@ -420,8 +414,6 @@ class TestMessageCountFromCheckpointBlob:
     @pytest.fixture
     def temp_db_with_checkpoint_messages(self, tmp_path: Path) -> Path:
         """Create a database with messages in checkpoint blob, no writes."""
-        from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
-
         db_path = tmp_path / "test_sessions.db"
         conn = sqlite3.connect(str(db_path))
 
@@ -503,3 +495,37 @@ class TestMessageCountFromCheckpointBlob:
             # BUG: Currently returns 0 because it looks at writes table
             # EXPECTED: 4 messages from checkpoint blob
             assert threads[0]["message_count"] == 4
+
+
+class TestGetThreadLimit:
+    """Tests for get_thread_limit() env var parsing."""
+
+    def test_default_when_unset(self) -> None:
+        """Returns default limit when DA_CLI_RECENT_THREADS is not set."""
+        env = {
+            k: v
+            for k, v in __import__("os").environ.items()
+            if k != "DA_CLI_RECENT_THREADS"
+        }
+        with patch.dict("os.environ", env, clear=True):
+            assert get_thread_limit() == 20
+
+    def test_custom_value(self) -> None:
+        """Returns parsed integer from DA_CLI_RECENT_THREADS."""
+        with patch.dict("os.environ", {"DA_CLI_RECENT_THREADS": "50"}):
+            assert get_thread_limit() == 50
+
+    def test_invalid_value_falls_back(self) -> None:
+        """Returns default when DA_CLI_RECENT_THREADS is not a valid integer."""
+        with patch.dict("os.environ", {"DA_CLI_RECENT_THREADS": "abc"}):
+            assert get_thread_limit() == 20
+
+    def test_zero_clamps_to_one(self) -> None:
+        """Returns 1 when DA_CLI_RECENT_THREADS is 0."""
+        with patch.dict("os.environ", {"DA_CLI_RECENT_THREADS": "0"}):
+            assert get_thread_limit() == 1
+
+    def test_negative_clamps_to_one(self) -> None:
+        """Returns 1 when DA_CLI_RECENT_THREADS is negative."""
+        with patch.dict("os.environ", {"DA_CLI_RECENT_THREADS": "-5"}):
+            assert get_thread_limit() == 1

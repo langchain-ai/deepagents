@@ -5,10 +5,12 @@ helpers used by backends and the composite router. Structured helpers
 enable composition without fragile string parsing.
 """
 
+import os
 import re
+from collections.abc import Sequence
 from datetime import UTC, datetime
-from pathlib import Path
-from typing import Any, Literal
+from pathlib import Path, PurePosixPath
+from typing import Any, Literal, overload
 
 import wcmatch.glob as wcglob
 
@@ -30,8 +32,7 @@ def sanitize_tool_call_id(tool_call_id: str) -> str:
 
     Replaces dangerous characters (., /, \) with underscores.
     """
-    sanitized = tool_call_id.replace(".", "_").replace("/", "_").replace("\\", "_")
-    return sanitized
+    return tool_call_id.replace(".", "_").replace("/", "_").replace("\\", "_")
 
 
 def format_content_with_line_numbers(
@@ -181,7 +182,7 @@ def perform_string_replacement(
     content: str,
     old_string: str,
     new_string: str,
-    replace_all: bool,
+    replace_all: bool = False,  # noqa: FBT001, FBT002
 ) -> tuple[str, int] | str:
     """Perform string replacement with occurrence validation.
 
@@ -200,10 +201,21 @@ def perform_string_replacement(
         return f"Error: String not found in file: '{old_string}'"
 
     if occurrences > 1 and not replace_all:
-        return f"Error: String '{old_string}' appears {occurrences} times in file. Use replace_all=True to replace all instances, or provide a more specific string with surrounding context."
+        return (
+            f"Error: String '{old_string}' appears {occurrences} times in file. "
+            f"Use replace_all=True to replace all instances, or provide a more specific string with surrounding context."
+        )
 
     new_content = content.replace(old_string, new_string)
     return new_content, occurrences
+
+
+@overload
+def truncate_if_too_long(result: list[str]) -> list[str]: ...
+
+
+@overload
+def truncate_if_too_long(result: str) -> str: ...
 
 
 def truncate_if_too_long(result: list[str] | str) -> list[str] | str:
@@ -211,12 +223,78 @@ def truncate_if_too_long(result: list[str] | str) -> list[str] | str:
     if isinstance(result, list):
         total_chars = sum(len(item) for item in result)
         if total_chars > TOOL_RESULT_TOKEN_LIMIT * 4:
-            return result[: len(result) * TOOL_RESULT_TOKEN_LIMIT * 4 // total_chars] + [TRUNCATION_GUIDANCE]
+            return result[: len(result) * TOOL_RESULT_TOKEN_LIMIT * 4 // total_chars] + [TRUNCATION_GUIDANCE]  # noqa: RUF005  # Concatenation preferred for clarity
         return result
     # string
     if len(result) > TOOL_RESULT_TOKEN_LIMIT * 4:
         return result[: TOOL_RESULT_TOKEN_LIMIT * 4] + "\n" + TRUNCATION_GUIDANCE
     return result
+
+
+def validate_path(path: str, *, allowed_prefixes: Sequence[str] | None = None) -> str:
+    r"""Validate and normalize file path for security.
+
+    Ensures paths are safe to use by preventing directory traversal attacks
+    and enforcing consistent formatting. All paths are normalized to use
+    forward slashes and start with a leading slash.
+
+    This function is designed for virtual filesystem paths and rejects
+    Windows absolute paths (e.g., `C:/...`, `F:/...`) to maintain consistency
+    and prevent path format ambiguity.
+
+    Args:
+        path: The path to validate and normalize.
+        allowed_prefixes: Optional list of allowed path prefixes.
+
+            If provided, the normalized path must start with one of
+            these prefixes.
+
+    Returns:
+        Normalized canonical path starting with `/` and using forward slashes.
+
+    Raises:
+        ValueError: If path contains traversal sequences (`..` or `~`), is a
+            Windows absolute path (e.g., `C:/...`), or does not start with an
+            allowed prefix when `allowed_prefixes` is specified.
+
+    Example:
+        ```python
+        validate_path("foo/bar")  # Returns: "/foo/bar"
+        validate_path("/./foo//bar")  # Returns: "/foo/bar"
+        validate_path("../etc/passwd")  # Raises ValueError
+        validate_path(r"C:\\Users\\file.txt")  # Raises ValueError
+        validate_path("/data/file.txt", allowed_prefixes=["/data/"])  # OK
+        validate_path("/etc/file.txt", allowed_prefixes=["/data/"])  # Raises ValueError
+        ```
+    """
+    # Check for traversal as a path component (not substring) to avoid
+    # false-positive rejection of legitimate filenames like "foo..bar.txt"
+    parts = PurePosixPath(path.replace("\\", "/")).parts
+    if ".." in parts or path.startswith("~"):
+        msg = f"Path traversal not allowed: {path}"
+        raise ValueError(msg)
+
+    # Reject Windows absolute paths (e.g., C:\..., D:/...)
+    if re.match(r"^[a-zA-Z]:", path):
+        msg = f"Windows absolute paths are not supported: {path}. Please use virtual paths starting with / (e.g., /workspace/file.txt)"
+        raise ValueError(msg)
+
+    normalized = os.path.normpath(path)
+    normalized = normalized.replace("\\", "/")
+
+    if not normalized.startswith("/"):
+        normalized = f"/{normalized}"
+
+    # Defense-in-depth: verify normpath didn't produce traversal
+    if ".." in normalized.split("/"):
+        msg = f"Path traversal detected after normalization: {path} -> {normalized}"
+        raise ValueError(msg)
+
+    if allowed_prefixes is not None and not any(normalized.startswith(prefix) for prefix in allowed_prefixes):
+        msg = f"Path must start with one of {allowed_prefixes}: {path}"
+        raise ValueError(msg)
+
+    return normalized
 
 
 def _normalize_path(path: str | None) -> str:
@@ -242,7 +320,8 @@ def _normalize_path(path: str | None) -> str:
     """
     path = path or "/"
     if not path or path.strip() == "":
-        raise ValueError("Path cannot be empty")
+        msg = "Path cannot be empty"
+        raise ValueError(msg)
 
     normalized = path if path.startswith("/") else "/" + path
 
@@ -288,7 +367,7 @@ def _glob_search_files(
     pattern: str,
     path: str = "/",
 ) -> str:
-    """Search files dict for paths matching glob pattern.
+    r"""Search files dict for paths matching glob pattern.
 
     Args:
         files: Dictionary of file paths to FileData.

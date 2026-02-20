@@ -3,6 +3,7 @@
 from unittest.mock import MagicMock
 
 import pytest
+from rich.markup import render
 
 from deepagents_cli.config import get_glyphs
 from deepagents_cli.widgets.approval import (
@@ -120,6 +121,14 @@ class TestGetCommandDisplay:
         display = menu._get_command_display(expanded=False)
         assert "12345" in display
 
+    def test_command_display_escapes_markup_tags(self) -> None:
+        """Shell command display should escape literal Rich tag sequences."""
+        command = "echo [/dim] [literal]"
+        menu = ApprovalMenu({"name": "shell", "args": {"command": command}})
+        display = menu._get_command_display(expanded=True)
+        rendered = render(display)
+        assert command in rendered.plain
+
 
 class TestToggleExpand:
     """Tests for `ApprovalMenu.action_toggle_expand`."""
@@ -180,7 +189,7 @@ class TestToggleExpand:
 
 
 class TestToolSetConsistency:
-    """Tests for tool set consistency between _MINIMAL_TOOLS and _SHELL_TOOLS."""
+    """Tests for tool set consistency between _MINIMAL_TOOLS and SHELL_TOOL_NAMES."""
 
     def test_bash_tool_is_expandable(self) -> None:
         """Test that bash tool commands can be expandable like shell commands.
@@ -201,7 +210,7 @@ class TestToolSetConsistency:
     def test_execute_tool_is_minimal(self) -> None:
         """Test that execute tool uses minimal display like shell.
 
-        The 'execute' tool is in _SHELL_TOOLS, so it should use minimal display.
+        The 'execute' tool is in SHELL_TOOL_NAMES, so it should use minimal display.
         """
         menu = ApprovalMenu({"name": "execute", "args": {"command": "echo hello"}})
         # execute should use minimal display like shell/bash

@@ -94,11 +94,16 @@ class CompletionController(Protocol):
 
 SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/help", "Show help"),
+    ("/changelog", "Open changelog in browser"),
     ("/clear", "Clear chat and start new thread"),
+    ("/docs", "Open documentation in browser"),
+    ("/feedback", "Submit a bug report or feature request"),
+    ("/model", "Switch model, show selector, or set default (--default)"),
     ("/remember", "Update memory and skills from conversation"),
     ("/quit", "Exit app"),
     ("/tokens", "Token usage"),
-    ("/threads", "Show thread info"),
+    ("/threads", "Browse and resume previous threads"),
+    ("/trace", "Open current thread in LangSmith"),
     ("/version", "Show version"),
 ]
 """Built-in slash commands with descriptions."""
@@ -126,7 +131,7 @@ class SlashCommandController:
         self._selected_index = 0
 
     @staticmethod
-    def can_handle(text: str, cursor_index: int) -> bool:  # noqa: ARG004
+    def can_handle(text: str, cursor_index: int) -> bool:  # noqa: ARG004  # Required by AutocompleteProvider interface
         """Handle input that starts with /.
 
         Returns:
@@ -160,9 +165,6 @@ class SlashCommandController:
             for cmd, desc in self._commands
             if cmd.lower().startswith("/" + search)
         ]
-
-        if len(suggestions) > MAX_SUGGESTIONS:
-            suggestions = suggestions[:MAX_SUGGESTIONS]
 
         if suggestions:
             self._suggestions = suggestions
@@ -284,7 +286,7 @@ def _get_project_files(root: Path) -> list[str]:
         for pattern in ["*", "*/*", "*/*/*", "*/*/*/*"]:
             for p in root.glob(pattern):
                 if p.is_file() and not any(part.startswith(".") for part in p.parts):
-                    files.append(str(p.relative_to(root)))
+                    files.append(p.relative_to(root).as_posix())
                 if len(files) >= _MAX_FALLBACK_FILES:
                     break
             if len(files) >= _MAX_FALLBACK_FILES:
@@ -301,10 +303,12 @@ def _fuzzy_score(query: str, candidate: str) -> float:
         Score value where higher indicates better match quality.
     """
     query_lower = query.lower()
-    candidate_lower = candidate.lower()
+    # Normalize path separators for cross-platform support
+    candidate_normalized = candidate.replace("\\", "/")
+    candidate_lower = candidate_normalized.lower()
 
     # Extract filename for matching (prioritize filename over full path)
-    filename = candidate.rsplit("/", 1)[-1].lower()
+    filename = candidate_normalized.rsplit("/", 1)[-1].lower()
     filename_start = candidate_lower.rfind("/") + 1
 
     # Check filename first (higher priority)

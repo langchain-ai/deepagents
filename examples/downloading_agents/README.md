@@ -21,7 +21,7 @@ uv tool install deepagents-cli==0.0.13
 mkdir my-project && cd my-project && git init
 
 # Download the agent
-curl -L https://raw.githubusercontent.com/langchain-ai/deepagents/master/examples/downloading_agents/content-writer.zip -o agent.zip
+curl -L https://raw.githubusercontent.com/langchain-ai/deepagents/main/examples/downloading_agents/content-writer.zip -o agent.zip
 
 # Unzip to .deepagents
 unzip agent.zip -d .deepagents
@@ -43,5 +43,5 @@ deepagents
 ## One-Liner
 
 ```bash
-git init && curl -L https://raw.githubusercontent.com/langchain-ai/deepagents/master/examples/downloading_agents/content-writer.zip -o agent.zip && unzip agent.zip -d .deepagents && rm agent.zip && deepagents
+git init && curl -L https://raw.githubusercontent.com/langchain-ai/deepagents/main/examples/downloading_agents/content-writer.zip -o agent.zip && unzip agent.zip -d .deepagents && rm agent.zip && deepagents
 ```

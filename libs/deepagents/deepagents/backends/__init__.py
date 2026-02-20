@@ -3,18 +3,25 @@
 from deepagents.backends.composite import CompositeBackend
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.langsmith import LangSmithBackend, LangSmithProvider
-from deepagents.backends.local_shell import LocalShellBackend
+from deepagents.backends.local_shell import DEFAULT_EXECUTE_TIMEOUT, LocalShellBackend
 from deepagents.backends.protocol import BackendProtocol
 from deepagents.backends.state import StateBackend
-from deepagents.backends.store import StoreBackend
+from deepagents.backends.store import (
+    BackendContext,
+    NamespaceFactory,
+    StoreBackend,
+)
 
 __all__ = [
+    "DEFAULT_EXECUTE_TIMEOUT",
+    "BackendContext",
     "BackendProtocol",
     "CompositeBackend",
     "FilesystemBackend",
     "LangSmithBackend",
     "LangSmithProvider",
     "LocalShellBackend",
+    "NamespaceFactory",
     "StateBackend",
     "StoreBackend",
 ]

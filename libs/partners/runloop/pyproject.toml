@@ -1,0 +1,98 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "langchain-runloop"
+description = "Runloop sandbox integration for Deep Agents"
+license = { text = "MIT" }
+readme = "README.md"
+
+classifiers = [
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+version = "0.0.2"
+requires-python = ">=3.11,<4.0"
+dependencies = [
+    "deepagents>=0.4.3",
+    "runloop-api-client",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["langchain_runloop"]
+
+
+[project.urls]
+Homepage = "https://github.com/langchain-ai/deepagents/tree/main/libs/partners/runloop"
+Repository = "https://github.com/langchain-ai/deepagents"
+Documentation = "https://github.com/langchain-ai/deepagents/tree/main/libs/partners/runloop"
+
+[dependency-groups]
+test = [
+    "pytest>=7.3.0,<9.0.0",
+    "pytest-cov",
+    "pytest-socket",
+    "pytest-xdist",
+    "pytest-timeout>=2.3.1,<3.0.0",
+    "pytest-asyncio>=1.3.0",
+    "ruff>=0.13.1,<0.16.0",
+    "ty>=0.0.1,<1.0.0",
+    "langchain-tests",
+]
+
+[tool.uv.sources]
+deepagents = { path = "../../deepagents", editable = true }
+
+[tool.uv]
+constraint-dependencies = ["urllib3>=2.6.3"]
+
+[tool.ty.environment]
+python-version = "3.11"
+extra-paths = ["../../deepagents"]
+
+[tool.ty.rules]
+# https://docs.astral.sh/ty/rules/
+division-by-zero = "error"
+
+[tool.ruff.format]
+docstring-code-format = true
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+    "COM812",  # Messes with the formatter
+    "ISC001",  # Messes with the formatter
+    "ANN401",  # Dynamically typed expressions (typing.Any) are disallowed — too strict for generic wrappers
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+ignore-var-parameters = true  # ignore missing documentation for *args and **kwargs parameters
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
+
+[tool.coverage.run]
+omit = ["tests/*"]
+
+[tool.pytest.ini_options]
+addopts = "--strict-markers --strict-config --durations=5"
+testpaths = ["tests"]
+markers = [
+    "requires: mark tests as requiring a specific library",
+    "compile: mark placeholder test used to compile integration tests without running them",
+    "scheduled: mark tests to run in scheduled testing",
+]
+asyncio_mode = "auto"
+filterwarnings = []
+
+[tool.ruff.lint.extend-per-file-ignores]
+"tests/**/*.py" = ["D", "S101"]

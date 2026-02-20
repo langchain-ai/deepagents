@@ -1,7 +1,6 @@
-.PHONY: all lint format test help
+.PHONY: lint format test help test_watch toad
 
-# Default target executed when no arguments are given to make.
-all: help
+.DEFAULT_GOAL := help
 
 ######################
 # TESTING AND COVERAGE
@@ -10,14 +9,14 @@ all: help
 # Define a variable for the test file path.
 TEST_FILE ?= tests/
 
-test:
-	uv run pytest --disable-socket --allow-unix-socket $(TEST_FILE) --timeout 10
+test: ## Run unit tests with coverage
+	uv run pytest --disable-socket --allow-unix-socket $(TEST_FILE) --timeout 10 --cov=deepagents_acp --cov-report=term-missing --cov-report=xml
 
-test_watch:
+test_watch: ## Run tests in watch mode
 	uv run ptw . -- $(TEST_FILE)
 
-toad:
-	uv run toad acp "deepacp"
+toad: ## Run toad ACP server
+	uv run toad acp 'bash ./run.sh'
 
 
 ######################
@@ -26,29 +25,25 @@ toad:
 
 # Define a variable for Python and notebook files.
 lint format: PYTHON_FILES=deepagents_acp/ tests/
-lint_diff format_diff: PYTHON_FILES=$(shell git diff --relative=. --name-only --diff-filter=d master | grep -E '\.py$$|\.ipynb$$')
+lint_diff format_diff: PYTHON_FILES=$(shell git diff --relative=. --name-only --diff-filter=d main | grep -E '\.py$$|\.ipynb$$')
 
+lint: ## Run linters and type checker
 lint lint_diff:
 	[ "$(PYTHON_FILES)" = "" ] ||	uv run --group test ruff format $(PYTHON_FILES) --diff
-	[ "$(PYTHON_FILES)" = "" ] ||	uv run --group test ruff check $(PYTHON_FILES) --diff
-	# [ "$(PYTHON_FILES)" = "" ] || uv run --group dev ty check $(PYTHON_FILES)
+	[ "$(PYTHON_FILES)" = "" ] ||	uv run --group test ruff check $(PYTHON_FILES)
+	uv run --group test ty check deepagents_acp
 
+format: ## Run code formatters
 format format_diff:
 	[ "$(PYTHON_FILES)" = "" ] || uv run --group test ruff format $(PYTHON_FILES)
 	[ "$(PYTHON_FILES)" = "" ] || uv run --group test ruff check --fix $(PYTHON_FILES)
-
-
 
 ######################
 # HELP
 ######################
 
-help:
-	@echo '===================='
-	@echo '-- LINTING --'
-	@echo 'format                       - run code formatters'
-	@echo 'lint                         - run linters'
-	@echo '-- TESTS --'
-	@echo 'test                         - run unit tests'
-	@echo 'test TEST_FILE=<test_file>   - run all tests in file'
-	@echo '-- DOCUMENTATION tasks are from the top-level Makefile --'
+help: ## Show this help message
+	@echo "Usage: make [target] [TEST_FILE=path/to/tests/]"
+	@echo ""
+	@echo "Targets:"
+	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z_-]+:.*##/ {printf "  %-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)

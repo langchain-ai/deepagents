@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -10,7 +11,9 @@ from textual.css.query import NoMatches
 from textual.reactive import reactive
 from textual.widgets import Static
 
-from deepagents_cli.config import settings
+from deepagents_cli.config import COLORS, settings
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
@@ -37,13 +40,13 @@ class StatusBar(Horizontal):
     }
 
     StatusBar .status-mode.bash {
-        background: #ff1493;
+        background: __MODE_BASH__;
         color: white;
         text-style: bold;
     }
 
     StatusBar .status-mode.command {
-        background: #8b5cf6;
+        background: __MODE_CMD__;
         color: white;
     }
 
@@ -89,7 +92,9 @@ class StatusBar(Horizontal):
         padding: 0 1;
         color: $text-muted;
     }
-    """
+    """.replace("__MODE_BASH__", COLORS["mode_bash"]).replace(
+        "__MODE_CMD__", COLORS["mode_command"]
+    )
 
     mode: reactive[str] = reactive("normal", init=False)
     status_message: reactive[str] = reactive("", init=False)
@@ -122,9 +127,19 @@ class StatusBar(Horizontal):
         )
         yield Static("", classes="status-message", id="status-message")
         yield Static("", classes="status-tokens", id="tokens-display")
-        yield Static(
-            settings.model_name or "", classes="status-model", id="model-display"
-        )
+        model_display = self._format_model_display()
+        yield Static(model_display, classes="status-model", id="model-display")
+
+    def _format_model_display(self) -> str:  # noqa: PLR6301  # Textual widget method convention
+        """Format the model display string.
+
+        Returns:
+            Model display string in `provider:model` format if provider is known,
+                otherwise just the model name.
+        """
+        if settings.model_provider and settings.model_name:
+            return f"{settings.model_provider}:{settings.model_name}"
+        return settings.model_name or ""
 
     def on_mount(self) -> None:
         """Set reactive values after mount to trigger watchers safely."""
@@ -197,7 +212,7 @@ class StatusBar(Horizontal):
             # Try to use ~ for home directory
             home = Path.home()
             if path.is_relative_to(home):
-                return "~/" + str(path.relative_to(home))
+                return "~/" + path.relative_to(home).as_posix()
         except (ValueError, RuntimeError):
             pass
         return str(path)
@@ -235,7 +250,7 @@ class StatusBar(Horizontal):
 
         if new_value > 0:
             # Format with K suffix for thousands
-            if new_value >= 1000:
+            if new_value >= 1000:  # noqa: PLR2004  # Count formatting threshold
                 display.update(f"{new_value / 1000:.1f}K tokens")
             else:
                 display.update(f"{new_value} tokens")
@@ -253,3 +268,12 @@ class StatusBar(Horizontal):
     def hide_tokens(self) -> None:
         """Hide the token display (e.g., during streaming)."""
         self.query_one("#tokens-display", Static).update("")
+
+    def set_model(self, model_spec: str) -> None:
+        """Update the model display text.
+
+        Args:
+            model_spec: Model specification to display (e.g.,
+                `'anthropic:claude-sonnet-4-5'`).
+        """
+        self.query_one("#model-display", Static).update(model_spec)

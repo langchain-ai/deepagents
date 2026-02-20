@@ -1,32 +1,32 @@
 """Agent management and creation for the CLI."""
 
+from __future__ import annotations
+
 import os
 import shutil
 import tempfile
-from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from deepagents import create_deep_agent
-from deepagents.backends import CompositeBackend
+from deepagents.backends import CompositeBackend, LocalShellBackend
 from deepagents.backends.filesystem import FilesystemBackend
-from deepagents.backends.local_shell import LocalShellBackend
-from deepagents.backends.sandbox import SandboxBackendProtocol
 from deepagents.middleware import MemoryMiddleware, SkillsMiddleware
+from langgraph.checkpoint.memory import InMemorySaver
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Sequence
+
+    from deepagents.backends.sandbox import SandboxBackendProtocol
     from deepagents.middleware.subagents import CompiledSubAgent, SubAgent
-from langchain.agents.middleware import (
-    InterruptOnConfig,
-)
-from langchain.agents.middleware.types import AgentState
-from langchain.messages import ToolCall
-from langchain.tools import BaseTool
-from langchain_core.language_models import BaseChatModel
-from langgraph.checkpoint.base import BaseCheckpointSaver
-from langgraph.checkpoint.memory import InMemorySaver
-from langgraph.pregel import Pregel
-from langgraph.runtime import Runtime
+    from langchain.agents.middleware import InterruptOnConfig
+    from langchain.agents.middleware.types import AgentState
+    from langchain.messages import ToolCall
+    from langchain.tools import BaseTool
+    from langchain_core.language_models import BaseChatModel
+    from langgraph.checkpoint.base import BaseCheckpointSaver
+    from langgraph.pregel import Pregel
+    from langgraph.runtime import Runtime
 
 from deepagents_cli.config import (
     COLORS,
@@ -37,8 +37,11 @@ from deepagents_cli.config import (
     settings,
 )
 from deepagents_cli.integrations.sandbox_factory import get_default_working_dir
-from deepagents_cli.local_context import LocalContextMiddleware
+from deepagents_cli.local_context import LocalContextMiddleware, _ExecutableBackend
 from deepagents_cli.subagents import list_subagents
+
+DEFAULT_AGENT_NAME = "agent"
+"""The default agent name used when no `-a` flag is provided."""
 
 
 def list_agents() -> None:
@@ -60,16 +63,20 @@ def list_agents() -> None:
         if agent_path.is_dir():
             agent_name = agent_path.name
             agent_md = agent_path / "AGENTS.md"
+            is_default = agent_name == DEFAULT_AGENT_NAME
+            default_label = " [dim](default)[/dim]" if is_default else ""
 
             bullet = get_glyphs().bullet
             if agent_md.exists():
                 console.print(
-                    f"  {bullet} [bold]{agent_name}[/bold]", style=COLORS["primary"]
+                    f"  {bullet} [bold]{agent_name}[/bold]{default_label}",
+                    style=COLORS["primary"],
                 )
                 console.print(f"    {agent_path}", style=COLORS["dim"])
             else:
                 console.print(
-                    f"  {bullet} [bold]{agent_name}[/bold] [dim](incomplete)[/dim]",
+                    f"  {bullet} [bold]{agent_name}[/bold]{default_label}"
+                    " [dim](incomplete)[/dim]",
                     style=COLORS["tool"],
                 )
                 console.print(f"    {agent_path}", style=COLORS["dim"])
@@ -119,30 +126,39 @@ def reset_agent(agent_name: str, source_agent: str | None = None) -> None:
 def get_system_prompt(assistant_id: str, sandbox_type: str | None = None) -> str:
     """Get the base system prompt for the agent.
 
-    This includes:
-    1. The immutable base instructions from default_agent_prompt.md
-    2. Environment-specific context (working directory, model info, etc.)
+    Loads the immutable system prompt from `system_prompt.md` and
+    interpolates dynamic sections (model identity, working directory,
+    skills path).
 
     Args:
         assistant_id: The agent identifier for path references
         sandbox_type: Type of sandbox provider
-            ("daytona", "langsmith", "modal", "runloop").
+            (`'daytona'`, `'langsmith'`, `'modal'`, `'runloop'`).
 
-            If None, agent is operating in local mode.
+            If `None`, agent is operating in local mode.
 
     Returns:
-        The system prompt string (base instructions + environment context)
+        The system prompt string
+
+    Example:
+        ```txt
+        You are running as model {MODEL} (provider: {PROVIDER}).
+
+        Your context window is {CONTEXT_WINDOW} tokens.
+
+        ... {CONDITIONAL SECTIONS} ...
+        ```
     """
-    # Always load base instructions fresh from package
-    base_instructions = get_default_coding_instructions()
-    agent_dir_path = f"~/.deepagents/{assistant_id}"
+    template = (Path(__file__).parent / "system_prompt.md").read_text()
+
+    skills_path = f"~/.deepagents/{assistant_id}/skills/"
 
     # Build model identity section
     model_identity_section = ""
     if settings.model_name:
-        model_identity_section = f"""### Model Identity
-
-You are running as model `{settings.model_name}`"""
+        model_identity_section = (
+            f"### Model Identity\n\nYou are running as model `{settings.model_name}`"
+        )
         if settings.model_provider:
             model_identity_section += f" (provider: {settings.model_provider})"
         model_identity_section += ".\n"
@@ -152,85 +168,37 @@ You are running as model `{settings.model_name}`"""
             )
         model_identity_section += "\n"
 
+    # Build working directory section (local vs sandbox)
     if sandbox_type:
-        # Get provider-specific working directory
-
         working_dir = get_default_working_dir(sandbox_type)
-
-        working_dir_section = f"""### Current Working Directory
-
-You are operating in a **remote Linux sandbox** at `{working_dir}`.
-
-All code execution and file operations happen in this sandbox environment.
-
-**Important:**
-- The CLI is running locally on the user's machine, but you execute code remotely
-- Use `{working_dir}` as your working directory for all operations
-
-"""
+        working_dir_section = (
+            f"### Current Working Directory\n\n"
+            f"You are operating in a **remote Linux sandbox** at `{working_dir}`.\n\n"
+            f"All code execution and file operations happen in this sandbox "
+            f"environment.\n\n"
+            f"**Important:**\n"
+            f"- The CLI is running locally on the user's machine, but you execute "
+            f"code remotely\n"
+            f"- Use `{working_dir}` as your working directory for all operations\n\n"
+        )
     else:
         cwd = Path.cwd()
-        working_dir_section = f"""### Current Working Directory
-
-The filesystem backend is currently operating in: `{cwd}`
-
-### File System and Paths
-
-**IMPORTANT - Path Handling:**
-- All file paths must be absolute paths (e.g., `{cwd}/file.txt`)
-- Use the working directory to construct absolute paths
-- Example: To create a file in your working directory, use `{cwd}/research_project/file.md`
-- Never use relative paths - always construct full absolute paths
-
-"""  # noqa: E501
+        working_dir_section = (
+            f"### Current Working Directory\n\n"
+            f"The filesystem backend is currently operating in: `{cwd}`\n\n"
+            f"### File System and Paths\n\n"
+            f"**IMPORTANT - Path Handling:**\n"
+            f"- All file paths must be absolute paths (e.g., `{cwd}/file.txt`)\n"
+            f"- Use the working directory to construct absolute paths\n"
+            f"- Example: To create a file in your working directory, "
+            f"use `{cwd}/research_project/file.md`\n"
+            f"- Never use relative paths - always construct full absolute paths\n\n"
+        )
 
     return (
-        base_instructions
-        + "\n\n---\n\n"
-        + model_identity_section
-        + working_dir_section
-        + f"""### Skills Directory
-
-Your skills are stored at: `{agent_dir_path}/skills/`
-Skills may contain scripts or supporting files. When executing skill scripts with bash, use the real filesystem path:
-Example: `bash python {agent_dir_path}/skills/web-research/script.py`
-
-### Human-in-the-Loop Tool Approval
-
-Some tool calls require user approval before execution. When a tool call is rejected by the user:
-1. Accept their decision immediately - do NOT retry the same command
-2. Explain that you understand they rejected the action
-3. Suggest an alternative approach or ask for clarification
-4. Never attempt the exact same rejected command again
-
-Respect the user's decisions and work with them collaboratively.
-
-### Web Search Tool Usage
-
-When you use the web_search tool:
-1. The tool will return search results with titles, URLs, and content excerpts
-2. You MUST read and process these results, then respond naturally to the user
-3. NEVER show raw JSON or tool results directly to the user
-4. Synthesize the information from multiple sources into a coherent answer
-5. Cite your sources by mentioning page titles or URLs when relevant
-6. If the search doesn't find what you need, explain what you found and ask clarifying questions
-
-The user only sees your text responses - not tool results. Always provide a complete, natural language answer after using web_search.
-
-### Todo List Management
-
-When using the write_todos tool:
-1. Keep the todo list MINIMAL - aim for 3-6 items maximum
-2. Only create todos for complex, multi-step tasks that truly need tracking
-3. Break down work into clear, actionable items without over-fragmenting
-4. For simple tasks (1-2 steps), just do them directly without creating todos
-5. When first creating a todo list for a task, ALWAYS ask the user if the plan looks good before starting work
-   - Create the todos, let them render, then ask: "Does this plan look good?" or similar
-   - Wait for the user's response before marking the first todo as in_progress
-   - If they want changes, adjust the plan accordingly
-6. Update todo status promptly as you complete each item
-
-The todo list is a planning tool - use it judiciously to avoid overwhelming the user with excessive task tracking."""  # noqa: E501
+        template.replace("{model_identity_section}", model_identity_section)
+        .replace("{working_dir_section}", working_dir_section)
+        .replace("{skills_path}", skills_path)
     )
 
 
@@ -321,7 +289,7 @@ def _format_task_description(
 
     # Truncate description if too long for display
     description_preview = description
-    if len(description) > 500:
+    if len(description) > 500:  # noqa: PLR2004  # Subagent description length threshold
         description_preview = description[:500] + "..."
 
     glyphs = get_glyphs()
@@ -351,40 +319,46 @@ def _format_execute_description(
 
 
 def _add_interrupt_on() -> dict[str, InterruptOnConfig]:
-    """Configure human-in-the-loop interrupt_on settings for destructive tools.
+    """Configure human-in-the-loop interrupt settings for all gated tools.
+
+    Every tool that can have side effects or access external resources
+    (shell execution, file writes/edits, web search, URL fetch, task
+    delegation) is gated behind an approval prompt unless auto-approve
+    is enabled.
 
     Returns:
         Dictionary mapping tool names to their interrupt configuration.
     """
     execute_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
-        "description": _format_execute_description,  # type: ignore[typeddict-item]
+        "description": _format_execute_description,  # type: ignore[typeddict-item]  # Callable description narrower than TypedDict expects
     }
 
     write_file_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
-        "description": _format_write_file_description,  # type: ignore[typeddict-item]
+        "description": _format_write_file_description,  # type: ignore[typeddict-item]  # Callable description narrower than TypedDict expects
     }
 
     edit_file_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
-        "description": _format_edit_file_description,  # type: ignore[typeddict-item]
+        "description": _format_edit_file_description,  # type: ignore[typeddict-item]  # Callable description narrower than TypedDict expects
     }
 
     web_search_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
-        "description": _format_web_search_description,  # type: ignore[typeddict-item]
+        "description": _format_web_search_description,  # type: ignore[typeddict-item]  # Callable description narrower than TypedDict expects
     }
 
     fetch_url_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
-        "description": _format_fetch_url_description,  # type: ignore[typeddict-item]
+        "description": _format_fetch_url_description,  # type: ignore[typeddict-item]  # Callable description narrower than TypedDict expects
     }
 
     task_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
-        "description": _format_task_description,  # type: ignore[typeddict-item]
+        "description": _format_task_description,  # type: ignore[typeddict-item]  # Callable description narrower than TypedDict expects
     }
+
     return {
         "execute": execute_interrupt_config,
         "write_file": write_file_interrupt_config,
@@ -428,10 +402,12 @@ def create_cli_agent(
         system_prompt: Override the default system prompt.
 
             If `None`, generates one based on `sandbox_type` and `assistant_id`.
-        auto_approve: If `True`, automatically approves all tool calls without
-            human confirmation.
+        auto_approve: If `True`, no tools trigger human-in-the-loop
+            interrupts — all calls (shell execution, file writes/edits,
+            web search, URL fetch) run automatically.
 
-            Useful for automated workflows.
+            If `False`, tools pause for user confirmation via the approval menu.
+            See `_add_interrupt_on` for the full list of gated tools.
         enable_memory: Enable `MemoryMiddleware` for persistent memory
         enable_skills: Enable `SkillsMiddleware` for custom agent skills
         enable_shell: Enable shell execution via `LocalShellBackend`
@@ -490,9 +466,7 @@ def create_cli_agent(
     # Add memory middleware
     if enable_memory:
         memory_sources = [str(settings.get_user_agent_md_path(assistant_id))]
-        project_agent_md = settings.get_project_agent_md_path()
-        if project_agent_md:
-            memory_sources.append(str(project_agent_md))
+        memory_sources.extend(str(p) for p in settings.get_project_agent_md_path())
 
         agent_middleware.append(
             MemoryMiddleware(
@@ -503,7 +477,9 @@ def create_cli_agent(
 
     # Add skills middleware
     if enable_skills:
-        sources = [str(skills_dir)]
+        # Built-in first (lowest precedence), then user, then project (highest)
+        sources = [str(settings.get_built_in_skills_dir())]
+        sources.append(str(skills_dir))
         if project_skills_dir:
             sources.append(str(project_skills_dir))
 
@@ -525,7 +501,8 @@ def create_cli_agent(
                 shell_env["LANGSMITH_PROJECT"] = settings.user_langchain_project
 
             # Use LocalShellBackend for filesystem + shell execution.
-            # Provides `execute` tool via FilesystemMiddleware.
+            # The SDK's FilesystemMiddleware exposes per-command timeout
+            # on the execute tool natively.
             backend = LocalShellBackend(
                 root_dir=Path.cwd(),
                 inherit_env=True,
@@ -534,14 +511,17 @@ def create_cli_agent(
         else:
             # No shell access - use plain FilesystemBackend
             backend = FilesystemBackend()
-
-        # Local context middleware (git info, directory tree, etc.)
-        agent_middleware.append(LocalContextMiddleware())
     else:
         # ========== REMOTE SANDBOX MODE ==========
         backend = sandbox  # Remote sandbox (ModalBackend, etc.)
         # Note: Shell middleware not used in sandbox mode
         # File operations and execute tool are provided by the sandbox backend
+
+    # Local context middleware (git info, directory tree, etc.)
+    # Uses backend.execute() so it works in both local shell and remote sandbox modes.
+    # Only enabled when the backend supports shell execution.
+    if isinstance(backend, _ExecutableBackend):
+        agent_middleware.append(LocalContextMiddleware(backend=backend))
 
     # Get or use custom system prompt
     if system_prompt is None:
@@ -551,12 +531,12 @@ def create_cli_agent(
 
     # Configure interrupt_on based on auto_approve setting
     interrupt_on: dict[str, bool | InterruptOnConfig] | None = None
-    if auto_approve:
+    if auto_approve:  # noqa: SIM108  # if-else more readable for interrupt_on config
         # No interrupts - all tools run automatically
         interrupt_on = {}
     else:
         # Full HITL for destructive operations
-        interrupt_on = _add_interrupt_on()  # type: ignore[assignment]
+        interrupt_on = _add_interrupt_on()  # type: ignore[assignment]  # InterruptOnConfig is compatible at runtime
 
     # Set up composite backend with routing
     # For local FilesystemBackend, route large tool results to /tmp to avoid polluting

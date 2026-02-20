@@ -590,6 +590,5 @@ def create_cli_agent(
         interrupt_on=interrupt_on,
         checkpointer=final_checkpointer,
         subagents=custom_subagents or None,
-        enable_compact_tool=True,
     ).with_config(config)
     return agent, composite_backend

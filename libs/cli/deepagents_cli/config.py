@@ -356,20 +356,22 @@ def _find_project_agent_md(project_root: Path) -> list[Path]:
         project_root: Path to the project root directory.
 
     Returns:
-        List of paths to project AGENTS.md files (may contain 0, 1, or 2 paths).
+        Existing AGENTS.md paths.
+
+            Empty if neither file exists, one entry if only one is present, or
+            two entries if both locations have the file.
     """
-    paths = []
-
-    # Check .deepagents/AGENTS.md (preferred)  # noqa: ERA001
-    deepagents_md = project_root / ".deepagents" / "AGENTS.md"
-    if deepagents_md.exists():
-        paths.append(deepagents_md)
-
-    # Check root AGENTS.md (fallback, but also include if both exist)
-    root_md = project_root / "AGENTS.md"
-    if root_md.exists():
-        paths.append(root_md)
-
+    candidates = [
+        project_root / ".deepagents" / "AGENTS.md",
+        project_root / "AGENTS.md",
+    ]
+    paths: list[Path] = []
+    for candidate in candidates:
+        try:
+            if candidate.exists():
+                paths.append(candidate)
+        except OSError:
+            pass
     return paths
 
 
@@ -568,10 +570,16 @@ class Settings:
         """Get project-level AGENTS.md paths.
 
         Checks both `{project_root}/.deepagents/AGENTS.md` and
-        `{project_root}/AGENTS.md`, returning all that exist.
+        `{project_root}/AGENTS.md`, returning all that exist. If both are
+        present, both are loaded and their instructions are combined, with
+        `.deepagents/AGENTS.md` first.
 
         Returns:
-            List of paths to project AGENTS.md files (may contain 0, 1, or 2 paths).
+            Existing AGENTS.md paths.
+
+                Empty if neither file exists or not in a project, one entry if
+                only one is present, or two entries if both locations have the
+                file.
         """
         if not self.project_root:
             return []

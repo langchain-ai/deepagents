@@ -6,71 +6,64 @@ safe to import from the argument-parsing path (no heavy deps).
 """
 
 # ---------------------------------------------------------------------------
-# Brand palette
+# Brand palette  (tokyonight-inspired, LangChain blue primary)
 # ---------------------------------------------------------------------------
-LC_DARK = "#030710"
-"""Deep dark-blue background."""
+LC_DARK = "#11121D"
+"""Background — visible blue tint, distinguishable from pure black."""
 
-LC_CARD = "#0B1120"
-"""Surface / card background."""
+LC_CARD = "#1A1B2E"
+"""Surface / card — clearly elevated above background."""
 
-LC_BORDER = "#B8DFFF"
-"""Light borders on dark backgrounds."""
-
-LC_BORDER_DK = "#1A2740"
+LC_BORDER_DK = "#25283B"
 """Borders on dark backgrounds."""
 
-LC_MUTED = "#6B8299"
-"""Muted / secondary text."""
+LC_BODY = "#C0CAF5"
+"""Body text — high contrast on dark backgrounds."""
 
-LC_BODY = "#C8DDF0"
-"""Body text."""
-
-LC_WHITE = "#FFFFFF"
-"""Headings."""
-
-LC_BLUE = "#7FC8FF"
+LC_BLUE = "#7AA2F7"
 """Primary accent blue."""
 
-LC_BLUE_HVR = "#99D4FF"
-"""Hover variant of primary blue."""
+LC_PURPLE = "#BB9AF7"
+"""Secondary accent / badges / labels."""
 
-LC_LIME = "#E3FF8F"
+LC_GREEN = "#9ECE6A"
 """Success / positive indicator."""
 
-LC_ROSE = "#B27D75"
-"""Warm accent (dev install indicator)."""
+LC_AMBER = "#E0AF68"
+"""Warning / caution indicator."""
 
-LC_PINK = "#C78EAD"
-"""Decorative pink."""
+LC_PINK = "#F7768E"
+"""Error / destructive actions."""
 
-LC_LAVENDER = "#D5C3F7"
-"""Badges / labels."""
+LC_ORANGE = "#FF9E64"
+"""Dev install indicator / warm accent."""
+
+LC_CYAN = "#7DCFFF"
+"""Info / decorative accent."""
 
 # ---------------------------------------------------------------------------
 # Semantic constants  (Rich markup — cannot use CSS variables)
 # ---------------------------------------------------------------------------
 PRIMARY = LC_BLUE
-PRIMARY_DEV = LC_ROSE
-PRIMARY_HOVER = LC_BLUE_HVR
-SUCCESS = LC_LIME
-WARNING = "#f59e0b"
-ERROR = "#ef4444"
-MUTED = LC_MUTED
+PRIMARY_DEV = LC_ORANGE
+SUCCESS = LC_GREEN
+WARNING = LC_AMBER
+ERROR = LC_PINK
+MUTED = "#545C7E"
 
 MODE_BASH = LC_PINK
-MODE_COMMAND = LC_LAVENDER
+MODE_COMMAND = LC_PURPLE
 
 # Diff colors
-DIFF_ADD_FG = "#8ce99a"
-DIFF_ADD_BG = "#0f2818"
-DIFF_REMOVE_FG = "#ff8787"
-DIFF_REMOVE_BG = "#2a1018"
-DIFF_CONTEXT = LC_MUTED
+DIFF_ADD_FG = "#9ECE6A"
+DIFF_ADD_BG = "#1C2A38"
+DIFF_REMOVE_FG = "#F7768E"
+DIFF_REMOVE_BG = "#2A1F32"
+DIFF_CONTEXT = MUTED
 
 # Tool call widget
 TOOL_BORDER = LC_BORDER_DK
-TOOL_BORDER_HVR = "#2a3a55"
+TOOL_BORDER_HVR = "#3A3E57"
 TOOL_HEADER = WARNING
 TOOL_PENDING = WARNING
 TOOL_SUCCESS = SUCCESS
@@ -82,5 +75,5 @@ FILE_CONFIG = WARNING
 FILE_DIR = SUCCESS
 
 # Misc
-ERROR_BG = "#2a1018"
+ERROR_BG = "#2A1F32"
 SPINNER = LC_BLUE

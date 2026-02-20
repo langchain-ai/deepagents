@@ -426,17 +426,14 @@ class DeepAgentsApp(App):
             Theme(
                 name="langchain",
                 primary=theme_colors.PRIMARY,
-                secondary=theme_colors.LC_LAVENDER,
+                secondary=theme_colors.LC_PURPLE,
+                foreground=theme_colors.LC_BODY,
                 background=theme_colors.LC_DARK,
                 surface=theme_colors.LC_CARD,
                 warning=theme_colors.WARNING,
                 error=theme_colors.ERROR,
                 success=theme_colors.SUCCESS,
                 dark=True,
-                variables={
-                    "text": theme_colors.LC_BODY,
-                    "text-muted": theme_colors.MUTED,
-                },
             )
         )
         self.theme = "langchain"

@@ -34,7 +34,6 @@ from __future__ import annotations
 
 import logging
 import uuid
-import warnings
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Annotated, Any, NotRequired, cast
 
@@ -117,10 +116,8 @@ class SummarizationDefaults(TypedDict):
     truncate_args_settings: TruncateArgsSettings
 
 
-def _compute_summarization_defaults(model: BaseChatModel) -> SummarizationDefaults:
+def compute_summarization_defaults(model: BaseChatModel) -> SummarizationDefaults:
     """Compute default summarization settings based on model profile.
-
-    This is an internal helper function used by middleware implementations.
 
     Args:
         model: A resolved chat model instance.
@@ -427,38 +424,18 @@ A condensed summary follows:
     def _get_effective_messages(self, request: ModelRequest) -> list[AnyMessage]:
         """Generate effective messages for model call based on summarization event.
 
-        This reconstructs the message list by applying the most recent summarization event.
-        After summarization, instead of using all messages from state, we use the summary
-        message plus messages after the cutoff index.
+        Delegates to `_apply_event_to_messages` so the defensive checks
+        (malformed event, out-of-bounds cutoff) are shared with the compact
+        tool path.
 
         Args:
             request: The model request with messages from state.
 
         Returns:
-            The effective message list to use for the model call. This includes the
-            most recent summary message (if we've summarized) and all preserved
-            messages from the cutoff index onward.
+            The effective message list to use for the model call.
         """
-        # Get messages from request (these are from state["messages"])
-        messages = request.messages
-
-        # Get summarization event from state
         event = request.state.get("_summarization_event")
-
-        # If no summarization event, return all messages as-is
-        if event is None:
-            return messages
-
-        # Apply the summarization event
-        # The cutoff_index tells us: messages before cutoff are summarized, messages at/after are kept
-
-        # Build effective messages: summary message, then messages from cutoff onward
-        result = [event["summary_message"]]
-
-        # Add messages from cutoff_index onward (messages at cutoff_index and after are preserved)
-        result.extend(messages[event["cutoff_index"] :])
-
-        return result
+        return self._apply_event_to_messages(request.messages, event)
 
     @staticmethod
     def _apply_event_to_messages(
@@ -498,6 +475,28 @@ A condensed summary follows:
         result: list[AnyMessage] = [summary_msg]
         result.extend(messages[cutoff_idx:])
         return result
+
+    @staticmethod
+    def _compute_state_cutoff(
+        event: SummarizationEvent | None,
+        effective_cutoff: int,
+    ) -> int:
+        """Translate an effective-list cutoff index to an absolute state index.
+
+        When a prior summarization event exists, the effective message list
+        starts with the summary message at index 0. The absolute index accounts
+        for the old cutoff minus 1 (the summary replaces the old prefix).
+
+        Args:
+            event: The prior `_summarization_event`, or `None`.
+            effective_cutoff: Cutoff index within the effective message list.
+
+        Returns:
+            The absolute cutoff index for the state.
+        """
+        if event is None:
+            return effective_cutoff
+        return event["cutoff_index"] + effective_cutoff - 1
 
     def _resolve_backend_for_tool(self, runtime: ToolRuntime) -> BackendProtocol:
         """Resolve backend from instance or factory using a `ToolRuntime`.
@@ -566,12 +565,7 @@ A condensed summary follows:
             A `Command` with `_summarization_event` state update.
         """
         summary_msg = self._build_new_messages_with_path(summary, file_path)[0]
-
-        # The cutoff is relative to the effective message list. When a prior
-        # event exists, translate back to an absolute index by adding the old
-        # cutoff and subtracting 1 (the summary message at index 0 of the
-        # effective list replaces the entire old prefix).
-        state_cutoff = event["cutoff_index"] + cutoff - 1 if event is not None else cutoff
+        state_cutoff = self._compute_state_cutoff(event, cutoff)
 
         new_event: SummarizationEvent = {
             "cutoff_index": state_cutoff,
@@ -630,8 +624,8 @@ A condensed summary follows:
                         content=(
                             "Compaction failed: an error occurred while "
                             f"generating the summary ({type(exc).__name__}: "
-                            f"{exc}). The conversation state has not been "
-                            "modified."
+                            f"{exc}). The conversation graph state has not "
+                            "been modified."
                         ),
                         tool_call_id=tool_call_id,
                     )
@@ -660,13 +654,16 @@ A condensed summary follows:
 
         try:
             to_summarize, _ = self._partition_messages(effective, cutoff)
+            # Generate summary before offloading so no backend side effects
+            # occur if the LLM call fails.
             summary = self._create_summary(to_summarize)
-            backend = self._resolve_backend_for_tool(runtime)
-            file_path = self._offload_to_backend(backend, to_summarize)
-            return self._build_compact_result(runtime, to_summarize, summary, file_path, event, cutoff)
-        except Exception as exc:
+        except Exception as exc:  # tool must return a ToolMessage, not raise
             logger.exception("compact_conversation tool failed")
             return self._compact_error(tool_call_id, exc)
+
+        backend = self._resolve_backend_for_tool(runtime)
+        file_path = self._offload_to_backend(backend, to_summarize)
+        return self._build_compact_result(runtime, to_summarize, summary, file_path, event, cutoff)
 
     async def _arun_compact(self, runtime: ToolRuntime) -> Command:
         """Async variant of `_run_compact`. See that method for details.
@@ -689,13 +686,16 @@ A condensed summary follows:
 
         try:
             to_summarize, _ = self._partition_messages(effective, cutoff)
+            # Generate summary before offloading so no backend side effects
+            # occur if the LLM call fails.
             summary = await self._acreate_summary(to_summarize)
-            backend = self._resolve_backend_for_tool(runtime)
-            file_path = await self._aoffload_to_backend(backend, to_summarize)
-            return self._build_compact_result(runtime, to_summarize, summary, file_path, event, cutoff)
-        except Exception as exc:
+        except Exception as exc:  # tool must return a ToolMessage, not raise
             logger.exception("compact_conversation tool failed")
             return self._compact_error(tool_call_id, exc)
+
+        backend = self._resolve_backend_for_tool(runtime)
+        file_path = await self._aoffload_to_backend(backend, to_summarize)
+        return self._build_compact_result(runtime, to_summarize, summary, file_path, event, cutoff)
 
     def _should_truncate_args(self, messages: list[AnyMessage], total_tokens: int) -> bool:
         """Check if argument truncation should be triggered.
@@ -878,12 +878,16 @@ A condensed summary follows:
         Previous summary messages are filtered out to avoid redundant storage during
         chained summarization events.
 
+        A `None` return is non-fatal; callers may proceed without the
+        offloaded history.
+
         Args:
             backend: Backend to write to.
             messages: Messages being summarized.
 
         Returns:
-            The file path where history was stored, or `None` if write failed.
+            The file path where history was stored, or `None` if the read
+            or write failed.
         """
         path = self._get_history_path()
 
@@ -893,22 +897,23 @@ A condensed summary follows:
         timestamp = datetime.now(UTC).isoformat()
         new_section = f"## Summarized at {timestamp}\n\n{get_buffer_string(filtered_messages)}\n\n"
 
-        # Read existing content (if any) and append
+        # Read existing content (if any) and append.
         # Note: We use download_files() instead of read() because read() returns
         # line-numbered content (for LLM consumption), but edit() expects raw content.
+        # If the read fails, abort the write to avoid overwriting prior history.
         existing_content = ""
         try:
             responses = backend.download_files([path])
             if responses and responses[0].content is not None and responses[0].error is None:
                 existing_content = responses[0].content.decode("utf-8")
         except Exception as e:  # noqa: BLE001
-            # File likely doesn't exist yet, but log for observability
-            logger.debug(
-                "Exception reading existing history from %s (treating as new file): %s: %s",
+            logger.warning(
+                "Failed to read existing history from %s; aborting offload to avoid overwriting prior history: %s: %s",
                 path,
                 type(e).__name__,
                 e,
             )
+            return None
 
         combined_content = existing_content + new_section
 
@@ -949,12 +954,17 @@ A condensed summary follows:
         Previous summary messages are filtered out to avoid redundant storage during
         chained summarization events.
 
+        Callers decide whether to treat a `None` return as fatal or proceed
+        without the offloaded history (e.g., `awrap_model_call` proceeds, while
+        the CLI's `/compact` shows a warning).
+
         Args:
             backend: Backend to write to.
             messages: Messages being summarized.
 
         Returns:
-            The file path where history was stored, or `None` if write failed.
+            The file path where history was stored, or `None` if the read
+            or write failed.
         """
         path = self._get_history_path()
 
@@ -964,22 +974,23 @@ A condensed summary follows:
         timestamp = datetime.now(UTC).isoformat()
         new_section = f"## Summarized at {timestamp}\n\n{get_buffer_string(filtered_messages)}\n\n"
 
-        # Read existing content (if any) and append
+        # Read existing content (if any) and append.
         # Note: We use adownload_files() instead of aread() because read() returns
         # line-numbered content (for LLM consumption), but edit() expects raw content.
+        # If the read fails, abort the write to avoid overwriting prior history.
         existing_content = ""
         try:
             responses = await backend.adownload_files([path])
             if responses and responses[0].content is not None and responses[0].error is None:
                 existing_content = responses[0].content.decode("utf-8")
         except Exception as e:  # noqa: BLE001
-            # File likely doesn't exist yet, but log for observability
-            logger.debug(
-                "Exception reading existing history from %s (treating as new file): %s: %s",
+            logger.warning(
+                "Failed to read existing history from %s; aborting offload to avoid overwriting prior history: %s: %s",
                 path,
                 type(e).__name__,
                 e,
             )
+            return None
 
         combined_content = existing_content + new_section
 
@@ -1070,10 +1081,7 @@ A condensed summary follows:
         backend = self._get_backend(request.state, request.runtime)
         file_path = self._offload_to_backend(backend, messages_to_summarize)
         if file_path is None:
-            warnings.warn(
-                "Offloading conversation history to backend failed during summarization.",
-                stacklevel=2,
-            )
+            logger.error("Offloading conversation history to backend failed during summarization. Older messages will not be recoverable.")
 
         # Generate summary
         summary = self._create_summary(messages_to_summarize)
@@ -1081,12 +1089,8 @@ A condensed summary follows:
         # Build summary message with file path reference
         new_messages = self._build_new_messages_with_path(summary, file_path)
 
-        # Calculate state cutoff index
-        # If this is a subsequent summarization, convert effective message index to state index
-        # new_state_cutoff = old_state_cutoff + effective_cutoff - 1  # noqa: ERA001
-        # The -1 accounts for the summary message at effective[0]
         previous_event = request.state.get("_summarization_event")
-        state_cutoff_index = previous_event["cutoff_index"] + cutoff_index - 1 if previous_event is not None else cutoff_index
+        state_cutoff_index = self._compute_state_cutoff(previous_event, cutoff_index)
 
         # Create new summarization event
         new_event: SummarizationEvent = {
@@ -1166,10 +1170,7 @@ A condensed summary follows:
         backend = self._get_backend(request.state, request.runtime)
         file_path = await self._aoffload_to_backend(backend, messages_to_summarize)
         if file_path is None:
-            warnings.warn(
-                "Offloading conversation history to backend failed during summarization.",
-                stacklevel=2,
-            )
+            logger.error("Offloading conversation history to backend failed during summarization. Older messages will not be recoverable.")
 
         # Generate summary
         summary = await self._acreate_summary(messages_to_summarize)
@@ -1177,12 +1178,8 @@ A condensed summary follows:
         # Build summary message with file path reference
         new_messages = self._build_new_messages_with_path(summary, file_path)
 
-        # Calculate state cutoff index
-        # If this is a subsequent summarization, convert effective message index to state index
-        # new_state_cutoff = old_state_cutoff + effective_cutoff - 1  # noqa: ERA001
-        # The -1 accounts for the summary message at effective[0]
         previous_event = request.state.get("_summarization_event")
-        state_cutoff_index = previous_event["cutoff_index"] + cutoff_index - 1 if previous_event is not None else cutoff_index
+        state_cutoff_index = self._compute_state_cutoff(previous_event, cutoff_index)
 
         # Create new summarization event
         new_event: SummarizationEvent = {

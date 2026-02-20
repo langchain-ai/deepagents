@@ -67,6 +67,7 @@ if TYPE_CHECKING:
 
     from deepagents.backends import CompositeBackend
     from deepagents.backends.sandbox import SandboxBackendProtocol
+    from deepagents.middleware.summarization import SummarizationMiddleware
     from langchain_core.runnables import RunnableConfig
     from langgraph.checkpoint.base import BaseCheckpointSaver
     from langgraph.pregel import Pregel
@@ -1284,7 +1285,8 @@ class DeepAgentsApp(App):
 
         Writes a `_summarization_event` into the agent's checkpointed state.
         On the next model call, `SummarizationMiddleware.wrap_model_call` reads
-        this event and replaces older messages with the summary.
+        this event and presents the summary plus recent messages to the model
+        instead of the full history.
         """
         if not self._agent or not self._lc_thread_id or not self._backend:
             await self._mount_message(AppMessage("No active session to compact"))
@@ -1320,13 +1322,13 @@ class DeepAgentsApp(App):
             from deepagents.middleware.summarization import (
                 SummarizationEvent,
                 SummarizationMiddleware,
-                _compute_summarization_defaults,  # noqa: PLC2701
+                compute_summarization_defaults,
             )
 
             try:
                 result = create_model()
                 model = result.model
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001  # surface model config errors to user
                 await self._mount_message(
                     ErrorMessage(
                         f"Compaction requires a working model configuration: {exc}"
@@ -1334,7 +1336,7 @@ class DeepAgentsApp(App):
                 )
                 return
 
-            defaults = _compute_summarization_defaults(model)
+            defaults = compute_summarization_defaults(model)
             middleware = SummarizationMiddleware(
                 model=model, backend=self._backend, keep=defaults["keep"]
             )
@@ -1362,26 +1364,25 @@ class DeepAgentsApp(App):
             # Generate summary first so no side effects occur if the LLM fails
             summary = await middleware._acreate_summary(to_summarize)
 
-            file_path = await self._offload_messages_for_compact(to_summarize)
-            if file_path is None:
+            offload_result = await self._offload_messages_for_compact(
+                to_summarize, middleware
+            )
+            if offload_result is None:
+                # Actual failure (read/write error)
                 await self._mount_message(
                     AppMessage(
                         "Warning: conversation history could not be saved to "
                         "storage. Older messages will not be recoverable."
                     )
                 )
+            # offload_result == "" means nothing to offload (not an error)
+            file_path = offload_result or None
 
             summary_msg = middleware._build_new_messages_with_path(summary, file_path)[
                 0
             ]
 
-            # The cutoff is relative to the effective message list. When a
-            # prior event exists, translate back to an absolute index by
-            # adding the old cutoff and subtracting 1 (the summary message
-            # at index 0 of the effective list replaces the old prefix).
-            state_cutoff = (
-                event["cutoff_index"] + cutoff - 1 if event is not None else cutoff
-            )
+            state_cutoff = middleware._compute_state_cutoff(event, cutoff)
 
             new_event: SummarizationEvent = {
                 "cutoff_index": state_cutoff,
@@ -1408,66 +1409,66 @@ class DeepAgentsApp(App):
             if self._token_tracker:
                 self._token_tracker.add(tokens_after)
 
-        except Exception as exc:
+        except Exception as exc:  # surface compaction errors to user
             logger.exception("Compaction failed")
             await self._mount_message(ErrorMessage(f"Compaction failed: {exc}"))
         finally:
             self._agent_running = False
             try:
                 await self._set_spinner(None)
-            except Exception:
-                logger.warning(
-                    "Failed to dismiss spinner after compaction", exc_info=True
-                )
+            except Exception:  # best-effort spinner cleanup
+                logger.exception("Failed to dismiss spinner after compaction")
 
-    async def _offload_messages_for_compact(self, messages: list[Any]) -> str | None:
+    async def _offload_messages_for_compact(
+        self,
+        messages: list[Any],
+        middleware: SummarizationMiddleware,
+    ) -> str | None:
         """Write messages to backend storage before compaction.
 
         Appends messages as a timestamped markdown section to the conversation
         history file, matching the `SummarizationMiddleware` offload pattern.
 
-        Filters out prior summary messages (identified by
-        `lc_source == 'summarization'` in `additional_kwargs`) to avoid
-        storing summaries-of-summaries in the history file.
+        Filters out prior summary messages using the middleware's
+        `_filter_summary_messages` to avoid storing summaries-of-summaries.
 
         Args:
             messages: Messages to offload.
+            middleware: `SummarizationMiddleware` instance for filtering.
 
         Returns:
-            File path where history was stored, or `None` if there were no
-            non-summary messages to offload or the write failed.
+            File path where history was stored, `""` (empty string) if there
+            were no non-summary messages to offload (not an error), or `None`
+            if the write failed.
         """
         from datetime import UTC, datetime
 
-        from langchain_core.messages import HumanMessage, get_buffer_string
+        from langchain_core.messages import get_buffer_string
+
+        if self._backend is None:
+            logger.warning("No backend configured; cannot offload messages")
+            return None
 
         path = f"/conversation_history/{self._lc_thread_id}.md"
 
         # Exclude prior summaries so the offloaded history contains only
         # original messages
-        filtered = [
-            m
-            for m in messages
-            if not (
-                isinstance(m, HumanMessage)
-                and m.additional_kwargs.get("lc_source") == "summarization"
-            )
-        ]
-        if not filtered or self._backend is None:
-            return None
+        filtered = middleware._filter_summary_messages(messages)
+        if not filtered:
+            # Nothing to offload — all messages were summaries. Not an error.
+            return ""
 
         timestamp = datetime.now(UTC).isoformat()
         buf = get_buffer_string(filtered)
         new_section = f"## Compacted at {timestamp}\n\n{buf}\n\n"
 
         existing_content = ""
-        read_failed = False
         try:
             responses = await self._backend.adownload_files([path])
             resp = responses[0] if responses else None
             if resp and resp.content is not None and resp.error is None:
                 existing_content = resp.content.decode("utf-8")
-        except Exception as exc:
+        except Exception as exc:  # abort write on read failure
             logger.warning(
                 "Failed to read existing history at %s; aborting offload to "
                 "avoid overwriting prior history: %s",
@@ -1475,11 +1476,6 @@ class DeepAgentsApp(App):
                 exc,
                 exc_info=True,
             )
-            read_failed = True
-
-        # If we failed to read an existing file, don't write — we might
-        # overwrite prior compaction history with only the new section.
-        if read_failed:
             return None
 
         combined = existing_content + new_section
@@ -1498,7 +1494,7 @@ class DeepAgentsApp(App):
                     error_detail,
                 )
                 return None
-        except Exception as exc:
+        except Exception as exc:  # defensive: surface write failures gracefully
             logger.warning(
                 "Exception offloading compact history to %s: %s",
                 path,

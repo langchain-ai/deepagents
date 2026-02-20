@@ -21,9 +21,10 @@ _TOKEN_COUNT_PATH = "langchain_core.messages.utils.count_tokens_approximately"
 # Patch targets for middleware-based partitioning in _handle_compact
 _CREATE_MODEL_PATH = "deepagents_cli.app.create_model"
 _COMPUTE_DEFAULTS_PATH = (
-    "deepagents.middleware.summarization._compute_summarization_defaults"
+    "deepagents.middleware.summarization.compute_summarization_defaults"
 )
 _LC_MIDDLEWARE_PATH = "deepagents.middleware.summarization.SummarizationMiddleware"
+_GET_BUFFER_STRING_PATH = "langchain_core.messages.get_buffer_string"
 
 
 def _real_build_summary_msg(summary: str, file_path: str | None) -> list[Any]:
@@ -83,6 +84,11 @@ def _mock_middleware(
         list(msgs)
         if event is None
         else [event["summary_message"], *msgs[event["cutoff_index"] :]]
+    )
+    mock_mw._compute_state_cutoff.side_effect = lambda event, effective_cutoff: (
+        effective_cutoff
+        if event is None
+        else event["cutoff_index"] + effective_cutoff - 1
     )
 
     with (
@@ -653,6 +659,214 @@ class TestCompactErrorHandling:
             assert mock_spinner.call_count == 2
             mock_spinner.assert_any_call("Compacting")
             mock_spinner.assert_any_call(None)
+
+
+class TestCreateModelFailure:
+    """Test that _handle_compact handles create_model() failures."""
+
+    @pytest.mark.asyncio
+    async def test_create_model_failure_shows_error(self) -> None:
+        """Should show error when create_model() raises."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _setup_compact_app(app)
+
+            with patch(_CREATE_MODEL_PATH, side_effect=ValueError("no API key")):
+                await app._handle_compact()
+                await pilot.pause()
+
+            error_msgs = app.query(ErrorMessage)
+            assert any(
+                "working model configuration" in str(w._content) for w in error_msgs
+            )
+            # State should not have been modified
+            app._agent.aupdate_state.assert_not_called()  # type: ignore[union-attr]
+
+
+class TestOffloadMessagesForCompact:
+    """Test _offload_messages_for_compact code paths."""
+
+    @pytest.mark.asyncio
+    async def test_filters_summary_messages(self) -> None:
+        """Should use middleware._filter_summary_messages to exclude summaries."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _setup_compact_app(app)
+
+            mock_mw = MagicMock()
+            # Mix of real and summary messages — filter keeps only non-summaries
+            messages = _make_messages(3)
+            mock_mw._filter_summary_messages.return_value = [messages[0], messages[2]]
+
+            resp = MagicMock()
+            resp.content = None
+            resp.error = None
+            mock_backend = MagicMock()
+            mock_backend.adownload_files = AsyncMock(return_value=[resp])
+            write_result = MagicMock()
+            write_result.error = None
+            mock_backend.awrite = AsyncMock(return_value=write_result)
+            app._backend = mock_backend
+
+            with patch(_GET_BUFFER_STRING_PATH, return_value="msg text"):
+                result = await app._offload_messages_for_compact(messages, mock_mw)
+
+            mock_mw._filter_summary_messages.assert_called_once_with(messages)
+            assert result is not None
+            assert result != ""
+
+    @pytest.mark.asyncio
+    async def test_all_summary_messages_returns_empty(self) -> None:
+        """Should return empty string when all messages are summaries."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _setup_compact_app(app)
+
+            mock_mw = MagicMock()
+            mock_mw._filter_summary_messages.return_value = []
+
+            result = await app._offload_messages_for_compact(_make_messages(2), mock_mw)
+
+            assert result == ""
+
+    @pytest.mark.asyncio
+    async def test_appends_to_existing_content(self) -> None:
+        """Should append new section to existing history file."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _setup_compact_app(app)
+
+            mock_mw = MagicMock()
+            messages = _make_messages(2)
+            mock_mw._filter_summary_messages.return_value = messages
+
+            existing = b"## Prior section\n\nold content\n\n"
+            resp = MagicMock()
+            resp.content = existing
+            resp.error = None
+            mock_backend = MagicMock()
+            mock_backend.adownload_files = AsyncMock(return_value=[resp])
+            edit_result = MagicMock()
+            edit_result.error = None
+            mock_backend.aedit = AsyncMock(return_value=edit_result)
+            app._backend = mock_backend
+
+            with patch(_GET_BUFFER_STRING_PATH, return_value="msg text"):
+                result = await app._offload_messages_for_compact(messages, mock_mw)
+
+            assert result is not None
+            # Should have called aedit (not awrite) since existing content exists
+            mock_backend.aedit.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_creates_new_file_when_none_exists(self) -> None:
+        """Should call awrite when no existing file is found."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _setup_compact_app(app)
+
+            mock_mw = MagicMock()
+            messages = _make_messages(2)
+            mock_mw._filter_summary_messages.return_value = messages
+
+            resp = MagicMock()
+            resp.content = None
+            resp.error = None
+            mock_backend = MagicMock()
+            mock_backend.adownload_files = AsyncMock(return_value=[resp])
+            write_result = MagicMock()
+            write_result.error = None
+            mock_backend.awrite = AsyncMock(return_value=write_result)
+            app._backend = mock_backend
+
+            with patch(_GET_BUFFER_STRING_PATH, return_value="msg text"):
+                result = await app._offload_messages_for_compact(messages, mock_mw)
+
+            assert result is not None
+            mock_backend.awrite.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_read_failure_returns_none(self) -> None:
+        """Should return None when reading existing file fails."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _setup_compact_app(app)
+
+            mock_mw = MagicMock()
+            mock_mw._filter_summary_messages.return_value = _make_messages(2)
+
+            mock_backend = MagicMock()
+            mock_backend.adownload_files = AsyncMock(
+                side_effect=RuntimeError("storage unavailable")
+            )
+            app._backend = mock_backend
+
+            with patch(_GET_BUFFER_STRING_PATH, return_value="msg text"):
+                result = await app._offload_messages_for_compact(
+                    _make_messages(2), mock_mw
+                )
+
+            assert result is None
+
+    @pytest.mark.asyncio
+    async def test_write_failure_returns_none(self) -> None:
+        """Should return None when writing to backend fails."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _setup_compact_app(app)
+
+            mock_mw = MagicMock()
+            mock_mw._filter_summary_messages.return_value = _make_messages(2)
+
+            resp = MagicMock()
+            resp.content = None
+            resp.error = None
+            mock_backend = MagicMock()
+            mock_backend.adownload_files = AsyncMock(return_value=[resp])
+            mock_backend.awrite = AsyncMock(side_effect=RuntimeError("disk full"))
+            app._backend = mock_backend
+
+            with patch(_GET_BUFFER_STRING_PATH, return_value="msg text"):
+                result = await app._offload_messages_for_compact(
+                    _make_messages(2), mock_mw
+                )
+
+            assert result is None
+
+    @pytest.mark.asyncio
+    async def test_write_error_result_returns_none(self) -> None:
+        """Should return None when write result contains an error."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _setup_compact_app(app)
+
+            mock_mw = MagicMock()
+            mock_mw._filter_summary_messages.return_value = _make_messages(2)
+
+            resp = MagicMock()
+            resp.content = None
+            resp.error = None
+            mock_backend = MagicMock()
+            mock_backend.adownload_files = AsyncMock(return_value=[resp])
+            write_result = MagicMock()
+            write_result.error = "permission denied"
+            mock_backend.awrite = AsyncMock(return_value=write_result)
+            app._backend = mock_backend
+
+            with patch(_GET_BUFFER_STRING_PATH, return_value="msg text"):
+                result = await app._offload_messages_for_compact(
+                    _make_messages(2), mock_mw
+                )
+
+            assert result is None
 
 
 class TestCompactRouting:

@@ -536,9 +536,8 @@ async def run_textual_cli_async(
             error_text = Text("Failed to create agent: ", style="red")
             error_text.append(str(e))
             console.print(error_text)
-            console.print(
-                Text(traceback.format_exc(), style="dim"),
-            )
+            if logger.isEnabledFor(logging.DEBUG):
+                console.print(Text(traceback.format_exc(), style="dim"))
             sys.exit(1)
 
         # Run Textual app - errors propagate to caller

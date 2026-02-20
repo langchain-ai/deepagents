@@ -434,6 +434,19 @@ class TestMalformedEvent:
         assert result == messages
         assert result is not messages
 
+    def test_cutoff_exceeds_message_count(self) -> None:
+        """Should return only summary when cutoff_index > len(messages)."""
+        messages = _make_messages(3)
+        summary_msg = MagicMock()
+        event = {
+            "cutoff_index": 10,
+            "summary_message": summary_msg,
+            "file_path": None,
+        }
+        result = SummarizationMiddleware._apply_event_to_messages(messages, event)
+        assert len(result) == 1
+        assert result[0] is summary_msg
+
 
 class TestResolveBackendForTool:
     """Test backend resolution for tool context."""

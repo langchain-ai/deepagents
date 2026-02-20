@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 import pytest
 from langchain_tests.integration_tests import SandboxIntegrationTests
 
-from deepagents.backends.langsmith import LangSmithBackend, LangSmithProvider
+from deepagents_cli.integrations.langsmith import LangSmithProvider
 
 if TYPE_CHECKING:
     from collections.abc import Iterator

@@ -245,6 +245,11 @@ def _validate_skill_name(name: str, directory_name: str) -> tuple[bool, str]:
         return False, f"name '{name}' must match directory name '{directory_name}'"
     return True, ""
 
+def _normalize_to_posix_path(path_str: str) -> PurePosixPath:
+    if "\\" in path_str or (len(path_str) >= 2 and path_str[1] == ":"):
+        return PurePosixPath(path_str.replace("\\", "/"))
+    else:
+        return PurePosixPath(path_str)
 
 def _parse_skill_metadata(  # noqa: C901
     content: str,
@@ -465,7 +470,7 @@ def _list_skills(backend: BackendProtocol, source_path: str) -> list[SkillMetada
             continue
 
         # Extract directory name from path using PurePosixPath
-        directory_name = PurePosixPath(skill_dir_path).name
+        directory_name = _normalize_to_posix_path(skill_dir_path).name
 
         # Parse metadata
         skill_metadata = _parse_skill_metadata(

@@ -2,7 +2,7 @@ import uuid
 
 import pytest
 from langchain.agents import create_agent
-from langchain.agents.middleware.types import AgentMiddleware
+from langchain.agents.middleware import AgentMiddleware
 from langchain.tools import ToolRuntime
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage

@@ -359,20 +359,6 @@ List what you captured and where you stored it:
 """  # noqa: E501
 
 
-def _fmt_tokens(n: int) -> str:
-    """Format a token count for display (e.g., 1500 -> '1.5K').
-
-    Args:
-        n: The token count.
-
-    Returns:
-        Formatted string with K suffix for values >= 1000.
-    """
-    if n >= 1000:  # noqa: PLR2004
-        return f"{n / 1000:.1f}K"
-    return str(n)
-
-
 class DeepAgentsApp(App):
     """Main Textual application for deepagents-cli."""
 
@@ -1418,8 +1404,8 @@ class DeepAgentsApp(App):
 
             tokens_after = count_tokens_approximately([summary_msg, *to_keep])
 
-            before = _fmt_tokens(tokens_before)
-            after = _fmt_tokens(tokens_after)
+            before = _format_token_count(tokens_before)
+            after = _format_token_count(tokens_after)
             await self._mount_message(
                 AppMessage(
                     f"Compacted {len(to_summarize)} messages "

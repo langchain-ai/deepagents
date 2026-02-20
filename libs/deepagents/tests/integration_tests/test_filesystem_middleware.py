@@ -1,7 +1,8 @@
 import uuid
 
 import pytest
-from langchain.agents import AgentMiddleware, create_agent
+from langchain.agents import create_agent
+from langchain.agents.middleware import AgentMiddleware
 from langchain.tools import ToolRuntime
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage
@@ -9,7 +10,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.store.memory import InMemoryStore
 
 from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
-from deepagents.backends.protocol import ExecuteResponse
+from deepagents.backends.protocol import ExecuteResponse, SandboxBackendProtocol
 from deepagents.graph import create_deep_agent
 from deepagents.middleware.filesystem import (
     FileData,
@@ -916,7 +917,7 @@ class TestFilesystem:
         assert "write_file" in captured_tools
 
         # Test with sandbox backend (has execution support)
-        class MockSandboxBackend(StateBackend):
+        class MockSandboxBackend(StateBackend, SandboxBackendProtocol):
             def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
                 return ExecuteResponse(output="test", exit_code=0, truncated=False)
 
@@ -964,7 +965,7 @@ class TestFilesystem:
         assert "execute" not in prompt.lower() or "Execute Tool" not in prompt
 
         # Test with sandbox backend (has execution support)
-        class MockSandboxBackend(StateBackend):
+        class MockSandboxBackend(StateBackend, SandboxBackendProtocol):
             def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
                 return ExecuteResponse(output="test", exit_code=0, truncated=False)
 
@@ -988,7 +989,7 @@ class TestFilesystem:
         """Verify _supports_execution correctly detects CompositeBackend capabilities."""
 
         # Mock sandbox backend
-        class MockSandboxBackend(StateBackend):
+        class MockSandboxBackend(StateBackend, SandboxBackendProtocol):
             def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
                 return ExecuteResponse(output="test", exit_code=0, truncated=False)
 

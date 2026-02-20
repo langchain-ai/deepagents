@@ -28,7 +28,7 @@ async def ralph(model_name: str = None):
 
     model = create_model(model_name)
     agent, backend = create_cli_agent(
-        model=model,
+        model=model.model,
         assistant_id="ralph",
         tools=[],
         auto_approve=True,

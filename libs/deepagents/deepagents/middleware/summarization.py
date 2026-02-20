@@ -485,8 +485,10 @@ A condensed summary follows:
         """Translate an effective-list cutoff index to an absolute state index.
 
         When a prior summarization event exists, the effective message list
-        starts with the summary message at index 0. The absolute index accounts
-        for the old cutoff minus 1 (the summary replaces the old prefix).
+        starts with the summary message at index 0. The -1 accounts for the
+        summary message at effective index 0, which does not correspond to a
+        real state message -- the effective cutoff already counts it, so we
+        subtract 1 to avoid double-counting.
 
         Args:
             event: The prior `_summarization_event`, or `None`.
@@ -1106,7 +1108,7 @@ A condensed summary follows:
         modified_messages = [*new_messages, *preserved_messages]
         response = handler(request.override(messages=modified_messages))
 
-        # Return WrapModelCallResult with state update
+        # Return ExtendedModelResponse with state update
         return ExtendedModelResponse(
             model_response=response,
             command=Command(update={"_summarization_event": new_event}),
@@ -1197,7 +1199,7 @@ A condensed summary follows:
         modified_messages = [*new_messages, *preserved_messages]
         response = await handler(request.override(messages=modified_messages))
 
-        # Return WrapModelCallResult with state update
+        # Return ExtendedModelResponse with state update
         return ExtendedModelResponse(
             model_response=response,
             command=Command(update={"_summarization_event": new_event}),

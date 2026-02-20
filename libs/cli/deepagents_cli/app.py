@@ -1380,9 +1380,9 @@ class DeepAgentsApp(App):
             if offload_result is None:
                 # Actual failure (read/write error)
                 await self._mount_message(
-                    AppMessage(
+                    ErrorMessage(
                         "Warning: conversation history could not be saved to "
-                        "storage. Older messages will not be recoverable."
+                        "storage. Older messages will not be recoverable. "
                     )
                 )
             # offload_result == "" means nothing to offload (not an error)

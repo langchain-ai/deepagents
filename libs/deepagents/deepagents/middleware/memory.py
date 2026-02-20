@@ -145,12 +145,12 @@ MEMORY_SYSTEM_PROMPT = """<agent_memory>
     Agent: Sure, I'll write you an example for creating a deep agent in LangChain <example code in Python>
     User: Can you do this in JavaScript
     Agent: Let me save this to my memory.
-    Tool Call: edit_file(...) -> remembers that the user prefers to get LangChaincode examples in JavaScript
+    Tool Call: edit_file(...) -> remembers that the user prefers to get LangChain code examples in JavaScript
     Agent: Sure, here is the JavaScript example<example code in JavaScript>
 
     Example 3 (do not remember transient information):
     User: I'm going to play basketball tonight so I will be offline for a few hours.
-    Agent: Okay I'll add a black to your calendar.
+    Agent: Okay I'll add a block to your calendar.
     Tool Call: create_calendar_event(...) -> just calls a tool, does not commit anything to memory, as it is transient information
 </memory_guidelines>
 """

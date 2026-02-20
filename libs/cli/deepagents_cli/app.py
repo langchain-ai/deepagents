@@ -41,7 +41,12 @@ from deepagents_cli.textual_adapter import TextualUIAdapter, execute_task_textua
 from deepagents_cli.widgets.approval import ApprovalMenu
 from deepagents_cli.widgets.chat_input import ChatInput
 from deepagents_cli.widgets.loading import LoadingWidget
-from deepagents_cli.widgets.message_store import MessageData, MessageStore
+from deepagents_cli.widgets.message_store import (
+    MessageData,
+    MessageStore,
+    MessageType,
+    ToolStatus,
+)
 from deepagents_cli.widgets.messages import (
     AppMessage,
     AssistantMessage,
@@ -666,7 +671,7 @@ class DeepAgentsApp(App):
                     exc_info=True,
                 )
 
-        for widget, _msg_data in reversed(hydrated_widgets):
+        for widget, msg_data in reversed(hydrated_widgets):
             try:
                 if first_child:
                     await messages_container.mount(widget, before=first_child)
@@ -674,6 +679,9 @@ class DeepAgentsApp(App):
                     await messages_container.mount(widget)
                 first_child = widget
                 hydrated_count += 1
+                # Render Markdown content for hydrated assistant messages
+                if isinstance(widget, AssistantMessage) and msg_data.content:
+                    await widget.set_content(msg_data.content)
             except Exception:
                 logger.warning(
                     "Failed to mount hydrated widget %s",
@@ -1371,25 +1379,121 @@ class DeepAgentsApp(App):
         # Process next message from queue if any
         await self._process_next_from_queue()
 
+    @staticmethod
+    def _convert_messages_to_data(messages: list[Any]) -> list[MessageData]:
+        """Convert LangChain messages into lightweight `MessageData` objects.
+
+        This is a pure function with zero DOM operations. Tool call matching
+        happens here: `ToolMessage` results are matched by `tool_call_id` and
+        stored directly on the corresponding `MessageData`.
+
+        Args:
+            messages: LangChain message objects from a thread checkpoint.
+
+        Returns:
+            Ordered list of `MessageData` ready for `MessageStore.bulk_load`.
+        """
+        from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
+        result: list[MessageData] = []
+        # Maps tool_call_id -> index into result list
+        pending_tool_indices: dict[str, int] = {}
+
+        for msg in messages:
+            if isinstance(msg, HumanMessage):
+                content = (
+                    msg.content if isinstance(msg.content, str) else str(msg.content)
+                )
+                if content.startswith("[SYSTEM]"):
+                    continue
+                result.append(MessageData(type=MessageType.USER, content=content))
+
+            elif isinstance(msg, AIMessage):
+                # Extract text content
+                content = msg.content
+                text = ""
+                if isinstance(content, str):
+                    text = content.strip()
+                elif isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, dict) and block.get("type") == "text":
+                            text += block.get("text", "")
+                        elif isinstance(block, str):
+                            text += block
+                    text = text.strip()
+
+                if text:
+                    result.append(MessageData(type=MessageType.ASSISTANT, content=text))
+
+                # Track tool calls for later matching
+                for tc in getattr(msg, "tool_calls", []):
+                    tc_id = tc.get("id")
+                    name = tc.get("name", "unknown")
+                    args = tc.get("args", {})
+                    data = MessageData(
+                        type=MessageType.TOOL,
+                        content="",
+                        tool_name=name,
+                        tool_args=args,
+                        tool_status=ToolStatus.PENDING,
+                    )
+                    result.append(data)
+                    if tc_id:
+                        pending_tool_indices[tc_id] = len(result) - 1
+                    else:
+                        data.tool_status = ToolStatus.REJECTED
+
+            elif isinstance(msg, ToolMessage):
+                tc_id = getattr(msg, "tool_call_id", None)
+                if tc_id and tc_id in pending_tool_indices:
+                    idx = pending_tool_indices.pop(tc_id)
+                    data = result[idx]
+                    status = getattr(msg, "status", "success")
+                    content = (
+                        msg.content
+                        if isinstance(msg.content, str)
+                        else str(msg.content)
+                    )
+                    if status == "success":
+                        data.tool_status = ToolStatus.SUCCESS
+                    else:
+                        data.tool_status = ToolStatus.ERROR
+                    data.tool_output = content
+                else:
+                    logger.debug(
+                        "ToolMessage with tool_call_id=%r could not be "
+                        "matched to a pending tool call",
+                        tc_id,
+                    )
+
+            else:
+                logger.debug(
+                    "Skipping unsupported message type %s during history conversion",
+                    type(msg).__name__,
+                )
+
+        # Mark unmatched tool calls as rejected
+        for idx in pending_tool_indices.values():
+            result[idx].tool_status = ToolStatus.REJECTED
+
+        return result
+
     async def _load_thread_history(self) -> None:
         """Load and render message history when resuming a thread.
 
-        This retrieves the checkpoint state from the agent and converts
-        stored messages into UI widgets.
+        This retrieves the checkpoint state from the agent and converts stored
+        messages into lightweight `MessageData` objects, then bulk-loads them
+        into the `MessageStore`. Only the last `WINDOW_SIZE` messages are
+        mounted as widgets, drastically reducing DOM operations for large
+        threads.
         """
         if not self._agent or not self._lc_thread_id:
             return
 
-        from langchain_core.messages import (
-            AIMessage,
-            HumanMessage,
-            ToolMessage,
-        )
-
         config: RunnableConfig = {"configurable": {"thread_id": self._lc_thread_id}}
 
         try:
-            # Get the state snapshot from the agent
+            # 1. Fetch state (single network call)
             state = await self._agent.aget_state(config)
             if not state or not state.values:
                 return
@@ -1398,101 +1502,47 @@ class DeepAgentsApp(App):
             if not messages:
                 return
 
-            # Track tool calls from AIMessages to match with ToolMessages
-            pending_tool_calls: dict[str, dict] = {}
+            # 2. Convert to data (pure computation, no DOM)
+            all_data = self._convert_messages_to_data(messages)
+            if not all_data:
+                return
 
-            for msg in messages:
-                if isinstance(msg, HumanMessage):
-                    # Skip system messages that were auto-injected
-                    content = (
-                        msg.content
-                        if isinstance(msg.content, str)
-                        else str(msg.content)
-                    )
-                    if content.startswith("[SYSTEM]"):
-                        continue
-                    await self._mount_message(UserMessage(content))
+            # 3. Bulk load into store (sets visible window)
+            _archived, visible = self._message_store.bulk_load(all_data)
 
-                elif isinstance(msg, AIMessage):
-                    # Render text content if present
-                    content = msg.content
-                    # Handle both string content and list of content blocks
-                    text_content = ""
-                    if isinstance(content, str):
-                        text_content = content.strip()
-                    elif isinstance(content, list):
-                        # Extract text from content blocks
-                        for block in content:
-                            if isinstance(block, dict) and block.get("type") == "text":
-                                text_content += block.get("text", "")
-                            elif isinstance(block, str):
-                                text_content += block
-                        text_content = text_content.strip()
+            # 4. Remove spacer once
+            await self._remove_spacer()
 
-                    if text_content:
-                        widget = AssistantMessage(text_content)
-                        await self._mount_message(widget)
-                        await widget.write_initial_content()
+            # 5. Cache container ref (single query)
+            try:
+                messages_container = self.query_one("#messages", Container)
+            except NoMatches:
+                return
 
-                    # Track tool calls for later matching with ToolMessages
-                    tool_calls = getattr(msg, "tool_calls", [])
-                    for tc in tool_calls:
-                        tc_id = tc.get("id")
-                        if tc_id:
-                            pending_tool_calls[tc_id] = {
-                                "name": tc.get("name", "unknown"),
-                                "args": tc.get("args", {}),
-                            }
-                            # Mount tool call widget
-                            tool_widget = ToolCallMessage(
-                                tc.get("name", "unknown"),
-                                tc.get("args", {}),
-                            )
-                            await self._mount_message(tool_widget)
-                            # Store widget reference for result matching
-                            pending_tool_calls[tc_id]["widget"] = tool_widget
+            # 6-7. Create and mount only visible widgets (max WINDOW_SIZE)
+            for msg_data in visible:
+                widget = msg_data.to_widget()
+                await messages_container.mount(widget)
+                # 8. Render content for AssistantMessage after mount
+                if isinstance(widget, AssistantMessage) and msg_data.content:
+                    await widget.set_content(msg_data.content)
 
-                elif isinstance(msg, ToolMessage):
-                    # Match with pending tool call and show result
-                    tc_id = getattr(msg, "tool_call_id", None)
-                    if tc_id and tc_id in pending_tool_calls:
-                        tool_info = pending_tool_calls.pop(tc_id)
-                        widget = tool_info.get("widget")
-                        if widget:
-                            status = getattr(msg, "status", "success")
-                            content = (
-                                msg.content
-                                if isinstance(msg.content, str)
-                                else str(msg.content)
-                            )
-                            if status == "success":
-                                widget.set_success(content)
-                            else:
-                                widget.set_error(content)
-
-            # Mark any unmatched tool calls as interrupted (no ToolMessage result)
-            for tool_info in pending_tool_calls.values():
-                widget = tool_info.get("widget")
-                if widget:
-                    widget.set_rejected()  # Shows as interrupted/rejected in UI
-
-            # Show system message indicating this is a resumed thread,
-            # with a clickable LangSmith link when tracing is configured.
+            # 9. Add footer — "Resumed thread" message
             thread_msg = await self._build_thread_message(
                 "Resumed thread", self._lc_thread_id
             )
             await self._mount_message(AppMessage(thread_msg))
 
-            # Scroll to bottom after UI fully renders
-            # Use set_timer to ensure layout is complete (Markdown rendering is async)
+            # 10. Scroll once
             def scroll_to_end() -> None:
-                chat = self.query_one("#chat", VerticalScroll)
-                chat.scroll_end(animate=False, immediate=True)
+                with suppress(NoMatches):
+                    chat = self.query_one("#chat", VerticalScroll)
+                    chat.scroll_end(animate=False, immediate=True)
 
             self.set_timer(0.1, scroll_to_end)
 
-        except Exception as e:  # noqa: BLE001  # Resilient scroll-to-bottom
-            # Don't fail the app if history loading fails
+        except Exception as e:  # Resilient history loading
+            logger.exception("Failed to load thread history for %s", self._lc_thread_id)
             await self._mount_message(AppMessage(f"Could not load history: {e}"))
 
     async def _mount_message(
@@ -2140,6 +2190,20 @@ class DeepAgentsApp(App):
             )
 
 
+@dataclass(frozen=True)
+class AppResult:
+    """Result from running the Textual application.
+
+    Attributes:
+        return_code: Exit code (0 for success, non-zero for error).
+        thread_id: The final thread ID at shutdown. May differ from the
+            initial thread ID if the user switched threads via `/threads`.
+    """
+
+    return_code: int
+    thread_id: str | None
+
+
 async def run_textual_app(
     *,
     agent: Pregel | None = None,
@@ -2153,7 +2217,7 @@ async def run_textual_app(
     tools: list[Callable[..., Any] | dict[str, Any]] | None = None,
     sandbox: SandboxBackendProtocol | None = None,
     sandbox_type: str | None = None,
-) -> int:
+) -> AppResult:
     """Run the Textual application.
 
     Args:
@@ -2170,7 +2234,7 @@ async def run_textual_app(
         sandbox_type: Type of sandbox provider (for model hot-swap)
 
     Returns:
-        The app's return code (0 for success, non-zero for error).
+        An `AppResult` with the return code and final thread ID.
     """
     app = DeepAgentsApp(
         agent=agent,
@@ -2186,7 +2250,10 @@ async def run_textual_app(
         sandbox_type=sandbox_type,
     )
     await app.run_async()
-    return app.return_code or 0
+    return AppResult(
+        return_code=app.return_code or 0,
+        thread_id=app._lc_thread_id,
+    )
 
 
 if __name__ == "__main__":

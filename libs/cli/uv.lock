@@ -892,7 +892,7 @@ test = [
 
 [[package]]
 name = "deepagents-cli"
-version = "0.0.24"
+version = "0.0.25"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },

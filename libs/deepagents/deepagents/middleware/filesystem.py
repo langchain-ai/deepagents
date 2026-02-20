@@ -886,7 +886,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             # Safe cast: _supports_execution validates that execute()/aexecute() exist
             # (either SandboxBackendProtocol or CompositeBackend with sandbox default)
             executable = cast("SandboxBackendProtocol", resolved_backend)
-            if timeout is not None and not execute_accepts_timeout(executable):
+            if timeout is not None and not execute_accepts_timeout(type(executable)):
                 return (
                     "Error: This sandbox backend does not support per-command "
                     "timeout overrides. Update your sandbox package to the "
@@ -940,7 +940,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
             # Safe cast: _supports_execution validates that execute()/aexecute() exist
             executable = cast("SandboxBackendProtocol", resolved_backend)
-            if timeout is not None and not execute_accepts_timeout(executable):
+            if timeout is not None and not execute_accepts_timeout(type(executable)):
                 return (
                     "Error: This sandbox backend does not support per-command "
                     "timeout overrides. Update your sandbox package to the "

@@ -486,13 +486,13 @@ class SandboxBackendProtocol(BackendProtocol):
         """Async version of execute."""
         # The middleware layer validates timeout support before calling, so
         # this guard only protects direct callers bypassing the middleware.
-        if timeout is not None and execute_accepts_timeout(self):
+        if timeout is not None and execute_accepts_timeout(type(self)):
             return await asyncio.to_thread(self.execute, command, timeout=timeout)
         return await asyncio.to_thread(self.execute, command)
 
 
 @lru_cache(maxsize=128)
-def _cls_execute_accepts_timeout(cls: type[SandboxBackendProtocol]) -> bool:
+def execute_accepts_timeout(cls: type[SandboxBackendProtocol]) -> bool:
     """Check whether a backend class's `execute` accepts a `timeout` kwarg.
 
     Older backend packages didn't lower-bound their SDK dependency, so they
@@ -511,31 +511,6 @@ def _cls_execute_accepts_timeout(cls: type[SandboxBackendProtocol]) -> bool:
         return False
     else:
         return "timeout" in sig.parameters
-
-
-def execute_accepts_timeout(backend: SandboxBackendProtocol) -> bool:
-    """Check whether a backend's `execute` method accepts a `timeout` kwarg.
-
-    For composite backends that delegate to an inner default, this unwraps
-    the chain to check the actual executor. Uses duck-typing (checking for
-    a `default` attribute) rather than importing `CompositeBackend` to avoid
-    a circular import.
-    """
-    seen: set[int] = set()
-    current = backend
-    while True:
-        backend_id = id(current)
-        if backend_id in seen:
-            break
-        seen.add(backend_id)
-        # Composite backends delegate execution to their inner default.
-        # Can't import CompositeBackend here (circular), so use duck-typing.
-        default = getattr(current, "default", None)
-        if default is not None and isinstance(default, SandboxBackendProtocol):
-            current = default
-        else:
-            break
-    return _cls_execute_accepts_timeout(type(current))
 
 
 BackendFactory: TypeAlias = Callable[[ToolRuntime], BackendProtocol]

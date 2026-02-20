@@ -717,6 +717,7 @@ class TestAppFocusRestoresChatInput:
         async with app.run_test() as pilot:
             await pilot.pause()
             assert app._chat_input is not None
+            assert app._chat_input._text_area is not None
 
             # Blur the input to simulate focus loss from webbrowser.open
             app._chat_input._text_area.blur()

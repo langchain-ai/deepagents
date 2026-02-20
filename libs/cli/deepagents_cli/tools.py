@@ -4,7 +4,7 @@ import ipaddress
 import re
 import socket
 from typing import Any, Literal
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 import requests
 from markdownify import markdownify
@@ -129,6 +129,69 @@ def _validate_direct_fetch_url(url: str) -> tuple[bool, str | None]:
     return True, None
 
 
+def _fetch_url_with_safe_redirects(
+    url: str,
+    timeout: int = 30,
+    max_redirects: int = 5,
+) -> dict[str, Any]:
+    """Fetch URL content while validating each redirect hop for SSRF safety.
+
+    Returns:
+        Fetch response payload, or an error payload when blocked/failed.
+    """
+    current_url = url
+
+    for _ in range(max_redirects + 1):
+        is_safe, block_reason = _validate_direct_fetch_url(current_url)
+        if not is_safe:
+            return {
+                "error": block_reason,
+                "url": current_url,
+                "blocked_url": current_url,
+            }
+
+        try:
+            response = requests.get(
+                current_url,
+                timeout=timeout,
+                allow_redirects=False,
+                headers={"User-Agent": "Mozilla/5.0 (compatible; DeepAgents/1.0)"},
+            )
+        except requests.exceptions.RequestException as e:
+            return {"error": f"Fetch URL error: {e!s}", "url": current_url}
+
+        if response.is_redirect or response.is_permanent_redirect:
+            location = response.headers.get("Location")
+            if not location:
+                return {
+                    "error": (
+                        "Fetch URL error: redirect response missing "
+                        "Location header"
+                    ),
+                    "url": current_url,
+                }
+            current_url = urljoin(current_url, location)
+            continue
+
+        try:
+            response.raise_for_status()
+        except requests.exceptions.RequestException as e:
+            return {"error": f"Fetch URL error: {e!s}", "url": current_url}
+
+        markdown_content = markdownify(response.text)
+        return {
+            "url": str(response.url),
+            "markdown_content": markdown_content,
+            "status_code": response.status_code,
+            "content_length": len(markdown_content),
+        }
+
+    return {
+        "error": f"Fetch URL error: too many redirects (>{max_redirects})",
+        "url": current_url,
+    }
+
+
 def http_request(
     url: str,
     method: str = "GET",
@@ -231,16 +294,15 @@ def web_search(
     """
     direct_url = _extract_first_http_url(query)
     if direct_url:
-        is_safe, block_reason = _validate_direct_fetch_url(direct_url)
-        if not is_safe:
+        fetched = _fetch_url_with_safe_redirects(direct_url)
+        if "error" in fetched:
             return {
-                "error": block_reason,
+                "error": fetched["error"],
                 "query": query,
-                "blocked_url": direct_url,
+                "blocked_url": fetched.get("blocked_url", direct_url),
                 "direct_fetch": False,
                 "source_tool": "fetch_url",
             }
-        fetched = fetch_url(direct_url)
         return {
             "query": query,
             "direct_fetch": True,

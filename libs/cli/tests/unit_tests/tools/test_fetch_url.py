@@ -1,5 +1,6 @@
 """Tests for tools module."""
 
+from typing import Any
 from unittest.mock import patch
 
 import requests
@@ -170,4 +171,74 @@ def test_web_search_blocks_domain_resolving_to_private_ip() -> None:
     assert "Blocked direct URL fetch" in result["error"]
     assert result["blocked_url"] == "http://internal.example.com/admin"
     mock_fetch_url.assert_not_called()
+    mock_tavily.search.assert_not_called()
+
+
+@responses.activate
+def test_web_search_follows_safe_redirect_for_direct_fetch() -> None:
+    """web_search should allow redirects only when each hop remains safe."""
+    responses.add(
+        responses.GET,
+        "https://example.com/start",
+        status=302,
+        headers={"Location": "https://docs.example.com/final"},
+    )
+    responses.add(
+        responses.GET,
+        "https://docs.example.com/final",
+        body="<html><body><h1>Final</h1></body></html>",
+        status=200,
+    )
+
+    def fake_getaddrinfo(
+        host: str, *_args: Any, **_kwargs: Any
+    ) -> list[tuple[int, int, int, str, tuple[str, int]]]:
+        mapping = {
+            "example.com": [("93.184.216.34", 0)],
+            "docs.example.com": [("93.184.216.34", 0)],
+        }
+        return [(2, 1, 6, "", mapping[host][0])]
+
+    with (
+        patch("deepagents_cli.tools.tavily_client") as mock_tavily,
+        patch("deepagents_cli.tools.socket.getaddrinfo", side_effect=fake_getaddrinfo),
+    ):
+        result = web_search("Please summarize https://example.com/start")
+
+    assert result["direct_fetch"] is True
+    assert result["status_code"] == 200
+    assert result["url"] == "https://docs.example.com/final"
+    assert "Final" in result["markdown_content"]
+    mock_tavily.search.assert_not_called()
+
+
+@responses.activate
+def test_web_search_blocks_redirect_to_localhost() -> None:
+    """web_search should block redirect chains that end on internal hosts."""
+    responses.add(
+        responses.GET,
+        "https://example.com/start",
+        status=302,
+        headers={"Location": "http://127.0.0.1/admin"},
+    )
+
+    with (
+        patch("deepagents_cli.tools.tavily_client") as mock_tavily,
+        patch("deepagents_cli.tools.socket.getaddrinfo") as mock_getaddrinfo,
+    ):
+        mock_getaddrinfo.return_value = [
+            (
+                2,
+                1,
+                6,
+                "",
+                ("93.184.216.34", 0),
+            )
+        ]
+        result = web_search("Please summarize https://example.com/start")
+
+    assert result["direct_fetch"] is False
+    assert "Blocked direct URL fetch" in result["error"]
+    assert result["blocked_url"] == "http://127.0.0.1/admin"
+    assert len(responses.calls) == 1
     mock_tavily.search.assert_not_called()

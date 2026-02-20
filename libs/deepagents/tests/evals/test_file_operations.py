@@ -400,9 +400,7 @@ def test_read_file_truncation_recovery_with_pagination(model: str) -> None:
         agent,
         model=model,
         initial_files=initial_files,
-        query=(
-            "Read /big.txt and tell me the exact contents of the last non-empty line. Reply with that line only."
-        ),
+        query=("Read /big.txt and tell me the exact contents of the last non-empty line. Reply with that line only."),
         expect=(
             TrajectoryExpectations(num_agent_steps=4, num_tool_call_requests=3)
             .require_tool_call(step=1, name="read_file", args_contains={"file_path": "/big.txt"})

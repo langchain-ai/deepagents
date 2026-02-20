@@ -67,6 +67,7 @@ if TYPE_CHECKING:
 
     from deepagents.backends import CompositeBackend
     from deepagents.backends.sandbox import SandboxBackendProtocol
+    from deepagents.middleware.summarization import SummarizationMiddleware
     from langchain_core.runnables import RunnableConfig
     from langgraph.checkpoint.base import BaseCheckpointSaver
     from langgraph.pregel import Pregel
@@ -1130,7 +1131,7 @@ class DeepAgentsApp(App):
         elif cmd == "/help":
             await self._mount_message(UserMessage(command))
             help_text = Text(
-                "Commands: /quit, /clear, /model [--default], /remember, "
+                "Commands: /quit, /clear, /compact, /model [--default], /remember, "
                 "/tokens, /threads, /trace, /changelog, /docs, /feedback, /help\n\n"
                 "Interactive Features:\n"
                 "  Enter           Submit your message\n"
@@ -1196,6 +1197,9 @@ class DeepAgentsApp(App):
                 await self._mount_message(
                     AppMessage(f"Started new thread: {new_thread_id}")
                 )
+        elif cmd == "/compact":
+            await self._mount_message(UserMessage(command))
+            await self._handle_compact()
         elif cmd == "/threads":
             await self._show_thread_selector()
         elif cmd == "/trace":
@@ -1285,6 +1289,265 @@ class DeepAgentsApp(App):
                 pass
 
         self.call_after_refresh(_scroll_after_command)
+
+    async def _handle_compact(self) -> None:
+        """Compact the conversation by summarizing old messages.
+
+        Writes a `_summarization_event` into the agent's checkpointed state.
+        On the next model call, `SummarizationMiddleware.wrap_model_call` reads
+        this event and presents the summary plus recent messages to the model
+        instead of the full history.
+
+        Compaction is a no-op when the conversation's total token count is
+        within the `keep` budget (by default 10% of the model's
+        `max_input_tokens`). Until that threshold is exceeded the user sees
+        "Nothing to compact yet".
+        """
+        if not self._agent or not self._lc_thread_id or not self._backend:
+            await self._mount_message(
+                AppMessage("Nothing to compact \u2014 start a conversation first")
+            )
+            return
+
+        if self._agent_running:
+            await self._mount_message(
+                AppMessage("Cannot compact while agent is running")
+            )
+            return
+
+        from langchain_core.messages.utils import count_tokens_approximately
+
+        config: RunnableConfig = {"configurable": {"thread_id": self._lc_thread_id}}
+
+        try:
+            state = await self._agent.aget_state(config)
+        except Exception as exc:  # noqa: BLE001
+            await self._mount_message(ErrorMessage(f"Failed to read state: {exc}"))
+            return
+
+        if not state or not state.values:
+            await self._mount_message(
+                AppMessage("Nothing to compact \u2014 start a conversation first")
+            )
+            return
+
+        messages = state.values.get("messages", [])
+
+        # Prevent concurrent user input while compaction modifies state
+        self._agent_running = True
+        try:
+            await self._set_spinner("Compacting")
+
+            from deepagents.middleware.summarization import (
+                SummarizationEvent,
+                SummarizationMiddleware,
+                compute_summarization_defaults,
+            )
+
+            try:
+                model_spec = f"{settings.model_provider}:{settings.model_name}"
+                result = create_model(model_spec)
+                model = result.model
+            except Exception as exc:  # noqa: BLE001  # surface model config errors to user
+                await self._mount_message(
+                    ErrorMessage(
+                        f"Compaction requires a working model configuration: {exc}"
+                    )
+                )
+                return
+
+            defaults = compute_summarization_defaults(model)
+            middleware = SummarizationMiddleware(
+                model=model, backend=self._backend, keep=defaults["keep"]
+            )
+
+            # Rebuild the message list the model would see, accounting for
+            # any prior compaction
+            event = state.values.get("_summarization_event")
+            effective = middleware._apply_event_to_messages(messages, event)
+
+            cutoff = middleware._determine_cutoff_index(effective)
+
+            if cutoff == 0:
+                await self._mount_message(
+                    AppMessage(
+                        "Nothing to compact yet"
+                        " \u2014 conversation is within the token budget"
+                    )
+                )
+                return
+
+            to_summarize, to_keep = middleware._partition_messages(effective, cutoff)
+
+            tokens_summarized = count_tokens_approximately(to_summarize)
+            tokens_kept = count_tokens_approximately(to_keep)
+            tokens_before = tokens_summarized + tokens_kept
+
+            # Generate summary first so no side effects occur if the LLM fails
+            summary = await middleware._acreate_summary(to_summarize)
+
+            offload_result = await self._offload_messages_for_compact(
+                to_summarize, middleware
+            )
+            if offload_result is None:
+                # Actual failure (read/write error)
+                await self._mount_message(
+                    ErrorMessage(
+                        "Warning: conversation history could not be saved to "
+                        "storage. Older messages will not be recoverable. "
+                    )
+                )
+            # offload_result == "" means nothing to offload (not an error)
+            file_path = offload_result or None
+
+            summary_msg = middleware._build_new_messages_with_path(summary, file_path)[
+                0
+            ]
+
+            # Compute token savings and append to the summary message so the
+            # model is aware of how much context was reclaimed.
+            tokens_summary = count_tokens_approximately([summary_msg])
+            tokens_after = tokens_summary + tokens_kept
+            before = _format_token_count(tokens_before)
+            after = _format_token_count(tokens_after)
+            pct = (
+                round((tokens_before - tokens_after) / tokens_before * 100)
+                if tokens_before > 0
+                else 0
+            )
+            summarized_before = _format_token_count(tokens_summarized)
+            summarized_after = _format_token_count(tokens_summary)
+            savings_note = (
+                f"\n\n{len(to_summarize)} messages were compacted "
+                f"({summarized_before} \u2192 {summarized_after} tokens). "
+                f"Total context: {before} \u2192 {after} tokens "
+                f"({pct}% decrease), "
+                f"{len(to_keep)} messages unchanged."
+            )
+            summary_msg.content += savings_note  # type: ignore[operator]
+
+            state_cutoff = middleware._compute_state_cutoff(event, cutoff)
+
+            new_event: SummarizationEvent = {
+                "cutoff_index": state_cutoff,
+                "summary_message": summary_msg,  # ty: ignore[invalid-argument-type]
+                "file_path": file_path,
+            }
+
+            await self._agent.aupdate_state(config, {"_summarization_event": new_event})
+
+            await self._mount_message(
+                AppMessage(
+                    f"Compacted {len(to_summarize)} messages "
+                    f"({summarized_before} \u2192 {summarized_after} tokens)\n"
+                    f"  total context: {before} \u2192 {after} "
+                    f"({pct}% decrease) "
+                    f"\u00b7 {len(to_keep)} messages unchanged"
+                )
+            )
+
+            # Approximate token count via count_tokens_approximately (content
+            # tokens only; excludes system prompts and tool schemas). The next
+            # agent turn replaces this with the real count from usage_metadata.
+            if self._token_tracker:
+                self._token_tracker.add(tokens_after)
+
+        except Exception as exc:  # surface compaction errors to user
+            logger.exception("Compaction failed")
+            await self._mount_message(ErrorMessage(f"Compaction failed: {exc}"))
+        finally:
+            self._agent_running = False
+            try:
+                await self._set_spinner(None)
+            except Exception:  # best-effort spinner cleanup
+                logger.exception("Failed to dismiss spinner after compaction")
+
+    async def _offload_messages_for_compact(
+        self,
+        messages: list[Any],
+        middleware: SummarizationMiddleware,
+    ) -> str | None:
+        """Write messages to backend storage before compaction.
+
+        Appends messages as a timestamped markdown section to the conversation
+        history file, matching the `SummarizationMiddleware` offload pattern.
+
+        Filters out prior summary messages using the middleware's
+        `_filter_summary_messages` to avoid storing summaries-of-summaries.
+
+        Args:
+            messages: Messages to offload.
+            middleware: `SummarizationMiddleware` instance for filtering.
+
+        Returns:
+            File path where history was stored, `""` (empty string) if there
+            were no non-summary messages to offload (not an error), or `None`
+            if the write failed.
+        """
+        from datetime import UTC, datetime
+
+        from langchain_core.messages import get_buffer_string
+
+        if self._backend is None:
+            logger.warning("No backend configured; cannot offload messages")
+            return None
+
+        path = f"/conversation_history/{self._lc_thread_id}.md"
+
+        # Exclude prior summaries so the offloaded history contains only
+        # original messages
+        filtered = middleware._filter_summary_messages(messages)
+        if not filtered:
+            # Nothing to offload — all messages were summaries. Not an error.
+            return ""
+
+        timestamp = datetime.now(UTC).isoformat()
+        buf = get_buffer_string(filtered)
+        new_section = f"## Compacted at {timestamp}\n\n{buf}\n\n"
+
+        existing_content = ""
+        try:
+            responses = await self._backend.adownload_files([path])
+            resp = responses[0] if responses else None
+            if resp and resp.content is not None and resp.error is None:
+                existing_content = resp.content.decode("utf-8")
+        except Exception as exc:  # abort write on read failure
+            logger.warning(
+                "Failed to read existing history at %s; aborting offload to "
+                "avoid overwriting prior history: %s",
+                path,
+                exc,
+                exc_info=True,
+            )
+            return None
+
+        combined = existing_content + new_section
+
+        try:
+            result = (
+                await self._backend.aedit(path, existing_content, combined)
+                if existing_content
+                else await self._backend.awrite(path, combined)
+            )
+            if result is None or result.error:
+                error_detail = result.error if result else "backend returned None"
+                logger.warning(
+                    "Failed to offload compact history to %s: %s",
+                    path,
+                    error_detail,
+                )
+                return None
+        except Exception as exc:  # defensive: surface write failures gracefully
+            logger.warning(
+                "Exception offloading compact history to %s: %s",
+                path,
+                exc,
+                exc_info=True,
+            )
+            return None
+
+        logger.debug("Offloaded %d messages to %s", len(filtered), path)
+        return path
 
     async def _handle_user_message(self, message: str) -> None:
         """Handle a user message to send to the agent.

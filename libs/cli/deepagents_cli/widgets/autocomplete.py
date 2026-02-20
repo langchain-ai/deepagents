@@ -96,6 +96,7 @@ SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/help", "Show help"),
     ("/changelog", "Open changelog in browser"),
     ("/clear", "Clear chat and start new thread"),
+    ("/compact", "Summarize conversation to reduce context usage"),
     ("/docs", "Open documentation in browser"),
     ("/feedback", "Submit a bug report or feature request"),
     ("/model", "Switch model, show selector, or set default (--default)"),

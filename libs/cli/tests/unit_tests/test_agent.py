@@ -507,3 +507,68 @@ class TestCreateCliAgentSkillsSources:
         assert sources[0] == str(built_in_dir)
         # User skills dir should follow
         assert sources[1] == str(skills_dir)
+
+
+class TestMiddlewareStackConformance:
+    """Verify all middleware passed to create_deep_agent inherits AgentMiddleware."""
+
+    def test_all_middleware_inherit_agent_middleware(self, tmp_path: Path) -> None:
+        """Every middleware in the stack must be an AgentMiddleware subclass.
+
+        This prevents runtime errors like 'has no attribute wrap_tool_call'
+        when the agent framework iterates over the middleware list.
+        """
+        from langchain.agents.middleware.types import AgentMiddleware
+
+        agent_dir = tmp_path / "agent"
+        agent_dir.mkdir()
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+
+        mock_settings = Mock()
+        mock_settings.ensure_agent_dir.return_value = agent_dir
+        mock_settings.ensure_user_skills_dir.return_value = skills_dir
+        mock_settings.get_project_skills_dir.return_value = None
+        mock_settings.get_built_in_skills_dir.return_value = (
+            Settings.get_built_in_skills_dir()
+        )
+        mock_settings.get_user_agent_md_path.return_value = agent_dir / "AGENTS.md"
+        mock_settings.get_project_agent_md_path.return_value = None
+        mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
+        mock_settings.get_project_agents_dir.return_value = None
+        mock_settings.model_name = None
+        mock_settings.model_provider = None
+        mock_settings.model_context_limit = None
+        mock_settings.project_root = None
+
+        captured_middleware: list[list[Any]] = []
+
+        def capture_create_agent(**kwargs: Any) -> Mock:
+            captured_middleware.append(kwargs.get("middleware", []))
+            agent = Mock()
+            agent.with_config.return_value = agent
+            return agent
+
+        with (
+            patch("deepagents_cli.agent.settings", mock_settings),
+            patch(
+                "deepagents_cli.agent.create_deep_agent",
+                side_effect=capture_create_agent,
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=True,
+                enable_skills=True,
+                enable_shell=False,
+            )
+
+        assert len(captured_middleware) == 1
+        middleware_list = captured_middleware[0]
+        assert len(middleware_list) > 0, "Expected at least one middleware"
+
+        for mw in middleware_list:
+            assert isinstance(mw, AgentMiddleware), (
+                f"{type(mw).__name__} does not inherit from AgentMiddleware"
+            )

@@ -173,6 +173,9 @@ def format_tool_display(tool_name: str, tool_args: dict) -> str:
             desc = truncate_value(desc, 100)
             return f'{prefix} {tool_name}("{desc}")'
 
+    elif tool_name == "compact_conversation":
+        return f"{prefix} {tool_name}()"
+
     elif tool_name == "write_todos":
         # Todos: show count of items
         if "todos" in tool_args and isinstance(tool_args["todos"], list):

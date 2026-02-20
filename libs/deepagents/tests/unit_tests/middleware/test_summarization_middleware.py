@@ -641,6 +641,11 @@ class TestSummaryMessageFormat:
         assert result.command.update is not None
         assert modified_request is not None
 
+        # file_path must be None so the summary message does not reference
+        # a nonexistent backend path.
+        event = result.command.update["_summarization_event"]
+        assert event["file_path"] is None
+
     def test_summary_includes_file_path_after_second_summarization(self) -> None:
         """Test that summary message includes file path reference after multiple summarizations.
 
@@ -909,6 +914,11 @@ class TestBackendFailureHandling:
         assert result.command.update is not None
         assert modified_request is not None
 
+        # file_path must be None so the summary message does not reference
+        # a nonexistent backend path.
+        event = result.command.update["_summarization_event"]
+        assert event["file_path"] is None
+
     def test_summarization_aborts_on_write_exception(self) -> None:
         """Test that summarization warns when backend raises exception but still summarizes."""
         backend = MagicMock()
@@ -935,6 +945,11 @@ class TestBackendFailureHandling:
         assert result.command is not None
         assert result.command.update is not None
         assert modified_request is not None
+
+        # file_path must be None so the summary message does not reference
+        # a nonexistent backend path.
+        event = result.command.update["_summarization_event"]
+        assert event["file_path"] is None
 
 
 class TestThreadIdExtraction:

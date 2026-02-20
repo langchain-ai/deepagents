@@ -30,7 +30,10 @@ from deepagents.middleware.subagents import (
     SubAgent,
     SubAgentMiddleware,
 )
-from deepagents.middleware.summarization import SummarizationMiddleware, _compute_summarization_defaults
+from deepagents.middleware.summarization import SummarizationMiddleware, compute_summarization_defaults
+
+_ENABLE_COMPACT_TOOL = True
+"""Whether to enable the compact_conversation tool."""
 
 BASE_AGENT_PROMPT = """You are a Deep Agent, an AI assistant that helps users accomplish tasks using tools. You respond with text and tool calls. The user can see your responses and tool outputs in real time.
 
@@ -188,7 +191,7 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
         model = init_chat_model(model, **model_init_params)
 
     # Compute summarization defaults based on model profile
-    summarization_defaults = _compute_summarization_defaults(model)
+    summarization_defaults = compute_summarization_defaults(model)
 
     backend = backend if backend is not None else (StateBackend)
 
@@ -203,6 +206,7 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
             keep=summarization_defaults["keep"],
             trim_tokens_to_summarize=None,
             truncate_args_settings=summarization_defaults["truncate_args_settings"],
+            enable_compact_tool=_ENABLE_COMPACT_TOOL,
         ),
         AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
         PatchToolCallsMiddleware(),
@@ -232,7 +236,7 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
                 subagent_model = init_chat_model(subagent_model)
 
             # Build middleware: base stack + skills (if specified) + user's middleware
-            subagent_summarization_defaults = _compute_summarization_defaults(subagent_model)
+            subagent_summarization_defaults = compute_summarization_defaults(subagent_model)
             subagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
                 TodoListMiddleware(),
                 FilesystemMiddleware(backend=backend),
@@ -243,6 +247,7 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
                     keep=subagent_summarization_defaults["keep"],
                     trim_tokens_to_summarize=None,
                     truncate_args_settings=subagent_summarization_defaults["truncate_args_settings"],
+                    enable_compact_tool=_ENABLE_COMPACT_TOOL,
                 ),
                 AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
                 PatchToolCallsMiddleware(),
@@ -285,6 +290,7 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
                 keep=summarization_defaults["keep"],
                 trim_tokens_to_summarize=None,
                 truncate_args_settings=summarization_defaults["truncate_args_settings"],
+                enable_compact_tool=_ENABLE_COMPACT_TOOL,
             ),
             AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
             PatchToolCallsMiddleware(),

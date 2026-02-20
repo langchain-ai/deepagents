@@ -1145,10 +1145,10 @@ def _get_default_model_spec() -> str:
         model = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-5-20250929")
         return f"anthropic:{model}"
     if settings.has_google:
-        model = os.environ.get("GOOGLE_MODEL", "gemini-3-pro-preview")
+        model = os.environ.get("GOOGLE_MODEL", "gemini-3.1-pro-preview")
         return f"google_genai:{model}"
     if settings.has_vertex_ai:
-        model = os.environ.get("VERTEX_AI_MODEL", "gemini-3-pro-preview")
+        model = os.environ.get("VERTEX_AI_MODEL", "gemini-3.1-pro-preview")
         return f"google_vertexai:{model}"
 
     msg = (
@@ -1157,6 +1157,16 @@ def _get_default_model_spec() -> str:
         "or GOOGLE_CLOUD_PROJECT"
     )
     raise ModelConfigError(msg)
+
+
+_OPENROUTER_DEFAULT_HEADERS: dict[str, str] = {
+    "HTTP-Referer": "https://github.com/langchain-ai/deepagents",
+    "X-Title": "Deep Agents CLI",
+}
+"""Default attribution headers sent with every OpenRouter request.
+
+See https://openrouter.ai/docs/app-attribution for details.
+"""
 
 
 def _get_provider_kwargs(
@@ -1169,6 +1179,10 @@ def _get_provider_kwargs(
 
     When `model_name` is provided, per-model overrides from the `params`
     sub-table are shallow-merged on top.
+
+    For the `openrouter` provider, default attribution headers (`HTTP-Referer`
+    and `X-Title`) are injected automatically. User-supplied `default_headers`
+    in config take precedence.
 
     Args:
         provider: Provider name (e.g., openai, anthropic, fireworks, ollama).
@@ -1187,6 +1201,11 @@ def _get_provider_kwargs(
         api_key = os.environ.get(api_key_env)
         if api_key:
             result["api_key"] = api_key
+
+    if provider == "openrouter":
+        user_headers = result.get("default_headers") or {}
+        result["default_headers"] = {**_OPENROUTER_DEFAULT_HEADERS, **user_headers}
+
     return result
 
 

@@ -132,7 +132,7 @@ def test_update_skill_typo_fix_no_read(model: str) -> None:
 
 @pytest.mark.langsmith
 def test_update_skill_typo_fix_requires_read(model: str) -> None:
-    """Agent must read a skill file to find and fix an unknown typo."""
+    """Agent must read a skill file to discover and fix an unknown typo."""
     agent = create_deep_agent(model=model, skills=["/skills/user/"])
     trajectory = run_agent(
         agent,
@@ -144,7 +144,11 @@ def test_update_skill_typo_fix_requires_read(model: str) -> None:
                 body="## Steps\n1. Write unit tests\n2. Run test suite\n3. Check covreage\n",
             ),
         },
-        query=("Fix the typo in /skills/user/testing/SKILL.md: replace the misspelled word 'covreage' with 'coverage'. Edit the file directly."),
+        query=("There is a misspelled word somewhere in /skills/user/testing/SKILL.md. Read the file, identify the typo, and fix it."),
+        # Step 1: read_file to discover the typo.
+        # Step 2: edit_file to fix it.
+        # Step 3: confirm.
+        # 2 tool call requests: read_file + edit_file.
         expect=(
             TrajectoryExpectations(num_agent_steps=3, num_tool_call_requests=2)
             .require_tool_call(step=1, name="read_file", args_contains={"file_path": "/skills/user/testing/SKILL.md"})

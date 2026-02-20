@@ -1114,7 +1114,7 @@ class DeepAgentsApp(App):
         elif cmd == "/help":
             await self._mount_message(UserMessage(command))
             help_text = Text(
-                "Commands: /quit, /clear, /model [--default], /remember, "
+                "Commands: /quit, /clear, /image, /model [--default], /remember, "
                 "/tokens, /threads, /trace, /changelog, /docs, /feedback, /help\n\n"
                 "Interactive Features:\n"
                 "  Enter           Submit your message\n"
@@ -1131,6 +1131,8 @@ class DeepAgentsApp(App):
 
         elif cmd in {"/changelog", "/docs", "/feedback"}:
             await self._open_url_command(command, cmd)
+        elif cmd == "/image":
+            await self._handle_image_command(command)
         elif cmd == "/version":
             await self._mount_message(UserMessage(command))
             # Show CLI and SDK package versions
@@ -1261,6 +1263,22 @@ class DeepAgentsApp(App):
                 pass
 
         self.call_after_refresh(_scroll_after_command)
+
+    async def _handle_image_command(self, command: str) -> None:
+        """Handle the /image command to paste an image from the clipboard.
+
+        Args:
+            command: The raw command text.
+        """
+        await self._mount_message(UserMessage(command))
+        if self._chat_input and self._chat_input._try_attach_clipboard_image():
+            await self._mount_message(AppMessage("Image attached from clipboard."))
+        else:
+            await self._mount_message(
+                AppMessage(
+                    "No image found on clipboard. Copy an image first, then run /image."
+                )
+            )
 
     async def _handle_user_message(self, message: str) -> None:
         """Handle a user message to send to the agent.

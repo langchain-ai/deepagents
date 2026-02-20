@@ -98,6 +98,7 @@ SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/clear", "Clear chat and start new thread"),
     ("/docs", "Open documentation in browser"),
     ("/feedback", "Submit a bug report or feature request"),
+    ("/image", "Paste image from clipboard"),
     ("/model", "Switch model, show selector, or set default (--default)"),
     ("/remember", "Update memory and skills from conversation"),
     ("/quit", "Exit app"),

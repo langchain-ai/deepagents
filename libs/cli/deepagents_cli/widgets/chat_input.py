@@ -304,6 +304,9 @@ class ChatTextArea(TextArea):
             self.paths = paths
             super().__init__()
 
+    class ClipboardImageRequest(Message):
+        """Request clipboard image check when paste text is empty."""
+
     def __init__(self, **kwargs: Any) -> None:
         """Initialize the chat text area."""
         # Remove placeholder if passed, TextArea doesn't support it the same way
@@ -465,13 +468,19 @@ class ChatTextArea(TextArea):
         from deepagents_cli.input import parse_pasted_file_paths
 
         paths = parse_pasted_file_paths(event.text)
-        if not paths:
-            await super()._on_paste(event)
+        if paths:
+            event.prevent_default()
+            event.stop()
+            self.post_message(self.PastedPaths(event.text, paths))
             return
 
-        event.prevent_default()
-        event.stop()
-        self.post_message(self.PastedPaths(event.text, paths))
+        if not event.text.strip():
+            event.prevent_default()
+            event.stop()
+            self.post_message(self.ClipboardImageRequest())
+            return
+
+        await super()._on_paste(event)
 
     def set_text_from_history(self, text: str) -> None:
         """Set text from history navigation."""
@@ -927,11 +936,19 @@ class ChatInput(Vertical):
 
         self._insert_pasted_paths(event.raw_text, event.paths)
 
+    def on_chat_text_area_clipboard_image_request(
+        self,
+        event: ChatTextArea.ClipboardImageRequest,  # noqa: ARG002
+    ) -> None:
+        """Handle clipboard image check when paste text was empty."""
+        self._try_attach_clipboard_image()
+
     def handle_external_paste(self, pasted: str) -> bool:
         """Handle paste text from app-level routing when input is not focused.
 
         When the text area is mounted, the paste is always consumed: file paths
-        are attached as images, and plain text is inserted directly.
+        are attached as images, plain text is inserted directly, and empty
+        payloads trigger a clipboard image check.
 
         Args:
             pasted: Raw pasted text payload.
@@ -948,6 +965,8 @@ class ChatInput(Vertical):
         paths = parse_pasted_file_paths(pasted)
         if paths:
             self._insert_pasted_paths(pasted, paths)
+        elif not pasted.strip():
+            self._try_attach_clipboard_image()
         else:
             self._text_area.insert(pasted)
 
@@ -970,6 +989,28 @@ class ChatInput(Vertical):
             self._text_area.insert(replacement)
             return
         self._text_area.insert(raw_text)
+
+    def _try_attach_clipboard_image(self) -> bool:
+        """Try to read an image from the system clipboard and attach it.
+
+        Runs synchronously since the subprocess calls in
+        ``get_clipboard_image`` are fast (< 3 s timeout).
+
+        Returns:
+            `True` when an image was attached, `False` otherwise.
+        """
+        if not self._image_tracker or not self._text_area:
+            return False
+
+        from deepagents_cli.image_utils import get_clipboard_image
+
+        image = get_clipboard_image()
+        if image is None:
+            return False
+
+        placeholder = self._image_tracker.add_image(image)
+        self._text_area.insert(placeholder + " ")
+        return True
 
     def _build_path_replacement(
         self,

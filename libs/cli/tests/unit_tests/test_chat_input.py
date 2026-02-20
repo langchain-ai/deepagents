@@ -1439,3 +1439,164 @@ class TestDroppedImagePaste:
             assert app.submitted[0].value == "[image 1]"
             assert app.submitted[0].mode == "normal"
             assert len(app.tracker.get_images()) == 1
+
+
+class TestClipboardImagePaste:
+    """Tests for clipboard image fallback on empty paste events."""
+
+    @pytest.mark.asyncio
+    async def test_empty_paste_triggers_clipboard_image_fallback(self) -> None:
+        """handle_external_paste('') should try reading an image from the clipboard."""
+        from unittest.mock import patch
+
+        from deepagents_cli.image_utils import ImageData
+
+        fake_image = ImageData(
+            base64_data="aGVsbG8=",
+            format="png",
+            placeholder="[image]",
+        )
+
+        app = _ImagePasteApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            with patch(
+                "deepagents_cli.image_utils.get_clipboard_image",
+                return_value=fake_image,
+            ) as mock_get:
+                result = chat.handle_external_paste("")
+                await pilot.pause()
+
+                assert result is True
+                mock_get.assert_called_once()
+                assert "[image 1]" in chat._text_area.text
+                assert len(app.tracker.get_images()) == 1
+
+    @pytest.mark.asyncio
+    async def test_nonempty_paste_does_not_trigger_clipboard_fallback(self) -> None:
+        """handle_external_paste with text should NOT check the clipboard."""
+        from unittest.mock import patch
+
+        app = _ImagePasteApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            with patch(
+                "deepagents_cli.image_utils.get_clipboard_image",
+            ) as mock_get:
+                chat.handle_external_paste("hello world")
+                await pilot.pause()
+
+                mock_get.assert_not_called()
+                assert chat._text_area.text == "hello world"
+
+    @pytest.mark.asyncio
+    async def test_empty_paste_no_clipboard_image_is_silent(self) -> None:
+        """handle_external_paste('') with no clipboard image inserts nothing."""
+        from unittest.mock import patch
+
+        app = _ImagePasteApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            with patch(
+                "deepagents_cli.image_utils.get_clipboard_image",
+                return_value=None,
+            ) as mock_get:
+                result = chat.handle_external_paste("")
+                await pilot.pause()
+
+                assert result is True
+                mock_get.assert_called_once()
+                assert chat._text_area.text == ""
+                assert app.tracker.get_images() == []
+
+    @pytest.mark.asyncio
+    async def test_whitespace_paste_tries_clipboard_image(self) -> None:
+        """handle_external_paste with only whitespace should try clipboard."""
+        from unittest.mock import patch
+
+        from deepagents_cli.image_utils import ImageData
+
+        fake_image = ImageData(
+            base64_data="aGVsbG8=",
+            format="png",
+            placeholder="[image]",
+        )
+
+        app = _ImagePasteApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            with patch(
+                "deepagents_cli.image_utils.get_clipboard_image",
+                return_value=fake_image,
+            ) as mock_get:
+                result = chat.handle_external_paste("   \n  ")
+                await pilot.pause()
+
+                assert result is True
+                mock_get.assert_called_once()
+                assert "[image 1]" in chat._text_area.text
+
+    @pytest.mark.asyncio
+    async def test_try_attach_clipboard_image_without_tracker(self) -> None:
+        """_try_attach_clipboard_image should return False with no tracker."""
+        app = _ChatInputTestApp()
+        async with app.run_test():
+            chat = app.query_one(ChatInput)
+            assert chat._image_tracker is None
+            assert chat._try_attach_clipboard_image() is False
+
+    @pytest.mark.asyncio
+    async def test_try_attach_clipboard_image_returns_true_on_success(self) -> None:
+        """_try_attach_clipboard_image should return True when image is attached."""
+        from unittest.mock import patch
+
+        from deepagents_cli.image_utils import ImageData
+
+        fake_image = ImageData(
+            base64_data="aGVsbG8=",
+            format="png",
+            placeholder="[image]",
+        )
+
+        app = _ImagePasteApp()
+        async with app.run_test():
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            with patch(
+                "deepagents_cli.image_utils.get_clipboard_image",
+                return_value=fake_image,
+            ):
+                result = chat._try_attach_clipboard_image()
+
+                assert result is True
+                assert "[image 1]" in chat._text_area.text
+                assert len(app.tracker.get_images()) == 1
+
+    @pytest.mark.asyncio
+    async def test_try_attach_clipboard_image_returns_false_on_no_image(self) -> None:
+        """_try_attach_clipboard_image should return False when no image."""
+        from unittest.mock import patch
+
+        app = _ImagePasteApp()
+        async with app.run_test():
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            with patch(
+                "deepagents_cli.image_utils.get_clipboard_image",
+                return_value=None,
+            ):
+                result = chat._try_attach_clipboard_image()
+
+                assert result is False
+                assert chat._text_area.text == ""
+                assert app.tracker.get_images() == []

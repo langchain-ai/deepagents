@@ -103,7 +103,7 @@ class TestToolCallMessageMarkupSafety:
 
         # `task` has no inline args widget, so this validates the header markup.
         header = next(iter(msg.compose()))
-        content = header._Static__content  # type: ignore[attr-defined]
+        content = header._Static__content
         assert isinstance(content, str)
         rendered = render(content)
         assert "[/dim]" in rendered.plain

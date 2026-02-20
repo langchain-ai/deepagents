@@ -1340,7 +1340,8 @@ class DeepAgentsApp(App):
             )
 
             try:
-                result = create_model()
+                model_spec = f"{settings.model_provider}:{settings.model_name}"
+                result = create_model(model_spec)
                 model = result.model
             except Exception as exc:  # noqa: BLE001  # surface model config errors to user
                 await self._mount_message(

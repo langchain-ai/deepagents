@@ -1406,10 +1406,15 @@ class DeepAgentsApp(App):
 
             before = _format_token_count(tokens_before)
             after = _format_token_count(tokens_after)
+            pct = (
+                round((tokens_before - tokens_after) / tokens_before * 100)
+                if tokens_before > 0
+                else 0
+            )
             await self._mount_message(
                 AppMessage(
                     f"Compacted {len(to_summarize)} messages "
-                    f"({before} \u2192 {after} tokens)"
+                    f"({before} \u2192 {after} tokens, {pct}% decrease)"
                 )
             )
 

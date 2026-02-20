@@ -150,7 +150,7 @@ MEMORY_SYSTEM_PROMPT = """<agent_memory>
 
     Example 3 (do not remember transient information):
     User: I'm going to play basketball tonight so I will be offline for a few hours.
-    Agent: Okay I'll add a black to your calendar.
+    Agent: Okay I'll add a block to your calendar.
     Tool Call: create_calendar_event(...) -> just calls a tool, does not commit anything to memory, as it is transient information
 </memory_guidelines>
 """

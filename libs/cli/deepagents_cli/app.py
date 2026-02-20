@@ -1184,8 +1184,14 @@ class DeepAgentsApp(App):
                     formatted = f"{count / 1000:.1f}K"
                 else:
                     formatted = str(count)
+
+                # Get model information
+                model_name = settings.model_name or "Unknown"
+                context_limit = settings.model_context_limit
+                context_size_str = f"{context_limit:,} tokens" if context_limit is not None else "Unknown"
+
                 await self._mount_message(
-                    AppMessage(f"Current context: {formatted} tokens")
+                    AppMessage(f"Current context: {formatted} tokens + {model_name} context window size: {context_size_str}")
                 )
             else:
                 await self._mount_message(AppMessage("No token usage yet"))

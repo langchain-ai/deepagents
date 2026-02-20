@@ -25,6 +25,7 @@ from deepagents_cli.config import (
 )
 from deepagents_cli.input import EMAIL_PREFIX_PATTERN, INPUT_HIGHLIGHT_PATTERN
 from deepagents_cli.tool_display import format_tool_display
+from deepagents_cli.widgets._links import open_style_link
 from deepagents_cli.widgets.diff import format_diff_textual
 
 if TYPE_CHECKING:
@@ -449,7 +450,7 @@ class ToolCallMessage(Vertical):
         Yields:
             Widgets for header, arguments, status, and output display.
         """
-        tool_label = format_tool_display(self._tool_name, self._args)
+        tool_label = escape_markup(format_tool_display(self._tool_name, self._args))
         yield Static(
             f"[bold #f59e0b]{tool_label}[/bold #f59e0b]",
             classes="tool-header",
@@ -463,7 +464,10 @@ class ToolCallMessage(Vertical):
                 )
                 if len(args) > _MAX_INLINE_ARGS:
                     args_str += ", ..."
-                yield Static(f"[dim]({args_str})[/dim]", classes="tool-args")
+                yield Static(
+                    f"[dim]({escape_markup(args_str)})[/dim]",
+                    classes="tool-args",
+                )
         # Status - shows running animation while pending, then final status
         yield Static("", classes="tool-status", id="status")
         # Output area - hidden initially, shown when output is set
@@ -1223,7 +1227,10 @@ class DiffMessage(Static):
             Widgets displaying the diff header and formatted content.
         """
         if self._file_path:
-            yield Static(f"[bold]File: {self._file_path}[/bold]", classes="diff-header")
+            yield Static(
+                f"[bold]File: {escape_markup(self._file_path)}[/bold]",
+                classes="diff-header",
+            )
 
         # Render the diff with enhanced formatting
         rendered = format_diff_textual(self._diff_content, max_lines=100)
@@ -1272,6 +1279,12 @@ class ErrorMessage(Static):
 class AppMessage(Static):
     """Widget displaying an app message."""
 
+    # Disable Textual's auto_links to prevent a flicker cycle: Style.__add__
+    # calls .copy() for linked styles, generating a fresh random _link_id on
+    # each render. This means highlight_link_id never stabilizes, causing an
+    # infinite hover-refresh loop.
+    auto_links = False
+
     DEFAULT_CSS = """
     AppMessage {
         height: auto;
@@ -1296,3 +1309,7 @@ class AppMessage(Static):
             message if isinstance(message, Text) else Text(message, style="dim italic")
         )
         super().__init__(content, **kwargs)
+
+    def on_click(self, event: Click) -> None:  # noqa: PLR6301  # Textual event handler
+        """Open Rich-style hyperlinks on single click."""
+        open_style_link(event)

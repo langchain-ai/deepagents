@@ -11,7 +11,8 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
-from deepagents_cli.backends import DEFAULT_EXECUTE_TIMEOUT
+from deepagents.backends import DEFAULT_EXECUTE_TIMEOUT
+
 from deepagents_cli.config import MAX_ARG_LENGTH, get_glyphs
 
 

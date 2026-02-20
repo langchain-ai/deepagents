@@ -48,7 +48,7 @@ def _run_sandbox_setup(backend: SandboxBackendProtocol, setup_script_path: str) 
     result = backend.execute(f"bash -c {shlex.quote(expanded_script)}")
 
     if result.exit_code != 0:
-        console.print(f"[red]❌ Setup script failed (exit {result.exit_code}):[/red]")
+        console.print(f"[red]Setup script failed (exit {result.exit_code}):[/red]")
         console.print(f"[dim]{result.output}[/dim]")
         msg = "Setup failed - aborting"
         raise RuntimeError(msg)

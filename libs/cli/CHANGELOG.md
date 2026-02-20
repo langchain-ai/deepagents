@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.0.23](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.22...deepagents-cli==0.0.23) (2026-02-18)
+
+
+### Features
+
+* **cli:** add drag-and-drop image attachment to chat input ([#1386](https://github.com/langchain-ai/deepagents/issues/1386)) ([cd3d89b](https://github.com/langchain-ai/deepagents/commit/cd3d89b4419b4c164915ff745afff99cb11b55a5))
+* **cli:** add skill deletion command ([#580](https://github.com/langchain-ai/deepagents/issues/580)) ([40a8d86](https://github.com/langchain-ai/deepagents/commit/40a8d866f952e0cf8d856e2fa360de771721b99a))
+* **cli:** add visual mode indicators to chat input ([#1371](https://github.com/langchain-ai/deepagents/issues/1371)) ([1ea6159](https://github.com/langchain-ai/deepagents/commit/1ea6159b068b8c7d721d90a5c196e2eb9877c1c5))
+* **cli:** dismiss completion dropdown on `esc` ([#1362](https://github.com/langchain-ai/deepagents/issues/1362)) ([961b7fc](https://github.com/langchain-ai/deepagents/commit/961b7fc764a7fbf63466d78c1d80b154b5d1692b))
+* **cli:** expand local context & implement via bash for sandbox support ([#1295](https://github.com/langchain-ai/deepagents/issues/1295)) ([de8bc7c](https://github.com/langchain-ai/deepagents/commit/de8bc7cbbd7780ef250b3838f61ace85d4465c0a))
+* **cli:** show sdk version alongside cli version ([#1378](https://github.com/langchain-ai/deepagents/issues/1378)) ([e99b4c8](https://github.com/langchain-ai/deepagents/commit/e99b4c864afd01d68c3829304fb93cc0530eedee))
+* **cli:** strip mode-trigger prefix from chat input text ([#1373](https://github.com/langchain-ai/deepagents/issues/1373)) ([6879eff](https://github.com/langchain-ai/deepagents/commit/6879effb37c2160ef3835cd2d058b79f9d3a5a99))
+
+
+### Bug Fixes
+
+* **cli,sdk:** harden path hardening ([#918](https://github.com/langchain-ai/deepagents/issues/918)) ([fc34a14](https://github.com/langchain-ai/deepagents/commit/fc34a144a2791c75f8b4c11f67dd1adbc029c81e))
+* **cli:** only navigate prompt history at input boundaries ([#1385](https://github.com/langchain-ai/deepagents/issues/1385)) ([6d82d6d](https://github.com/langchain-ai/deepagents/commit/6d82d6de290e73b897a58d724f3dfc7a32a06cba))
+* **cli:** substitute image base64 for placeholder in result block ([#1381](https://github.com/langchain-ai/deepagents/issues/1381)) ([54f4d8e](https://github.com/langchain-ai/deepagents/commit/54f4d8e834c4aad672d78b4130cd43f2454424fa))
+
+
+### Performance Improvements
+
+* **cli:** defer more heavy imports to speed up startup ([#1389](https://github.com/langchain-ai/deepagents/issues/1389)) ([4dd10d5](https://github.com/langchain-ai/deepagents/commit/4dd10d5c9f3cfe13cd7b9ac18a1799c0832976ff))
+
 ## [0.0.22](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.21...deepagents-cli==0.0.22) (2026-02-17)
 
 

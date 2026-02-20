@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from deepagents_cli.app import run_textual_app
+from deepagents_cli.app import AppResult, run_textual_app
 from deepagents_cli.config import build_langsmith_thread_url, reset_langsmith_url_cache
 from deepagents_cli.main import (
     check_optional_tools,
@@ -17,38 +17,51 @@ from deepagents_cli.main import (
 
 
 class TestResumeHintLogic:
-    """Test that resume hint logic is correct."""
+    """Test that resume hint logic is correct.
+
+    The actual condition in `cli_main` is::
+
+        thread_id and return_code == 0 and asyncio.run(thread_exists(thread_id))
+
+    These tests mirror the three-part condition. `thread_exists` is
+    represented as a boolean to keep the tests as pure unit tests.
+    """
 
     def test_resume_hint_condition_error_case(self) -> None:
-        """Resume hint should NOT be shown when return_code is non-zero.
-
-        This tests the condition: thread_id and not is_resumed and return_code == 0
-        """
-        # Simulating the condition from main.py
+        """Resume hint should NOT be shown when return_code is non-zero."""
         thread_id = "test123"
-        is_resumed = False
-        return_code = 1  # Error case
+        return_code = 1
+        has_checkpoints = True
 
-        show_resume_hint = thread_id and not is_resumed and return_code == 0
-        assert not show_resume_hint, "Resume hint should not be shown on error"
+        show = bool(thread_id) and return_code == 0 and has_checkpoints
+        assert not show, "Resume hint should not be shown on error"
 
     def test_resume_hint_condition_success_case(self) -> None:
-        """Resume hint SHOULD be shown when return_code is 0 (success)."""
+        """Resume hint SHOULD be shown on success with checkpoints."""
         thread_id = "test123"
-        is_resumed = False
-        return_code = 0  # Success case
-
-        show_resume_hint = thread_id and not is_resumed and return_code == 0
-        assert show_resume_hint, "Resume hint should be shown on success"
-
-    def test_resume_hint_not_shown_for_resumed_threads(self) -> None:
-        """Resume hint should NOT be shown for resumed threads."""
-        thread_id = "test123"
-        is_resumed = True  # Resumed session
         return_code = 0
+        has_checkpoints = True
 
-        show_resume_hint = thread_id and not is_resumed and return_code == 0
-        assert not show_resume_hint, "Resume hint not shown for resumed threads"
+        show = bool(thread_id) and return_code == 0 and has_checkpoints
+        assert show, "Resume hint should be shown on success"
+
+    def test_resume_hint_shown_for_resumed_threads(self) -> None:
+        """Resume hint SHOULD be shown for resumed threads too."""
+        thread_id = "test123"
+        return_code = 0
+        has_checkpoints = True
+
+        show = bool(thread_id) and return_code == 0 and has_checkpoints
+        assert show, "Resume hint should be shown for resumed threads"
+
+    def test_resume_hint_not_shown_without_checkpoints(self) -> None:
+        """Resume hint should NOT appear when thread has no checkpoints."""
+        thread_id = "test123"
+        return_code = 0
+        has_checkpoints = False
+
+        show = bool(thread_id) and return_code == 0 and has_checkpoints
+        assert not show, "No hint when thread_exists returns False"
 
 
 class TestLangSmithTeardownUrl:
@@ -86,30 +99,51 @@ class TestLangSmithTeardownUrl:
         assert show_link
 
 
+class TestAppResult:
+    """Tests for the AppResult dataclass."""
+
+    def test_fields_accessible(self) -> None:
+        """AppResult should expose return_code and thread_id."""
+        result = AppResult(return_code=0, thread_id="tid-abc")
+        assert result.return_code == 0
+        assert result.thread_id == "tid-abc"
+
+    def test_thread_id_none(self) -> None:
+        """AppResult should accept None for thread_id."""
+        result = AppResult(return_code=1, thread_id=None)
+        assert result.thread_id is None
+
+    def test_frozen(self) -> None:
+        """AppResult should be immutable."""
+        from dataclasses import FrozenInstanceError
+
+        result = AppResult(return_code=0, thread_id="tid")
+        with pytest.raises(FrozenInstanceError):
+            result.return_code = 1  # type: ignore[misc]
+
+
 class TestRunTextualAppReturnType:
-    """Test that run_textual_app returns proper return code."""
+    """Test that run_textual_app returns AppResult."""
 
     @pytest.mark.asyncio
-    async def test_run_textual_app_returns_int(self) -> None:
-        """run_textual_app should return an integer return code."""
-        # Verify the function signature returns int
+    async def test_run_textual_app_returns_app_result(self) -> None:
+        """run_textual_app should return an AppResult."""
         sig = inspect.signature(run_textual_app)
-        # Handle both 'int' string and int type (forward refs)
         annotation = sig.return_annotation
-        assert annotation in (int, "int"), (
-            f"run_textual_app should return int, got {annotation}"
+        assert annotation in (AppResult, "AppResult"), (
+            f"run_textual_app should return AppResult, got {annotation}"
         )
 
 
 class TestRunTextualCliAsyncReturnType:
-    """Test that run_textual_cli_async returns proper return code."""
+    """Test that run_textual_cli_async returns AppResult."""
 
-    def test_run_textual_cli_async_returns_int(self) -> None:
-        """run_textual_cli_async should return an integer return code."""
-        # Verify the function signature returns int
+    def test_run_textual_cli_async_returns_app_result(self) -> None:
+        """run_textual_cli_async should return an AppResult."""
         sig = inspect.signature(run_textual_cli_async)
-        assert sig.return_annotation in (int, "int"), (
-            f"run_textual_cli_async should return int, got {sig.return_annotation}"
+        assert sig.return_annotation in (AppResult, "AppResult"), (
+            "run_textual_cli_async should return AppResult, "
+            f"got {sig.return_annotation}"
         )
 
 

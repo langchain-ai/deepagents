@@ -384,9 +384,37 @@ async def get_checkpointer() -> AsyncIterator[AsyncSqliteSaver]:
         yield checkpointer
 
 
+_DEFAULT_THREAD_LIMIT = 20
+
+
+def get_thread_limit() -> int:
+    """Read the thread listing limit from `DA_CLI_RECENT_THREADS`.
+
+    Falls back to `_DEFAULT_THREAD_LIMIT` when the variable is unset or contains
+    a non-integer value. The result is clamped to a minimum of 1.
+
+    Returns:
+        Number of threads to display.
+    """
+    import os
+
+    raw = os.environ.get("DA_CLI_RECENT_THREADS")
+    if raw is None:
+        return _DEFAULT_THREAD_LIMIT
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        logger.warning(
+            "Invalid DA_CLI_RECENT_THREADS value %r, using default %d",
+            raw,
+            _DEFAULT_THREAD_LIMIT,
+        )
+        return _DEFAULT_THREAD_LIMIT
+
+
 async def list_threads_command(
     agent_name: str | None = None,
-    limit: int = 20,
+    limit: int | None = None,
 ) -> None:
     """CLI handler for `deepagents threads list`.
 
@@ -398,10 +426,15 @@ async def list_threads_command(
 
             When `None`, threads for all agents are shown.
         limit: Maximum number of threads to display.
+
+            When `None`, reads from `DA_CLI_RECENT_THREADS` or falls back to
+            the default.
     """
     from rich.table import Table
 
     from deepagents_cli.config import COLORS, console
+
+    limit = get_thread_limit() if limit is None else max(1, limit)
 
     threads = await list_threads(agent_name, limit=limit, include_message_count=True)
 

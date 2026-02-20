@@ -21,7 +21,10 @@ import sys
 import traceback
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from deepagents_cli.app import AppResult
 
 # Suppress Pydantic v1 compatibility warnings from langchain on Python 3.14+
 warnings.filterwarnings("ignore", message=".*Pydantic V1.*", category=UserWarning)
@@ -52,7 +55,7 @@ def check_cli_dependencies() -> None:
         missing.append("textual")
 
     if missing:
-        print("\n❌ Missing required CLI dependencies!")  # noqa: T201  # CLI output for missing dependencies
+        print("\nMissing required CLI dependencies!")  # noqa: T201  # CLI output for missing dependencies
         print("\nThe following packages are required to use the deepagents CLI:")  # noqa: T201  # CLI output for missing dependencies
         for pkg in missing:
             print(f"  - {pkg}")  # noqa: T201  # CLI output for missing dependencies
@@ -256,7 +259,7 @@ def parse_args() -> argparse.Namespace:
     threads_list.add_argument(
         "--limit",
         type=int,
-        default=20,
+        default=None,
         help="Max number of threads to display (default: 20)",
     )
     threads_delete = threads_sub.add_parser(
@@ -434,7 +437,7 @@ async def run_textual_cli_async(
     thread_id: str | None = None,
     is_resumed: bool = False,
     initial_prompt: str | None = None,
-) -> int:
+) -> "AppResult":
     """Run the Textual CLI interface (async version).
 
     Args:
@@ -454,7 +457,7 @@ async def run_textual_cli_async(
         initial_prompt: Optional prompt to auto-submit when session starts
 
     Returns:
-        The app's return code (0 for success, non-zero for error).
+        An `AppResult` with the return code and final thread ID.
     """
     from rich.text import Text
 
@@ -468,16 +471,18 @@ async def run_textual_cli_async(
     try:
         result = create_model(model_name, extra_kwargs=model_params)
     except ModelConfigError as e:
+        from deepagents_cli.app import AppResult
+
         console.print(f"[bold red]Error:[/bold red] {e}")
-        return 1
+        return AppResult(return_code=1, thread_id=None)
 
     model = result.model
     result.apply_to_settings()
 
     # Show thread info
     if is_resumed:
-        msg = Text("Resuming thread: ", style="green")
-        msg.append(str(thread_id))
+        msg = Text("Resuming thread: ", style="dim")
+        msg.append(str(thread_id), style="dim")
         console.print(msg)
     else:
         msg = Text("Starting with thread: ", style="dim")
@@ -512,7 +517,7 @@ async def run_textual_cli_async(
                 sandbox_backend = sandbox_cm.__enter__()  # noqa: PLC2801  # Context manager used without `with` for long-lived sandbox lifecycle
             except (ImportError, ValueError, RuntimeError, NotImplementedError) as e:
                 console.print()
-                console.print("[red]❌ Sandbox creation failed[/red]")
+                console.print("[red]Sandbox creation failed[/red]")
                 console.print(Text(str(e), style="dim"))
                 sys.exit(1)
 
@@ -527,15 +532,17 @@ async def run_textual_cli_async(
                 checkpointer=checkpointer,
             )
         except Exception as e:  # noqa: BLE001  # CLI needs robust error handling to show friendly error messages
-            error_text = Text("❌ Failed to create agent: ", style="red")
+            error_text = Text("Failed to create agent: ", style="red")
             error_text.append(str(e))
             console.print(error_text)
             sys.exit(1)
 
         # Run Textual app - errors propagate to caller
-        return_code = 0
+        from deepagents_cli.app import AppResult
+
+        result = AppResult(return_code=1, thread_id=None)
         try:
-            return_code = await run_textual_app(
+            result = await run_textual_app(
                 agent=agent,
                 assistant_id=assistant_id,
                 backend=composite_backend,
@@ -551,9 +558,11 @@ async def run_textual_cli_async(
         finally:
             # Clean up sandbox after app exits (success or error)
             if sandbox_cm is not None:
-                with contextlib.suppress(Exception):
+                try:
                     sandbox_cm.__exit__(None, None, None)
-        return return_code
+                except Exception:
+                    logger.warning("Sandbox cleanup failed", exc_info=True)
+        return result
 
 
 def apply_stdin_pipe(args: argparse.Namespace) -> None:
@@ -829,7 +838,7 @@ def cli_main() -> None:
                 asyncio.run(
                     list_threads_command(
                         agent_name=getattr(args, "agent", None),
-                        limit=getattr(args, "limit", 20),
+                        limit=getattr(args, "limit", None),
                     )
                 )
             elif args.threads_command == "delete":
@@ -955,7 +964,7 @@ def cli_main() -> None:
             # Run Textual CLI
             return_code = 0
             try:
-                return_code = asyncio.run(
+                result = asyncio.run(
                     run_textual_cli_async(
                         assistant_id=args.agent,
                         auto_approve=args.auto_approve,
@@ -969,6 +978,10 @@ def cli_main() -> None:
                         initial_prompt=getattr(args, "initial_prompt", None),
                     )
                 )
+                return_code = result.return_code
+                # The user may have switched threads via /threads during the
+                # session; use the final thread ID for teardown messages.
+                thread_id = result.thread_id or thread_id
             except Exception as e:  # noqa: BLE001  # Top-level error handler for the application
                 error_msg = Text("\nApplication error: ", style="red")
                 error_msg.append(str(e))
@@ -994,8 +1007,8 @@ def cli_main() -> None:
                     exc_info=True,
                 )
 
-            # Show resume hint on exit (only for new threads with successful exit)
-            if thread_id and not is_resumed and return_code == 0:
+            # Show resume hint on exit for threads with checkpointed content.
+            if thread_id and return_code == 0 and asyncio.run(thread_exists(thread_id)):
                 console.print()
                 console.print("[dim]Resume this thread with:[/dim]")
                 hint = Text("deepagents -r ", style="cyan")

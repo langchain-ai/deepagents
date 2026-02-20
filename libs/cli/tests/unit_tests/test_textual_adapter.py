@@ -86,6 +86,27 @@ class TestTextualUIAdapterInit:
         adapter.set_token_tracker(mock_tracker)
         assert adapter._token_tracker is mock_tracker
 
+    def test_finalize_pending_tools_with_error_marks_and_clears(self) -> None:
+        """Pending tool widgets should be marked error and then cleared."""
+        set_active = MagicMock()
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_active_message=set_active,
+        )
+
+        tool_1 = MagicMock()
+        tool_2 = MagicMock()
+        adapter._current_tool_messages = {"a": tool_1, "b": tool_2}
+
+        adapter.finalize_pending_tools_with_error("Agent error: boom")
+
+        tool_1.set_error.assert_called_once_with("Agent error: boom")
+        tool_2.set_error.assert_called_once_with("Agent error: boom")
+        assert adapter._current_tool_messages == {}
+        set_active.assert_called_once_with(None)
+
 
 class TestBuildStreamConfig:
     """Tests for `_build_stream_config` metadata construction."""

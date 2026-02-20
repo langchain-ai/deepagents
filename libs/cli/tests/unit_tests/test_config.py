@@ -130,6 +130,60 @@ class TestProjectAgentMdFinding:
         result = _find_project_agent_md(project_root)
         assert result == []
 
+    def test_skips_paths_with_permission_errors(self, tmp_path: Path) -> None:
+        """Test that OSError from Path.exists() is caught gracefully."""
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+
+        real_md = project_root / "AGENTS.md"
+        real_md.write_text("root instructions")
+
+        original_exists = Path.exists
+
+        def patched_exists(self: Path) -> bool:
+            if self.name == "AGENTS.md" and ".deepagents" in str(self):
+                msg = "Permission denied"
+                raise PermissionError(msg)
+            return original_exists(self)
+
+        with patch.object(Path, "exists", patched_exists):
+            result = _find_project_agent_md(project_root)
+
+        assert len(result) == 1
+        assert result[0] == real_md
+
+
+class TestSettingsGetProjectAgentMdPath:
+    """Test Settings.get_project_agent_md_path() integration."""
+
+    def test_returns_empty_list_when_no_project_root(self) -> None:
+        """Should return [] when project_root is None."""
+        s = Settings.__new__(Settings)
+        s.project_root = None
+        assert s.get_project_agent_md_path() == []
+
+    def test_returns_existing_paths(self, tmp_path: Path) -> None:
+        """Should return existing AGENTS.md paths from project root."""
+        deepagents_dir = tmp_path / ".deepagents"
+        deepagents_dir.mkdir()
+        deepagents_md = deepagents_dir / "AGENTS.md"
+        deepagents_md.write_text("inner")
+
+        root_md = tmp_path / "AGENTS.md"
+        root_md.write_text("root")
+
+        s = Settings.__new__(Settings)
+        s.project_root = tmp_path
+
+        result = s.get_project_agent_md_path()
+        assert result == [deepagents_md, root_md]
+
+    def test_returns_empty_when_no_agents_md_files(self, tmp_path: Path) -> None:
+        """Should return [] when project exists but has no AGENTS.md."""
+        s = Settings.__new__(Settings)
+        s.project_root = tmp_path
+        assert s.get_project_agent_md_path() == []
+
 
 class TestValidateModelCapabilities:
     """Tests for model capability validation."""

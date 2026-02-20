@@ -892,8 +892,7 @@ A condensed summary follows:
             messages: Messages being summarized.
 
         Returns:
-            The file path where history was stored, or `None` if the read
-            or write failed.
+            The file path where history was stored, or `None` if write failed.
         """
         path = self._get_history_path()
 
@@ -906,20 +905,19 @@ A condensed summary follows:
         # Read existing content (if any) and append.
         # Note: We use download_files() instead of read() because read() returns
         # line-numbered content (for LLM consumption), but edit() expects raw content.
-        # If the read fails, abort the write to avoid overwriting prior history.
         existing_content = ""
         try:
             responses = backend.download_files([path])
             if responses and responses[0].content is not None and responses[0].error is None:
                 existing_content = responses[0].content.decode("utf-8")
         except Exception as e:  # noqa: BLE001
-            logger.warning(
-                "Failed to read existing history from %s; aborting offload to avoid overwriting prior history: %s: %s",
+            # File likely doesn't exist yet, but log for observability
+            logger.debug(
+                "Exception reading existing history from %s (treating as new file): %s: %s",
                 path,
                 type(e).__name__,
                 e,
             )
-            return None
 
         combined_content = existing_content + new_section
 
@@ -968,8 +966,7 @@ A condensed summary follows:
             messages: Messages being summarized.
 
         Returns:
-            The file path where history was stored, or `None` if the read
-            or write failed.
+            The file path where history was stored, or `None` if write failed.
         """
         path = self._get_history_path()
 
@@ -982,20 +979,19 @@ A condensed summary follows:
         # Read existing content (if any) and append.
         # Note: We use adownload_files() instead of aread() because read() returns
         # line-numbered content (for LLM consumption), but edit() expects raw content.
-        # If the read fails, abort the write to avoid overwriting prior history.
         existing_content = ""
         try:
             responses = await backend.adownload_files([path])
             if responses and responses[0].content is not None and responses[0].error is None:
                 existing_content = responses[0].content.decode("utf-8")
         except Exception as e:  # noqa: BLE001
-            logger.warning(
-                "Failed to read existing history from %s; aborting offload to avoid overwriting prior history: %s: %s",
+            # File likely doesn't exist yet, but log for observability
+            logger.debug(
+                "Exception reading existing history from %s (treating as new file): %s: %s",
                 path,
                 type(e).__name__,
                 e,
             )
-            return None
 
         combined_content = existing_content + new_section
 

@@ -135,7 +135,7 @@ class TestCompactGuards:
             await pilot.pause()
 
             msgs = app.query(AppMessage)
-            assert any("No active session" in str(w._content) for w in msgs)
+            assert any("Nothing to compact" in str(w._content) for w in msgs)
 
     @pytest.mark.asyncio
     async def test_agent_running_shows_error(self) -> None:
@@ -190,7 +190,7 @@ class TestCompactGuards:
             await pilot.pause()
 
             msgs = app.query(AppMessage)
-            assert any("No active session" in str(w._content) for w in msgs)
+            assert any("Nothing to compact" in str(w._content) for w in msgs)
 
     @pytest.mark.asyncio
     async def test_state_read_failure_shows_error(self) -> None:
@@ -887,7 +887,7 @@ class TestCompactRouting:
             await pilot.pause()
 
             msgs = app.query(AppMessage)
-            assert any("No active session" in str(w._content) for w in msgs)
+            assert any("Nothing to compact" in str(w._content) for w in msgs)
 
 
 class TestFormatTokenCount:

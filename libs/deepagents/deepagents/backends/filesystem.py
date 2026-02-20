@@ -107,8 +107,9 @@ class FilesystemBackend(BackendProtocol):
                 are resolved under `root_dir`. This provides no security against an agent
                 choosing paths outside `root_dir`.
 
-                **Security note:** `virtual_mode=True` restricts file access via paths, but
-                does not sandbox the Python process itself.
+                - Absolute paths (e.g., `/etc/passwd`) bypass `root_dir` entirely
+                - Relative paths with `..` can escape `root_dir`
+                - Agents have unrestricted filesystem access
 
             max_file_size_mb: Maximum file size in megabytes for operations like
                 grep's Python fallback search.

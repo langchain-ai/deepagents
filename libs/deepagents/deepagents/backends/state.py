@@ -12,14 +12,15 @@ from deepagents.backends.protocol import (
     FileInfo,
     FileUploadResponse,
     GrepMatch,
+    ReadResult,
     WriteResult,
 )
 from deepagents.backends.utils import (
+    _apply_read_pagination,
     _glob_search_files,
     _to_legacy_file_data,
     create_file_data,
     file_data_to_string,
-    format_read_response,
     grep_matches_from_files,
     perform_string_replacement,
     update_file_data,
@@ -120,29 +121,24 @@ class StateBackend(BackendProtocol):
         infos.sort(key=lambda x: x.get("path", ""))
         return infos
 
-    def read(
-        self,
-        file_path: str,
-        offset: int = 0,
-        limit: int = 2000,
-    ) -> str:
-        """Read file content with line numbers.
+    def read(self, file_path: str, offset: int = 0, limit: int = 2000) -> ReadResult:
+        """Read file data with optional line-based pagination.
 
         Args:
             file_path: Absolute file path.
-            offset: Line offset to start reading from (0-indexed).
-            limit: Maximum number of lines to read.
+            offset: Line offset (0-indexed) for UTF-8 text files.
+            limit: Maximum number of lines for UTF-8 text files.
 
         Returns:
-            Formatted file content with line numbers, or error message.
+            ReadResult with file_data on success, or error on failure.
         """
         files = self.runtime.state.get("files", {})
         file_data = files.get(file_path)
 
         if file_data is None:
-            return f"Error: File '{file_path}' not found"
+            return ReadResult(error=f"File '{file_path}' not found")
 
-        return format_read_response(file_data, offset, limit)
+        return _apply_read_pagination(ReadResult(file_data=file_data), offset, limit)
 
     def write(
         self,

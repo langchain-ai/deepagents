@@ -31,8 +31,9 @@ def test_filesystem_backend_normal_mode(tmp_path: Path):
     assert (str(root) + "/dir/") in paths  # Directory should be listed
 
     # read, edit, write
-    txt = be.read(str(f1))
-    assert "hello fs" in txt
+    read_res = be.read(str(f1))
+    assert read_res.error is None
+    assert "hello fs" in read_res.file_data["content"]
     msg = be.edit(str(f1), "fs", "filesystem", replace_all=False)
     assert isinstance(msg, EditResult) and msg.error is None and msg.occurrences == 1
     msg2 = be.write(str(root / "new.txt"), "new content")
@@ -64,8 +65,9 @@ def test_filesystem_backend_virtual_mode(tmp_path: Path):
     assert "/dir/" in paths  # Directory should be listed
 
     # read and edit via virtual path
-    txt = be.read("/a.txt")
-    assert "hello virtual" in txt
+    read_res = be.read("/a.txt")
+    assert read_res.error is None
+    assert "hello virtual" in read_res.file_data["content"]
     msg = be.edit("/a.txt", "virtual", "virt", replace_all=False)
     assert isinstance(msg, EditResult) and msg.error is None and msg.occurrences == 1
 

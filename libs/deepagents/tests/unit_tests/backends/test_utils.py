@@ -4,7 +4,12 @@ from typing import Any
 
 import pytest
 
-from deepagents.backends.utils import _glob_search_files, validate_path
+from deepagents.backends.utils import (
+    EMPTY_CONTENT_WARNING,
+    _glob_search_files,
+    validate_path,
+)
+from deepagents.middleware.filesystem import _paginate_content
 
 
 class TestValidatePath:
@@ -132,3 +137,77 @@ class TestGlobSearchFiles:
         """Test that path traversal in path parameter is rejected."""
         result = _glob_search_files(sample_files, "*.py", "../etc/")
         assert result == "No files found"
+
+
+class TestPaginateContent:
+    """Tests for _paginate_content utility."""
+
+    def test_basic_pagination(self) -> None:
+        """First 5 lines of a 10-line file."""
+        content = "\n".join(f"line {i}" for i in range(1, 11))
+        result = _paginate_content(content, offset=0, limit=5)
+        assert "line 1" in result
+        assert "line 5" in result
+        assert "line 6" not in result
+
+    def test_offset(self) -> None:
+        """Lines 6-10 via offset=5."""
+        content = "\n".join(f"line {i}" for i in range(1, 11))
+        result = _paginate_content(content, offset=5, limit=5)
+        assert "line 6" in result
+        assert "line 10" in result
+        assert "line 5" not in result
+
+    def test_offset_exceeds_length(self) -> None:
+        """Offset beyond file length returns error string."""
+        content = "short file"
+        result = _paginate_content(content, offset=100, limit=5)
+        assert "Error:" in result
+        assert "exceeds file length" in result
+
+    def test_empty_content(self) -> None:
+        """Empty content returns EMPTY_CONTENT_WARNING."""
+        result = _paginate_content("", offset=0, limit=5)
+        assert result == EMPTY_CONTENT_WARNING
+
+    def test_whitespace_only_content(self) -> None:
+        """Whitespace-only content returns EMPTY_CONTENT_WARNING."""
+        result = _paginate_content("   \n  \n  ", offset=0, limit=10)
+        assert result == EMPTY_CONTENT_WARNING
+
+    def test_single_line(self) -> None:
+        """Single line file."""
+        result = _paginate_content("hello world", offset=0, limit=100)
+        assert "hello world" in result
+        # Should have line number 1
+        assert "1\t" in result
+
+    def test_full_file_read(self) -> None:
+        """Limit larger than line count reads entire file."""
+        content = "line1\nline2\nline3"
+        result = _paginate_content(content, offset=0, limit=1000)
+        assert "line1" in result
+        assert "line2" in result
+        assert "line3" in result
+
+    def test_long_line_continuation_markers(self) -> None:
+        """Lines longer than MAX_LINE_LENGTH get continuation markers."""
+        long_line = "x" * 15000  # 3 chunks at MAX_LINE_LENGTH=5000
+        result = _paginate_content(long_line, offset=0, limit=10)
+        # Should have continuation markers like 1.1, 1.2
+        assert "1.1" in result
+        assert "1.2" in result
+
+    def test_exact_limit(self) -> None:
+        """Line exactly at MAX_LINE_LENGTH should not be split."""
+        exact_line = "y" * 5000
+        result = _paginate_content(exact_line, offset=0, limit=10)
+        # No continuation markers needed
+        assert ".1" not in result
+
+    def test_line_numbers_start_at_offset_plus_one(self) -> None:
+        """Line numbers should start at offset + 1."""
+        content = "\n".join(f"line {i}" for i in range(1, 21))
+        result = _paginate_content(content, offset=10, limit=3)
+        # First line should be numbered 11
+        assert "11\t" in result

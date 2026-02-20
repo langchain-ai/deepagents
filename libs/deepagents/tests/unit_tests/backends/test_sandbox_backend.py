@@ -87,7 +87,7 @@ def test_glob_command_template_format() -> None:
 
 def test_read_command_template_format() -> None:
     """Test that _READ_COMMAND_TEMPLATE can be formatted without KeyError."""
-    cmd = _READ_COMMAND_TEMPLATE.format(file_path="/test/file.txt", offset=0, limit=100)
+    cmd = _READ_COMMAND_TEMPLATE.format(file_path="/test/file.txt")
 
     assert "python3 -c" in cmd
     assert "/test/file.txt" in cmd

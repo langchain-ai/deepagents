@@ -32,8 +32,9 @@ def test_store_backend_crud_and_search():
     assert isinstance(msg, WriteResult) and msg.error is None and msg.path == "/docs/readme.md"
 
     # read
-    txt = be.read("/docs/readme.md")
-    assert "hello store" in txt
+    read_res = be.read("/docs/readme.md")
+    assert read_res.error is None
+    assert "hello store" in read_res.file_data["content"]
 
     # edit
     msg2 = be.edit("/docs/readme.md", "hello", "hi", replace_all=False)
@@ -168,8 +169,9 @@ def test_store_backend_namespace_user_scoped() -> None:
     assert items[0].key == "/test.txt"
 
     # Read it back
-    content = be.read("/test.txt")
-    assert "hello alice" in content
+    read_res = be.read("/test.txt")
+    assert read_res.error is None
+    assert "hello alice" in read_res.file_data["content"]
 
 
 def test_store_backend_namespace_multi_level() -> None:
@@ -234,11 +236,13 @@ def test_store_backend_namespace_isolation() -> None:
     be_bob.write("/notes.txt", "bob notes")
 
     # Verify isolation
-    alice_content = be_alice.read("/notes.txt")
-    assert "alice notes" in alice_content
+    alice_res = be_alice.read("/notes.txt")
+    assert alice_res.error is None
+    assert "alice notes" in alice_res.file_data["content"]
 
-    bob_content = be_bob.read("/notes.txt")
-    assert "bob notes" in bob_content
+    bob_res = be_bob.read("/notes.txt")
+    assert bob_res.error is None
+    assert "bob notes" in bob_res.file_data["content"]
 
     # Verify they're in different namespaces
     alice_items = store.search(("filesystem", "alice"))

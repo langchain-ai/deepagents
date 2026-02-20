@@ -133,6 +133,19 @@ class FileData(TypedDict):
 
 
 @dataclass
+class ReadResult:
+    """Result from backend read operations.
+
+    Attributes:
+        error: Error message on failure, None on success.
+        file_data: FileData dict on success, None on failure.
+    """
+
+    error: str | None = None
+    file_data: FileData | None = None
+
+
+@dataclass
 class WriteResult:
     """Result from backend write operations.
 
@@ -231,26 +244,25 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         file_path: str,
         offset: int = 0,
         limit: int = 2000,
-    ) -> str:
-        """Read file content with line numbers.
+    ) -> "ReadResult":
+        """Read raw file data.
+
+        Returns a ``ReadResult`` containing the file's ``FileData`` on success
+        (including encoding info), or an error message on failure.
+
+        The ``offset`` and ``limit`` parameters are accepted for backwards
+        compatibility but pagination and line-number formatting are handled
+        by the tool layer.  Backend implementations may ignore these values.
 
         Args:
             file_path: Absolute path to the file to read. Must start with '/'.
-            offset: Line number to start reading from (0-indexed). Default: 0.
-            limit: Maximum number of lines to read. Default: 2000.
+            offset: Line offset (0-indexed). Accepted for compatibility;
+                pagination is handled by the tool layer.
+            limit: Maximum number of lines. Accepted for compatibility;
+                pagination is handled by the tool layer.
 
         Returns:
-            String containing file content formatted with line numbers (cat -n format),
-            starting at line 1. Lines longer than 2000 characters are truncated.
-
-            Returns an error string if the file doesn't exist or can't be read.
-
-        !!! note
-            - Use pagination (offset/limit) for large files to avoid context overflow
-            - First scan: `read(path, limit=100)` to see file structure
-            - Read more: `read(path, offset=100, limit=200)` for next section
-            - ALWAYS read a file before editing it
-            - If file exists but is empty, you'll receive a system reminder warning
+            ReadResult with ``file_data`` on success or ``error`` on failure.
         """
         raise NotImplementedError
 
@@ -259,7 +271,7 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         file_path: str,
         offset: int = 0,
         limit: int = 2000,
-    ) -> str:
+    ) -> "ReadResult":
         """Async version of read."""
         return await asyncio.to_thread(self.read, file_path, offset, limit)
 

@@ -1,7 +1,10 @@
 """Custom tools for the CLI agent."""
 
+import ipaddress
 import re
+import socket
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 import requests
 from markdownify import markdownify
@@ -23,6 +26,10 @@ tavily_client = (
 
 
 _HTTP_URL_PATTERN = re.compile(r"https?://[^\s)\]}>\"']+")
+_METADATA_HOSTNAMES = {
+    "metadata.google.internal",
+    "metadata.goog.internal",
+}
 
 
 def _extract_first_http_url(text: str) -> str | None:
@@ -35,6 +42,91 @@ def _extract_first_http_url(text: str) -> str | None:
     if not match:
         return None
     return match.group(0).rstrip(".,;:!?")
+
+
+def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    return (
+        ip.is_loopback
+        or ip.is_private
+        or ip.is_link_local
+        or ip.is_reserved
+        or ip.is_unspecified
+        or ip.is_multicast
+        or ip == ipaddress.ip_address("169.254.169.254")
+    )
+
+
+def _validate_direct_fetch_url(url: str) -> tuple[bool, str | None]:
+    """Validate direct-fetch URL to reduce SSRF risk for local/internal hosts.
+
+    Returns:
+        A tuple of `(is_safe, reason)`. `reason` is set when validation fails.
+    """
+    parsed = urlsplit(url)
+    if parsed.scheme not in {"http", "https"}:
+        return (
+            False,
+            f"Blocked direct URL fetch for unsupported scheme: {parsed.scheme}",
+        )
+
+    hostname = parsed.hostname
+    if not hostname:
+        return False, "Blocked direct URL fetch for invalid URL host."
+
+    normalized_host = hostname.rstrip(".").lower()
+
+    if (
+        normalized_host == "localhost"
+        or normalized_host.endswith(".localhost")
+        or normalized_host == "localhost.localdomain"
+    ):
+        return (
+            False,
+            f"Blocked direct URL fetch for local/internal host: {hostname}",
+        )
+
+    if normalized_host in _METADATA_HOSTNAMES:
+        return (
+            False,
+            f"Blocked direct URL fetch for cloud metadata host: {hostname}",
+        )
+
+    try:
+        literal_ip = ipaddress.ip_address(normalized_host)
+    except ValueError:
+        try:
+            resolved = socket.getaddrinfo(hostname, None, proto=socket.IPPROTO_TCP)
+        except socket.gaierror:
+            msg = (
+                "Blocked direct URL fetch because host could not be safely "
+                f"resolved: {hostname}"
+            )
+            return (
+                False,
+                msg,
+            )
+
+        for info in resolved:
+            if not info or len(info) < 5 or not info[4]:
+                continue
+            ip_text = str(info[4][0]).split("%", 1)[0]
+            try:
+                resolved_ip = ipaddress.ip_address(ip_text)
+            except ValueError:
+                continue
+            if _is_blocked_ip(resolved_ip):
+                return (
+                    False,
+                    f"Blocked direct URL fetch for local/internal host: {hostname}",
+                )
+    else:
+        if _is_blocked_ip(literal_ip):
+            return (
+                False,
+                f"Blocked direct URL fetch for local/internal host: {hostname}",
+            )
+
+    return True, None
 
 
 def http_request(
@@ -139,6 +231,15 @@ def web_search(
     """
     direct_url = _extract_first_http_url(query)
     if direct_url:
+        is_safe, block_reason = _validate_direct_fetch_url(direct_url)
+        if not is_safe:
+            return {
+                "error": block_reason,
+                "query": query,
+                "blocked_url": direct_url,
+                "direct_fetch": False,
+                "source_tool": "fetch_url",
+            }
         fetched = fetch_url(direct_url)
         return {
             "query": query,

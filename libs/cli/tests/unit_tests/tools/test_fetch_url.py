@@ -84,7 +84,19 @@ def test_web_search_delegates_to_fetch_url_when_query_contains_url() -> None:
         status=200,
     )
 
-    with patch("deepagents_cli.tools.tavily_client") as mock_tavily:
+    with (
+        patch("deepagents_cli.tools.tavily_client") as mock_tavily,
+        patch("deepagents_cli.tools.socket.getaddrinfo") as mock_getaddrinfo,
+    ):
+        mock_getaddrinfo.return_value = [
+            (
+                2,
+                1,
+                6,
+                "",
+                ("93.184.216.34", 0),
+            )
+        ]
         result = web_search("Please summarize https://example.com/docs")
 
     assert result["direct_fetch"] is True
@@ -104,3 +116,58 @@ def test_web_search_uses_tavily_when_query_has_no_url() -> None:
 
     assert result == expected
     mock_tavily.search.assert_called_once()
+
+
+def test_web_search_blocks_localhost_direct_fetch() -> None:
+    """web_search should reject localhost direct fetch URLs."""
+    with (
+        patch("deepagents_cli.tools.tavily_client") as mock_tavily,
+        patch("deepagents_cli.tools.fetch_url") as mock_fetch_url,
+    ):
+        result = web_search("Please summarize http://localhost:8080/debug")
+
+    assert result["direct_fetch"] is False
+    assert "Blocked direct URL fetch" in result["error"]
+    assert result["blocked_url"] == "http://localhost:8080/debug"
+    mock_fetch_url.assert_not_called()
+    mock_tavily.search.assert_not_called()
+
+
+def test_web_search_blocks_private_ip_direct_fetch() -> None:
+    """web_search should reject private IP direct fetch URLs."""
+    with (
+        patch("deepagents_cli.tools.tavily_client") as mock_tavily,
+        patch("deepagents_cli.tools.fetch_url") as mock_fetch_url,
+    ):
+        result = web_search("Please summarize http://10.0.0.5/admin")
+
+    assert result["direct_fetch"] is False
+    assert "Blocked direct URL fetch" in result["error"]
+    assert result["blocked_url"] == "http://10.0.0.5/admin"
+    mock_fetch_url.assert_not_called()
+    mock_tavily.search.assert_not_called()
+
+
+def test_web_search_blocks_domain_resolving_to_private_ip() -> None:
+    """web_search should reject domains that resolve to private addresses."""
+    with (
+        patch("deepagents_cli.tools.tavily_client") as mock_tavily,
+        patch("deepagents_cli.tools.fetch_url") as mock_fetch_url,
+        patch("deepagents_cli.tools.socket.getaddrinfo") as mock_getaddrinfo,
+    ):
+        mock_getaddrinfo.return_value = [
+            (
+                2,
+                1,
+                6,
+                "",
+                ("192.168.1.5", 0),
+            )
+        ]
+        result = web_search("Please summarize http://internal.example.com/admin")
+
+    assert result["direct_fetch"] is False
+    assert "Blocked direct URL fetch" in result["error"]
+    assert result["blocked_url"] == "http://internal.example.com/admin"
+    mock_fetch_url.assert_not_called()
+    mock_tavily.search.assert_not_called()

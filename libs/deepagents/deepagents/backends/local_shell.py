@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import subprocess
 import uuid
+import warnings
 from typing import TYPE_CHECKING
 
 from deepagents.backends.filesystem import FilesystemBackend
@@ -104,7 +105,7 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
         self,
         root_dir: str | Path | None = None,
         *,
-        virtual_mode: bool = False,
+        virtual_mode: bool | None = None,
         timeout: int = DEFAULT_EXECUTE_TIMEOUT,
         max_output_bytes: int = 100_000,
         env: dict[str, str] | None = None,
@@ -163,6 +164,20 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
         if timeout <= 0:
             msg = f"timeout must be positive, got {timeout}"
             raise ValueError(msg)
+
+        if virtual_mode is None:
+            warnings.warn(
+                "LocalShellBackend virtual_mode default will change in deepagents 0.5.0; "
+                "please specify virtual_mode explicitly. "
+                "Note: virtual_mode is for virtual path semantics (e.g., CompositeBackend routing) and optional path-based guardrails; "
+                "it does not provide sandboxing or process isolation. "
+                "Security note: leaving virtual_mode=False allows absolute paths and '..' to bypass root_dir, "
+                "and LocalShellBackend provides no sandboxing (execute runs commands on the host; virtual_mode does not restrict shell execution). "
+                "Please consult the API reference for usage guidelines.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            virtual_mode = False
 
         # Initialize parent FilesystemBackend
         super().__init__(

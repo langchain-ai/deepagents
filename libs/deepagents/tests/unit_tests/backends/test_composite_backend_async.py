@@ -452,15 +452,15 @@ async def test_composite_aupload_routing_async(tmp_path: Path):
 
     # Upload files to routed path (store)
     routed_files = [
-        ("/memories/note1.bin", b"Memory content 1"),
-        ("/memories/note2.bin", b"Memory content 2"),
+        ("/memories/note1.txt", b"Memory content 1"),
+        ("/memories/note2.txt", b"Memory content 2"),
     ]
     responses = await comp.aupload_files(routed_files)
     assert len(responses) == 2
     assert all(r.error is None for r in responses)
 
     # Verify files are accessible in store
-    content1 = await comp.aread("/memories/note1.bin")
+    content1 = await comp.aread("/memories/note1.txt")
     assert "Memory content 1" in content1
 
 

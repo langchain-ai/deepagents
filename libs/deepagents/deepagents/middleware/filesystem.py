@@ -20,7 +20,6 @@ from langchain_core.messages import ToolMessage
 from langchain_core.messages.content import create_image_block
 from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.types import Command
-from typing_extensions import TypedDict
 
 from deepagents.backends import StateBackend
 from deepagents.backends.composite import CompositeBackend
@@ -28,6 +27,7 @@ from deepagents.backends.protocol import (
     BACKEND_TYPES as BACKEND_TYPES,  # Re-export type here for backwards compatibility
     BackendProtocol,
     EditResult,
+    FileData as FileData,  # Re-export for backwards compatibility
     SandboxBackendProtocol,
     WriteResult,
 )
@@ -68,19 +68,6 @@ READ_FILE_TRUNCATION_MSG = (
 # Using 4 chars per token as a conservative approximation (actual ratio varies by content)
 # This errs on the high side to avoid premature eviction of content that might fit
 NUM_CHARS_PER_TOKEN = 4
-
-
-class FileData(TypedDict):
-    """Data structure for storing file contents with metadata."""
-
-    content: list[str]
-    """Lines of the file."""
-
-    created_at: str
-    """ISO 8601 timestamp of file creation."""
-
-    modified_at: str
-    """ISO 8601 timestamp of last modification."""
 
 
 def _file_data_reducer(left: dict[str, FileData] | None, right: dict[str, FileData | None]) -> dict[str, FileData]:

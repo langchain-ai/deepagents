@@ -70,6 +70,7 @@ class TestFilesystem:
             "/test.txt",
             {
                 "content": ["Hello world"],
+                "encoding": "utf-8",
                 "created_at": "2021-01-01",
                 "modified_at": "2021-01-01",
             },
@@ -79,6 +80,7 @@ class TestFilesystem:
             "/pokemon/charmander.txt",
             {
                 "content": ["Ember"],
+                "encoding": "utf-8",
                 "created_at": "2021-01-01",
                 "modified_at": "2021-01-01",
             },
@@ -130,6 +132,7 @@ class TestFilesystem:
             "/test.txt",
             {
                 "content": ["Hello world"],
+                "encoding": "utf-8",
                 "created_at": "2021-01-01",
                 "modified_at": "2021-01-01",
             },
@@ -139,6 +142,7 @@ class TestFilesystem:
             "/pokemon/charmander.txt",
             {
                 "content": ["Ember"],
+                "encoding": "utf-8",
                 "created_at": "2021-01-01",
                 "modified_at": "2021-01-01",
             },
@@ -185,6 +189,7 @@ class TestFilesystem:
             "/test.txt",
             {
                 "content": ["Hello world"],
+                "encoding": "utf-8",
                 "created_at": "2021-01-01",
                 "modified_at": "2021-01-01",
             },
@@ -226,6 +231,7 @@ class TestFilesystem:
             "/test.txt",
             {
                 "content": ["Hello world"],
+                "encoding": "utf-8",
                 "created_at": "2021-01-01",
                 "modified_at": "2021-01-01",
             },
@@ -267,6 +273,7 @@ class TestFilesystem:
             "/test.txt",
             {
                 "content": ["Hello world"],
+                "encoding": "utf-8",
                 "created_at": "2021-01-01",
                 "modified_at": "2021-01-01",
             },
@@ -276,6 +283,7 @@ class TestFilesystem:
             "/pokemon/charmander.txt",
             {
                 "content": ["Ember"],
+                "encoding": "utf-8",
                 "created_at": "2021-01-01",
                 "modified_at": "2021-01-01",
             },
@@ -345,6 +353,7 @@ class TestFilesystem:
             "/charmander.txt",
             {
                 "content": ["Hello world"],
+                "encoding": "utf-8",
                 "created_at": "2021-01-01",
                 "modified_at": "2021-01-01",
             },
@@ -412,6 +421,7 @@ class TestFilesystem:
             "/charmander.txt",
             {
                 "content": ["The fire burns brightly. The fire burns hot."],
+                "encoding": "utf-8",
                 "created_at": "2021-01-01",
                 "modified_at": "2021-01-01",
             },
@@ -605,6 +615,7 @@ class TestFilesystem:
             "/config.py",
             {
                 "content": ["DEBUG = True"],
+                "encoding": "utf-8",
                 "created_at": "2021-01-01",
                 "modified_at": "2021-01-01",
             },
@@ -614,6 +625,7 @@ class TestFilesystem:
             "/settings.py",
             {
                 "content": ["SECRET_KEY = 'abc'"],
+                "encoding": "utf-8",
                 "created_at": "2021-01-01",
                 "modified_at": "2021-01-01",
             },
@@ -623,6 +635,7 @@ class TestFilesystem:
             "/notes.txt",
             {
                 "content": ["Important notes"],
+                "encoding": "utf-8",
                 "created_at": "2021-01-01",
                 "modified_at": "2021-01-01",
             },
@@ -659,6 +672,7 @@ class TestFilesystem:
             "/longterm.py",
             {
                 "content": ["# Longterm file"],
+                "encoding": "utf-8",
                 "created_at": "2021-01-01",
                 "modified_at": "2021-01-01",
             },
@@ -668,6 +682,7 @@ class TestFilesystem:
             "/longterm.txt",
             {
                 "content": ["Text file"],
+                "encoding": "utf-8",
                 "created_at": "2021-01-01",
                 "modified_at": "2021-01-01",
             },
@@ -757,6 +772,7 @@ class TestFilesystem:
             "/pokemon/charmander.txt",
             {
                 "content": ["Charmander is a fire type", "It evolves into Charmeleon"],
+                "encoding": "utf-8",
                 "created_at": "2021-01-01",
                 "modified_at": "2021-01-01",
             },
@@ -766,6 +782,7 @@ class TestFilesystem:
             "/pokemon/squirtle.txt",
             {
                 "content": ["Squirtle is a water type", "It evolves into Wartortle"],
+                "encoding": "utf-8",
                 "created_at": "2021-01-01",
                 "modified_at": "2021-01-01",
             },
@@ -775,6 +792,7 @@ class TestFilesystem:
             "/pokemon/bulbasaur.txt",
             {
                 "content": ["Bulbasaur is a grass type"],
+                "encoding": "utf-8",
                 "created_at": "2021-01-01",
                 "modified_at": "2021-01-01",
             },
@@ -811,6 +829,7 @@ class TestFilesystem:
             "/longterm_config.py",
             {
                 "content": ["DEBUG = True", "TESTING = False"],
+                "encoding": "utf-8",
                 "created_at": "2021-01-01",
                 "modified_at": "2021-01-01",
             },
@@ -820,6 +839,7 @@ class TestFilesystem:
             "/longterm_settings.py",
             {
                 "content": ["SECRET_KEY = 'abc'"],
+                "encoding": "utf-8",
                 "created_at": "2021-01-01",
                 "modified_at": "2021-01-01",
             },

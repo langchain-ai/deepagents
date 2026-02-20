@@ -1,5 +1,6 @@
 """StoreBackend: Adapter for LangGraph's BaseStore (persistent, cross-thread)."""
 
+import base64
 import re
 import warnings
 from collections.abc import Callable
@@ -16,7 +17,9 @@ from langgraph.typing import ContextT, StateT
 from deepagents.backends.protocol import (
     BackendProtocol,
     EditResult,
+    FileData,
     FileDownloadResponse,
+    FileFormat,
     FileInfo,
     FileUploadResponse,
     GrepMatch,
@@ -24,6 +27,7 @@ from deepagents.backends.protocol import (
 )
 from deepagents.backends.utils import (
     _glob_search_files,
+    _to_legacy_file_data,
     create_file_data,
     file_data_to_string,
     format_read_response,
@@ -103,8 +107,14 @@ class StoreBackend(BackendProtocol):
     The namespace can include an optional assistant_id for multi-agent isolation.
     """
 
-    def __init__(self, runtime: "ToolRuntime", *, namespace: NamespaceFactory | None = None) -> None:
-        """Initialize StoreBackend with runtime.
+    def __init__(
+        self,
+        runtime: "ToolRuntime",
+        *,
+        namespace: NamespaceFactory | None = None,
+        file_format: FileFormat = "v2",
+    ) -> None:
+        r"""Initialize StoreBackend with runtime.
 
         Args:
             runtime: The ToolRuntime instance providing store access and configuration.
@@ -113,17 +123,23 @@ class StoreBackend(BackendProtocol):
                 We forbid * which is a wild card for now.
                 If None, uses legacy assistant_id detection from metadata (deprecated).
 
-                .. note::
+                !!! Note:
                     This parameter will be **required** in version 0.5.0.
-
-                .. warning::
+                !!!! Warning:
                     This API is subject to change in a minor version.
+
+            file_format: Storage format version. `"v2"` (default) stores
+                content as a plain `str` with an `encoding` field.
+                `"v1"` stores content as `list[str]` (lines split on
+                `\\n`) without an `encoding` field, for consumers that
+                expect the legacy format.
 
         Example:
                     namespace=lambda ctx: ("filesystem", ctx.runtime.context.user_id)
         """
         self.runtime = runtime
         self._namespace = namespace
+        self._file_format = file_format
 
     def _get_store(self) -> BaseStore:
         """Get the store instance.
@@ -198,21 +214,37 @@ class StoreBackend(BackendProtocol):
             return (assistant_id, namespace)
         return (namespace,)
 
-    def _convert_store_item_to_file_data(self, store_item: Item) -> dict[str, Any]:
+    def _convert_store_item_to_file_data(self, store_item: Item) -> FileData:
         """Convert a store Item to FileData format.
 
         Args:
             store_item: The store Item containing file data.
 
         Returns:
-            FileData dict with content, created_at, and modified_at fields.
+            FileData dict with content, encoding, created_at, and modified_at fields.
 
         Raises:
             ValueError: If required fields are missing or have incorrect types.
         """
-        if "content" not in store_item.value or not isinstance(store_item.value["content"], list):
+        raw_content = store_item.value.get("content")
+        if raw_content is None:
             msg = f"Store item does not contain valid content field. Got: {store_item.value.keys()}"
             raise ValueError(msg)
+
+        # BACKWARDS COMPAT: legacy list[str] format
+        if isinstance(raw_content, list):
+            warnings.warn(
+                "Store item with list[str] content is deprecated. Content should be stored as a plain str.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            content = "\n".join(raw_content)
+        elif isinstance(raw_content, str):
+            content = raw_content
+        else:
+            msg = f"Store item does not contain valid content field. Got: {store_item.value.keys()}"
+            raise TypeError(msg)
+
         if "created_at" not in store_item.value or not isinstance(store_item.value["created_at"], str):
             msg = f"Store item does not contain valid created_at field. Got: {store_item.value.keys()}"
             raise ValueError(msg)
@@ -220,22 +252,29 @@ class StoreBackend(BackendProtocol):
             msg = f"Store item does not contain valid modified_at field. Got: {store_item.value.keys()}"
             raise ValueError(msg)
         return {
-            "content": store_item.value["content"],
+            "content": content,
+            "encoding": store_item.value.get("encoding", "utf-8"),
             "created_at": store_item.value["created_at"],
             "modified_at": store_item.value["modified_at"],
         }
 
-    def _convert_file_data_to_store_value(self, file_data: dict[str, Any]) -> dict[str, Any]:
+    def _convert_file_data_to_store_value(self, file_data: FileData) -> dict[str, Any]:
         """Convert FileData to a dict suitable for store.put().
+
+        When `file_format="v1"`, returns the legacy format with `content`
+        as `list[str]` and no `encoding` key.
 
         Args:
             file_data: The FileData to convert.
 
         Returns:
-            Dictionary with content, created_at, and modified_at fields.
+            Dictionary with content, encoding, created_at, and modified_at fields.
         """
+        if self._file_format == "v1":
+            return _to_legacy_file_data(file_data)
         return {
             "content": file_data["content"],
+            "encoding": file_data["encoding"],
             "created_at": file_data["created_at"],
             "modified_at": file_data["modified_at"],
         }
@@ -329,7 +368,9 @@ class StoreBackend(BackendProtocol):
                 fd = self._convert_store_item_to_file_data(item)
             except ValueError:
                 continue
-            size = len("\n".join(fd.get("content", [])))
+            # BACKWARDS COMPAT: handle legacy list[str] content for size computation
+            raw = fd.get("content", "")
+            size = len("\n".join(raw)) if isinstance(raw, list) else len(raw)
             infos.append(
                 {
                     "path": item.key,
@@ -559,7 +600,12 @@ class StoreBackend(BackendProtocol):
         infos: list[FileInfo] = []
         for p in paths:
             fd = files.get(p)
-            size = len("\n".join(fd.get("content", []))) if fd else 0
+            if fd:
+                # BACKWARDS COMPAT: handle legacy list[str] content for size computation
+                raw = fd.get("content", "")
+                size = len("\n".join(raw)) if isinstance(raw, list) else len(raw)
+            else:
+                size = 0
             infos.append(
                 {
                     "path": p,
@@ -573,6 +619,9 @@ class StoreBackend(BackendProtocol):
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
         """Upload multiple files to the store.
 
+        Binary files (images, PDFs, etc.) are stored as base64-encoded strings.
+        Text files are stored as utf-8 strings.
+
         Args:
             files: List of (path, content) tuples where content is bytes.
 
@@ -585,12 +634,16 @@ class StoreBackend(BackendProtocol):
         responses: list[FileUploadResponse] = []
 
         for path, content in files:
-            content_str = content.decode("utf-8")
-            # Create file data
-            file_data = create_file_data(content_str)
+            try:
+                content_str = content.decode("utf-8")
+                encoding = "utf-8"
+            except UnicodeDecodeError:
+                content_str = base64.standard_b64encode(content).decode("ascii")
+                encoding = "base64"
+
+            file_data = create_file_data(content_str, encoding=encoding)
             store_value = self._convert_file_data_to_store_value(file_data)
 
-            # Store the file
             store.put(namespace, path, store_value)
             responses.append(FileUploadResponse(path=path, error=None))
 
@@ -618,9 +671,10 @@ class StoreBackend(BackendProtocol):
                 continue
 
             file_data = self._convert_store_item_to_file_data(item)
-            # Convert file data to bytes
             content_str = file_data_to_string(file_data)
-            content_bytes = content_str.encode("utf-8")
+
+            encoding = file_data["encoding"]
+            content_bytes = base64.standard_b64decode(content_str) if encoding == "base64" else content_str.encode("utf-8")
 
             responses.append(FileDownloadResponse(path=path, content=content_bytes, error=None))
 

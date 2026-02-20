@@ -394,7 +394,7 @@ def test_composite_backend_intercept_large_tool_result():
 
     assert isinstance(result, Command)
     assert "/large_tool_results/test_789" in result.update["files"]
-    assert result.update["files"]["/large_tool_results/test_789"]["content"] == [large_content]
+    assert result.update["files"]["/large_tool_results/test_789"]["content"] == large_content
     assert "Tool result too large" in result.update["messages"][0].content
 
 
@@ -417,7 +417,7 @@ def test_composite_backend_intercept_large_tool_result_routed_to_store():
 
     stored_item = rt.store.get(("filesystem",), "/test_routed_123")
     assert stored_item is not None
-    assert stored_item.value["content"] == [large_content]
+    assert stored_item.value["content"] == large_content
 
 
 # Mock sandbox backend for testing execute functionality
@@ -528,15 +528,15 @@ def test_composite_upload_routing(tmp_path: Path):
 
     # Upload files to routed path (store)
     routed_files = [
-        ("/memories/note1.bin", b"Memory content 1"),
-        ("/memories/note2.bin", b"Memory content 2"),
+        ("/memories/note1.txt", b"Memory content 1"),
+        ("/memories/note2.txt", b"Memory content 2"),
     ]
     responses = comp.upload_files(routed_files)
     assert len(responses) == 2
     assert all(r.error is None for r in responses)
 
     # Verify files are accessible in store
-    content1 = comp.read("/memories/note1.bin")
+    content1 = comp.read("/memories/note1.txt")
     assert "Memory content 1" in content1
 
 

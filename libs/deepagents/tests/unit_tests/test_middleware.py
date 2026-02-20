@@ -670,6 +670,7 @@ class TestFilesystemMiddleware:
                 f"/file{i}.txt",
                 {
                     "content": [f"content {i}"],
+                    "encoding": "utf-8",
                     "created_at": "2021-01-01",
                     "modified_at": "2021-01-01",
                 },
@@ -690,6 +691,7 @@ class TestFilesystemMiddleware:
                 f"/file{i}.txt",
                 {
                     "content": [f"content {i}"],
+                    "encoding": "utf-8",
                     "created_at": "2021-01-01",
                     "modified_at": "2021-01-01",
                 },
@@ -709,6 +711,7 @@ class TestFilesystemMiddleware:
                 f"/file{i}.txt",
                 {
                     "content": [f"content {i}"],
+                    "encoding": "utf-8",
                     "created_at": "2021-01-01",
                     "modified_at": "2021-01-01",
                 },
@@ -728,6 +731,7 @@ class TestFilesystemMiddleware:
                 f"/file{i}.txt",
                 {
                     "content": [f"content {i}"],
+                    "encoding": "utf-8",
                     "created_at": "2021-01-01",
                     "modified_at": "2021-01-01",
                     "type": "test" if i % 2 == 0 else "other",
@@ -751,6 +755,7 @@ class TestFilesystemMiddleware:
                 f"/file{i}.txt",
                 {
                     "content": [f"content {i}"],
+                    "encoding": "utf-8",
                     "created_at": "2021-01-01",
                     "modified_at": "2021-01-01",
                 },
@@ -763,20 +768,19 @@ class TestFilesystemMiddleware:
         assert keys == {f"/file{i}.txt" for i in range(55)}
 
     def test_create_file_data_preserves_long_lines(self):
-        """Test that create_file_data stores long lines as-is without splitting."""
+        """Test that create_file_data stores content as a single string."""
         long_line = "a" * 3500
         short_line = "short line"
         content = f"{short_line}\n{long_line}"
 
         file_data = create_file_data(content)
 
-        assert len(file_data["content"]) == 2
-        assert file_data["content"][0] == short_line
-        assert file_data["content"][1] == long_line
-        assert len(file_data["content"][1]) == 3500
+        assert isinstance(file_data["content"], str)
+        assert file_data["content"] == content
+        assert file_data["encoding"] == "utf-8"
 
     def test_update_file_data_preserves_long_lines(self):
-        """Test that update_file_data stores long lines as-is without splitting."""
+        """Test that update_file_data stores content as a single string."""
         initial_file_data = create_file_data("initial content")
 
         long_line = "b" * 5000
@@ -785,10 +789,9 @@ class TestFilesystemMiddleware:
 
         updated_file_data = update_file_data(initial_file_data, new_content)
 
-        assert len(updated_file_data["content"]) == 2
-        assert updated_file_data["content"][0] == short_line
-        assert updated_file_data["content"][1] == long_line
-        assert len(updated_file_data["content"][1]) == 5000
+        assert isinstance(updated_file_data["content"], str)
+        assert updated_file_data["content"] == new_content
+        assert updated_file_data["encoding"] == "utf-8"
 
         assert updated_file_data["created_at"] == initial_file_data["created_at"]
 
@@ -1071,10 +1074,11 @@ class TestFilesystemMiddleware:
         assert isinstance(result, Command)
         # Check that the file contains actual text, not stringified dict
         file_content = result.update["files"]["/large_tool_results/test_single"]["content"]
-        file_text = "\n".join(file_content)
+        # Content is now stored as a plain string
+        assert isinstance(file_content, str)
         # Should start with the actual text, not with "[{" which would indicate stringified dict
-        assert file_text.startswith("Hello world!")
-        assert not file_text.startswith("[{")
+        assert file_content.startswith("Hello world!")
+        assert not file_content.startswith("[{")
 
     def test_multiple_text_blocks_stringifies_structure(self):
         """Test that multiple text blocks stringify entire structure."""
@@ -1093,9 +1097,10 @@ class TestFilesystemMiddleware:
         assert isinstance(result, Command)
         # Check that the file contains stringified structure (starts with "[")
         file_content = result.update["files"]["/large_tool_results/test_multi"]["content"]
-        file_text = "\n".join(file_content)
+        # Content is now stored as a plain string
+        assert isinstance(file_content, str)
         # Should be stringified list of dicts
-        assert file_text.startswith("[{")
+        assert file_content.startswith("[{")
 
     def test_mixed_content_blocks_stringifies_all(self):
         """Test that mixed content block types (text + image) stringify entire structure."""
@@ -1114,11 +1119,12 @@ class TestFilesystemMiddleware:
         assert isinstance(result, Command)
         # Check that the file contains stringified structure
         file_content = result.update["files"]["/large_tool_results/test_mixed"]["content"]
-        file_text = "\n".join(file_content)
-        assert file_text.startswith("[{")
+        # Content is now stored as a plain string
+        assert isinstance(file_content, str)
+        assert file_content.startswith("[{")
         # Should contain both blocks in the stringified output
-        assert "'type': 'text'" in file_text
-        assert "'type': 'image'" in file_text
+        assert "'type': 'text'" in file_content
+        assert "'type': 'image'" in file_content
 
     def test_read_file_image_returns_standard_image_content_block(self):
         """Test image reads return standard image blocks with base64 + mime_type."""

@@ -7,6 +7,7 @@ enable composition without fragile string parsing.
 
 import os
 import re
+import warnings
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -14,7 +15,7 @@ from typing import Any, Literal, overload
 
 import wcmatch.glob as wcglob
 
-from deepagents.backends.protocol import FileInfo as _FileInfo, GrepMatch as _GrepMatch
+from deepagents.backends.protocol import FileData, FileInfo as _FileInfo, GrepMatch as _GrepMatch
 
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
 MAX_LINE_LENGTH = 5000
@@ -25,6 +26,30 @@ TRUNCATION_GUIDANCE = "... [results truncated, try being more specific with your
 # Re-export protocol types for backwards compatibility
 FileInfo = _FileInfo
 GrepMatch = _GrepMatch
+
+
+def _normalize_content(file_data: FileData) -> str:
+    """Normalize file_data content to a plain string.
+
+    This is the single backwards-compatibility conversion point for the
+    legacy `list[str]` file format.  New code stores `content` as a
+    plain `str`; old data may still contain a list of lines.
+
+    Args:
+        file_data: FileData dict with `content` key.
+
+    Returns:
+        Content as a single string.
+    """
+    content = file_data["content"]
+    if isinstance(content, list):
+        warnings.warn(
+            "FileData with list[str] content is deprecated. Content should be stored as a plain str.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return "\n".join(content)
+    return content
 
 
 def sanitize_tool_call_id(tool_call_id: str) -> str:
@@ -95,39 +120,67 @@ def check_empty_content(content: str) -> str | None:
     return None
 
 
-def file_data_to_string(file_data: dict[str, Any]) -> str:
+def _to_legacy_file_data(file_data: FileData) -> dict[str, Any]:
+    r"""Convert a FileData dict to the legacy (v1) storage format.
+
+    The v1 format stores content as `list[str]` (lines split on `\\n`)
+    and omits the `encoding` field.  Use this when `file_format="v1"`
+    on a backend to preserve backwards compatibility with consumers that
+    expect `list[str]` content.
+
+    Args:
+        file_data: Modern (v2) FileData with `content: str` and `encoding`.
+
+    Returns:
+        Dict with `content` as `list[str]`, plus `created_at` /
+        `modified_at` timestamps.  No `encoding` key.
+    """
+    content = file_data["content"]
+    return {
+        "content": content.split("\n"),
+        "created_at": file_data["created_at"],
+        "modified_at": file_data["modified_at"],
+    }
+
+
+def file_data_to_string(file_data: FileData) -> str:
     """Convert FileData to plain string content.
 
     Args:
         file_data: FileData dict with 'content' key
 
     Returns:
-        Content as string with lines joined by newlines
+        Content as a single string.
     """
-    return "\n".join(file_data["content"])
+    return _normalize_content(file_data)
 
 
-def create_file_data(content: str, created_at: str | None = None) -> dict[str, Any]:
+def create_file_data(
+    content: str,
+    created_at: str | None = None,
+    encoding: str = "utf-8",
+) -> FileData:
     """Create a FileData object with timestamps.
 
     Args:
-        content: File content as string
-        created_at: Optional creation timestamp (ISO format)
+        content: File content as string (plain text or base64-encoded binary).
+        created_at: Optional creation timestamp (ISO format).
+        encoding: Content encoding — `"utf-8"` for text, `"base64"` for binary.
 
     Returns:
-        FileData dict with content and timestamps
+        FileData dict with content, encoding, and timestamps.
     """
-    lines = content.split("\n") if isinstance(content, str) else content
     now = datetime.now(UTC).isoformat()
 
     return {
-        "content": lines,
+        "content": content,
+        "encoding": encoding,
         "created_at": created_at or now,
         "modified_at": now,
     }
 
 
-def update_file_data(file_data: dict[str, Any], content: str) -> dict[str, Any]:
+def update_file_data(file_data: FileData, content: str) -> FileData:
     """Update FileData with new content, preserving creation timestamp.
 
     Args:
@@ -137,18 +190,18 @@ def update_file_data(file_data: dict[str, Any], content: str) -> dict[str, Any]:
     Returns:
         Updated FileData dict
     """
-    lines = content.split("\n") if isinstance(content, str) else content
     now = datetime.now(UTC).isoformat()
 
     return {
-        "content": lines,
+        "content": content,
+        "encoding": file_data.get("encoding", "utf-8"),
         "created_at": file_data["created_at"],
         "modified_at": now,
     }
 
 
 def format_read_response(
-    file_data: dict[str, Any],
+    file_data: FileData,
     offset: int,
     limit: int,
 ) -> str:
@@ -459,7 +512,7 @@ def _grep_search_files(
     glob: str | None = None,
     output_mode: Literal["files_with_matches", "content", "count"] = "files_with_matches",
 ) -> str:
-    """Search file contents for regex pattern.
+    r"""Search file contents for regex pattern.
 
     Args:
         files: Dictionary of file paths to FileData.
@@ -473,7 +526,7 @@ def _grep_search_files(
 
     Example:
         ```python
-        files = {"/file.py": FileData(content=["import os", "print('hi')"], ...)}
+        files = {"/file.py": FileData(content="import os\nprint('hi')", ...)}
         _grep_search_files(files, "import", "/")
         # Returns: "/file.py" (with output_mode="files_with_matches")
         ```
@@ -495,7 +548,8 @@ def _grep_search_files(
 
     results: dict[str, list[tuple[int, str]]] = {}
     for file_path, file_data in filtered.items():
-        for line_num, line in enumerate(file_data["content"], 1):
+        content_str = _normalize_content(file_data)
+        for line_num, line in enumerate(content_str.split("\n"), 1):
             if regex.search(line):
                 if file_path not in results:
                     results[file_path] = []
@@ -535,7 +589,8 @@ def grep_matches_from_files(
 
     matches: list[GrepMatch] = []
     for file_path, file_data in filtered.items():
-        for line_num, line in enumerate(file_data["content"], 1):
+        content_str = _normalize_content(file_data)
+        for line_num, line in enumerate(content_str.split("\n"), 1):
             if pattern in line:  # Simple substring search for literal matching
                 matches.append({"path": file_path, "line": int(line_num), "text": line})
     return matches

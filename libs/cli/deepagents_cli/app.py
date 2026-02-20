@@ -1411,7 +1411,7 @@ class DeepAgentsApp(App):
                 f"\n\n{len(to_summarize)} messages were compacted "
                 f"({before} \u2192 {after} tokens, {pct}% decrease)."
             )
-            summary_msg.content += savings_note  # type: ignore[operator]
+            summary_msg.content += savings_note
 
             state_cutoff = middleware._compute_state_cutoff(event, cutoff)
 

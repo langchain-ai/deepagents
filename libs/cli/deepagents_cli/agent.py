@@ -374,7 +374,12 @@ def _add_interrupt_on() -> dict[str, InterruptOnConfig]:
     if REQUIRE_COMPACT_TOOL_APPROVAL:
         interrupt_map["compact_conversation"] = {
             "allowed_decisions": ["approve", "reject"],
-            "description": "Action: Compact conversation by summarizing older messages",
+            "description": (
+                "Summarizes older messages into a shorter summary "
+                "using an LLM call, then replaces them in context. "
+                "Recent messages are kept as-is. Full history is "
+                "written to backend storage for agent retrieval."
+            ),
         }
 
     return interrupt_map

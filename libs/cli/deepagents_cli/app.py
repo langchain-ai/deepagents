@@ -1299,7 +1299,9 @@ class DeepAgentsApp(App):
         instead of the full history.
         """
         if not self._agent or not self._lc_thread_id or not self._backend:
-            await self._mount_message(AppMessage("No active session to compact"))
+            await self._mount_message(
+                AppMessage("Nothing to compact \u2014 start a conversation first")
+            )
             return
 
         if self._agent_running:
@@ -1319,7 +1321,9 @@ class DeepAgentsApp(App):
             return
 
         if not state or not state.values:
-            await self._mount_message(AppMessage("No active session to compact"))
+            await self._mount_message(
+                AppMessage("Nothing to compact \u2014 start a conversation first")
+            )
             return
 
         messages = state.values.get("messages", [])
@@ -1392,6 +1396,22 @@ class DeepAgentsApp(App):
                 0
             ]
 
+            # Compute token savings and append to the summary message so the
+            # model is aware of how much context was reclaimed.
+            tokens_after = count_tokens_approximately([summary_msg, *to_keep])
+            before = _format_token_count(tokens_before)
+            after = _format_token_count(tokens_after)
+            pct = (
+                round((tokens_before - tokens_after) / tokens_before * 100)
+                if tokens_before > 0
+                else 0
+            )
+            savings_note = (
+                f"\n\n{len(to_summarize)} messages were compacted "
+                f"({before} \u2192 {after} tokens, {pct}% decrease)."
+            )
+            summary_msg.content += savings_note  # type: ignore[operator]
+
             state_cutoff = middleware._compute_state_cutoff(event, cutoff)
 
             new_event: SummarizationEvent = {
@@ -1402,15 +1422,6 @@ class DeepAgentsApp(App):
 
             await self._agent.aupdate_state(config, {"_summarization_event": new_event})
 
-            tokens_after = count_tokens_approximately([summary_msg, *to_keep])
-
-            before = _format_token_count(tokens_before)
-            after = _format_token_count(tokens_after)
-            pct = (
-                round((tokens_before - tokens_after) / tokens_before * 100)
-                if tokens_before > 0
-                else 0
-            )
             await self._mount_message(
                 AppMessage(
                     f"Compacted {len(to_summarize)} messages "

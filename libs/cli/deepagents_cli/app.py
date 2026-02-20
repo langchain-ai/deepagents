@@ -1208,7 +1208,7 @@ class DeepAgentsApp(App):
                 else:
                     usage = f"{formatted} tokens used"
 
-                msg = f"{model_name} · {usage}" if model_name else usage
+                msg = f"{usage} · {model_name}" if model_name else usage
 
                 await self._mount_message(AppMessage(msg))
             else:

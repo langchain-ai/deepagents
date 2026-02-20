@@ -898,7 +898,7 @@ class TestOpenRouterHeaders:
         assert kwargs["default_headers"]["HTTP-Referer"] == (
             "https://github.com/langchain-ai/deepagents"
         )
-        assert kwargs["default_headers"]["X-Title"] == "Deep Agents"
+        assert kwargs["default_headers"]["X-Title"] == "Deep Agents CLI"
 
     def test_per_model_headers_override_defaults(self, tmp_path: Path) -> None:
         """Per-model default_headers override built-in defaults."""

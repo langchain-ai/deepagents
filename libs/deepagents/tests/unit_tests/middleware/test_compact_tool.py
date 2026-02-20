@@ -399,6 +399,7 @@ class TestCompactErrorHandling:
                 "_partition_messages",
                 side_effect=lambda msgs, idx: (msgs[:idx], msgs[idx:]),
             ),
+            patch.object(mw, "_create_summary", return_value="Summary."),
             patch.object(
                 mw,
                 "_resolve_backend_for_tool",
@@ -475,3 +476,45 @@ class TestResolveBackendForTool:
         result = mw._resolve_backend_for_tool(runtime)
         assert result is resolved
         factory.assert_called_once_with(runtime)
+
+
+class TestComputeStateCutoff:
+    """Tests for _compute_state_cutoff arithmetic."""
+
+    def test_no_event_returns_effective_cutoff(self) -> None:
+        """With no prior event, should return effective_cutoff as-is."""
+        assert SummarizationMiddleware._compute_state_cutoff(None, 0) == 0
+        assert SummarizationMiddleware._compute_state_cutoff(None, 5) == 5
+
+    def test_with_event_applies_offset(self) -> None:
+        """Should return old_cutoff + effective_cutoff - 1."""
+        event: dict[str, Any] = {
+            "cutoff_index": 10,
+            "summary_message": MagicMock(),
+            "file_path": None,
+        }
+        # old(10) + new(1) - 1 = 10
+        assert SummarizationMiddleware._compute_state_cutoff(event, 1) == 10
+
+    def test_with_zero_old_cutoff(self) -> None:
+        """Edge case: old cutoff of 0."""
+        event: dict[str, Any] = {
+            "cutoff_index": 0,
+            "summary_message": MagicMock(),
+            "file_path": None,
+        }
+        # old(0) + new(3) - 1 = 2
+        assert SummarizationMiddleware._compute_state_cutoff(event, 3) == 2
+
+    def test_malformed_event_missing_cutoff(self) -> None:
+        """Should fall back to effective_cutoff when cutoff_index is missing."""
+        bad_event: dict[str, Any] = {"summary_message": MagicMock()}
+        assert SummarizationMiddleware._compute_state_cutoff(bad_event, 4) == 4
+
+    def test_malformed_event_non_int_cutoff(self) -> None:
+        """Should fall back to effective_cutoff when cutoff_index is not an int."""
+        bad_event: dict[str, Any] = {
+            "cutoff_index": "five",
+            "summary_message": MagicMock(),
+        }
+        assert SummarizationMiddleware._compute_state_cutoff(bad_event, 4) == 4

@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+import warnings
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Annotated, Any, NotRequired, cast
 
@@ -496,7 +497,11 @@ A condensed summary follows:
         """
         if event is None:
             return effective_cutoff
-        return event["cutoff_index"] + effective_cutoff - 1
+        prior_cutoff = event.get("cutoff_index")
+        if not isinstance(prior_cutoff, int):
+            logger.warning("Malformed _summarization_event: missing cutoff_index")
+            return effective_cutoff
+        return prior_cutoff + effective_cutoff - 1
 
     def _resolve_backend_for_tool(self, runtime: ToolRuntime) -> BackendProtocol:
         """Resolve backend from instance or factory using a `ToolRuntime`.
@@ -562,7 +567,8 @@ A condensed summary follows:
             cutoff: The cutoff index within the effective message list.
 
         Returns:
-            A `Command` with `_summarization_event` state update.
+            A `Command` with `_summarization_event` state update and a
+            confirmation `ToolMessage`.
         """
         summary_msg = self._build_new_messages_with_path(summary, file_path)[0]
         state_cutoff = self._compute_state_cutoff(event, cutoff)
@@ -624,8 +630,8 @@ A condensed summary follows:
                         content=(
                             "Compaction failed: an error occurred while "
                             f"generating the summary ({type(exc).__name__}: "
-                            f"{exc}). The conversation graph state has not "
-                            "been modified."
+                            f"{exc}). The conversation has not been compacted "
+                            "— no messages were summarized or removed."
                         ),
                         tool_call_id=tool_call_id,
                     )
@@ -657,12 +663,12 @@ A condensed summary follows:
             # Generate summary before offloading so no backend side effects
             # occur if the LLM call fails.
             summary = self._create_summary(to_summarize)
+            backend = self._resolve_backend_for_tool(runtime)
+            file_path = self._offload_to_backend(backend, to_summarize)
         except Exception as exc:  # tool must return a ToolMessage, not raise
             logger.exception("compact_conversation tool failed")
             return self._compact_error(tool_call_id, exc)
 
-        backend = self._resolve_backend_for_tool(runtime)
-        file_path = self._offload_to_backend(backend, to_summarize)
         return self._build_compact_result(runtime, to_summarize, summary, file_path, event, cutoff)
 
     async def _arun_compact(self, runtime: ToolRuntime) -> Command:
@@ -689,12 +695,12 @@ A condensed summary follows:
             # Generate summary before offloading so no backend side effects
             # occur if the LLM call fails.
             summary = await self._acreate_summary(to_summarize)
+            backend = self._resolve_backend_for_tool(runtime)
+            file_path = await self._aoffload_to_backend(backend, to_summarize)
         except Exception as exc:  # tool must return a ToolMessage, not raise
             logger.exception("compact_conversation tool failed")
             return self._compact_error(tool_call_id, exc)
 
-        backend = self._resolve_backend_for_tool(runtime)
-        file_path = await self._aoffload_to_backend(backend, to_summarize)
         return self._build_compact_result(runtime, to_summarize, summary, file_path, event, cutoff)
 
     def _should_truncate_args(self, messages: list[AnyMessage], total_tokens: int) -> bool:
@@ -954,9 +960,8 @@ A condensed summary follows:
         Previous summary messages are filtered out to avoid redundant storage during
         chained summarization events.
 
-        Callers decide whether to treat a `None` return as fatal or proceed
-        without the offloaded history (e.g., `awrap_model_call` proceeds, while
-        the CLI's `/compact` shows a warning).
+        A `None` return is non-fatal; callers may proceed without the
+        offloaded history.
 
         Args:
             backend: Backend to write to.
@@ -1081,7 +1086,9 @@ A condensed summary follows:
         backend = self._get_backend(request.state, request.runtime)
         file_path = self._offload_to_backend(backend, messages_to_summarize)
         if file_path is None:
-            logger.error("Offloading conversation history to backend failed during summarization. Older messages will not be recoverable.")
+            msg = "Offloading conversation history to backend failed during summarization. Older messages will not be recoverable."
+            logger.error(msg)
+            warnings.warn(msg, stacklevel=2)
 
         # Generate summary
         summary = self._create_summary(messages_to_summarize)
@@ -1170,7 +1177,9 @@ A condensed summary follows:
         backend = self._get_backend(request.state, request.runtime)
         file_path = await self._aoffload_to_backend(backend, messages_to_summarize)
         if file_path is None:
-            logger.error("Offloading conversation history to backend failed during summarization. Older messages will not be recoverable.")
+            msg = "Offloading conversation history to backend failed during summarization. Older messages will not be recoverable."
+            logger.error(msg)
+            warnings.warn(msg, stacklevel=2)
 
         # Generate summary
         summary = await self._acreate_summary(messages_to_summarize)

@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from deepagents_cli.app import DeepAgentsApp
+from deepagents_cli.app import DeepAgentsApp, _fmt_tokens
 from deepagents_cli.widgets.autocomplete import SLASH_COMMANDS
 from deepagents_cli.widgets.messages import AppMessage, ErrorMessage
 
@@ -682,6 +682,8 @@ class TestCreateModelFailure:
             )
             # State should not have been modified
             app._agent.aupdate_state.assert_not_called()  # type: ignore[union-attr]
+            # _agent_running must be reset so the UI doesn't lock up
+            assert app._agent_running is False
 
 
 class TestOffloadMessagesForCompact:
@@ -886,3 +888,22 @@ class TestCompactRouting:
 
             msgs = app.query(AppMessage)
             assert any("No active session" in str(w._content) for w in msgs)
+
+
+class TestFmtTokens:
+    """Test the _fmt_tokens helper function."""
+
+    def test_zero(self) -> None:
+        assert _fmt_tokens(0) == "0"
+
+    def test_below_threshold(self) -> None:
+        assert _fmt_tokens(999) == "999"
+
+    def test_at_threshold(self) -> None:
+        assert _fmt_tokens(1000) == "1.0K"
+
+    def test_above_threshold(self) -> None:
+        assert _fmt_tokens(1500) == "1.5K"
+
+    def test_large_value(self) -> None:
+        assert _fmt_tokens(200000) == "200.0K"

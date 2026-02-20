@@ -23,6 +23,7 @@ from deepagents_cli.config import (
     get_glyphs,
 )
 from deepagents_cli.widgets.autocomplete import (
+    SLASH_COMMAND_ALIASES,
     SLASH_COMMANDS,
     CompletionResult,
     FuzzyFileController,
@@ -676,7 +677,11 @@ class ChatInput(Vertical):
         self._completion_view = _CompletionViewAdapter(self)
         self._completion_manager = MultiCompletionManager(
             [
-                SlashCommandController(SLASH_COMMANDS, self._completion_view),
+                SlashCommandController(
+                    SLASH_COMMANDS,
+                    self._completion_view,
+                    aliases=SLASH_COMMAND_ALIASES,
+                ),
                 FuzzyFileController(self._completion_view, cwd=self._cwd),
             ]  # type: ignore[list-item]  # Controller types are compatible at runtime
         )

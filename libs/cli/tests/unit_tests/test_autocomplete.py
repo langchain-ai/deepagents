@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from deepagents_cli.widgets.autocomplete import (
+    SLASH_COMMAND_ALIASES,
     SLASH_COMMANDS,
     CompletionController,
     FuzzyFileController,
@@ -276,6 +277,80 @@ class TestSlashCommandController:
         controller.reset()
         # Second reset should be a no-op (suggestions already empty)
         controller.reset()
+
+
+class TestSlashCommandAliases:
+    """Tests for slash command alias matching."""
+
+    @pytest.fixture
+    def mock_view(self):
+        """Create a mock CompletionView."""
+        return MagicMock()
+
+    @pytest.fixture
+    def controller(self, mock_view):
+        """Create a SlashCommandController with aliases."""
+        return SlashCommandController(
+            SLASH_COMMANDS, mock_view, aliases=SLASH_COMMAND_ALIASES
+        )
+
+    def test_exit_alias_suggests_quit(self, controller, mock_view):
+        """Typing /exit should suggest /quit via alias."""
+        controller.on_text_changed("/exit", 5)
+
+        mock_view.render_completion_suggestions.assert_called()
+        suggestions = mock_view.render_completion_suggestions.call_args[0][0]
+        assert any("/quit" in s[0] for s in suggestions)
+
+    def test_partial_exit_alias_suggests_quit(self, controller, mock_view):
+        """Typing /ex should suggest /quit via the /exit alias."""
+        controller.on_text_changed("/ex", 3)
+
+        mock_view.render_completion_suggestions.assert_called()
+        suggestions = mock_view.render_completion_suggestions.call_args[0][0]
+        assert any("/quit" in s[0] for s in suggestions)
+
+    def test_alias_does_not_duplicate_existing_match(self, controller, mock_view):
+        """Alias should not add a duplicate if the command already matches."""
+        controller.on_text_changed("/q", 2)
+
+        mock_view.render_completion_suggestions.assert_called()
+        suggestions = mock_view.render_completion_suggestions.call_args[0][0]
+        quit_count = sum(1 for s in suggestions if s[0] == "/quit")
+        assert quit_count == 1
+
+    def test_continue_alias_suggests_threads(self, controller, mock_view):
+        """Typing /continue should suggest /threads via alias."""
+        controller.on_text_changed("/continue", 9)
+
+        mock_view.render_completion_suggestions.assert_called()
+        suggestions = mock_view.render_completion_suggestions.call_args[0][0]
+        assert any("/threads" in s[0] for s in suggestions)
+
+    def test_resume_alias_suggests_threads(self, controller, mock_view):
+        """Typing /resume should suggest /threads via alias."""
+        controller.on_text_changed("/resume", 7)
+
+        mock_view.render_completion_suggestions.assert_called()
+        suggestions = mock_view.render_completion_suggestions.call_args[0][0]
+        assert any("/threads" in s[0] for s in suggestions)
+
+    def test_partial_resume_alias_suggests_threads(self, controller, mock_view):
+        """Typing /res should suggest /threads via the /resume alias."""
+        controller.on_text_changed("/res", 4)
+
+        mock_view.render_completion_suggestions.assert_called()
+        suggestions = mock_view.render_completion_suggestions.call_args[0][0]
+        assert any("/threads" in s[0] for s in suggestions)
+
+    def test_no_aliases_by_default(self, mock_view):
+        """Controller without aliases behaves as before."""
+        controller = SlashCommandController(SLASH_COMMANDS, mock_view)
+        controller.on_text_changed("/exit", 5)
+
+        # No command starts with /exit and no aliases configured,
+        # so /quit should NOT appear in suggestions
+        mock_view.render_completion_suggestions.assert_not_called()
 
 
 class TestFuzzyFileControllerCanHandle:

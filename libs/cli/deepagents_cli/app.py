@@ -1125,7 +1125,7 @@ class DeepAgentsApp(App):
         """
         cmd = command.lower().strip()
 
-        if cmd in {"/quit", "/q"}:
+        if cmd in {"/quit", "/q", "/exit"}:
             self.exit()
         elif cmd == "/help":
             await self._mount_message(UserMessage(command))
@@ -1196,7 +1196,7 @@ class DeepAgentsApp(App):
                 await self._mount_message(
                     AppMessage(f"Started new thread: {new_thread_id}")
                 )
-        elif cmd == "/threads":
+        elif cmd in {"/threads", "/continue", "/resume"}:
             await self._show_thread_selector()
         elif cmd == "/trace":
             await self._handle_trace_command(command)

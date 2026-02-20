@@ -466,7 +466,9 @@ class ChatTextArea(TextArea):
 
         paths = parse_pasted_file_paths(event.text)
         if not paths:
-            await super()._on_paste(event)
+            # Don't call super() here — Textual's MRO dispatch already calls
+            # TextArea._on_paste after this handler returns. Calling super()
+            # would insert the text a second time, duplicating the paste.
             return
 
         event.prevent_default()

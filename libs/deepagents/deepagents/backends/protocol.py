@@ -497,7 +497,17 @@ def _execute_accepts_timeout(backend: SandboxBackendProtocol) -> bool:
     Introspecting the signature lets callers skip the keyword rather than
     raising a `TypeError` at runtime. Results are cached per backend class
     since the method signature is stable across instances.
+
+    For composite backends that delegate to an inner default, this recurses
+    to check the actual executor.
     """
+    # Composite backends delegate execution to their inner default backend.
+    # Check the actual executor, not the wrapper — can't import
+    # CompositeBackend here (circular), so use duck-typing.
+    default = getattr(backend, "default", None)
+    if default is not None and isinstance(default, SandboxBackendProtocol):
+        return _execute_accepts_timeout(default)
+
     cls = type(backend)
     if cls in _timeout_support_cache:
         return _timeout_support_cache[cls]

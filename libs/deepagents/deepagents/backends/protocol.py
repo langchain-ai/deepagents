@@ -200,7 +200,7 @@ class BackendProtocol(abc.ABC):  # noqa: B024
             "modified_at": str,  # ISO format timestamp
         }
 
-    .. note::
+    Note:
         Legacy data may still contain `"content": list[str]` (lines split on
         `\\n`).  Backends accept this for backwards compatibility and emit a
         `DeprecationWarning`.

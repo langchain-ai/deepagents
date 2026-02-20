@@ -1,7 +1,6 @@
 [project]
 name = "deepagents"
-version = "0.4.1"
-# don't forget 0.4.2 was yanked, bump to 0.4.3 next
+version = "0.4.3"
 
 description = "General purpose 'deep agent' with sub-agent spawning, todo list capabilities, and mock file system. Built on LangGraph."
 readme = "README.md"

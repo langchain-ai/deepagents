@@ -92,7 +92,8 @@ class DeepAgentsWrapper(BaseAgent):
         super().__init__(logs_dir, model_name, *args, **kwargs)
 
         if model_name is None:
-            model_name = os.environ.get("MODEL_NAME", "anthropic:claude-sonnet-4-5-20250929")
+            # Use Deep Agents default
+            model_name = "anthropic:claude-sonnet-4-5-20250929"
 
         self._model_name = model_name
         self._temperature = temperature

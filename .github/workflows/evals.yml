@@ -1,6 +1,6 @@
 # Daily evaluation workflow for Deep Agents
 #
-# Runs terminal-bench evaluations on a cron schedule (once per day).
+# Runs tests/evals on a cron schedule (once per day).
 # Parallel jobs run evaluations for both Anthropic and OpenAI providers.
 #
 # Required secrets:
@@ -28,9 +28,9 @@ jobs:
     timeout-minutes: 120
     defaults:
       run:
-        working-directory: libs/harbor
+        working-directory: libs/deepagents
     env:
-      MODEL_NAME: "anthropic:claude-sonnet-4-5-20250929"
+      PYTEST_ADDOPTS: "--model anthropic:claude-sonnet-4-5-20250929"
       LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
       LANGSMITH_TRACING_V2: "true"
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -41,12 +41,12 @@ jobs:
       - name: "🐍 Set up Python + UV"
         uses: "./.github/actions/uv_setup"
         with:
-          python-version: "3.12"
+          python-version: "3.11"
           cache-suffix: evals
-          working-directory: libs/harbor
+          working-directory: libs/deepagents
 
       - name: "📦 Install Dependencies"
-        run: uv sync --locked
+        run: uv sync --group test --locked
 
       - name: "📊 Run Evals"
         run: make evals
@@ -57,9 +57,9 @@ jobs:
     timeout-minutes: 120
     defaults:
       run:
-        working-directory: libs/harbor
+        working-directory: libs/deepagents
     env:
-      MODEL_NAME: "openai:gpt-4o"
+      PYTEST_ADDOPTS: "--model openai:gpt-4o"
       LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
       LANGSMITH_TRACING_V2: "true"
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -70,12 +70,12 @@ jobs:
       - name: "🐍 Set up Python + UV"
         uses: "./.github/actions/uv_setup"
         with:
-          python-version: "3.12"
+          python-version: "3.11"
           cache-suffix: evals
-          working-directory: libs/harbor
+          working-directory: libs/deepagents
 
       - name: "📦 Install Dependencies"
-        run: uv sync --locked
+        run: uv sync --group test --locked
 
       - name: "📊 Run Evals"
         run: make evals

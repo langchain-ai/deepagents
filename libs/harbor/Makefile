@@ -37,10 +37,6 @@ run-terminal-bench-docker: ## Run terminal-bench on Docker
 	@mkdir -p jobs/terminal-bench
 	harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper --dataset terminal-bench@2.0 -n 1 --jobs-dir jobs/terminal-bench --env docker
 
-evals: ## Run evals on terminal-bench via Docker
-	@mkdir -p jobs/evals
-	harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper --dataset terminal-bench@2.0 -n 5 --jobs-dir jobs/evals --env docker
-
 run-terminal-bench-runloop: ## Run terminal-bench on Runloop
 	@mkdir -p jobs/terminal-bench
 	harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper --dataset terminal-bench@2.0 -n 10 --jobs-dir jobs/terminal-bench --env runloop

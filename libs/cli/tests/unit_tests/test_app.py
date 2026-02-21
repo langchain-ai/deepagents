@@ -78,6 +78,61 @@ class TestAppCSSValidation:
             assert app.is_running
 
 
+class TestThreadCachePrewarm:
+    """Tests for startup thread-cache prewarming."""
+
+    @pytest.mark.asyncio
+    async def test_prewarm_uses_current_thread_limit(self) -> None:
+        """Prewarm helper should pass the resolved thread limit through."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+
+        with (
+            patch("deepagents_cli.sessions.get_thread_limit", return_value=7),
+            patch(
+                "deepagents_cli.sessions.prewarm_thread_message_counts",
+                new_callable=AsyncMock,
+            ) as mock_prewarm,
+        ):
+            await app._prewarm_threads_cache()
+
+        mock_prewarm.assert_awaited_once_with(limit=7)
+
+    @pytest.mark.asyncio
+    async def test_show_thread_selector_uses_cached_rows(self) -> None:
+        """Thread selector should receive prefetched rows when available."""
+        cached_threads = [
+            {
+                "thread_id": "thread-abc",
+                "agent_name": "agent1",
+                "updated_at": "2024-01-01T00:00:00+00:00",
+                "message_count": 2,
+            }
+        ]
+        app = DeepAgentsApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch("deepagents_cli.sessions.get_thread_limit", return_value=9),
+                patch(
+                    "deepagents_cli.sessions.get_cached_threads",
+                    return_value=cached_threads,
+                ),
+                patch("deepagents_cli.app.ThreadSelectorScreen") as mock_screen_cls,
+                patch.object(app, "push_screen") as mock_push_screen,
+            ):
+                mock_screen = MagicMock()
+                mock_screen_cls.return_value = mock_screen
+                await app._show_thread_selector()
+
+                mock_screen_cls.assert_called_once_with(
+                    current_thread=app._session_state.thread_id,
+                    thread_limit=9,
+                    initial_threads=cached_threads,
+                )
+                mock_push_screen.assert_called_once()
+
+
 class TestAppBindings:
     """Test app keybindings."""
 

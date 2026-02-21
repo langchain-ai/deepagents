@@ -530,6 +530,13 @@ class DeepAgentsApp(App):
             )
             self._ui_adapter.set_token_tracker(self._token_tracker)
 
+            # Prewarm `/threads` cache in the background so first open is faster.
+            self.run_worker(
+                self._prewarm_threads_cache,
+                exclusive=True,
+                group="startup-thread-prewarm",
+            )
+
         # Focus the input (autocomplete is now built into ChatInput)
         self._chat_input.focus_input()
 
@@ -583,6 +590,15 @@ class DeepAgentsApp(App):
             self.call_after_refresh(self._size_initial_spacer)
         except NoMatches:
             pass  # Spacer already removed, no action needed
+
+    async def _prewarm_threads_cache(self) -> None:  # noqa: PLR6301  # Worker hook kept as instance method
+        """Prewarm thread selector cache without blocking app startup."""
+        from deepagents_cli.sessions import (
+            get_thread_limit,
+            prewarm_thread_message_counts,
+        )
+
+        await prewarm_thread_message_counts(limit=get_thread_limit())
 
     def on_scroll_up(self, _event: ScrollUp) -> None:
         """Handle scroll up to check if we need to hydrate older messages."""
@@ -1920,7 +1936,11 @@ class DeepAgentsApp(App):
 
     async def _show_thread_selector(self) -> None:
         """Show interactive thread selector as a modal screen."""
+        from deepagents_cli.sessions import get_cached_threads, get_thread_limit
+
         current = self._session_state.thread_id if self._session_state else None
+        thread_limit = get_thread_limit()
+        initial_threads = get_cached_threads(limit=thread_limit)
 
         def handle_result(result: str | None) -> None:
             """Handle the thread selector result."""
@@ -1929,7 +1949,11 @@ class DeepAgentsApp(App):
             if self._chat_input:
                 self._chat_input.focus_input()
 
-        screen = ThreadSelectorScreen(current_thread=current)
+        screen = ThreadSelectorScreen(
+            current_thread=current,
+            thread_limit=thread_limit,
+            initial_threads=initial_threads,
+        )
         self.push_screen(screen, handle_result)
 
     async def _resume_thread(self, thread_id: str) -> None:

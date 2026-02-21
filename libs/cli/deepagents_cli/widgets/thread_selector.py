@@ -20,14 +20,13 @@ if TYPE_CHECKING:
     from textual.app import ComposeResult
     from textual.events import Click
 
-    from deepagents_cli.sessions import ThreadInfo
-
 from deepagents_cli.config import (
     CharsetMode,
     _detect_charset_mode,
     build_langsmith_thread_url,
     get_glyphs,
 )
+from deepagents_cli.sessions import ThreadInfo
 from deepagents_cli.widgets._links import open_style_link
 
 logger = logging.getLogger(__name__)
@@ -179,17 +178,40 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
     }
     """
 
-    def __init__(self, current_thread: str | None = None) -> None:
+    def __init__(
+        self,
+        current_thread: str | None = None,
+        *,
+        thread_limit: int | None = None,
+        initial_threads: list[ThreadInfo] | None = None,
+    ) -> None:
         """Initialize the `ThreadSelectorScreen`.
 
         Args:
             current_thread: The currently active thread ID (to highlight).
+            thread_limit: Maximum number of rows to fetch when querying DB.
+            initial_threads: Optional preloaded rows to render immediately.
         """
         super().__init__()
         self._current_thread = current_thread
-        self._threads: list[ThreadInfo] = []
+        self._thread_limit = thread_limit
+        self._threads: list[ThreadInfo] = (
+            [ThreadInfo(**thread) for thread in initial_threads]
+            if initial_threads is not None
+            else []
+        )
+        self._has_initial_threads = initial_threads is not None
         self._selected_index = 0
         self._option_widgets: list[ThreadOption] = []
+        self._sync_selected_index()
+
+    def _sync_selected_index(self) -> None:
+        """Select the current thread when it exists in the loaded rows."""
+        self._selected_index = 0
+        for i, thread in enumerate(self._threads):
+            if thread["thread_id"] == self._current_thread:
+                self._selected_index = i
+                break
 
     def _build_title(self, thread_url: str | None = None) -> str | Text:
         """Build the title, optionally with a clickable thread ID link.
@@ -226,11 +248,21 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             yield Static(self._format_header(), classes="thread-list-header")
 
             with VerticalScroll(classes="thread-list"):
-                yield Static(
-                    "[dim]Loading threads...[/dim]",
-                    classes="thread-empty",
-                    id="thread-loading",
-                )
+                if self._has_initial_threads:
+                    if self._threads:
+                        self._option_widgets, _ = self._create_option_widgets()
+                        yield from self._option_widgets
+                    else:
+                        yield Static(
+                            "[dim]No threads found[/dim]",
+                            classes="thread-empty",
+                        )
+                else:
+                    yield Static(
+                        "[dim]Loading threads...[/dim]",
+                        classes="thread-empty",
+                        id="thread-loading",
+                    )
 
             help_text = (
                 f"{glyphs.arrow_up}/{glyphs.arrow_down}/tab navigate "
@@ -244,12 +276,38 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             container = self.query_one(Vertical)
             container.styles.border = ("ascii", "green")
 
-        from deepagents_cli.sessions import get_thread_limit, list_threads
+        self.focus()
+        if self._has_initial_threads:
+            self.call_after_refresh(self._scroll_selected_into_view)
+            if self._threads and any("message_count" not in t for t in self._threads):
+                self.run_worker(
+                    self._load_message_counts,
+                    exclusive=True,
+                    group="thread-selector-counts",
+                )
+            if self._current_thread:
+                self._resolve_thread_url()
+            return
+
+        # Defer DB work to a worker so modal paints immediately.
+        self.run_worker(
+            self._load_threads, exclusive=True, group="thread-selector-load"
+        )
+
+    async def _load_threads(self) -> None:
+        """Load thread rows first, then kick off background message counts."""
+        from deepagents_cli.sessions import (
+            apply_cached_thread_message_counts,
+            list_threads,
+        )
 
         try:
-            self._threads = await list_threads(
-                limit=get_thread_limit(), include_message_count=True
-            )
+            limit = self._thread_limit
+            if limit is None:
+                from deepagents_cli.sessions import get_thread_limit
+
+                limit = get_thread_limit()
+            self._threads = await list_threads(limit=limit, include_message_count=False)
         except (OSError, sqlite3.Error) as exc:
             logger.exception("Failed to load threads for thread selector")
             await self._show_mount_error(str(exc))
@@ -259,24 +317,78 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             await self._show_mount_error(str(exc))
             return
 
-        for i, t in enumerate(self._threads):
-            if t["thread_id"] == self._current_thread:
-                self._selected_index = i
-                break
+        self._sync_selected_index()
+
+        # Reuse startup-prewarmed counts before first list paint.
+        apply_cached_thread_message_counts(self._threads)
 
         await self._build_list()
+
+        # Populate message counts after first paint.
+        if self._threads and any("message_count" not in t for t in self._threads):
+            self.run_worker(
+                self._load_message_counts,
+                exclusive=True,
+                group="thread-selector-counts",
+            )
 
         if self._current_thread:
             self._resolve_thread_url()
 
-        self.focus()
+    async def _load_message_counts(self) -> None:
+        """Populate thread message counts in background and refresh labels."""
+        from deepagents_cli.sessions import populate_thread_message_counts
+
+        if not self._threads:
+            return
+
+        try:
+            await populate_thread_message_counts(self._threads)
+        except (OSError, sqlite3.Error):
+            logger.debug(
+                "Could not load message counts for thread selector",
+                exc_info=True,
+            )
+            return
+        except Exception:
+            logger.debug(
+                "Unexpected error loading message counts for thread selector",
+                exc_info=True,
+            )
+            return
+
+        self._refresh_message_count_labels()
+
+    def _refresh_message_count_labels(self) -> None:
+        """Refresh only row labels after background message counts complete."""
+        if not self._threads or not self._option_widgets:
+            return
+
+        try:
+            for index, thread in enumerate(self._threads):
+                if index >= len(self._option_widgets):
+                    break
+                widget = self._option_widgets[index]
+                widget.update(
+                    self._format_option_label(
+                        thread,
+                        selected=index == self._selected_index,
+                        current=thread["thread_id"] == self._current_thread,
+                    )
+                )
+        except NoMatches:
+            logger.debug(
+                "Thread list no longer mounted while refreshing message counts"
+            )
 
     def _resolve_thread_url(self) -> None:
         """Start exclusive background worker to resolve LangSmith thread URL.
 
         `exclusive=True` so repeated calls cancel any in-flight resolution.
         """
-        self.run_worker(self._fetch_thread_url, exclusive=True)
+        self.run_worker(
+            self._fetch_thread_url, exclusive=True, group="thread-selector-url"
+        )
 
     async def _fetch_thread_url(self) -> None:
         """Resolve the LangSmith URL and update the title with a clickable link.
@@ -341,9 +453,9 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         """Build the thread option widgets."""
         scroll = self.query_one(".thread-list", VerticalScroll)
         await scroll.remove_children()
-        self._option_widgets = []
 
         if not self._threads:
+            self._option_widgets = []
             await scroll.mount(
                 Static(
                     "[dim]No threads found[/dim]",
@@ -352,6 +464,19 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             )
             return
 
+        self._option_widgets, selected_widget = self._create_option_widgets()
+        await scroll.mount(*self._option_widgets)
+
+        if selected_widget:
+            self._scroll_selected_into_view()
+
+    def _create_option_widgets(self) -> tuple[list[ThreadOption], ThreadOption | None]:
+        """Build option widgets from loaded threads without mounting.
+
+        Returns:
+            Tuple of all option widgets and the currently selected widget.
+        """
+        widgets: list[ThreadOption] = []
         selected_widget: ThreadOption | None = None
 
         for i, thread in enumerate(self._threads):
@@ -373,18 +498,27 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                 index=i,
                 classes=classes,
             )
-            self._option_widgets.append(widget)
-
+            widgets.append(widget)
             if is_selected:
                 selected_widget = widget
 
-        await scroll.mount(*self._option_widgets)
+        return widgets, selected_widget
 
-        if selected_widget:
-            if self._selected_index == 0:
-                scroll.scroll_home(animate=False)
-            else:
-                selected_widget.scroll_visible(animate=False)
+    def _scroll_selected_into_view(self) -> None:
+        """Scroll selected option into view without animation."""
+        if not self._option_widgets:
+            return
+        if self._selected_index >= len(self._option_widgets):
+            return
+        try:
+            scroll = self.query_one(".thread-list", VerticalScroll)
+        except NoMatches:
+            return
+
+        if self._selected_index == 0:
+            scroll.scroll_home(animate=False)
+        else:
+            self._option_widgets[self._selected_index].scroll_visible(animate=False)
 
     @staticmethod
     def _format_header() -> str:

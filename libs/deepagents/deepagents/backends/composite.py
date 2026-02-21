@@ -50,11 +50,13 @@ class CompositeBackend(BackendProtocol):
     """Routes file operations to different backends by path prefix.
 
     Matches paths against route prefixes (longest first) and delegates to the
-    corresponding backend. Unmatched paths use the default backend.
+    corresponding backend. Unmatched paths use the default backend. Routes are
+    automatically normalized to end with "/" for consistent behavior.
 
     Attributes:
         default: Backend for paths that don't match any route.
         routes: Map of path prefixes to backends (e.g., {"/memories/": store_backend}).
+            Prefixes without trailing "/" are normalized (e.g., "/workspace" -> "/workspace/").
         sorted_routes: Routes sorted by length (longest first) for correct matching.
 
     Examples:
@@ -76,16 +78,22 @@ class CompositeBackend(BackendProtocol):
         Args:
             default: Backend for paths that don't match any route.
             routes: Map of path prefixes to backends. Prefixes must start with "/"
-                and should end with "/" (e.g., "/memories/").
+                and are normalized to end with "/" (e.g., "/workspace" -> "/workspace/").
         """
         # Default backend
         self.default = default
 
+        # Normalize route prefixes to end with / (e.g., "/workspace" → "/workspace/")
+        normalized_routes = {}
+        for route_prefix, backend in routes.items():
+            normalized_prefix = route_prefix if route_prefix.endswith("/") else route_prefix + "/"
+            normalized_routes[normalized_prefix] = backend
+
         # Virtual routes
-        self.routes = routes
+        self.routes = normalized_routes
 
         # Sort routes by length (longest first) for correct prefix matching
-        self.sorted_routes = sorted(routes.items(), key=lambda x: len(x[0]), reverse=True)
+        self.sorted_routes = sorted(normalized_routes.items(), key=lambda x: len(x[0]), reverse=True)
 
     def _get_backend_and_key(self, key: str) -> tuple[BackendProtocol, str]:
         """Get backend for path and strip route prefix.

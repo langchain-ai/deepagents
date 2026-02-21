@@ -11,8 +11,12 @@ import shlex
 import sys
 import uuid
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from enum import StrEnum
-from importlib.metadata import PackageNotFoundError, distribution
+from importlib.metadata import (
+    PackageNotFoundError,
+    distribution,
+)
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -314,6 +318,49 @@ MAX_ARG_LENGTH = 150
 
 # Agent configuration
 config: RunnableConfig = {"recursion_limit": 1000}
+
+
+def build_stream_config(
+    thread_id: str,
+    assistant_id: str | None,
+) -> RunnableConfig:
+    """Build the LangGraph stream config dict.
+
+    Injects `deepagents-cli` version into `metadata["versions"]` so LangSmith
+    traces can be filtered by CLI release. The SDK version (`deepagents`) is
+    attached separately by `create_deep_agent` via `with_config`;
+    langchain-core's `merge_configs` deep-merges the `versions` dicts so both
+    survive.
+
+    The `thread_id` in `configurable` is automatically propagated as run
+    metadata by LangGraph, so it can be used for LangSmith filtering without a
+    separate metadata key.
+
+    Args:
+        thread_id: The CLI session thread identifier.
+        assistant_id: The agent/assistant identifier, if any.
+
+    Returns:
+        Config dict with `configurable` and `metadata` keys.
+    """
+    metadata: dict[str, Any] = {
+        "versions": {
+            "deepagents-cli": __version__,
+        },
+    }
+    if assistant_id:
+        metadata.update(
+            {
+                "assistant_id": assistant_id,
+                "agent_name": assistant_id,
+                "updated_at": datetime.now(UTC).isoformat(),
+            }
+        )
+    return {
+        "configurable": {"thread_id": thread_id},
+        "metadata": metadata,
+    }
+
 
 # Rich console instance
 console = Console(highlight=False)

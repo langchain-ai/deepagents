@@ -685,8 +685,13 @@ class TestDismissCompletion:
             assert chat._current_suggestions
             chat.dismiss_completion()
 
-            # Clear input — mode resets to normal
+            # Clear input — mode persists (backspace-on-empty exits)
             chat._text_area.text = ""
+            await pilot.pause()
+            assert chat.mode == "command"
+
+            # Exit mode via backspace on empty
+            await pilot.press("backspace")
             await pilot.pause()
             assert chat.mode == "normal"
 
@@ -750,8 +755,8 @@ class TestModePrefixStripping:
             assert chat._text_area.text == ""
 
     @pytest.mark.asyncio
-    async def test_mode_resets_on_empty_text(self) -> None:
-        """Clearing text after entering bash mode should reset to normal."""
+    async def test_mode_stays_on_empty_text(self) -> None:
+        """Clearing text after entering bash mode should stay in mode."""
         app = _ChatInputTestApp()
         async with app.run_test() as pilot:
             chat = app.query_one(ChatInput)
@@ -762,10 +767,83 @@ class TestModePrefixStripping:
             await _pause_for_strip(pilot)
             assert chat.mode == "bash"
 
-            # Clear text — mode should reset
+            # Clear text — mode should persist (backspace on empty exits)
             chat._text_area.text = ""
             await pilot.pause()
+            assert chat.mode == "bash"
+
+    @pytest.mark.asyncio
+    async def test_backspace_on_empty_exits_mode(self) -> None:
+        """Backspace on empty input in bash mode should reset to normal."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            # Enter bash mode
+            chat._text_area.text = "!ls"
+            await _pause_for_strip(pilot)
+            assert chat.mode == "bash"
+
+            # Clear text — still in bash mode
+            chat._text_area.text = ""
+            await pilot.pause()
+            assert chat.mode == "bash"
+
+            # Backspace on empty — exits mode
+            await pilot.press("backspace")
+            await pilot.pause()
             assert chat.mode == "normal"
+
+    @pytest.mark.asyncio
+    async def test_backspace_on_single_char_stays_in_mode(self) -> None:
+        """Deleting last char in command mode should stay in mode, not exit."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            # Enter command mode and type a character
+            chat._text_area.insert("/")
+            await _pause_for_strip(pilot)
+            assert chat.mode == "command"
+
+            chat._text_area.insert("h")
+            await pilot.pause()
+            assert chat._text_area.text == "h"
+
+            # Backspace deletes 'h' — should stay in command mode
+            await pilot.press("backspace")
+            await pilot.pause()
+            assert chat._text_area.text == ""
+            assert chat.mode == "command"
+
+            # Second backspace on empty — exits mode
+            await pilot.press("backspace")
+            await pilot.pause()
+            assert chat.mode == "normal"
+
+    @pytest.mark.asyncio
+    async def test_backspace_exit_mode_dismisses_completion(self) -> None:
+        """Exiting mode via backspace-on-empty should hide the completion popup."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            popup = chat.query_one(CompletionPopup)
+            assert chat._text_area is not None
+
+            # Enter command mode — completions appear
+            chat._text_area.insert("/")
+            await _pause_for_strip(pilot)
+            assert chat.mode == "command"
+            assert chat._current_suggestions
+
+            # Backspace on empty — exits mode and hides popup
+            await pilot.press("backspace")
+            await pilot.pause()
+            assert chat.mode == "normal"
+            assert chat._current_suggestions == []
+            assert popup.styles.display == "none"
 
     @pytest.mark.asyncio
     async def test_slash_completion_works_after_strip(self) -> None:

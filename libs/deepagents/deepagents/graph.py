@@ -49,7 +49,7 @@ def get_default_model() -> ChatAnthropic:
     )
 
 
-def create_deep_agent(
+def create_deep_agent(  # noqa: PLR0915
     model: str | BaseChatModel | None = None,
     tools: Sequence[BaseTool | Callable | dict[str, Any]] | None = None,
     *,

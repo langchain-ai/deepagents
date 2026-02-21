@@ -44,7 +44,10 @@ python ralph_mode.py "Build a Python course"
 python ralph_mode.py "Build a REST API" --iterations 5
 
 # With specific model
-python ralph_mode.py "Create a CLI tool" --model claude-haiku-4-5-20251001
+python ralph_mode.py "Create a CLI tool" --model claude-sonnet-4-6
+
+# With a specific working directory
+python ralph_mode.py "Build a web app" --work-dir ./my-project
 ```
 
 ## How It Works

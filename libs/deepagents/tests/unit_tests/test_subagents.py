@@ -1551,6 +1551,213 @@ class TestSubAgents:
         assert "skills_metadata" not in subagent_state, "Subagent without skills parameter should NOT have skills_metadata"
 
 
+class TestSubAgentModel:
+    """Tests for the subagent_model parameter in create_deep_agent."""
+
+    def test_subagent_model_used_for_general_purpose_subagent(self) -> None:
+        """Test that subagent_model is used for the general-purpose subagent."""
+        subagent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(content="Response from subagent model."),
+                ]
+            )
+        )
+
+        parent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {
+                                    "description": "Do a task",
+                                    "subagent_type": "general-purpose",
+                                },
+                                "id": "call_gp",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        parent_agent = create_deep_agent(
+            model=parent_chat_model,
+            subagent_model=subagent_chat_model,
+            checkpointer=InMemorySaver(),
+        )
+
+        result = parent_agent.invoke(
+            {"messages": [HumanMessage(content="Do something")]},
+            config={"configurable": {"thread_id": "test_subagent_model"}},
+        )
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert len(tool_messages) == 1
+        assert tool_messages[0].content == "Response from subagent model."
+
+    def test_subagent_model_none_inherits_main_model(self) -> None:
+        """Test that when subagent_model is None, subagents inherit the main model."""
+        shared_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {
+                                    "description": "Do a task",
+                                    "subagent_type": "general-purpose",
+                                },
+                                "id": "call_gp",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Response from shared model."),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        parent_agent = create_deep_agent(
+            model=shared_model,
+            checkpointer=InMemorySaver(),
+        )
+
+        result = parent_agent.invoke(
+            {"messages": [HumanMessage(content="Do something")]},
+            config={"configurable": {"thread_id": "test_subagent_model_none"}},
+        )
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert len(tool_messages) == 1
+        assert tool_messages[0].content == "Response from shared model."
+
+    def test_subagent_model_used_as_default_for_custom_subagents(self) -> None:
+        """Test that subagent_model is used as default for custom subagents without model."""
+        subagent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(content="Custom subagent using subagent_model."),
+                ]
+            )
+        )
+
+        parent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {
+                                    "description": "Do custom work",
+                                    "subagent_type": "custom-agent",
+                                },
+                                "id": "call_custom",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        parent_agent = create_deep_agent(
+            model=parent_chat_model,
+            subagent_model=subagent_chat_model,
+            checkpointer=InMemorySaver(),
+            subagents=[
+                SubAgent(
+                    name="custom-agent",
+                    description="A custom agent",
+                    system_prompt="You are a custom agent.",
+                )
+            ],
+        )
+
+        result = parent_agent.invoke(
+            {"messages": [HumanMessage(content="Do something")]},
+            config={"configurable": {"thread_id": "test_subagent_model_custom"}},
+        )
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        custom_msg = next(m for m in tool_messages if m.tool_call_id == "call_custom")
+        assert custom_msg.content == "Custom subagent using subagent_model."
+
+    def test_custom_subagent_model_overrides_subagent_model(self) -> None:
+        """Test that a custom subagent with its own model ignores subagent_model."""
+        gp_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(content="GP response."),
+                ]
+            )
+        )
+
+        custom_specific_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(content="Custom override response."),
+                ]
+            )
+        )
+
+        parent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {
+                                    "description": "Do custom work",
+                                    "subagent_type": "override-agent",
+                                },
+                                "id": "call_override",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        parent_agent = create_deep_agent(
+            model=parent_chat_model,
+            subagent_model=gp_model,
+            checkpointer=InMemorySaver(),
+            subagents=[
+                SubAgent(
+                    name="override-agent",
+                    description="Agent with its own model",
+                    system_prompt="You are an override agent.",
+                    model=custom_specific_model,
+                )
+            ],
+        )
+
+        result = parent_agent.invoke(
+            {"messages": [HumanMessage(content="Do something")]},
+            config={"configurable": {"thread_id": "test_custom_override"}},
+        )
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        override_msg = next(m for m in tool_messages if m.tool_call_id == "call_override")
+        assert override_msg.content == "Custom override response."
+
+
 class TestSubAgentMiddlewareValidation:
     """Tests for SubAgentMiddleware initialization validation."""
 

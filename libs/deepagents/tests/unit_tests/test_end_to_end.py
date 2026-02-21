@@ -1218,9 +1218,7 @@ class TestDeepAgentStructure:
 
     def test_user_middleware_replaces_builtin_of_same_type(self) -> None:
         """Verifies that user-provided middleware replaces built-in instances of the same type."""
-        fake_model = FixedGenericFakeChatModel(
-            messages=iter([AIMessage(content="done")])
-        )
+        fake_model = FixedGenericFakeChatModel(messages=iter([AIMessage(content="done")]))
         custom = SummarizationMiddleware(
             model=fake_model,
             backend=StateBackend,

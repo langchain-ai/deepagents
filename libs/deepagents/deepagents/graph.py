@@ -230,9 +230,7 @@ def create_deep_agent(  # noqa: PLR0915
             user_subagent_mw = spec.get("middleware", [])
             if user_subagent_mw:
                 user_types = {type(m) for m in user_subagent_mw}
-                subagent_middleware = [
-                    m for m in subagent_middleware if type(m) not in user_types
-                ]
+                subagent_middleware = [m for m in subagent_middleware if type(m) not in user_types]
                 subagent_middleware.extend(user_subagent_mw)
 
             processed_spec: SubAgent = {
@@ -275,9 +273,7 @@ def create_deep_agent(  # noqa: PLR0915
     )
     if middleware:
         user_types = {type(m) for m in middleware}
-        deepagent_middleware = [
-            m for m in deepagent_middleware if type(m) not in user_types
-        ]
+        deepagent_middleware = [m for m in deepagent_middleware if type(m) not in user_types]
         deepagent_middleware.extend(middleware)
     if interrupt_on is not None:
         deepagent_middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))

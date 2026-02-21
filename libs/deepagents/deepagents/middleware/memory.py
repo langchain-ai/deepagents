@@ -1,3 +1,4 @@
+# ruff: noqa: E501  # Long prompt strings in MEMORY_SYSTEM_PROMPT
 """Middleware for loading agent memory/context from AGENTS.md files.
 
 This module implements support for the AGENTS.md specification (https://agents.md/),
@@ -50,23 +51,26 @@ Common sections include:
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Annotated, NotRequired, TypedDict
 
-from langchain_core.runnables import RunnableConfig
-
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
+    from langchain_core.runnables import RunnableConfig
+    from langgraph.runtime import Runtime
+
     from deepagents.backends.protocol import BACKEND_TYPES, BackendProtocol
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     AgentState,
+    ContextT,
     ModelRequest,
     ModelResponse,
     PrivateStateAttr,
+    ResponseT,
 )
 from langchain.tools import ToolRuntime
-from langgraph.runtime import Runtime
 
 from deepagents.middleware._utils import append_to_system_message
 
@@ -141,18 +145,18 @@ MEMORY_SYSTEM_PROMPT = """<agent_memory>
     Agent: Sure, I'll write you an example for creating a deep agent in LangChain <example code in Python>
     User: Can you do this in JavaScript
     Agent: Let me save this to my memory.
-    Tool Call: edit_file(...) -> remembers that the user prefers to get LangChaincode examples in JavaScript
+    Tool Call: edit_file(...) -> remembers that the user prefers to get LangChain code examples in JavaScript
     Agent: Sure, here is the JavaScript example<example code in JavaScript>
 
     Example 3 (do not remember transient information):
     User: I'm going to play basketball tonight so I will be offline for a few hours.
-    Agent: Okay I'll add a black to your calendar.
+    Agent: Okay I'll add a block to your calendar.
     Tool Call: create_calendar_event(...) -> just calls a tool, does not commit anything to memory, as it is transient information
 </memory_guidelines>
 """
 
 
-class MemoryMiddleware(AgentMiddleware):
+class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
     """Middleware for loading agent memory from `AGENTS.md` files.
 
     Loads memory content from configured sources and injects into the system prompt.
@@ -208,7 +212,7 @@ class MemoryMiddleware(AgentMiddleware):
                 config=config,
                 tool_call_id=None,
             )
-            return self._backend(tool_runtime)
+            return self._backend(tool_runtime)  # ty: ignore[invalid-argument-type]
         return self._backend
 
     def _format_agent_memory(self, contents: dict[str, str]) -> str:
@@ -223,10 +227,7 @@ class MemoryMiddleware(AgentMiddleware):
         if not contents:
             return MEMORY_SYSTEM_PROMPT.format(agent_memory="(No memory loaded)")
 
-        sections = []
-        for path in self.sources:
-            if contents.get(path):
-                sections.append(f"{path}\n{contents[path]}")
+        sections = [f"{path}\n{contents[path]}" for path in self.sources if contents.get(path)]
 
         if not sections:
             return MEMORY_SYSTEM_PROMPT.format(agent_memory="(No memory loaded)")
@@ -251,7 +252,8 @@ class MemoryMiddleware(AgentMiddleware):
         results = await backend.adownload_files([path])
         # Should get exactly one response for one path
         if len(results) != 1:
-            raise AssertionError(f"Expected 1 response for path {path}, got {len(results)}")
+            msg = f"Expected 1 response for path {path}, got {len(results)}"
+            raise AssertionError(msg)
         response = results[0]
 
         if response.error is not None:
@@ -260,7 +262,8 @@ class MemoryMiddleware(AgentMiddleware):
             if response.error == "file_not_found":
                 return None
             # Other errors should be raised
-            raise ValueError(f"Failed to download {path}: {response.error}")
+            msg = f"Failed to download {path}: {response.error}"
+            raise ValueError(msg)
 
         if response.content is not None:
             return response.content.decode("utf-8")
@@ -284,7 +287,8 @@ class MemoryMiddleware(AgentMiddleware):
         results = backend.download_files([path])
         # Should get exactly one response for one path
         if len(results) != 1:
-            raise AssertionError(f"Expected 1 response for path {path}, got {len(results)}")
+            msg = f"Expected 1 response for path {path}, got {len(results)}"
+            raise AssertionError(msg)
         response = results[0]
 
         if response.error is not None:
@@ -293,14 +297,15 @@ class MemoryMiddleware(AgentMiddleware):
             if response.error == "file_not_found":
                 return None
             # Other errors should be raised
-            raise ValueError(f"Failed to download {path}: {response.error}")
+            msg = f"Failed to download {path}: {response.error}"
+            raise ValueError(msg)
 
         if response.content is not None:
             return response.content.decode("utf-8")
 
         return None
 
-    def before_agent(self, state: MemoryState, runtime: Runtime, config: RunnableConfig) -> MemoryStateUpdate | None:
+    def before_agent(self, state: MemoryState, runtime: Runtime, config: RunnableConfig) -> MemoryStateUpdate | None:  # ty: ignore[invalid-method-override]
         """Load memory content before agent execution (synchronous).
 
         Loads memory from all configured sources and stores in state.
@@ -325,11 +330,11 @@ class MemoryMiddleware(AgentMiddleware):
             content = self._load_memory_from_backend_sync(backend, path)
             if content:
                 contents[path] = content
-                logger.debug(f"Loaded memory from: {path}")
+                logger.debug("Loaded memory from: %s", path)
 
         return MemoryStateUpdate(memory_contents=contents)
 
-    async def abefore_agent(self, state: MemoryState, runtime: Runtime, config: RunnableConfig) -> MemoryStateUpdate | None:
+    async def abefore_agent(self, state: MemoryState, runtime: Runtime, config: RunnableConfig) -> MemoryStateUpdate | None:  # ty: ignore[invalid-method-override]
         """Load memory content before agent execution.
 
         Loads memory from all configured sources and stores in state.
@@ -354,11 +359,11 @@ class MemoryMiddleware(AgentMiddleware):
             content = await self._load_memory_from_backend(backend, path)
             if content:
                 contents[path] = content
-                logger.debug(f"Loaded memory from: {path}")
+                logger.debug("Loaded memory from: %s", path)
 
         return MemoryStateUpdate(memory_contents=contents)
 
-    def modify_request(self, request: ModelRequest) -> ModelRequest:
+    def modify_request(self, request: ModelRequest[ContextT]) -> ModelRequest[ContextT]:
         """Inject memory content into the system message.
 
         Args:
@@ -376,9 +381,9 @@ class MemoryMiddleware(AgentMiddleware):
 
     def wrap_model_call(
         self,
-        request: ModelRequest,
-        handler: Callable[[ModelRequest], ModelResponse],
-    ) -> ModelResponse:
+        request: ModelRequest[ContextT],
+        handler: Callable[[ModelRequest[ContextT]], ModelResponse[ResponseT]],
+    ) -> ModelResponse[ResponseT]:
         """Wrap model call to inject memory into system prompt.
 
         Args:
@@ -393,9 +398,9 @@ class MemoryMiddleware(AgentMiddleware):
 
     async def awrap_model_call(
         self,
-        request: ModelRequest,
-        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
-    ) -> ModelResponse:
+        request: ModelRequest[ContextT],
+        handler: Callable[[ModelRequest[ContextT]], Awaitable[ModelResponse[ResponseT]]],
+    ) -> ModelResponse[ResponseT]:
         """Async wrap model call to inject memory into system prompt.
 
         Args:

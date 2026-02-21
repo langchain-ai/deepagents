@@ -929,6 +929,35 @@ class TestFilesystemMiddleware:
         assert isinstance(result, Command)
         assert result.update["messages"][0].name == "example_tool"
 
+    def test_intercept_long_toolmessage_preserves_artifact_and_metadata(self):
+        """Test that ToolMessage artifact and metadata fields are preserved after eviction."""
+        middleware = FilesystemMiddleware(tool_token_limit_before_evict=1000)
+        state = FilesystemState(messages=[], files={})
+        runtime = ToolRuntime(state=state, context=None, tool_call_id="test_123", store=None, stream_writer=lambda _: None, config={})
+
+        large_content = "x" * 5000
+        artifact_payload = {"urls": ["https://example.com"], "ids": [42]}
+        tool_message = ToolMessage(
+            content=large_content,
+            tool_call_id="test_123",
+            name="example_tool",
+            id="tool_msg_1",
+            artifact=artifact_payload,
+            status="error",
+            additional_kwargs={"source": "unit-test"},
+            response_metadata={"provider": "mock"},
+        )
+        result = middleware._intercept_large_tool_result(tool_message, runtime)
+
+        assert isinstance(result, Command)
+        processed_message = result.update["messages"][0]
+        assert isinstance(processed_message, ToolMessage)
+        assert processed_message.artifact == artifact_payload
+        assert processed_message.id == "tool_msg_1"
+        assert processed_message.status == "error"
+        assert processed_message.additional_kwargs == {"source": "unit-test"}
+        assert processed_message.response_metadata == {"provider": "mock"}
+
     def test_intercept_command_with_short_toolmessage(self):
         """Test that Commands with small messages pass through unchanged."""
         middleware = FilesystemMiddleware(tool_token_limit_before_evict=1000)

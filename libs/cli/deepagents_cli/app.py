@@ -529,6 +529,7 @@ class DeepAgentsApp(App):
                 sync_message_content=self._sync_message_content,
             )
             self._ui_adapter.set_token_tracker(self._token_tracker)
+
             # Prewarm `/threads` cache in the background so first open is faster.
             self.run_worker(
                 self._prewarm_threads_cache,

@@ -103,6 +103,7 @@ SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/quit", "Exit app"),
     ("/tokens", "Token usage"),
     ("/threads", "Browse and resume previous threads"),
+    ("/agents", "Switch to a different agent"),
     ("/trace", "Open current thread in LangSmith"),
     ("/version", "Show version"),
 ]

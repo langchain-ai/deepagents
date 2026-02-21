@@ -234,7 +234,7 @@ class SlashCommandController:
 
 
 # ============================================================================
-# Fuzzy File Completion (from project root)
+# Fuzzy File Completion (scoped to current working directory)
 # ============================================================================
 
 # Constants for fuzzy file completion
@@ -401,7 +401,7 @@ def _fuzzy_search(
 
 
 class FuzzyFileController:
-    """Controller for @ file completion with fuzzy matching from project root."""
+    """Controller for @ file completion with fuzzy matching from current cwd."""
 
     def __init__(
         self,
@@ -412,10 +412,10 @@ class FuzzyFileController:
 
         Args:
             view: View to render suggestions to
-            cwd: Starting directory to find project root from
+            cwd: Current working directory for file completion scope
         """
         self._view = view
-        self._cwd = cwd or Path.cwd()
+        self._cwd = (cwd or Path.cwd()).resolve()
         self._project_root = _find_project_root(self._cwd)
         self._suggestions: list[tuple[str, str]] = []
         self._selected_index = 0
@@ -428,7 +428,14 @@ class FuzzyFileController:
             List of project file paths.
         """
         if self._file_cache is None:
-            self._file_cache = _get_project_files(self._project_root)
+            files = _get_project_files(self._project_root)
+            if self._cwd != self._project_root:
+                relative_cwd = self._cwd.relative_to(self._project_root).as_posix()
+                prefix = f"{relative_cwd}/"
+                files = [
+                    path[len(prefix) :] for path in files if path.startswith(prefix)
+                ]
+            self._file_cache = files
         return self._file_cache
 
     def refresh_cache(self) -> None:

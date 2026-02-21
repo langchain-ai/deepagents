@@ -5,6 +5,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from deepagents_cli.widgets import autocomplete as autocomplete_module
 from deepagents_cli.widgets.autocomplete import (
     SLASH_COMMANDS,
     CompletionController,
@@ -321,6 +322,82 @@ class TestFuzzyFileControllerCanHandle:
         assert controller.can_handle("@file", 0) is False
         assert controller.can_handle("@file", -1) is False
         assert controller.can_handle("@file", 100) is False
+
+
+class TestFuzzyFileControllerScope:
+    """Tests for cwd-scoped file completion behavior."""
+
+    @pytest.fixture
+    def mock_view(self):
+        """Create a mock CompletionView."""
+        return MagicMock()
+
+    def test_scopes_git_file_list_to_cwd(self, mock_view, monkeypatch, tmp_path):
+        """When cwd is nested, suggestions are scoped to that subtree."""
+        project_root = tmp_path
+        (project_root / ".git").mkdir()
+        cwd = project_root / "apps" / "cli"
+        cwd.mkdir(parents=True)
+
+        mock_files = [
+            "README.md",
+            "apps/cli/main.py",
+            "apps/cli/utils/helpers.py",
+            "apps/web/index.ts",
+        ]
+        monkeypatch.setattr(
+            autocomplete_module, "_get_project_files", lambda _root: mock_files
+        )
+
+        controller = FuzzyFileController(mock_view, cwd=cwd)
+        assert controller._get_files() == ["main.py", "utils/helpers.py"]
+
+        controller.on_text_changed("@", 1)
+        suggestions = mock_view.render_completion_suggestions.call_args[0][0]
+        labels = [label for label, _ in suggestions]
+        assert "@main.py" in labels
+        assert "@utils/helpers.py" in labels
+        assert not any("apps/web" in label for label in labels)
+
+    def test_keeps_project_root_scope_when_cwd_is_root(
+        self, mock_view, monkeypatch, tmp_path
+    ):
+        """When cwd is project root, file list remains repo-relative."""
+        (tmp_path / ".git").mkdir()
+        mock_files = ["README.md", "apps/cli/main.py"]
+        monkeypatch.setattr(
+            autocomplete_module, "_get_project_files", lambda _root: mock_files
+        )
+
+        controller = FuzzyFileController(mock_view, cwd=tmp_path)
+        assert controller._get_files() == mock_files
+
+    def test_scopes_git_file_list_with_symlinked_cwd(
+        self, mock_view, monkeypatch, tmp_path
+    ):
+        """Symlinked cwd should still scope suggestions to the resolved subtree."""
+        project_root = tmp_path
+        (project_root / ".git").mkdir()
+        real_cwd = project_root / "apps" / "cli"
+        real_cwd.mkdir(parents=True)
+        symlink_cwd = project_root / "APPS_CLI_LINK"
+        try:
+            symlink_cwd.symlink_to(real_cwd, target_is_directory=True)
+        except OSError:  # pragma: no cover - platform/permission dependent
+            return
+
+        mock_files = [
+            "README.md",
+            "apps/cli/main.py",
+            "apps/cli/utils/helpers.py",
+            "apps/web/index.ts",
+        ]
+        monkeypatch.setattr(
+            autocomplete_module, "_get_project_files", lambda _root: mock_files
+        )
+
+        controller = FuzzyFileController(mock_view, cwd=symlink_cwd)
+        assert controller._get_files() == ["main.py", "utils/helpers.py"]
 
 
 class TestMultiCompletionManager:

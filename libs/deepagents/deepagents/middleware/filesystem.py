@@ -1138,6 +1138,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             content=replacement_text,
             tool_call_id=message.tool_call_id,
             name=message.name,
+            id=message.id,
+            artifact=message.artifact,
+            status=message.status,
+            additional_kwargs=dict(message.additional_kwargs),
+            response_metadata=dict(message.response_metadata),
         )
         return processed_message, result.files_update
 
@@ -1194,6 +1199,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             content=replacement_text,
             tool_call_id=message.tool_call_id,
             name=message.name,
+            id=message.id,
+            artifact=message.artifact,
+            status=message.status,
+            additional_kwargs=dict(message.additional_kwargs),
+            response_metadata=dict(message.response_metadata),
         )
         return processed_message, result.files_update
 

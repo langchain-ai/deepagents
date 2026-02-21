@@ -79,7 +79,7 @@ def get_default_model() -> ChatAnthropic:
     )
 
 
-def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic with many conditional branches
+def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly logic with many conditional branches
     model: str | BaseChatModel | None = None,
     tools: Sequence[BaseTool | Callable | dict[str, Any]] | None = None,
     *,
@@ -250,7 +250,11 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
             subagent_skills = spec.get("skills")
             if subagent_skills:
                 subagent_middleware.append(SkillsMiddleware(backend=backend, sources=subagent_skills))
-            subagent_middleware.extend(spec.get("middleware", []))
+            user_subagent_mw = spec.get("middleware", [])
+            if user_subagent_mw:
+                user_types = {type(m) for m in user_subagent_mw}
+                subagent_middleware = [m for m in subagent_middleware if type(m) not in user_types]
+                subagent_middleware.extend(user_subagent_mw)
 
             processed_spec: SubAgent = {  # ty: ignore[missing-typed-dict-key]
                 **spec,
@@ -292,6 +296,8 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
     )
 
     if middleware:
+        user_types = {type(m) for m in middleware}
+        deepagent_middleware = [m for m in deepagent_middleware if type(m) not in user_types]
         deepagent_middleware.extend(middleware)
     if interrupt_on is not None:
         deepagent_middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))

@@ -23,6 +23,7 @@ from deepagents.backends.store import StoreBackend
 from deepagents.backends.utils import TOOL_RESULT_TOKEN_LIMIT
 from deepagents.graph import create_deep_agent
 from deepagents.middleware.filesystem import NUM_CHARS_PER_TOKEN
+from deepagents.middleware.summarization import SummarizationMiddleware
 from tests.utils import SampleMiddlewareWithTools, SampleMiddlewareWithToolsAndState, assert_all_deepagent_qualities
 
 
@@ -1214,3 +1215,42 @@ class TestDeepAgentStructure:
         assert_all_deepagent_qualities(agent)
         assert "sample_tool" in agent.nodes["tools"].bound._tools_by_name
         assert "sample_input" in agent.stream_channels
+
+    def test_user_middleware_replaces_builtin_of_same_type(self) -> None:
+        """Verifies that user-provided middleware replaces built-in instances of the same type."""
+        fake_model = FixedGenericFakeChatModel(messages=iter([AIMessage(content="done")]))
+        custom = SummarizationMiddleware(
+            model=fake_model,
+            backend=StateBackend,
+            trigger=("tokens", 99999),
+            keep=("messages", 5),
+        )
+        agent = create_deep_agent(model=fake_model, middleware=[custom])
+        assert_all_deepagent_qualities(agent)
+
+    def test_user_middleware_does_not_duplicate_builtin(self) -> None:
+        """Verifies that the middleware dedup logic removes built-in duplicates."""
+
+        class _MiddlewareA(AgentMiddleware):
+            pass
+
+        class _MiddlewareB(AgentMiddleware):
+            pass
+
+        builtin_stack: list[AgentMiddleware] = [_MiddlewareA(), _MiddlewareB()]
+        user_mw: list[AgentMiddleware] = [_MiddlewareB()]
+
+        user_types = {type(m) for m in user_mw}
+        deduped = [m for m in builtin_stack if type(m) not in user_types]
+        deduped.extend(user_mw)
+
+        type_counts: dict[type, int] = {}
+        for m in deduped:
+            type_counts[type(m)] = type_counts.get(type(m), 0) + 1
+
+        for mw_type, count in type_counts.items():
+            assert count == 1, f"Duplicate middleware: {mw_type.__name__} appears {count} times"
+
+        assert len(deduped) == 2
+        assert isinstance(deduped[0], _MiddlewareA)
+        assert isinstance(deduped[1], _MiddlewareB)

@@ -37,7 +37,7 @@ class StateBackend(BackendProtocol):
     This is indicated by the uses_state=True flag.
     """
 
-    def __init__(self, runtime: "ToolRuntime"):
+    def __init__(self, runtime: "ToolRuntime") -> None:
         """Initialize StateBackend with runtime."""
         self.runtime = runtime
 
@@ -85,15 +85,7 @@ class StateBackend(BackendProtocol):
             )
 
         # Add directories to the results
-        for subdir in sorted(subdirs):
-            infos.append(
-                {
-                    "path": subdir,
-                    "is_dir": True,
-                    "size": 0,
-                    "modified_at": "",
-                }
-            )
+        infos.extend(FileInfo(path=subdir, is_dir=True, size=0, modified_at="") for subdir in sorted(subdirs))
 
         infos.sort(key=lambda x: x.get("path", ""))
         return infos
@@ -128,6 +120,7 @@ class StateBackend(BackendProtocol):
         content: str,
     ) -> WriteResult:
         """Create a new file with content.
+
         Returns WriteResult with files_update to update LangGraph state.
         """
         files = self.runtime.state.get("files", {})
@@ -143,9 +136,10 @@ class StateBackend(BackendProtocol):
         file_path: str,
         old_string: str,
         new_string: str,
-        replace_all: bool = False,
+        replace_all: bool = False,  # noqa: FBT001, FBT002
     ) -> EditResult:
         """Edit a file by replacing string occurrences.
+
         Returns EditResult with files_update and occurrences.
         """
         files = self.runtime.state.get("files", {})
@@ -167,11 +161,12 @@ class StateBackend(BackendProtocol):
     def grep_raw(
         self,
         pattern: str,
-        path: str = "/",
+        path: str | None = None,
         glob: str | None = None,
     ) -> list[GrepMatch] | str:
+        """Search state files for a literal text pattern."""
         files = self.runtime.state.get("files", {})
-        return grep_matches_from_files(files, pattern, path, glob)
+        return grep_matches_from_files(files, pattern, path if path is not None else "/", glob)
 
     def glob_info(self, pattern: str, path: str = "/") -> list[FileInfo]:
         """Get FileInfo for files matching glob pattern."""
@@ -203,10 +198,11 @@ class StateBackend(BackendProtocol):
         Returns:
             List of FileUploadResponse objects, one per input file
         """
-        raise NotImplementedError(
+        msg = (
             "StateBackend does not support upload_files yet. You can upload files "
             "directly by passing them in invoke if you're storing files in the memory."
         )
+        raise NotImplementedError(msg)
 
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
         """Download multiple files from state.

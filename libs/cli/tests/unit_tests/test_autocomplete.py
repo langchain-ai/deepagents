@@ -338,6 +338,33 @@ class TestFuzzyFileControllerScope:
         controller = FuzzyFileController(mock_view, cwd=tmp_path)
         assert controller._get_files() == mock_files
 
+    def test_scopes_git_file_list_with_symlinked_cwd(
+        self, mock_view, monkeypatch, tmp_path
+    ):
+        """Symlinked cwd should still scope suggestions to the resolved subtree."""
+        project_root = tmp_path
+        (project_root / ".git").mkdir()
+        real_cwd = project_root / "apps" / "cli"
+        real_cwd.mkdir(parents=True)
+        symlink_cwd = project_root / "APPS_CLI_LINK"
+        try:
+            symlink_cwd.symlink_to(real_cwd, target_is_directory=True)
+        except OSError:  # pragma: no cover - platform/permission dependent
+            return
+
+        mock_files = [
+            "README.md",
+            "apps/cli/main.py",
+            "apps/cli/utils/helpers.py",
+            "apps/web/index.ts",
+        ]
+        monkeypatch.setattr(
+            autocomplete_module, "_get_project_files", lambda _root: mock_files
+        )
+
+        controller = FuzzyFileController(mock_view, cwd=symlink_cwd)
+        assert controller._get_files() == ["main.py", "utils/helpers.py"]
+
 
 class TestMultiCompletionManager:
     """Tests for MultiCompletionManager."""

@@ -1,0 +1,20 @@
+[project]
+name = "code-review-agent"
+version = "0.1.0"
+description = "An AI code review agent that finds bugs, security vulnerabilities, and suggests improvements"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "deepagents>=0.3.5",
+    "langchain-google-genai>=3.1.0",
+    "python-dotenv>=1.0.0",
+    "pyyaml>=6.0.0",
+    "rich>=13.0.0",
+]
+
+[project.urls]
+Repository = "https://github.com/langchain-ai/deepagents/tree/master/examples/code-review-agent"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"

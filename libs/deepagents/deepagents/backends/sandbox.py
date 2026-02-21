@@ -151,8 +151,9 @@ __DEEPAGENTS_EOF__"""
 _READ_COMMAND_TEMPLATE = """python3 -c "
 import os
 import sys
+import base64
 
-file_path = '{file_path}'
+file_path = base64.b64decode('{file_path_b64}').decode('utf-8')
 offset = {offset}
 limit = {limit}
 
@@ -212,11 +213,13 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
 
     def ls_info(self, path: str) -> list[FileInfo]:
         """Structured listing with file metadata using os.scandir."""
+        path_b64 = base64.b64encode(path.encode("utf-8")).decode("ascii")
         cmd = f"""python3 -c "
 import os
 import json
+import base64
 
-path = '{path}'
+path = base64.b64decode('{path_b64}').decode('utf-8')
 
 try:
     with os.scandir(path) as it:
@@ -254,7 +257,8 @@ except PermissionError:
     ) -> str:
         """Read file content with line numbers using a single shell command."""
         # Use template for reading file with offset and limit
-        cmd = _READ_COMMAND_TEMPLATE.format(file_path=file_path, offset=offset, limit=limit)
+        file_path_b64 = base64.b64encode(file_path.encode("utf-8")).decode("ascii")
+        cmd = _READ_COMMAND_TEMPLATE.format(file_path_b64=file_path_b64, offset=int(offset), limit=int(limit))
         result = self.execute(cmd)
 
         output = result.output.rstrip()

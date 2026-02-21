@@ -724,10 +724,6 @@ class ChatInput(Vertical):
                     self.mode = detected
                 self._strip_mode_prefix()
                 return
-        elif not text and self.mode != "normal":
-            # Reset mode when text is fully cleared
-            self.mode = "normal"
-
         # Update completion suggestions using completion-space text/cursor.
         if self._completion_manager and self._text_area:
             if is_path_payload:
@@ -1072,6 +1068,18 @@ class ChatInput(Vertical):
     async def on_key(self, event: events.Key) -> None:
         """Handle key events for completion navigation."""
         if not self._completion_manager or not self._text_area:
+            return
+
+        # Backspace on empty input exits the current mode (e.g. command/bash)
+        if (
+            event.key == "backspace"
+            and not self._text_area.text
+            and self.mode != "normal"
+        ):
+            self._completion_manager.reset()
+            self.mode = "normal"
+            event.prevent_default()
+            event.stop()
             return
 
         text, cursor = self._completion_text_and_cursor()

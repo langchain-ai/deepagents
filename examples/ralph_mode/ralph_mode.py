@@ -4,11 +4,20 @@ Ralph is an autonomous looping pattern created by Geoff Huntley
 (https://ghuntley.com/ralph/). Each loop starts with fresh context.
 The filesystem and git serve as the agent's memory across iterations.
 
-Usage:
+This script uses `deepagents-cli` as its runtime: model resolution, tool
+registration, checkpointing, and streaming all come from the CLI's public API
+(`deepagents_cli.agent`, `deepagents_cli.config`, etc.).
+
+Setup:
+    uv venv
+    source .venv/bin/activate
     uv pip install deepagents-cli
+
+Usage:
     python ralph_mode.py "Build a Python course. Use git."
     python ralph_mode.py "Build a REST API" --iterations 5
     python ralph_mode.py "Create a CLI tool" --work-dir ./my-project
+    python ralph_mode.py "Create a CLI tool" --model claude-sonnet-4-6
 """
 
 from __future__ import annotations
@@ -24,14 +33,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from langchain_core.messages import AIMessage, ToolMessage
-from rich.console import Console
-
 from deepagents_cli.agent import create_cli_agent
-from deepagents_cli.config import create_model, settings
+from deepagents_cli.config import ModelResult, create_model, settings
 from deepagents_cli.file_ops import FileOpTracker
 from deepagents_cli.sessions import generate_thread_id, get_checkpointer
 from deepagents_cli.tools import fetch_url, http_request, web_search
+from langchain.chat_models import BaseChatModel
+from langchain_core.messages import AIMessage, ToolMessage
+from rich.console import Console
 
 if TYPE_CHECKING:
     from langgraph.pregel import Pregel
@@ -122,18 +131,28 @@ async def ralph(
     checkpointer state) while the filesystem persists across iterations.
     This is the core Ralph pattern: fresh context, persistent filesystem.
 
-    The working directory should be set by the caller (via `os.chdir`)
-    before invoking this coroutine.
+    Uses `deepagents_cli.config.create_model` for model resolution and
+    `deepagents_cli.agent.create_cli_agent` to build the underlying LangGraph
+    agent with tool registration and auto-approval.
+
+    The working directory should be set by the caller (via `os.chdir`) before
+    invoking this coroutine.
 
     Args:
         task: Declarative description of what to build.
         max_iterations: Maximum number of iterations (0 = unlimited).
-        model_name: Model spec (e.g. `'anthropic:claude-sonnet-4-5'`).
+        model_name: Model spec in `provider:model` format (e.g.
+            `'anthropic:claude-sonnet-4-5'`).
+
+            When `None`, `deepagents-cli` resolves a default via its config file
+            (`[models].default`, then `[models].recent`) and falls back to
+            auto-detection from environment API keys
+            (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`).
     """
     work_path = Path.cwd()
 
-    result = create_model(model_name)
-    model = result.model
+    result: ModelResult = create_model(model_name)
+    model: BaseChatModel = result.model
     result.apply_to_settings()
 
     console.print("\n[bold magenta]Ralph Mode[/bold magenta]")
@@ -220,7 +239,7 @@ def main() -> None:
 Examples:
   python ralph_mode.py "Build a Python course. Use git."
   python ralph_mode.py "Build a REST API" --iterations 5
-  python ralph_mode.py "Create a CLI tool" --model claude-haiku-4-5-20251001
+  python ralph_mode.py "Create a CLI tool" --model claude-sonnet-4-6
   python ralph_mode.py "Build a web app" --work-dir ./my-project
         """,
     )
@@ -231,9 +250,7 @@ Examples:
         default=0,
         help="Max iterations (0 = unlimited, default: unlimited)",
     )
-    parser.add_argument(
-        "--model", help="Model to use (e.g., claude-haiku-4-5-20251001)"
-    )
+    parser.add_argument("--model", help="Model to use (e.g., claude-sonnet-4-6)")
     parser.add_argument(
         "--work-dir",
         help="Working directory for the agent (default: current directory)",

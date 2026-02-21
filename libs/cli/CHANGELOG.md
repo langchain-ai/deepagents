@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.26](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.25...deepagents-cli==0.0.26) (2026-02-21)
+
+
+### Bug Fixes
+
+* **cli:** only exit input mode on backspace, not text clear ([#1479](https://github.com/langchain-ai/deepagents/issues/1479)) ([da0965e](https://github.com/langchain-ai/deepagents/commit/da0965ee33e6bdf7aec30865bed44a1bd38a7d12))
+
 ## [0.0.25](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.24...deepagents-cli==0.0.25) (2026-02-20)
 
 ### Features

@@ -276,11 +276,11 @@ async def test_state_backend_intercept_large_tool_result_async():
 async def test_state_backend_agrep_exact_file_path() -> None:
     """Test that async grep works with exact file paths (no trailing slash).
 
-    This reproduces the bug where _validate_path adds a trailing slash to all paths,
+    This reproduces the bug where validate_path adds a trailing slash to all paths,
     causing exact file path matching to fail with startswith filter.
 
     Bug: When grep is called with an exact file path like "/data/result_abc123",
-    _validate_path adds a trailing slash making it "/data/result_abc123/",
+    validate_path adds a trailing slash making it "/data/result_abc123/",
     which doesn't match the key in state (which has no trailing slash).
     """
     rt = make_runtime()

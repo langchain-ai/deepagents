@@ -142,7 +142,7 @@ class MessageData:
             The appropriate message widget for this data.
         """
         # Import here to avoid circular imports
-        from deepagents_cli.widgets.messages import (  # noqa: PLC0415
+        from deepagents_cli.widgets.messages import (
             AppMessage,
             AssistantMessage,
             DiffMessage,
@@ -202,7 +202,9 @@ class MessageData:
         Returns:
             MessageData containing all the widget's state.
         """
-        from deepagents_cli.widgets.messages import (  # noqa: PLC0415
+        # Deferred: prevents import-order issue — both modules live in the
+        # widgets package, and messages is re-exported from widgets/__init__.
+        from deepagents_cli.widgets.messages import (
             AppMessage,
             AssistantMessage,
             DiffMessage,
@@ -343,6 +345,35 @@ class MessageStore:
         """
         self._messages.append(message)
         self._visible_end = len(self._messages)
+
+    def bulk_load(
+        self, messages: list[MessageData]
+    ) -> tuple[list[MessageData], list[MessageData]]:
+        """Load many messages at once, keeping only the tail visible.
+
+        This is optimized for thread resumption: all messages are stored as
+        lightweight data, but only the last `WINDOW_SIZE` entries are marked
+        visible (i.e. will need DOM widgets).
+
+        Args:
+            messages: Ordered list of message data to load.
+
+        Returns:
+            Tuple of (archived, visible) message lists.
+        """
+        self._messages.extend(messages)
+        total = len(self._messages)
+
+        if total <= self.WINDOW_SIZE:
+            self._visible_start = 0
+        else:
+            self._visible_start = total - self.WINDOW_SIZE
+
+        self._visible_end = total
+
+        archived = self._messages[: self._visible_start]
+        visible = self._messages[self._visible_start : self._visible_end]
+        return archived, visible
 
     def get_message(self, message_id: str) -> MessageData | None:
         """Get a message by its ID.

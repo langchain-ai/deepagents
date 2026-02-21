@@ -258,7 +258,7 @@ except PermissionError:
         """Read file content with line numbers using a single shell command."""
         # Use template for reading file with offset and limit
         file_path_b64 = base64.b64encode(file_path.encode("utf-8")).decode("ascii")
-        cmd = _READ_COMMAND_TEMPLATE.format(file_path_b64=file_path_b64, offset=offset, limit=limit)
+        cmd = _READ_COMMAND_TEMPLATE.format(file_path_b64=file_path_b64, offset=int(offset), limit=int(limit))
         result = self.execute(cmd)
 
         output = result.output.rstrip()

@@ -37,7 +37,7 @@ class WriteFileRenderer(ToolRenderer):
     """Renderer for write_file tool - shows full file content."""
 
     @staticmethod
-    def get_approval_widget(
+    def get_approval_widget(  # noqa: D102  # Protocol method — docstring on base class
         tool_args: dict[str, Any],
     ) -> tuple[type[ToolApprovalWidget], dict[str, Any]]:
         # Extract file extension for syntax highlighting
@@ -61,7 +61,7 @@ class EditFileRenderer(ToolRenderer):
     """Renderer for edit_file tool - shows unified diff."""
 
     @staticmethod
-    def get_approval_widget(
+    def get_approval_widget(  # noqa: D102  # Protocol method — docstring on base class
         tool_args: dict[str, Any],
     ) -> tuple[type[ToolApprovalWidget], dict[str, Any]]:
         file_path = tool_args.get("file_path", "")
@@ -104,7 +104,7 @@ class EditFileRenderer(ToolRenderer):
 
         # Skip the first two header lines (--- and +++)
         diff_list = list(diff)
-        return diff_list[2:] if len(diff_list) > 2 else diff_list
+        return diff_list[2:] if len(diff_list) > 2 else diff_list  # noqa: PLR2004  # Column count threshold
 
 
 # Registry mapping tool names to renderers

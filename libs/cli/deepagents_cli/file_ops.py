@@ -322,7 +322,7 @@ class FileOpTracker:
                 record.before_content = _safe_read(record.physical_path) or ""
         self.active[tool_call_id] = record
 
-    def complete_with_message(self, tool_message: Any) -> FileOperationRecord | None:
+    def complete_with_message(self, tool_message: Any) -> FileOperationRecord | None:  # noqa: ANN401  # Tool message type is dynamic
         """Complete a file operation with the tool message result.
 
         Returns:

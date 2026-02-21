@@ -1,20 +1,22 @@
 """Sandbox lifecycle management with provider abstraction."""
 
+from __future__ import annotations
+
 import os
 import shlex
 import string
-from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
-
-from deepagents.backends.protocol import SandboxBackendProtocol
+from typing import TYPE_CHECKING
 
 from deepagents_cli.config import console, get_glyphs
-from deepagents_cli.integrations.daytona import DaytonaProvider
-from deepagents_cli.integrations.langsmith import LangSmithProvider
-from deepagents_cli.integrations.modal import ModalProvider
-from deepagents_cli.integrations.runloop import RunloopProvider
-from deepagents_cli.integrations.sandbox_provider import SandboxProvider
+
+if TYPE_CHECKING:
+    from collections.abc import Generator
+
+    from deepagents.backends.protocol import SandboxBackendProtocol
+
+    from deepagents_cli.integrations.sandbox_provider import SandboxProvider
 
 
 def _run_sandbox_setup(backend: SandboxBackendProtocol, setup_script_path: str) -> None:
@@ -46,7 +48,7 @@ def _run_sandbox_setup(backend: SandboxBackendProtocol, setup_script_path: str) 
     result = backend.execute(f"bash -c {shlex.quote(expanded_script)}")
 
     if result.exit_code != 0:
-        console.print(f"[red]❌ Setup script failed (exit {result.exit_code}):[/red]")
+        console.print(f"[red]Setup script failed (exit {result.exit_code}):[/red]")
         console.print(f"[dim]{result.output}[/dim]")
         msg = "Setup failed - aborting"
         raise RuntimeError(msg)
@@ -56,7 +58,7 @@ def _run_sandbox_setup(backend: SandboxBackendProtocol, setup_script_path: str) 
 
 _PROVIDER_TO_WORKING_DIR = {
     "daytona": "/home/daytona",
-    "langsmith": "/tmp",  # noqa: S108
+    "langsmith": "/tmp",  # noqa: S108  # LangSmith sandbox working directory
     "modal": "/workspace",
     "runloop": "/home/user",
 }
@@ -114,7 +116,7 @@ def create_sandbox(
                     f"[dim]{glyphs.checkmark} {provider.capitalize()} sandbox "
                     f"{backend.id} terminated[/dim]"
                 )
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001  # Cleanup errors should not mask the original sandbox failure
                 warning = get_glyphs().warning
                 console.print(
                     f"[yellow]{warning} Cleanup failed for {provider} sandbox "
@@ -162,12 +164,20 @@ def _get_provider(provider_name: str) -> SandboxProvider:
         ValueError: If provider_name is unknown
     """
     if provider_name == "daytona":
+        from deepagents_cli.integrations.daytona import DaytonaProvider
+
         return DaytonaProvider()
     if provider_name == "langsmith":
+        from deepagents_cli.integrations.langsmith import LangSmithProvider
+
         return LangSmithProvider()
     if provider_name == "modal":
+        from deepagents_cli.integrations.modal import ModalProvider
+
         return ModalProvider()
     if provider_name == "runloop":
+        from deepagents_cli.integrations.runloop import RunloopProvider
+
         return RunloopProvider()
     msg = (
         f"Unknown sandbox provider: {provider_name}. "

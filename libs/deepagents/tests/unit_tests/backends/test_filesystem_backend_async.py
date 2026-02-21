@@ -91,7 +91,7 @@ async def test_filesystem_backend_async_virtual_mode(tmp_path: Path):
     assert isinstance(matches_bracket, list)  # Should not error, returns empty list or matches
 
     # path traversal blocked
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="traversal"):
         await be.aread("/../a.txt")
 
 
@@ -208,7 +208,7 @@ async def test_filesystem_backend_intercept_large_tool_result_async(tmp_path: Pa
         config={},
     )
 
-    middleware = FilesystemMiddleware(backend=lambda r: FilesystemBackend(root_dir=str(root), virtual_mode=True), tool_token_limit_before_evict=1000)
+    middleware = FilesystemMiddleware(backend=lambda r: FilesystemBackend(root_dir=str(root), virtual_mode=True), tool_token_limit_before_evict=1000)  # noqa: ARG005  # Lambda signature matches backend factory pattern
 
     large_content = "f" * 5000
     tool_message = ToolMessage(content=large_content, tool_call_id="test_fs_123")
@@ -256,7 +256,7 @@ async def test_filesystem_aupload_multiple_files(tmp_path: Path):
     responses = await be.aupload_files(files)
 
     assert len(responses) == 3
-    for i, (path, content) in enumerate(files):
+    for i, (path, _content) in enumerate(files):
         assert responses[i].path == path
         assert responses[i].error is None
 

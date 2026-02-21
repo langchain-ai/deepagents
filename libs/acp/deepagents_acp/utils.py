@@ -1,20 +1,27 @@
+"""Utility functions for converting ACP content blocks to LangChain formats."""
+
+from __future__ import annotations
+
 import shlex
+from typing import TYPE_CHECKING
 
-from acp.schema import (
-    AudioContentBlock,
-    EmbeddedResourceContentBlock,
-    ImageContentBlock,
-    ResourceContentBlock,
-    TextContentBlock,
-)
+if TYPE_CHECKING:
+    from acp.schema import (
+        AudioContentBlock,
+        EmbeddedResourceContentBlock,
+        ImageContentBlock,
+        ResourceContentBlock,
+        TextContentBlock,
+    )
 
 
-def convert_text_block_to_content_blocks(block: TextContentBlock):
+def convert_text_block_to_content_blocks(block: TextContentBlock) -> list[dict[str, str]]:
+    """Convert an ACP text block to LangChain content blocks."""
     return [{"type": "text", "text": block.text}]
 
 
-def convert_image_block_to_content_blocks(block: ImageContentBlock):
-    # Image blocks contain visual data
+def convert_image_block_to_content_blocks(block: ImageContentBlock) -> list[dict[str, object]]:
+    """Convert an ACP image block to LangChain content blocks."""
     # Primary case: inline base64 data (data is already a base64 string)
     if block.data:
         data_uri = f"data:{block.mime_type};base64,{block.data}"
@@ -24,21 +31,29 @@ def convert_image_block_to_content_blocks(block: ImageContentBlock):
     return [{"type": "text", "text": "[Image: no data available]"}]
 
 
-def convert_audio_block_to_content_blocks(block: AudioContentBlock):
-    raise Exception("Audio is not currently supported.")
+def convert_audio_block_to_content_blocks(block: AudioContentBlock) -> list[dict[str, str]]:
+    """Convert an ACP audio block to LangChain content blocks.
+
+    Raises:
+        NotImplementedError: Audio content is not yet supported.
+    """
+    msg = "Audio is not currently supported."
+    raise NotImplementedError(msg)
 
 
-def convert_resource_block_to_content_blocks(block: ResourceContentBlock, *, root_dir: str):
-    # Resource blocks reference external resources
+def convert_resource_block_to_content_blocks(
+    block: ResourceContentBlock,
+    *,
+    root_dir: str,
+) -> list[dict[str, str]]:
+    """Convert an ACP resource block to LangChain content blocks."""
+    file_prefix = "file://"
     resource_text = f"[Resource: {block.name}"
     if block.uri:
         # Truncate root_dir from path while preserving file:// prefix
         uri = block.uri
-        has_file_prefix = uri.startswith("file://")
-        if has_file_prefix:
-            path = uri[7:]  # Remove "file://" temporarily
-        else:
-            path = uri
+        has_file_prefix = uri.startswith(file_prefix)
+        path = uri[len(file_prefix) :] if has_file_prefix else uri
 
         # Remove root_dir prefix to get path relative to agent's working directory
         if path.startswith(root_dir):
@@ -57,13 +72,17 @@ def convert_resource_block_to_content_blocks(block: ResourceContentBlock, *, roo
 
 def convert_embedded_resource_block_to_content_blocks(
     block: EmbeddedResourceContentBlock,
-) -> list[dict]:
-    # Embedded resource blocks contain the resource data inline
+) -> list[dict[str, str]]:
+    """Convert an ACP embedded resource block to LangChain content blocks.
+
+    Raises:
+        ValueError: If the block has neither a ``text`` nor ``blob`` property.
+    """
     resource = block.resource
     if hasattr(resource, "text"):
         mime_type = getattr(resource, "mime_type", "application/text")
         return [{"type": "text", "text": f"[Embedded {mime_type} resource: {resource.text}"}]
-    elif hasattr(resource, "blob"):
+    if hasattr(resource, "blob"):
         mime_type = getattr(resource, "mime_type", "application/octet-stream")
         data_uri = f"data:{mime_type};base64,{resource.blob}"
         return [
@@ -72,14 +91,14 @@ def convert_embedded_resource_block_to_content_blocks(
                 "text": f"[Embedded resource: {data_uri}]",
             }
         ]
-    else:
-        raise Exception(
-            "Could not parse embedded resource block. "
-            "Block expected either a `text` or `blob` property."
-        )
+    msg = (
+        "Could not parse embedded resource block. "
+        "Block expected either a `text` or `blob` property."
+    )
+    raise ValueError(msg)
 
 
-def extract_command_types(command: str) -> list[str]:
+def extract_command_types(command: str) -> list[str]:  # noqa: C901, PLR0915  # Complex shell command parser with nested helper functions
     """Extract all command types from a shell command, handling && separators.
 
     For security-sensitive commands (python, node, npm, uv, etc.), includes the full
@@ -126,62 +145,58 @@ def extract_command_types(command: str) -> list[str]:
     def extract_python_signature(tokens: list[str]) -> str:
         """Extract signature for python/python3 commands."""
         base_cmd = tokens[0]
-        if len(tokens) < 2:
+        if len(tokens) < 2:  # noqa: PLR2004  # Token count threshold for subcommand parsing
             return base_cmd
 
         # python -m <module> -> "python -m <module>"
-        if tokens[1] == "-m" and len(tokens) > 2:
+        if tokens[1] == "-m" and len(tokens) > 2:  # noqa: PLR2004  # Token count threshold for module name
             return f"{base_cmd} -m {tokens[2]}"
         # python -c <code> -> "python -c" (code changes, just track the flag)
-        elif tokens[1] == "-c":
+        if tokens[1] == "-c":
             return f"{base_cmd} -c"
         # python script.py -> "python" (just running a script)
-        else:
-            return base_cmd
+        return base_cmd
 
     def extract_node_signature(tokens: list[str]) -> str:
         """Extract signature for node commands."""
         base_cmd = tokens[0]
-        if len(tokens) < 2:
+        if len(tokens) < 2:  # noqa: PLR2004  # Token count threshold for subcommand parsing
             return base_cmd
 
         # node -e <code> -> "node -e" (code changes, just track the flag)
         if tokens[1] == "-e":
             return f"{base_cmd} -e"
         # node -p <code> -> "node -p" (code changes, just track the flag)
-        elif tokens[1] == "-p":
+        if tokens[1] == "-p":
             return f"{base_cmd} -p"
         # node script.js -> "node" (just running a script)
-        else:
-            return base_cmd
+        return base_cmd
 
     def extract_npm_signature(tokens: list[str]) -> str:
         """Extract signature for npm commands."""
         base_cmd = tokens[0]
-        if len(tokens) < 2:
+        if len(tokens) < 2:  # noqa: PLR2004  # Token count threshold for subcommand parsing
             return base_cmd
 
         subcommand = tokens[1]
         # npm run <script> -> "npm run <script>" (include script name)
-        if subcommand == "run" and len(tokens) > 2:
+        if subcommand == "run" and len(tokens) > 2:  # noqa: PLR2004  # Token count threshold for script name
             return f"{base_cmd} run {tokens[2]}"
         # npm install/test/etc -> "npm <subcommand>"
-        else:
-            return f"{base_cmd} {subcommand}"
+        return f"{base_cmd} {subcommand}"
 
     def extract_uv_signature(tokens: list[str]) -> str:
         """Extract signature for uv commands."""
         base_cmd = tokens[0]
-        if len(tokens) < 2:
+        if len(tokens) < 2:  # noqa: PLR2004  # Token count threshold for subcommand parsing
             return base_cmd
 
         subcommand = tokens[1]
         # uv run <tool> -> "uv run <tool>" (include tool name)
-        if subcommand == "run" and len(tokens) > 2:
+        if subcommand == "run" and len(tokens) > 2:  # noqa: PLR2004  # Token count threshold for tool name
             return f"{base_cmd} run {tokens[2]}"
         # uv pip/add/sync/etc -> "uv <subcommand>"
-        else:
-            return f"{base_cmd} {subcommand}"
+        return f"{base_cmd} {subcommand}"
 
     def extract_npx_signature(tokens: list[str]) -> str:
         """Extract signature for npx commands."""
@@ -189,25 +204,23 @@ def extract_command_types(command: str) -> list[str]:
         # npx <package> -> "npx <package>" (always include package name)
         if len(tokens) > 1:
             return f"{base_cmd} {tokens[1]}"
-        else:
-            return base_cmd
+        return base_cmd
 
     def extract_yarn_pnpm_signature(tokens: list[str]) -> str:
         """Extract signature for yarn/pnpm commands."""
         base_cmd = tokens[0]
-        if len(tokens) < 2:
+        if len(tokens) < 2:  # noqa: PLR2004  # Token count threshold for subcommand parsing
             return base_cmd
 
         subcommand = tokens[1]
         # yarn/pnpm run <script> -> "yarn run <script>" (include script name)
-        if subcommand == "run" and len(tokens) > 2:
+        if subcommand == "run" and len(tokens) > 2:  # noqa: PLR2004  # Token count threshold for script name
             return f"{base_cmd} run {tokens[2]}"
         # yarn/pnpm install/test/etc -> "yarn <subcommand>"
-        else:
-            return f"{base_cmd} {subcommand}"
+        return f"{base_cmd} {subcommand}"
 
     # Command handlers for sensitive commands
-    COMMAND_HANDLERS = {
+    command_handlers = {
         "python": extract_python_signature,
         "python3": extract_python_signature,
         "node": extract_node_signature,
@@ -218,13 +231,13 @@ def extract_command_types(command: str) -> list[str]:
         "uv": extract_uv_signature,
     }
 
-    command_types = []
+    command_types: list[str] = []
 
     # Split by && to handle chained commands
     and_segments = command.split("&&")
 
-    for segment in and_segments:
-        segment = segment.strip()
+    for raw_segment in and_segments:
+        segment = raw_segment.strip()
         if not segment:
             continue
 
@@ -232,8 +245,8 @@ def extract_command_types(command: str) -> list[str]:
             # Split by pipes and process all segments
             pipe_segments = segment.split("|")
 
-            for pipe_segment in pipe_segments:
-                pipe_segment = pipe_segment.strip()
+            for raw_pipe_segment in pipe_segments:
+                pipe_segment = raw_pipe_segment.strip()
                 if not pipe_segment:
                     continue
 
@@ -245,8 +258,8 @@ def extract_command_types(command: str) -> list[str]:
                 base_cmd = tokens[0]
 
                 # Use specific handler if available, otherwise just use base command
-                if base_cmd in COMMAND_HANDLERS:
-                    signature = COMMAND_HANDLERS[base_cmd](tokens)
+                if base_cmd in command_handlers:
+                    signature = command_handlers[base_cmd](tokens)
                     command_types.append(signature)
                 else:
                     # Non-sensitive commands - just use the base command
@@ -259,10 +272,13 @@ def extract_command_types(command: str) -> list[str]:
     return command_types
 
 
+_MAX_DISPLAY_COMMAND_LENGTH = 120
+
+
 def truncate_execute_command_for_display(command: str) -> str:
-    """Truncate a command string to a maximum length"""
-    if len(command) >= 120:
-        return command[:120] + "..."
+    """Truncate a command string to a maximum length for display."""
+    if len(command) >= _MAX_DISPLAY_COMMAND_LENGTH:
+        return command[:_MAX_DISPLAY_COMMAND_LENGTH] + "..."
     return command
 
 

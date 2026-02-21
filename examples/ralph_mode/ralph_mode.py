@@ -25,7 +25,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
-import logging
 import os
 import sys
 import warnings
@@ -45,8 +44,6 @@ from rich.console import Console
 if TYPE_CHECKING:
     from langgraph.pregel import Pregel
 
-logger = logging.getLogger(__name__)
-
 _STREAM_TUPLE_LENGTH = 3
 _MESSAGE_TUPLE_LENGTH = 2
 
@@ -63,7 +60,7 @@ async def _stream_iteration(
 
     Processes the agent's streamed response chunks: text blocks are written
     to stdout as they arrive, tool-call names are printed as dim status
-    lines, and file operations are tracked for summary display.
+    lines, and file operations are tracked via `FileOpTracker`.
 
     Args:
         agent: The compiled LangGraph agent to stream.
@@ -135,8 +132,8 @@ async def ralph(
     `deepagents_cli.agent.create_cli_agent` to build the underlying LangGraph
     agent with tool registration and auto-approval.
 
-    The working directory should be set by the caller (via `os.chdir`) before
-    invoking this coroutine.
+    Uses `Path.cwd()` as the working directory; the caller may optionally
+    change the working directory before invoking this coroutine.
 
     Args:
         task: Declarative description of what to build.

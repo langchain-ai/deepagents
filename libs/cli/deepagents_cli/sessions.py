@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import sqlite3
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -19,6 +21,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _aiosqlite_patched = False
+_jsonplus_serializer: JsonPlusSerializer | None = None
+_message_count_cache: dict[str, tuple[str | None, int]] = {}
+_MAX_MESSAGE_COUNT_CACHE = 4096
+_recent_threads_cache: dict[tuple[str | None, int], list[ThreadInfo]] = {}
+_MAX_RECENT_THREADS_CACHE_KEYS = 16
 
 
 def _patch_aiosqlite() -> None:
@@ -83,6 +90,9 @@ class ThreadInfo(TypedDict):
 
     message_count: NotRequired[int]
     """Number of messages in the thread."""
+
+    latest_checkpoint_id: NotRequired[str | None]
+    """Most recent checkpoint ID for cache invalidation."""
 
 
 def format_timestamp(iso_timestamp: str | None) -> str:
@@ -169,7 +179,8 @@ async def list_threads(
             query = """
                 SELECT thread_id,
                        json_extract(metadata, '$.agent_name') as agent_name,
-                       MAX(json_extract(metadata, '$.updated_at')) as updated_at
+                       MAX(json_extract(metadata, '$.updated_at')) as updated_at,
+                       MAX(checkpoint_id) as latest_checkpoint_id
                 FROM checkpoints
                 WHERE json_extract(metadata, '$.agent_name') = ?
                 GROUP BY thread_id
@@ -181,7 +192,8 @@ async def list_threads(
             query = """
                 SELECT thread_id,
                        json_extract(metadata, '$.agent_name') as agent_name,
-                       MAX(json_extract(metadata, '$.updated_at')) as updated_at
+                       MAX(json_extract(metadata, '$.updated_at')) as updated_at,
+                       MAX(checkpoint_id) as latest_checkpoint_id
                 FROM checkpoints
                 GROUP BY thread_id
                 ORDER BY updated_at DESC
@@ -192,21 +204,195 @@ async def list_threads(
         async with conn.execute(query, params) as cursor:
             rows = await cursor.fetchall()
             threads: list[ThreadInfo] = [
-                ThreadInfo(thread_id=r[0], agent_name=r[1], updated_at=r[2])
+                ThreadInfo(
+                    thread_id=r[0],
+                    agent_name=r[1],
+                    updated_at=r[2],
+                    latest_checkpoint_id=r[3],
+                )
                 for r in rows
             ]
 
         # Fetch message counts if requested
         if include_message_count and threads:
-            from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+            await _populate_message_counts(conn, threads)
 
-            serde = JsonPlusSerializer()
-            for thread in threads:
-                thread["message_count"] = await _count_messages_from_checkpoint(
-                    conn, thread["thread_id"], serde
-                )
-
+        _cache_recent_threads(agent_name, limit, threads)
         return threads
+
+
+async def populate_thread_message_counts(threads: list[ThreadInfo]) -> list[ThreadInfo]:
+    """Populate `message_count` for an existing thread list.
+
+    This is used by the `/threads` modal to render rows quickly, then backfill
+    counts in the background without issuing a second thread-list query.
+
+    Args:
+        threads: Thread rows to enrich in place.
+
+    Returns:
+        The same list object with `message_count` values populated.
+    """
+    if not threads:
+        return threads
+
+    async with _connect() as conn:
+        await _populate_message_counts(conn, threads)
+    return threads
+
+
+async def prewarm_thread_message_counts(limit: int | None = None) -> None:
+    """Prewarm thread message-count cache for faster `/threads` open.
+
+    Fetches a bounded list of recent threads and populates counts into the
+    in-memory cache. Intended to run in a background worker during app startup.
+
+    Args:
+        limit: Maximum threads to prewarm. Uses `get_thread_limit()` when `None`.
+    """
+    thread_limit = limit if limit is not None else get_thread_limit()
+    if thread_limit < 1:
+        return
+
+    try:
+        threads = await list_threads(limit=thread_limit, include_message_count=False)
+        if threads:
+            await populate_thread_message_counts(threads)
+        _cache_recent_threads(None, thread_limit, threads)
+    except (OSError, sqlite3.Error):
+        logger.debug("Could not prewarm thread message counts", exc_info=True)
+    except Exception:
+        logger.debug(
+            "Unexpected error while prewarming thread message counts",
+            exc_info=True,
+        )
+
+
+def get_cached_threads(
+    agent_name: str | None = None,
+    limit: int | None = None,
+) -> list[ThreadInfo] | None:
+    """Get cached recent threads, if available.
+
+    Args:
+        agent_name: Optional agent-name filter key.
+        limit: Maximum rows requested. Uses `get_thread_limit()` when `None`.
+
+    Returns:
+        Copy of cached rows when available, otherwise `None`.
+    """
+    thread_limit = limit if limit is not None else get_thread_limit()
+    if thread_limit < 1:
+        return None
+
+    exact = _recent_threads_cache.get((agent_name, thread_limit))
+    if exact is not None:
+        return _copy_threads(exact)
+
+    best_key: tuple[str | None, int] | None = None
+    for key in _recent_threads_cache:
+        cache_agent, cache_limit = key
+        if cache_agent != agent_name or cache_limit < thread_limit:
+            continue
+        if best_key is None or cache_limit < best_key[1]:
+            best_key = key
+
+    if best_key is None:
+        return None
+
+    return _copy_threads(_recent_threads_cache[best_key][:thread_limit])
+
+
+def apply_cached_thread_message_counts(threads: list[ThreadInfo]) -> int:
+    """Apply cached message counts onto thread rows when freshness matches.
+
+    Args:
+        threads: Thread rows to mutate in place.
+
+    Returns:
+        Number of rows that were populated from cache.
+    """
+    populated = 0
+    for thread in threads:
+        if "message_count" in thread:
+            continue
+        thread_id = thread["thread_id"]
+        freshness = thread.get("latest_checkpoint_id") or thread.get("updated_at")
+        cached = _message_count_cache.get(thread_id)
+        if cached is None or cached[0] != freshness:
+            continue
+        thread["message_count"] = cached[1]
+        populated += 1
+    return populated
+
+
+async def _populate_message_counts(
+    conn: aiosqlite.Connection,
+    threads: list[ThreadInfo],
+) -> None:
+    """Fill `message_count` on thread rows with cache-aware lookup."""
+    serde = await _get_jsonplus_serializer()
+    for thread in threads:
+        thread_id = thread["thread_id"]
+        freshness = thread.get("latest_checkpoint_id") or thread.get("updated_at")
+        cached = _message_count_cache.get(thread_id)
+        if cached is not None and cached[0] == freshness:
+            thread["message_count"] = cached[1]
+            continue
+
+        count = await _count_messages_from_checkpoint(conn, thread_id, serde)
+        thread["message_count"] = count
+        _cache_message_count(thread_id, freshness, count)
+
+
+async def _get_jsonplus_serializer() -> JsonPlusSerializer:
+    """Return a cached JsonPlus serializer, loading it off the UI loop."""
+    global _jsonplus_serializer  # noqa: PLW0603  # Module-level cache requires global statement
+    if _jsonplus_serializer is not None:
+        return _jsonplus_serializer
+
+    loop = asyncio.get_running_loop()
+    _jsonplus_serializer = await loop.run_in_executor(None, _create_jsonplus_serializer)
+    return _jsonplus_serializer
+
+
+def _create_jsonplus_serializer() -> JsonPlusSerializer:
+    """Import and create a JsonPlus serializer.
+
+    Returns:
+        A ready `JsonPlusSerializer` instance.
+    """
+    from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+
+    return JsonPlusSerializer()
+
+
+def _cache_message_count(thread_id: str, freshness: str | None, count: int) -> None:
+    """Cache a thread's message count with a freshness token."""
+    if len(_message_count_cache) >= _MAX_MESSAGE_COUNT_CACHE and (
+        thread_id not in _message_count_cache
+    ):
+        _message_count_cache.clear()
+    _message_count_cache[thread_id] = (freshness, count)
+
+
+def _cache_recent_threads(
+    agent_name: str | None,
+    limit: int,
+    threads: list[ThreadInfo],
+) -> None:
+    """Store a copy of recent thread rows for fast selector startup."""
+    key = (agent_name, max(1, limit))
+    if len(_recent_threads_cache) >= _MAX_RECENT_THREADS_CACHE_KEYS and (
+        key not in _recent_threads_cache
+    ):
+        _recent_threads_cache.clear()
+    _recent_threads_cache[key] = _copy_threads(threads)
+
+
+def _copy_threads(threads: list[ThreadInfo]) -> list[ThreadInfo]:
+    """Return shallow-copied thread rows."""
+    return [ThreadInfo(**thread) for thread in threads]
 
 
 async def _count_messages_from_checkpoint(
@@ -366,6 +552,11 @@ async def delete_thread(thread_id: str) -> bool:
         if await _table_exists(conn, "writes"):
             await conn.execute("DELETE FROM writes WHERE thread_id = ?", (thread_id,))
         await conn.commit()
+        if deleted:
+            _message_count_cache.pop(thread_id, None)
+            for key, rows in list(_recent_threads_cache.items()):
+                filtered = [row for row in rows if row["thread_id"] != thread_id]
+                _recent_threads_cache[key] = filtered
         return deleted
 
 

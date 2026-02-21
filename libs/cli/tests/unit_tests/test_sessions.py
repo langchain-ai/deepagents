@@ -5,7 +5,7 @@ import json
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
@@ -401,6 +401,187 @@ class TestListThreadsWithMessageCount:
             threads = asyncio.run(sessions.list_threads())
             assert len(threads) == 1
             assert "message_count" not in threads[0]
+
+    def test_message_count_uses_cache_for_unchanged_thread(
+        self, temp_db_with_messages: Path
+    ) -> None:
+        """Second call should reuse cached count for unchanged checkpoint."""
+        sessions._message_count_cache.clear()
+        try:
+            with (
+                patch.object(
+                    sessions, "get_db_path", return_value=temp_db_with_messages
+                ),
+                patch.object(
+                    sessions,
+                    "_get_jsonplus_serializer",
+                    new_callable=AsyncMock,
+                    return_value=object(),
+                ),
+                patch.object(
+                    sessions,
+                    "_count_messages_from_checkpoint",
+                    new_callable=AsyncMock,
+                    return_value=3,
+                ) as mock_count,
+            ):
+                first = asyncio.run(sessions.list_threads(include_message_count=True))
+                second = asyncio.run(sessions.list_threads(include_message_count=True))
+
+                assert first[0]["message_count"] == 3
+                assert second[0]["message_count"] == 3
+                assert mock_count.await_count == 1
+        finally:
+            sessions._message_count_cache.clear()
+
+    def test_message_count_cache_invalidates_on_new_checkpoint(
+        self, temp_db_with_messages: Path
+    ) -> None:
+        """A newer checkpoint should invalidate cached message count."""
+        sessions._message_count_cache.clear()
+        try:
+            with (
+                patch.object(
+                    sessions, "get_db_path", return_value=temp_db_with_messages
+                ),
+                patch.object(
+                    sessions,
+                    "_get_jsonplus_serializer",
+                    new_callable=AsyncMock,
+                    return_value=object(),
+                ),
+                patch.object(
+                    sessions,
+                    "_count_messages_from_checkpoint",
+                    new_callable=AsyncMock,
+                    side_effect=[3, 4],
+                ) as mock_count,
+            ):
+                first = asyncio.run(sessions.list_threads(include_message_count=True))
+                assert first[0]["message_count"] == 3
+
+                conn = sqlite3.connect(str(temp_db_with_messages))
+                type_str, checkpoint_blob, metadata = conn.execute(
+                    "SELECT type, checkpoint, metadata FROM checkpoints "
+                    "WHERE thread_id = ? AND checkpoint_id = ?",
+                    ("thread1", "cp_1"),
+                ).fetchone()
+                conn.execute(
+                    "INSERT INTO checkpoints "
+                    "(thread_id, checkpoint_ns, checkpoint_id, type, checkpoint, "
+                    "metadata) "
+                    "VALUES (?, '', ?, ?, ?, ?)",
+                    ("thread1", "cp_2", type_str, checkpoint_blob, metadata),
+                )
+                conn.commit()
+                conn.close()
+
+                second = asyncio.run(sessions.list_threads(include_message_count=True))
+                assert second[0]["message_count"] == 4
+                assert mock_count.await_count == 2
+        finally:
+            sessions._message_count_cache.clear()
+
+
+class TestApplyCachedThreadMessageCounts:
+    """Tests for applying cached thread counts to rows."""
+
+    def test_populates_rows_from_cache(self) -> None:
+        """Rows with matching freshness should get counts from cache."""
+        sessions._message_count_cache.clear()
+        try:
+            sessions._message_count_cache["thread-a"] = ("cp_1", 7)
+            threads: list[sessions.ThreadInfo] = [
+                {
+                    "thread_id": "thread-a",
+                    "agent_name": "agent1",
+                    "updated_at": "2024-01-01T00:00:00+00:00",
+                    "latest_checkpoint_id": "cp_1",
+                },
+                {
+                    "thread_id": "thread-b",
+                    "agent_name": "agent2",
+                    "updated_at": "2024-01-01T00:00:00+00:00",
+                    "latest_checkpoint_id": "cp_1",
+                },
+            ]
+
+            populated = sessions.apply_cached_thread_message_counts(threads)
+
+            assert populated == 1
+            assert threads[0]["message_count"] == 7
+            assert "message_count" not in threads[1]
+        finally:
+            sessions._message_count_cache.clear()
+
+    def test_skips_stale_cache_entries(self) -> None:
+        """Rows should not use cache when freshness token changes."""
+        sessions._message_count_cache.clear()
+        try:
+            sessions._message_count_cache["thread-a"] = ("cp_1", 7)
+            threads: list[sessions.ThreadInfo] = [
+                {
+                    "thread_id": "thread-a",
+                    "agent_name": "agent1",
+                    "updated_at": "2024-01-01T00:00:00+00:00",
+                    "latest_checkpoint_id": "cp_2",
+                }
+            ]
+
+            populated = sessions.apply_cached_thread_message_counts(threads)
+
+            assert populated == 0
+            assert "message_count" not in threads[0]
+        finally:
+            sessions._message_count_cache.clear()
+
+
+class TestGetCachedThreads:
+    """Tests for cached thread snapshot retrieval."""
+
+    def test_returns_exact_cached_limit(self) -> None:
+        """Exact cache key should return copied rows."""
+        sessions._recent_threads_cache.clear()
+        try:
+            sessions._recent_threads_cache[None, 5] = [
+                {
+                    "thread_id": "thread-a",
+                    "agent_name": "agent1",
+                    "updated_at": "2024-01-01T00:00:00+00:00",
+                    "message_count": 3,
+                }
+            ]
+            rows = sessions.get_cached_threads(limit=5)
+            assert rows is not None
+            assert len(rows) == 1
+            assert rows[0]["thread_id"] == "thread-a"
+            rows[0]["thread_id"] = "mutated"
+            assert sessions._recent_threads_cache[None, 5][0]["thread_id"] == "thread-a"
+        finally:
+            sessions._recent_threads_cache.clear()
+
+    def test_uses_larger_cached_limit(self) -> None:
+        """Larger cached window should satisfy smaller requested limit."""
+        sessions._recent_threads_cache.clear()
+        try:
+            sessions._recent_threads_cache[None, 20] = [
+                {
+                    "thread_id": "thread-1",
+                    "agent_name": "agent1",
+                    "updated_at": "2024-01-01T00:00:00+00:00",
+                },
+                {
+                    "thread_id": "thread-2",
+                    "agent_name": "agent1",
+                    "updated_at": "2024-01-01T00:00:00+00:00",
+                },
+            ]
+            rows = sessions.get_cached_threads(limit=1)
+            assert rows is not None
+            assert len(rows) == 1
+            assert rows[0]["thread_id"] == "thread-1"
+        finally:
+            sessions._recent_threads_cache.clear()
 
 
 class TestMessageCountFromCheckpointBlob:

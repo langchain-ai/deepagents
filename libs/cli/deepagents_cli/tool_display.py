@@ -147,18 +147,6 @@ def format_tool_display(tool_name: str, tool_args: dict) -> str:
             pattern = truncate_value(pattern, 80)
             return f'{prefix} {tool_name}("{pattern}")'
 
-    elif tool_name == "http_request":
-        # HTTP: show method and URL
-        parts = []
-        if "method" in tool_args:
-            parts.append(str(tool_args["method"]).upper())
-        if "url" in tool_args:
-            url = str(tool_args["url"])
-            url = truncate_value(url, 80)
-            parts.append(url)
-        if parts:
-            return f"{prefix} {tool_name}({' '.join(parts)})"
-
     elif tool_name == "fetch_url":
         # Fetch URL: show the URL being fetched
         if "url" in tool_args:

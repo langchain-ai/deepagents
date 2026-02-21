@@ -101,10 +101,6 @@ Always use absolute paths starting with /.
 
 Search for documentation, error solutions, and code examples.
 
-### http_request
-
-Make HTTP requests to APIs (GET, POST, etc.).
-
 ## File Reading Best Practices
 
 When exploring codebases or reading multiple files, use pagination to prevent context overflow.

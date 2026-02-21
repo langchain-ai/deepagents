@@ -87,10 +87,11 @@ def test_glob_command_template_format() -> None:
 
 def test_read_command_template_format() -> None:
     """Test that _READ_COMMAND_TEMPLATE can be formatted without KeyError."""
-    cmd = _READ_COMMAND_TEMPLATE.format(file_path="/test/file.txt", offset=0, limit=100)
+    file_path_b64 = base64.b64encode(b"/test/file.txt").decode("ascii")
+    cmd = _READ_COMMAND_TEMPLATE.format(file_path_b64=file_path_b64, offset=0, limit=100)
 
     assert "python3 -c" in cmd
-    assert "/test/file.txt" in cmd
+    assert file_path_b64 in cmd
 
 
 def test_sandbox_write_method() -> None:
@@ -174,3 +175,27 @@ def test_sandbox_grep_literal_search() -> None:
     # Verify the command uses grep -rHnF for literal search (combined flags)
     assert sandbox.last_command is not None
     assert "grep -rHnF" in sandbox.last_command
+
+
+def test_sandbox_ls_info_path_is_sanitized() -> None:
+    """Test that ls_info base64-encodes paths to prevent injection."""
+    sandbox = MockSandbox()
+
+    malicious_path = "'; import os; os.system('echo INJECTED'); #"
+    sandbox.ls_info(malicious_path)
+
+    assert sandbox.last_command is not None
+    assert malicious_path not in sandbox.last_command
+    assert "base64" in sandbox.last_command
+
+
+def test_sandbox_read_path_is_sanitized() -> None:
+    """Test that read base64-encodes paths to prevent injection."""
+    sandbox = MockSandbox()
+
+    malicious_path = "'; import os; os.system('echo INJECTED'); #"
+    sandbox.read(malicious_path)
+
+    assert sandbox.last_command is not None
+    assert malicious_path not in sandbox.last_command
+    assert "base64" in sandbox.last_command

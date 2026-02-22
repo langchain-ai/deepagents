@@ -51,7 +51,7 @@ async def test_load_memory_from_backend_single_source_async(tmp_path: Path) -> N
     middleware = MemoryMiddleware(backend=backend, sources=sources)
 
     # Test abefore_agent loads the memory
-    result = await middleware.abefore_agent({}, None, {})  # type: ignore
+    result = await middleware.abefore_agent({}, None, {})  # type: ignore[arg-type]
 
     assert result is not None
     assert "memory_contents" in result
@@ -87,7 +87,7 @@ async def test_load_memory_from_backend_multiple_sources_async(tmp_path: Path) -
     middleware = MemoryMiddleware(backend=backend, sources=sources)
 
     # Test abefore_agent loads all memory
-    result = await middleware.abefore_agent({}, None, {})  # type: ignore
+    result = await middleware.abefore_agent({}, None, {})  # type: ignore[arg-type]
 
     assert result is not None
     assert "memory_contents" in result
@@ -116,7 +116,7 @@ async def test_load_memory_handles_missing_file_async(tmp_path: Path) -> None:
     middleware = MemoryMiddleware(backend=backend, sources=sources)
 
     # Test abefore_agent loads only existing memory
-    result = await middleware.abefore_agent({}, None, {})  # type: ignore
+    result = await middleware.abefore_agent({}, None, {})  # type: ignore[arg-type]
     assert result is not None
     assert missing_path not in result["memory_contents"]
     assert user_path in result["memory_contents"]
@@ -135,7 +135,7 @@ async def test_before_agent_skips_if_already_loaded_async(tmp_path: Path) -> Non
 
     # Pre-populate state
     state = {"memory_contents": {user_path: "Already loaded content"}}
-    result = await middleware.abefore_agent(state, None, {})  # type: ignore
+    result = await middleware.abefore_agent(state, None, {})  # type: ignore[arg-type]
 
     # Should return None (no update needed)
     assert result is None
@@ -147,7 +147,7 @@ async def test_load_memory_with_empty_sources_async(tmp_path: Path) -> None:
 
     middleware = MemoryMiddleware(backend=backend, sources=[])
 
-    result = await middleware.abefore_agent({}, None, {})  # type: ignore
+    result = await middleware.abefore_agent({}, None, {})  # type: ignore[arg-type]
 
     assert result is not None
     assert result["memory_contents"] == {}
@@ -173,7 +173,7 @@ async def test_memory_content_with_special_characters_async(tmp_path: Path) -> N
         sources=[memory_path],
     )
 
-    result = await middleware.abefore_agent({}, None, {})  # type: ignore
+    result = await middleware.abefore_agent({}, None, {})  # type: ignore[arg-type]
 
     assert result is not None
     content = result["memory_contents"][memory_path]
@@ -193,7 +193,7 @@ async def test_memory_content_with_unicode_async(tmp_path: Path) -> None:
         """- 日本語 (Japanese)
 - 中文 (Chinese)
 - Emoji: 🚀 🎉 ✨
-- Math: ∀x∈ℝ, x² ≥ 0""",
+- Math: ∀x∈ℝ, x² ≥ 0""",  # noqa: RUF001  # Intentional unicode test data
     )
 
     backend.upload_files([(memory_path, memory_content.encode("utf-8"))])
@@ -203,14 +203,14 @@ async def test_memory_content_with_unicode_async(tmp_path: Path) -> None:
         sources=[memory_path],
     )
 
-    result = await middleware.abefore_agent({}, None, {})  # type: ignore
+    result = await middleware.abefore_agent({}, None, {})  # type: ignore[arg-type]
 
     assert result is not None
     content = result["memory_contents"][memory_path]
     assert "日本語" in content
     assert "中文" in content
     assert "🚀" in content
-    assert "∀x∈ℝ" in content
+    assert "∀x∈ℝ" in content  # noqa: RUF001  # Intentional unicode test data
 
 
 async def test_memory_content_with_large_file_async(tmp_path: Path) -> None:
@@ -228,7 +228,7 @@ async def test_memory_content_with_large_file_async(tmp_path: Path) -> None:
         sources=[memory_path],
     )
 
-    result = await middleware.abefore_agent({}, None, {})  # type: ignore
+    result = await middleware.abefore_agent({}, None, {})  # type: ignore[arg-type]
 
     assert result is not None
     content = result["memory_contents"][memory_path]
@@ -346,7 +346,7 @@ async def test_memory_middleware_order_matters_async(tmp_path: Path) -> None:
     agent = create_agent(model=fake_model, middleware=[middleware])
 
     # Invoke asynchronously
-    result = await agent.ainvoke({"messages": [HumanMessage(content="Test")]})
+    await agent.ainvoke({"messages": [HumanMessage(content="Test")]})
 
     # Verify order in system prompt with new format
     first_call = fake_model.call_history[0]

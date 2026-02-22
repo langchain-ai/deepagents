@@ -8,7 +8,7 @@ import pytest
 from rich.console import Console
 
 from deepagents_cli.agent import DEFAULT_AGENT_NAME
-from deepagents_cli.main import parse_args
+from deepagents_cli.main import _DEFAULT_AGENT_NAME, parse_args
 
 
 class TestInitialPromptArg:
@@ -262,3 +262,8 @@ class TestQuietArg:
             args = parse_args()
         assert args.quiet is True
         assert args.non_interactive_message is None
+
+
+def test_default_agent_name_matches_canonical() -> None:
+    """Ensure the duplicated constant in main.py stays in sync with agent.py."""
+    assert _DEFAULT_AGENT_NAME == DEFAULT_AGENT_NAME

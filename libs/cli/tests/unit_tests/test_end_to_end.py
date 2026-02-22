@@ -96,7 +96,7 @@ def mock_settings(
             return tmp_path / "agents" / agent_id
 
         mock_settings_obj.get_user_agent_md_path = get_user_agent_md_path
-        mock_settings_obj.get_project_agent_md_path.return_value = None
+        mock_settings_obj.get_project_agent_md_path.return_value = []
         mock_settings_obj.get_agent_dir = get_agent_dir
         mock_settings_obj.project_root = None
 

@@ -11,9 +11,10 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from deepagents import create_deep_agent
 from deepagents.backends.filesystem import FilesystemBackend
+from tests.evals.utils import run_agent
 
 # URL for a large file that will trigger summarization
-LARGE_FILE_URL = "https://raw.githubusercontent.com/langchain-ai/langchain/3356d0555725c3e0bbb9408c2b3f554cad2a6ee2/libs/partners/openai/langchain_openai/chat_models/base.py"
+LARGE_FILE_URL = "https://raw.githubusercontent.com/langchain-ai/deepagents/refs/heads/main/libs/deepagents/deepagents/middleware/summarization.py"
 
 SYSTEM_PROMPT = dedent(
     """
@@ -44,17 +45,17 @@ def _write_file(p: Path, content: str) -> None:
     p.write_text(content)
 
 
-def _setup_summarization_test(tmp_path: Path, model_name: str) -> tuple[Any, FilesystemBackend, Path, dict[str, Any]]:
+def _setup_summarization_test(tmp_path: Path, model_name: str) -> tuple[Any, FilesystemBackend, Path]:
     """Common setup for summarization tests.
 
     Returns:
-        Tuple of `(agent, backend, root_path, config)`
+        Tuple of `(agent, backend, root_path)`
     """
     response = requests.get(LARGE_FILE_URL, timeout=30)
     response.raise_for_status()
 
     root = tmp_path
-    fp = root / "base.py"
+    fp = root / "summarization.py"
     _write_file(fp, response.text)
 
     backend = FilesystemBackend(root_dir=str(root), virtual_mode=True)
@@ -64,7 +65,7 @@ def _setup_summarization_test(tmp_path: Path, model_name: str) -> tuple[Any, Fil
     if model.profile is None:
         model.profile = {}
     # Lower artificially to trigger summarization more easily
-    model.profile["max_input_tokens"] = 30_000
+    model.profile["max_input_tokens"] = 15_000
 
     agent = create_deep_agent(
         model=model,
@@ -74,73 +75,67 @@ def _setup_summarization_test(tmp_path: Path, model_name: str) -> tuple[Any, Fil
         checkpointer=checkpointer,
     )
 
-    config = {"configurable": {"thread_id": uuid.uuid4().hex[:8]}}
-
-    return agent, backend, root, config
+    return agent, backend, root
 
 
-@pytest.mark.parametrize(
-    "model_name",
-    [
-        pytest.param("anthropic:claude-sonnet-4-5-20250929", id="claude-sonnet"),
-    ],
-)
-def test_summarize_continues_task(tmp_path: Path, model_name: str) -> None:
+@pytest.mark.langsmith
+def test_summarize_continues_task(tmp_path: Path, model: str) -> None:
     """Test that summarization triggers and the agent can continue reading a large file."""
-    agent, _, _, config = _setup_summarization_test(tmp_path, model_name)
+    agent, _, _ = _setup_summarization_test(tmp_path, model)
+    thread_id = uuid.uuid4().hex[:8]
 
-    input_message = {
-        "role": "user",
-        "content": "Can you read the entirety of base.py, 500 lines at a time, and summarize it?",
-    }
-    result = agent.invoke({"messages": [input_message]}, config)
+    trajectory = run_agent(
+        agent,
+        model=model,
+        query="Can you read the entirety of summarization.py, 500 lines at a time, and summarize it?",
+        thread_id=thread_id,
+    )
 
     # Check we summarized
+    config = {"configurable": {"thread_id": thread_id}}
     state = agent.get_state(config)
     assert state.values["_summarization_event"]
 
     # Verify the agent made substantial progress reading the file after summarization.
-    # We check the highest line number seen across all tool messages to confirm
+    # We check the highest line number seen across all tool observations to confirm
     # the agent continued working after context was summarized.
     max_line_seen = 0
     reached_eof = False
 
-    for message in result["messages"]:
-        if message.type == "tool":
+    for step in trajectory.steps:
+        for obs in step.observations:
             # Check for EOF error (indicates agent tried to read past end)
-            if "exceeds file length" in message.content:
+            if "exceeds file length" in obs.content:
                 reached_eof = True
             # Extract line numbers from formatted output (e.g., "4609\t    )")
-            line_numbers = re.findall(r"^\s*(\d+)\t", message.content, re.MULTILINE)
+            line_numbers = re.findall(r"^\s*(\d+)\t", obs.content, re.MULTILINE)
             if line_numbers:
                 max_line_seen = max(max_line_seen, *[int(n) for n in line_numbers])
 
-    assert max_line_seen >= 4609 or reached_eof, (
+    assert max_line_seen >= 959 or reached_eof, (
         f"Expected agent to make substantial progress reading file. Max line seen: {max_line_seen}, reached EOF: {reached_eof}"
     )
 
 
-@pytest.mark.parametrize(
-    "model_name",
-    [
-        pytest.param("anthropic:claude-sonnet-4-5-20250929", id="claude-sonnet"),
-    ],
-)
-def test_summarization_offloads_to_filesystem(tmp_path: Path, model_name: str) -> None:
+@pytest.mark.langsmith
+def test_summarization_offloads_to_filesystem(tmp_path: Path, model: str) -> None:
     """Test that conversation history is offloaded to filesystem during summarization.
 
     This verifies the summarization middleware correctly writes conversation history
     as markdown to the backend at /conversation_history/{thread_id}.md.
     """
-    agent, _, root, config = _setup_summarization_test(tmp_path, model_name)
+    agent, _, root = _setup_summarization_test(tmp_path, model)
+    thread_id = uuid.uuid4().hex[:8]
 
-    input_message = {
-        "role": "user",
-        "content": "Can you read the entirety of base.py, 500 lines at a time, and summarize it?",
-    }
-    _ = agent.invoke({"messages": [input_message]}, config)
+    _ = run_agent(
+        agent,
+        model=model,
+        query="Can you read the entirety of summarization.py, 500 lines at a time, and summarize it?",
+        thread_id=thread_id,
+    )
 
     # Check we summarized
+    config = {"configurable": {"thread_id": thread_id}}
     state = agent.get_state(config)
     assert state.values["_summarization_event"]
 
@@ -149,7 +144,6 @@ def test_summarization_offloads_to_filesystem(tmp_path: Path, model_name: str) -
     assert conversation_history_root.exists(), f"Conversation history root directory not found at {conversation_history_root}"
 
     # Verify the markdown file exists for thread_id
-    thread_id = config["configurable"]["thread_id"]
     history_file = conversation_history_root / f"{thread_id}.md"
     assert history_file.exists(), f"Expected markdown file at {history_file}"
 
@@ -170,18 +164,19 @@ def test_summarization_offloads_to_filesystem(tmp_path: Path, model_name: str) -
     # --- Needle in the haystack follow-up ---
     # Ask about a specific detail from the beginning of the file that was read
     # before summarization. The agent should read the conversation history to find it.
-    # The first standard library import in base.py (after `from __future__`) is `import base64`.
-    followup_message = {
-        "role": "user",
-        "content": (
-            "What is the first standard library import in base.py? (After the `from __future__` import.) Check the conversation history if needed."
+    # The first standard library import in summarization.py (after `from __future__`) is `import base64`.
+    followup_trajectory = run_agent(
+        agent,
+        model=model,
+        query=(
+            "What is the first standard library import in summarization.py? (After "
+            "the `from __future__` import.) Check the conversation history if needed."
         ),
-    }
-    followup_result = agent.invoke({"messages": [followup_message]}, config)
+        thread_id=thread_id,
+    )
 
     # The agent should retrieve the answer from the conversation history
-    final_ai_message = followup_result["messages"][-1]
-    assert final_ai_message.type == "ai", "Expected final message to be from the AI"
+    final_answer = followup_trajectory.answer
 
     # Check that the answer mentions "base64" (the first standard library import)
-    assert "base64" in final_ai_message.content.lower(), f"Expected agent to find 'base64' as the first import. Got: {final_ai_message.content}"
+    assert "logging" in final_answer.lower(), f"Expected agent to find 'logging' as the first import. Got: {final_answer}"

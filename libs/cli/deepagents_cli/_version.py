@@ -1,3 +1,3 @@
-"""Version information for deepagents-cli."""
+"""Version information for `deepagents-cli`."""
 
-__version__ = "0.0.21"  # x-release-please-version
+__version__ = "0.0.25"  # x-release-please-version

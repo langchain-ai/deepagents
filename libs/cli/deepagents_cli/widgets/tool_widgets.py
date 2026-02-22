@@ -34,7 +34,7 @@ class ToolApprovalWidget(Vertical):
         super().__init__(classes="tool-approval-widget")
         self.data = data
 
-    def compose(self) -> ComposeResult:
+    def compose(self) -> ComposeResult:  # noqa: PLR6301  # Textual widget method convention
         """Default compose - override in subclasses.
 
         Yields:

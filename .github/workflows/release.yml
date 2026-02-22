@@ -22,7 +22,7 @@ on:
       package:
         required: true
         type: choice
-        description: "Package to release"
+        description: "Package to release (⚠️ For deepagents-cli, use release-please by default; manual dispatch is exception-only for recovery/hotfix scenarios — see .github/RELEASING.md)"
         options:
           - deepagents
           - deepagents-cli
@@ -233,6 +233,13 @@ jobs:
               if [ -n "$PR_DATA" ]; then
                 GH_USER=$(echo "$PR_DATA" | jq -r '.author.login // empty')
                 PR_BODY=$(echo "$PR_DATA" | jq -r '.body // empty')
+
+                # Skip bots and automated accounts
+                IS_BOT=$(echo "$PR_DATA" | jq -r '.author.is_bot // false')
+                if [ "$IS_BOT" = "true" ]; then
+                  echo "Skipping bot account: $GH_USER (PR #$PR_NUM)"
+                  continue
+                fi
 
                 # Skip internal contributors (PRs labeled "internal" by tag-external-contributions workflow)
                 IS_INTERNAL=$(echo "$PR_DATA" | jq -r '.labels[].name // empty' | grep -qx "internal" && echo "true" || echo "false")

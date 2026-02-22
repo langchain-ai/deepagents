@@ -35,7 +35,7 @@ class MockSandbox(BaseSandbox):
     def id(self) -> str:
         return "mock-sandbox"
 
-    def execute(self, command: str) -> ExecuteResponse:
+    def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
         self.last_command = command
         # Return "1" for edit commands (simulates 1 occurrence replaced)
         return ExecuteResponse(output="1", exit_code=0, truncated=False)

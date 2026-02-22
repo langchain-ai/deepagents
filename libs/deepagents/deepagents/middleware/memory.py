@@ -326,10 +326,15 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
         backend = self._get_backend(state, runtime, config)
         contents: dict[str, str] = {}
 
-        for path in self.sources:
-            content = self._load_memory_from_backend_sync(backend, path)
-            if content:
-                contents[path] = content
+        results = backend.download_files(list(self.sources))
+        for path, response in zip(self.sources, results, strict=True):
+            if response.error is not None:
+                if response.error == "file_not_found":
+                    continue
+                msg = f"Failed to download {path}: {response.error}"
+                raise ValueError(msg)
+            if response.content is not None:
+                contents[path] = response.content.decode("utf-8")
                 logger.debug("Loaded memory from: %s", path)
 
         return MemoryStateUpdate(memory_contents=contents)
@@ -355,10 +360,15 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
         backend = self._get_backend(state, runtime, config)
         contents: dict[str, str] = {}
 
-        for path in self.sources:
-            content = await self._load_memory_from_backend(backend, path)
-            if content:
-                contents[path] = content
+        results = await backend.adownload_files(list(self.sources))
+        for path, response in zip(self.sources, results, strict=True):
+            if response.error is not None:
+                if response.error == "file_not_found":
+                    continue
+                msg = f"Failed to download {path}: {response.error}"
+                raise ValueError(msg)
+            if response.content is not None:
+                contents[path] = response.content.decode("utf-8")
                 logger.debug("Loaded memory from: %s", path)
 
         return MemoryStateUpdate(memory_contents=contents)

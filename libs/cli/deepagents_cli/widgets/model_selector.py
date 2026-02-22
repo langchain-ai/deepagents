@@ -9,6 +9,7 @@ from textual.containers import Container, Vertical, VerticalScroll
 from textual.events import (
     Click,  # noqa: TC002 - needed at runtime for Textual event dispatch
 )
+from textual.fuzzy import Matcher
 from textual.message import Message
 from textual.screen import ModalScreen
 from textual.widgets import Input, Static
@@ -292,7 +293,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         Args:
             event: The input changed event.
         """
-        self._filter_text = event.value.lower()
+        self._filter_text = event.value
         self._update_filtered_list()
         self._rebuild_needed = True
         self.call_after_refresh(self._update_display)
@@ -316,20 +317,27 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         self.dismiss((event.model_spec, event.provider))
 
     def _update_filtered_list(self) -> None:
-        """Update the filtered models based on search text."""
-        if not self._filter_text:
+        """Update the filtered models based on search text using fuzzy matching."""
+        if not self._filter_text.strip():
             self._filtered_models = list(self._all_models)
-            # Re-select current model when filter is cleared
             self._selected_index = self._find_current_model_index()
         else:
-            self._filtered_models = [
-                (model_spec, provider)
-                for model_spec, provider in self._all_models
-                if self._filter_text in model_spec.lower()
+            matcher = Matcher(self._filter_text, case_sensitive=False)
+            scored = [
+                (matcher.match(spec), spec, provider)
+                for spec, provider in self._all_models
             ]
-            # Reset selection if out of bounds
-            if self._selected_index >= len(self._filtered_models):
-                self._selected_index = max(0, len(self._filtered_models) - 1)
+            self._filtered_models = [
+                (spec, provider)
+                for score, spec, provider in sorted(scored, reverse=True)
+                if score > 0
+            ]
+            if self._filtered_models:
+                self._selected_index = min(
+                    self._selected_index, len(self._filtered_models) - 1
+                )
+            else:
+                self._selected_index = 0
 
     async def _update_display(self) -> None:
         """Render the model list grouped by provider.

@@ -878,7 +878,7 @@ def test_before_agent_batches_download_into_single_call(tmp_path: Path) -> None:
     ])
 
     middleware = MemoryMiddleware(backend=backend, sources=[path_a, path_b, path_c])
-    result = middleware.before_agent({}, None, {})  # type: ignore
+    result = middleware.before_agent({}, None, {})  # type: ignore[arg-type]
 
     assert result is not None
     assert len(result["memory_contents"]) == 3
@@ -895,7 +895,7 @@ def test_before_agent_batch_skips_missing_keeps_found(tmp_path: Path) -> None:
     backend.upload_files([(existing_path, b"# Exists\nSome content")])
 
     middleware = MemoryMiddleware(backend=backend, sources=[existing_path, missing_path])
-    result = middleware.before_agent({}, None, {})  # type: ignore
+    result = middleware.before_agent({}, None, {})  # type: ignore[arg-type]
 
     assert result is not None
     assert existing_path in result["memory_contents"]

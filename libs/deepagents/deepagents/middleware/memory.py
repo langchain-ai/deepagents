@@ -327,7 +327,7 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
         contents: dict[str, str] = {}
 
         results = backend.download_files(list(self.sources))
-        for path, response in zip(self.sources, results):
+        for path, response in zip(self.sources, results, strict=True):
             if response.error is not None:
                 if response.error == "file_not_found":
                     continue
@@ -361,7 +361,7 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
         contents: dict[str, str] = {}
 
         results = await backend.adownload_files(list(self.sources))
-        for path, response in zip(self.sources, results):
+        for path, response in zip(self.sources, results, strict=True):
             if response.error is not None:
                 if response.error == "file_not_found":
                     continue

@@ -392,7 +392,7 @@ async def test_abefore_agent_batches_download_into_single_call(tmp_path: Path) -
     ])
 
     middleware = MemoryMiddleware(backend=backend, sources=[path_a, path_b, path_c])
-    result = await middleware.abefore_agent({}, None, {})  # type: ignore
+    result = await middleware.abefore_agent({}, None, {})  # type: ignore[arg-type]
 
     assert result is not None
     assert len(result["memory_contents"]) == 3

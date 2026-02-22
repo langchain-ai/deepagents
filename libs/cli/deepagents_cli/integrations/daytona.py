@@ -36,7 +36,7 @@ class DaytonaBackend(BaseSandbox):
             sandbox: Daytona sandbox instance
         """
         self._sandbox = sandbox
-        self._timeout: int = 30 * 60  # 30 mins
+        self._default_timeout: int = 30 * 60  # 30 mins
 
     @property
     def id(self) -> str:
@@ -46,17 +46,25 @@ class DaytonaBackend(BaseSandbox):
     def execute(
         self,
         command: str,
+        *,
+        timeout: int | None = None,
     ) -> ExecuteResponse:
         """Execute a command in the sandbox and return ExecuteResponse.
 
         Args:
             command: Full shell command string to execute.
+            timeout: Maximum time in seconds to wait for the command to complete.
+
+                If None, uses the backend's default timeout.
+
+                Note that in Daytona's implementation, a timeout of 0 means
+                "wait indefinitely".
 
         Returns:
-            ExecuteResponse with combined output, exit code, optional signal, and
-                truncation flag.
+            ExecuteResponse with combined output, exit code, and truncation flag.
         """
-        result = self._sandbox.process.exec(command, timeout=self._timeout)
+        effective_timeout = timeout if timeout is not None else self._default_timeout
+        result = self._sandbox.process.exec(command, timeout=effective_timeout)
 
         return ExecuteResponse(
             output=result.result,  # Daytona combines stdout/stderr
@@ -157,7 +165,7 @@ class DaytonaProvider(SandboxProvider):
         *,
         sandbox_id: str | None = None,
         timeout: int = 180,
-        **kwargs: Any,  # noqa: ARG002
+        **kwargs: Any,  # noqa: ARG002  # Required by SandboxFactory interface
     ) -> SandboxBackendProtocol:
         """Get existing or create new Daytona sandbox.
 
@@ -188,8 +196,7 @@ class DaytonaProvider(SandboxProvider):
                 result = sandbox.process.exec("echo ready", timeout=5)
                 if result.exit_code == 0:
                     break
-            except Exception:  # noqa: S110, BLE001
-                # Sandbox not ready yet, continue polling
+            except Exception:  # noqa: S110, BLE001  # Sandbox not ready yet, continue polling
                 pass
             time.sleep(2)
         else:
@@ -201,7 +208,7 @@ class DaytonaProvider(SandboxProvider):
 
         return DaytonaBackend(sandbox)
 
-    def delete(self, *, sandbox_id: str, **kwargs: Any) -> None:  # noqa: ARG002
+    def delete(self, *, sandbox_id: str, **kwargs: Any) -> None:  # noqa: ARG002  # Required by SandboxFactory interface
         """Delete a Daytona sandbox.
 
         Args:

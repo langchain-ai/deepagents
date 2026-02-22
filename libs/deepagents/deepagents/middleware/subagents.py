@@ -10,13 +10,12 @@ from langchain.agents.middleware.types import AgentMiddleware, ContextT, ModelRe
 from langchain.chat_models import init_chat_model
 from langchain.tools import BaseTool, ToolRuntime
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import HumanMessage, ToolMessage
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import Runnable
 from langchain_core.tools import StructuredTool
 from langgraph.types import Command
 
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
-from deepagents.middleware._utils import append_to_system_message
 
 
 class SubAgent(TypedDict):
@@ -54,25 +53,27 @@ class SubAgent(TypedDict):
     """
 
     name: str
-    """Unique identifier for the subagent."""
+    """The name of the agent."""
 
     description: str
-    """What this subagent does. The main agent uses this to decide when to delegate."""
+    """The description of the agent."""
 
-    system_prompt: str
-    """Instructions for the subagent."""
+    system_prompt: NotRequired[str]
+    """The system prompt to use for the agent. If omitted, `prompt` will be used as a fallback.
+    If neither are provided, `DEFAULT_SUBAGENT_PROMPT` will be used.
+    """
 
     tools: NotRequired[Sequence[BaseTool | Callable | dict[str, Any]]]
     """Tools the subagent can use. If not specified, inherits from main agent."""
 
     model: NotRequired[str | BaseChatModel]
-    """Override the main agent's model. Use `'provider:model-name'` format."""
+    """The model for the agent. Defaults to `default_model`."""
 
     middleware: NotRequired[list[AgentMiddleware]]
-    """Additional middleware for custom behavior."""
+    """Additional middleware to append after `default_middleware`."""
 
     interrupt_on: NotRequired[dict[str, bool | InterruptOnConfig]]
-    """Configure human-in-the-loop for specific tools."""
+    """The tool configs to use for the agent."""
 
     skills: NotRequired[list[str]]
     """Skill source paths for SkillsMiddleware."""
@@ -92,10 +93,10 @@ class CompiledSubAgent(TypedDict):
     """
 
     name: str
-    """Unique identifier for the subagent."""
+    """The name of the agent."""
 
     description: str
-    """What this subagent does."""
+    """The description of the agent."""
 
     runnable: Runnable
     """A custom agent implementation.
@@ -676,7 +677,16 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
     ) -> ModelResponse[ResponseT]:
         """Update the system message to include instructions on using subagents."""
         if self.system_prompt is not None:
-            new_system_message = append_to_system_message(request.system_message, self.system_prompt)
+            request_system_prompt = None
+            if hasattr(request, "system_message") and request.system_message:
+                request_system_prompt = request.system_message.content
+            elif hasattr(request, "runtime"):
+                runtime_config = getattr(request.runtime, "config", None)
+                if isinstance(runtime_config, dict):
+                    request_system_prompt = runtime_config.get("configurable", {}).get("system_prompt")
+
+            combined_prompt = f"{request_system_prompt}\n\n{self.system_prompt}" if request_system_prompt else self.system_prompt
+            new_system_message = SystemMessage(content=combined_prompt)
             return handler(request.override(system_message=new_system_message))
         return handler(request)
 
@@ -687,6 +697,15 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
     ) -> ModelResponse[ResponseT]:
         """(async) Update the system message to include instructions on using subagents."""
         if self.system_prompt is not None:
-            new_system_message = append_to_system_message(request.system_message, self.system_prompt)
+            request_system_prompt = None
+            if hasattr(request, "system_message") and request.system_message:
+                request_system_prompt = request.system_message.content
+            elif hasattr(request, "runtime"):
+                runtime_config = getattr(request.runtime, "config", None)
+                if isinstance(runtime_config, dict):
+                    request_system_prompt = runtime_config.get("configurable", {}).get("system_prompt")
+
+            combined_prompt = f"{request_system_prompt}\n\n{self.system_prompt}" if request_system_prompt else self.system_prompt
+            new_system_message = SystemMessage(content=combined_prompt)
             return await handler(request.override(system_message=new_system_message))
         return await handler(request)

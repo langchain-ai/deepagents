@@ -32,6 +32,7 @@ of all evicted messages.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 import warnings
@@ -915,17 +916,17 @@ A condensed summary follows:
 
         messages_to_summarize, preserved_messages = self._partition_messages(truncated_messages, cutoff_index)
 
-        # Offload to backend first - abort summarization if this fails to prevent data loss
+        # Offload to backend and generate summary concurrently -- they are independent
         backend = self._get_backend(request.state, request.runtime)
-        file_path = await self._aoffload_to_backend(backend, messages_to_summarize)
+        file_path, summary = await asyncio.gather(
+            self._aoffload_to_backend(backend, messages_to_summarize),
+            self._acreate_summary(messages_to_summarize),
+        )
         if file_path is None:
             warnings.warn(
                 "Offloading conversation history to backend failed during summarization.",
                 stacklevel=2,
             )
-
-        # Generate summary
-        summary = await self._acreate_summary(messages_to_summarize)
 
         # Build summary message with file path reference
         new_messages = self._build_new_messages_with_path(summary, file_path)

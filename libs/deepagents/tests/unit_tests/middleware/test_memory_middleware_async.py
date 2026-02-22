@@ -385,11 +385,13 @@ async def test_abefore_agent_batches_download_into_single_call(tmp_path: Path) -
     path_b = str(tmp_path / "b" / "AGENTS.md")
     path_c = str(tmp_path / "c" / "AGENTS.md")
 
-    backend.upload_files([
-        (path_a, b"# Memory A\nContent A"),
-        (path_b, b"# Memory B\nContent B"),
-        (path_c, b"# Memory C\nContent C"),
-    ])
+    backend.upload_files(
+        [
+            (path_a, b"# Memory A\nContent A"),
+            (path_b, b"# Memory B\nContent B"),
+            (path_c, b"# Memory C\nContent C"),
+        ]
+    )
 
     middleware = MemoryMiddleware(backend=backend, sources=[path_a, path_b, path_c])
     result = await middleware.abefore_agent({}, None, {})  # type: ignore[arg-type]

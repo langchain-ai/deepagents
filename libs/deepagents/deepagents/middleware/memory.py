@@ -330,7 +330,7 @@ class MemoryMiddleware(AgentMiddleware):
                 raise ValueError(msg)
             if response.content is not None:
                 contents[path] = response.content.decode("utf-8")
-                logger.debug(f"Loaded memory from: {path}")
+                logger.debug("Loaded memory from: %s", path)
 
         return MemoryStateUpdate(memory_contents=contents)
 
@@ -364,7 +364,7 @@ class MemoryMiddleware(AgentMiddleware):
                 raise ValueError(msg)
             if response.content is not None:
                 contents[path] = response.content.decode("utf-8")
-                logger.debug(f"Loaded memory from: {path}")
+                logger.debug("Loaded memory from: %s", path)
 
         return MemoryStateUpdate(memory_contents=contents)
 

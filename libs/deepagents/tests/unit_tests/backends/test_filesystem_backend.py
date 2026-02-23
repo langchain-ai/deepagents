@@ -54,7 +54,7 @@ def test_filesystem_backend_virtual_mode(tmp_path: Path, monkeypatch: pytest.Mon
     write_file(f1, "hello virtual")
     write_file(f2, "content")
 
-    monkeypatch.setattr(FilesystemBackend, "_ripgrep_search", lambda *args, **kwargs: None)
+    monkeypatch.setattr(FilesystemBackend, "_ripgrep_search", lambda *_args, **_kwargs: None)
 
     be = FilesystemBackend(root_dir=str(root), virtual_mode=True)
 

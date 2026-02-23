@@ -7,12 +7,17 @@ database, etc.) and provide a uniform interface for file operations.
 
 import abc
 import asyncio
+import inspect
+import logging
 from collections.abc import AsyncIterator, Callable, Iterator
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any, Literal, NotRequired, TypeAlias
 
 from langchain.tools import ToolRuntime
 from typing_extensions import TypedDict
+
+logger = logging.getLogger(__name__)
 
 FileOperationError = Literal[
     "file_not_found",  # Download: file doesn't exist

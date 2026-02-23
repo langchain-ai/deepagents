@@ -16,60 +16,26 @@ import importlib.util
 import json
 import logging
 import os
+import shutil
 import sys
 import traceback
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from deepagents_cli.app import AppResult
 
 # Suppress Pydantic v1 compatibility warnings from langchain on Python 3.14+
 warnings.filterwarnings("ignore", message=".*Pydantic V1.*", category=UserWarning)
-
-from rich.style import Style
-from rich.text import Text
 
 from deepagents_cli._version import __version__
 
 logger = logging.getLogger(__name__)
 
-# Now safe to import agent (which imports LangChain modules)
-from deepagents_cli.agent import (
-    DEFAULT_AGENT_NAME,
-    create_cli_agent,
-    list_agents,
-    reset_agent,
-)
-
-# CRITICAL: Import config FIRST to set LANGSMITH_PROJECT before LangChain loads
-from deepagents_cli.config import (
-    build_langsmith_thread_url,
-    console,
-    create_model,
-    settings,
-)
-from deepagents_cli.integrations.sandbox_factory import create_sandbox
-from deepagents_cli.model_config import ModelConfigError
-from deepagents_cli.sessions import (
-    delete_thread_command,
-    find_similar_threads,
-    generate_thread_id,
-    get_checkpointer,
-    get_most_recent,
-    get_thread_agent,
-    list_threads_command,
-    thread_exists,
-)
-from deepagents_cli.skills import execute_skills_command, setup_skills_parser
-from deepagents_cli.tools import fetch_url, http_request, web_search
-from deepagents_cli.ui import (
-    build_help_parent,
-    show_help,
-    show_list_help,
-    show_reset_help,
-    show_threads_delete_help,
-    show_threads_help,
-    show_threads_list_help,
-)
+# Duplicated from agent.DEFAULT_AGENT_NAME to avoid importing the heavy agent
+# module at startup. Keep in sync with agent.py. Tested.
+_DEFAULT_AGENT_NAME = "agent"
 
 
 def check_cli_dependencies() -> None:
@@ -89,15 +55,82 @@ def check_cli_dependencies() -> None:
         missing.append("textual")
 
     if missing:
-        print("\n❌ Missing required CLI dependencies!")
-        print("\nThe following packages are required to use the deepagents CLI:")
+        print("\nMissing required CLI dependencies!")  # noqa: T201  # CLI output for missing dependencies
+        print("\nThe following packages are required to use the deepagents CLI:")  # noqa: T201  # CLI output for missing dependencies
         for pkg in missing:
-            print(f"  - {pkg}")
-        print("\nPlease install them with:")
-        print("  pip install deepagents[cli]")
-        print("\nOr install all dependencies:")
-        print("  pip install 'deepagents[cli]'")
+            print(f"  - {pkg}")  # noqa: T201  # CLI output for missing dependencies
+        print("\nPlease install them with:")  # noqa: T201  # CLI output for missing dependencies
+        print("  pip install deepagents[cli]")  # noqa: T201  # CLI output for missing dependencies
+        print("\nOr install all dependencies:")  # noqa: T201  # CLI output for missing dependencies
+        print("  pip install 'deepagents[cli]'")  # noqa: T201  # CLI output for missing dependencies
         sys.exit(1)
+
+
+_RIPGREP_URL = "https://github.com/BurntSushi/ripgrep#installation"
+
+_RIPGREP_SUPPRESS_HINT = (
+    "To suppress, add to ~/.deepagents/config.toml:\n"
+    "\\[warnings]\n"
+    'suppress = \\["ripgrep"]'
+)
+
+
+def check_optional_tools(*, config_path: Path | None = None) -> list[str]:
+    """Check for recommended external tools and return missing tool names.
+
+    Skips tools that the user has suppressed via
+    `[warnings].suppress` in `config.toml`.
+
+    Args:
+        config_path: Path to config file.
+
+            Defaults to `~/.deepagents/config.toml`.
+
+    Returns:
+        List of missing tool names (e.g. `["ripgrep"]`).
+    """
+    from deepagents_cli.model_config import is_warning_suppressed
+
+    missing: list[str] = []
+    if shutil.which("rg") is None and not is_warning_suppressed("ripgrep", config_path):
+        missing.append("ripgrep")
+    return missing
+
+
+def format_tool_warning_tui(tool: str) -> str:
+    """Format a missing-tool warning for the TUI toast.
+
+    Args:
+        tool: Name of the missing tool.
+
+    Returns:
+        Plain-text warning suitable for `App.notify`.
+    """
+    if tool == "ripgrep":
+        return (
+            "ripgrep is not installed; the grep tool will use a slower fallback.\n"
+            f"\nInstall: {_RIPGREP_URL}\n\n"
+            f"{_RIPGREP_SUPPRESS_HINT}"
+        )
+    return f"{tool} is not installed."
+
+
+def format_tool_warning_cli(tool: str) -> str:
+    """Format a missing-tool warning for non-interactive Rich console output.
+
+    Args:
+        tool: Name of the missing tool.
+
+    Returns:
+        Rich-markup string suitable for `console.print`.
+    """
+    if tool == "ripgrep":
+        return (
+            "ripgrep is not installed; the grep tool will use a slower fallback.\n"
+            f"Install: [link={_RIPGREP_URL}]{_RIPGREP_URL}[/link]\n\n"
+            f"{_RIPGREP_SUPPRESS_HINT}\n"
+        )
+    return f"{tool} is not installed."
 
 
 def parse_args() -> argparse.Namespace:
@@ -106,6 +139,16 @@ def parse_args() -> argparse.Namespace:
     Returns:
         Parsed arguments namespace.
     """
+    from deepagents_cli.skills import setup_skills_parser
+    from deepagents_cli.ui import (
+        build_help_parent,
+        show_help,
+        show_list_help,
+        show_reset_help,
+        show_threads_delete_help,
+        show_threads_help,
+        show_threads_list_help,
+    )
 
     # Factory that builds an argparse Action whose __call__ invokes the
     # supplied *help_fn* instead of argparse's default help text.  Each
@@ -147,9 +190,9 @@ def parse_args() -> argparse.Namespace:
             def __call__(
                 self,
                 parser: argparse.ArgumentParser,
-                namespace: argparse.Namespace,  # noqa: ARG002
-                values: str | Sequence[Any] | None,  # noqa: ARG002
-                option_string: str | None = None,  # noqa: ARG002
+                namespace: argparse.Namespace,  # noqa: ARG002  # Required by argparse Action interface
+                values: str | Sequence[Any] | None,  # noqa: ARG002  # Required by argparse Action interface
+                option_string: str | None = None,  # noqa: ARG002  # Required by argparse Action interface
             ) -> None:
                 with contextlib.suppress(BrokenPipeError):
                     help_fn()
@@ -216,7 +259,7 @@ def parse_args() -> argparse.Namespace:
     threads_list.add_argument(
         "--limit",
         type=int,
-        default=20,
+        default=None,
         help="Max number of threads to display (default: 20)",
     )
     threads_delete = threads_sub.add_parser(
@@ -243,7 +286,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "-a",
         "--agent",
-        default=DEFAULT_AGENT_NAME,
+        default=_DEFAULT_AGENT_NAME,
         metavar="NAME",
         help="Agent to use (e.g., coder, researcher).",
     )
@@ -354,11 +397,24 @@ def parse_args() -> argparse.Namespace:
         "Applies to both -n and interactive modes.",
     )
 
+    try:
+        from importlib.metadata import (
+            PackageNotFoundError,
+            version as _pkg_version,
+        )
+
+        sdk_version = _pkg_version("deepagents")
+    except PackageNotFoundError:
+        logger.debug("deepagents SDK package not found in environment")
+        sdk_version = "unknown"
+    except Exception:
+        logger.warning("Unexpected error looking up SDK version", exc_info=True)
+        sdk_version = "unknown"
     parser.add_argument(
         "-v",
         "--version",
         action="version",
-        version=f"deepagents-cli {__version__}",
+        version=f"deepagents-cli {__version__}\ndeepagents (SDK) {sdk_version}",
     )
     parser.add_argument(
         "-h",
@@ -381,7 +437,7 @@ async def run_textual_cli_async(
     thread_id: str | None = None,
     is_resumed: bool = False,
     initial_prompt: str | None = None,
-) -> int:
+) -> "AppResult":
     """Run the Textual CLI interface (async version).
 
     Args:
@@ -401,23 +457,32 @@ async def run_textual_cli_async(
         initial_prompt: Optional prompt to auto-submit when session starts
 
     Returns:
-        The app's return code (0 for success, non-zero for error).
+        An `AppResult` with the return code and final thread ID.
     """
+    from rich.text import Text
+
+    from deepagents_cli.agent import create_cli_agent
     from deepagents_cli.app import run_textual_app
+    from deepagents_cli.config import console, create_model, settings
+    from deepagents_cli.model_config import ModelConfigError
+    from deepagents_cli.sessions import get_checkpointer
+    from deepagents_cli.tools import fetch_url, http_request, web_search
 
     try:
         result = create_model(model_name, extra_kwargs=model_params)
     except ModelConfigError as e:
+        from deepagents_cli.app import AppResult
+
         console.print(f"[bold red]Error:[/bold red] {e}")
-        return 1
+        return AppResult(return_code=1, thread_id=None)
 
     model = result.model
     result.apply_to_settings()
 
     # Show thread info
     if is_resumed:
-        msg = Text("Resuming thread: ", style="green")
-        msg.append(str(thread_id))
+        msg = Text("Resuming thread: ", style="dim")
+        msg.append(str(thread_id), style="dim")
         console.print(msg)
     else:
         msg = Text("Starting with thread: ", style="dim")
@@ -436,6 +501,12 @@ async def run_textual_cli_async(
         sandbox_cm = None
 
         if sandbox_type != "none":
+            # Deferred: sandbox_factory imports provider-specific SDKs,
+            # only needed when a sandbox is actually requested.
+            from deepagents_cli.integrations.sandbox_factory import (
+                create_sandbox,
+            )
+
             try:
                 # Create sandbox context manager but keep it open
                 sandbox_cm = create_sandbox(
@@ -443,10 +514,10 @@ async def run_textual_cli_async(
                     sandbox_id=sandbox_id,
                     setup_script_path=sandbox_setup,
                 )
-                sandbox_backend = sandbox_cm.__enter__()  # noqa: PLC2801
+                sandbox_backend = sandbox_cm.__enter__()  # noqa: PLC2801  # Context manager used without `with` for long-lived sandbox lifecycle
             except (ImportError, ValueError, RuntimeError, NotImplementedError) as e:
                 console.print()
-                console.print("[red]❌ Sandbox creation failed[/red]")
+                console.print("[red]Sandbox creation failed[/red]")
                 console.print(Text(str(e), style="dim"))
                 sys.exit(1)
 
@@ -460,16 +531,18 @@ async def run_textual_cli_async(
                 auto_approve=auto_approve,
                 checkpointer=checkpointer,
             )
-        except Exception as e:
-            error_text = Text("❌ Failed to create agent: ", style="red")
+        except Exception as e:  # noqa: BLE001  # CLI needs robust error handling to show friendly error messages
+            error_text = Text("Failed to create agent: ", style="red")
             error_text.append(str(e))
             console.print(error_text)
             sys.exit(1)
 
         # Run Textual app - errors propagate to caller
-        return_code = 0
+        from deepagents_cli.app import AppResult
+
+        result = AppResult(return_code=1, thread_id=None)
         try:
-            return_code = await run_textual_app(
+            result = await run_textual_app(
                 agent=agent,
                 assistant_id=assistant_id,
                 backend=composite_backend,
@@ -485,9 +558,11 @@ async def run_textual_cli_async(
         finally:
             # Clean up sandbox after app exits (success or error)
             if sandbox_cm is not None:
-                with contextlib.suppress(Exception):
+                try:
                     sandbox_cm.__exit__(None, None, None)
-        return return_code
+                except Exception:
+                    logger.warning("Sandbox cleanup failed", exc_info=True)
+        return result
 
 
 def apply_stdin_pipe(args: argparse.Namespace) -> None:
@@ -525,6 +600,8 @@ def apply_stdin_pipe(args: argparse.Namespace) -> None:
     Args:
         args: The parsed argument namespace (mutated in place).
     """
+    from deepagents_cli.config import console
+
     if sys.stdin is None:
         return
 
@@ -584,7 +661,7 @@ def apply_stdin_pipe(args: argparse.Namespace) -> None:
     try:
         os.dup2(tty_fd, 0)
         os.close(tty_fd)
-        sys.stdin = open(0, encoding="utf-8", closefd=False)  # noqa: SIM115
+        sys.stdin = open(0, encoding="utf-8", closefd=False)  # noqa: SIM115  # fd 0 requires open() for TTY restoration
     except OSError:
         console.print(
             "[yellow]Warning:[/yellow] TTY restoration failed. "
@@ -616,8 +693,27 @@ def cli_main() -> None:
     # DEEPAGENTS_LANGSMITH_PROJECT while shell commands use the
     # user's original LANGSMITH_PROJECT (via LocalShellBackend env).
 
+    # Fast path: print version without loading heavy dependencies
+    if len(sys.argv) == 2 and sys.argv[1] in {"-v", "--version"}:  # noqa: PLR2004  # argv length check for fast-path
+        try:
+            from importlib.metadata import (
+                PackageNotFoundError,
+                version as _pkg_version,
+            )
+
+            sdk_version = _pkg_version("deepagents")
+        except PackageNotFoundError:
+            sdk_version = "unknown"
+        except Exception:  # Best-effort SDK version lookup
+            logger.debug("Unexpected error looking up SDK version", exc_info=True)
+            sdk_version = "unknown"
+        print(f"deepagents-cli {__version__}\ndeepagents (SDK) {sdk_version}")  # noqa: T201  # CLI version output
+        sys.exit(0)
+
     # Check dependencies first
     check_cli_dependencies()
+
+    from deepagents_cli.config import console, settings
 
     try:
         args = parse_args()
@@ -714,21 +810,35 @@ def cli_main() -> None:
             sys.exit(0)
 
         if args.command == "help":
+            from deepagents_cli.ui import show_help
+
             show_help()
         elif args.command == "list":
+            from deepagents_cli.agent import list_agents
+
             list_agents()
         elif args.command == "reset":
+            from deepagents_cli.agent import reset_agent
+
             reset_agent(args.agent, args.source_agent)
         elif args.command == "skills":
+            from deepagents_cli.skills import execute_skills_command
+
             execute_skills_command(args)
         elif args.command == "threads":
+            from deepagents_cli.sessions import (
+                delete_thread_command,
+                list_threads_command,
+            )
+            from deepagents_cli.ui import show_threads_help
+
             # "ls" is an argparse alias for "list" — argparse stores the
             # alias as-is in the namespace, so we must match both values.
             if args.threads_command in {"list", "ls"}:
                 asyncio.run(
                     list_threads_command(
                         agent_name=getattr(args, "agent", None),
-                        limit=getattr(args, "limit", 20),
+                        limit=getattr(args, "limit", None),
                     )
                 )
             elif args.threads_command == "delete":
@@ -737,6 +847,24 @@ def cli_main() -> None:
                 # No subcommand provided, show threads help screen
                 show_threads_help()
         elif args.non_interactive_message:
+            # Check for optional tools before running agent (stderr so
+            # --quiet piped output stays clean)
+            try:
+                from rich.console import Console as _Console
+            except ImportError:
+                logger.warning(
+                    "Could not import rich.console; skipping tool warnings",
+                    exc_info=True,
+                )
+            else:
+                try:
+                    warn_console = _Console(stderr=True)
+                    for tool in check_optional_tools():
+                        warn_console.print(
+                            f"[yellow]Warning:[/yellow] {format_tool_warning_cli(tool)}"
+                        )
+                except Exception:
+                    logger.debug("Failed to check for optional tools", exc_info=True)
             # Non-interactive mode - execute single task and exit
             from deepagents_cli.non_interactive import run_non_interactive
 
@@ -756,6 +884,20 @@ def cli_main() -> None:
             sys.exit(exit_code)
         else:
             # Interactive mode - handle thread resume
+            from rich.style import Style
+            from rich.text import Text
+
+            from deepagents_cli.config import (
+                build_langsmith_thread_url,
+            )
+            from deepagents_cli.sessions import (
+                find_similar_threads,
+                generate_thread_id,
+                get_most_recent,
+                get_thread_agent,
+                thread_exists,
+            )
+
             thread_id = None
             is_resumed = False
 
@@ -763,7 +905,7 @@ def cli_main() -> None:
                 # -r (no ID): Get most recent thread
                 # If --agent specified, filter by that agent; otherwise get
                 # most recent overall
-                agent_filter = args.agent if args.agent != DEFAULT_AGENT_NAME else None
+                agent_filter = args.agent if args.agent != _DEFAULT_AGENT_NAME else None
                 thread_id = asyncio.run(get_most_recent(agent_filter))
                 if thread_id:
                     is_resumed = True
@@ -784,7 +926,7 @@ def cli_main() -> None:
                 if asyncio.run(thread_exists(args.resume_thread)):
                     thread_id = args.resume_thread
                     is_resumed = True
-                    if args.agent == DEFAULT_AGENT_NAME:
+                    if args.agent == _DEFAULT_AGENT_NAME:
                         agent_name = asyncio.run(get_thread_agent(thread_id))
                         if agent_name:
                             args.agent = agent_name
@@ -822,7 +964,7 @@ def cli_main() -> None:
             # Run Textual CLI
             return_code = 0
             try:
-                return_code = asyncio.run(
+                result = asyncio.run(
                     run_textual_cli_async(
                         assistant_id=args.agent,
                         auto_approve=args.auto_approve,
@@ -836,7 +978,11 @@ def cli_main() -> None:
                         initial_prompt=getattr(args, "initial_prompt", None),
                     )
                 )
-            except Exception as e:
+                return_code = result.return_code
+                # The user may have switched threads via /threads during the
+                # session; use the final thread ID for teardown messages.
+                thread_id = result.thread_id or thread_id
+            except Exception as e:  # noqa: BLE001  # Top-level error handler for the application
                 error_msg = Text("\nApplication error: ", style="red")
                 error_msg.append(str(e))
                 console.print(error_msg)
@@ -861,8 +1007,8 @@ def cli_main() -> None:
                     exc_info=True,
                 )
 
-            # Show resume hint on exit (only for new threads with successful exit)
-            if thread_id and not is_resumed and return_code == 0:
+            # Show resume hint on exit for threads with checkpointed content.
+            if thread_id and return_code == 0 and asyncio.run(thread_exists(thread_id)):
                 console.print()
                 console.print("[dim]Resume this thread with:[/dim]")
                 hint = Text("deepagents -r ", style="cyan")

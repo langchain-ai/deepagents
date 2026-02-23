@@ -1,10 +1,15 @@
 """Input handling utilities including image tracking and file mention parsing."""
 
+import logging
 import re
+import shlex
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 from deepagents_cli.config import console
 from deepagents_cli.image_utils import ImageData
+
+logger = logging.getLogger(__name__)
 
 PATH_CHAR_CLASS = r"A-Za-z0-9._~/\\:-"
 """Characters allowed in file paths.
@@ -44,6 +49,13 @@ Matches either:
 Note: The `^` anchor matches start of string, not start of line. The consumer
 in `UserMessage.compose()` additionally checks `start == 0` before styling
 slash commands, so a `/` mid-string is not highlighted.
+"""
+
+IMAGE_PLACEHOLDER_PATTERN = re.compile(r"\[image (?P<id>\d+)\]")
+"""Pattern for image placeholders with a named `id` capture group.
+
+Used to extract numeric IDs from placeholder tokens so the tracker can prune
+stale entries and compute the next available ID.
 """
 
 
@@ -86,6 +98,33 @@ class ImageTracker:
         """Clear all tracked images and reset counter."""
         self.images.clear()
         self.next_id = 1
+
+    def sync_to_text(self, text: str) -> None:
+        """Retain only images still referenced by placeholders in current text.
+
+        Args:
+            text: Current input text shown to the user.
+        """
+        placeholders = {
+            match.group(0) for match in IMAGE_PLACEHOLDER_PATTERN.finditer(text)
+        }
+        if not placeholders:
+            self.clear()
+            return
+
+        self.images = [img for img in self.images if img.placeholder in placeholders]
+        if not self.images:
+            self.next_id = 1
+            return
+
+        max_id = 0
+        for image in self.images:
+            match = IMAGE_PLACEHOLDER_PATTERN.fullmatch(image.placeholder)
+            if match is None:
+                continue
+            max_id = max(max_id, int(match.group("id")))
+
+        self.next_id = max_id + 1 if max_id else len(self.images) + 1
 
 
 def parse_file_mentions(text: str) -> tuple[str, list[Path]]:
@@ -139,3 +178,110 @@ def parse_file_mentions(text: str) -> tuple[str, list[Path]]:
             console.print(f"[yellow]Warning: Invalid path {raw_path}: {e}[/yellow]")
 
     return text, files
+
+
+def parse_pasted_file_paths(text: str) -> list[Path]:
+    r"""Parse a paste payload that may contain dragged-and-dropped file paths.
+
+    The parser is strict on purpose: it only returns paths when the entire paste
+    payload can be interpreted as one or more existing files. Any invalid token
+    falls back to normal text paste behavior by returning an empty list.
+
+    Supports common dropped-path formats:
+
+    - Absolute/relative paths
+    - POSIX shell quoting and escaping
+    - `file://` URLs
+
+    Args:
+        text: Raw paste payload from the terminal.
+
+    Returns:
+        List of resolved file paths, or an empty list when parsing fails.
+    """
+    payload = text.strip()
+    if not payload:
+        return []
+
+    tokens: list[str] = []
+    for raw_line in payload.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        line_tokens = _split_paste_line(line)
+        if not line_tokens:
+            return []
+        tokens.extend(line_tokens)
+
+    if not tokens:
+        return []
+
+    paths: list[Path] = []
+    for token in tokens:
+        path = _token_to_path(token)
+        if path is None:
+            return []
+        try:
+            resolved = path.expanduser().resolve()
+        except (OSError, RuntimeError) as e:
+            logger.debug("Path resolution failed for token %r: %s", token, e)
+            return []
+        if not resolved.exists() or not resolved.is_file():
+            return []
+        paths.append(resolved)
+
+    return paths
+
+
+def _split_paste_line(line: str) -> list[str]:
+    """Split a single pasted line into path-like tokens.
+
+    Args:
+        line: A single line from the paste payload.
+
+    Returns:
+        Parsed shell-like tokens, or an empty list when parsing fails.
+    """
+    try:
+        return shlex.split(line, posix=True)
+    except ValueError:
+        # Unbalanced quotes or other tokenization errors: treat as plain text.
+        return []
+
+
+def _token_to_path(token: str) -> Path | None:
+    """Convert a pasted token into a path candidate.
+
+    Args:
+        token: A single shell-split token from the paste payload.
+
+    Returns:
+        A parsed path candidate, or `None` when token parsing fails.
+    """
+    value = token.strip()
+    if not value:
+        return None
+
+    if value.startswith("<") and value.endswith(">"):
+        value = value[1:-1].strip()
+        if not value:
+            return None
+
+    if value.startswith("file://"):
+        parsed = urlparse(value)
+        path_text = unquote(parsed.path or "")
+        if parsed.netloc and parsed.netloc != "localhost":
+            path_text = f"//{parsed.netloc}{path_text}"
+        if (
+            path_text.startswith("/")
+            and len(path_text) > 2  # noqa: PLR2004  # '/C:' minimum for Windows file URI
+            and path_text[2] == ":"
+            and path_text[1].isalpha()
+        ):
+            # `file:///C:/...` on Windows includes an extra leading slash.
+            path_text = path_text[1:]
+        if not path_text:
+            return None
+        return Path(path_text)
+
+    return Path(value)

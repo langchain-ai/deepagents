@@ -13,8 +13,6 @@ import sys
 import tempfile
 from dataclasses import dataclass
 
-from PIL import Image, UnidentifiedImageError
-
 logger = logging.getLogger(__name__)
 
 
@@ -60,8 +58,50 @@ def get_clipboard_image() -> ImageData | None:
     """
     if sys.platform == "darwin":
         return _get_macos_clipboard_image()
-    # Linux/Windows support could be added here
+    logger.warning(
+        "Clipboard image paste is not supported on %s. "
+        "Only macOS is currently supported. "
+        "You can still attach images by dragging and dropping file paths.",
+        sys.platform,
+    )
     return None
+
+
+def get_image_from_path(path: pathlib.Path) -> ImageData | None:
+    """Read and encode an image file from disk.
+
+    Args:
+        path: Path to the image file.
+
+    Returns:
+        `ImageData` when the file is a valid image, otherwise `None`.
+    """
+    from PIL import Image, UnidentifiedImageError
+
+    try:
+        image_bytes = path.read_bytes()
+        if not image_bytes:
+            return None
+
+        with Image.open(io.BytesIO(image_bytes)) as image:
+            image_format = (image.format or "").lower()
+
+        if image_format == "jpg":
+            image_format = "jpeg"
+        if not image_format:
+            suffix = path.suffix.lower().removeprefix(".")
+            image_format = "jpeg" if suffix == "jpg" else suffix
+        if not image_format:
+            image_format = "png"
+
+        return ImageData(
+            base64_data=encode_image_to_base64(image_bytes),
+            format=image_format,
+            placeholder="[image]",
+        )
+    except (UnidentifiedImageError, OSError) as e:
+        logger.debug("Failed to load image from %s: %s", path, e, exc_info=True)
+        return None
 
 
 def _get_macos_clipboard_image() -> ImageData | None:
@@ -72,6 +112,8 @@ def _get_macos_clipboard_image() -> ImageData | None:
     Returns:
         ImageData if an image is found, None otherwise.
     """
+    from PIL import Image, UnidentifiedImageError
+
     # Try pngpaste first (fast if installed)
     pngpaste_path = _get_executable("pngpaste")
     if pngpaste_path:
@@ -120,6 +162,8 @@ def _get_clipboard_via_osascript() -> ImageData | None:
     Returns:
         ImageData if an image is found, None otherwise.
     """
+    from PIL import Image, UnidentifiedImageError
+
     # Get osascript path - it's a macOS builtin so should always exist
     osascript_path = _get_executable("osascript")
     if not osascript_path:

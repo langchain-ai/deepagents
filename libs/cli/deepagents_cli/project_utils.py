@@ -44,7 +44,7 @@ def find_project_agent_md(project_root: Path) -> list[Path]:
     """
     paths = []
 
-    # Check .deepagents/agent.md (preferred)
+    # Check .deepagents/agent.md (preferred)  # noqa: ERA001
     deepagents_md = project_root / ".deepagents" / "agent.md"
     if deepagents_md.exists():
         paths.append(deepagents_md)

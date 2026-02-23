@@ -7,7 +7,7 @@ database, etc.) and provide a uniform interface for file operations.
 
 import abc
 import asyncio
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable, Iterator
 from dataclasses import dataclass
 from typing import Any, Literal, NotRequired, TypeAlias
 
@@ -467,6 +467,39 @@ class SandboxBackendProtocol(BackendProtocol):
     ) -> ExecuteResponse:
         """Async version of execute."""
         return await asyncio.to_thread(self.execute, command)
+
+    def execute_stream(self, command: str) -> Iterator[str]:
+        """Execute a command and yield output lines as they arrive.
+
+        Override in subclasses for native streaming support. The default
+        implementation falls back to `execute()` and yields lines from
+        the collected output.
+
+        Args:
+            command: Full shell command string to execute.
+
+        Yields:
+            Output lines (including newline characters) as they become available.
+        """
+        result = self.execute(command)
+        yield from result.output.splitlines(keepends=True)
+
+    async def aexecute_stream(self, command: str) -> AsyncIterator[str]:
+        """Async version of execute_stream.
+
+        Override in subclasses for native async streaming. The default
+        implementation falls back to `aexecute()` and yields lines from
+        the collected output.
+
+        Args:
+            command: Full shell command string to execute.
+
+        Yields:
+            Output lines (including newline characters) as they become available.
+        """
+        result = await self.aexecute(command)
+        for line in result.output.splitlines(keepends=True):
+            yield line
 
 
 BackendFactory: TypeAlias = Callable[[ToolRuntime], BackendProtocol]

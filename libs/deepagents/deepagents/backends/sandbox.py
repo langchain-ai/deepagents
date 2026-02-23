@@ -207,11 +207,13 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
 
     def ls_info(self, path: str) -> list[FileInfo]:
         """Structured listing with file metadata using os.scandir."""
+        path_b64 = base64.b64encode(path.encode("utf-8")).decode("ascii")
         cmd = f"""python3 -c "
 import os
 import json
+import base64
 
-path = '{path}'
+path = base64.b64decode('{path_b64}').decode('utf-8')
 
 try:
     with os.scandir(path) as it:
@@ -227,17 +229,16 @@ except PermissionError:
     pass
 " 2>/dev/null"""
 
-        result = self.execute(cmd)
-
         file_infos: list[FileInfo] = []
-        for line in result.output.strip().split("\n"):
-            if not line:
-                continue
-            try:
-                data = json.loads(line)
-                file_infos.append({"path": data["path"], "is_dir": data["is_dir"]})
-            except json.JSONDecodeError:
-                continue
+        for chunk in self.execute_stream(cmd):
+            for line in chunk.splitlines():
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                    file_infos.append({"path": data["path"], "is_dir": data["is_dir"]})
+                except json.JSONDecodeError:
+                    continue
 
         return file_infos
 
@@ -329,66 +330,55 @@ except PermissionError:
         """Structured search results or error string for invalid input."""
         search_path = shlex.quote(path or ".")
 
-        # Build grep command to get structured output
-        grep_opts = "-rHnF"  # recursive, with filename, with line number, fixed-strings (literal)
+        grep_opts = "-rHnF"
 
-        # Add glob pattern if specified
         glob_pattern = ""
         if glob:
             glob_pattern = f"--include='{glob}'"
 
-        # Escape pattern for shell
         pattern_escaped = shlex.quote(pattern)
 
         cmd = f"grep {grep_opts} {glob_pattern} -e {pattern_escaped} {search_path} 2>/dev/null || true"
-        result = self.execute(cmd)
 
-        output = result.output.rstrip()
-        if not output:
-            return []
-
-        # Parse grep output into GrepMatch objects
         matches: list[GrepMatch] = []
-        for line in output.split("\n"):
-            # Format is: path:line_number:text
-            parts = line.split(":", 2)
-            if len(parts) >= 3:
-                matches.append(
-                    {
-                        "path": parts[0],
-                        "line": int(parts[1]),
-                        "text": parts[2],
-                    }
-                )
+        for chunk in self.execute_stream(cmd):
+            for line in chunk.splitlines():
+                if not line:
+                    continue
+                parts = line.split(":", 2)
+                if len(parts) >= 3:
+                    matches.append(
+                        {
+                            "path": parts[0],
+                            "line": int(parts[1]),
+                            "text": parts[2],
+                        }
+                    )
 
         return matches
 
     def glob_info(self, pattern: str, path: str = "/") -> list[FileInfo]:
         """Structured glob matching returning FileInfo dicts."""
-        # Encode pattern and path as base64 to avoid escaping issues
         pattern_b64 = base64.b64encode(pattern.encode("utf-8")).decode("ascii")
         path_b64 = base64.b64encode(path.encode("utf-8")).decode("ascii")
 
         cmd = _GLOB_COMMAND_TEMPLATE.format(path_b64=path_b64, pattern_b64=pattern_b64)
-        result = self.execute(cmd)
 
-        output = result.output.strip()
-        if not output:
-            return []
-
-        # Parse JSON output into FileInfo dicts
         file_infos: list[FileInfo] = []
-        for line in output.split("\n"):
-            try:
-                data = json.loads(line)
-                file_infos.append(
-                    {
-                        "path": data["path"],
-                        "is_dir": data["is_dir"],
-                    }
-                )
-            except json.JSONDecodeError:
-                continue
+        for chunk in self.execute_stream(cmd):
+            for line in chunk.splitlines():
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                    file_infos.append(
+                        {
+                            "path": data["path"],
+                            "is_dir": data["is_dir"],
+                        }
+                    )
+                except json.JSONDecodeError:
+                    continue
 
         return file_infos
 

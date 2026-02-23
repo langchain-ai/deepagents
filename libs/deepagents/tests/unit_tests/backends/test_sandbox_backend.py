@@ -10,6 +10,9 @@ that need to be escaped as {{e}} for Python's .format() method.
 
 import base64
 import json
+from collections.abc import Iterator
+
+import pytest
 
 from deepagents.backends.protocol import (
     ExecuteResponse,
@@ -174,3 +177,152 @@ def test_sandbox_grep_literal_search() -> None:
     # Verify the command uses grep -rHnF for literal search (combined flags)
     assert sandbox.last_command is not None
     assert "grep -rHnF" in sandbox.last_command
+
+
+class EmptyOutputSandbox(MockSandbox):
+    """MockSandbox that returns empty output, suitable for ls_info/read tests."""
+
+    def execute(self, command: str) -> ExecuteResponse:
+        self.last_command = command
+        return ExecuteResponse(output="", exit_code=0, truncated=False)
+
+
+class StreamingSandbox(MockSandbox):
+    """MockSandbox with a custom execute_stream that yields lines one at a time."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.stream_lines: list[str] = []
+        self.stream_called = False
+
+    def execute_stream(self, command: str) -> Iterator[str]:
+        self.last_command = command
+        self.stream_called = True
+        yield from self.stream_lines
+
+
+# --- Tests for execute_stream / aexecute_stream default fallback ---
+
+
+def test_execute_stream_default_fallback() -> None:
+    """Default execute_stream splits execute() output into lines."""
+    sandbox = MockSandbox()
+    sandbox.execute = lambda cmd: ExecuteResponse(  # type: ignore[assignment]
+        output="line1\nline2\nline3\n", exit_code=0, truncated=False
+    )
+    lines = list(sandbox.execute_stream("echo test"))
+    assert lines == ["line1\n", "line2\n", "line3\n"]
+
+
+@pytest.mark.anyio
+async def test_aexecute_stream_default_fallback() -> None:
+    """Default aexecute_stream splits aexecute() output into lines."""
+    sandbox = MockSandbox()
+
+    async def mock_aexecute(cmd: str) -> ExecuteResponse:
+        return ExecuteResponse(output="a\nb\n", exit_code=0, truncated=False)
+
+    sandbox.aexecute = mock_aexecute  # type: ignore[assignment]
+    lines = [line async for line in sandbox.aexecute_stream("echo test")]
+    assert lines == ["a\n", "b\n"]
+
+
+# --- Tests for streaming integration in grep_raw ---
+
+
+def test_grep_raw_uses_execute_stream() -> None:
+    """grep_raw should consume execute_stream for incremental parsing."""
+    sandbox = StreamingSandbox()
+    sandbox.stream_lines = [
+        "/src/a.py:10:match one\n",
+        "/src/b.py:20:match two\n",
+    ]
+
+    matches = sandbox.grep_raw("match", path="/src")
+
+    assert sandbox.stream_called
+    assert isinstance(matches, list)
+    assert len(matches) == 2
+    assert matches[0] == {"path": "/src/a.py", "line": 10, "text": "match one"}
+    assert matches[1] == {"path": "/src/b.py", "line": 20, "text": "match two"}
+
+
+def test_grep_raw_empty_stream() -> None:
+    """grep_raw returns empty list when stream yields nothing."""
+    sandbox = StreamingSandbox()
+    sandbox.stream_lines = []
+
+    matches = sandbox.grep_raw("notfound", path="/src")
+    assert matches == []
+
+
+# --- Tests for streaming integration in glob_info ---
+
+
+def test_glob_info_uses_execute_stream() -> None:
+    """glob_info should consume execute_stream for incremental JSON parsing."""
+    sandbox = StreamingSandbox()
+    sandbox.stream_lines = [
+        json.dumps({"path": "foo.py", "size": 100, "mtime": 1.0, "is_dir": False}) + "\n",
+        json.dumps({"path": "bar/", "size": 0, "mtime": 2.0, "is_dir": True}) + "\n",
+    ]
+
+    results = sandbox.glob_info("**/*.py", path="/")
+
+    assert sandbox.stream_called
+    assert len(results) == 2
+    assert results[0] == {"path": "foo.py", "is_dir": False}
+    assert results[1] == {"path": "bar/", "is_dir": True}
+
+
+def test_glob_info_skips_invalid_json_lines() -> None:
+    """glob_info should skip lines that are not valid JSON."""
+    sandbox = StreamingSandbox()
+    sandbox.stream_lines = [
+        json.dumps({"path": "valid.py", "is_dir": False}) + "\n",
+        "not-json\n",
+        json.dumps({"path": "also_valid.py", "is_dir": False}) + "\n",
+    ]
+
+    results = sandbox.glob_info("*.py", path="/")
+    assert len(results) == 2
+
+
+# --- Tests for streaming integration in ls_info ---
+
+
+def test_ls_info_uses_execute_stream() -> None:
+    """ls_info should consume execute_stream for incremental JSON parsing."""
+    sandbox = StreamingSandbox()
+    sandbox.stream_lines = [
+        json.dumps({"path": "/tmp/a.txt", "is_dir": False}) + "\n",
+        json.dumps({"path": "/tmp/subdir", "is_dir": True}) + "\n",
+    ]
+
+    results = sandbox.ls_info("/tmp")
+
+    assert sandbox.stream_called
+    assert len(results) == 2
+    assert results[0] == {"path": "/tmp/a.txt", "is_dir": False}
+    assert results[1] == {"path": "/tmp/subdir", "is_dir": True}
+
+
+def test_ls_info_empty_stream() -> None:
+    """ls_info returns empty list when stream yields nothing."""
+    sandbox = StreamingSandbox()
+    sandbox.stream_lines = []
+
+    results = sandbox.ls_info("/nonexistent")
+    assert results == []
+
+
+def test_ls_info_path_is_base64_encoded() -> None:
+    """ls_info should base64-encode the path to prevent injection."""
+    sandbox = EmptyOutputSandbox()
+
+    malicious = "'; import os; os.system('echo INJECTED'); #"
+    sandbox.ls_info(malicious)
+
+    assert sandbox.last_command is not None
+    assert malicious not in sandbox.last_command
+    assert "base64" in sandbox.last_command

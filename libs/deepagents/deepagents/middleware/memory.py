@@ -235,76 +235,6 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
         memory_body = "\n\n".join(sections)
         return MEMORY_SYSTEM_PROMPT.format(agent_memory=memory_body)
 
-    async def _load_memory_from_backend(
-        self,
-        backend: BackendProtocol,
-        path: str,
-    ) -> str | None:
-        """Load memory content from a backend path.
-
-        Args:
-            backend: Backend to load from.
-            path: Path to the AGENTS.md file.
-
-        Returns:
-            File content if found, None otherwise.
-        """
-        results = await backend.adownload_files([path])
-        # Should get exactly one response for one path
-        if len(results) != 1:
-            msg = f"Expected 1 response for path {path}, got {len(results)}"
-            raise AssertionError(msg)
-        response = results[0]
-
-        if response.error is not None:
-            # For now, memory files are treated as optional. file_not_found is expected
-            # and we skip silently to allow graceful degradation.
-            if response.error == "file_not_found":
-                return None
-            # Other errors should be raised
-            msg = f"Failed to download {path}: {response.error}"
-            raise ValueError(msg)
-
-        if response.content is not None:
-            return response.content.decode("utf-8")
-
-        return None
-
-    def _load_memory_from_backend_sync(
-        self,
-        backend: BackendProtocol,
-        path: str,
-    ) -> str | None:
-        """Load memory content from a backend path synchronously.
-
-        Args:
-            backend: Backend to load from.
-            path: Path to the AGENTS.md file.
-
-        Returns:
-            File content if found, None otherwise.
-        """
-        results = backend.download_files([path])
-        # Should get exactly one response for one path
-        if len(results) != 1:
-            msg = f"Expected 1 response for path {path}, got {len(results)}"
-            raise AssertionError(msg)
-        response = results[0]
-
-        if response.error is not None:
-            # For now, memory files are treated as optional. file_not_found is expected
-            # and we skip silently to allow graceful degradation.
-            if response.error == "file_not_found":
-                return None
-            # Other errors should be raised
-            msg = f"Failed to download {path}: {response.error}"
-            raise ValueError(msg)
-
-        if response.content is not None:
-            return response.content.decode("utf-8")
-
-        return None
-
     def before_agent(self, state: MemoryState, runtime: Runtime, config: RunnableConfig) -> MemoryStateUpdate | None:  # ty: ignore[invalid-method-override]
         """Load memory content before agent execution (synchronous).
 
@@ -326,10 +256,15 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
         backend = self._get_backend(state, runtime, config)
         contents: dict[str, str] = {}
 
-        for path in self.sources:
-            content = self._load_memory_from_backend_sync(backend, path)
-            if content:
-                contents[path] = content
+        results = backend.download_files(list(self.sources))
+        for path, response in zip(self.sources, results, strict=True):
+            if response.error is not None:
+                if response.error == "file_not_found":
+                    continue
+                msg = f"Failed to download {path}: {response.error}"
+                raise ValueError(msg)
+            if response.content is not None:
+                contents[path] = response.content.decode("utf-8")
                 logger.debug("Loaded memory from: %s", path)
 
         return MemoryStateUpdate(memory_contents=contents)
@@ -355,10 +290,15 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
         backend = self._get_backend(state, runtime, config)
         contents: dict[str, str] = {}
 
-        for path in self.sources:
-            content = await self._load_memory_from_backend(backend, path)
-            if content:
-                contents[path] = content
+        results = await backend.adownload_files(list(self.sources))
+        for path, response in zip(self.sources, results, strict=True):
+            if response.error is not None:
+                if response.error == "file_not_found":
+                    continue
+                msg = f"Failed to download {path}: {response.error}"
+                raise ValueError(msg)
+            if response.content is not None:
+                contents[path] = response.content.decode("utf-8")
                 logger.debug("Loaded memory from: %s", path)
 
         return MemoryStateUpdate(memory_contents=contents)

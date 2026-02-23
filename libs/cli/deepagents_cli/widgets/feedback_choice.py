@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import webbrowser
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from textual.message import Message
 from textual.screen import ModalScreen
@@ -32,7 +32,7 @@ class FeedbackOption(Static):
         self,
         label: str,
         url: str,
-        **kwargs: object,
+        **kwargs: Any,
     ) -> None:
         """Initialize the FeedbackOption.
 

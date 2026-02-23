@@ -352,7 +352,7 @@ def _make_hitl_decision(
             return {"type": "approve"}
 
         allowed_list_str = ", ".join(settings.shell_allow_list)
-        console.print(f"\n[red]❌ Shell command rejected:[/red] {command}")
+        console.print(f"\n[red]Shell command rejected:[/red] {command}")
         console.print(f"[yellow]Allowed commands:[/yellow] {allowed_list_str}")
         return {
             "type": "reject",
@@ -541,9 +541,9 @@ async def run_non_interactive(
     list; commands not in the list are rejected with an error message sent
     back to the agent.
 
-    Note: `_build_non_interactive_header` makes a synchronous network call
-    to LangSmith (via `fetch_langsmith_project_url`) to resolve the thread
-    URL. This blocks the event loop briefly at startup.
+    Note: when LangSmith tracing is configured, `_build_non_interactive_header`
+    makes a synchronous network call (via `fetch_langsmith_project_url`) to
+    resolve the thread URL. This blocks the event loop briefly at startup.
 
     Args:
         message: The task/message to execute.
@@ -601,7 +601,9 @@ async def run_non_interactive(
     exit_stack = contextlib.ExitStack()
 
     if sandbox_type != "none":
-        from deepagents_cli.integrations.sandbox_factory import (  # noqa: PLC0415
+        # Conditional: sandbox_factory transitively imports provider modules
+        # and SDKs — skip that cost for the common no-sandbox path.
+        from deepagents_cli.integrations.sandbox_factory import (
             create_sandbox,
         )
 
@@ -614,12 +616,12 @@ async def run_non_interactive(
             sandbox_backend = exit_stack.enter_context(sandbox_cm)
         except (ImportError, ValueError, RuntimeError) as e:
             logger.exception("Sandbox creation failed")
-            console.print(f"[red]❌ Sandbox creation failed: {e}[/red]")
+            console.print(f"[red]Sandbox creation failed: {e}[/red]")
             return 1
         except NotImplementedError as e:
             logger.exception("Unsupported sandbox type %r", sandbox_type)
             console.print(
-                f"[red]❌ Sandbox type '{sandbox_type}' is not yet supported: {e}[/red]"
+                f"[red]Sandbox type '{sandbox_type}' is not yet supported: {e}[/red]"
             )
             return 1
 
@@ -674,11 +676,11 @@ async def run_non_interactive(
         return 1
     except (ValueError, OSError) as e:
         logger.exception("Error during non-interactive execution")
-        console.print(f"\n[red]❌ Error: {e}[/red]")
+        console.print(f"\n[red]Error: {e}[/red]")
         return 1
     except Exception as e:
         logger.exception("Unexpected error during non-interactive execution")
-        console.print(f"\n[red]❌ Unexpected error ({type(e).__name__}): {e}[/red]")
+        console.print(f"\n[red]Unexpected error ({type(e).__name__}): {e}[/red]")
         return 1
     finally:
         try:

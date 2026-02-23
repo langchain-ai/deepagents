@@ -130,6 +130,60 @@ class TestProjectAgentMdFinding:
         result = _find_project_agent_md(project_root)
         assert result == []
 
+    def test_skips_paths_with_permission_errors(self, tmp_path: Path) -> None:
+        """Test that OSError from Path.exists() is caught gracefully."""
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+
+        real_md = project_root / "AGENTS.md"
+        real_md.write_text("root instructions")
+
+        original_exists = Path.exists
+
+        def patched_exists(self: Path) -> bool:
+            if self.name == "AGENTS.md" and ".deepagents" in str(self):
+                msg = "Permission denied"
+                raise PermissionError(msg)
+            return original_exists(self)
+
+        with patch.object(Path, "exists", patched_exists):
+            result = _find_project_agent_md(project_root)
+
+        assert len(result) == 1
+        assert result[0] == real_md
+
+
+class TestSettingsGetProjectAgentMdPath:
+    """Test Settings.get_project_agent_md_path() integration."""
+
+    def test_returns_empty_list_when_no_project_root(self) -> None:
+        """Should return [] when project_root is None."""
+        s = Settings.__new__(Settings)
+        s.project_root = None
+        assert s.get_project_agent_md_path() == []
+
+    def test_returns_existing_paths(self, tmp_path: Path) -> None:
+        """Should return existing AGENTS.md paths from project root."""
+        deepagents_dir = tmp_path / ".deepagents"
+        deepagents_dir.mkdir()
+        deepagents_md = deepagents_dir / "AGENTS.md"
+        deepagents_md.write_text("inner")
+
+        root_md = tmp_path / "AGENTS.md"
+        root_md.write_text("root")
+
+        s = Settings.__new__(Settings)
+        s.project_root = tmp_path
+
+        result = s.get_project_agent_md_path()
+        assert result == [deepagents_md, root_md]
+
+    def test_returns_empty_when_no_agents_md_files(self, tmp_path: Path) -> None:
+        """Should return [] when project exists but has no AGENTS.md."""
+        s = Settings.__new__(Settings)
+        s.project_root = tmp_path
+        assert s.get_project_agent_md_path() == []
+
 
 class TestValidateModelCapabilities:
     """Tests for model capability validation."""
@@ -293,7 +347,7 @@ class TestCreateModelProfileExtraction:
     now uses it internally.
     """
 
-    @patch("deepagents_cli.config.init_chat_model")
+    @patch("langchain.chat_models.init_chat_model")
     def test_extracts_context_limit_from_profile(
         self, mock_init_chat_model: Mock
     ) -> None:
@@ -305,7 +359,7 @@ class TestCreateModelProfileExtraction:
         result = create_model("anthropic:claude-sonnet-4-5")
         assert result.context_limit == 200000
 
-    @patch("deepagents_cli.config.init_chat_model")
+    @patch("langchain.chat_models.init_chat_model")
     def test_handles_missing_profile_gracefully(
         self, mock_init_chat_model: Mock
     ) -> None:
@@ -316,7 +370,7 @@ class TestCreateModelProfileExtraction:
         result = create_model("anthropic:claude-sonnet-4-5")
         assert result.context_limit is None
 
-    @patch("deepagents_cli.config.init_chat_model")
+    @patch("langchain.chat_models.init_chat_model")
     def test_handles_none_profile(self, mock_init_chat_model: Mock) -> None:
         """Test that profile=None leaves context_limit as None."""
         mock_model = Mock()
@@ -326,7 +380,7 @@ class TestCreateModelProfileExtraction:
         result = create_model("anthropic:claude-sonnet-4-5")
         assert result.context_limit is None
 
-    @patch("deepagents_cli.config.init_chat_model")
+    @patch("langchain.chat_models.init_chat_model")
     def test_handles_non_dict_profile(self, mock_init_chat_model: Mock) -> None:
         """Test that non-dict profile is handled safely."""
         mock_model = Mock()
@@ -336,7 +390,7 @@ class TestCreateModelProfileExtraction:
         result = create_model("anthropic:claude-sonnet-4-5")
         assert result.context_limit is None
 
-    @patch("deepagents_cli.config.init_chat_model")
+    @patch("langchain.chat_models.init_chat_model")
     def test_handles_non_int_max_input_tokens(self, mock_init_chat_model: Mock) -> None:
         """Test that string max_input_tokens is ignored."""
         mock_model = Mock()
@@ -346,7 +400,7 @@ class TestCreateModelProfileExtraction:
         result = create_model("anthropic:claude-sonnet-4-5")
         assert result.context_limit is None
 
-    @patch("deepagents_cli.config.init_chat_model")
+    @patch("langchain.chat_models.init_chat_model")
     def test_handles_missing_max_input_tokens_key(
         self, mock_init_chat_model: Mock
     ) -> None:
@@ -829,6 +883,50 @@ base_url = "https://wrong-url.com"
         assert kwargs["base_url"] == "https://correct-url.com"
 
 
+class TestOpenRouterHeaders:
+    """Tests for OpenRouter default attribution headers."""
+
+    def setup_method(self) -> None:
+        """Clear model config cache before each test."""
+        clear_caches()
+
+    def test_injects_default_headers(self) -> None:
+        """Injects HTTP-Referer and X-Title for openrouter provider."""
+        kwargs = _get_provider_kwargs("openrouter")
+
+        assert "default_headers" in kwargs
+        assert kwargs["default_headers"]["HTTP-Referer"] == (
+            "https://github.com/langchain-ai/deepagents"
+        )
+        assert kwargs["default_headers"]["X-Title"] == "Deep Agents CLI"
+
+    def test_per_model_headers_override_defaults(self, tmp_path: Path) -> None:
+        """Per-model default_headers override built-in defaults."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.openrouter]
+models = ["deepseek/deepseek-chat"]
+
+[models.providers.openrouter.params."deepseek/deepseek-chat"]
+default_headers = {X-Title = "My Custom App"}
+""")
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            kwargs = _get_provider_kwargs(
+                "openrouter", model_name="deepseek/deepseek-chat"
+            )
+
+        assert kwargs["default_headers"]["X-Title"] == "My Custom App"
+        # Built-in HTTP-Referer should still be present
+        assert kwargs["default_headers"]["HTTP-Referer"] == (
+            "https://github.com/langchain-ai/deepagents"
+        )
+
+    def test_no_headers_for_other_providers(self) -> None:
+        """Other providers do not get OpenRouter attribution headers."""
+        kwargs = _get_provider_kwargs("openai")
+        assert "default_headers" not in kwargs
+
+
 class TestCreateModelFromClass:
     """Tests for _create_model_from_class() custom class factory."""
 
@@ -1010,7 +1108,7 @@ api_key_env = "FIREWORKS_API_KEY"
 class TestCreateModelExtraKwargs:
     """Tests for create_model() with extra_kwargs from --model-params."""
 
-    @patch("deepagents_cli.config.init_chat_model")
+    @patch("langchain.chat_models.init_chat_model")
     def test_extra_kwargs_passed_to_model(self, mock_init_chat_model: Mock) -> None:
         """extra_kwargs are forwarded to init_chat_model."""
         mock_model = Mock()
@@ -1022,7 +1120,7 @@ class TestCreateModelExtraKwargs:
         _, call_kwargs = mock_init_chat_model.call_args
         assert call_kwargs["temperature"] == 0.7
 
-    @patch("deepagents_cli.config.init_chat_model")
+    @patch("langchain.chat_models.init_chat_model")
     def test_extra_kwargs_override_config(
         self, mock_init_chat_model: Mock, tmp_path: Path
     ) -> None:
@@ -1053,7 +1151,7 @@ max_tokens = 1024
         # Config kwarg preserved when not overridden
         assert call_kwargs["max_tokens"] == 1024
 
-    @patch("deepagents_cli.config.init_chat_model")
+    @patch("langchain.chat_models.init_chat_model")
     def test_none_extra_kwargs_is_noop(self, mock_init_chat_model: Mock) -> None:
         """extra_kwargs=None does not affect behavior."""
         mock_model = Mock()
@@ -1063,7 +1161,7 @@ max_tokens = 1024
         create_model("anthropic:claude-sonnet-4-5", extra_kwargs=None)
         mock_init_chat_model.assert_called_once()
 
-    @patch("deepagents_cli.config.init_chat_model")
+    @patch("langchain.chat_models.init_chat_model")
     def test_empty_extra_kwargs_is_noop(self, mock_init_chat_model: Mock) -> None:
         """extra_kwargs={} does not affect behavior."""
         mock_model = Mock()
@@ -1077,7 +1175,7 @@ max_tokens = 1024
 class TestCreateModelEdgeCaseParsing:
     """Tests for create_model() edge-case spec parsing."""
 
-    @patch("deepagents_cli.config.init_chat_model")
+    @patch("langchain.chat_models.init_chat_model")
     def test_leading_colon_treated_as_bare_model(
         self, mock_init_chat_model: Mock
     ) -> None:
@@ -1101,7 +1199,7 @@ class TestCreateModelEdgeCaseParsing:
             create_model("anthropic:")
 
     @patch("deepagents_cli.config._get_default_model_spec")
-    @patch("deepagents_cli.config.init_chat_model")
+    @patch("langchain.chat_models.init_chat_model")
     def test_empty_string_uses_default(
         self, mock_init_chat_model: Mock, mock_default: Mock
     ) -> None:
@@ -1128,7 +1226,7 @@ class TestDetectProvider:
             ("o4-mini", "openai"),
             ("claude-sonnet-4-5", "anthropic"),
             ("claude-opus-4-5", "anthropic"),
-            ("gemini-3-pro-preview", "google_genai"),
+            ("gemini-3.1-pro-preview", "google_genai"),
             ("llama3", None),
             ("mistral-large", None),
             ("some-unknown-model", None),

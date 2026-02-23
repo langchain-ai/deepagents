@@ -40,6 +40,7 @@ from deepagents_cli.model_config import ModelSpec, save_recent_model
 from deepagents_cli.textual_adapter import TextualUIAdapter, execute_task_textual
 from deepagents_cli.widgets.approval import ApprovalMenu
 from deepagents_cli.widgets.chat_input import ChatInput
+from deepagents_cli.widgets.feedback_choice import FeedbackChoiceScreen
 from deepagents_cli.widgets.loading import LoadingWidget
 from deepagents_cli.widgets.message_store import (
     MessageData,
@@ -1145,8 +1146,10 @@ class DeepAgentsApp(App):
             help_text.stylize(f"link {DOCS_URL}", help_text.plain.index(DOCS_URL))
             await self._mount_message(AppMessage(help_text))
 
-        elif cmd in {"/changelog", "/docs", "/feedback"}:
+        elif cmd in {"/changelog", "/docs"}:
             await self._open_url_command(command, cmd)
+        elif cmd == "/feedback":
+            self.push_screen(FeedbackChoiceScreen())
         elif cmd == "/version":
             await self._mount_message(UserMessage(command))
             # Show CLI and SDK package versions

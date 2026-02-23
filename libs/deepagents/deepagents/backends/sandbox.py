@@ -265,11 +265,13 @@ except PermissionError:
         limit: int = 2000,
     ) -> str:
         """Read file content with line numbers using a single shell command."""
-        payload = json.dumps({
-            "path": file_path,
-            "offset": int(offset),
-            "limit": int(limit),
-        })
+        payload = json.dumps(
+            {
+                "path": file_path,
+                "offset": int(offset),
+                "limit": int(limit),
+            }
+        )
         payload_b64 = base64.b64encode(payload.encode("utf-8")).decode("ascii")
         cmd = _READ_COMMAND_TEMPLATE.format(payload_b64=payload_b64)
         result = self.execute(cmd)

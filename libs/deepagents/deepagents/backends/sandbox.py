@@ -353,7 +353,7 @@ except PermissionError:
                 if not line:
                     continue
                 parts = line.split(":", 2)
-                if len(parts) >= 3:
+                if len(parts) >= 3:  # noqa: PLR2004
                     matches.append(
                         {
                             "path": parts[0],

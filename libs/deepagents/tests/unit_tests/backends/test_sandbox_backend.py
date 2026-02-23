@@ -183,7 +183,7 @@ def test_sandbox_grep_literal_search() -> None:
 class EmptyOutputSandbox(MockSandbox):
     """MockSandbox that returns empty output, suitable for ls_info/read tests."""
 
-    def execute(self, command: str) -> ExecuteResponse:
+    def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
         self.last_command = command
         return ExecuteResponse(output="", exit_code=0, truncated=False)
 
@@ -208,7 +208,7 @@ class StreamingSandbox(MockSandbox):
 def test_execute_stream_default_fallback() -> None:
     """Default execute_stream splits execute() output into lines."""
     sandbox = MockSandbox()
-    sandbox.execute = lambda cmd: ExecuteResponse(  # type: ignore[assignment]
+    sandbox.execute = lambda _cmd: ExecuteResponse(  # type: ignore[assignment]
         output="line1\nline2\nline3\n", exit_code=0, truncated=False
     )
     lines = list(sandbox.execute_stream("echo test"))
@@ -220,7 +220,7 @@ async def test_aexecute_stream_default_fallback() -> None:
     """Default aexecute_stream splits aexecute() output into lines."""
     sandbox = MockSandbox()
 
-    async def mock_aexecute(cmd: str) -> ExecuteResponse:
+    async def mock_aexecute(_cmd: str) -> ExecuteResponse:
         return ExecuteResponse(output="a\nb\n", exit_code=0, truncated=False)
 
     sandbox.aexecute = mock_aexecute  # type: ignore[assignment]
@@ -296,16 +296,16 @@ def test_ls_info_uses_execute_stream() -> None:
     """ls_info should consume execute_stream for incremental JSON parsing."""
     sandbox = StreamingSandbox()
     sandbox.stream_lines = [
-        json.dumps({"path": "/tmp/a.txt", "is_dir": False}) + "\n",
-        json.dumps({"path": "/tmp/subdir", "is_dir": True}) + "\n",
+        json.dumps({"path": "/home/user/a.txt", "is_dir": False}) + "\n",
+        json.dumps({"path": "/home/user/subdir", "is_dir": True}) + "\n",
     ]
 
-    results = sandbox.ls_info("/tmp")
+    results = sandbox.ls_info("/home/user")
 
     assert sandbox.stream_called
     assert len(results) == 2
-    assert results[0] == {"path": "/tmp/a.txt", "is_dir": False}
-    assert results[1] == {"path": "/tmp/subdir", "is_dir": True}
+    assert results[0] == {"path": "/home/user/a.txt", "is_dir": False}
+    assert results[1] == {"path": "/home/user/subdir", "is_dir": True}
 
 
 def test_ls_info_empty_stream() -> None:
@@ -313,7 +313,7 @@ def test_ls_info_empty_stream() -> None:
     sandbox = StreamingSandbox()
     sandbox.stream_lines = []
 
-    results = sandbox.ls_info("/nonexistent")
+    results = sandbox.ls_info("/home/nonexistent")
     assert results == []
 
 

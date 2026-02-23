@@ -1,5 +1,7 @@
 """Unit tests for `SummarizationMiddleware` with backend offloading."""
 
+import asyncio
+import time
 from collections.abc import Generator
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, cast
@@ -2499,3 +2501,49 @@ def test_usage_metadata_trigger() -> None:
     assert result.command.update is not None
     assert "_summarization_event" in result.command.update
     assert len(backend.write_calls) == 1
+
+
+async def test_async_offload_and_summary_run_concurrently() -> None:
+    """Verify that _aoffload_to_backend and _acreate_summary run in parallel."""
+    delay = 0.1
+    backend = MockBackend()
+    mock_model = make_mock_model()
+
+    middleware = SummarizationMiddleware(
+        model=mock_model,
+        backend=backend,
+        trigger=("messages", 5),
+        keep=("messages", 2),
+    )
+
+    original_offload = middleware._aoffload_to_backend
+    original_summary = middleware._acreate_summary
+
+    async def slow_offload(
+        be: Any,  # noqa: ANN401
+        msgs: Any,  # noqa: ANN401
+    ) -> str | None:
+        await asyncio.sleep(delay)
+        return await original_offload(be, msgs)
+
+    async def slow_summary(
+        msgs: Any,  # noqa: ANN401
+    ) -> str:
+        await asyncio.sleep(delay)
+        return await original_summary(msgs)
+
+    middleware._aoffload_to_backend = slow_offload  # type: ignore[assignment]
+    middleware._acreate_summary = slow_summary  # type: ignore[assignment]
+
+    messages = make_conversation_messages(num_old=6, num_recent=2)
+    state = cast("AgentState[Any]", {"messages": messages})
+    runtime = make_mock_runtime()
+
+    with mock_get_config():
+        start = time.monotonic()
+        result, _ = await call_awrap_model_call(middleware, state, runtime)
+        elapsed = time.monotonic() - start
+
+    assert isinstance(result, ExtendedModelResponse)
+    # If sequential, elapsed >= 2 * delay (0.2s). If parallel, elapsed ~ delay (0.1s).
+    assert elapsed < 2 * delay, f"Expected parallel execution (<{2 * delay}s) but took {elapsed:.2f}s"

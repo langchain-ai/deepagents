@@ -56,7 +56,9 @@ class FeedbackOption(Static):
 class FeedbackChoiceScreen(ModalScreen[None]):
     """Screen for choosing feedback type (bug report or feature request)."""
 
-    BUG_URL = "https://github.com/langchain-ai/deepagents/issues/new?template=bug_report.yml"
+    BUG_URL = (
+        "https://github.com/langchain-ai/deepagents/issues/new?template=bug_report.yml"
+    )
     FEATURE_URL = "https://github.com/langchain-ai/deepagents/issues/new?template=feature_request.yml"
 
     def compose(self) -> ComposeResult:

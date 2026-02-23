@@ -87,10 +87,24 @@ def test_glob_command_template_format() -> None:
 
 def test_read_command_template_format() -> None:
     """Test that _READ_COMMAND_TEMPLATE can be formatted without KeyError."""
-    cmd = _READ_COMMAND_TEMPLATE.format(file_path="/test/file.txt", offset=0, limit=100)
+    payload = json.dumps({"path": "/test/file.txt", "offset": 0, "limit": 100})
+    payload_b64 = base64.b64encode(payload.encode("utf-8")).decode("ascii")
+    cmd = _READ_COMMAND_TEMPLATE.format(payload_b64=payload_b64)
 
     assert "python3 -c" in cmd
-    assert "/test/file.txt" in cmd
+    assert payload_b64 in cmd
+    assert "__DEEPAGENTS_EOF__" in cmd
+
+
+def test_sandbox_read_uses_payload() -> None:
+    """Test that read() bundles all params into a single base64 payload."""
+    sandbox = MockSandbox()
+
+    sandbox.read("/test/file.txt", offset=5, limit=50)
+
+    assert sandbox.last_command is not None
+    assert "__DEEPAGENTS_EOF__" in sandbox.last_command
+    assert "/test/file.txt" not in sandbox.last_command
 
 
 def test_sandbox_write_method() -> None:

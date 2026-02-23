@@ -52,7 +52,10 @@ class TestModelSwitchNoOp:
             original_init(self, message, **kwargs)
 
         with (
-            patch("deepagents_cli.app.has_provider_credentials", return_value=True),
+            patch(
+                "deepagents_cli.model_config.has_provider_credentials",
+                return_value=True,
+            ),
             patch.object(AppMessage, "__init__", capture_init),
         ):
             # Attempt to switch to the same model
@@ -88,9 +91,12 @@ class TestModelSwitchErrorHandling:
             original_init(self, message, **kwargs)
 
         with (
-            patch("deepagents_cli.app.has_provider_credentials", return_value=False),
             patch(
-                "deepagents_cli.app.get_credential_env_var",
+                "deepagents_cli.model_config.has_provider_credentials",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_cli.model_config.get_credential_env_var",
                 return_value="ANTHROPIC_API_KEY",
             ),
             patch.object(ErrorMessage, "__init__", capture_init),
@@ -122,7 +128,10 @@ class TestModelSwitchErrorHandling:
 
         error = ModelConfigError("Missing package for provider 'anthropic'")
         with (
-            patch("deepagents_cli.app.has_provider_credentials", return_value=True),
+            patch(
+                "deepagents_cli.model_config.has_provider_credentials",
+                return_value=True,
+            ),
             patch("deepagents_cli.app.create_model", side_effect=error),
             patch.object(ErrorMessage, "__init__", capture_init),
         ):
@@ -152,7 +161,10 @@ class TestModelSwitchErrorHandling:
 
         model_error = ValueError("Invalid model")
         with (
-            patch("deepagents_cli.app.has_provider_credentials", return_value=True),
+            patch(
+                "deepagents_cli.model_config.has_provider_credentials",
+                return_value=True,
+            ),
             patch("deepagents_cli.app.create_model", side_effect=model_error),
             patch.object(ErrorMessage, "__init__", capture_init),
         ):
@@ -194,9 +206,12 @@ class TestModelSwitchErrorHandling:
 
         agent_error = RuntimeError("Agent creation failed")
         with (
-            patch("deepagents_cli.app.has_provider_credentials", return_value=True),
+            patch(
+                "deepagents_cli.model_config.has_provider_credentials",
+                return_value=True,
+            ),
             patch("deepagents_cli.app.create_model", return_value=mock_result),
-            patch("deepagents_cli.app.create_cli_agent", side_effect=agent_error),
+            patch("deepagents_cli.agent.create_cli_agent", side_effect=agent_error),
             patch.object(ErrorMessage, "__init__", capture_init),
         ):
             await app._switch_model("anthropic:claude-sonnet-4-5")
@@ -232,10 +247,13 @@ class TestModelSwitchErrorHandling:
         mock_backend = MagicMock()
 
         with (
-            patch("deepagents_cli.app.has_provider_credentials", return_value=True),
+            patch(
+                "deepagents_cli.model_config.has_provider_credentials",
+                return_value=True,
+            ),
             patch("deepagents_cli.app.create_model", return_value=mock_result),
             patch(
-                "deepagents_cli.app.create_cli_agent",
+                "deepagents_cli.agent.create_cli_agent",
                 return_value=(mock_agent, mock_backend),
             ),
             patch("deepagents_cli.app.save_recent_model", return_value=True),
@@ -263,10 +281,13 @@ class TestModelSwitchErrorHandling:
         )
 
         with (
-            patch("deepagents_cli.app.has_provider_credentials", return_value=True),
+            patch(
+                "deepagents_cli.model_config.has_provider_credentials",
+                return_value=True,
+            ),
             patch("deepagents_cli.app.create_model", return_value=mock_result),
             patch(
-                "deepagents_cli.app.create_cli_agent",
+                "deepagents_cli.agent.create_cli_agent",
                 side_effect=RuntimeError("fail"),
             ),
         ):
@@ -293,7 +314,10 @@ class TestModelSwitchErrorHandling:
             original_init(self, message, **kwargs)
 
         with (
-            patch("deepagents_cli.app.has_provider_credentials", return_value=True),
+            patch(
+                "deepagents_cli.model_config.has_provider_credentials",
+                return_value=True,
+            ),
             patch("deepagents_cli.app.save_recent_model", return_value=True),
             patch.object(AppMessage, "__init__", capture_init),
         ):
@@ -322,7 +346,10 @@ class TestModelSwitchErrorHandling:
             original_init(self, message, **kwargs)
 
         with (
-            patch("deepagents_cli.app.has_provider_credentials", return_value=True),
+            patch(
+                "deepagents_cli.model_config.has_provider_credentials",
+                return_value=True,
+            ),
             patch("deepagents_cli.app.save_recent_model", return_value=False),
             patch.object(ErrorMessage, "__init__", capture_init),
         ):
@@ -359,10 +386,13 @@ class TestModelSwitchErrorHandling:
         mock_backend = MagicMock()
 
         with (
-            patch("deepagents_cli.app.has_provider_credentials", return_value=True),
+            patch(
+                "deepagents_cli.model_config.has_provider_credentials",
+                return_value=True,
+            ),
             patch("deepagents_cli.app.create_model", return_value=mock_result),
             patch(
-                "deepagents_cli.app.create_cli_agent",
+                "deepagents_cli.agent.create_cli_agent",
                 return_value=(mock_agent, mock_backend),
             ),
             patch("deepagents_cli.app.save_recent_model", return_value=False),
@@ -424,7 +454,7 @@ api_key_env = "FIREWORKS_API_KEY"
             patch.dict("os.environ", {"FIREWORKS_API_KEY": "test-key"}),
             patch("deepagents_cli.app.create_model", return_value=mock_result),
             patch(
-                "deepagents_cli.app.create_cli_agent",
+                "deepagents_cli.agent.create_cli_agent",
                 return_value=(mock_agent, mock_backend),
             ),
             patch("deepagents_cli.app.save_recent_model", return_value=True),
@@ -506,7 +536,7 @@ models = ["llama3"]
             patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
             patch("deepagents_cli.app.create_model", return_value=mock_result),
             patch(
-                "deepagents_cli.app.create_cli_agent",
+                "deepagents_cli.agent.create_cli_agent",
                 return_value=(mock_agent, mock_backend),
             ),
             patch("deepagents_cli.app.save_recent_model", return_value=True),
@@ -548,10 +578,13 @@ class TestModelSwitchBareModelName:
 
         with (
             patch("deepagents_cli.app.detect_provider", return_value="openai"),
-            patch("deepagents_cli.app.has_provider_credentials", return_value=True),
+            patch(
+                "deepagents_cli.model_config.has_provider_credentials",
+                return_value=True,
+            ),
             patch("deepagents_cli.app.create_model", return_value=mock_result),
             patch(
-                "deepagents_cli.app.create_cli_agent",
+                "deepagents_cli.agent.create_cli_agent",
                 return_value=(mock_agent, mock_backend),
             ),
             patch("deepagents_cli.app.save_recent_model", return_value=True),
@@ -580,9 +613,12 @@ class TestModelSwitchBareModelName:
 
         with (
             patch("deepagents_cli.app.detect_provider", return_value="openai"),
-            patch("deepagents_cli.app.has_provider_credentials", return_value=False),
             patch(
-                "deepagents_cli.app.get_credential_env_var",
+                "deepagents_cli.model_config.has_provider_credentials",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_cli.model_config.get_credential_env_var",
                 return_value="OPENAI_API_KEY",
             ),
             patch.object(ErrorMessage, "__init__", capture_init),
@@ -613,7 +649,10 @@ class TestModelSwitchBareModelName:
 
         with (
             patch("deepagents_cli.app.detect_provider", return_value="openai"),
-            patch("deepagents_cli.app.has_provider_credentials", return_value=True),
+            patch(
+                "deepagents_cli.model_config.has_provider_credentials",
+                return_value=True,
+            ),
             patch.object(AppMessage, "__init__", capture_init),
         ):
             await app._switch_model("gpt-4o")

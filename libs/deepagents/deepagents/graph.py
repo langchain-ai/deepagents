@@ -277,6 +277,7 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
             SubAgentMiddleware(
                 backend=backend,
                 subagents=all_subagents,
+                checkpointer=checkpointer,
             ),
             SummarizationMiddleware(
                 model=model,

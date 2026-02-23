@@ -6,14 +6,15 @@ from typing import Annotated, Any, NotRequired, TypedDict, Unpack, cast
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig
-from langchain.agents.middleware.types import AgentMiddleware, ContextT, ModelRequest, ModelResponse, ResponseT
+from langchain.agents.middleware.types import AgentMiddleware, ModelRequest, ModelResponse
 from langchain.chat_models import init_chat_model
 from langchain.tools import BaseTool, ToolRuntime
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import HumanMessage, ToolMessage
-from langchain_core.runnables import Runnable
+from langchain_core.messages import HumanMessage, ToolMessage, messages_to_dict
+from langchain_core.runnables import Runnable, RunnableConfig
+from langchain_core.runnables.config import merge_configs
 from langchain_core.tools import StructuredTool
-from langgraph.types import Command
+from langgraph.types import Checkpointer, Command
 
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
 from deepagents.middleware._utils import append_to_system_message
@@ -291,6 +292,7 @@ def _get_subagents_legacy(
     default_interrupt_on: dict[str, bool | InterruptOnConfig] | None,
     subagents: list[SubAgent | CompiledSubAgent],
     general_purpose_agent: bool,
+    checkpointer: Checkpointer | None = None,
 ) -> list[_SubagentSpec]:
     """Create subagent instances from specifications.
 
@@ -303,6 +305,8 @@ def _get_subagents_legacy(
             are also the fallback for any subagents that don't specify their own tool configs.
         subagents: List of agent specifications or pre-compiled agents.
         general_purpose_agent: Whether to include a general-purpose subagent.
+        checkpointer: Optional checkpointer to compile subagents with, enabling persistence
+            of subagent state (e.g. message history) when a `thread_id` is provided at runtime.
 
     Returns:
         List of subagent specs containing name, description, and runnable.
@@ -323,6 +327,7 @@ def _get_subagents_legacy(
             tools=default_tools,
             middleware=general_purpose_middleware,
             name="general-purpose",
+            checkpointer=checkpointer,
         )
         specs.append(
             {
@@ -364,6 +369,7 @@ def _get_subagents_legacy(
                     tools=_tools,
                     middleware=_middleware,
                     name=agent_["name"],
+                    checkpointer=checkpointer,
                 ),
             }
         )
@@ -371,7 +377,7 @@ def _get_subagents_legacy(
     return specs
 
 
-def _build_task_tool(  # noqa: C901
+def _build_task_tool(  # noqa: C901, PLR0915
     subagents: list[_SubagentSpec],
     task_description: str | None = None,
 ) -> BaseTool:
@@ -399,7 +405,13 @@ def _build_task_tool(  # noqa: C901
     else:
         description = task_description
 
-    def _return_command_with_state_update(result: dict, tool_call_id: str) -> Command:
+    def _return_command_with_state_update(
+        result: dict,
+        tool_call_id: str,
+        *,
+        subagent_type: str,
+        checkpoint_ns: str,
+    ) -> Command:
         # Validate that the result contains a 'messages' key
         if "messages" not in result:
             error_msg = (
@@ -415,7 +427,18 @@ def _build_task_tool(  # noqa: C901
         return Command(
             update={
                 **state_update,
-                "messages": [ToolMessage(message_text, tool_call_id=tool_call_id)],
+                "messages": [
+                    ToolMessage(
+                        message_text,
+                        tool_call_id=tool_call_id,
+                        artifact={
+                            "type": "deepagents.subagent",
+                            "subagent_type": subagent_type,
+                            "checkpoint_ns": checkpoint_ns,
+                            "messages": messages_to_dict(result["messages"]),
+                        },
+                    )
+                ],
             }
         )
 
@@ -426,6 +449,18 @@ def _build_task_tool(  # noqa: C901
         subagent_state = {k: v for k, v in runtime.state.items() if k not in _EXCLUDED_STATE_KEYS}
         subagent_state["messages"] = [HumanMessage(content=description)]
         return subagent, subagent_state
+
+    def _with_subagent_checkpoint_ns(config: RunnableConfig, checkpoint_ns: str) -> RunnableConfig:
+        configurable = dict(config.get("configurable") or {})
+        configurable["checkpoint_ns"] = checkpoint_ns
+        # Avoid accidentally resuming from a parent checkpoint in this namespace.
+        configurable.pop("checkpoint_id", None)
+        return {**config, "configurable": configurable}
+
+    def _compute_subagent_checkpoint_ns(config: RunnableConfig, subagent_type: str, tool_call_id: str) -> str:
+        parent_ns = (config.get("configurable") or {}).get("checkpoint_ns")
+        sub_ns = f"subagent:{subagent_type}:{tool_call_id}"
+        return f"{parent_ns}|{sub_ns}" if parent_ns else sub_ns
 
     def task(
         description: Annotated[
@@ -438,12 +473,17 @@ def _build_task_tool(  # noqa: C901
         if subagent_type not in subagent_graphs:
             allowed_types = ", ".join([f"`{k}`" for k in subagent_graphs])
             return f"We cannot invoke subagent {subagent_type} because it does not exist, the only allowed types are {allowed_types}"
-        subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
-        result = subagent.invoke(subagent_state)
         if not runtime.tool_call_id:
             value_error_msg = "Tool call ID is required for subagent invocation"
             raise ValueError(value_error_msg)
-        return _return_command_with_state_update(result, runtime.tool_call_id)
+        tool_call_id = runtime.tool_call_id
+        subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
+        checkpoint_ns = _compute_subagent_checkpoint_ns(runtime.config, subagent_type, tool_call_id)
+        subagent_base_config = getattr(subagent, "config", None)
+        merged_config = merge_configs(runtime.config, subagent_base_config) if isinstance(subagent_base_config, dict) else runtime.config
+        subagent_config = _with_subagent_checkpoint_ns(merged_config, checkpoint_ns)
+        result = subagent.invoke(subagent_state, config=subagent_config)
+        return _return_command_with_state_update(result, tool_call_id, subagent_type=subagent_type, checkpoint_ns=checkpoint_ns)
 
     async def atask(
         description: Annotated[
@@ -456,12 +496,17 @@ def _build_task_tool(  # noqa: C901
         if subagent_type not in subagent_graphs:
             allowed_types = ", ".join([f"`{k}`" for k in subagent_graphs])
             return f"We cannot invoke subagent {subagent_type} because it does not exist, the only allowed types are {allowed_types}"
-        subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
-        result = await subagent.ainvoke(subagent_state)
         if not runtime.tool_call_id:
             value_error_msg = "Tool call ID is required for subagent invocation"
             raise ValueError(value_error_msg)
-        return _return_command_with_state_update(result, runtime.tool_call_id)
+        tool_call_id = runtime.tool_call_id
+        subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
+        checkpoint_ns = _compute_subagent_checkpoint_ns(runtime.config, subagent_type, tool_call_id)
+        subagent_base_config = getattr(subagent, "config", None)
+        merged_config = merge_configs(runtime.config, subagent_base_config) if isinstance(subagent_base_config, dict) else runtime.config
+        subagent_config = _with_subagent_checkpoint_ns(merged_config, checkpoint_ns)
+        result = await subagent.ainvoke(subagent_state, config=subagent_config)
+        return _return_command_with_state_update(result, tool_call_id, subagent_type=subagent_type, checkpoint_ns=checkpoint_ns)
 
     return StructuredTool.from_function(
         name="task",
@@ -479,7 +524,7 @@ class _DeprecatedKwargs(TypedDict, total=False):
     """
 
 
-class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
+class SubAgentMiddleware(AgentMiddleware):
     """Middleware for providing subagents to an agent via a `task` tool.
 
     This middleware adds a `task` tool to the agent that can be used to invoke subagents.
@@ -549,6 +594,7 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         subagents: list[SubAgent | CompiledSubAgent] | None = None,
         system_prompt: str | None = TASK_SYSTEM_PROMPT,
         task_description: str | None = None,
+        checkpointer: Checkpointer | None = None,
         **deprecated_kwargs: Unpack[_DeprecatedKwargs],
     ) -> None:
         """Initialize the `SubAgentMiddleware`."""
@@ -561,7 +607,7 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             raise TypeError(msg)
 
         # Handle deprecated kwargs for backward compatibility
-        default_model = deprecated_kwargs.get("default_model")
+        default_model: str | BaseChatModel | None = deprecated_kwargs.get("default_model")
         default_tools = deprecated_kwargs.get("default_tools")
         default_middleware = deprecated_kwargs.get("default_middleware")
         default_interrupt_on = deprecated_kwargs.get("default_interrupt_on")
@@ -588,13 +634,17 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
 
         if using_old_api and not using_new_api:
             # Legacy API - build subagents from deprecated args
+            if default_model is None:
+                msg = "SubAgentMiddleware legacy API requires `default_model`"
+                raise ValueError(msg)
             subagent_specs = _get_subagents_legacy(
-                default_model=default_model,  # ty: ignore[invalid-argument-type]
+                default_model=default_model,
                 default_tools=default_tools or [],
                 default_middleware=default_middleware,
                 default_interrupt_on=default_interrupt_on,
                 subagents=subagents or [],
                 general_purpose_agent=general_purpose_agent,
+                checkpointer=checkpointer,
             )
         elif using_new_api:
             if not subagents:
@@ -602,6 +652,7 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
                 raise ValueError(msg)
             self._backend = backend
             self._subagents = subagents
+            self._checkpointer = checkpointer
             subagent_specs = self._get_subagents()
         else:
             msg = "SubAgentMiddleware requires either `backend` (new API) or `default_model` (deprecated API)"
@@ -663,6 +714,7 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
                         tools=spec["tools"],
                         middleware=middleware,
                         name=spec["name"],
+                        checkpointer=self._checkpointer,
                     ),
                 }
             )
@@ -671,9 +723,9 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
 
     def wrap_model_call(
         self,
-        request: ModelRequest[ContextT],
-        handler: Callable[[ModelRequest[ContextT]], ModelResponse[ResponseT]],
-    ) -> ModelResponse[ResponseT]:
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], ModelResponse],
+    ) -> ModelResponse:
         """Update the system message to include instructions on using subagents."""
         if self.system_prompt is not None:
             new_system_message = append_to_system_message(request.system_message, self.system_prompt)
@@ -682,9 +734,9 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
 
     async def awrap_model_call(
         self,
-        request: ModelRequest[ContextT],
-        handler: Callable[[ModelRequest[ContextT]], Awaitable[ModelResponse[ResponseT]]],
-    ) -> ModelResponse[ResponseT]:
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
+    ) -> ModelResponse:
         """(async) Update the system message to include instructions on using subagents."""
         if self.system_prompt is not None:
             new_system_message = append_to_system_message(request.system_message, self.system_prompt)

@@ -127,6 +127,111 @@ class TestSubAgents:
         subagent_tool_message = tool_messages[0]
         assert "The sum of 2 and 3 is 5." in subagent_tool_message.content, "ToolMessage should contain subagent's final message content"
 
+    def test_subagent_tool_result_includes_transcript_artifact_and_checkpoint_ns(self) -> None:
+        """Subagent invocations should persist enough data for UI replay after reload.
+
+        This is a "fork-style" workaround for UIs that want to show subagent progress
+        (tool calls + results) even after a page refresh, without bloating the main
+        agent prompt. We attach the full subagent transcript to the returned
+        ToolMessage via `artifact`, and we run the subagent under an isolated
+        checkpoint namespace.
+        """
+
+        @tool
+        def add(a: int, b: int) -> str:
+            """Add two integers."""
+            return str(a + b)
+
+        thread_id = "test_thread_subagent_artifact"
+        memory = InMemorySaver()
+
+        parent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {
+                                    "description": "Compute 2+3 using the add tool",
+                                    "subagent_type": "worker",
+                                },
+                                "id": "call_worker_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        subagent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "add",
+                                "args": {"a": 2, "b": 3},
+                                "id": "call_add_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="2 + 3 = 5"),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=parent_chat_model,
+            tools=[add],
+            checkpointer=memory,
+            subagents=[
+                {
+                    "name": "worker",
+                    "description": "Computes small arithmetic tasks.",
+                    "system_prompt": "Use the add tool when needed.",
+                    "model": subagent_chat_model,
+                    "tools": [add],
+                }
+            ],
+        )
+
+        result = agent.invoke(
+            {"messages": [HumanMessage(content="What is 2+3?")]},
+            config={"configurable": {"thread_id": thread_id}},
+        )
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert tool_messages, "Expected ToolMessage returned from task tool"
+
+        task_result = tool_messages[0]
+        assert task_result.tool_call_id == "call_worker_1"
+
+        # The fork workaround: include a replayable transcript + subagent checkpoint namespace.
+        assert isinstance(task_result.artifact, dict)
+        assert task_result.artifact["type"] == "deepagents.subagent"
+        assert task_result.artifact["subagent_type"] == "worker"
+
+        expected_checkpoint_ns_suffix = "subagent:worker:call_worker_1"
+        checkpoint_ns = task_result.artifact["checkpoint_ns"]
+        assert isinstance(checkpoint_ns, str)
+        assert checkpoint_ns.endswith(expected_checkpoint_ns_suffix)
+
+        transcript = task_result.artifact["messages"]
+        assert isinstance(transcript, list)
+        assert any(m.get("type") == "ai" for m in transcript), "Expected AIMessage(s) in transcript"
+        assert any(m.get("type") == "tool" for m in transcript), "Expected ToolMessage(s) in transcript"
+
+        # Ensure the subagent wrote checkpoints under an isolated namespace.
+        assert thread_id in memory.storage
+        assert checkpoint_ns in memory.storage[thread_id]
+        assert memory.storage[thread_id][checkpoint_ns], "Expected at least one checkpoint in subagent namespace"
+
     def test_multiple_subagents_invoked_in_parallel(self) -> None:
         """Test that multiple different subagents can be launched in parallel.
 

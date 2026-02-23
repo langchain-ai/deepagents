@@ -151,8 +151,9 @@ __DEEPAGENTS_EOF__"""
 _READ_COMMAND_TEMPLATE = """python3 -c "
 import os
 import sys
+import base64
 
-file_path = '{file_path}'
+file_path = base64.b64decode('{file_path_b64}').decode('utf-8')
 offset = {offset}
 limit = {limit}
 
@@ -195,14 +196,19 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
     def execute(
         self,
         command: str,
+        *,
+        timeout: int | None = None,
     ) -> ExecuteResponse:
         """Execute a command in the sandbox and return ExecuteResponse.
 
         Args:
             command: Full shell command string to execute.
+            timeout: Maximum time in seconds to wait for the command to complete.
+
+                If None, uses the backend's default timeout.
 
         Returns:
-            ExecuteResponse with combined output, exit code, optional signal, and truncation flag.
+            ExecuteResponse with combined output, exit code, and truncation flag.
         """
 
     def ls_info(self, path: str) -> list[FileInfo]:
@@ -250,7 +256,8 @@ except PermissionError:
     ) -> str:
         """Read file content with line numbers using a single shell command."""
         # Use template for reading file with offset and limit
-        cmd = _READ_COMMAND_TEMPLATE.format(file_path=file_path, offset=offset, limit=limit)
+        file_path_b64 = base64.b64encode(file_path.encode("utf-8")).decode("ascii")
+        cmd = _READ_COMMAND_TEMPLATE.format(file_path_b64=file_path_b64, offset=int(offset), limit=int(limit))
         result = self.execute(cmd)
 
         output = result.output.rstrip()
@@ -290,7 +297,7 @@ except PermissionError:
         file_path: str,
         old_string: str,
         new_string: str,
-        replace_all: bool = False,
+        replace_all: bool = False,  # noqa: FBT001, FBT002
     ) -> EditResult:
         """Edit a file by replacing string occurrences. Returns EditResult."""
         # Create JSON payload with file path, old string, and new string

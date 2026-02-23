@@ -38,7 +38,7 @@ class MockSandbox(BaseSandbox):
     def id(self) -> str:
         return "mock-sandbox"
 
-    def execute(self, command: str) -> ExecuteResponse:
+    def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
         self.last_command = command
         # Return "1" for edit commands (simulates 1 occurrence replaced)
         return ExecuteResponse(output="1", exit_code=0, truncated=False)
@@ -90,10 +90,11 @@ def test_glob_command_template_format() -> None:
 
 def test_read_command_template_format() -> None:
     """Test that _READ_COMMAND_TEMPLATE can be formatted without KeyError."""
-    cmd = _READ_COMMAND_TEMPLATE.format(file_path="/test/file.txt", offset=0, limit=100)
+    file_path_b64 = base64.b64encode(b"/test/file.txt").decode("ascii")
+    cmd = _READ_COMMAND_TEMPLATE.format(file_path_b64=file_path_b64, offset=0, limit=100)
 
     assert "python3 -c" in cmd
-    assert "/test/file.txt" in cmd
+    assert file_path_b64 in cmd
 
 
 def test_sandbox_write_method() -> None:

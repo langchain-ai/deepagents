@@ -28,15 +28,20 @@ class FeedbackOption(Static):
             super().__init__()
             self.url = url
 
-    def __init__(self, label: str, url: str, *args: object) -> None:
+    def __init__(
+        self,
+        label: str,
+        url: str,
+        **kwargs: object,
+    ) -> None:
         """Initialize the FeedbackOption.
 
         Args:
             label: The display label for this option.
             url: The URL to open when this option is clicked.
-            *args: Additional arguments passed to parent.
+            **kwargs: Additional arguments passed to parent.
         """
-        super().__init__(*args)
+        super().__init__(label, **kwargs)
         self.label = label
         self.url = url
 

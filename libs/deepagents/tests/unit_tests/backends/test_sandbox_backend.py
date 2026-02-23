@@ -175,35 +175,3 @@ def test_sandbox_grep_literal_search() -> None:
     # Verify the command uses grep -rHnF for literal search (combined flags)
     assert sandbox.last_command is not None
     assert "grep -rHnF" in sandbox.last_command
-
-
-class EmptyOutputSandbox(MockSandbox):
-    """MockSandbox that returns empty output, suitable for ls_info/read tests."""
-
-    def execute(self, command: str) -> ExecuteResponse:
-        self.last_command = command
-        return ExecuteResponse(output="", exit_code=0, truncated=False)
-
-
-def test_sandbox_ls_info_path_is_sanitized() -> None:
-    """Test that ls_info base64-encodes paths to prevent injection."""
-    sandbox = EmptyOutputSandbox()
-
-    malicious_path = "'; import os; os.system('echo INJECTED'); #"
-    sandbox.ls_info(malicious_path)
-
-    assert sandbox.last_command is not None
-    assert malicious_path not in sandbox.last_command
-    assert "base64" in sandbox.last_command
-
-
-def test_sandbox_read_path_is_sanitized() -> None:
-    """Test that read base64-encodes paths to prevent injection."""
-    sandbox = EmptyOutputSandbox()
-
-    malicious_path = "'; import os; os.system('echo INJECTED'); #"
-    sandbox.read(malicious_path)
-
-    assert sandbox.last_command is not None
-    assert malicious_path not in sandbox.last_command
-    assert "base64" in sandbox.last_command

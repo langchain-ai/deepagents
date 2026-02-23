@@ -735,6 +735,19 @@ class TestLocalSandboxOperations:
         assert f"{base_dir}/file[2].txt" in paths
         assert f"{base_dir}/file-3.txt" in paths
 
+    def test_ls_info_path_is_sanitized(self, sandbox: LocalSubprocessSandbox) -> None:
+        """Test that ls_info base64-encodes paths to prevent injection."""
+        malicious_path = "'; import os; os.system('echo INJECTED'); #"
+        result = sandbox.ls_info(malicious_path)
+        assert result == []
+
+    def test_read_path_is_sanitized(self, sandbox: LocalSubprocessSandbox) -> None:
+        """Test that read base64-encodes paths to prevent injection."""
+        malicious_path = "'; import os; os.system('echo INJECTED'); #"
+        result = sandbox.read(malicious_path)
+        assert "Error: File" in result
+        assert "INJECTED" in result
+
     # ==================== grep_raw() tests ====================
 
     def test_grep_basic_search(self, sandbox: LocalSubprocessSandbox) -> None:

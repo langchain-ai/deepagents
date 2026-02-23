@@ -2503,10 +2503,9 @@ def test_usage_metadata_trigger() -> None:
     assert len(backend.write_calls) == 1
 
 
-@pytest.mark.anyio
 async def test_async_offload_and_summary_run_concurrently() -> None:
     """Verify that _aoffload_to_backend and _acreate_summary run in parallel."""
-    delay = 0.3
+    delay = 0.1
     backend = MockBackend()
     mock_model = make_mock_model()
 
@@ -2546,5 +2545,5 @@ async def test_async_offload_and_summary_run_concurrently() -> None:
         elapsed = time.monotonic() - start
 
     assert isinstance(result, ExtendedModelResponse)
-    # If sequential, elapsed >= 2 * delay (0.6s). If parallel, elapsed ~ delay (0.3s).
+    # If sequential, elapsed >= 2 * delay (0.2s). If parallel, elapsed ~ delay (0.1s).
     assert elapsed < 2 * delay, f"Expected parallel execution (<{2 * delay}s) but took {elapsed:.2f}s"

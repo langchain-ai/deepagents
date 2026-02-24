@@ -9,10 +9,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from typing_extensions import TypedDict
+
 import pytest
 from langchain_core.tools import ToolException, tool
 
 from deepagents import create_deep_agent
+from langchain_pydantic import MontyMiddleware
 
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
@@ -28,7 +31,46 @@ from tests.evals.utils import (
 # Static relational data
 # ---------------------------------------------------------------------------
 
-USER_DATA = [
+
+class UserRecord(TypedDict):
+    id: int
+    name: str
+    email: str
+    location: int
+    favorite_color: str
+    favorite_foods: list[int]
+
+
+class LocationRecord(TypedDict):
+    id: int
+    city: str
+    current_time: str
+    current_weather: str
+
+
+class FoodRecord(TypedDict):
+    id: int
+    name: str
+    calories: int
+    allergic_ingredients: list[str]
+
+
+class UserSearchResult(TypedDict):
+    id: int
+    name: str
+
+
+class LocationSearchResult(TypedDict):
+    id: int
+    city: str
+
+
+class FoodSearchResult(TypedDict):
+    id: int
+    name: str
+
+
+USER_DATA: list[UserRecord] = [
     {
         "id": 1,
         "name": "Alice",
@@ -79,7 +121,7 @@ USER_DATA = [
     },
 ]
 
-LOCATION_DATA = [
+LOCATION_DATA: list[LocationRecord] = [
     {
         "id": 1,
         "city": "New York",
@@ -112,7 +154,7 @@ LOCATION_DATA = [
     },
 ]
 
-FOOD_DATA = [
+FOOD_DATA: list[FoodRecord] = [
     {
         "id": 1,
         "name": "Pizza",
@@ -163,7 +205,11 @@ FOOD_DATA = [
 # ---------------------------------------------------------------------------
 
 
-def _similarity_search(data: list[dict], query: str, key: str) -> list[dict]:
+def _similarity_search(
+    data: list[UserRecord] | list[LocationRecord] | list[FoodRecord],
+    query: str,
+    key: str,
+) -> list[UserSearchResult] | list[LocationSearchResult] | list[FoodSearchResult]:
     """Jaccard-similarity search over a string field."""
 
     def _score(x: str) -> float:
@@ -173,7 +219,7 @@ def _similarity_search(data: list[dict], query: str, key: str) -> list[dict]:
     return [{"id": d["id"], key: d[key]} for d in ranked]
 
 
-def _get_user(user_id: int) -> dict:
+def _get_user(user_id: int) -> UserRecord:
     for user in USER_DATA:
         if user["id"] == user_id:
             return user
@@ -181,7 +227,7 @@ def _get_user(user_id: int) -> dict:
     raise ToolException(msg)
 
 
-def _get_location(location_id: int) -> dict:
+def _get_location(location_id: int) -> LocationRecord:
     for loc in LOCATION_DATA:
         if loc["id"] == location_id:
             return loc
@@ -189,7 +235,7 @@ def _get_location(location_id: int) -> dict:
     raise ToolException(msg)
 
 
-def _get_food(food_id: int) -> dict:
+def _get_food(food_id: int) -> FoodRecord:
     for food in FOOD_DATA:
         if food["id"] == food_id:
             return food
@@ -219,7 +265,7 @@ def list_user_ids() -> list[int]:
 
 
 @tool
-def find_users_by_name(name: str) -> list[dict]:
+def find_users_by_name(name: str) -> list[UserSearchResult]:
     """Find users with the given name.
 
     Args:
@@ -229,7 +275,7 @@ def find_users_by_name(name: str) -> list[dict]:
 
 
 @tool
-def find_locations_by_name(city: str) -> list[dict]:
+def find_locations_by_name(city: str) -> list[LocationSearchResult]:
     """Find locations with the given city name.
 
     Args:
@@ -239,7 +285,7 @@ def find_locations_by_name(city: str) -> list[dict]:
 
 
 @tool
-def find_foods_by_name(food: str) -> list[dict]:
+def find_foods_by_name(food: str) -> list[FoodSearchResult]:
     """Find foods with the given name.
 
     Args:
@@ -377,18 +423,31 @@ RELATIONAL_TOOLS = [
     get_current_user_id,
 ]
 
+RELATIONAL_TOOL_NAMES = [tool.name for tool in RELATIONAL_TOOLS]
+RELATIONAL_TOOL_IMPLEMENTATIONS = {tool.name: tool for tool in RELATIONAL_TOOLS}
+
 # ---------------------------------------------------------------------------
 # Test cases
 # ---------------------------------------------------------------------------
 
 
+def _create_relational_monty_agent(model: BaseChatModel):
+    return create_deep_agent(
+        model=model,
+        middleware=[
+            MontyMiddleware(
+                external_functions=RELATIONAL_TOOL_NAMES,
+                external_function_implementations=RELATIONAL_TOOL_IMPLEMENTATIONS,
+                auto_include=True,
+            )
+        ],
+    )
+
+
 @pytest.mark.langsmith
 def test_single_tool_list_user_ids(model: BaseChatModel) -> None:
     """Agent lists all user IDs with a single tool call."""
-    agent = create_deep_agent(
-        model=model,
-        tools=RELATIONAL_TOOLS,
-    )
+    agent = _create_relational_monty_agent(model)
     run_agent(
         agent,
         model=model,
@@ -416,10 +475,7 @@ def test_single_tool_list_user_ids(model: BaseChatModel) -> None:
 @pytest.mark.langsmith
 def test_single_tool_get_user_email(model: BaseChatModel) -> None:
     """Agent retrieves a user's email by ID."""
-    agent = create_deep_agent(
-        model=model,
-        tools=RELATIONAL_TOOLS,
-    )
+    agent = _create_relational_monty_agent(model)
     run_agent(
         agent,
         model=model,
@@ -442,10 +498,7 @@ def test_single_tool_get_user_email(model: BaseChatModel) -> None:
 @pytest.mark.langsmith
 def test_single_tool_get_food_calories(model: BaseChatModel) -> None:
     """Agent retrieves calorie info for a food by ID."""
-    agent = create_deep_agent(
-        model=model,
-        tools=RELATIONAL_TOOLS,
-    )
+    agent = _create_relational_monty_agent(model)
     run_agent(
         agent,
         model=model,
@@ -468,10 +521,7 @@ def test_single_tool_get_food_calories(model: BaseChatModel) -> None:
 @pytest.mark.langsmith
 def test_two_tools_user_name_from_current_id(model: BaseChatModel) -> None:
     """Agent gets the current user ID, then looks up the name."""
-    agent = create_deep_agent(
-        model=model,
-        tools=RELATIONAL_TOOLS,
-    )
+    agent = _create_relational_monty_agent(model)
     run_agent(
         agent,
         model=model,
@@ -498,10 +548,7 @@ def test_two_tools_user_name_from_current_id(model: BaseChatModel) -> None:
 @pytest.mark.langsmith
 def test_two_tools_city_for_user(model: BaseChatModel) -> None:
     """Agent resolves user 1's location ID, then gets the city name."""
-    agent = create_deep_agent(
-        model=model,
-        tools=RELATIONAL_TOOLS,
-    )
+    agent = _create_relational_monty_agent(model)
     run_agent(
         agent,
         model=model,
@@ -528,10 +575,7 @@ def test_two_tools_city_for_user(model: BaseChatModel) -> None:
 @pytest.mark.langsmith
 def test_two_tools_find_user_then_email(model: BaseChatModel) -> None:
     """Agent searches for a user by name, then gets their email."""
-    agent = create_deep_agent(
-        model=model,
-        tools=RELATIONAL_TOOLS,
-    )
+    agent = _create_relational_monty_agent(model)
     run_agent(
         agent,
         model=model,
@@ -558,10 +602,7 @@ def test_two_tools_find_user_then_email(model: BaseChatModel) -> None:
 @pytest.mark.langsmith
 def test_three_tools_current_user_city(model: BaseChatModel) -> None:
     """Agent resolves current user -> location ID -> city name."""
-    agent = create_deep_agent(
-        model=model,
-        tools=RELATIONAL_TOOLS,
-    )
+    agent = _create_relational_monty_agent(model)
     run_agent(
         agent,
         model=model,
@@ -590,10 +631,7 @@ def test_three_tools_current_user_city(model: BaseChatModel) -> None:
 @pytest.mark.langsmith
 def test_three_tools_find_user_then_city(model: BaseChatModel) -> None:
     """Agent searches for Alice by name, gets her location ID, then resolves the city."""
-    agent = create_deep_agent(
-        model=model,
-        tools=RELATIONAL_TOOLS,
-    )
+    agent = _create_relational_monty_agent(model)
     run_agent(
         agent,
         model=model,
@@ -622,10 +660,7 @@ def test_three_tools_find_user_then_city(model: BaseChatModel) -> None:
 @pytest.mark.langsmith
 def test_three_tools_current_user_weather(model: BaseChatModel) -> None:
     """Agent resolves current user -> location ID -> weather."""
-    agent = create_deep_agent(
-        model=model,
-        tools=RELATIONAL_TOOLS,
-    )
+    agent = _create_relational_monty_agent(model)
     run_agent(
         agent,
         model=model,
@@ -654,10 +689,7 @@ def test_three_tools_current_user_weather(model: BaseChatModel) -> None:
 @pytest.mark.langsmith
 def test_four_tools_current_user_favorite_food_names(model: BaseChatModel) -> None:
     """Agent resolves current user -> favorite food IDs -> food names (parallel)."""
-    agent = create_deep_agent(
-        model=model,
-        tools=RELATIONAL_TOOLS,
-    )
+    agent = _create_relational_monty_agent(model)
     run_agent(
         agent,
         model=model,
@@ -691,10 +723,7 @@ def test_four_tools_current_user_favorite_food_names(model: BaseChatModel) -> No
 @pytest.mark.langsmith
 def test_four_tools_find_user_food_name_and_calories(model: BaseChatModel) -> None:
     """Agent finds Frank The Cat -> fav foods -> food name + calories (parallel)."""
-    agent = create_deep_agent(
-        model=model,
-        tools=RELATIONAL_TOOLS,
-    )
+    agent = _create_relational_monty_agent(model)
     run_agent(
         agent,
         model=model,
@@ -726,10 +755,7 @@ def test_four_tools_find_user_food_name_and_calories(model: BaseChatModel) -> No
 @pytest.mark.langsmith
 def test_four_tools_current_user_location_time_and_weather(model: BaseChatModel) -> None:
     """Agent resolves current user -> location -> time + weather (parallel)."""
-    agent = create_deep_agent(
-        model=model,
-        tools=RELATIONAL_TOOLS,
-    )
+    agent = _create_relational_monty_agent(model)
     run_agent(
         agent,
         model=model,
@@ -762,10 +788,7 @@ def test_four_tools_current_user_location_time_and_weather(model: BaseChatModel)
 @pytest.mark.langsmith
 def test_five_steps_current_user_food_names_and_calories(model: BaseChatModel) -> None:
     """Agent resolves current user -> fav foods -> names + calories (all parallel)."""
-    agent = create_deep_agent(
-        model=model,
-        tools=RELATIONAL_TOOLS,
-    )
+    agent = _create_relational_monty_agent(model)
     run_agent(
         agent,
         model=model,
@@ -804,10 +827,7 @@ def test_five_steps_current_user_food_names_and_calories(model: BaseChatModel) -
 @pytest.mark.langsmith
 def test_four_steps_find_user_city_and_weather(model: BaseChatModel) -> None:
     """Agent finds Bob -> location -> city + time + weather (parallel)."""
-    agent = create_deep_agent(
-        model=model,
-        tools=RELATIONAL_TOOLS,
-    )
+    agent = _create_relational_monty_agent(model)
     run_agent(
         agent,
         model=model,
@@ -842,10 +862,7 @@ def test_four_steps_find_user_city_and_weather(model: BaseChatModel) -> None:
 @pytest.mark.langsmith
 def test_four_steps_find_user_food_allergies(model: BaseChatModel) -> None:
     """Agent finds Alice -> fav foods -> food names + allergies (all parallel)."""
-    agent = create_deep_agent(
-        model=model,
-        tools=RELATIONAL_TOOLS,
-    )
+    agent = _create_relational_monty_agent(model)
     run_agent(
         agent,
         model=model,

@@ -7,6 +7,9 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Generic
 
 from langgraph.config import get_config
+
+if TYPE_CHECKING:
+    from langchain.tools import ToolRuntime
 from langgraph.store.base import BaseStore, Item
 from langgraph.typing import ContextT, StateT
 
@@ -100,7 +103,7 @@ class StoreBackend(BackendProtocol):
     The namespace can include an optional assistant_id for multi-agent isolation.
     """
 
-    def __init__(self, runtime: "ToolRuntime", *, namespace: NamespaceFactory | None = None):
+    def __init__(self, runtime: "ToolRuntime", *, namespace: NamespaceFactory | None = None) -> None:
         """Initialize StoreBackend with runtime.
 
         Args:
@@ -145,7 +148,7 @@ class StoreBackend(BackendProtocol):
         """
         if self._namespace is not None:
             state = getattr(self.runtime, "state", None)
-            ctx = BackendContext(state=state, runtime=self.runtime)
+            ctx = BackendContext(state=state, runtime=self.runtime)  # ty: ignore[invalid-argument-type]
             return _validate_namespace(self._namespace(ctx))
 
         return self._get_namespace_legacy()
@@ -183,12 +186,12 @@ class StoreBackend(BackendProtocol):
         # called outside of a runnable context
         try:
             cfg = get_config()
-        except Exception:
+        except Exception:  # noqa: BLE001  # Intentional for resilient config fallback
             return (namespace,)
 
         try:
-            assistant_id = cfg.get("metadata", {}).get("assistant_id")  # type: ignore[assignment]
-        except Exception:
+            assistant_id = cfg.get("metadata", {}).get("assistant_id")
+        except Exception:  # noqa: BLE001  # Intentional for resilient config fallback
             assistant_id = None
 
         if assistant_id:
@@ -243,7 +246,7 @@ class StoreBackend(BackendProtocol):
         namespace: tuple[str, ...],
         *,
         query: str | None = None,
-        filter: dict[str, Any] | None = None,
+        filter: dict[str, Any] | None = None,  # noqa: A002  # Matches LangGraph BaseStore.search() API
         page_size: int = 100,
     ) -> list[Item]:
         """Search store with automatic pagination to retrieve all results.
@@ -337,15 +340,7 @@ class StoreBackend(BackendProtocol):
             )
 
         # Add directories to the results
-        for subdir in sorted(subdirs):
-            infos.append(
-                {
-                    "path": subdir,
-                    "is_dir": True,
-                    "size": 0,
-                    "modified_at": "",
-                }
-            )
+        infos.extend(FileInfo(path=subdir, is_dir=True, size=0, modified_at="") for subdir in sorted(subdirs))
 
         infos.sort(key=lambda x: x.get("path", ""))
         return infos
@@ -410,6 +405,7 @@ class StoreBackend(BackendProtocol):
         content: str,
     ) -> WriteResult:
         """Create a new file with content.
+
         Returns WriteResult. External storage sets files_update=None.
         """
         store = self._get_store()
@@ -454,9 +450,10 @@ class StoreBackend(BackendProtocol):
         file_path: str,
         old_string: str,
         new_string: str,
-        replace_all: bool = False,
+        replace_all: bool = False,  # noqa: FBT001, FBT002
     ) -> EditResult:
         """Edit a file by replacing string occurrences.
+
         Returns EditResult. External storage sets files_update=None.
         """
         store = self._get_store()
@@ -491,7 +488,7 @@ class StoreBackend(BackendProtocol):
         file_path: str,
         old_string: str,
         new_string: str,
-        replace_all: bool = False,
+        replace_all: bool = False,  # noqa: FBT001, FBT002
     ) -> EditResult:
         """Async version of edit using native store async methods.
 
@@ -529,9 +526,10 @@ class StoreBackend(BackendProtocol):
     def grep_raw(
         self,
         pattern: str,
-        path: str = "/",
+        path: str | None = None,
         glob: str | None = None,
     ) -> list[GrepMatch] | str:
+        """Search store files for a literal text pattern."""
         store = self._get_store()
         namespace = self._get_namespace()
         items = self._search_store_paginated(store, namespace)
@@ -544,6 +542,7 @@ class StoreBackend(BackendProtocol):
         return grep_matches_from_files(files, pattern, path, glob)
 
     def glob_info(self, pattern: str, path: str = "/") -> list[FileInfo]:
+        """Find files matching a glob pattern in the store."""
         store = self._get_store()
         namespace = self._get_namespace()
         items = self._search_store_paginated(store, namespace)

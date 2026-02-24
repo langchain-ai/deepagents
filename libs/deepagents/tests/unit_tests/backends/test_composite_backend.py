@@ -1106,3 +1106,67 @@ def test_composite_glob_info_nested_path_in_route() -> None:
     result_paths = sorted([fi["path"] for fi in results])
 
     assert result_paths == ["/archive/2024/feb.log", "/archive/2024/jan.log"]
+
+
+# --- Tests for path stripping consistency ---
+
+
+def test_grep_raw_path_stripping_matches_get_backend_and_key() -> None:
+    """Verify grep_raw strips route prefix the same way as _get_backend_and_key."""
+    rt = make_runtime("t_strip1")
+    store = StoreBackend(rt)
+    state = StateBackend(rt)
+    comp = CompositeBackend(default=state, routes={"/memories/": store})
+
+    comp.write("/memories/readme.md", "hello world")
+
+    # Search with trailing slash (exact route prefix)
+    matches = comp.grep_raw("hello", path="/memories/")
+    assert isinstance(matches, list)
+    assert any(m["path"] == "/memories/readme.md" for m in matches)
+
+    # Search with nested path inside route
+    matches2 = comp.grep_raw("hello", path="/memories/readme.md")
+    assert isinstance(matches2, list)
+
+
+def test_glob_info_path_stripping_matches_get_backend_and_key() -> None:
+    """Verify glob_info strips route prefix the same way as _get_backend_and_key."""
+    rt = make_runtime("t_strip2")
+    store = StoreBackend(rt)
+    state = StateBackend(rt)
+    comp = CompositeBackend(default=state, routes={"/memories/": store})
+
+    comp.write("/memories/notes.txt", "content")
+
+    # Glob with trailing slash
+    results = comp.glob_info("*.txt", path="/memories/")
+    assert any(fi["path"] == "/memories/notes.txt" for fi in results)
+
+
+def test_get_backend_and_key_consistency() -> None:
+    """Verify _get_backend_and_key produces correct stripped paths."""
+    rt = make_runtime("t_strip3")
+    store = StoreBackend(rt)
+    state = StateBackend(rt)
+    comp = CompositeBackend(default=state, routes={"/memories/": store})
+
+    # Exact route prefix
+    backend, stripped = comp._get_backend_and_key("/memories/")
+    assert backend is store
+    assert stripped == "/"
+
+    # File inside route
+    backend, stripped = comp._get_backend_and_key("/memories/notes.txt")
+    assert backend is store
+    assert stripped == "/notes.txt"
+
+    # Nested path inside route
+    backend, stripped = comp._get_backend_and_key("/memories/sub/file.txt")
+    assert backend is store
+    assert stripped == "/sub/file.txt"
+
+    # Path not matching any route
+    backend, stripped = comp._get_backend_and_key("/other/file.txt")
+    assert backend is state
+    assert stripped == "/other/file.txt"

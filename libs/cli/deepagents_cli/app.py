@@ -16,7 +16,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from rich.text import Text
 from textual.app import App
 from textual.binding import Binding, BindingType
@@ -25,7 +24,6 @@ from textual.css.query import NoMatches
 from textual.screen import ModalScreen
 from textual.widgets import Static
 
-from deepagents_cli.agent import create_cli_agent
 from deepagents_cli.clipboard import copy_selection_to_clipboard
 from deepagents_cli.config import (
     DOCS_URL,
@@ -38,20 +36,17 @@ from deepagents_cli.config import (
     is_shell_command_allowed,
     settings,
 )
-from deepagents_cli.model_config import (
-    ModelConfigError,
-    ModelSpec,
-    clear_default_model,
-    get_credential_env_var,
-    has_provider_credentials,
-    save_default_model,
-    save_recent_model,
-)
+from deepagents_cli.model_config import ModelSpec, save_recent_model
 from deepagents_cli.textual_adapter import TextualUIAdapter, execute_task_textual
 from deepagents_cli.widgets.approval import ApprovalMenu
 from deepagents_cli.widgets.chat_input import ChatInput
 from deepagents_cli.widgets.loading import LoadingWidget
-from deepagents_cli.widgets.message_store import MessageData, MessageStore
+from deepagents_cli.widgets.message_store import (
+    MessageData,
+    MessageStore,
+    MessageType,
+    ToolStatus,
+)
 from deepagents_cli.widgets.messages import (
     AppMessage,
     AssistantMessage,
@@ -76,7 +71,7 @@ if TYPE_CHECKING:
     from langgraph.checkpoint.base import BaseCheckpointSaver
     from langgraph.pregel import Pregel
     from textual.app import ComposeResult
-    from textual.events import Click, MouseUp, Resize
+    from textual.events import Click, MouseUp, Paste, Resize
     from textual.scrollbar import ScrollUp
     from textual.widget import Widget
     from textual.worker import Worker
@@ -105,6 +100,22 @@ _IS_ITERM = (
 # Where OSC = ESC ] (0x1b 0x5d) and ST = ESC \ (0x1b 0x5c)
 _ITERM_CURSOR_GUIDE_OFF = "\x1b]1337;HighlightCursorLine=no\x1b\\"
 _ITERM_CURSOR_GUIDE_ON = "\x1b]1337;HighlightCursorLine=yes\x1b\\"
+
+
+def _format_token_count(count: int) -> str:
+    """Format a token count into a human-readable short string.
+
+    Args:
+        count: Number of tokens.
+
+    Returns:
+        Formatted string like `"12.5K"`, `"1.2M"`, or `"500"`.
+    """
+    if count >= 1_000_000:  # noqa: PLR2004
+        return f"{count / 1_000_000:.1f}M"
+    if count >= 1000:  # noqa: PLR2004
+        return f"{count / 1000:.1f}K"
+    return str(count)
 
 
 def _write_iterm_escape(sequence: str) -> None:
@@ -453,6 +464,11 @@ class DeepAgentsApp(App):
         self._processing_pending = False
         # Message virtualization store
         self._message_store = MessageStore()
+        # Lazily imported here to avoid pulling image dependencies into
+        # argument parsing paths.
+        from deepagents_cli.input import ImageTracker
+
+        self._image_tracker = ImageTracker()
 
     def compose(self) -> ComposeResult:
         """Compose the application layout.
@@ -466,7 +482,11 @@ class DeepAgentsApp(App):
             yield WelcomeBanner(thread_id=self._lc_thread_id, id="welcome-banner")
             yield Container(id="messages")
             with Container(id="bottom-app-container"):
-                yield ChatInput(cwd=self._cwd, id="input-area")
+                yield ChatInput(
+                    cwd=self._cwd,
+                    image_tracker=self._image_tracker,
+                    id="input-area",
+                )
             yield Static(id="chat-spacer")  # Fills remaining space below input
 
         # Status bar at bottom
@@ -512,6 +532,28 @@ class DeepAgentsApp(App):
 
         # Focus the input (autocomplete is now built into ChatInput)
         self._chat_input.focus_input()
+
+        # Warn about missing optional tools (advisory only — never block startup)
+        try:
+            from deepagents_cli.main import (
+                check_optional_tools,
+                format_tool_warning_tui,
+            )
+        except ImportError:
+            logger.warning(
+                "Could not import optional tools checker; skipping tool warnings",
+                exc_info=True,
+            )
+        else:
+            try:
+                for tool in check_optional_tools():
+                    self.notify(
+                        format_tool_warning_tui(tool),
+                        severity="warning",
+                        timeout=15,
+                    )
+            except Exception:
+                logger.debug("Failed to check for optional tools", exc_info=True)
 
         # Size the spacer to fill remaining viewport below input
         self.call_after_refresh(self._size_initial_spacer)
@@ -576,7 +618,7 @@ class DeepAgentsApp(App):
         # Sticky scroll: only scroll to bottom if user is near the bottom
         # "Near" means within 100 pixels of the bottom (about 6-7 lines)
         distance_from_bottom = chat.max_scroll_y - chat.scroll_y
-        if distance_from_bottom < 100:
+        if distance_from_bottom < 100:  # noqa: PLR2004  # Token count threshold
             chat.scroll_end(animate=False)
 
     def _check_hydration_needed(self) -> None:
@@ -645,7 +687,7 @@ class DeepAgentsApp(App):
                     exc_info=True,
                 )
 
-        for widget, _msg_data in reversed(hydrated_widgets):
+        for widget, msg_data in reversed(hydrated_widgets):
             try:
                 if first_child:
                     await messages_container.mount(widget, before=first_child)
@@ -653,6 +695,9 @@ class DeepAgentsApp(App):
                     await messages_container.mount(widget)
                 first_child = widget
                 hydrated_count += 1
+                # Render Markdown content for hydrated assistant messages
+                if isinstance(widget, AssistantMessage) and msg_data.content:
+                    await widget.set_content(msg_data.content)
             except Exception:
                 logger.warning(
                     "Failed to mount hydrated widget %s",
@@ -777,7 +822,7 @@ class DeepAgentsApp(App):
 
     async def _request_approval(
         self,
-        action_requests: Any,
+        action_requests: Any,  # noqa: ANN401  # ActionRequest uses dynamic typing
         assistant_id: str | None,
     ) -> asyncio.Future:
         """Request user approval inline in the messages area.
@@ -830,14 +875,14 @@ class DeepAgentsApp(App):
                         )
                         await self._mount_before_queued(messages, auto_msg)
                     self._scroll_chat_to_bottom()
-                except Exception:  # noqa: S110
+                except Exception:  # noqa: S110, BLE001  # Resilient auto-message display
                     pass  # Don't fail if we can't show the message
 
                 return result_future
 
         # If there's already a pending approval, wait for it to complete first
         if self._pending_approval_widget is not None:
-            while self._pending_approval_widget is not None:
+            while self._pending_approval_widget is not None:  # noqa: ASYNC110  # Simple polling is sufficient here
                 await asyncio.sleep(0.1)
 
         # Create menu with unique ID to avoid conflicts
@@ -901,7 +946,7 @@ class DeepAgentsApp(App):
     async def on_chat_input_submitted(self, event: ChatInput.Submitted) -> None:
         """Handle submitted input from ChatInput widget."""
         value = event.value
-        mode: InputMode = event.mode  # type: ignore[assignment]
+        mode: InputMode = event.mode  # type: ignore[assignment]  # Textual event mode is str at type level but InputMode at runtime
 
         # Reset quit pending state on any input
         self._quit_pending = False
@@ -923,7 +968,7 @@ class DeepAgentsApp(App):
 
     async def on_approval_menu_decided(
         self,
-        event: Any,
+        event: Any,  # noqa: ARG002, ANN401  # Textual event handler signature
     ) -> None:
         """Handle approval menu decision - remove from messages and refocus input."""
         # Remove ApprovalMenu using stored reference
@@ -1023,7 +1068,7 @@ class DeepAgentsApp(App):
                 asyncio.to_thread(build_langsmith_thread_url, thread_id),
                 timeout=2.0,
             )
-        except (TimeoutError, Exception):
+        except (TimeoutError, Exception):  # noqa: BLE001  # Resilient non-interactive mode error handling
             url = None
 
         if url:
@@ -1104,15 +1149,34 @@ class DeepAgentsApp(App):
             await self._open_url_command(command, cmd)
         elif cmd == "/version":
             await self._mount_message(UserMessage(command))
-            # Show CLI package version
+            # Show CLI and SDK package versions
             try:
-                from deepagents_cli._version import __version__
-
-                await self._mount_message(
-                    AppMessage(f"deepagents version: {__version__}")
+                from deepagents_cli._version import (
+                    __version__ as cli_version,
                 )
+
+                cli_line = f"deepagents-cli version: {cli_version}"
+            except ImportError:
+                logger.debug("deepagents_cli._version module not found")
+                cli_line = "deepagents-cli version: unknown"
             except Exception:
-                await self._mount_message(AppMessage("deepagents version: unknown"))
+                logger.warning("Unexpected error looking up CLI version", exc_info=True)
+                cli_line = "deepagents-cli version: unknown"
+            try:
+                from importlib.metadata import (
+                    PackageNotFoundError,
+                    version as _pkg_version,
+                )
+
+                sdk_version = _pkg_version("deepagents")
+                sdk_line = f"deepagents (SDK) version: {sdk_version}"
+            except PackageNotFoundError:
+                logger.debug("deepagents SDK package not found in environment")
+                sdk_line = "deepagents (SDK) version: unknown"
+            except Exception:
+                logger.warning("Unexpected error looking up SDK version", exc_info=True)
+                sdk_line = "deepagents (SDK) version: unknown"
+            await self._mount_message(AppMessage(f"{cli_line}\n{sdk_line}"))
         elif cmd == "/clear":
             self._pending_messages.clear()
             self._queued_widgets.clear()
@@ -1140,13 +1204,21 @@ class DeepAgentsApp(App):
             await self._mount_message(UserMessage(command))
             if self._token_tracker and self._token_tracker.current_context > 0:
                 count = self._token_tracker.current_context
-                if count >= 1000:
-                    formatted = f"{count / 1000:.1f}K"
+                formatted = _format_token_count(count)
+
+                model_name = settings.model_name
+                context_limit = settings.model_context_limit
+
+                if context_limit is not None:
+                    limit_str = _format_token_count(context_limit)
+                    pct = count / context_limit * 100
+                    usage = f"{formatted} / {limit_str} tokens ({pct:.0f}%)"
                 else:
-                    formatted = str(count)
-                await self._mount_message(
-                    AppMessage(f"Current context: {formatted} tokens")
-                )
+                    usage = f"{formatted} tokens used"
+
+                msg = f"{usage} · {model_name}" if model_name else usage
+
+                await self._mount_message(AppMessage(msg))
             else:
                 await self._mount_message(AppMessage("No token usage yet"))
         elif cmd == "/remember" or cmd.startswith("/remember "):
@@ -1268,8 +1340,13 @@ class DeepAgentsApp(App):
                 session_state=self._session_state,
                 adapter=self._ui_adapter,
                 backend=self._backend,
+                image_tracker=self._image_tracker,
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001  # Resilient tool rendering
+            # Ensure any in-flight tool calls don't remain stuck in "Running..."
+            # when streaming aborts before tool results arrive.
+            if self._ui_adapter:
+                self._ui_adapter.finalize_pending_tools_with_error(f"Agent error: {e}")
             await self._mount_message(ErrorMessage(f"Agent error: {e}"))
         finally:
             # Clean up loading widget and agent state
@@ -1281,7 +1358,7 @@ class DeepAgentsApp(App):
         Dequeues and processes the next pending message in FIFO order.
         Uses the `_processing_pending` flag to prevent reentrant execution.
         """
-        if self._processing_pending or not self._pending_messages:
+        if self._processing_pending or not self._pending_messages or self._exit:
             return
 
         self._processing_pending = True
@@ -1326,11 +1403,113 @@ class DeepAgentsApp(App):
         # Process next message from queue if any
         await self._process_next_from_queue()
 
+    @staticmethod
+    def _convert_messages_to_data(messages: list[Any]) -> list[MessageData]:
+        """Convert LangChain messages into lightweight `MessageData` objects.
+
+        This is a pure function with zero DOM operations. Tool call matching
+        happens here: `ToolMessage` results are matched by `tool_call_id` and
+        stored directly on the corresponding `MessageData`.
+
+        Args:
+            messages: LangChain message objects from a thread checkpoint.
+
+        Returns:
+            Ordered list of `MessageData` ready for `MessageStore.bulk_load`.
+        """
+        from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
+        result: list[MessageData] = []
+        # Maps tool_call_id -> index into result list
+        pending_tool_indices: dict[str, int] = {}
+
+        for msg in messages:
+            if isinstance(msg, HumanMessage):
+                content = (
+                    msg.content if isinstance(msg.content, str) else str(msg.content)
+                )
+                if content.startswith("[SYSTEM]"):
+                    continue
+                result.append(MessageData(type=MessageType.USER, content=content))
+
+            elif isinstance(msg, AIMessage):
+                # Extract text content
+                content = msg.content
+                text = ""
+                if isinstance(content, str):
+                    text = content.strip()
+                elif isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, dict) and block.get("type") == "text":
+                            text += block.get("text", "")
+                        elif isinstance(block, str):
+                            text += block
+                    text = text.strip()
+
+                if text:
+                    result.append(MessageData(type=MessageType.ASSISTANT, content=text))
+
+                # Track tool calls for later matching
+                for tc in getattr(msg, "tool_calls", []):
+                    tc_id = tc.get("id")
+                    name = tc.get("name", "unknown")
+                    args = tc.get("args", {})
+                    data = MessageData(
+                        type=MessageType.TOOL,
+                        content="",
+                        tool_name=name,
+                        tool_args=args,
+                        tool_status=ToolStatus.PENDING,
+                    )
+                    result.append(data)
+                    if tc_id:
+                        pending_tool_indices[tc_id] = len(result) - 1
+                    else:
+                        data.tool_status = ToolStatus.REJECTED
+
+            elif isinstance(msg, ToolMessage):
+                tc_id = getattr(msg, "tool_call_id", None)
+                if tc_id and tc_id in pending_tool_indices:
+                    idx = pending_tool_indices.pop(tc_id)
+                    data = result[idx]
+                    status = getattr(msg, "status", "success")
+                    content = (
+                        msg.content
+                        if isinstance(msg.content, str)
+                        else str(msg.content)
+                    )
+                    if status == "success":
+                        data.tool_status = ToolStatus.SUCCESS
+                    else:
+                        data.tool_status = ToolStatus.ERROR
+                    data.tool_output = content
+                else:
+                    logger.debug(
+                        "ToolMessage with tool_call_id=%r could not be "
+                        "matched to a pending tool call",
+                        tc_id,
+                    )
+
+            else:
+                logger.debug(
+                    "Skipping unsupported message type %s during history conversion",
+                    type(msg).__name__,
+                )
+
+        # Mark unmatched tool calls as rejected
+        for idx in pending_tool_indices.values():
+            result[idx].tool_status = ToolStatus.REJECTED
+
+        return result
+
     async def _load_thread_history(self) -> None:
         """Load and render message history when resuming a thread.
 
-        This retrieves the checkpoint state from the agent and converts
-        stored messages into UI widgets.
+        This retrieves the checkpoint state from the agent and converts stored
+        messages into lightweight `MessageData` objects, then bulk-loads them
+        into the `MessageStore`. Only the last `WINDOW_SIZE` messages are
+        mounted as widgets, drastically reducing DOM operations for large
+        threads.
         """
         if not self._agent or not self._lc_thread_id:
             return
@@ -1338,7 +1517,7 @@ class DeepAgentsApp(App):
         config: RunnableConfig = {"configurable": {"thread_id": self._lc_thread_id}}
 
         try:
-            # Get the state snapshot from the agent
+            # 1. Fetch state (single network call)
             state = await self._agent.aget_state(config)
             if not state or not state.values:
                 return
@@ -1347,101 +1526,47 @@ class DeepAgentsApp(App):
             if not messages:
                 return
 
-            # Track tool calls from AIMessages to match with ToolMessages
-            pending_tool_calls: dict[str, dict] = {}
+            # 2. Convert to data (pure computation, no DOM)
+            all_data = self._convert_messages_to_data(messages)
+            if not all_data:
+                return
 
-            for msg in messages:
-                if isinstance(msg, HumanMessage):
-                    # Skip system messages that were auto-injected
-                    content = (
-                        msg.content
-                        if isinstance(msg.content, str)
-                        else str(msg.content)
-                    )
-                    if content.startswith("[SYSTEM]"):
-                        continue
-                    await self._mount_message(UserMessage(content))
+            # 3. Bulk load into store (sets visible window)
+            _archived, visible = self._message_store.bulk_load(all_data)
 
-                elif isinstance(msg, AIMessage):
-                    # Render text content if present
-                    content = msg.content
-                    # Handle both string content and list of content blocks
-                    text_content = ""
-                    if isinstance(content, str):
-                        text_content = content.strip()
-                    elif isinstance(content, list):
-                        # Extract text from content blocks
-                        for block in content:
-                            if isinstance(block, dict) and block.get("type") == "text":
-                                text_content += block.get("text", "")
-                            elif isinstance(block, str):
-                                text_content += block
-                        text_content = text_content.strip()
+            # 4. Remove spacer once
+            await self._remove_spacer()
 
-                    if text_content:
-                        widget = AssistantMessage(text_content)
-                        await self._mount_message(widget)
-                        await widget.write_initial_content()
+            # 5. Cache container ref (single query)
+            try:
+                messages_container = self.query_one("#messages", Container)
+            except NoMatches:
+                return
 
-                    # Track tool calls for later matching with ToolMessages
-                    tool_calls = getattr(msg, "tool_calls", [])
-                    for tc in tool_calls:
-                        tc_id = tc.get("id")
-                        if tc_id:
-                            pending_tool_calls[tc_id] = {
-                                "name": tc.get("name", "unknown"),
-                                "args": tc.get("args", {}),
-                            }
-                            # Mount tool call widget
-                            tool_widget = ToolCallMessage(
-                                tc.get("name", "unknown"),
-                                tc.get("args", {}),
-                            )
-                            await self._mount_message(tool_widget)
-                            # Store widget reference for result matching
-                            pending_tool_calls[tc_id]["widget"] = tool_widget
+            # 6-7. Create and mount only visible widgets (max WINDOW_SIZE)
+            for msg_data in visible:
+                widget = msg_data.to_widget()
+                await messages_container.mount(widget)
+                # 8. Render content for AssistantMessage after mount
+                if isinstance(widget, AssistantMessage) and msg_data.content:
+                    await widget.set_content(msg_data.content)
 
-                elif isinstance(msg, ToolMessage):
-                    # Match with pending tool call and show result
-                    tc_id = getattr(msg, "tool_call_id", None)
-                    if tc_id and tc_id in pending_tool_calls:
-                        tool_info = pending_tool_calls.pop(tc_id)
-                        widget = tool_info.get("widget")
-                        if widget:
-                            status = getattr(msg, "status", "success")
-                            content = (
-                                msg.content
-                                if isinstance(msg.content, str)
-                                else str(msg.content)
-                            )
-                            if status == "success":
-                                widget.set_success(content)
-                            else:
-                                widget.set_error(content)
-
-            # Mark any unmatched tool calls as interrupted (no ToolMessage result)
-            for tool_info in pending_tool_calls.values():
-                widget = tool_info.get("widget")
-                if widget:
-                    widget.set_rejected()  # Shows as interrupted/rejected in UI
-
-            # Show system message indicating this is a resumed thread,
-            # with a clickable LangSmith link when tracing is configured.
+            # 9. Add footer — "Resumed thread" message
             thread_msg = await self._build_thread_message(
                 "Resumed thread", self._lc_thread_id
             )
             await self._mount_message(AppMessage(thread_msg))
 
-            # Scroll to bottom after UI fully renders
-            # Use set_timer to ensure layout is complete (Markdown rendering is async)
+            # 10. Scroll once
             def scroll_to_end() -> None:
-                chat = self.query_one("#chat", VerticalScroll)
-                chat.scroll_end(animate=False, immediate=True)
+                with suppress(NoMatches):
+                    chat = self.query_one("#chat", VerticalScroll)
+                    chat.scroll_end(animate=False, immediate=True)
 
             self.set_timer(0.1, scroll_to_end)
 
-        except Exception as e:
-            # Don't fail the app if history loading fails
+        except Exception as e:  # Resilient history loading
+            logger.exception("Failed to load thread history for %s", self._lc_thread_id)
             await self._mount_message(AppMessage(f"Could not load history: {e}"))
 
     async def _mount_message(
@@ -1593,13 +1718,19 @@ class DeepAgentsApp(App):
             self.notify("Press Ctrl+C again to quit", timeout=3)
 
     def action_interrupt(self) -> None:
-        """Handle escape key - interrupt agent, reject approval, or dismiss modal.
+        """Handle escape key.
 
-        This is the primary way to stop a running agent.
+        Dismiss completion popup, dismiss modal, interrupt agent,
+        or reject approval. This is the primary way to stop a
+        running agent.
         """
         # If a modal screen is active, dismiss it
         if isinstance(self.screen, ModalScreen):
             self.screen.dismiss(None)
+            return
+
+        # Close completion popup before interrupting the agent
+        if self._chat_input and self._chat_input.dismiss_completion():
             return
 
         # If agent is running, interrupt it and discard queued messages
@@ -1621,9 +1752,9 @@ class DeepAgentsApp(App):
 
     def exit(
         self,
-        result: Any = None,
+        result: Any = None,  # noqa: ANN401  # Dynamic LangGraph stream result type
         return_code: int = 0,
-        message: Any = None,
+        message: Any = None,  # noqa: ANN401  # Dynamic LangGraph message type
     ) -> None:
         """Exit the app, restoring iTerm2 cursor guide if applicable.
 
@@ -1636,6 +1767,13 @@ class DeepAgentsApp(App):
             return_code: Exit code (non-zero for errors).
             message: Optional message to display on exit.
         """
+        # Discard queued messages so _cleanup_agent_task won't try to
+        # process them after the event loop is torn down.
+        self._pending_messages.clear()
+        for w in self._queued_widgets:
+            w.remove()
+        self._queued_widgets.clear()
+
         _write_iterm_escape(_ITERM_CURSOR_GUIDE_ON)
         super().exit(result=result, return_code=return_code, message=message)
 
@@ -1719,6 +1857,32 @@ class DeepAgentsApp(App):
         if self._pending_approval_widget:
             self._pending_approval_widget.action_select_reject()
 
+    def on_paste(self, event: Paste) -> None:
+        """Route unfocused paste events to chat input for drag/drop reliability."""
+        if not self._chat_input:
+            return
+        if self._pending_approval_widget or self._is_input_focused():
+            return
+        if self._chat_input.handle_external_paste(event.text):
+            event.prevent_default()
+            event.stop()
+
+    def on_app_focus(self) -> None:
+        """Restore chat input focus when the terminal regains OS focus.
+
+        When the user opens a link via `webbrowser.open`, OS focus shifts to
+        the browser. On returning to the terminal, Textual fires `AppFocus`
+        (requires a terminal that supports FocusIn events). Re-focusing the chat
+        input here keeps it ready for typing.
+        """
+        if not self._chat_input:
+            return
+        if isinstance(self.screen, ModalScreen):
+            return
+        if self._pending_approval_widget:
+            return
+        self._chat_input.focus_input()
+
     def on_click(self, _event: Click) -> None:
         """Handle clicks anywhere in the terminal to focus on the command line."""
         if not self._chat_input:
@@ -1728,7 +1892,7 @@ class DeepAgentsApp(App):
             return
         self.call_after_refresh(self._chat_input.focus_input)
 
-    def on_mouse_up(self, event: MouseUp) -> None:
+    def on_mouse_up(self, event: MouseUp) -> None:  # noqa: ARG002  # Textual event handler signature
         """Copy selection to clipboard on mouse release."""
         copy_selection_to_clipboard(self)
 
@@ -1841,7 +2005,7 @@ class DeepAgentsApp(App):
             # Attempt to restore the previous thread's visible history
             try:
                 await self._load_thread_history()
-            except Exception:
+            except Exception:  # noqa: BLE001  # Resilient session state saving
                 logger.debug(
                     "Could not restore previous thread history after "
                     "failed switch to %s",
@@ -1865,6 +2029,13 @@ class DeepAgentsApp(App):
                 for auto-detection.
         """
         logger.info("Switching model to %s", model_spec)
+
+        from deepagents_cli.agent import create_cli_agent
+        from deepagents_cli.model_config import (
+            ModelConfigError,
+            get_credential_env_var,
+            has_provider_credentials,
+        )
 
         # Strip leading colon — treat ":claude-opus-4-6" as "claude-opus-4-6"
         model_spec = model_spec.removeprefix(":")
@@ -2000,6 +2171,8 @@ class DeepAgentsApp(App):
         Args:
             model_spec: The model specification (e.g., `'anthropic:claude-opus-4-6'`).
         """
+        from deepagents_cli.model_config import save_default_model
+
         model_spec = model_spec.removeprefix(":")
 
         parsed = ModelSpec.try_parse(model_spec)
@@ -2023,6 +2196,8 @@ class DeepAgentsApp(App):
         After clearing, future launches fall back to `[models].recent` or
         environment auto-detection.
         """
+        from deepagents_cli.model_config import clear_default_model
+
         if clear_default_model():
             await self._mount_message(
                 AppMessage(
@@ -2039,6 +2214,20 @@ class DeepAgentsApp(App):
             )
 
 
+@dataclass(frozen=True)
+class AppResult:
+    """Result from running the Textual application.
+
+    Attributes:
+        return_code: Exit code (0 for success, non-zero for error).
+        thread_id: The final thread ID at shutdown. May differ from the
+            initial thread ID if the user switched threads via `/threads`.
+    """
+
+    return_code: int
+    thread_id: str | None
+
+
 async def run_textual_app(
     *,
     agent: Pregel | None = None,
@@ -2052,7 +2241,7 @@ async def run_textual_app(
     tools: list[Callable[..., Any] | dict[str, Any]] | None = None,
     sandbox: SandboxBackendProtocol | None = None,
     sandbox_type: str | None = None,
-) -> int:
+) -> AppResult:
     """Run the Textual application.
 
     Args:
@@ -2069,7 +2258,7 @@ async def run_textual_app(
         sandbox_type: Type of sandbox provider (for model hot-swap)
 
     Returns:
-        The app's return code (0 for success, non-zero for error).
+        An `AppResult` with the return code and final thread ID.
     """
     app = DeepAgentsApp(
         agent=agent,
@@ -2085,7 +2274,10 @@ async def run_textual_app(
         sandbox_type=sandbox_type,
     )
     await app.run_async()
-    return app.return_code or 0
+    return AppResult(
+        return_code=app.return_code or 0,
+        thread_id=app._lc_thread_id,
+    )
 
 
 if __name__ == "__main__":

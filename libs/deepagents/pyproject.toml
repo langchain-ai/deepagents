@@ -1,6 +1,7 @@
 [project]
 name = "deepagents"
-version = "0.4.2"
+version = "0.4.3"
+
 description = "General purpose 'deep agent' with sub-agent spawning, todo list capabilities, and mock file system. Built on LangGraph."
 readme = "README.md"
 license = { text = "MIT" }
@@ -21,7 +22,7 @@ classifiers = [
 dependencies = [
     "langchain-core>=1.2.10,<2.0.0",
     "langchain>=1.2.10,<2.0.0",
-    "langchain-anthropic>=1.3.2,<2.0.0",
+    "langchain-anthropic>=1.3.3,<2.0.0",
     "langchain-google-genai>=4.2.0,<5.0.0",
     "wcmatch",
 ]
@@ -73,13 +74,12 @@ select = [
     "ALL"  # Enable all rules by default
 ]
 ignore = [
-    "COM812",  # Messes with the formatter
-    "ISC001",  # Messes with the formatter
-    "PERF203", # Rarely useful
-    "SLF001",  # Private member access
-    "PLR0913", # Too many arguments in function definition
-    "PLC0414", # Inconsistent with how type checkers expect to be notified of intentional re-exports
-    "C901",    # Too complex
+    "COM812",  # Trailing comma missing — conflicts with the ruff formatter
+    "ISC001",  # Implicit string concatenation on one line — conflicts with the ruff formatter
+    "PERF203", # `try`-`except` within a loop — incurs overhead only when exceptions are common
+    "SLF001",  # Access to a private member of an external class
+    "PLR0913", # Too many arguments to function definition
+    "PLC0414", # Import alias does not rename original package — conflicts with type-checker re-export conventions
 ]
 unfixable = ["B028"]  # Rules that shouldn't be auto-fixed
 
@@ -99,52 +99,32 @@ convention = "google"  # Google-style docstrings
 ignore-var-parameters = true
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = [
-    "D1",      # Skip documentation rules in tests
-    "S101",    # Allow asserts in tests
-    "S311",    # Allow pseudo-random generators in tests
-    # Add more test-specific ignores
-    "PLR2004", # Magic values in comparisons (fine for test assertions)
-    "ARG002",  # https://docs.astral.sh/ruff/rules/unused-method-argument/
+# Tests: relax annotations, docstrings, magic values, security, and assertion style
+"tests/**" = [
+    "ANN001",  # Missing type annotation for function argument
+    "ANN201",  # Missing return type annotation for public function
+    "ANN202",  # Missing return type annotation for private function
+    "ARG002",  # Unused method argument — common for pytest fixtures
+    "D1",      # Missing docstrings
+    "PLR2004", # Magic value used in comparison — fine in test assertions
+    "PT018",   # Assertion should be broken down into multiple parts
+    "S101",    # Use of `assert` detected
+    "S311",    # Pseudo-random generator not suitable for security — fine in tests
 ]
-
-"deepagents/backends/composite.py" = ["B007", "BLE001", "D102", "EM101", "FBT001", "FBT002", "PLC0415", "PLW2901", "S110"]
-"deepagents/backends/filesystem.py" = ["BLE001", "D102", "D205", "D417", "DTZ006", "EM101", "EM102", "FBT001", "FBT002", "PLR0912", "S112", "TRY003"]
-"deepagents/backends/protocol.py" = ["B024", "B027", "FBT001", "FBT002"]
-"deepagents/backends/sandbox.py" = ["FBT001", "FBT002", "PLC0105", "PLR2004"]
-"deepagents/backends/state.py" = ["ANN204", "D102", "D205", "EM101", "FBT001", "FBT002", "PERF401"]
-"deepagents/backends/store.py" = ["A002", "ANN204", "BLE001", "D102", "D205", "F821", "FBT001", "FBT002", "PERF401"]
-"deepagents/backends/utils.py" = ["D301", "E501", "EM101", "FBT001", "RET504", "RUF005", "TRY003"]
-"deepagents/middleware/filesystem.py" = ["EM102", "TRY003"]
-"deepagents/middleware/memory.py" = ["E501", "EM102", "G004", "PERF401", "SIM108", "T201", "TC002", "TC003", "TRY003"]
-"deepagents/middleware/skills.py" = ["EM101", "SIM108", "TC002", "TC003", "TRY003"]
-"deepagents/graph.py" = ["PLR0912"]
-"tests/integration_tests/test_deepagents.py" = ["ANN201", "C419", "E731", "PLR2004", "SIM118"]
-"tests/integration_tests/test_filesystem_middleware.py" = ["ANN001", "ANN201", "ANN202", "ARG002", "E731", "PLR2004", "SIM118", "T201"]
-"tests/integration_tests/test_hitl.py" = ["ANN201", "C419", "E501", "PLR2004"]
-"tests/integration_tests/test_subagent_middleware.py" = ["ANN001", "ANN201", "F841", "RUF012", "SIM118"]
-"tests/unit_tests/backends/test_composite_backend.py" = ["ANN001", "ANN201", "ANN202", "ARG001", "F841", "INP001", "PLR2004", "PT018"]
-"tests/unit_tests/backends/test_composite_backend_async.py" = ["ANN001", "ANN201", "ANN202", "ARG001", "F841", "INP001", "PLR2004", "PT018"]
-"tests/unit_tests/backends/test_filesystem_backend.py" = ["ANN201", "ARG005", "B007", "B011", "INP001", "PLR2004", "PT015", "PT018"]
-"tests/unit_tests/backends/test_filesystem_backend_async.py" = ["ANN201", "ARG005", "B007", "INP001", "PLR2004", "PT011", "PT018"]
-"tests/unit_tests/backends/test_state_backend.py" = ["ANN001", "ANN201", "INP001", "PLR2004", "PT018"]
-"tests/unit_tests/backends/test_state_backend_async.py" = ["ANN001", "ANN201", "INP001", "PLR2004", "PT018"]
-"tests/unit_tests/backends/test_store_backend.py" = ["ANN201", "INP001", "PLR2004", "PT018"]
-"tests/unit_tests/backends/test_sandbox_backend.py" = ["ANN201", "INP001", "PLR2004", "PT018"]
-"tests/unit_tests/backends/test_store_backend_async.py" = ["ANN201", "INP001", "PLR2004", "PT018"]
-"tests/unit_tests/chat_model.py" = ["D301", "PLR0912", "RUF012"]
-"tests/unit_tests/middleware/test_memory_middleware.py" = ["F841", "PGH003", "PLR2004", "RUF001", "TC002"]
-"tests/unit_tests/middleware/test_memory_middleware_async.py" = ["F841", "PGH003", "PLR2004", "RUF001"]
-"tests/unit_tests/middleware/test_skills_middleware.py" = ["F841", "PGH003", "PLR2004", "TC002"]
-"tests/unit_tests/middleware/test_skills_middleware_async.py" = ["F841", "PGH003", "PLR2004"]
-"tests/unit_tests/middleware/test_validate_path.py" = ["ANN201"]
-"tests/unit_tests/test_end_to_end.py" = ["PLR2004"]
-"tests/unit_tests/test_middleware.py" = ["ANN001", "ANN201", "ANN202", "E731", "PLR2004", "SIM118", "T201"]
-"tests/unit_tests/test_middleware_async.py" = ["ANN001", "ANN201", "ANN202"]
-"tests/unit_tests/test_subagents.py" = ["PLR2004"]
-"tests/unit_tests/test_todo_middleware.py" = ["E501", "PLR2004"]
-"tests/utils.py" = ["ANN001", "ANN201", "RUF012", "SIM118"]
-"scripts/check_imports.py" = ["INP001", "BLE001"]
+# Scripts: allow prints, broad exceptions, and standalone modules
+"scripts/**" = [
+    "BLE001",  # Blind exception catch — resilience in standalone scripts
+    "INP001",  # Missing `__init__.py` — scripts are standalone
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+
+[tool.ty.environment]
+python-version = "3.11"
+
+[tool.ty.rules]
+# Most rules are enabled by default. Enable rules that are disabled by default:
+division-by-zero = "error"
+# Add rules here to ignore, e.g.:
+# possibly-unresolved-reference = "ignore"

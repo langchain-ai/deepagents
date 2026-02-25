@@ -34,8 +34,9 @@ def test_write_read_edit_ls_grep_glob_state_backend():
     rt.state["files"].update(res.files_update)
 
     # read
-    content = be.read("/notes.txt")
-    assert "hello world" in content
+    read_res = be.read("/notes.txt")
+    assert read_res.error is None
+    assert "hello world" in read_res.file_data["content"]
 
     # edit unique occurrence
     res2 = be.edit("/notes.txt", "hello", "hi", replace_all=False)
@@ -43,8 +44,9 @@ def test_write_read_edit_ls_grep_glob_state_backend():
     assert res2.error is None and res2.files_update is not None
     rt.state["files"].update(res2.files_update)
 
-    content2 = be.read("/notes.txt")
-    assert "hi world" in content2
+    read_res2 = be.read("/notes.txt")
+    assert read_res2.error is None
+    assert "hi world" in read_res2.file_data["content"]
 
     # ls_info should include the file
     listing = be.ls_info("/")

@@ -29,6 +29,7 @@ from deepagents.backends.protocol import (
     FileInfo,
     FileUploadResponse,
     GrepMatch,
+    ReadResult,
     SandboxBackendProtocol,
     WriteResult,
 )
@@ -188,34 +189,24 @@ class CompositeBackend(BackendProtocol):
         # Path doesn't match a route: query only default backend
         return await self.default.als_info(path)
 
-    def read(
-        self,
-        file_path: str,
-        offset: int = 0,
-        limit: int = 2000,
-    ) -> str:
+    def read(self, file_path: str, offset: int = 0, limit: int = 2000) -> ReadResult:
         """Read file content, routing to appropriate backend.
 
         Args:
             file_path: Absolute file path.
-            offset: Line offset to start reading from (0-indexed).
-            limit: Maximum number of lines to read.
+            offset: Accepted for compatibility; forwarded to sub-backend.
+            limit: Accepted for compatibility; forwarded to sub-backend.
 
         Returns:
-            Formatted file content with line numbers, or error message.
+            ReadResult with file_data on success, or error on failure.
         """
         backend, stripped_key = self._get_backend_and_key(file_path)
-        return backend.read(stripped_key, offset=offset, limit=limit)
+        return backend.read(stripped_key, offset, limit)
 
-    async def aread(
-        self,
-        file_path: str,
-        offset: int = 0,
-        limit: int = 2000,
-    ) -> str:
+    async def aread(self, file_path: str, offset: int = 0, limit: int = 2000) -> ReadResult:
         """Async version of read."""
         backend, stripped_key = self._get_backend_and_key(file_path)
-        return await backend.aread(stripped_key, offset=offset, limit=limit)
+        return await backend.aread(stripped_key, offset, limit)
 
     def grep_raw(
         self,

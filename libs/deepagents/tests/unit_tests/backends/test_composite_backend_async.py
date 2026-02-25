@@ -143,11 +143,13 @@ async def test_composite_backend_store_to_store_async():
     assert isinstance(res2, WriteResult) and res2.error is None and res2.path == "/important.txt"
 
     # Read from both
-    content1 = await comp.aread("/notes.txt")
-    assert "default store content" in content1
+    result1 = await comp.aread("/notes.txt")
+    assert result1.error is None
+    assert "default store content" in result1.file_data["content"]
 
-    content2 = await comp.aread("/memories/important.txt")
-    assert "routed store content" in content2
+    result2 = await comp.aread("/memories/important.txt")
+    assert result2.error is None
+    assert "routed store content" in result2.file_data["content"]
 
     # als_info at root should show both
     infos = await comp.als_info("/")
@@ -228,8 +230,9 @@ async def test_composite_backend_multiple_routes_async():
     assert edit_res.error is None
     assert edit_res.occurrences == 1
 
-    updated_content = await comp.aread("/memories/important.md")
-    assert "persistent memory" in updated_content
+    result = await comp.aread("/memories/important.md")
+    assert result.error is None
+    assert "persistent memory" in result.file_data["content"]
 
 
 async def test_composite_backend_als_nested_directories_async(tmp_path: Path):
@@ -425,8 +428,10 @@ async def test_composite_backend_aexecute_with_routed_backends_async():
     assert result.output == "Async Executed: echo test"
 
     # File operations should still work
-    assert "local content" in await comp.aread("/local.txt")
-    assert "persistent content" in await comp.aread("/memories/persistent.txt")
+    _r = await comp.aread("/local.txt")
+    assert _r.error is None and "local content" in _r.file_data["content"]
+    _r = await comp.aread("/memories/persistent.txt")
+    assert _r.error is None and "persistent content" in _r.file_data["content"]
 
 
 async def test_composite_aupload_routing_async(tmp_path: Path):
@@ -460,8 +465,9 @@ async def test_composite_aupload_routing_async(tmp_path: Path):
     assert all(r.error is None for r in responses)
 
     # Verify files are accessible in store
-    content1 = await comp.aread("/memories/note1.txt")
-    assert "Memory content 1" in content1
+    result = await comp.aread("/memories/note1.txt")
+    assert result.error is None
+    assert "Memory content 1" in result.file_data["content"]
 
 
 async def test_composite_adownload_routing_async(tmp_path: Path):

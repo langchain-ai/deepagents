@@ -331,7 +331,12 @@ class TestDeepAgentEndToEnd:
 
     @pytest.mark.parametrize("backend_factory", BACKEND_FACTORIES)
     def test_deep_agent_truncate_lines(self, tmp_path: Path, backend_factory: Callable[[Path], BackendProtocol]) -> None:
-        """Test line count limiting in read_file tool with very long lines."""
+        """Test line count limiting in read_file tool with very long lines.
+
+        `limit` counts source lines (before formatting). A very long source line
+        expands into multiple continuation lines (2.1, 2.2, …) after formatting,
+        so the formatted output may have more lines than `limit`.
+        """
         # Create a file with a very long line (18,000 chars) that will be split into continuation lines
         # With MAX_LINE_LENGTH=5000, this becomes line 2, 2.1, 2.2, 2.3 (4 output lines for 1 logical line)
         very_long_line = "x" * 18000  # 18,000 characters -> will split into 4 continuation lines (5k each)
@@ -355,7 +360,7 @@ class TestDeepAgentEndToEnd:
             backend.runtime.state["files"].update(res.files_update)
 
         # Create a fake model that calls read_file with limit=3
-        # This should return: line 1 (short line 0), line 2 (first chunk of very_long_line), line 2.1 (second chunk)
+        # limit=3 selects 3 source lines: "short line 0", very_long_line, "short line 2"
         model = FixedGenericFakeChatModel(
             messages=iter(
                 [
@@ -392,23 +397,14 @@ class TestDeepAgentEndToEnd:
 
         file_content = tool_messages[0].content
 
-        # Should have the first short line
+        # limit=3 selects 3 source lines: short line 0, very_long_line, short line 2
         assert "short line 0" in file_content
-
-        # Should have the beginning of the very long line (line 2 with continuation)
         assert "xxx" in file_content  # The very long line should be present
+        assert "short line 2" in file_content  # 3rd source line is included
 
-        # Should NOT have the later short lines because the limit cuts off after 3 output lines
-        # (line 1, line 2, line 2.1)
-        assert "short line 2" not in file_content
+        # Lines beyond the limit are NOT included
         assert "short line 3" not in file_content
         assert "short line 4" not in file_content
-
-        # Count actual lines in the output (excluding empty lines from formatting)
-        output_lines = [line for line in file_content.split("\n") if line.strip()]
-        # Should be at most 3 lines (the limit we specified)
-        # This includes continuation lines as separate lines
-        assert len(output_lines) <= 3
 
     @pytest.mark.parametrize("backend_factory", BACKEND_FACTORIES)
     def test_deep_agent_read_empty_file(self, tmp_path: Path, backend_factory: Callable[[Path], BackendProtocol]) -> None:
@@ -1057,15 +1053,9 @@ class TestDeepAgentEndToEnd:
         When a file has a single very long line (e.g., 85,000 chars), it gets split
         into continuation markers (1, 1.1, 1.2, etc.) by format_content_with_line_numbers.
 
-        The current behavior:
-        - offset works on logical lines (before formatting)
-        - limit applies to formatted output lines (after continuation markers)
-        - This allows pagination through long lines by increasing limit
-        - Limitation: cannot use offset to skip within a long line
-
-        This test verifies:
-        1. A single long line with limit=1 returns only the first chunk (respects limit on formatted lines)
-        2. Size-based truncation applies if the formatted output exceeds threshold
+        `limit` counts source lines, so limit=1 selects the entire source line.
+        The continuation-split output (~85k chars) then hits the token-based
+        truncation threshold (~80k chars), so the result is capped by size.
         """
         # Create a file with a SINGLE very long line (no newlines)
         # This will be split into ~17 continuation chunks (85000 / 5000)
@@ -1080,7 +1070,8 @@ class TestDeepAgentEndToEnd:
             backend.runtime.state["files"].update(res.files_update)
 
         # Create a fake model that calls read_file with limit=1
-        # This should return just 1 formatted line (the first chunk of the long line)
+        # limit=1 selects the entire source line (85k chars), which then gets
+        # truncated by the token-based size limit
         model = FixedGenericFakeChatModel(
             messages=iter(
                 [
@@ -1117,14 +1108,13 @@ class TestDeepAgentEndToEnd:
 
         file_content = tool_messages[0].content
 
-        # Verify behavior: with limit=1, we get only the first formatted line
-        # (not all continuation markers)
-        assert len(file_content) < 10000  # Only got first chunk (~5000 chars)
-        assert len(file_content.splitlines()) == 1  # Only 1 formatted line
-        assert "1.1" not in file_content  # No continuation markers (would need higher limit)
+        # limit=1 selects the full source line. The formatted output (~85k+ chars)
+        # exceeds the token truncation threshold, so it gets truncated.
+        assert "Output was truncated due to size limits" in file_content
+        assert len(file_content) <= 80000
 
-        # To get more of the line, the model would need to increase limit, not offset
-        # E.g., read_file(offset=0, limit=20) would get first 20 formatted lines
+        # Continuation markers are present (the long line is expanded)
+        assert "xxx" in file_content
 
     def test_read_large_single_line_file_returns_reasonable_size(self) -> None:
         """Test that read_file doesn't return excessive chars for a single-line file.

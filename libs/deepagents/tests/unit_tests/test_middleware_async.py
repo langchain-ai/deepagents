@@ -1,6 +1,9 @@
 """Async tests for middleware filesystem tools."""
 
 import pytest
+from unittest.mock import patch
+
+import deepagents.middleware.filesystem as filesystem_middleware
 from langchain.tools import ToolRuntime
 from langgraph.store.memory import InMemoryStore
 from langgraph.types import Command
@@ -302,6 +305,33 @@ class TestFilesystemMiddlewareAsync:
             }
         )
         assert result == str([])
+
+    async def test_glob_timeout_returns_error_message_async(self):
+        state = FilesystemState(messages=[], files={})
+        middleware = FilesystemMiddleware()
+        glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
+        backend = middleware._get_backend(
+            ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={})
+        )
+
+        async def slow_aglob_info(*args: object, **kwargs: object) -> list[dict[str, str]]:
+            import asyncio
+
+            await asyncio.sleep(2)
+            return []
+
+        with (
+            patch.object(filesystem_middleware, "GLOB_TIMEOUT", 0.5),
+            patch.object(backend, "aglob_info", side_effect=slow_aglob_info),
+        ):
+            result = await glob_search_tool.ainvoke(
+                {
+                    "pattern": "**/*",
+                    "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+                }
+            )
+
+        assert result == "Error: glob timed out after 0.5s. Try a more specific pattern or a narrower path."
 
     @pytest.mark.asyncio
     async def test_agrep_search_shortterm_files_with_matches(self):

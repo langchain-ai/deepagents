@@ -1,4 +1,9 @@
+import time
+from unittest.mock import patch
+
 import pytest
+
+import deepagents.middleware.filesystem as filesystem_middleware
 from langchain.agents import create_agent
 from langchain.agents.middleware.types import ToolCallRequest
 from langchain.tools import ToolRuntime
@@ -410,6 +415,29 @@ class TestFilesystemMiddleware:
             }
         )
         assert result == str([])
+
+    def test_glob_timeout_returns_error_message(self):
+        state = FilesystemState(messages=[], files={})
+        middleware = FilesystemMiddleware()
+        glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
+        backend = middleware._get_backend(ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}))
+
+        def slow_glob_info(*args: object, **kwargs: object) -> list[dict[str, str]]:
+            time.sleep(2)
+            return []
+
+        with (
+            patch.object(filesystem_middleware, "GLOB_TIMEOUT", 0.5),
+            patch.object(backend, "glob_info", side_effect=slow_glob_info),
+        ):
+            result = glob_search_tool.invoke(
+                {
+                    "pattern": "**/*",
+                    "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+                }
+            )
+
+        assert result == "Error: glob timed out after 0.5s. Try a more specific pattern or a narrower path."
 
     def test_glob_search_truncates_large_results(self):
         """Test that glob results are truncated when they exceed token limit."""

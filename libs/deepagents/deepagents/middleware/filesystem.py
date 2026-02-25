@@ -44,7 +44,7 @@ from deepagents.backends.utils import (
 from deepagents.middleware._utils import append_to_system_message
 
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
-GLOB_TIMEOUT = 20  # seconds
+GLOB_TIMEOUT = 20.0  # seconds
 LINE_NUMBER_WIDTH = 6
 DEFAULT_READ_OFFSET = 0
 DEFAULT_READ_LIMIT = 100
@@ -809,7 +809,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     resolved_backend.aglob_info(pattern, path=validated_path),
                     timeout=GLOB_TIMEOUT,
                 )
-            except TimeoutError:
+            except asyncio.TimeoutError:
                 return f"Error: glob timed out after {GLOB_TIMEOUT}s. Try a more specific pattern or a narrower path."
             paths = [fi.get("path", "") for fi in infos]
             result = truncate_if_too_long(paths)

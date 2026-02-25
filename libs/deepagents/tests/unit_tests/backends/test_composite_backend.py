@@ -89,6 +89,17 @@ def test_composite_backend_filesystem_plus_store(tmp_path: Path):
     infos_mem = comp.ls_info("/memories/")
     assert any(i["path"] == "/memories/notes.md" for i in infos_mem)
 
+    infos_mem_no_slash = comp.ls_info("/memories")
+    assert any(i["path"] == "/memories/notes.md" for i in infos_mem_no_slash)
+
+    # grep_raw route targeting should accept /memories as the route root
+    gm_mem = comp.grep_raw("note", path="/memories")
+    assert any(m["path"] == "/memories/notes.md" for m in gm_mem)
+
+    # glob_info route targeting should accept /memories as the route root
+    gl_mem = comp.glob_info("*.md", path="/memories")
+    assert any(i["path"] == "/memories/notes.md" for i in gl_mem)
+
     # grep_raw merges
     gm = comp.grep_raw("hello", path="/")
     assert any(m["path"] == "/hello.txt" for m in gm)

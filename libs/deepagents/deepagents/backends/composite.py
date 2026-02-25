@@ -99,6 +99,9 @@ class CompositeBackend(BackendProtocol):
         """
         # Check routes in order of length (longest first)
         for prefix, backend in self.sorted_routes:
+            prefix_no_slash = prefix.rstrip("/")
+            if key == prefix_no_slash:
+                return backend, "/"
             if key.startswith(prefix):
                 # Strip full prefix and ensure a leading slash remains
                 # e.g., "/memories/notes.txt" → "/notes.txt"; "/memories/" → "/"
@@ -129,7 +132,11 @@ class CompositeBackend(BackendProtocol):
         """
         # Check if path matches a specific route
         for route_prefix, backend in self.sorted_routes:
-            if path.startswith(route_prefix.rstrip("/")):
+            prefix_no_slash = route_prefix.rstrip("/")
+            if path == prefix_no_slash:
+                infos = backend.ls_info("/")
+                return [_remap_file_info_path(fi, route_prefix) for fi in infos]
+            if path.startswith(route_prefix):
                 # Query only the matching routed backend
                 suffix = path[len(route_prefix) :]
                 search_path = f"/{suffix}" if suffix else "/"
@@ -161,7 +168,11 @@ class CompositeBackend(BackendProtocol):
         """Async version of ls_info."""
         # Check if path matches a specific route
         for route_prefix, backend in self.sorted_routes:
-            if path.startswith(route_prefix.rstrip("/")):
+            prefix_no_slash = route_prefix.rstrip("/")
+            if path == prefix_no_slash:
+                infos = await backend.als_info("/")
+                return [_remap_file_info_path(fi, route_prefix) for fi in infos]
+            if path.startswith(route_prefix):
                 # Query only the matching routed backend
                 suffix = path[len(route_prefix) :]
                 search_path = f"/{suffix}" if suffix else "/"
@@ -248,6 +259,12 @@ class CompositeBackend(BackendProtocol):
         """
         # If path targets a specific route, search only that backend
         for route_prefix, backend in self.sorted_routes:
+            prefix_no_slash = route_prefix.rstrip("/")
+            if path is not None and path == prefix_no_slash:
+                raw = backend.grep_raw(pattern, "/", glob)
+                if isinstance(raw, str):
+                    return raw
+                return [_remap_grep_path(m, route_prefix) for m in raw]
             if path is not None and path.startswith(route_prefix):
                 suffix = path[len(route_prefix) :]
                 search_path = f"/{suffix}" if suffix else "/"
@@ -289,6 +306,12 @@ class CompositeBackend(BackendProtocol):
         """
         # If path targets a specific route, search only that backend
         for route_prefix, backend in self.sorted_routes:
+            prefix_no_slash = route_prefix.rstrip("/")
+            if path is not None and path == prefix_no_slash:
+                raw = await backend.agrep_raw(pattern, "/", glob)
+                if isinstance(raw, str):
+                    return raw
+                return [_remap_grep_path(m, route_prefix) for m in raw]
             if path is not None and path.startswith(route_prefix):
                 suffix = path[len(route_prefix) :]
                 search_path = f"/{suffix}" if suffix else "/"

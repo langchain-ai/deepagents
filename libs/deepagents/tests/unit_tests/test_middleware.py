@@ -429,6 +429,7 @@ class TestFilesystemMiddleware:
 
         with (
             patch.object(filesystem_middleware, "GLOB_TIMEOUT", 0.5),
+            patch.object(middleware, "_get_backend", return_value=backend),
             patch.object(backend, "glob_info", side_effect=slow_glob_info),
         ):
             result = glob_search_tool.invoke(

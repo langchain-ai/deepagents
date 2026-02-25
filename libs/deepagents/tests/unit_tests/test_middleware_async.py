@@ -1,13 +1,14 @@
 """Async tests for middleware filesystem tools."""
 
-import pytest
+import asyncio
 from unittest.mock import patch
 
-import deepagents.middleware.filesystem as filesystem_middleware
+import pytest
 from langchain.tools import ToolRuntime
 from langgraph.store.memory import InMemoryStore
 from langgraph.types import Command
 
+import deepagents.middleware.filesystem as filesystem_middleware
 from deepagents.backends import CompositeBackend, StateBackend
 from deepagents.backends.protocol import ExecuteResponse, SandboxBackendProtocol
 from deepagents.middleware.filesystem import FileData, FilesystemMiddleware, FilesystemState
@@ -314,9 +315,7 @@ class TestFilesystemMiddlewareAsync:
             ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={})
         )
 
-        async def slow_aglob_info(*args: object, **kwargs: object) -> list[dict[str, str]]:
-            import asyncio
-
+        async def slow_aglob_info(*_args: object, **_kwargs: object) -> list[dict[str, str]]:
             await asyncio.sleep(2)
             return []
 

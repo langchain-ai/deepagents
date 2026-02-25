@@ -809,7 +809,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     resolved_backend.aglob_info(pattern, path=validated_path),
                     timeout=GLOB_TIMEOUT,
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 return f"Error: glob timed out after {GLOB_TIMEOUT}s. Try a more specific pattern or a narrower path."
             paths = [fi.get("path", "") for fi in infos]
             result = truncate_if_too_long(paths)

@@ -2,8 +2,6 @@ import time
 from unittest.mock import patch
 
 import pytest
-
-import deepagents.middleware.filesystem as filesystem_middleware
 from langchain.agents import create_agent
 from langchain.agents.middleware.types import ToolCallRequest
 from langchain.tools import ToolRuntime
@@ -17,6 +15,7 @@ from langchain_core.messages import (
 from langgraph.store.memory import InMemoryStore
 from langgraph.types import Command, Overwrite
 
+import deepagents.middleware.filesystem as filesystem_middleware
 from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
 from deepagents.backends.protocol import (
     ExecuteResponse,
@@ -420,9 +419,11 @@ class TestFilesystemMiddleware:
         state = FilesystemState(messages=[], files={})
         middleware = FilesystemMiddleware()
         glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
-        backend = middleware._get_backend(ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}))
+        backend = middleware._get_backend(
+            ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={})
+        )
 
-        def slow_glob_info(*args: object, **kwargs: object) -> list[dict[str, str]]:
+        def slow_glob_info(*_args: object, **_kwargs: object) -> list[dict[str, str]]:
             time.sleep(2)
             return []
 

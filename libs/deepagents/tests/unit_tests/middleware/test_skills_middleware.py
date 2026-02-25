@@ -1398,7 +1398,8 @@ def test_create_deep_agent_with_skills_default_backend() -> None:
     # But this demonstrates the proper format for StateBackend
     skill_files = {
         "/skills/user/test-skill/SKILL.md": {
-            "content": skill_content.split("\n"),
+            "content": skill_content,
+            "encoding": "utf-8",
             "created_at": timestamp,
             "modified_at": timestamp,
         }
@@ -1440,11 +1441,12 @@ def create_store_skill_item(content: str) -> dict:
         content: Skill content string
 
     Returns:
-        Dict with content (as list of lines), created_at, and modified_at
+        Dict with content as str, encoding, created_at, and modified_at
     """
     timestamp = datetime.now(UTC).isoformat()
     return {
-        "content": content.split("\n"),
+        "content": content,
+        "encoding": "utf-8",
         "created_at": timestamp,
         "modified_at": timestamp,
     }

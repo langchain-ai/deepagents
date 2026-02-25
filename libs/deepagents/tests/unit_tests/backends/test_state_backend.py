@@ -156,6 +156,7 @@ def test_state_backend_intercept_large_tool_result():
 
     assert isinstance(result, Command)
     assert "/large_tool_results/test_123" in result.update["files"]
+    # v1 format stores content as list[str]
     assert result.update["files"]["/large_tool_results/test_123"]["content"] == [large_content]
     assert "Tool result too large" in result.update["messages"][0].content
 

@@ -14,6 +14,16 @@ from typing import Any, Literal, NotRequired, TypeAlias
 from langchain.tools import ToolRuntime
 from typing_extensions import TypedDict
 
+FileFormat = Literal["v1", "v2"]
+r"""File storage format version.
+
+- `"v1"`: Legacy format — `content` stored as `list[str]` (lines split
+  on `\\n`), no `encoding` field.
+- `"v2"`: Current format — `content` stored as a plain `str` (UTF-8 text
+  or base64-encoded binary), with an `encoding` field (`"utf-8"` or
+  `"base64"`).
+"""
+
 FileOperationError = Literal[
     "file_not_found",  # Download: file doesn't exist
     "permission_denied",  # Both: access denied
@@ -106,6 +116,22 @@ class GrepMatch(TypedDict):
     text: str
 
 
+class FileData(TypedDict):
+    """Data structure for storing file contents with metadata."""
+
+    content: str
+    """File content as a plain string (utf-8 text or base64-encoded binary)."""
+
+    encoding: str
+    """Content encoding: `"utf-8"` for text, `"base64"` for binary."""
+
+    created_at: str
+    """ISO 8601 timestamp of file creation."""
+
+    modified_at: str
+    """ISO 8601 timestamp of last modification."""
+
+
 @dataclass
 class WriteResult:
     """Result from backend write operations.
@@ -160,17 +186,24 @@ class EditResult:
 
 # @abstractmethod to avoid breaking subclasses that only implement a subset
 class BackendProtocol(abc.ABC):  # noqa: B024
-    """Protocol for pluggable memory backends (single, unified).
+    r"""Protocol for pluggable memory backends (single, unified).
 
     Backends can store files in different locations (state, filesystem, database, etc.)
     and provide a uniform interface for file operations.
 
-    All file data is represented as dicts with the following structure:
-    {
-        "content": list[str], # Lines of text content
-        "created_at": str, # ISO format timestamp
-        "modified_at": str, # ISO format timestamp
-    }
+    All file data is represented as dicts with the following structure::
+
+        {
+            "content": str,  # Text content (utf-8) or base64-encoded binary
+            "encoding": str,  # "utf-8" for text, "base64" for binary data
+            "created_at": str,  # ISO format timestamp
+            "modified_at": str,  # ISO format timestamp
+        }
+
+    Note:
+        Legacy data may still contain `"content": list[str]` (lines split on
+        `\\n`).  Backends accept this for backwards compatibility and emit a
+        `DeprecationWarning`.
     """
 
     def ls_info(self, path: str) -> list["FileInfo"]:

@@ -31,7 +31,7 @@ def get_premier_league_standings(runtime: ToolRuntime):
     return Command(
         update={
             "messages": [ToolMessage(content=long_tool_msg, tool_call_id=runtime.tool_call_id)],
-            "files": {"/test.txt": {"content": ["Goodbye world"], "created_at": "2021-01-01", "modified_at": "2021-01-01"}},
+            "files": {"/test.txt": {"content": ["Goodbye world"], "encoding": "utf-8", "created_at": "2021-01-01", "modified_at": "2021-01-01"}},
             "research": "extra_value",
         }
     )

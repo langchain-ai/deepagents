@@ -290,6 +290,7 @@ async def test_store_backend_intercept_large_tool_result_async():
 
     stored_content = rt.store.get(("filesystem",), "/large_tool_results/test_456")
     assert stored_content is not None
+    # v1 format stores content as list[str]
     assert stored_content.value["content"] == [large_content]
 
 
@@ -312,4 +313,5 @@ async def test_store_backend_aintercept_large_tool_result_async():
     # Verify content was stored via async path
     stored_content = await rt.store.aget(("filesystem",), "/large_tool_results/test_async_789")
     assert stored_content is not None
+    # v1 format stores content as list[str]
     assert stored_content.value["content"] == [large_content]

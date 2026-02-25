@@ -25,3 +25,4 @@ jobs:
         with:
           scan-diff: 'true'
           fail-on-findings: 'true'
+          test-vectors: 'false'

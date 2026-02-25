@@ -109,7 +109,6 @@ class FixedGenericFakeChatModel(GenericFakeChatModel):
 class TestDeepAgentEndToEnd:
     """Test suite for end-to-end deepagent functionality with fake LLM."""
 
-
     def test_deep_agent_with_fake_llm_basic(self) -> None:
         """Test basic deepagent functionality with a fake LLM model.
 

@@ -165,6 +165,7 @@ PROVIDER_API_KEY_ENV: dict[str, str] = {
     "mistralai": "MISTRAL_API_KEY",
     "nvidia": "NVIDIA_API_KEY",
     "openai": "OPENAI_API_KEY",
+    "openrouter": "OPENROUTER_API_KEY",
     "perplexity": "PPLX_API_KEY",
     "together": "TOGETHER_API_KEY",
     "xai": "XAI_API_KEY",
@@ -174,8 +175,10 @@ PROVIDER_API_KEY_ENV: dict[str, str] = {
 Used by `has_provider_credentials` to verify credentials *before* model
 creation, so the UI can show a warning icon and a specific error message
 (e.g., "ANTHROPIC_API_KEY not set") instead of letting the provider fail at call
-time. Providers not listed here fall through to the config-file check or the
-langchain registry fallback.
+time.
+
+Providers not listed here fall through to the config-file check or the langchain
+registry fallback.
 """
 
 
@@ -190,7 +193,7 @@ def clear_caches() -> None:
 
     Intended for tests and for a hypothetical "refresh models" UI action.
     """
-    global _available_models_cache, _builtin_providers_cache, _default_config_cache  # noqa: PLW0603
+    global _available_models_cache, _builtin_providers_cache, _default_config_cache  # noqa: PLW0603  # Module-level caches require global statement
     _available_models_cache = None
     _builtin_providers_cache = None
     _default_config_cache = None
@@ -207,11 +210,13 @@ def _get_builtin_providers() -> dict[str, Any]:
     Returns:
         The provider registry dict from `langchain.chat_models.base`.
     """
-    global _builtin_providers_cache  # noqa: PLW0603
+    global _builtin_providers_cache  # noqa: PLW0603  # Module-level cache requires global statement
     if _builtin_providers_cache is not None:
         return _builtin_providers_cache
 
-    from langchain.chat_models import base  # noqa: PLC0415
+    # Deferred: langchain.chat_models pulls in heavy provider registry,
+    # only needed when resolving provider names for model config.
+    from langchain.chat_models import base
 
     registry: dict[str, Any] | None = getattr(base, "_BUILTIN_PROVIDERS", None)
     if registry is None:
@@ -311,7 +316,7 @@ def get_available_models() -> dict[str, list[str]]:
         Dictionary mapping provider names to lists of model identifiers.
             Only includes providers whose packages are installed.
     """
-    global _available_models_cache  # noqa: PLW0603
+    global _available_models_cache  # noqa: PLW0603  # Module-level cache requires global statement
     if _available_models_cache is not None:
         return _available_models_cache
 
@@ -480,7 +485,7 @@ class ModelConfig:
                 Returns empty config if file is missing, unreadable, or contains
                 invalid TOML syntax.
         """
-        global _default_config_cache  # noqa: PLW0603
+        global _default_config_cache  # noqa: PLW0603  # Module-level cache requires global statement
         is_default = config_path is None
         if is_default and _default_config_cache is not None:
             return _default_config_cache
@@ -698,7 +703,9 @@ def _save_model_field(
     Args:
         field: Key name under the `[models]` table (e.g., `'default'` or `'recent'`).
         model_spec: The model to save in `provider:model` format.
-        config_path: Path to config file. Defaults to `~/.deepagents/config.toml`.
+        config_path: Path to config file.
+
+            Defaults to `~/.deepagents/config.toml`.
 
     Returns:
         True if save succeeded, False if it failed due to I/O errors.
@@ -736,7 +743,7 @@ def _save_model_field(
         return False
     else:
         # Invalidate config cache so the next load() picks up the change.
-        global _default_config_cache  # noqa: PLW0603
+        global _default_config_cache  # noqa: PLW0603  # Module-level cache requires global statement
         _default_config_cache = None
         return True
 
@@ -749,7 +756,9 @@ def save_default_model(model_spec: str, config_path: Path | None = None) -> bool
 
     Args:
         model_spec: The model to set as default in `provider:model` format.
-        config_path: Path to config file. Defaults to `~/.deepagents/config.toml`.
+        config_path: Path to config file.
+
+            Defaults to `~/.deepagents/config.toml`.
 
     Returns:
         True if save succeeded, False if it failed due to I/O errors.
@@ -767,7 +776,9 @@ def clear_default_model(config_path: Path | None = None) -> bool:
     `[models].recent` or environment auto-detection.
 
     Args:
-        config_path: Path to config file. Defaults to `~/.deepagents/config.toml`.
+        config_path: Path to config file.
+
+            Defaults to `~/.deepagents/config.toml`.
 
     Returns:
         True if the key was removed (or was already absent), False on I/O error.
@@ -801,9 +812,102 @@ def clear_default_model(config_path: Path | None = None) -> bool:
         logger.exception("Could not clear default model preference")
         return False
     else:
-        global _default_config_cache  # noqa: PLW0603
+        global _default_config_cache  # noqa: PLW0603  # Module-level cache requires global statement
         _default_config_cache = None
         return True
+
+
+def is_warning_suppressed(key: str, config_path: Path | None = None) -> bool:
+    """Check if a warning key is suppressed in the config file.
+
+    Reads the `[warnings].suppress` list from `config.toml` and checks
+    whether `key` is present.
+
+    Args:
+        key: Warning identifier to check (e.g., `'ripgrep'`).
+        config_path: Path to config file.
+
+            Defaults to `~/.deepagents/config.toml`.
+
+    Returns:
+        `True` if the warning is suppressed, `False` otherwise (including
+            when the file is missing, unreadable, or has no
+            `[warnings]` section).
+    """
+    if config_path is None:
+        config_path = DEFAULT_CONFIG_PATH
+
+    try:
+        if not config_path.exists():
+            return False
+        with config_path.open("rb") as f:
+            data = tomllib.load(f)
+    except (OSError, tomllib.TOMLDecodeError):
+        logger.debug(
+            "Could not read config file %s for warning suppression check",
+            config_path,
+            exc_info=True,
+        )
+        return False
+
+    suppress_list = data.get("warnings", {}).get("suppress", [])
+    if not isinstance(suppress_list, list):
+        logger.debug(
+            "[warnings].suppress in %s should be a list, got %s",
+            config_path,
+            type(suppress_list).__name__,
+        )
+        return False
+    return key in suppress_list
+
+
+def suppress_warning(key: str, config_path: Path | None = None) -> bool:
+    """Add a warning key to the suppression list in the config file.
+
+    Reads existing config (if any), adds `key` to `[warnings].suppress`,
+    and writes back using atomic temp-file rename. Deduplicates entries.
+
+    Args:
+        key: Warning identifier to suppress (e.g., `'ripgrep'`).
+        config_path: Path to config file.
+
+            Defaults to `~/.deepagents/config.toml`.
+
+    Returns:
+        `True` if save succeeded, `False` if it failed due to I/O errors.
+    """
+    if config_path is None:
+        config_path = DEFAULT_CONFIG_PATH
+
+    try:
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if config_path.exists():
+            with config_path.open("rb") as f:
+                data = tomllib.load(f)
+        else:
+            data = {}
+
+        if "warnings" not in data:
+            data["warnings"] = {}
+        suppress_list: list[str] = data["warnings"].get("suppress", [])
+        if key not in suppress_list:
+            suppress_list.append(key)
+        data["warnings"]["suppress"] = suppress_list
+
+        fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "wb") as f:
+                tomli_w.dump(data, f)
+            Path(tmp_path).replace(config_path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                Path(tmp_path).unlink()
+            raise
+    except (OSError, tomllib.TOMLDecodeError):
+        logger.exception("Could not save warning suppression for '%s'", key)
+        return False
+    return True
 
 
 def save_recent_model(model_spec: str, config_path: Path | None = None) -> bool:
@@ -814,7 +918,9 @@ def save_recent_model(model_spec: str, config_path: Path | None = None) -> bool:
 
     Args:
         model_spec: The model to save in `provider:model` format.
-        config_path: Path to config file. Defaults to `~/.deepagents/config.toml`.
+        config_path: Path to config file.
+
+            Defaults to `~/.deepagents/config.toml`.
 
     Returns:
         True if save succeeded, False if it failed due to I/O errors.

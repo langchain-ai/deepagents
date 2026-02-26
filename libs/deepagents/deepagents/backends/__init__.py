@@ -5,6 +5,7 @@ from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.local_shell import DEFAULT_EXECUTE_TIMEOUT, LocalShellBackend
 from deepagents.backends.protocol import BackendProtocol
 from deepagents.backends.state import StateBackend
+from deepagents.backends.redis_backend import RedisBackend
 from deepagents.backends.store import (
     BackendContext,
     NamespaceFactory,
@@ -19,6 +20,7 @@ __all__ = [
     "FilesystemBackend",
     "LocalShellBackend",
     "NamespaceFactory",
+    "RedisBackend",
     "StateBackend",
     "StoreBackend",
 ]

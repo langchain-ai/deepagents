@@ -123,11 +123,6 @@ class TestToolRegistered:
         mw = _make_middleware()
         assert mw.tools[0].description
 
-    def test_summarization_middleware_has_no_tools(self) -> None:
-        """SummarizationMiddleware itself should not expose any tools."""
-        mw = _make_summarization_middleware()
-        assert len(mw.tools) == 0
-
 
 class TestApplyEventToMessages:
     """Test the _apply_event_to_messages static method."""

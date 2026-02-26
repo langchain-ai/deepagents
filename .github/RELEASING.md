@@ -134,7 +134,7 @@ For hotfixes or exceptional cases, you can trigger a release manually. Use the `
 
 1. Go to **Actions** > **Package Release**
 2. Click **Run workflow**
-3. Select the package to release
+3. Select the package to release (`deepagents-cli` only for exception/recovery/hotfix scenarios; otherwise use release-please)
 4. (Optionally enable `dangerous-nonmain-release` for hotfix branches)
 
 > [!WARNING]

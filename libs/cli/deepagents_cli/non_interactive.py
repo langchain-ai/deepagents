@@ -541,9 +541,9 @@ async def run_non_interactive(
     list; commands not in the list are rejected with an error message sent
     back to the agent.
 
-    Note: `_build_non_interactive_header` makes a synchronous network call
-    to LangSmith (via `fetch_langsmith_project_url`) to resolve the thread
-    URL. This blocks the event loop briefly at startup.
+    Note: when LangSmith tracing is configured, `_build_non_interactive_header`
+    makes a synchronous network call (via `fetch_langsmith_project_url`) to
+    resolve the thread URL. This blocks the event loop briefly at startup.
 
     Args:
         message: The task/message to execute.

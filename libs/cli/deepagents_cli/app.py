@@ -1358,7 +1358,10 @@ class DeepAgentsApp(App):
 
             defaults = compute_summarization_defaults(model)
             middleware = SummarizationMiddleware(
-                model=model, backend=self._backend, keep=defaults["keep"]
+                model=model,
+                backend=self._backend,
+                keep=defaults["keep"],
+                trim_tokens_to_summarize=None,
             )
 
             # Rebuild the message list the model would see, accounting for

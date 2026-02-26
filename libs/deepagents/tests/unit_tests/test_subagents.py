@@ -8,14 +8,13 @@ and child agents.
 import warnings
 from pathlib import Path
 from typing import Any, TypedDict
+from unittest.mock import Mock
 
 import pytest
 from langchain.agents import create_agent
 from langchain.agents.middleware import TodoListMiddleware
 from langchain.agents.structured_output import ToolStrategy
 from langchain.tools import ToolRuntime
-from unittest.mock import Mock
-
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig, RunnableLambda
 from langchain_core.tools import tool

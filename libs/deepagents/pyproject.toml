@@ -27,6 +27,9 @@ dependencies = [
     "wcmatch",
 ]
 
+[project.optional-dependencies]
+redis = ["redis>=5.0"]
+
 
 [project.urls]
 Homepage = "https://docs.langchain.com/oss/python/deepagents/overview"

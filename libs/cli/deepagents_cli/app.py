@@ -38,6 +38,7 @@ from deepagents_cli.config import (
 )
 from deepagents_cli.model_config import ModelSpec, save_recent_model
 from deepagents_cli.textual_adapter import TextualUIAdapter, execute_task_textual
+from deepagents_cli.widgets.agent_selector import AgentSelectorScreen
 from deepagents_cli.widgets.approval import ApprovalMenu
 from deepagents_cli.widgets.chat_input import ChatInput
 from deepagents_cli.widgets.loading import LoadingWidget
@@ -1131,7 +1132,8 @@ class DeepAgentsApp(App):
             await self._mount_message(UserMessage(command))
             help_text = Text(
                 "Commands: /quit, /clear, /model [--default], /remember, "
-                "/tokens, /threads, /trace, /changelog, /docs, /feedback, /help\n\n"
+                "/tokens, /threads, /agents, /trace, "
+                "/changelog, /docs, /feedback, /help\n\n"
                 "Interactive Features:\n"
                 "  Enter           Submit your message\n"
                 "  Ctrl+J          Insert newline\n"
@@ -1198,6 +1200,8 @@ class DeepAgentsApp(App):
                 )
         elif cmd == "/threads":
             await self._show_thread_selector()
+        elif cmd == "/agents":
+            await self._show_agent_selector()
         elif cmd == "/trace":
             await self._handle_trace_command(command)
         elif cmd == "/tokens":
@@ -1931,6 +1935,94 @@ class DeepAgentsApp(App):
 
         screen = ThreadSelectorScreen(current_thread=current)
         self.push_screen(screen, handle_result)
+
+    async def _show_agent_selector(self) -> None:
+        """Show interactive agent selector as a modal screen."""
+
+        def handle_result(result: str | None) -> None:
+            """Handle the agent selector result."""
+            if result is not None:
+                self.call_later(self._switch_agent, result)
+            if self._chat_input:
+                self._chat_input.focus_input()
+
+        screen = AgentSelectorScreen(current_agent=self._assistant_id)
+        self.push_screen(screen, handle_result)
+
+    async def _switch_agent(self, agent_name: str) -> None:
+        """Switch to a different agent by name.
+
+        Recreates the agent with the new `assistant_id`, clears the current
+        conversation, starts a fresh thread, and updates the UI.
+
+        Args:
+            agent_name: Name of the agent to switch to.
+        """
+        if agent_name == self._assistant_id:
+            await self._mount_message(AppMessage(f"Already using agent: {agent_name}"))
+            return
+
+        if not self._checkpointer:
+            await self._mount_message(
+                AppMessage(
+                    f"Agent preference set to {agent_name}. "
+                    "Restart the CLI for the change to take effect."
+                )
+            )
+            return
+
+        from deepagents_cli.agent import create_cli_agent
+        from deepagents_cli.model_config import ModelConfigError
+
+        try:
+            current_model_result = create_model()
+        except ModelConfigError as e:
+            await self._mount_message(ErrorMessage(str(e)))
+            return
+        except Exception as e:
+            logger.exception("Failed to get current model for agent switch")
+            await self._mount_message(ErrorMessage(f"Agent switch failed: {e}"))
+            return
+
+        try:
+            new_agent, new_backend = create_cli_agent(
+                model=current_model_result.model,
+                assistant_id=agent_name,
+                tools=self._tools,
+                sandbox=self._sandbox,
+                sandbox_type=self._sandbox_type,
+                auto_approve=self._auto_approve,
+                checkpointer=self._checkpointer,
+            )
+        except Exception as e:
+            logger.exception("Failed to create agent for agent switch")
+            await self._mount_message(ErrorMessage(f"Agent switch failed: {e}"))
+            return
+
+        # Swap agent and update assistant ID
+        self._agent = new_agent
+        self._backend = new_backend
+        self._assistant_id = agent_name
+
+        # Clear conversation and start a fresh thread
+        self._pending_messages.clear()
+        self._queued_widgets.clear()
+        await self._clear_messages()
+        if self._token_tracker:
+            self._token_tracker.reset()
+        self._update_status("")
+
+        if self._session_state:
+            new_thread_id = self._session_state.reset_thread()
+            self._lc_thread_id = new_thread_id
+            try:
+                banner = self.query_one("#welcome-banner", WelcomeBanner)
+                banner.update_thread_id(new_thread_id)
+            except NoMatches:
+                pass
+
+        await self._mount_message(AppMessage(f"Switched to agent: {agent_name}"))
+        logger.info("Agent switched to %s", agent_name)
 
     async def _resume_thread(self, thread_id: str) -> None:
         """Resume a previously saved thread.

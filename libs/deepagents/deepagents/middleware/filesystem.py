@@ -472,7 +472,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             Resolved backend instance.
         """
         if callable(self.backend):
-            return self.backend(runtime)
+            return self.backend(runtime)  # ty: ignore[call-top-callable]
         return self.backend
 
     def _create_ls_tool(self) -> BaseTool:

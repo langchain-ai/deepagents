@@ -6,7 +6,7 @@ from langchain_core.messages import ToolMessage
 from langgraph.store.memory import InMemoryStore
 from langgraph.types import Command
 
-from deepagents.backends.composite import CompositeBackend
+from deepagents.backends.composite import CompositeBackend, _route_for_path
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.protocol import (
     ExecuteResponse,
@@ -1181,3 +1181,71 @@ def test_get_backend_and_key_consistency() -> None:
     backend, stripped = comp._get_backend_and_key("/other/file.txt")
     assert backend is state
     assert stripped == "/other/file.txt"
+
+
+def test_route_for_path_edge_cases() -> None:
+    rt = make_runtime("t_route_edges")
+    default = StateBackend(rt)
+    mem = StoreBackend(rt)
+    mem_private = StoreBackend(rt)
+
+    sorted_routes = [
+        ("/memories/private/", mem_private),
+        ("/memories/", mem),
+    ]
+
+    # No match -> default backend, path unchanged
+    assert _route_for_path(default=default, sorted_routes=sorted_routes, path="/other/file.txt") == (
+        default,
+        "/other/file.txt",
+        None,
+    )
+
+    # Exact route root without trailing slash -> backend_path "/"
+    assert _route_for_path(default=default, sorted_routes=sorted_routes, path="/memories") == (
+        mem,
+        "/",
+        "/memories/",
+    )
+
+    # Exact route prefix with trailing slash -> backend_path "/"
+    assert _route_for_path(default=default, sorted_routes=sorted_routes, path="/memories/") == (
+        mem,
+        "/",
+        "/memories/",
+    )
+
+    # Nested path in route -> strip and keep leading slash
+    assert _route_for_path(
+        default=default,
+        sorted_routes=sorted_routes,
+        path="/memories/notes.txt",
+    ) == (mem, "/notes.txt", "/memories/")
+
+    # Deep nested path -> strip
+    assert _route_for_path(
+        default=default,
+        sorted_routes=sorted_routes,
+        path="/memories/sub/file.txt",
+    ) == (mem, "/sub/file.txt", "/memories/")
+
+    # Longest-prefix wins
+    assert _route_for_path(
+        default=default,
+        sorted_routes=sorted_routes,
+        path="/memories/private/secret.txt",
+    ) == (mem_private, "/secret.txt", "/memories/private/")
+
+    # Route root for nested route, without trailing slash
+    assert _route_for_path(default=default, sorted_routes=sorted_routes, path="/memories/private") == (
+        mem_private,
+        "/",
+        "/memories/private/",
+    )
+
+    # Prefix boundary: should not match "/memories/" for "/memories2/..."
+    assert _route_for_path(default=default, sorted_routes=sorted_routes, path="/memories2/file.txt") == (
+        default,
+        "/memories2/file.txt",
+        None,
+    )

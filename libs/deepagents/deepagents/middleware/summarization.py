@@ -314,7 +314,7 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
                 config=config,
                 tool_call_id=None,
             )
-            return self._backend(tool_runtime)  # ty: ignore[invalid-argument-type]
+            return self._backend(tool_runtime)  # ty: ignore[call-top-callable, invalid-argument-type]
         return self._backend
 
     def _get_thread_id(self) -> str:

@@ -258,8 +258,6 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
             self._max_arg_length = truncate_args_settings.get("max_length", 2000)
             self._truncation_text = truncate_args_settings.get("truncation_text", "...(argument truncated)")
 
-        self.tools: list[BaseTool] = []
-
     # Delegated properties and methods from langchain helper
     @property
     def model(self) -> BaseChatModel:

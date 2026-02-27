@@ -638,7 +638,7 @@ async def run_non_interactive(
             # If an allow-list is provided, enable shell but disable
             # auto-approve so HITL can gate commands. If no allow-list, disable
             # shell entirely and auto-approve all other tools.
-            enable_shell = bool(settings.shell_allow_list)
+            enable_shell = settings.shell_allow_list is not None
             use_auto_approve = not enable_shell
 
             agent, composite_backend = create_cli_agent(

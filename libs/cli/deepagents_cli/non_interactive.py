@@ -614,7 +614,7 @@ async def run_non_interactive(
                 setup_script_path=sandbox_setup,
             )
             sandbox_backend = exit_stack.enter_context(sandbox_cm)
-        except (ImportError, ValueError, RuntimeError) as e:
+        except (ImportError, ValueError) as e:
             logger.exception("Sandbox creation failed")
             console.print(f"[red]Sandbox creation failed: {e}[/red]")
             return 1
@@ -623,6 +623,10 @@ async def run_non_interactive(
             console.print(
                 f"[red]Sandbox type '{sandbox_type}' is not yet supported: {e}[/red]"
             )
+            return 1
+        except RuntimeError as e:
+            logger.exception("Sandbox creation failed")
+            console.print(f"[red]Sandbox creation failed: {e}[/red]")
             return 1
 
     try:

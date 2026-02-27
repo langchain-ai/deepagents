@@ -4,7 +4,10 @@ from pathlib import Path
 
 import pytest
 
-from deepagents_cli.input import parse_file_mentions
+from deepagents_cli.input import (
+    parse_file_mentions,
+    parse_pasted_file_paths,
+)
 
 
 def test_parse_file_mentions_with_chinese_sentence(
@@ -243,3 +246,68 @@ def test_parse_file_mentions_handles_bad_tilde_user(
     mock_console.print.assert_called_once()
     call_arg = mock_console.print.call_args[0][0]
     assert "nonexistentuser12345" in call_arg
+
+
+def test_parse_pasted_file_paths_with_quoted_paths(tmp_path: Path) -> None:
+    """Quoted dropped paths should resolve correctly."""
+    img = tmp_path / "my image.png"
+    img.write_bytes(b"img")
+
+    result = parse_pasted_file_paths(f'"{img}"')
+
+    assert result == [img.resolve()]
+
+
+def test_parse_pasted_file_paths_with_file_url(tmp_path: Path) -> None:
+    """`file://` dropped paths should be URL-decoded and resolved."""
+    img = tmp_path / "space name.png"
+    img.write_bytes(b"img")
+
+    result = parse_pasted_file_paths(f"file://{str(img).replace(' ', '%20')}")
+
+    assert result == [img.resolve()]
+
+
+def test_parse_pasted_file_paths_with_multiple_lines(tmp_path: Path) -> None:
+    """Multiple dropped paths separated by newlines should all resolve."""
+    first = tmp_path / "a.png"
+    second = tmp_path / "b.png"
+    first.write_bytes(b"a")
+    second.write_bytes(b"b")
+
+    result = parse_pasted_file_paths(f"{first}\n{second}")
+
+    assert result == [first.resolve(), second.resolve()]
+
+
+def test_parse_pasted_file_paths_returns_empty_for_text_payload() -> None:
+    """Normal prose should not be interpreted as dropped file paths."""
+    assert parse_pasted_file_paths("please inspect this image") == []
+
+
+def test_parse_pasted_file_paths_returns_empty_for_missing_file(tmp_path: Path) -> None:
+    """Missing dropped files should fall back to regular text paste."""
+    missing = tmp_path / "missing.png"
+    assert parse_pasted_file_paths(str(missing)) == []
+
+
+def test_parse_pasted_file_paths_returns_empty_for_empty_string() -> None:
+    """Empty string should return an empty list."""
+    assert parse_pasted_file_paths("") == []
+
+
+def test_parse_pasted_file_paths_returns_empty_for_whitespace() -> None:
+    """Whitespace-only payloads should return an empty list."""
+    assert parse_pasted_file_paths("   \n\t  ") == []
+
+
+def test_parse_pasted_file_paths_handles_angle_bracket_wrapped_path(
+    tmp_path: Path,
+) -> None:
+    """Angle-bracket wrapped paths (e.g. from some terminals) should resolve."""
+    img = tmp_path / "bracketed.png"
+    img.write_bytes(b"img")
+
+    result = parse_pasted_file_paths(f"<{img}>")
+
+    assert result == [img.resolve()]

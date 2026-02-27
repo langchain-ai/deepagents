@@ -1,3 +1,5 @@
+"""Demo coding agent using ACP."""
+
 import asyncio
 import os
 
@@ -9,19 +11,18 @@ from acp.schema import (
     SessionModeState,
 )
 from deepagents import create_deep_agent
-from deepagents.backends import CompositeBackend, StateBackend
-from deepagents_cli.backends import CLIShellBackend, patch_filesystem_middleware
-from deepagents_cli.config import settings
-from deepagents_cli.local_context import LocalContextMiddleware
+from deepagents.backends import CompositeBackend, LocalShellBackend, StateBackend
 from dotenv import load_dotenv
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph.state import Checkpointer, CompiledStateGraph
+from langgraph.prebuilt import ToolRuntime
 
 from deepagents_acp.server import AgentServerACP, AgentSessionContext
+from examples.local_context import LocalContextMiddleware
 
 
 def _get_interrupt_config(mode_id: str) -> dict:
-    """Get interrupt configuration for a given mode"""
+    """Get interrupt configuration for a given mode."""
     mode_to_interrupt = {
         "ask_before_edits": {
             "edit_file": {"allowed_decisions": ["approve", "reject"]},
@@ -40,45 +41,42 @@ def _get_interrupt_config(mode_id: str) -> dict:
 
 async def _serve_example_agent() -> None:
     """Run example agent from the root of the repository with ACP integration."""
-
     load_dotenv()
 
     checkpointer: Checkpointer = MemorySaver()
 
     def build_agent(context: AgentSessionContext) -> CompiledStateGraph:
         """Agent factory based in the given root directory."""
-
         _root_dir = context.cwd
         interrupt_config = _get_interrupt_config(context.mode)
 
-        def create_backend(tr):
-            ephemeral_backend = StateBackend(tr)
+        def create_backend(tr: ToolRuntime | None = None) -> CompositeBackend:
+            ephemeral_backend = StateBackend(tr) if tr is not None else None
             shell_env = os.environ.copy()
-            if settings.user_langchain_project:
-                shell_env["LANGSMITH_PROJECT"] = settings.user_langchain_project
 
             # Use CLIShellBackend for filesystem + shell execution.
             # Provides `execute` tool via FilesystemMiddleware with per-command
             # timeout support.
-            shell_backend = CLIShellBackend(
+            shell_backend = LocalShellBackend(
                 root_dir=_root_dir,
                 inherit_env=True,
                 env=shell_env,
             )
-            patch_filesystem_middleware()
             return CompositeBackend(
                 default=shell_backend,
                 routes={
                     "/memories/": ephemeral_backend,
                     "/conversation_history/": ephemeral_backend,
-                },
+                }
+                if ephemeral_backend is not None
+                else {},
             )
 
         return create_deep_agent(
             checkpointer=checkpointer,
             backend=create_backend,
             interrupt_on=interrupt_config,
-            middleware=[LocalContextMiddleware()],
+            middleware=[LocalContextMiddleware(backend=create_backend())],
         )
 
     modes = SessionModeState(
@@ -106,7 +104,8 @@ async def _serve_example_agent() -> None:
     await run_acp_agent(acp_agent)
 
 
-def main():
+def main() -> None:
+    """Run the demo agent."""
     asyncio.run(_serve_example_agent())
 
 

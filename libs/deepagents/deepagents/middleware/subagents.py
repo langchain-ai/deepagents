@@ -8,7 +8,8 @@ from typing import Annotated, Any, NotRequired, TypedDict, Unpack, cast
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig
-from langchain.agents.middleware.types import AgentMiddleware, ContextT, ModelRequest, ModelResponse, ResponseT
+from langchain.agents.middleware.types import AgentMiddleware, ContextT, ModelRequest, \
+    ModelResponse, ResponseT
 from langchain.chat_models import init_chat_model
 from langchain.tools import BaseTool, ToolRuntime
 from langchain_core.language_models import BaseChatModel
@@ -692,9 +693,10 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         else:
             self.system_prompt = system_prompt
 
-        self.tools = [task_tool]
+        tools = [task_tool]
         if enable_swarm:
-            self.tools.append(self._build_swarm_tool(subagent_specs))
+            tools.append(self._build_swarm_tool(subagent_specs))
+        self.tools = tools
 
     def _build_swarm_tool(self, subagents: list[_SubagentSpec]) -> BaseTool:
         """Create the `swarm` tool.
@@ -720,16 +722,6 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         subagent_description_str = "\n".join(f"- {s['name']}: {s['description']}" for s in subagents)
         description = SWARM_TOOL_DESCRIPTION.format(available_agents=subagent_description_str)
 
-        def swarm(
-            config_file: Annotated[str, "Absolute path to the JSON config file containing the task definitions."],
-            output_dir: Annotated[
-                str,
-                "Absolute path to the directory where result files will be written. Each task result is written to <output_dir>/<task_id>.txt.",
-            ],
-            runtime: ToolRuntime,
-        ) -> str:
-            raise NotImplementedError("Sync implementation is not yet available.")
-
         async def aswarm(
             config_file: Annotated[str, "Absolute path to the JSON config file containing the task definitions."],
             output_dir: Annotated[
@@ -738,6 +730,7 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             ],
             runtime: ToolRuntime,
         ) -> ToolMessage:
+            """Swarm implementation."""
             if callable(backend):
                 resolved_backend = backend(runtime)  # ty: ignore[call-top-callable]
             else:
@@ -830,7 +823,6 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
 
         return StructuredTool.from_function(
             name="swarm",
-            func=swarm,
             coroutine=aswarm,
             description=description,
         )

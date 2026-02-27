@@ -542,7 +542,7 @@ Available subagent types:
 """
 
 
-def _build_swarm_tool(
+def _build_swarm_tool(  # noqa: C901, PLR0915
     subagents: list[_SubagentSpec],
     backend: "BackendProtocol | BackendFactory | None" = None,
 ) -> BaseTool:
@@ -558,6 +558,18 @@ def _build_swarm_tool(
     subagent_graphs: dict[str, Runnable] = {spec["name"]: spec["runnable"] for spec in subagents}
     subagent_description_str = "\n".join(f"- {s['name']}: {s['description']}" for s in subagents)
     description = SWARM_TOOL_DESCRIPTION.format(available_agents=subagent_description_str)
+
+    def _get_backend(runtime: ToolRuntime) -> BackendProtocol:
+        resolved_backend = backend if backend is not None else runtime.state.get("__deepagents_backend")
+        if resolved_backend is None:
+            msg = "backend is required"
+            raise ValueError(msg)
+        if callable(resolved_backend):
+            resolved_backend = resolved_backend(runtime)  # ty: ignore[call-top-callable]
+        if not isinstance(resolved_backend, BackendProtocol):
+            msg = "backend must be a BackendProtocol instance"
+            raise TypeError(msg)
+        return resolved_backend
 
     async def _run_one_task(
         task_spec: dict,
@@ -583,7 +595,7 @@ def _build_swarm_tool(
             if messages:
                 text = messages[-1].text or ""
                 return task_id, text.rstrip()
-            return task_id, ""
+            return task_id, ""  # noqa: TRY300
         except Exception as e:
             return task_id, f"Error: {e}"
 
@@ -593,11 +605,18 @@ def _build_swarm_tool(
         runtime: ToolRuntime,
     ) -> str:
         """Core implementation of swarm."""
-        # Read config file from disk
+        # Read config file from backend
         try:
-            with open(config_file) as f:
-                config_data = json.load(f)
-        except Exception as e:
+            backend_ = _get_backend(runtime)
+        except (TypeError, ValueError) as e:
+            return f"Error: {e}"
+        try:
+            responses = await backend_.adownload_files([config_file])
+            response = responses[0]
+            if response.error is not None or response.content is None:
+                return f"Error reading config file '{config_file}': {response.error}"
+            config_data = json.loads(response.content.decode("utf-8"))
+        except (OSError, ValueError, TypeError, UnicodeDecodeError) as e:
             return f"Error reading config file '{config_file}': {e}"
 
         tasks = config_data.get("tasks", [])
@@ -612,22 +631,29 @@ def _build_swarm_tool(
         results = await asyncio.gather(*coros, return_exceptions=True)
 
         # Write results to output files
-        import os
         output_dir_clean = output_dir.rstrip("/")
-        os.makedirs(output_dir_clean, exist_ok=True)
-        summaries = []
+        try:
+            backend_ = _get_backend(runtime)
+        except (TypeError, ValueError) as e:
+            return f"Error: {e}"
+
+        outputs: list[tuple[str, bytes]] = []
+        summaries: list[str] = []
         for item in results:
             if isinstance(item, Exception):
                 summaries.append(f"Error: {item}")
                 continue
             task_id, result_text = item
             output_path = f"{output_dir_clean}/{task_id}.txt"
-            try:
-                with open(output_path, "w") as f:
-                    f.write(result_text)
-                summaries.append(f"✓ {task_id}: wrote {len(result_text)} chars to {output_path}")
-            except Exception as e:
-                summaries.append(f"✗ {task_id}: error writing result: {e}")
+            outputs.append((output_path, result_text.encode("utf-8")))
+
+        upload_responses = await backend_.aupload_files(outputs)
+        for upload in upload_responses:
+            if upload.error is not None:
+                summaries.append(f"✗ {upload.path}: error writing result: {upload.error}")
+            else:
+                result_len = next((len(b) for p, b in outputs if p == upload.path), 0)
+                summaries.append(f"✓ {upload.path}: wrote {result_len} chars")
 
         completed = sum(1 for s in summaries if s.startswith("✓"))
         summary = f"{completed}/{len(tasks)} tasks completed. Results in {output_dir_clean}/\n"
@@ -636,16 +662,18 @@ def _build_swarm_tool(
 
     def swarm(
         config_file: Annotated[str, "Absolute path to the JSON config file containing the task definitions."],
-        output_dir: Annotated[str, "Absolute path to the directory where result files will be written. Each task result is written to <output_dir>/<task_id>.txt."],
+        output_dir: Annotated[
+            str, "Absolute path to the directory where result files will be written. Each task result is written to <output_dir>/<task_id>.txt."
+        ],
         runtime: ToolRuntime,
     ) -> str:
-        import concurrent.futures
-        with concurrent.futures.ThreadPoolExecutor() as pool:
-            return pool.submit(asyncio.run, _execute_swarm(config_file, output_dir, runtime)).result()
+	raise NotImlementedError("No sync path yet")
 
     async def aswarm(
         config_file: Annotated[str, "Absolute path to the JSON config file containing the task definitions."],
-        output_dir: Annotated[str, "Absolute path to the directory where result files will be written. Each task result is written to <output_dir>/<task_id>.txt."],
+        output_dir: Annotated[
+            str, "Absolute path to the directory where result files will be written. Each task result is written to <output_dir>/<task_id>.txt."
+        ],
         runtime: ToolRuntime,
     ) -> str:
         return await _execute_swarm(config_file, output_dir, runtime)

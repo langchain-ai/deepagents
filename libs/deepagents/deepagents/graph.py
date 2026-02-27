@@ -82,7 +82,7 @@ def get_default_model() -> ChatAnthropic:
     )
 
 
-def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic with many conditional branches
+def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly logic with many conditional branches
     model: str | BaseChatModel | None = None,
     tools: Sequence[BaseTool | Callable | dict[str, Any]] | None = None,
     *,
@@ -135,6 +135,8 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
             `SummarizationMiddleware`, `AnthropicPromptCachingMiddleware`,
             `PatchToolCallsMiddleware`).
         subagents: The subagents to use.
+        enable_swarm: Whether to include the `swarm` tool for running many subagents in
+            parallel.
 
             Each subagent should be a `dict` with the following keys:
 

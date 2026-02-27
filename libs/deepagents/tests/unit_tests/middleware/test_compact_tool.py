@@ -208,7 +208,9 @@ class TestCompactSuccess:
         assert result.update is not None
         event = result.update["_summarization_event"]
         assert event["cutoff_index"] == 4
-        assert event["summary_message"] is not None
+        # Verify that the summarization event contains the expected values.
+        assert event["summary_message"] == "Summary of the conversation."
+        assert event["file_path"] == "/conversation_history/test-thread.md"
 
         update_messages = result.update["messages"]
         assert len(update_messages) == 1

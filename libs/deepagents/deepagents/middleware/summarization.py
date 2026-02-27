@@ -804,7 +804,7 @@ A condensed summary follows:
         if was_modified:
             counted_messages = [request.system_message, *truncated_messages] if request.system_message is not None else truncated_messages
             try:
-                total_tokens = self.token_counter(counted_messages, tools=request.tools)
+                total_tokens = self.token_counter(counted_messages, tools=request.tools)  # ty: ignore[unknown-argument]
             except TypeError:
                 total_tokens = self.token_counter(counted_messages)
         should_summarize = self._should_summarize(truncated_messages, total_tokens)
@@ -902,7 +902,7 @@ A condensed summary follows:
         if was_modified:
             counted_messages = [request.system_message, *truncated_messages] if request.system_message is not None else truncated_messages
             try:
-                total_tokens = self.token_counter(counted_messages, tools=request.tools)
+                total_tokens = self.token_counter(counted_messages, tools=request.tools)  # ty: ignore[unknown-argument]
             except TypeError:
                 total_tokens = self.token_counter(counted_messages)
         should_summarize = self._should_summarize(truncated_messages, total_tokens)

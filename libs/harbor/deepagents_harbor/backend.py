@@ -1,5 +1,6 @@
-"""Implement harbor backend."""
+"""Harbor sandbox backend for executing commands in Harbor environments."""
 
+import asyncio
 import base64
 import json
 import shlex
@@ -13,6 +14,21 @@ from deepagents.backends.protocol import (
     WriteResult,
 )
 from harbor.environments.base import BaseEnvironment
+
+_SYNC_NOT_SUPPORTED = "This backend only supports async execution. Use the async variant instead."
+
+# Shell exit codes used by the aedit command script
+_EXIT_NOT_FOUND = 1
+_EXIT_MULTIPLE_MATCHES = 2
+_EXIT_FILE_MISSING = 3
+_EXIT_DECODE_FAILED = 4
+
+# Default per-command timeout (5 minutes) - prevents hanging on stuck commands
+DEFAULT_COMMAND_TIMEOUT_SEC = 300
+
+# Parsing constants
+_PIPE_FIELD_COUNT = 2  # expected number of pipe-separated fields in ls/glob output
+_GREP_FIELD_COUNT = 3  # minimum number of colon-separated fields in grep output
 
 
 class HarborSandbox(SandboxBackendProtocol):
@@ -29,9 +45,38 @@ class HarborSandbox(SandboxBackendProtocol):
     async def aexecute(
         self,
         command: str,
+        *,
+        timeout: int | None = None,  # noqa: ASYNC109  # Timeout parameter is forwarded to environment exec, not used as asyncio timeout
     ) -> ExecuteResponse:
-        """Execute a bash command in the task environment."""
-        result = await self.environment.exec(command)
+        """Execute a bash command in the task environment.
+
+        Args:
+            command: Shell command string to execute.
+            timeout: Maximum time in seconds to wait for the command to complete.
+
+                If None, uses the environment's default timeout.
+        """
+        timeout_sec = timeout if timeout is not None else DEFAULT_COMMAND_TIMEOUT_SEC
+        try:
+            if timeout_sec > 0:
+                result = await asyncio.wait_for(
+                    self.environment.exec(command),
+                    timeout=timeout_sec,
+                )
+            else:
+                result = await self.environment.exec(command)
+        except asyncio.TimeoutError:
+            return ExecuteResponse(
+                output=f"ERROR: Command timed out after {timeout_sec} seconds.\n"
+                f"Command: {command[:200]}{'...' if len(command) > 200 else ''}\n\n"
+                f"SUGGESTION: This command is taking too long. Consider:\n"
+                f"- Breaking it into smaller steps\n"
+                f"- Using a shorter timeout with the timeout_sec parameter\n"
+                f"- For package installs: use --no-install-recommends ...\n"
+                f"- For long builds: run in background with nohup ...",
+                exit_code=124,
+                truncated=False,
+            )
 
         # These errors appear in harbor environments when running bash commands
         # in non-interactive/non-TTY contexts. They're harmless artifacts.
@@ -76,9 +121,11 @@ class HarborSandbox(SandboxBackendProtocol):
     def execute(
         self,
         command: str,
+        *,
+        timeout: int | None = None,
     ) -> ExecuteResponse:
         """Execute a bash command in the task environment."""
-        raise NotImplementedError("This backend only supports async execution")
+        raise NotImplementedError(_SYNC_NOT_SUPPORTED)
 
     @property
     def id(self) -> str:
@@ -127,7 +174,7 @@ awk -v offset={offset} -v limit={limit} '
         limit: int = 2000,
     ) -> str:
         """Read file content with line numbers using shell commands."""
-        raise NotImplementedError("Use aread instead")
+        raise NotImplementedError(_SYNC_NOT_SUPPORTED)
 
     async def awrite(
         self,
@@ -171,7 +218,7 @@ fi
         content: str,
     ) -> WriteResult:
         """Create a new file using shell commands."""
-        raise NotImplementedError("Use awrite instead")
+        raise NotImplementedError(_SYNC_NOT_SUPPORTED)
 
     async def aedit(
         self,
@@ -248,15 +295,15 @@ __DEEPAGENTS_EOF__
         exit_code = result.exit_code
         output = result.output.strip()
 
-        if exit_code == 1:
+        if exit_code == _EXIT_NOT_FOUND:
             return EditResult(error=f"Error: String not found in file: '{old_string}'")
-        if exit_code == 2:
+        if exit_code == _EXIT_MULTIPLE_MATCHES:
             return EditResult(
                 error=f"Error: String '{old_string}' appears multiple times. Use replace_all=True to replace all occurrences."
             )
-        if exit_code == 3:
+        if exit_code == _EXIT_FILE_MISSING:
             return EditResult(error=f"Error: File '{file_path}' not found")
-        if exit_code == 4:
+        if exit_code == _EXIT_DECODE_FAILED:
             return EditResult(error=f"Error: Failed to decode edit payload: {output}")
         if exit_code != 0:
             return EditResult(
@@ -278,7 +325,7 @@ __DEEPAGENTS_EOF__
         replace_all: bool = False,
     ) -> EditResult:
         """Edit a file by replacing string occurrences using shell commands."""
-        raise NotImplementedError("Use aedit instead")
+        raise NotImplementedError(_SYNC_NOT_SUPPORTED)
 
     async def als_info(self, path: str) -> list[FileInfo]:
         """List directory contents with metadata using shell commands."""
@@ -309,14 +356,14 @@ done
             if not line:
                 continue
             parts = line.split("|")
-            if len(parts) == 2:
+            if len(parts) == _PIPE_FIELD_COUNT:
                 file_infos.append({"path": parts[0], "is_dir": parts[1] == "true"})
 
         return file_infos
 
     def ls_info(self, path: str) -> list[FileInfo]:
         """List directory contents with metadata using shell commands."""
-        raise NotImplementedError("Use als_info instead")
+        raise NotImplementedError(_SYNC_NOT_SUPPORTED)
 
     async def agrep_raw(
         self,
@@ -350,7 +397,7 @@ done
         for line in output.split("\n"):
             # Format is: path:line_number:text
             parts = line.split(":", 2)
-            if len(parts) >= 3:
+            if len(parts) >= _GREP_FIELD_COUNT:
                 try:
                     matches.append(
                         {
@@ -371,7 +418,7 @@ done
         glob: str | None = None,
     ) -> list[GrepMatch] | str:
         """Search for pattern in files using grep."""
-        raise NotImplementedError("Use agrep_raw instead")
+        raise NotImplementedError(_SYNC_NOT_SUPPORTED)
 
     async def aglob_info(self, pattern: str, path: str = "/") -> list[FileInfo]:
         """Find files matching glob pattern using shell commands.
@@ -410,7 +457,7 @@ done
             if not line:
                 continue
             parts = line.split("|")
-            if len(parts) == 2:
+            if len(parts) == _PIPE_FIELD_COUNT:
                 file_infos.append(
                     {
                         "path": parts[0],
@@ -422,4 +469,4 @@ done
 
     def glob_info(self, pattern: str, path: str = "/") -> list[FileInfo]:
         """Find files matching glob pattern using shell commands."""
-        raise NotImplementedError("Use aglob_info instead")
+        raise NotImplementedError(_SYNC_NOT_SUPPORTED)

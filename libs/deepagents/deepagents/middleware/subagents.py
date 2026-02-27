@@ -507,11 +507,7 @@ def _build_task_tool(  # noqa: C901
 
 SWARM_TOOL_DESCRIPTION = """Launch many subagents in parallel from a JSON config file.
 
-Use this when you need to fan out the same (or similar) work across many chunks of data - for example:
-- processing sections of a large file
-- classifying batches of entries
-- querying multiple documents
-
+Use this when you need to fan out the same (or similar) work across many chunks of data — for example, processing sections of a large file, classifying batches of entries, or querying multiple documents.
 
 ## Workflow
 1. Write a Python script (via `execute`) that reads your data, chunks it, and generates a JSON config file.

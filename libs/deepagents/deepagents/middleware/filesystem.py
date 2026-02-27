@@ -305,6 +305,25 @@ def _get_tool_name(tool: Any) -> str | None:  # noqa: ANN401
     return None
 
 
+def _filter_execute_tool(tools: list) -> tuple[bool, list]:
+    """Check for the "execute" tool and build a filtered list without it.
+
+    Short-circuits the detection: if no "execute" tool is found the filtered
+    list is never constructed.
+
+    Args:
+        tools: The tools list from a model request.
+
+    Returns:
+        Tuple of (has_execute_tool, filtered_tools). When `has_execute_tool`
+        is False, `filtered_tools` is the original list (unchanged).
+    """
+    has_execute = any(_get_tool_name(t) == "execute" for t in tools)
+    if not has_execute:
+        return False, tools
+    return True, [t for t in tools if _get_tool_name(t) != "execute"]
+
+
 # Tools that should be excluded from the large result eviction logic.
 #
 # This tuple contains tools that should NOT have their results evicted to the filesystem
@@ -1017,14 +1036,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         Returns:
             The model response from the handler.
         """
-        # Single pass: detect "execute" tool and build a filtered list without it
-        has_execute_tool = False
-        filtered_tools = []
-        for tool in request.tools:
-            if _get_tool_name(tool) == "execute":
-                has_execute_tool = True
-            else:
-                filtered_tools.append(tool)
+        has_execute_tool, filtered_tools = _filter_execute_tool(request.tools)
 
         backend_supports_execution = False
         if has_execute_tool:
@@ -1066,14 +1078,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         Returns:
             The model response from the handler.
         """
-        # Single pass: detect "execute" tool and build a filtered list without it
-        has_execute_tool = False
-        filtered_tools = []
-        for tool in request.tools:
-            if _get_tool_name(tool) == "execute":
-                has_execute_tool = True
-            else:
-                filtered_tools.append(tool)
+        has_execute_tool, filtered_tools = _filter_execute_tool(request.tools)
 
         backend_supports_execution = False
         if has_execute_tool:

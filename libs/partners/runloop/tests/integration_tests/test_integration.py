@@ -6,14 +6,17 @@ from typing import TYPE_CHECKING
 import pytest
 from langchain_tests.integration_tests import SandboxIntegrationTests
 
-from langchain_runloop import RunloopSandbox
-
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-    from runloop_api_client import Runloop
-
     from deepagents.backends.protocol import SandboxBackendProtocol
+
+from langchain_runloop import RunloopSandbox
+
+if TYPE_CHECKING:
+    from runloop_api_client.sdk import Devbox
+
+from runloop_api_client import Runloop
 
 
 class TestRunloopSandboxStandard(SandboxIntegrationTests):
@@ -32,10 +35,8 @@ class TestRunloopSandboxStandard(SandboxIntegrationTests):
             client.devboxes.delete(devbox_id=devbox.id)
 
 
-def _create_runloop_devbox(*, api_key: str) -> tuple["Runloop", "Devbox"]:
-    from runloop_api_client import Runloop
-    from runloop_api_client.sdk import Devbox
+def _create_runloop_devbox(*, api_key: str) -> tuple[Runloop, Devbox]:
 
     client = Runloop(bearer_token=api_key)
-    devbox: Devbox = client.devboxes.create()
+    devbox = client.devboxes.create()
     return client, devbox

@@ -1028,7 +1028,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
         backend_supports_execution = False
         if has_execute_tool:
-            backend = self._get_backend(request.runtime)
+            backend = self._get_backend(request.runtime)  # ty: ignore[invalid-argument-type]
             backend_supports_execution = _supports_execution(backend)
 
             if not backend_supports_execution:
@@ -1077,7 +1077,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
         backend_supports_execution = False
         if has_execute_tool:
-            backend = self._get_backend(request.runtime)
+            backend = self._get_backend(request.runtime)  # ty: ignore[invalid-argument-type]
             backend_supports_execution = _supports_execution(backend)
 
             if not backend_supports_execution:

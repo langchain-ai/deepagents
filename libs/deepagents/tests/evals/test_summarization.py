@@ -1,20 +1,31 @@
 import re
 import uuid
+from collections.abc import Sequence
 from pathlib import Path
 from textwrap import dedent
 from typing import Any
 
 import pytest
 import requests
+from langchain.agents.middleware import ModelCallLimitMiddleware
+from langchain.agents.middleware.types import AgentMiddleware
 from langchain.chat_models import init_chat_model
+from langchain_core.load import load
+from langchain_core.messages import AnyMessage, HumanMessage
 from langgraph.checkpoint.memory import InMemorySaver
+from langsmith import Client
 
 from deepagents import create_deep_agent
 from deepagents.backends.filesystem import FilesystemBackend
-from tests.evals.utils import run_agent
+from deepagents.middleware.summarization import (
+    SummarizationMiddleware,
+    SummarizationToolMiddleware,
+    compute_summarization_defaults,
+)
+from tests.evals.utils import AgentTrajectory, run_agent
 
 # URL for a large file that will trigger summarization
-LARGE_FILE_URL = "https://raw.githubusercontent.com/langchain-ai/deepagents/refs/heads/main/libs/deepagents/deepagents/middleware/summarization.py"
+LARGE_FILE_URL = "https://raw.githubusercontent.com/langchain-ai/deepagents/5c90376c02754c67d448908e55d1e953f54b8acd/libs/deepagents/deepagents/middleware/summarization.py"
 
 SYSTEM_PROMPT = dedent(
     """
@@ -38,6 +49,8 @@ SYSTEM_PROMPT = dedent(
     """
 )
 
+ls_client = Client()
+
 
 def _write_file(p: Path, content: str) -> None:
     """Helper to write a file, creating parent directories."""
@@ -45,7 +58,14 @@ def _write_file(p: Path, content: str) -> None:
     p.write_text(content)
 
 
-def _setup_summarization_test(tmp_path: Path, model_name: str) -> tuple[Any, FilesystemBackend, Path]:
+def _setup_summarization_test(
+    tmp_path: Path,
+    model_name: str,
+    max_input_tokens: int,
+    middleware: Sequence[AgentMiddleware] = (),
+    *,
+    include_compact_tool: bool = False,
+) -> tuple[Any, FilesystemBackend, Path]:
     """Common setup for summarization tests.
 
     Returns:
@@ -65,7 +85,20 @@ def _setup_summarization_test(tmp_path: Path, model_name: str) -> tuple[Any, Fil
     if model.profile is None:
         model.profile = {}
     # Lower artificially to trigger summarization more easily
-    model.profile["max_input_tokens"] = 15_000
+    model.profile["max_input_tokens"] = max_input_tokens
+
+    all_middleware: list[AgentMiddleware] = list(middleware)
+    if include_compact_tool:
+        summarization_defaults = compute_summarization_defaults(model)
+        summarization_middleware = SummarizationMiddleware(
+            model=model,
+            backend=backend,
+            trigger=summarization_defaults["trigger"],
+            keep=summarization_defaults["keep"],
+            trim_tokens_to_summarize=None,
+            truncate_args_settings=summarization_defaults["truncate_args_settings"],
+        )
+        all_middleware.append(SummarizationToolMiddleware(summarization_middleware))
 
     agent = create_deep_agent(
         model=model,
@@ -73,6 +106,7 @@ def _setup_summarization_test(tmp_path: Path, model_name: str) -> tuple[Any, Fil
         tools=[],
         backend=backend,
         checkpointer=checkpointer,
+        middleware=all_middleware,
     )
 
     return agent, backend, root
@@ -81,7 +115,7 @@ def _setup_summarization_test(tmp_path: Path, model_name: str) -> tuple[Any, Fil
 @pytest.mark.langsmith
 def test_summarize_continues_task(tmp_path: Path, model: str) -> None:
     """Test that summarization triggers and the agent can continue reading a large file."""
-    agent, _, _ = _setup_summarization_test(tmp_path, model)
+    agent, _, _ = _setup_summarization_test(tmp_path, model, 15_000)
     thread_id = uuid.uuid4().hex[:8]
 
     trajectory = run_agent(
@@ -124,7 +158,7 @@ def test_summarization_offloads_to_filesystem(tmp_path: Path, model: str) -> Non
     This verifies the summarization middleware correctly writes conversation history
     as markdown to the backend at /conversation_history/{thread_id}.md.
     """
-    agent, _, root = _setup_summarization_test(tmp_path, model)
+    agent, _, root = _setup_summarization_test(tmp_path, model, 15_000)
     thread_id = uuid.uuid4().hex[:8]
 
     _ = run_agent(
@@ -180,3 +214,70 @@ def test_summarization_offloads_to_filesystem(tmp_path: Path, model: str) -> Non
 
     # Check that the answer mentions "base64" (the first standard library import)
     assert "logging" in final_answer.lower(), f"Expected agent to find 'logging' as the first import. Got: {final_answer}"
+
+
+def _called_compact(trajectory: AgentTrajectory) -> bool:
+    """Check if `compact_conversation` was called in any step."""
+    return any(tc.get("name") == "compact_conversation" for step in trajectory.steps for tc in step.action.tool_calls)
+
+
+def _load_seed_messages() -> list[AnyMessage]:
+    """Load seed messages from the shared LangSmith run."""
+    run = ls_client.read_run("7c1618cc-0447-40b4-8c4e-c4dc5ad32c21")
+    return load(run.outputs["messages"])
+
+
+@pytest.mark.langsmith
+def test_compact_tool_new_task(tmp_path: Path, model: str) -> None:
+
+    agent, _, _ = _setup_summarization_test(tmp_path, model, 35_000, include_compact_tool=True)
+
+    seed = _load_seed_messages()
+    query = "Thanks. Let's move on to a completely new task. To prepare, first spec out how to upgrade a web app to Typescript 5.5"
+    trajectory = run_agent(
+        agent,
+        model=model,
+        query=[*seed, HumanMessage(query)],
+    )
+    assert _called_compact(trajectory)
+
+
+@pytest.mark.langsmith
+def test_compact_tool_not_overly_sensitive(tmp_path: Path, model: str) -> None:
+
+    agent, _, _ = _setup_summarization_test(tmp_path, model, 35_000, include_compact_tool=True)
+
+    seed = _load_seed_messages()
+    query = "Moving on, what are the two primary OpenAI APIs supported?"
+    trajectory = run_agent(
+        agent,
+        model=model,
+        query=[*seed, HumanMessage(query)],
+    )
+    assert not _called_compact(trajectory)
+
+
+@pytest.mark.langsmith
+def test_compact_tool_large_reads(tmp_path: Path, model: str) -> None:
+    another_large_file = "https://raw.githubusercontent.com/langchain-ai/deepagents/5c90376c02754c67d448908e55d1e953f54b8acd/libs/deepagents/deepagents/middleware/filesystem.py"
+
+    response = requests.get(another_large_file, timeout=30)
+    response.raise_for_status()
+
+    agent, backend, _ = _setup_summarization_test(
+        tmp_path,
+        model,
+        35_000,
+        middleware=[ModelCallLimitMiddleware(run_limit=3)],
+        include_compact_tool=True,
+    )
+    backend.upload_files([("/filesystem.py", response.content)])
+
+    seed = _load_seed_messages()
+    query = "OK, done with that. Now do the same for filesystem.py."
+    trajectory = run_agent(
+        agent,
+        model=model,
+        query=[*seed, HumanMessage(query)],
+    )
+    assert _called_compact(trajectory)

@@ -840,7 +840,7 @@ num_ctx = 4000
         with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
             kwargs = _get_provider_kwargs("ollama", model_name="qwen3:4b")
 
-        assert kwargs["temperature"] == 0.5
+        assert kwargs["temperature"] == pytest.approx(0.5)
         assert kwargs["num_ctx"] == 4000
 
     def test_model_name_none_uses_provider_params(self, tmp_path: Path) -> None:
@@ -1118,7 +1118,7 @@ class TestCreateModelExtraKwargs:
         create_model("anthropic:claude-sonnet-4-5", extra_kwargs={"temperature": 0.7})
 
         _, call_kwargs = mock_init_chat_model.call_args
-        assert call_kwargs["temperature"] == 0.7
+        assert call_kwargs["temperature"] == pytest.approx(0.7)
 
     @patch("langchain.chat_models.init_chat_model")
     def test_extra_kwargs_override_config(
@@ -1147,7 +1147,7 @@ max_tokens = 1024
 
         _, call_kwargs = mock_init_chat_model.call_args
         # CLI kwarg wins over config
-        assert call_kwargs["temperature"] == 0.9
+        assert call_kwargs["temperature"] == pytest.approx(0.9)
         # Config kwarg preserved when not overridden
         assert call_kwargs["max_tokens"] == 1024
 

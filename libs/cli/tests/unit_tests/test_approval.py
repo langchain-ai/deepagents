@@ -3,6 +3,7 @@
 from unittest.mock import MagicMock
 
 import pytest
+from rich.markup import render
 
 from deepagents_cli.config import get_glyphs
 from deepagents_cli.widgets.approval import (
@@ -119,6 +120,14 @@ class TestGetCommandDisplay:
         assert menu._has_expandable_command is False
         display = menu._get_command_display(expanded=False)
         assert "12345" in display
+
+    def test_command_display_escapes_markup_tags(self) -> None:
+        """Shell command display should escape literal Rich tag sequences."""
+        command = "echo [/dim] [literal]"
+        menu = ApprovalMenu({"name": "shell", "args": {"command": command}})
+        display = menu._get_command_display(expanded=True)
+        rendered = render(display)
+        assert command in rendered.plain
 
 
 class TestToggleExpand:

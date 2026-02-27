@@ -54,6 +54,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_MALFORMED_HITL_INTERRUPT_MESSAGE = "Malformed interrupt"
+
 
 class HITLIterationLimitError(RuntimeError):
     """Raised when the HITL interrupt loop exceeds `_MAX_HITL_ITERATIONS` rounds."""
@@ -154,7 +156,8 @@ def _process_interrupts(
                 )
             except ValidationError:
                 logger.warning(
-                    "Rejecting malformed HITL interrupt %s (raw value: %r)",
+                    "Rejecting %s %s (raw value: %r)",
+                    _MALFORMED_HITL_INTERRUPT_MESSAGE.lower(),
                     interrupt_obj.id,
                     interrupt_obj.value,
                 )
@@ -165,7 +168,9 @@ def _process_interrupts(
                 # Fail-closed: record a reject decision for malformed interrupts
 
                 state.hitl_response[interrupt_obj.id] = {
-                    "decisions": [{"type": "reject", "message": "Malformed interrupt"}]
+                    "decisions": [
+                        {"type": "reject", "message": _MALFORMED_HITL_INTERRUPT_MESSAGE}
+                    ]
                 }
                 continue
             state.pending_interrupts[interrupt_obj.id] = validated_request

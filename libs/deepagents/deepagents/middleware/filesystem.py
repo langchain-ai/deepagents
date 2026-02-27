@@ -6,7 +6,7 @@ import os
 import re
 from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
-from typing import Annotated, Literal, NotRequired
+from typing import Annotated, Any, Literal, NotRequired
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
@@ -328,6 +328,22 @@ def _supports_execution(backend: BackendProtocol) -> bool:
 
     # For other backends, use isinstance check
     return isinstance(backend, SandboxBackendProtocol)
+
+
+def _get_tool_name(tool: Any) -> str | None:  # noqa: ANN401
+    """Extract tool name from a tool object or dict.
+
+    Args:
+        tool: A tool object with a `name` attribute, or a dict with a `"name"` key.
+
+    Returns:
+        The tool name, or `None` if it cannot be determined.
+    """
+    if hasattr(tool, "name"):
+        return tool.name
+    if isinstance(tool, dict):
+        return tool.get("name")
+    return None
 
 
 # Tools that should be excluded from the large result eviction logic.
@@ -977,18 +993,21 @@ class FilesystemMiddleware(AgentMiddleware):
         Returns:
             The model response from the handler.
         """
-        # Check if execute tool is present and if backend supports it
-        has_execute_tool = any((tool.name if hasattr(tool, "name") else tool.get("name")) == "execute" for tool in request.tools)
+        # Single pass: detect "execute" tool and build a filtered list without it
+        has_execute_tool = False
+        filtered_tools = []
+        for tool in request.tools:
+            if _get_tool_name(tool) == "execute":
+                has_execute_tool = True
+            else:
+                filtered_tools.append(tool)
 
         backend_supports_execution = False
         if has_execute_tool:
-            # Resolve backend to check execution support
             backend = self._get_backend(request.runtime)
             backend_supports_execution = _supports_execution(backend)
 
-            # If execute tool exists but backend doesn't support it, filter it out
             if not backend_supports_execution:
-                filtered_tools = [tool for tool in request.tools if (tool.name if hasattr(tool, "name") else tool.get("name")) != "execute"]
                 request = request.override(tools=filtered_tools)
                 has_execute_tool = False
 
@@ -996,10 +1015,8 @@ class FilesystemMiddleware(AgentMiddleware):
         if self._custom_system_prompt is not None:
             system_prompt = self._custom_system_prompt
         else:
-            # Build dynamic system prompt based on available tools
             prompt_parts = [FILESYSTEM_SYSTEM_PROMPT]
 
-            # Add execution instructions if execute tool is available
             if has_execute_tool and backend_supports_execution:
                 prompt_parts.append(EXECUTION_SYSTEM_PROMPT)
 
@@ -1025,18 +1042,21 @@ class FilesystemMiddleware(AgentMiddleware):
         Returns:
             The model response from the handler.
         """
-        # Check if execute tool is present and if backend supports it
-        has_execute_tool = any((tool.name if hasattr(tool, "name") else tool.get("name")) == "execute" for tool in request.tools)
+        # Single pass: detect "execute" tool and build a filtered list without it
+        has_execute_tool = False
+        filtered_tools = []
+        for tool in request.tools:
+            if _get_tool_name(tool) == "execute":
+                has_execute_tool = True
+            else:
+                filtered_tools.append(tool)
 
         backend_supports_execution = False
         if has_execute_tool:
-            # Resolve backend to check execution support
             backend = self._get_backend(request.runtime)
             backend_supports_execution = _supports_execution(backend)
 
-            # If execute tool exists but backend doesn't support it, filter it out
             if not backend_supports_execution:
-                filtered_tools = [tool for tool in request.tools if (tool.name if hasattr(tool, "name") else tool.get("name")) != "execute"]
                 request = request.override(tools=filtered_tools)
                 has_execute_tool = False
 
@@ -1044,10 +1064,8 @@ class FilesystemMiddleware(AgentMiddleware):
         if self._custom_system_prompt is not None:
             system_prompt = self._custom_system_prompt
         else:
-            # Build dynamic system prompt based on available tools
             prompt_parts = [FILESYSTEM_SYSTEM_PROMPT]
 
-            # Add execution instructions if execute tool is available
             if has_execute_tool and backend_supports_execution:
                 prompt_parts.append(EXECUTION_SYSTEM_PROMPT)
 

@@ -166,7 +166,7 @@ def test_sandbox_grep_literal_search() -> None:
         if "grep" in command:
             # Check that -F flag (fixed-strings/literal) is present in the flags
             # -F can appear as standalone "-F" or combined like "-rHnF"
-            assert "-F" in command or "F" in command.split("grep")[1].split()[0], "grep should use -F flag for literal search"
+            assert "-F" in command or "F" in command.split("grep", 1)[1].split(maxsplit=1)[0], "grep should use -F flag for literal search"
             return ExecuteResponse(
                 output="/test/code.py:1:def __init__(self):\n/test/types.py:1:str | int",
                 exit_code=0,

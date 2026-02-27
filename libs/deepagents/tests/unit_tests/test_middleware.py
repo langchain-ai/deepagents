@@ -1,3 +1,6 @@
+import time
+from unittest.mock import patch
+
 import pytest
 from langchain.agents import create_agent
 from langchain.agents.middleware.types import ToolCallRequest
@@ -12,6 +15,7 @@ from langchain_core.messages import (
 from langgraph.store.memory import InMemoryStore
 from langgraph.types import Command, Overwrite
 
+import deepagents.middleware.filesystem as filesystem_middleware
 from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
 from deepagents.backends.protocol import (
     ExecuteResponse,
@@ -410,6 +414,32 @@ class TestFilesystemMiddleware:
             }
         )
         assert result == str([])
+
+    def test_glob_timeout_returns_error_message(self):
+        state = FilesystemState(messages=[], files={})
+        middleware = FilesystemMiddleware()
+        glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
+        backend = middleware._get_backend(
+            ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={})
+        )
+
+        def slow_glob_info(*_args: object, **_kwargs: object) -> list[dict[str, str]]:
+            time.sleep(2)
+            return []
+
+        with (
+            patch.object(filesystem_middleware, "GLOB_TIMEOUT", 0.5),
+            patch.object(middleware, "_get_backend", return_value=backend),
+            patch.object(backend, "glob_info", side_effect=slow_glob_info),
+        ):
+            result = glob_search_tool.invoke(
+                {
+                    "pattern": "**/*",
+                    "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+                }
+            )
+
+        assert result == "Error: glob timed out after 0.5s. Try a more specific pattern or a narrower path."
 
     def test_glob_search_truncates_large_results(self):
         """Test that glob results are truncated when they exceed token limit."""

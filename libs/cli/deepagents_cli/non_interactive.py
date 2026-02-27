@@ -598,9 +598,9 @@ async def run_non_interactive(
         console.print()
 
     sandbox_backend = None
-    exit_stack = contextlib.ExitStack()
 
     if sandbox_type != "none":
+        exit_stack = contextlib.ExitStack()
         # Conditional: sandbox_factory transitively imports provider modules
         # and SDKs — skip that cost for the common no-sandbox path.
         from deepagents_cli.integrations.sandbox_factory import (

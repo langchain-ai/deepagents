@@ -436,7 +436,7 @@ class LocalContextMiddleware(AgentMiddleware):
         # (and should not) redeclare it.
         raw_event = state.get("_summarization_event")
         if raw_event is not None:
-            event: SummarizationEvent = raw_event  # type: ignore[assignment]
+            event: SummarizationEvent = raw_event
             cutoff = event.get("cutoff_index")
             refreshed_cutoff = state.get("_local_context_refreshed_at_cutoff")
             if cutoff != refreshed_cutoff:

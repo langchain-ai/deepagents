@@ -43,6 +43,9 @@ from deepagents_cli.subagents import list_subagents
 DEFAULT_AGENT_NAME = "agent"
 """The default agent name used when no `-a` flag is provided."""
 
+REQUIRE_COMPACT_TOOL_APPROVAL: bool = True
+"""When `True`, `compact_conversation` requires HITL approval like other gated tools."""
+
 
 def list_agents() -> None:
     """List all available agents."""
@@ -359,7 +362,7 @@ def _add_interrupt_on() -> dict[str, InterruptOnConfig]:
         "description": _format_task_description,  # type: ignore[typeddict-item]  # Callable description narrower than TypedDict expects
     }
 
-    return {
+    interrupt_map: dict[str, InterruptOnConfig] = {
         "execute": execute_interrupt_config,
         "write_file": write_file_interrupt_config,
         "edit_file": edit_file_interrupt_config,
@@ -367,6 +370,19 @@ def _add_interrupt_on() -> dict[str, InterruptOnConfig]:
         "fetch_url": fetch_url_interrupt_config,
         "task": task_interrupt_config,
     }
+
+    if REQUIRE_COMPACT_TOOL_APPROVAL:
+        interrupt_map["compact_conversation"] = {
+            "allowed_decisions": ["approve", "reject"],
+            "description": (
+                "Summarizes older messages into a shorter summary "
+                "using an LLM call, then replaces them in context. "
+                "Recent messages are kept as-is. Full history is "
+                "written to backend storage for agent retrieval."
+            ),
+        }
+
+    return interrupt_map
 
 
 def create_cli_agent(

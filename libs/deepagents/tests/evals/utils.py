@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import pytest
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages import AIMessage, AnyMessage, ToolMessage
 from langsmith import testing as t
 
 from deepagents.backends.utils import create_file_data, file_data_to_string
@@ -266,14 +266,17 @@ def _assert_expectations(trajectory: AgentTrajectory, expect: TrajectoryExpectat
 def run_agent(
     agent: CompiledStateGraph[Any, Any],
     *,
-    query: str,
+    query: str | list[AnyMessage],
     model: str,
     initial_files: dict[str, str] | None = None,
     expect: TrajectoryExpectations | None = None,
     thread_id: str | None = None,
 ) -> AgentTrajectory:
     """Run agent eval against the given query."""
-    invoke_inputs: dict[str, object] = {"messages": [{"role": "user", "content": query}]}
+    if isinstance(query, str):
+        invoke_inputs: dict[str, object] = {"messages": [{"role": "user", "content": query}]}
+    else:
+        invoke_inputs = {"messages": query}
     if initial_files is not None:
         invoke_inputs["files"] = {path: create_file_data(content) for path, content in initial_files.items()}
 

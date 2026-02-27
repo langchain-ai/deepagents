@@ -32,7 +32,6 @@ from deepagents.middleware.subagents import (
 )
 from deepagents.middleware.summarization import (
     SummarizationMiddleware,
-    SummarizationToolMiddleware,
     compute_summarization_defaults,
 )
 
@@ -291,7 +290,6 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
                 subagents=all_subagents,
             ),
             summarization_middleware,
-            SummarizationToolMiddleware(summarization_middleware),
             AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
             PatchToolCallsMiddleware(),
         ]

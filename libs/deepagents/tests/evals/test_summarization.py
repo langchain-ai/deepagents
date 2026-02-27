@@ -17,6 +17,11 @@ from langsmith import Client
 
 from deepagents import create_deep_agent
 from deepagents.backends.filesystem import FilesystemBackend
+from deepagents.middleware.summarization import (
+    SummarizationMiddleware,
+    SummarizationToolMiddleware,
+    compute_summarization_defaults,
+)
 from tests.evals.utils import AgentTrajectory, run_agent
 
 # URL for a large file that will trigger summarization
@@ -58,6 +63,8 @@ def _setup_summarization_test(
     model_name: str,
     max_input_tokens: int,
     middleware: Sequence[AgentMiddleware] = (),
+    *,
+    include_compact_tool: bool = False,
 ) -> tuple[Any, FilesystemBackend, Path]:
     """Common setup for summarization tests.
 
@@ -80,13 +87,26 @@ def _setup_summarization_test(
     # Lower artificially to trigger summarization more easily
     model.profile["max_input_tokens"] = max_input_tokens
 
+    all_middleware: list[AgentMiddleware] = list(middleware)
+    if include_compact_tool:
+        summarization_defaults = compute_summarization_defaults(model)
+        summarization_middleware = SummarizationMiddleware(
+            model=model,
+            backend=backend,
+            trigger=summarization_defaults["trigger"],
+            keep=summarization_defaults["keep"],
+            trim_tokens_to_summarize=None,
+            truncate_args_settings=summarization_defaults["truncate_args_settings"],
+        )
+        all_middleware.append(SummarizationToolMiddleware(summarization_middleware))
+
     agent = create_deep_agent(
         model=model,
         system_prompt=SYSTEM_PROMPT,
         tools=[],
         backend=backend,
         checkpointer=checkpointer,
-        middleware=middleware,
+        middleware=all_middleware,
     )
 
     return agent, backend, root
@@ -210,7 +230,7 @@ def _load_seed_messages() -> list[AnyMessage]:
 @pytest.mark.langsmith
 def test_compact_tool_new_task(tmp_path: Path, model: str) -> None:
 
-    agent, _, _ = _setup_summarization_test(tmp_path, model, 35_000)
+    agent, _, _ = _setup_summarization_test(tmp_path, model, 35_000, include_compact_tool=True)
 
     seed = _load_seed_messages()
     query = "Thanks. Let's move on to a completely new task. To prepare, first spec out how to upgrade a web app to Typescript 5.5"
@@ -225,7 +245,7 @@ def test_compact_tool_new_task(tmp_path: Path, model: str) -> None:
 @pytest.mark.langsmith
 def test_compact_tool_not_overly_sensitive(tmp_path: Path, model: str) -> None:
 
-    agent, _, _ = _setup_summarization_test(tmp_path, model, 35_000)
+    agent, _, _ = _setup_summarization_test(tmp_path, model, 35_000, include_compact_tool=True)
 
     seed = _load_seed_messages()
     query = "Moving on, what are the two primary OpenAI APIs supported?"
@@ -249,6 +269,7 @@ def test_compact_tool_large_reads(tmp_path: Path, model: str) -> None:
         model,
         35_000,
         middleware=[ModelCallLimitMiddleware(run_limit=3)],
+        include_compact_tool=True,
     )
     backend.upload_files([("/filesystem.py", response.content)])
 

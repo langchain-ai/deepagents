@@ -6,7 +6,7 @@ import os
 import re
 from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
-from typing import Annotated, Any, Literal, NotRequired
+from typing import Annotated, Any, Literal, NotRequired, cast
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,

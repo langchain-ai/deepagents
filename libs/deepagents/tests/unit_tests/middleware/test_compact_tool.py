@@ -605,7 +605,8 @@ class TestIsEligibleForCompaction:
     def test_no_usage_metadata_falls_through(self) -> None:
         """No usage metadata → not eligible → falls through to cutoff check."""
         mw = _make_middleware_with_trigger(("tokens", 100_000))
-        messages = _make_messages(30)
+        # Explicitly create messages without any usage metadata to test the fallback path.
+        messages = [HumanMessage(content=f"msg {i}") for i in range(30)]
         runtime = _make_runtime(messages)
         with patch.object(mw._summarization, "_determine_cutoff_index", return_value=0):
             result = mw._run_compact(runtime)

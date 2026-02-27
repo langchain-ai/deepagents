@@ -1,10 +1,14 @@
 """Async tests for middleware filesystem tools."""
 
+import asyncio
+from unittest.mock import patch
+
 import pytest
 from langchain.tools import ToolRuntime
 from langgraph.store.memory import InMemoryStore
 from langgraph.types import Command
 
+import deepagents.middleware.filesystem as filesystem_middleware
 from deepagents.backends import CompositeBackend, StateBackend
 from deepagents.backends.protocol import ExecuteResponse, SandboxBackendProtocol
 from deepagents.middleware.filesystem import FileData, FilesystemMiddleware, FilesystemState
@@ -302,6 +306,31 @@ class TestFilesystemMiddlewareAsync:
             }
         )
         assert result == str([])
+
+    async def test_glob_timeout_returns_error_message_async(self):
+        state = FilesystemState(messages=[], files={})
+        middleware = FilesystemMiddleware()
+        glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
+        backend_runtime = ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={})
+        backend = middleware._get_backend(backend_runtime)
+
+        async def slow_aglob_info(*_args: object, **_kwargs: object) -> list[dict[str, str]]:
+            await asyncio.sleep(2)
+            return []
+
+        with (
+            patch.object(filesystem_middleware, "GLOB_TIMEOUT", 0.5),
+            patch.object(middleware, "_get_backend", return_value=backend),
+            patch.object(backend, "aglob_info", side_effect=slow_aglob_info),
+        ):
+            result = await glob_search_tool.ainvoke(
+                {
+                    "pattern": "**/*",
+                    "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+                }
+            )
+
+        assert result == "Error: glob timed out after 0.5s. Try a more specific pattern or a narrower path."
 
     @pytest.mark.asyncio
     async def test_agrep_search_shortterm_files_with_matches(self):
@@ -684,14 +713,14 @@ class TestFilesystemMiddlewareAsync:
 
         # Mock sandbox backend that returns specific output
         class FormattingMockSandboxBackend(SandboxBackendProtocol, StateBackend):
-            def execute(self, command: str) -> ExecuteResponse:
+            def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
                 return ExecuteResponse(
                     output="Hello world\nLine 2",
                     exit_code=0,
                     truncated=False,
                 )
 
-            async def aexecute(self, command: str) -> ExecuteResponse:
+            async def aexecute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:  # noqa: ASYNC109
                 return ExecuteResponse(
                     output="Async Hello world\nAsync Line 2",
                     exit_code=0,
@@ -728,14 +757,14 @@ class TestFilesystemMiddlewareAsync:
 
         # Mock sandbox backend that returns failure
         class FailureMockSandboxBackend(SandboxBackendProtocol, StateBackend):
-            def execute(self, command: str) -> ExecuteResponse:
+            def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
                 return ExecuteResponse(
                     output="Error: command not found",
                     exit_code=127,
                     truncated=False,
                 )
 
-            async def aexecute(self, command: str) -> ExecuteResponse:
+            async def aexecute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:  # noqa: ASYNC109
                 return ExecuteResponse(
                     output="Async Error: command not found",
                     exit_code=127,
@@ -772,14 +801,14 @@ class TestFilesystemMiddlewareAsync:
 
         # Mock sandbox backend that returns truncated output
         class TruncatedMockSandboxBackend(SandboxBackendProtocol, StateBackend):
-            def execute(self, command: str) -> ExecuteResponse:
+            def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
                 return ExecuteResponse(
                     output="Very long output...",
                     exit_code=0,
                     truncated=True,
                 )
 
-            async def aexecute(self, command: str) -> ExecuteResponse:
+            async def aexecute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:  # noqa: ASYNC109
                 return ExecuteResponse(
                     output="Async Very long output...",
                     exit_code=0,

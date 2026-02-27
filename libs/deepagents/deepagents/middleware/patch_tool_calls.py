@@ -17,13 +17,13 @@ class PatchToolCallsMiddleware(AgentMiddleware):
         if not messages:
             return None
 
-        answered_tool_call_ids = {msg.tool_call_id for msg in messages if msg.type == "tool"}
+        answered_tool_call_ids = {msg.tool_call_id for msg in messages if msg.type == "tool"}  # ty: ignore[unresolved-attribute]
 
         patched_messages = []
         for msg in messages:
             patched_messages.append(msg)
-            if msg.type == "ai" and msg.tool_calls:
-                for tool_call in msg.tool_calls:
+            if msg.type == "ai" and msg.tool_calls:  # ty: ignore[unresolved-attribute]
+                for tool_call in msg.tool_calls:  # ty: ignore[unresolved-attribute]
                     if tool_call["id"] not in answered_tool_call_ids:
                         tool_msg = (
                             f"Tool call {tool_call['name']} with id {tool_call['id']} was "

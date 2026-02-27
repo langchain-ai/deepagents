@@ -209,7 +209,10 @@ class TestCompactSuccess:
         event = result.update["_summarization_event"]
         assert event["cutoff_index"] == 4
         # Verify that the summarization event contains the expected values.
-        assert event["summary_message"] == "Summary of the conversation."
+        # summary_message is a HumanMessage wrapping the summary text.
+        summary_msg = event["summary_message"]
+        assert isinstance(summary_msg, HumanMessage)
+        assert "Summary of the conversation." in summary_msg.content
         assert event["file_path"] == "/conversation_history/test-thread.md"
 
         update_messages = result.update["messages"]

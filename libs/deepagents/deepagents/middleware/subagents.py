@@ -8,8 +8,7 @@ from typing import Annotated, Any, NotRequired, TypedDict, Unpack, cast
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig
-from langchain.agents.middleware.types import AgentMiddleware, ContextT, ModelRequest, \
-    ModelResponse, ResponseT
+from langchain.agents.middleware.types import AgentMiddleware, ContextT, ModelRequest, ModelResponse, ResponseT
 from langchain.chat_models import init_chat_model
 from langchain.tools import BaseTool, ToolRuntime
 from langchain_core.language_models import BaseChatModel
@@ -17,6 +16,7 @@ from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_core.runnables import Runnable
 from langchain_core.tools import StructuredTool
 from langgraph.types import Command
+from pydantic import TypeAdapter, ValidationError
 
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
 from deepagents.middleware._utils import append_to_system_message
@@ -507,7 +507,11 @@ def _build_task_tool(  # noqa: C901
 
 SWARM_TOOL_DESCRIPTION = """Launch many subagents in parallel from a JSON config file.
 
-Use this when you need to fan out the same (or similar) work across many chunks of data — for example, processing sections of a large file, classifying batches of entries, or querying multiple documents.
+Use this when you need to fan out the same (or similar) work across many chunks of data - for example:
+- processing sections of a large file
+- classifying batches of entries
+- querying multiple documents
+
 
 ## Workflow
 1. Write a Python script (via `execute`) that reads your data, chunks it, and generates a JSON config file.
@@ -541,6 +545,62 @@ Fields:
 Available subagent types:
 {available_agents}
 """
+
+
+class SwarmTaskSpec(TypedDict):
+    """A single task entry in a swarm config.
+
+    Only `description`, `subagent_type`, and `id` are used by the swarm implementation.
+    Additional keys may be present but are ignored.
+
+    Fields:
+        description: The instruction passed to the subagent as a single `HumanMessage`.
+        subagent_type: The subagent name to dispatch to.
+        id: Optional identifier used as the output filename. If omitted, defaults to the
+            task index. This value is stringified when writing `<output_dir>/<id>.txt`.
+    """
+
+    description: str
+    subagent_type: str
+    id: NotRequired[str | int]
+
+
+class ParsedSwarmConfig(TypedDict):
+    """Result of parsing a swarm config file."""
+
+    tasks: list[SwarmTaskSpec] | None
+    error: str | None
+
+
+async def _load_swarm_tasks(
+    resolved_backend: BackendProtocol,
+    config_file: str,
+) -> ParsedSwarmConfig:
+    responses = await resolved_backend.adownload_files([config_file])
+    response = responses[0]
+    if response.error:
+        return {"tasks": None, "error": f"Error reading config file '{config_file}': {response.error}"}
+
+    content = response.content
+    if not isinstance(content, bytes):
+        return {"tasks": None, "error": f"Content was expected to be bytes. Got {type(content)}."}
+
+    try:
+        config_data = json.loads(content.decode("utf-8"))
+    except UnicodeDecodeError as e:
+        return {"tasks": None, "error": f"Error reading config file '{config_file}': {e}"}
+
+    raw_tasks = config_data.get("tasks", [])
+    if not raw_tasks:
+        return {"tasks": None, "error": f"Error file '{config_file}' contains no tasks!"}
+
+    adapter = TypeAdapter(list[SwarmTaskSpec])
+    try:
+        tasks = adapter.validate_python(raw_tasks)
+    except ValidationError as e:
+        return {"tasks": None, "error": json.dumps(e.errors(), indent=2)}
+
+    return {"tasks": tasks, "error": None}
 
 
 class _DeprecatedKwargs(TypedDict, total=False):
@@ -659,6 +719,9 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         using_new_api = backend is not None
         using_old_api = default_model is not None
 
+        self._backend = backend
+        self._subagents = subagents
+
         if using_old_api and not using_new_api:
             # Legacy API - build subagents from deprecated args
             subagent_specs = _get_subagents_legacy(
@@ -673,8 +736,6 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             if not subagents:
                 msg = "At least one subagent must be specified when using the new API"
                 raise ValueError(msg)
-            self._backend = backend
-            self._subagents = subagents
             subagent_specs = self._get_subagents()
         else:
             msg = "SubAgentMiddleware requires either `backend` (new API) or `default_model` (deprecated API)"
@@ -694,11 +755,11 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             self.system_prompt = system_prompt
 
         tools = [task_tool]
-        if enable_swarm:
+        if enable_swarm and backend is not None:
             tools.append(self._build_swarm_tool(subagent_specs))
         self.tools = tools
 
-    def _build_swarm_tool(self, subagents: list[_SubagentSpec]) -> BaseTool:
+    def _build_swarm_tool(self, subagents: list[_SubagentSpec]) -> BaseTool:  # noqa: C901, PLR0915
         """Create the `swarm` tool.
 
         The `swarm` tool reads a JSON config file containing a list of task specs and
@@ -722,61 +783,21 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         subagent_description_str = "\n".join(f"- {s['name']}: {s['description']}" for s in subagents)
         description = SWARM_TOOL_DESCRIPTION.format(available_agents=subagent_description_str)
 
-        async def aswarm(
-            config_file: Annotated[str, "Absolute path to the JSON config file containing the task definitions."],
-            output_dir: Annotated[
-                str,
-                "Absolute path to the directory where result files will be written. Each task result is written to <output_dir>/<task_id>.txt.",
-            ],
-            runtime: ToolRuntime,
-        ) -> ToolMessage:
-            """Swarm implementation."""
-            if callable(backend):
-                resolved_backend = backend(runtime)  # ty: ignore[call-top-callable]
-            else:
-                resolved_backend = backend
-
-            responses = await resolved_backend.adownload_files([config_file])
-            response = responses[0]
-            if response.error:
-                return ToolMessage(
-                    content=f"Error reading config file '{config_file}': {response.error}",
-                    status="error",
-                    tool_call_id=runtime.tool_call_id,
-                )
-
-            content = response.content
-            if not isinstance(content, bytes):
-                msg = f"Content was expected to be bytes. Got {type(content)}."
-                raise AssertionError(msg)
-
-            try:
-                config_data = json.loads(content.decode("utf-8"))
-            except UnicodeDecodeError as e:
-                return ToolMessage(
-                    content=f"Error reading config file '{config_file}': {e}",
-                    status="error",
-                    tool_call_id=runtime.tool_call_id,
-                )
-
-            tasks = config_data.get("tasks", [])
-            if not tasks:
-                return ToolMessage(
-                    content=f"Error file '{config_file}' contains no tasks!",
-                    status="error",
-                    tool_call_id=runtime.tool_call_id,
-                )
-
-            parent_state = {k: v for k, v in runtime.state.items() if k not in _EXCLUDED_STATE_KEYS}
+        async def _run_swarm_tasks(
+            subagents: dict[str, Runnable],
+            parent_state: dict[str, Any],
+            tasks: list[SwarmTaskSpec],
+        ) -> list[tuple[str, str] | Exception]:
+            """Run tasks."""
 
             async def run_task(task_spec: dict[str, Any], idx: int) -> tuple[str, str]:
                 task_id = str(task_spec.get("id", idx))
                 desc = task_spec["description"]
                 subagent_type = task_spec["subagent_type"]
 
-                subagent = subagent_graphs.get(subagent_type)
+                subagent = subagents.get(subagent_type)
                 if subagent is None:
-                    allowed = ", ".join(subagent_graphs.keys())
+                    allowed = ", ".join(subagents.keys())
                     return task_id, f"Error: unknown subagent_type '{subagent_type}'. Allowed: {allowed}"
 
                 subagent_state = dict(parent_state)
@@ -790,12 +811,34 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
                 return task_id, ""
 
             coros = [run_task(task_spec, idx) for idx, task_spec in enumerate(tasks)]
-            results = await asyncio.gather(*coros, return_exceptions=True)
+            return await asyncio.gather(*coros, return_exceptions=True)
 
+        async def aswarm(
+            config_file: Annotated[str, "Absolute path to the JSON config file containing the task definitions."],
+            output_dir: Annotated[
+                str,
+                "Absolute path to the directory where result files will be written. Each task result is written to <output_dir>/<task_id>.txt.",
+            ],
+            runtime: ToolRuntime,
+        ) -> ToolMessage:
+            """Run swarm tasks."""
+            resolved_backend = backend(runtime) if callable(backend) else backend  # ty: ignore[call-top-callable]
+
+            parsed = await _load_swarm_tasks(resolved_backend, config_file)
+            if parsed["error"] is not None:
+                return ToolMessage(content=parsed["error"], status="error", tool_call_id=runtime.tool_call_id)
+            tasks = parsed["tasks"]
+            if tasks is None:
+                msg = "parsed swarm tasks unexpectedly missing"
+                raise AssertionError(msg)
+
+            parent_state = {k: v for k, v in runtime.state.items() if k not in _EXCLUDED_STATE_KEYS}
+
+            results = await _run_swarm_tasks(subagent_graphs, parent_state, tasks)
             output_dir_clean = output_dir.rstrip("/")
+
             outputs: list[tuple[str, bytes]] = []
             summaries: list[str] = []
-
             for item in results:
                 if isinstance(item, Exception):
                     summaries.append(f"Error: {item}")
@@ -899,4 +942,3 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             new_system_message = append_to_system_message(request.system_message, self.system_prompt)
             return await handler(request.override(system_message=new_system_message))
         return await handler(request)
-

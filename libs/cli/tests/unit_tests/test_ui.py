@@ -1,7 +1,13 @@
 """Unit tests for UI rendering utilities."""
 
 from deepagents_cli.config import get_glyphs
-from deepagents_cli.ui import _format_timeout, format_tool_display, truncate_value
+from deepagents_cli.tool_display import (
+    _format_content_block,
+    _format_timeout,
+    format_tool_display,
+    format_tool_message_content,
+    truncate_value,
+)
 
 
 class TestFormatTimeout:
@@ -137,3 +143,126 @@ class TestFormatToolDisplayOther:
         assert f"{prefix} custom_tool(" in result
         assert "arg1=" in result
         assert "arg2=" in result
+
+
+class TestFormatToolMessageContent:
+    """Tests for `format_tool_message_content`."""
+
+    def test_none_returns_empty_string(self) -> None:
+        """Test that None content returns empty string."""
+        assert format_tool_message_content(None) == ""
+
+    def test_plain_string_returned_as_is(self) -> None:
+        """Test that a plain string is returned unchanged."""
+        assert format_tool_message_content("hello") == "hello"
+
+    def test_list_of_strings_joined(self) -> None:
+        """Test that a list of strings is joined with newlines."""
+        assert format_tool_message_content(["a", "b"]) == "a\nb"
+
+    def test_list_with_dict_uses_json(self) -> None:
+        """Test that dicts in a list are serialized as JSON."""
+        result = format_tool_message_content([{"key": "val"}])
+        assert '"key"' in result
+        assert '"val"' in result
+
+    def test_list_mixed_types(self) -> None:
+        """Test a list with both strings and dicts."""
+        result = format_tool_message_content(["text", {"k": 1}])
+        lines = result.split("\n")
+        assert lines[0] == "text"
+        assert '"k"' in lines[1]
+
+    def test_non_serializable_falls_back_to_str(self) -> None:
+        """Test that non-JSON-serializable items fall back to str()."""
+        obj = object()
+        result = format_tool_message_content([obj])
+        assert "object" in result
+
+    def test_integer_content(self) -> None:
+        """Test that non-string, non-list content is stringified."""
+        assert format_tool_message_content(42) == "42"
+
+    def test_image_block_shows_placeholder(self) -> None:
+        """Test that image content blocks show a placeholder instead of base64."""
+        content = [{"type": "image", "base64": "A" * 4000, "mime_type": "image/png"}]
+        result = format_tool_message_content(content)
+        assert "Image" in result
+        assert "image/png" in result
+        assert "KB" in result
+        # Must NOT contain raw base64
+        assert "AAAA" not in result
+
+    def test_image_block_without_mime_type(self) -> None:
+        """Test image block falls back to generic 'image' when mime_type missing."""
+        content = [{"type": "image", "base64": "data"}]
+        result = format_tool_message_content(content)
+        assert "Image" in result
+        assert "image" in result
+
+    def test_mixed_list_with_strings_and_image_blocks(self) -> None:
+        """Test that mixed string/image list preserves ordering."""
+        content = [
+            "Here is the screenshot:",
+            {"type": "image", "base64": "A" * 4000, "mime_type": "image/png"},
+            "Analysis complete.",
+        ]
+        result = format_tool_message_content(content)
+        lines = result.split("\n")
+        assert lines[0] == "Here is the screenshot:"
+        assert "Image" in lines[1]
+        assert "AAAA" not in lines[1]
+        assert lines[2] == "Analysis complete."
+
+
+class TestFormatContentBlock:
+    """Tests for `_format_content_block`."""
+
+    def test_image_block_placeholder(self) -> None:
+        """Test image block returns a human-readable placeholder."""
+        block = {
+            "type": "image",
+            "base64": "A" * 40000,
+            "mime_type": "image/jpeg",
+        }
+        result = _format_content_block(block)
+        assert result == "[Image: image/jpeg, ~29KB]"
+
+    def test_non_image_dict_returns_json(self) -> None:
+        """Test that non-image dicts are still JSON-serialized."""
+        block = {"type": "text", "content": "hello"}
+        result = _format_content_block(block)
+        assert '"type"' in result
+        assert '"text"' in result
+
+    def test_image_block_without_base64_returns_json(self) -> None:
+        """Test that image blocks missing base64 key fall back to JSON."""
+        block = {"type": "image", "url": "https://example.com/img.png"}
+        result = _format_content_block(block)
+        assert '"url"' in result
+
+    def test_image_block_none_base64_returns_json(self) -> None:
+        """Test that image block with None base64 falls through to JSON."""
+        block = {"type": "image", "base64": None, "mime_type": "image/png"}
+        result = _format_content_block(block)
+        assert '"type"' in result
+        assert "Image" not in result
+
+    def test_image_block_non_string_base64_returns_json(self) -> None:
+        """Test that image block with non-string base64 falls through to JSON."""
+        block = {"type": "image", "base64": 12345}
+        result = _format_content_block(block)
+        assert "12345" in result
+        assert "Image" not in result
+
+    def test_image_block_empty_base64(self) -> None:
+        """Test that empty base64 string produces a 0KB placeholder."""
+        block = {"type": "image", "base64": "", "mime_type": "image/png"}
+        result = _format_content_block(block)
+        assert result == "[Image: image/png, ~0KB]"
+
+    def test_non_serializable_dict_falls_back_to_str(self) -> None:
+        """Test that dicts with non-serializable values fall back to str()."""
+        block = {"type": "data", "value": object()}
+        result = _format_content_block(block)
+        assert "type" in result

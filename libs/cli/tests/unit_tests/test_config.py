@@ -11,8 +11,6 @@ from deepagents_cli.config import (
     ModelResult,
     Settings,
     _create_model_from_class,
-    _find_project_agent_md,
-    _find_project_root,
     _get_provider_kwargs,
     build_langsmith_thread_url,
     create_model,
@@ -23,6 +21,10 @@ from deepagents_cli.config import (
     reset_langsmith_url_cache,
     settings,
     validate_model_capabilities,
+)
+from deepagents_cli.project_utils import (
+    find_project_agent_md as _find_project_agent_md,
+    find_project_root as _find_project_root,
 )
 from deepagents_cli.model_config import ModelConfigError, clear_caches
 

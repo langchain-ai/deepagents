@@ -246,14 +246,15 @@ _MIN_FUZZY_SCORE = 15  # Minimum score to include in results
 def _find_project_root(start_path: Path) -> Path:
     """Find git root or return start_path.
 
+    Thin wrapper around `project_utils.find_project_root` that guarantees a
+    non-None return by falling back to *start_path*.
+
     Returns:
         Path to git root directory, or start_path if not in a git repo.
     """
-    current = start_path.resolve()
-    for parent in [current, *list(current.parents)]:
-        if (parent / ".git").exists():
-            return parent
-    return start_path
+    from deepagents_cli.project_utils import find_project_root
+
+    return find_project_root(start_path) or start_path
 
 
 def _get_project_files(root: Path) -> list[str]:

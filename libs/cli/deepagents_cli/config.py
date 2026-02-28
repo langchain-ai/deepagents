@@ -42,6 +42,10 @@ from deepagents_cli.model_config import (  # noqa: E402
     ModelConfigError,
     ModelSpec,
 )
+from deepagents_cli.project_utils import (  # noqa: E402
+    find_project_agent_md as _find_project_agent_md,
+    find_project_root as _find_project_root,
+)
 
 DOCS_URL = "https://docs.langchain.com/oss/python/deepagents/cli"
 
@@ -307,60 +311,6 @@ config: RunnableConfig = {"recursion_limit": 1000}
 
 # Rich console instance
 console = Console(highlight=False)
-
-
-def _find_project_root(start_path: Path | None = None) -> Path | None:
-    """Find the project root by looking for .git directory.
-
-    Walks up the directory tree from start_path (or cwd) looking for a .git
-    directory, which indicates the project root.
-
-    Args:
-        start_path: Directory to start searching from.
-            Defaults to current working directory.
-
-    Returns:
-        Path to the project root if found, None otherwise.
-    """
-    current = Path(start_path or Path.cwd()).resolve()
-
-    # Walk up the directory tree
-    for parent in [current, *list(current.parents)]:
-        git_dir = parent / ".git"
-        if git_dir.exists():
-            return parent
-
-    return None
-
-
-def _find_project_agent_md(project_root: Path) -> list[Path]:
-    """Find project-specific AGENTS.md file(s).
-
-    Checks two locations and returns ALL that exist:
-    1. project_root/.deepagents/AGENTS.md
-    2. project_root/AGENTS.md
-
-    Both files will be loaded and combined if both exist.
-
-    Args:
-        project_root: Path to the project root directory.
-
-    Returns:
-        List of paths to project AGENTS.md files (may contain 0, 1, or 2 paths).
-    """
-    paths = []
-
-    # Check .deepagents/AGENTS.md (preferred)
-    deepagents_md = project_root / ".deepagents" / "AGENTS.md"
-    if deepagents_md.exists():
-        paths.append(deepagents_md)
-
-    # Check root AGENTS.md (fallback, but also include if both exist)
-    root_md = project_root / "AGENTS.md"
-    if root_md.exists():
-        paths.append(root_md)
-
-    return paths
 
 
 def parse_shell_allow_list(allow_list_str: str | None) -> list[str] | None:

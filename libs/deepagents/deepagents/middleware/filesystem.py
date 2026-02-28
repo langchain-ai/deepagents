@@ -1,7 +1,9 @@
 """Middleware for providing filesystem tools to an agent."""
 # ruff: noqa: E501
 
+import asyncio
 import base64
+import concurrent.futures
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Annotated, Any, Literal, NotRequired
@@ -465,6 +467,9 @@ def _build_eviction_message(
 ) -> ToolMessage:
     """Build a replacement ToolMessage with a truncated preview and file reference.
 
+    Preserves metadata fields (`id`, `artifact`, `status`, `additional_kwargs`,
+    `response_metadata`) from the original message.
+
     Args:
         message: The original ToolMessage being evicted.
         file_path: Path where the content was written.
@@ -483,6 +488,11 @@ def _build_eviction_message(
         content=replacement_text,
         tool_call_id=message.tool_call_id,
         name=message.name,
+        id=message.id,
+        artifact=message.artifact,
+        status=message.status,
+        additional_kwargs=message.additional_kwargs,
+        response_metadata=message.response_metadata,
     )
 
 
@@ -877,7 +887,13 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 validated_path = validate_path(path)
             except ValueError as e:
                 return f"Error: {e}"
-            return _format_info_paths(resolved_backend.glob_info(pattern, path=validated_path))
+            try:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                    future = pool.submit(resolved_backend.glob_info, pattern, validated_path)
+                    infos = future.result(timeout=GLOB_TIMEOUT)
+            except (concurrent.futures.TimeoutError, TimeoutError):
+                return f"Error: glob timed out after {GLOB_TIMEOUT}s. Try a more specific pattern or a narrower path."
+            return _format_info_paths(infos)
 
         async def async_glob(
             pattern: Annotated[str, "Glob pattern to match files (e.g., '**/*.py', '*.txt', '/subdir/**/*.md')."],
@@ -890,7 +906,14 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 validated_path = validate_path(path)
             except ValueError as e:
                 return f"Error: {e}"
-            return _format_info_paths(await resolved_backend.aglob_info(pattern, path=validated_path))
+            try:
+                infos = await asyncio.wait_for(
+                    resolved_backend.aglob_info(pattern, path=validated_path),
+                    timeout=GLOB_TIMEOUT,
+                )
+            except asyncio.TimeoutError:
+                return f"Error: glob timed out after {GLOB_TIMEOUT}s. Try a more specific pattern or a narrower path."
+            return _format_info_paths(infos)
 
         return StructuredTool.from_function(
             name="glob",

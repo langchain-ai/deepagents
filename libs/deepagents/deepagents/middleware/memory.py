@@ -252,13 +252,15 @@ class MemoryMiddleware(AgentMiddleware):
             ValueError: If the download returned an error other than file_not_found.
         """
         if len(results) != 1:
-            raise AssertionError(f"Expected 1 response for path {path}, got {len(results)}")
+            msg = f"Expected 1 response for path {path}, got {len(results)}"
+            raise AssertionError(msg)
         response = results[0]
 
         if response.error is not None:
             if response.error == "file_not_found":
                 return None
-            raise ValueError(f"Failed to download {path}: {response.error}")
+            msg = f"Failed to download {path}: {response.error}"
+            raise ValueError(msg)
 
         if response.content is not None:
             return response.content.decode("utf-8")

@@ -72,9 +72,9 @@ class TestToolsExceptionHandling:
 
     def test_web_search_handles_tavily_usage_limit_error(self):
         """Test that web_search catches Tavily UsageLimitExceededError."""
-        with patch("deepagents_cli.tools.tavily_client") as mock_client:
-            mock_client.search.side_effect = UsageLimitExceededError("Rate limit")
-
+        mock_client = MagicMock()
+        mock_client.search.side_effect = UsageLimitExceededError("Rate limit")
+        with patch("deepagents_cli.tools._get_tavily_client", return_value=mock_client):
             result = web_search("test query")
 
         assert "error" in result
@@ -83,9 +83,9 @@ class TestToolsExceptionHandling:
 
     def test_web_search_handles_tavily_invalid_api_key(self):
         """Test that web_search catches Tavily InvalidAPIKeyError."""
-        with patch("deepagents_cli.tools.tavily_client") as mock_client:
-            mock_client.search.side_effect = InvalidAPIKeyError("Invalid key")
-
+        mock_client = MagicMock()
+        mock_client.search.side_effect = InvalidAPIKeyError("Invalid key")
+        with patch("deepagents_cli.tools._get_tavily_client", return_value=mock_client):
             result = web_search("test query")
 
         assert "error" in result
@@ -93,9 +93,9 @@ class TestToolsExceptionHandling:
 
     def test_web_search_handles_tavily_bad_request(self):
         """Test that web_search catches Tavily BadRequestError."""
-        with patch("deepagents_cli.tools.tavily_client") as mock_client:
-            mock_client.search.side_effect = BadRequestError("Bad request")
-
+        mock_client = MagicMock()
+        mock_client.search.side_effect = BadRequestError("Bad request")
+        with patch("deepagents_cli.tools._get_tavily_client", return_value=mock_client):
             result = web_search("test query")
 
         assert "error" in result
@@ -103,9 +103,9 @@ class TestToolsExceptionHandling:
 
     def test_web_search_handles_tavily_timeout(self):
         """Test that web_search catches Tavily TimeoutError."""
-        with patch("deepagents_cli.tools.tavily_client") as mock_client:
-            mock_client.search.side_effect = TavilyTimeoutError(30.0)
-
+        mock_client = MagicMock()
+        mock_client.search.side_effect = TavilyTimeoutError(30.0)
+        with patch("deepagents_cli.tools._get_tavily_client", return_value=mock_client):
             result = web_search("test query")
 
         assert "error" in result

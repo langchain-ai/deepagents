@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from rich.style import Style
 from rich.text import Text
 from textual.widgets import Static
+
+if TYPE_CHECKING:
+    from textual.events import Click
 
 from deepagents_cli.config import (
     COLORS,
@@ -17,10 +20,17 @@ from deepagents_cli.config import (
     get_glyphs,
     get_langsmith_project_name,
 )
+from deepagents_cli.widgets._links import open_style_link
 
 
 class WelcomeBanner(Static):
     """Welcome banner displayed at startup."""
+
+    # Disable Textual's auto_links to prevent a flicker cycle: Style.__add__
+    # calls .copy() for linked styles, generating a fresh random _link_id on
+    # each render. This means highlight_link_id never stabilizes, causing an
+    # infinite hover-refresh loop.
+    auto_links = False
 
     DEFAULT_CSS = """
     WelcomeBanner {
@@ -72,6 +82,10 @@ class WelcomeBanner(Static):
         """
         self._cli_thread_id = thread_id
         self.update(self._build_banner(self._project_url))
+
+    def on_click(self, event: Click) -> None:  # noqa: PLR6301  # Textual event handler
+        """Open Rich-style hyperlinks on single click."""
+        open_style_link(event)
 
     def _build_banner(self, project_url: str | None = None) -> Text:
         """Build the banner rich text.

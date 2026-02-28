@@ -1,19 +1,21 @@
+from typing import ClassVar
+
 from langchain.agents.middleware import AgentMiddleware, AgentState
 from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
-from langchain_core.tools import tool
+from langchain_core.tools import BaseTool, tool
 from langgraph.types import Command
 
 
 def assert_all_deepagent_qualities(agent):
     assert "todos" in agent.stream_channels
     assert "files" in agent.stream_channels
-    assert "write_todos" in agent.nodes["tools"].bound._tools_by_name.keys()
-    assert "ls" in agent.nodes["tools"].bound._tools_by_name.keys()
-    assert "read_file" in agent.nodes["tools"].bound._tools_by_name.keys()
-    assert "write_file" in agent.nodes["tools"].bound._tools_by_name.keys()
-    assert "edit_file" in agent.nodes["tools"].bound._tools_by_name.keys()
-    assert "task" in agent.nodes["tools"].bound._tools_by_name.keys()
+    assert "write_todos" in agent.nodes["tools"].bound._tools_by_name
+    assert "ls" in agent.nodes["tools"].bound._tools_by_name
+    assert "read_file" in agent.nodes["tools"].bound._tools_by_name
+    assert "write_file" in agent.nodes["tools"].bound._tools_by_name
+    assert "edit_file" in agent.nodes["tools"].bound._tools_by_name
+    assert "task" in agent.nodes["tools"].bound._tools_by_name
 
 
 ###########################
@@ -91,7 +93,7 @@ class ResearchState(AgentState):
 
 class ResearchMiddlewareWithTools(AgentMiddleware):
     state_schema = ResearchState
-    tools = [research_basketball]
+    tools: ClassVar[list[BaseTool]] = [research_basketball]
 
 
 class ResearchMiddleware(AgentMiddleware):
@@ -99,7 +101,7 @@ class ResearchMiddleware(AgentMiddleware):
 
 
 class SampleMiddlewareWithTools(AgentMiddleware):
-    tools = [sample_tool]
+    tools: ClassVar[list[BaseTool]] = [sample_tool]
 
 
 class SampleState(AgentState):
@@ -108,8 +110,8 @@ class SampleState(AgentState):
 
 class SampleMiddlewareWithToolsAndState(AgentMiddleware):
     state_schema = SampleState
-    tools = [sample_tool]
+    tools: ClassVar[list[BaseTool]] = [sample_tool]
 
 
 class WeatherToolMiddleware(AgentMiddleware):
-    tools = [get_weather]
+    tools: ClassVar[list[BaseTool]] = [get_weather]

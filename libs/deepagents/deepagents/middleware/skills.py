@@ -126,6 +126,8 @@ MAX_SKILL_NAME_LENGTH = 64
 MAX_SKILL_DESCRIPTION_LENGTH = 1024
 MAX_SKILL_COMPATIBILITY_LENGTH = 500
 
+_FRONTMATTER_PATTERN = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
+
 
 class SkillMetadata(TypedDict):
     """Metadata for a skill per Agent Skills specification (https://agentskills.io/specification)."""
@@ -265,9 +267,7 @@ def _parse_skill_metadata(
         logger.warning("Skipping %s: content too large (%d bytes)", skill_path, len(content))
         return None
 
-    # Match YAML frontmatter between --- delimiters
-    frontmatter_pattern = r"^---\s*\n(.*?)\n---\s*\n"
-    match = re.match(frontmatter_pattern, content, re.DOTALL)
+    match = _FRONTMATTER_PATTERN.match(content)
 
     if not match:
         logger.warning("Skipping %s: no valid YAML frontmatter found", skill_path)

@@ -22,11 +22,11 @@ from deepagents_cli.config import (
     settings,
     validate_model_capabilities,
 )
+from deepagents_cli.model_config import ModelConfigError, clear_caches
 from deepagents_cli.project_utils import (
     find_project_agent_md as _find_project_agent_md,
     find_project_root as _find_project_root,
 )
-from deepagents_cli.model_config import ModelConfigError, clear_caches
 
 
 class TestProjectRootDetection:

@@ -73,13 +73,56 @@ deepagents = { path = "../deepagents", editable = true }
 [tool.ty.environment]
 extra-paths = ["../deepagents", "../cli"]
 
+[tool.ty.rules]
+# https://docs.astral.sh/ty/rules/
+division-by-zero = "error"
+
 [tool.ruff]
 line-length = 100
 target-version = "py312"
 
+[tool.ruff.format]
+docstring-code-format = true
+
 [tool.ruff.lint]
-select = ["E", "F", "I", "TID252"]
-ignore = ["E501"]
+select = ["ALL"]
+ignore = [
+    "C90",     # McCabe complexity — trajectory conversion has inherent branching
+    "COM812",  # Messes with the formatter
+    "ISC001",  # Messes with the formatter
+    "E501",    # Line too long — harbor wraps long shell scripts and command strings
+    "FBT",     # Boolean positional arguments — too pedantic for wrapper APIs matching upstream signatures
+    "FIX002",  # Line contains TODO
+    "PLR09",   # Too many something (args, branches, returns, statements) — wrapper/conversion methods are inherently branchy
+    "TD002",   # Missing author in TODO
+    "TD003",   # Missing issue link in TODO
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+ignore-var-parameters = true  # ignore missing documentation for *args and **kwargs parameters
+
+[tool.ruff.lint.flake8-annotations]
+allow-star-arg-any = true
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = [
+    "ANN001",  # Missing type annotation for function argument — not needed in tests
+    "ANN201",  # Missing return type annotation — not needed in tests
+    "D",       # Docstring conventions — not needed in tests
+    "S101",    # Use of `assert` — expected in tests
+    "PLR2004", # Magic value used in comparison — fine in test assertions
+    "S",       # Security warnings — not applicable to tests
+    "SLF",     # Private member access — tests need access to internals
+]
+"scripts/**" = [
+    "INP001",  # Missing `__init__.py` — scripts are standalone
+    "T201",    # `print` found — scripts use print for output
+    "S",       # Security warnings — not applicable to scripts
+]
 
 [tool.ruff.lint.isort]
 force-single-line = false

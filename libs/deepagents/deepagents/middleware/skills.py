@@ -99,20 +99,24 @@ import yaml
 from langchain.agents.middleware.types import PrivateStateAttr
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
+    from langchain_core.runnables import RunnableConfig
+    from langgraph.runtime import Runtime
+
     from deepagents.backends.protocol import BACKEND_TYPES, BackendProtocol
 
-from collections.abc import Awaitable, Callable
 from typing import NotRequired, TypedDict
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     AgentState,
+    ContextT,
     ModelRequest,
     ModelResponse,
+    ResponseT,
 )
-from langchain_core.runnables import RunnableConfig
 from langgraph.prebuilt import ToolRuntime
-from langgraph.runtime import Runtime
 
 from deepagents.middleware._utils import append_to_system_message
 
@@ -242,7 +246,7 @@ def _validate_skill_name(name: str, directory_name: str) -> tuple[bool, str]:
     return True, ""
 
 
-def _parse_skill_metadata(
+def _parse_skill_metadata(  # noqa: C901
     content: str,
     skill_path: str,
     directory_name: str,
@@ -592,7 +596,7 @@ Remember: Skills make you more capable and consistent. When in doubt, check if a
 """
 
 
-class SkillsMiddleware(AgentMiddleware):
+class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
     """Middleware for loading and exposing agent skills to the system prompt.
 
     Loads skills from backend sources and injects them into the system prompt
@@ -660,9 +664,10 @@ class SkillsMiddleware(AgentMiddleware):
                 config=config,
                 tool_call_id=None,
             )
-            backend = self._backend(tool_runtime)
+            backend = self._backend(tool_runtime)  # ty: ignore[call-top-callable, invalid-argument-type]
             if backend is None:
-                raise AssertionError("SkillsMiddleware requires a valid backend instance")
+                msg = "SkillsMiddleware requires a valid backend instance"
+                raise AssertionError(msg)
             return backend
 
         return self._backend
@@ -697,7 +702,7 @@ class SkillsMiddleware(AgentMiddleware):
 
         return "\n".join(lines)
 
-    def modify_request(self, request: ModelRequest) -> ModelRequest:
+    def modify_request(self, request: ModelRequest[ContextT]) -> ModelRequest[ContextT]:
         """Inject skills documentation into a model request's system message.
 
         Args:
@@ -719,11 +724,12 @@ class SkillsMiddleware(AgentMiddleware):
 
         return request.override(system_message=new_system_message)
 
-    def before_agent(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> SkillsStateUpdate | None:
+    def before_agent(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> SkillsStateUpdate | None:  # ty: ignore[invalid-method-override]
         """Load skills metadata before agent execution (synchronous).
 
-        Runs before each agent interaction to discover available skills from all
-        configured sources. Re-loads on every call to capture any changes.
+        Loads skills once per session from all configured sources. If
+        `skills_metadata` is already present in state (from a prior turn or
+        checkpointed session), the load is skipped and `None` is returned.
 
         Skills are loaded in source order with later sources overriding
         earlier ones if they contain skills with the same name (last one wins).
@@ -734,7 +740,7 @@ class SkillsMiddleware(AgentMiddleware):
             config: Runnable config.
 
         Returns:
-            State update with `skills_metadata` populated, or `None` if already present
+            State update with `skills_metadata` populated, or `None` if already present.
         """
         # Skip if skills_metadata is already present in state (even if empty)
         if "skills_metadata" in state:
@@ -754,11 +760,12 @@ class SkillsMiddleware(AgentMiddleware):
         skills = list(all_skills.values())
         return SkillsStateUpdate(skills_metadata=skills)
 
-    async def abefore_agent(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> SkillsStateUpdate | None:
+    async def abefore_agent(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> SkillsStateUpdate | None:  # ty: ignore[invalid-method-override]
         """Load skills metadata before agent execution (async).
 
-        Runs before each agent interaction to discover available skills from all
-        configured sources. Re-loads on every call to capture any changes.
+        Loads skills once per session from all configured sources. If
+        `skills_metadata` is already present in state (from a prior turn or
+        checkpointed session), the load is skipped and `None` is returned.
 
         Skills are loaded in source order with later sources overriding
         earlier ones if they contain skills with the same name (last one wins).
@@ -769,7 +776,7 @@ class SkillsMiddleware(AgentMiddleware):
             config: Runnable config.
 
         Returns:
-            State update with `skills_metadata` populated, or `None` if already present
+            State update with `skills_metadata` populated, or `None` if already present.
         """
         # Skip if skills_metadata is already present in state (even if empty)
         if "skills_metadata" in state:
@@ -791,9 +798,9 @@ class SkillsMiddleware(AgentMiddleware):
 
     def wrap_model_call(
         self,
-        request: ModelRequest,
-        handler: Callable[[ModelRequest], ModelResponse],
-    ) -> ModelResponse:
+        request: ModelRequest[ContextT],
+        handler: Callable[[ModelRequest[ContextT]], ModelResponse[ResponseT]],
+    ) -> ModelResponse[ResponseT]:
         """Inject skills documentation into the system prompt.
 
         Args:
@@ -808,9 +815,9 @@ class SkillsMiddleware(AgentMiddleware):
 
     async def awrap_model_call(
         self,
-        request: ModelRequest,
-        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
-    ) -> ModelResponse:
+        request: ModelRequest[ContextT],
+        handler: Callable[[ModelRequest[ContextT]], Awaitable[ModelResponse[ResponseT]]],
+    ) -> ModelResponse[ResponseT]:
         """Inject skills documentation into the system prompt (async version).
 
         Args:

@@ -3,8 +3,11 @@
 import asyncio
 import json
 import warnings
+from langgraph.types import Interrupt
+
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Annotated, Any, NotRequired, TypedDict, Unpack, cast
+from langgraph.errors import GraphInterrupt
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig
@@ -831,6 +834,24 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             parent_state = {k: v for k, v in runtime.state.items() if k not in _EXCLUDED_STATE_KEYS}
 
             results = await _run_swarm_tasks(subagent_graphs, parent_state, tasks)
+
+            interrupts: list[Interrupt] = []
+            interrupt_excs: list[GraphInterrupt] = []
+
+            for item in results:
+                if isinstance(item, GraphInterrupt):
+                    interrupt_excs.append(item)
+                    if not item.args:
+                        continue
+                    seq = item.args[0]
+                    if isinstance(seq, tuple | list) and all(isinstance(x, Interrupt) for x in seq):
+                        interrupts.extend(seq)
+
+            if interrupt_excs:
+                if interrupts:
+                    raise GraphInterrupt(interrupts)
+                raise interrupt_excs[0]
+
             output_dir_clean = output_dir.rstrip("/")
 
             outputs: list[tuple[str, bytes]] = []

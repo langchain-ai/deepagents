@@ -46,7 +46,7 @@ def find_project_agent_md(project_root: Path) -> list[Path]:
             two entries if both locations have the file.
     """
     candidates = [
-        project_root / ".deepagents" / "AGENTS.md",  # noqa: ERA001
+        project_root / ".deepagents" / "AGENTS.md",
         project_root / "AGENTS.md",
     ]
     paths: list[Path] = []

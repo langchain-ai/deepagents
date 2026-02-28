@@ -620,6 +620,110 @@ A condensed summary follows:
 
         return truncated_messages, modified
 
+    def _build_offload_section(
+        self,
+        messages: list[AnyMessage],
+    ) -> tuple[str, str, list[AnyMessage]]:
+        """Build the markdown section for conversation history offloading.
+
+        Shared preparation logic for both sync and async offload paths.
+        Filters summary messages, generates a timestamped section, and
+        resolves the storage path.
+
+        Args:
+            messages: Messages being summarized.
+
+        Returns:
+            Tuple of `(path, new_section, filtered_messages)`.
+        """
+        path = self._get_history_path()
+        filtered_messages = self._filter_summary_messages(messages)
+        timestamp = datetime.now(UTC).isoformat()
+        new_section = f"## Summarized at {timestamp}\n\n{get_buffer_string(filtered_messages)}\n\n"
+        return path, new_section, filtered_messages
+
+    def _finalize_offload(
+        self,
+        path: str,
+        existing_content: str,
+        new_section: str,
+        filtered_messages: list[AnyMessage],
+        write_result: object,
+    ) -> str | None:
+        """Validate the backend write result and log the outcome.
+
+        Shared finalization logic for both sync and async offload paths.
+
+        Args:
+            path: File path where history is stored.
+            existing_content: Content that existed before the write.
+            new_section: The new section that was appended.
+            filtered_messages: Messages that were offloaded (for logging).
+            write_result: Result object from backend write/edit call.
+
+        Returns:
+            The file path on success, `None` on failure.
+        """
+        if write_result is None or write_result.error:  # ty: ignore[union-attribute]
+            error_msg = write_result.error if write_result else "backend returned None"  # ty: ignore[union-attribute]
+            logger.warning(
+                "Failed to offload conversation history to %s (%d messages): %s",
+                path,
+                len(filtered_messages),
+                error_msg,
+            )
+            return None
+        logger.debug("Offloaded %d messages to %s", len(filtered_messages), path)
+        return path
+
+    def _read_existing_content(self, backend: BackendProtocol, path: str) -> str:
+        """Read existing offload file content from backend (sync).
+
+        Args:
+            backend: Backend to read from.
+            path: File path to read.
+
+        Returns:
+            Existing file content, or empty string if not found.
+        """
+        existing_content = ""
+        try:
+            responses = backend.download_files([path])
+            if responses and responses[0].content is not None and responses[0].error is None:
+                existing_content = responses[0].content.decode("utf-8")
+        except Exception as e:  # noqa: BLE001
+            logger.debug(
+                "Exception reading existing history from %s (treating as new file): %s: %s",
+                path,
+                type(e).__name__,
+                e,
+            )
+        return existing_content
+
+    async def _aread_existing_content(self, backend: BackendProtocol, path: str) -> str:
+        """Read existing offload file content from backend (async).
+
+        Args:
+            backend: Backend to read from.
+            path: File path to read.
+
+        Returns:
+            Existing file content, or empty string if not found.
+        """
+        existing_content = ""
+        try:
+            responses = await backend.adownload_files([path])
+            if responses and responses[0].content is not None and responses[0].error is None:
+                existing_content = responses[0].content.decode("utf-8")
+        except Exception as e:  # noqa: BLE001
+            logger.debug(
+                "Exception reading existing history from %s (treating as new file): %s: %s",
+                path,
+                type(e).__name__,
+                e,
+            )
+        return existing_content
+
     def _offload_to_backend(
         self,
         backend: BackendProtocol,
@@ -630,9 +734,6 @@ A condensed summary follows:
         Appends evicted messages to a single markdown file per thread. Each
         summarization event adds a new section with a timestamp header.
 
-        Previous summary messages are filtered out to avoid redundant storage during
-        chained summarization events.
-
         Args:
             backend: Backend to write to.
             messages: Messages being summarized.
@@ -640,44 +741,12 @@ A condensed summary follows:
         Returns:
             The file path where history was stored, or `None` if write failed.
         """
-        path = self._get_history_path()
-
-        # Filter out previous summary messages to avoid redundant storage
-        filtered_messages = self._filter_summary_messages(messages)
-
-        timestamp = datetime.now(UTC).isoformat()
-        new_section = f"## Summarized at {timestamp}\n\n{get_buffer_string(filtered_messages)}\n\n"
-
-        # Read existing content (if any) and append
-        # Note: We use download_files() instead of read() because read() returns
-        # line-numbered content (for LLM consumption), but edit() expects raw content.
-        existing_content = ""
-        try:
-            responses = backend.download_files([path])
-            if responses and responses[0].content is not None and responses[0].error is None:
-                existing_content = responses[0].content.decode("utf-8")
-        except Exception as e:  # noqa: BLE001
-            # File likely doesn't exist yet, but log for observability
-            logger.debug(
-                "Exception reading existing history from %s (treating as new file): %s: %s",
-                path,
-                type(e).__name__,
-                e,
-            )
-
+        path, new_section, filtered_messages = self._build_offload_section(messages)
+        existing_content = self._read_existing_content(backend, path)
         combined_content = existing_content + new_section
 
         try:
             result = backend.edit(path, existing_content, combined_content) if existing_content else backend.write(path, combined_content)
-            if result is None or result.error:
-                error_msg = result.error if result else "backend returned None"
-                logger.warning(
-                    "Failed to offload conversation history to %s (%d messages): %s",
-                    path,
-                    len(filtered_messages),
-                    error_msg,
-                )
-                return None
         except Exception as e:  # noqa: BLE001
             logger.warning(
                 "Exception offloading conversation history to %s (%d messages): %s: %s",
@@ -687,9 +756,7 @@ A condensed summary follows:
                 e,
             )
             return None
-        else:
-            logger.debug("Offloaded %d messages to %s", len(filtered_messages), path)
-            return path
+        return self._finalize_offload(path, existing_content, new_section, filtered_messages, result)
 
     async def _aoffload_to_backend(
         self,
@@ -701,9 +768,6 @@ A condensed summary follows:
         Appends evicted messages to a single markdown file per thread. Each
         summarization event adds a new section with a timestamp header.
 
-        Previous summary messages are filtered out to avoid redundant storage during
-        chained summarization events.
-
         Args:
             backend: Backend to write to.
             messages: Messages being summarized.
@@ -711,46 +775,14 @@ A condensed summary follows:
         Returns:
             The file path where history was stored, or `None` if write failed.
         """
-        path = self._get_history_path()
-
-        # Filter out previous summary messages to avoid redundant storage
-        filtered_messages = self._filter_summary_messages(messages)
-
-        timestamp = datetime.now(UTC).isoformat()
-        new_section = f"## Summarized at {timestamp}\n\n{get_buffer_string(filtered_messages)}\n\n"
-
-        # Read existing content (if any) and append
-        # Note: We use adownload_files() instead of aread() because read() returns
-        # line-numbered content (for LLM consumption), but edit() expects raw content.
-        existing_content = ""
-        try:
-            responses = await backend.adownload_files([path])
-            if responses and responses[0].content is not None and responses[0].error is None:
-                existing_content = responses[0].content.decode("utf-8")
-        except Exception as e:  # noqa: BLE001
-            # File likely doesn't exist yet, but log for observability
-            logger.debug(
-                "Exception reading existing history from %s (treating as new file): %s: %s",
-                path,
-                type(e).__name__,
-                e,
-            )
-
+        path, new_section, filtered_messages = self._build_offload_section(messages)
+        existing_content = await self._aread_existing_content(backend, path)
         combined_content = existing_content + new_section
 
         try:
             result = (
                 await backend.aedit(path, existing_content, combined_content) if existing_content else await backend.awrite(path, combined_content)
             )
-            if result is None or result.error:
-                error_msg = result.error if result else "backend returned None"
-                logger.warning(
-                    "Failed to offload conversation history to %s (%d messages): %s",
-                    path,
-                    len(filtered_messages),
-                    error_msg,
-                )
-                return None
         except Exception as e:  # noqa: BLE001
             logger.warning(
                 "Exception offloading conversation history to %s (%d messages): %s: %s",
@@ -760,9 +792,74 @@ A condensed summary follows:
                 e,
             )
             return None
-        else:
-            logger.debug("Offloaded %d messages to %s", len(filtered_messages), path)
-            return path
+        return self._finalize_offload(path, existing_content, new_section, filtered_messages, result)
+
+    def _prepare_truncated_messages(
+        self,
+        request: ModelRequest,
+    ) -> tuple[list[AnyMessage], bool]:
+        """Apply prior summarization events and truncate tool arguments.
+
+        Shared preparation logic for both sync and async `wrap_model_call`.
+
+        Args:
+            request: The model request to process.
+
+        Returns:
+            Tuple of `(truncated_messages, should_summarize)`.
+        """
+        effective_messages = self._get_effective_messages(request)
+
+        truncated_messages, _ = self._truncate_args(
+            effective_messages,
+            request.system_message,
+            request.tools,
+        )
+
+        counted_messages = [request.system_message, *truncated_messages] if request.system_message is not None else truncated_messages
+        try:
+            total_tokens = self.token_counter(counted_messages, tools=request.tools)
+        except TypeError:
+            total_tokens = self.token_counter(counted_messages)
+
+        should_summarize = self._should_summarize(truncated_messages, total_tokens)
+        return truncated_messages, should_summarize
+
+    def _build_summarization_result(
+        self,
+        request: ModelRequest,
+        summary: str,
+        file_path: str | None,
+        cutoff_index: int,
+        preserved_messages: list[AnyMessage],
+    ) -> tuple[list[AnyMessage], SummarizationEvent]:
+        """Build the final message list and summarization event after summary generation.
+
+        Shared post-summarization logic for both sync and async `wrap_model_call`.
+
+        Args:
+            request: The original model request.
+            summary: Generated summary text.
+            file_path: Path where history was offloaded, or `None`.
+            cutoff_index: The effective cutoff index used for partitioning.
+            preserved_messages: Messages kept after the cutoff.
+
+        Returns:
+            Tuple of `(modified_messages, summarization_event)`.
+        """
+        new_messages = self._build_new_messages_with_path(summary, file_path)
+
+        previous_event = request.state.get("_summarization_event")
+        state_cutoff_index = previous_event["cutoff_index"] + cutoff_index - 1 if previous_event is not None else cutoff_index
+
+        new_event: SummarizationEvent = {
+            "cutoff_index": state_cutoff_index,
+            "summary_message": new_messages[0],
+            "file_path": file_path,
+        }
+
+        modified_messages = [*new_messages, *preserved_messages]
+        return modified_messages, new_event
 
     def wrap_model_call(
         self,
@@ -775,10 +872,6 @@ A condensed summary follows:
         Then truncates large tool arguments in old messages if configured.
         Finally offloads messages to backend before summarization if thresholds are met.
 
-        Unlike the legacy `before_model` approach, this does NOT modify the LangGraph state.
-        Instead, it tracks summarization events in middleware state and modifies the model
-        request directly.
-
         Args:
             request: The model request to process.
             handler: The handler to call with the (possibly modified) request.
@@ -786,41 +879,20 @@ A condensed summary follows:
         Returns:
             The model response from the handler.
         """
-        # Get effective messages based on previous summarization events
-        effective_messages = self._get_effective_messages(request)
+        truncated_messages, should_summarize = self._prepare_truncated_messages(request)
 
-        # Step 1: Truncate args if configured
-        truncated_messages, _ = self._truncate_args(
-            effective_messages,
-            request.system_message,
-            request.tools,
-        )
-
-        # Step 2: Check if summarization should happen
-        counted_messages = [request.system_message, *truncated_messages] if request.system_message is not None else truncated_messages
-        try:
-            total_tokens = self.token_counter(counted_messages, tools=request.tools)
-        except TypeError:
-            total_tokens = self.token_counter(counted_messages)
-        should_summarize = self._should_summarize(truncated_messages, total_tokens)
-
-        # If no summarization needed, return with truncated messages
         if not should_summarize:
             try:
                 return handler(request.override(messages=truncated_messages))
             except ContextOverflowError:
                 pass
-                # Fallback to summarization on context overflow
 
-        # Step 3: Perform summarization
         cutoff_index = self._determine_cutoff_index(truncated_messages)
         if cutoff_index <= 0:
-            # Can't summarize, return truncated messages
             return handler(request.override(messages=truncated_messages))
 
         messages_to_summarize, preserved_messages = self._partition_messages(truncated_messages, cutoff_index)
 
-        # Offload to backend first - abort summarization if this fails to prevent data loss
         backend = self._get_backend(request.state, request.runtime)
         file_path = self._offload_to_backend(backend, messages_to_summarize)
         if file_path is None:
@@ -829,31 +901,12 @@ A condensed summary follows:
                 stacklevel=2,
             )
 
-        # Generate summary
         summary = self._create_summary(messages_to_summarize)
+        modified_messages, new_event = self._build_summarization_result(
+            request, summary, file_path, cutoff_index, preserved_messages,
+        )
 
-        # Build summary message with file path reference
-        new_messages = self._build_new_messages_with_path(summary, file_path)
-
-        # Calculate state cutoff index
-        # If this is a subsequent summarization, convert effective message index to state index
-        # new_state_cutoff = old_state_cutoff + effective_cutoff - 1  # noqa: ERA001
-        # The -1 accounts for the summary message at effective[0]
-        previous_event = request.state.get("_summarization_event")
-        state_cutoff_index = previous_event["cutoff_index"] + cutoff_index - 1 if previous_event is not None else cutoff_index
-
-        # Create new summarization event
-        new_event: SummarizationEvent = {
-            "cutoff_index": state_cutoff_index,
-            "summary_message": new_messages[0],  # The HumanMessage with summary
-            "file_path": file_path,
-        }
-
-        # Modify request to use summarized messages
-        modified_messages = [*new_messages, *preserved_messages]
         response = handler(request.override(messages=modified_messages))
-
-        # Return WrapModelCallResult with state update
         return ExtendedModelResponse(
             model_response=response,
             command=Command(update={"_summarization_event": new_event}),
@@ -870,10 +923,6 @@ A condensed summary follows:
         Then truncates large tool arguments in old messages if configured.
         Finally offloads messages to backend before summarization if thresholds are met.
 
-        Unlike the legacy `abefore_model` approach, this does NOT modify the LangGraph state.
-        Instead, it tracks summarization events in middleware state and modifies the model
-        request directly.
-
         Args:
             request: The model request to process.
             handler: The handler to call with the (possibly modified) request.
@@ -881,41 +930,20 @@ A condensed summary follows:
         Returns:
             The model response from the handler.
         """
-        # Get effective messages based on previous summarization events
-        effective_messages = self._get_effective_messages(request)
+        truncated_messages, should_summarize = self._prepare_truncated_messages(request)
 
-        # Step 1: Truncate args if configured
-        truncated_messages, _ = self._truncate_args(
-            effective_messages,
-            request.system_message,
-            request.tools,
-        )
-
-        # Step 2: Check if summarization should happen
-        counted_messages = [request.system_message, *truncated_messages] if request.system_message is not None else truncated_messages
-        try:
-            total_tokens = self.token_counter(counted_messages, tools=request.tools)
-        except TypeError:
-            total_tokens = self.token_counter(counted_messages)
-        should_summarize = self._should_summarize(truncated_messages, total_tokens)
-
-        # If no summarization needed, return with truncated messages
         if not should_summarize:
             try:
                 return await handler(request.override(messages=truncated_messages))
             except ContextOverflowError:
                 pass
-                # Fallback to summarization on context overflow
 
-        # Step 3: Perform summarization
         cutoff_index = self._determine_cutoff_index(truncated_messages)
         if cutoff_index <= 0:
-            # Can't summarize, return truncated messages
             return await handler(request.override(messages=truncated_messages))
 
         messages_to_summarize, preserved_messages = self._partition_messages(truncated_messages, cutoff_index)
 
-        # Offload to backend first - abort summarization if this fails to prevent data loss
         backend = self._get_backend(request.state, request.runtime)
         file_path = await self._aoffload_to_backend(backend, messages_to_summarize)
         if file_path is None:
@@ -924,31 +952,12 @@ A condensed summary follows:
                 stacklevel=2,
             )
 
-        # Generate summary
         summary = await self._acreate_summary(messages_to_summarize)
+        modified_messages, new_event = self._build_summarization_result(
+            request, summary, file_path, cutoff_index, preserved_messages,
+        )
 
-        # Build summary message with file path reference
-        new_messages = self._build_new_messages_with_path(summary, file_path)
-
-        # Calculate state cutoff index
-        # If this is a subsequent summarization, convert effective message index to state index
-        # new_state_cutoff = old_state_cutoff + effective_cutoff - 1  # noqa: ERA001
-        # The -1 accounts for the summary message at effective[0]
-        previous_event = request.state.get("_summarization_event")
-        state_cutoff_index = previous_event["cutoff_index"] + cutoff_index - 1 if previous_event is not None else cutoff_index
-
-        # Create new summarization event
-        new_event: SummarizationEvent = {
-            "cutoff_index": state_cutoff_index,
-            "summary_message": new_messages[0],  # The HumanMessage with summary
-            "file_path": file_path,
-        }
-
-        # Modify request to use summarized messages
-        modified_messages = [*new_messages, *preserved_messages]
         response = await handler(request.override(messages=modified_messages))
-
-        # Return WrapModelCallResult with state update
         return ExtendedModelResponse(
             model_response=response,
             command=Command(update={"_summarization_event": new_event}),

@@ -41,15 +41,19 @@ class LocalSubprocessSandbox(BaseSandbox):
         """Initialize the local subprocess sandbox."""
         self._id = "local-subprocess-sandbox"
 
-    def execute(self, command: str) -> ExecuteResponse:
+    def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
         """Execute a command using subprocess on the local machine.
 
         Args:
             command: Full shell command string to execute.
+            timeout: Maximum time in seconds to wait for the command.
+
+                If None, uses the default of 30 seconds.
 
         Returns:
             ExecuteResponse with combined output, exit code, and truncation flag.
         """
+        effective_timeout = timeout if timeout is not None else 30
         try:
             # shell=True mimics real sandbox behavior; only runs in CI, poses no risk
             result = subprocess.run(  # noqa: S602
@@ -58,7 +62,7 @@ class LocalSubprocessSandbox(BaseSandbox):
                 shell=True,
                 capture_output=True,
                 text=True,
-                timeout=30,
+                timeout=effective_timeout,
             )
             # Combine stdout and stderr
             output = result.stdout + result.stderr
@@ -69,7 +73,7 @@ class LocalSubprocessSandbox(BaseSandbox):
             )
         except subprocess.TimeoutExpired:
             return ExecuteResponse(
-                output="Error: Command timed out after 30 seconds",
+                output=f"Error: Command timed out after {effective_timeout} seconds",
                 exit_code=124,
                 truncated=True,
             )
@@ -731,6 +735,19 @@ class TestLocalSandboxOperations:
         assert f"{base_dir}/file[2].txt" in paths
         assert f"{base_dir}/file-3.txt" in paths
 
+    def test_ls_info_path_is_sanitized(self, sandbox: LocalSubprocessSandbox) -> None:
+        """Test that ls_info base64-encodes paths to prevent injection."""
+        malicious_path = "'; import os; os.system('echo INJECTED'); #"
+        result = sandbox.ls_info(malicious_path)
+        assert result == []
+
+    def test_read_path_is_sanitized(self, sandbox: LocalSubprocessSandbox) -> None:
+        """Test that read base64-encodes paths to prevent injection."""
+        malicious_path = "'; import os; os.system('echo INJECTED'); #"
+        result = sandbox.read(malicious_path)
+        assert "Error: File" in result
+        assert "INJECTED" in result
+
     # ==================== grep_raw() tests ====================
 
     def test_grep_basic_search(self, sandbox: LocalSubprocessSandbox) -> None:
@@ -872,6 +889,16 @@ class TestLocalSandboxOperations:
         assert isinstance(result, list)
         assert len(result) == 3
         # Should find matches in all nested levels
+
+    def test_grep_with_globstar_include_pattern(self, sandbox: LocalSubprocessSandbox) -> None:
+        base_dir = "/tmp/test_sandbox_ops/grep_globstar"
+        sandbox.execute(f"mkdir -p {base_dir}/a/b")
+        sandbox.write(f"{base_dir}/a/b/target.py", "needle")
+        sandbox.write(f"{base_dir}/a/ignore.txt", "needle")
+
+        result = sandbox.grep_raw("needle", path=base_dir, glob="*.py")
+
+        assert result == [{"path": f"{base_dir}/a/b/target.py", "line": 1, "text": "needle"}]
 
     def test_grep_with_multiline_matches(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test that grep reports correct line numbers for matches."""

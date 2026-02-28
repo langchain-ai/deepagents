@@ -29,6 +29,7 @@ from deepagents.backends.protocol import (
     BackendProtocol,
     EditResult,
     ExecuteResponse,
+    FileInfo,
     SandboxBackendProtocol,
     WriteResult,
 )
@@ -287,7 +288,7 @@ def _supports_execution(backend: BackendProtocol) -> bool:
     return isinstance(backend, SandboxBackendProtocol)
 
 
-def _format_write_result(res: WriteResult, tool_call_id: str) -> Command | str:
+def _format_write_result(res: WriteResult, tool_call_id: str | None) -> Command | str:
     """Format a write result into a Command or plain string.
 
     Args:
@@ -314,7 +315,7 @@ def _format_write_result(res: WriteResult, tool_call_id: str) -> Command | str:
     return f"Updated file {res.path}"
 
 
-def _format_edit_result(res: EditResult, tool_call_id: str) -> Command | str:
+def _format_edit_result(res: EditResult, tool_call_id: str | None) -> Command | str:
     """Format an edit result into a Command or plain string.
 
     Args:
@@ -359,7 +360,7 @@ def _format_execute_result(result: ExecuteResponse) -> str:
     return "".join(parts)
 
 
-def _format_info_paths(infos: list[dict]) -> str:
+def _format_info_paths(infos: list[FileInfo]) -> str:
     """Extract paths from file info dicts and truncate if needed.
 
     Args:
@@ -403,7 +404,7 @@ def _build_image_response(
     responses: list,
     validated_path: str,
     ext: str,
-    tool_call_id: str,
+    tool_call_id: str | None,
 ) -> ToolMessage | str:
     """Build an image ToolMessage or error string from download responses.
 
@@ -967,7 +968,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             if not _supports_execution(resolved_backend):
                 return _EXECUTION_NOT_AVAILABLE_MSG
             try:
-                result = resolved_backend.execute(command, timeout=timeout) if timeout is not None else resolved_backend.execute(command)
+                result = resolved_backend.execute(command, timeout=timeout) if timeout is not None else resolved_backend.execute(command)  # ty: ignore[unresolved-attribute]
             except NotImplementedError as e:
                 return f"Error: Execution not available. {e}"
             return _format_execute_result(result)
@@ -992,7 +993,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             if not _supports_execution(resolved_backend):
                 return _EXECUTION_NOT_AVAILABLE_MSG
             try:
-                result = (
+                result = (  # ty: ignore[unresolved-attribute]
                     await resolved_backend.aexecute(command, timeout=timeout) if timeout is not None else await resolved_backend.aexecute(command)
                 )
             except NotImplementedError as e:
@@ -1021,7 +1022,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
         backend_supports_execution = False
         if has_execute_tool:
-            backend = self._get_backend(request.runtime)
+            backend = self._get_backend(request.runtime)  # ty: ignore[invalid-argument-type]
             backend_supports_execution = _supports_execution(backend)
 
             if not backend_supports_execution:
@@ -1043,7 +1044,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
         return request
 
-    def wrap_model_call(
+    def wrap_model_call(  # ty: ignore[invalid-method-override]
         self,
         request: ModelRequest,
         handler: Callable[[ModelRequest], ModelResponse],
@@ -1073,7 +1074,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         Returns:
             The model response from the handler.
         """
-        return await handler(self._prepare_model_request(request))
+        return await handler(self._prepare_model_request(request))  # ty: ignore[invalid-argument-type]
 
     def _check_eviction_threshold(
         self,

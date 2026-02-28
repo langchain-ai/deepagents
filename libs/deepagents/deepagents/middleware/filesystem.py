@@ -28,6 +28,7 @@ from deepagents.backends.protocol import (
     BACKEND_TYPES as BACKEND_TYPES,  # Re-export type here for backwards compatibility
     BackendProtocol,
     EditResult,
+    ExecuteResponse,
     SandboxBackendProtocol,
     WriteResult,
 )
@@ -330,6 +331,211 @@ def _supports_execution(backend: BackendProtocol) -> bool:
     return isinstance(backend, SandboxBackendProtocol)
 
 
+def _format_write_result(res: WriteResult, tool_call_id: str) -> Command | str:
+    """Format a write result into a Command or plain string.
+
+    Args:
+        res: The write result from the backend.
+        tool_call_id: The tool call ID for the ToolMessage.
+
+    Returns:
+        A Command with state update if the backend returned one, otherwise a string.
+    """
+    if res.error:
+        return res.error
+    if res.files_update is not None:
+        return Command(
+            update={
+                "files": res.files_update,
+                "messages": [
+                    ToolMessage(
+                        content=f"Updated file {res.path}",
+                        tool_call_id=tool_call_id,
+                    )
+                ],
+            }
+        )
+    return f"Updated file {res.path}"
+
+
+def _format_edit_result(res: EditResult, tool_call_id: str) -> Command | str:
+    """Format an edit result into a Command or plain string.
+
+    Args:
+        res: The edit result from the backend.
+        tool_call_id: The tool call ID for the ToolMessage.
+
+    Returns:
+        A Command with state update if the backend returned one, otherwise a string.
+    """
+    if res.error:
+        return res.error
+    if res.files_update is not None:
+        return Command(
+            update={
+                "files": res.files_update,
+                "messages": [
+                    ToolMessage(
+                        content=f"Successfully replaced {res.occurrences} instance(s) of the string in '{res.path}'",
+                        tool_call_id=tool_call_id,
+                    )
+                ],
+            }
+        )
+    return f"Successfully replaced {res.occurrences} instance(s) of the string in '{res.path}'"
+
+
+def _format_execute_result(result: ExecuteResponse) -> str:
+    """Format an execution result for LLM consumption.
+
+    Args:
+        result: The execution response from the backend.
+
+    Returns:
+        Formatted string with output, exit code, and truncation info.
+    """
+    parts = [result.output]
+    if result.exit_code is not None:
+        status = "succeeded" if result.exit_code == 0 else "failed"
+        parts.append(f"\n[Command {status} with exit code {result.exit_code}]")
+    if result.truncated:
+        parts.append("\n[Output was truncated due to size limits]")
+    return "".join(parts)
+
+
+def _format_info_paths(infos: list[dict]) -> str:  # noqa: PYI047
+    """Extract paths from file info dicts and truncate if needed.
+
+    Args:
+        infos: List of file info dictionaries from backend.
+
+    Returns:
+        Truncated string of file paths.
+    """
+    paths = [fi.get("path", "") for fi in infos]
+    result = truncate_if_too_long(paths)
+    return str(result)
+
+
+def _truncate_read_result(result: str, limit: int, token_limit: int | None, file_path: str) -> str:
+    """Apply line-limit and token-limit truncation to read_file output.
+
+    Args:
+        result: Raw file content from the backend.
+        limit: Maximum number of lines to return.
+        token_limit: Token threshold for content truncation, or None to skip.
+        file_path: Validated file path (used in the truncation message).
+
+    Returns:
+        Truncated file content.
+    """
+    lines = result.splitlines(keepends=True)
+    if len(lines) > limit:
+        lines = lines[:limit]
+        result = "".join(lines)
+
+    if token_limit and len(result) >= NUM_CHARS_PER_TOKEN * token_limit:
+        truncation_msg = READ_FILE_TRUNCATION_MSG.format(file_path=file_path)
+        max_content_length = NUM_CHARS_PER_TOKEN * token_limit - len(truncation_msg)
+        result = result[:max_content_length]
+        result += truncation_msg
+
+    return result
+
+
+def _build_image_response(
+    responses: list,  # noqa: ANN401
+    validated_path: str,
+    ext: str,
+    tool_call_id: str,
+) -> ToolMessage | str:
+    """Build an image ToolMessage or error string from download responses.
+
+    Args:
+        responses: Download responses from backend.
+        validated_path: Validated image file path.
+        ext: Lowercase file extension.
+        tool_call_id: The tool call ID for the ToolMessage.
+
+    Returns:
+        A ToolMessage with image content, or an error string.
+    """
+    if responses and responses[0].content is not None:
+        media_type = IMAGE_MEDIA_TYPES.get(ext, "image/png")
+        image_b64 = base64.standard_b64encode(responses[0].content).decode("utf-8")
+        return ToolMessage(
+            content_blocks=[create_image_block(base64=image_b64, mime_type=media_type)],
+            name="read_file",
+            tool_call_id=tool_call_id,
+            additional_kwargs={
+                "read_file_path": validated_path,
+                "read_file_media_type": media_type,
+            },
+        )
+    if responses and responses[0].error:
+        return f"Error reading image: {responses[0].error}"
+    return "Error reading image: unknown error"
+
+
+def _extract_message_content(message: ToolMessage) -> str:
+    """Extract content from a ToolMessage as a string.
+
+    Handles single text blocks, plain strings, and complex multimodal content.
+
+    Args:
+        message: The ToolMessage to extract content from.
+
+    Returns:
+        String representation of the message content.
+    """
+    if (
+        isinstance(message.content, list)
+        and len(message.content) == 1
+        and isinstance(message.content[0], dict)
+        and message.content[0].get("type") == "text"
+        and "text" in message.content[0]
+    ):
+        return str(message.content[0]["text"])
+    if isinstance(message.content, str):
+        return message.content
+    return str(message.content)
+
+
+def _build_eviction_message(
+    message: ToolMessage,
+    file_path: str,
+    content_str: str,
+) -> ToolMessage:
+    """Build a replacement ToolMessage with a truncated preview and file reference.
+
+    Args:
+        message: The original ToolMessage being evicted.
+        file_path: Path where the content was written.
+        content_str: The full content string (used for preview generation).
+
+    Returns:
+        Replacement ToolMessage with preview and file path reference.
+    """
+    content_sample = _create_content_preview(content_str)
+    replacement_text = TOO_LARGE_TOOL_MSG.format(
+        tool_call_id=message.tool_call_id,
+        file_path=file_path,
+        content_sample=content_sample,
+    )
+    return ToolMessage(
+        content=replacement_text,
+        tool_call_id=message.tool_call_id,
+        name=message.name,
+    )
+
+
+_EXECUTION_NOT_AVAILABLE_MSG = (
+    "Error: Execution not available. This agent's backend "
+    "does not support command execution (SandboxBackendProtocol). "
+    "To use the execute tool, provide a backend that implements SandboxBackendProtocol."
+)
+
+
 # Tools that should be excluded from the large result eviction logic.
 #
 # This tuple contains tools that should NOT have their results evicted to the filesystem
@@ -517,10 +723,7 @@ class FilesystemMiddleware(AgentMiddleware):
                 validated_path = _validate_path(path)
             except ValueError as e:
                 return f"Error: {e}"
-            infos = resolved_backend.ls_info(validated_path)
-            paths = [fi.get("path", "") for fi in infos]
-            result = truncate_if_too_long(paths)
-            return str(result)
+            return _format_info_paths(resolved_backend.ls_info(validated_path))
 
         async def async_ls(
             runtime: ToolRuntime[None, FilesystemState],
@@ -532,10 +735,7 @@ class FilesystemMiddleware(AgentMiddleware):
                 validated_path = _validate_path(path)
             except ValueError as e:
                 return f"Error: {e}"
-            infos = await resolved_backend.als_info(validated_path)
-            paths = [fi.get("path", "") for fi in infos]
-            result = truncate_if_too_long(paths)
-            return str(result)
+            return _format_info_paths(await resolved_backend.als_info(validated_path))
 
         return StructuredTool.from_function(
             name="ls",
@@ -564,39 +764,13 @@ class FilesystemMiddleware(AgentMiddleware):
 
             ext = Path(validated_path).suffix.lower()
             if ext in IMAGE_EXTENSIONS:
-                responses = resolved_backend.download_files([validated_path])
-                if responses and responses[0].content is not None:
-                    media_type = IMAGE_MEDIA_TYPES.get(ext, "image/png")
-                    image_b64 = base64.standard_b64encode(responses[0].content).decode("utf-8")
-                    return ToolMessage(
-                        content_blocks=[create_image_block(base64=image_b64, mime_type=media_type)],
-                        name="read_file",
-                        tool_call_id=runtime.tool_call_id,
-                        additional_kwargs={
-                            "read_file_path": validated_path,
-                            "read_file_media_type": media_type,
-                        },
-                    )
-                if responses and responses[0].error:
-                    return f"Error reading image: {responses[0].error}"
-                return "Error reading image: unknown error"
+                return _build_image_response(
+                    resolved_backend.download_files([validated_path]),
+                    validated_path, ext, runtime.tool_call_id,
+                )
 
             result = resolved_backend.read(validated_path, offset=offset, limit=limit)
-
-            lines = result.splitlines(keepends=True)
-            if len(lines) > limit:
-                lines = lines[:limit]
-                result = "".join(lines)
-
-            # Check if result exceeds token threshold and truncate if necessary
-            if token_limit and len(result) >= NUM_CHARS_PER_TOKEN * token_limit:
-                # Calculate truncation message length to ensure final result stays under threshold
-                truncation_msg = READ_FILE_TRUNCATION_MSG.format(file_path=validated_path)
-                max_content_length = NUM_CHARS_PER_TOKEN * token_limit - len(truncation_msg)
-                result = result[:max_content_length]
-                result += truncation_msg
-
-            return result
+            return _truncate_read_result(result, limit, token_limit, validated_path)
 
         async def async_read_file(
             file_path: Annotated[str, "Absolute path to the file to read. Must be absolute, not relative."],
@@ -613,39 +787,13 @@ class FilesystemMiddleware(AgentMiddleware):
 
             ext = Path(validated_path).suffix.lower()
             if ext in IMAGE_EXTENSIONS:
-                responses = await resolved_backend.adownload_files([validated_path])
-                if responses and responses[0].content is not None:
-                    media_type = IMAGE_MEDIA_TYPES.get(ext, "image/png")
-                    image_b64 = base64.standard_b64encode(responses[0].content).decode("utf-8")
-                    return ToolMessage(
-                        content_blocks=[create_image_block(base64=image_b64, mime_type=media_type)],
-                        name="read_file",
-                        tool_call_id=runtime.tool_call_id,
-                        additional_kwargs={
-                            "read_file_path": validated_path,
-                            "read_file_media_type": media_type,
-                        },
-                    )
-                if responses and responses[0].error:
-                    return f"Error reading image: {responses[0].error}"
-                return "Error reading image: unknown error"
+                return _build_image_response(
+                    await resolved_backend.adownload_files([validated_path]),
+                    validated_path, ext, runtime.tool_call_id,
+                )
 
             result = await resolved_backend.aread(validated_path, offset=offset, limit=limit)
-
-            lines = result.splitlines(keepends=True)
-            if len(lines) > limit:
-                lines = lines[:limit]
-                result = "".join(lines)
-
-            # Check if result exceeds token threshold and truncate if necessary
-            if token_limit and len(result) >= NUM_CHARS_PER_TOKEN * token_limit:
-                # Calculate truncation message length to ensure final result stays under threshold
-                truncation_msg = READ_FILE_TRUNCATION_MSG.format(file_path=validated_path)
-                max_content_length = NUM_CHARS_PER_TOKEN * token_limit - len(truncation_msg)
-                result = result[:max_content_length]
-                result += truncation_msg
-
-            return result
+            return _truncate_read_result(result, limit, token_limit, validated_path)
 
         return StructuredTool.from_function(
             name="read_file",
@@ -669,23 +817,7 @@ class FilesystemMiddleware(AgentMiddleware):
                 validated_path = _validate_path(file_path)
             except ValueError as e:
                 return f"Error: {e}"
-            res: WriteResult = resolved_backend.write(validated_path, content)
-            if res.error:
-                return res.error
-            # If backend returns state update, wrap into Command with ToolMessage
-            if res.files_update is not None:
-                return Command(
-                    update={
-                        "files": res.files_update,
-                        "messages": [
-                            ToolMessage(
-                                content=f"Updated file {res.path}",
-                                tool_call_id=runtime.tool_call_id,
-                            )
-                        ],
-                    }
-                )
-            return f"Updated file {res.path}"
+            return _format_write_result(resolved_backend.write(validated_path, content), runtime.tool_call_id)
 
         async def async_write_file(
             file_path: Annotated[str, "Absolute path where the file should be created. Must be absolute, not relative."],
@@ -698,23 +830,7 @@ class FilesystemMiddleware(AgentMiddleware):
                 validated_path = _validate_path(file_path)
             except ValueError as e:
                 return f"Error: {e}"
-            res: WriteResult = await resolved_backend.awrite(validated_path, content)
-            if res.error:
-                return res.error
-            # If backend returns state update, wrap into Command with ToolMessage
-            if res.files_update is not None:
-                return Command(
-                    update={
-                        "files": res.files_update,
-                        "messages": [
-                            ToolMessage(
-                                content=f"Updated file {res.path}",
-                                tool_call_id=runtime.tool_call_id,
-                            )
-                        ],
-                    }
-                )
-            return f"Updated file {res.path}"
+            return _format_write_result(await resolved_backend.awrite(validated_path, content), runtime.tool_call_id)
 
         return StructuredTool.from_function(
             name="write_file",
@@ -741,22 +857,10 @@ class FilesystemMiddleware(AgentMiddleware):
                 validated_path = _validate_path(file_path)
             except ValueError as e:
                 return f"Error: {e}"
-            res: EditResult = resolved_backend.edit(validated_path, old_string, new_string, replace_all=replace_all)
-            if res.error:
-                return res.error
-            if res.files_update is not None:
-                return Command(
-                    update={
-                        "files": res.files_update,
-                        "messages": [
-                            ToolMessage(
-                                content=f"Successfully replaced {res.occurrences} instance(s) of the string in '{res.path}'",
-                                tool_call_id=runtime.tool_call_id,
-                            )
-                        ],
-                    }
-                )
-            return f"Successfully replaced {res.occurrences} instance(s) of the string in '{res.path}'"
+            return _format_edit_result(
+                resolved_backend.edit(validated_path, old_string, new_string, replace_all=replace_all),
+                runtime.tool_call_id,
+            )
 
         async def async_edit_file(
             file_path: Annotated[str, "Absolute path to the file to edit. Must be absolute, not relative."],
@@ -772,22 +876,10 @@ class FilesystemMiddleware(AgentMiddleware):
                 validated_path = _validate_path(file_path)
             except ValueError as e:
                 return f"Error: {e}"
-            res: EditResult = await resolved_backend.aedit(validated_path, old_string, new_string, replace_all=replace_all)
-            if res.error:
-                return res.error
-            if res.files_update is not None:
-                return Command(
-                    update={
-                        "files": res.files_update,
-                        "messages": [
-                            ToolMessage(
-                                content=f"Successfully replaced {res.occurrences} instance(s) of the string in '{res.path}'",
-                                tool_call_id=runtime.tool_call_id,
-                            )
-                        ],
-                    }
-                )
-            return f"Successfully replaced {res.occurrences} instance(s) of the string in '{res.path}'"
+            return _format_edit_result(
+                await resolved_backend.aedit(validated_path, old_string, new_string, replace_all=replace_all),
+                runtime.tool_call_id,
+            )
 
         return StructuredTool.from_function(
             name="edit_file",
@@ -811,10 +903,7 @@ class FilesystemMiddleware(AgentMiddleware):
                 validated_path = _validate_path(path)
             except ValueError as e:
                 return f"Error: {e}"
-            infos = resolved_backend.glob_info(pattern, path=validated_path)
-            paths = [fi.get("path", "") for fi in infos]
-            result = truncate_if_too_long(paths)
-            return str(result)
+            return _format_info_paths(resolved_backend.glob_info(pattern, path=validated_path))
 
         async def async_glob(
             pattern: Annotated[str, "Glob pattern to match files (e.g., '**/*.py', '*.txt', '/subdir/**/*.md')."],
@@ -827,10 +916,7 @@ class FilesystemMiddleware(AgentMiddleware):
                 validated_path = _validate_path(path)
             except ValueError as e:
                 return f"Error: {e}"
-            infos = await resolved_backend.aglob_info(pattern, path=validated_path)
-            paths = [fi.get("path", "") for fi in infos]
-            result = truncate_if_too_long(paths)
-            return str(result)
+            return _format_info_paths(await resolved_backend.aglob_info(pattern, path=validated_path))
 
         return StructuredTool.from_function(
             name="glob",
@@ -896,32 +982,13 @@ class FilesystemMiddleware(AgentMiddleware):
         ) -> str:
             """Synchronous wrapper for execute tool."""
             resolved_backend = self._get_backend(runtime)
-
-            # Runtime check - fail gracefully if not supported
             if not _supports_execution(resolved_backend):
-                return (
-                    "Error: Execution not available. This agent's backend "
-                    "does not support command execution (SandboxBackendProtocol). "
-                    "To use the execute tool, provide a backend that implements SandboxBackendProtocol."
-                )
-
+                return _EXECUTION_NOT_AVAILABLE_MSG
             try:
                 result = resolved_backend.execute(command)
             except NotImplementedError as e:
-                # Handle case where execute() exists but raises NotImplementedError
                 return f"Error: Execution not available. {e}"
-
-            # Format output for LLM consumption
-            parts = [result.output]
-
-            if result.exit_code is not None:
-                status = "succeeded" if result.exit_code == 0 else "failed"
-                parts.append(f"\n[Command {status} with exit code {result.exit_code}]")
-
-            if result.truncated:
-                parts.append("\n[Output was truncated due to size limits]")
-
-            return "".join(parts)
+            return _format_execute_result(result)
 
         async def async_execute(
             command: Annotated[str, "Shell command to execute in the sandbox environment."],
@@ -929,32 +996,13 @@ class FilesystemMiddleware(AgentMiddleware):
         ) -> str:
             """Asynchronous wrapper for execute tool."""
             resolved_backend = self._get_backend(runtime)
-
-            # Runtime check - fail gracefully if not supported
             if not _supports_execution(resolved_backend):
-                return (
-                    "Error: Execution not available. This agent's backend "
-                    "does not support command execution (SandboxBackendProtocol). "
-                    "To use the execute tool, provide a backend that implements SandboxBackendProtocol."
-                )
-
+                return _EXECUTION_NOT_AVAILABLE_MSG
             try:
                 result = await resolved_backend.aexecute(command)
             except NotImplementedError as e:
-                # Handle case where execute() exists but raises NotImplementedError
                 return f"Error: Execution not available. {e}"
-
-            # Format output for LLM consumption
-            parts = [result.output]
-
-            if result.exit_code is not None:
-                status = "succeeded" if result.exit_code == 0 else "failed"
-                parts.append(f"\n[Command {status} with exit code {result.exit_code}]")
-
-            if result.truncated:
-                parts.append("\n[Output was truncated due to size limits]")
-
-            return "".join(parts)
+            return _format_execute_result(result)
 
         return StructuredTool.from_function(
             name="execute",
@@ -962,6 +1010,49 @@ class FilesystemMiddleware(AgentMiddleware):
             func=sync_execute,
             coroutine=async_execute,
         )
+
+    def _prepare_model_request(self, request: ModelRequest) -> ModelRequest:
+        """Filter tools and build system prompt for a model request.
+
+        Shared preparation logic for both sync and async `wrap_model_call`.
+
+        Args:
+            request: The model request being processed.
+
+        Returns:
+            Modified request with filtered tools and updated system prompt.
+        """
+        has_execute_tool = any(
+            (tool.name if hasattr(tool, "name") else tool.get("name")) == "execute"
+            for tool in request.tools
+        )
+
+        backend_supports_execution = False
+        if has_execute_tool:
+            backend = self._get_backend(request.runtime)
+            backend_supports_execution = _supports_execution(backend)
+
+            if not backend_supports_execution:
+                filtered_tools = [
+                    tool for tool in request.tools
+                    if (tool.name if hasattr(tool, "name") else tool.get("name")) != "execute"
+                ]
+                request = request.override(tools=filtered_tools)
+                has_execute_tool = False
+
+        if self._custom_system_prompt is not None:
+            system_prompt = self._custom_system_prompt
+        else:
+            prompt_parts = [FILESYSTEM_SYSTEM_PROMPT]
+            if has_execute_tool and backend_supports_execution:
+                prompt_parts.append(EXECUTION_SYSTEM_PROMPT)
+            system_prompt = "\n\n".join(prompt_parts)
+
+        if system_prompt:
+            new_system_message = append_to_system_message(request.system_message, system_prompt)
+            request = request.override(system_message=new_system_message)
+
+        return request
 
     def wrap_model_call(
         self,
@@ -977,39 +1068,7 @@ class FilesystemMiddleware(AgentMiddleware):
         Returns:
             The model response from the handler.
         """
-        # Check if execute tool is present and if backend supports it
-        has_execute_tool = any((tool.name if hasattr(tool, "name") else tool.get("name")) == "execute" for tool in request.tools)
-
-        backend_supports_execution = False
-        if has_execute_tool:
-            # Resolve backend to check execution support
-            backend = self._get_backend(request.runtime)
-            backend_supports_execution = _supports_execution(backend)
-
-            # If execute tool exists but backend doesn't support it, filter it out
-            if not backend_supports_execution:
-                filtered_tools = [tool for tool in request.tools if (tool.name if hasattr(tool, "name") else tool.get("name")) != "execute"]
-                request = request.override(tools=filtered_tools)
-                has_execute_tool = False
-
-        # Use custom system prompt if provided, otherwise generate dynamically
-        if self._custom_system_prompt is not None:
-            system_prompt = self._custom_system_prompt
-        else:
-            # Build dynamic system prompt based on available tools
-            prompt_parts = [FILESYSTEM_SYSTEM_PROMPT]
-
-            # Add execution instructions if execute tool is available
-            if has_execute_tool and backend_supports_execution:
-                prompt_parts.append(EXECUTION_SYSTEM_PROMPT)
-
-            system_prompt = "\n\n".join(prompt_parts)
-
-        if system_prompt:
-            new_system_message = append_to_system_message(request.system_message, system_prompt)
-            request = request.override(system_message=new_system_message)
-
-        return handler(request)
+        return handler(self._prepare_model_request(request))
 
     async def awrap_model_call(
         self,
@@ -1025,39 +1084,31 @@ class FilesystemMiddleware(AgentMiddleware):
         Returns:
             The model response from the handler.
         """
-        # Check if execute tool is present and if backend supports it
-        has_execute_tool = any((tool.name if hasattr(tool, "name") else tool.get("name")) == "execute" for tool in request.tools)
+        return await handler(self._prepare_model_request(request))
 
-        backend_supports_execution = False
-        if has_execute_tool:
-            # Resolve backend to check execution support
-            backend = self._get_backend(request.runtime)
-            backend_supports_execution = _supports_execution(backend)
+    def _check_eviction_threshold(
+        self, message: ToolMessage,
+    ) -> tuple[str, str] | None:
+        """Check if a message exceeds the eviction threshold and compute paths.
 
-            # If execute tool exists but backend doesn't support it, filter it out
-            if not backend_supports_execution:
-                filtered_tools = [tool for tool in request.tools if (tool.name if hasattr(tool, "name") else tool.get("name")) != "execute"]
-                request = request.override(tools=filtered_tools)
-                has_execute_tool = False
+        Shared pre-write logic for both sync and async `_process_large_message`.
 
-        # Use custom system prompt if provided, otherwise generate dynamically
-        if self._custom_system_prompt is not None:
-            system_prompt = self._custom_system_prompt
-        else:
-            # Build dynamic system prompt based on available tools
-            prompt_parts = [FILESYSTEM_SYSTEM_PROMPT]
+        Args:
+            message: The ToolMessage to check.
 
-            # Add execution instructions if execute tool is available
-            if has_execute_tool and backend_supports_execution:
-                prompt_parts.append(EXECUTION_SYSTEM_PROMPT)
+        Returns:
+            Tuple of `(content_str, file_path)` if eviction is needed, `None` otherwise.
+        """
+        if not self._tool_token_limit_before_evict:
+            return None
 
-            system_prompt = "\n\n".join(prompt_parts)
+        content_str = _extract_message_content(message)
+        if len(content_str) <= NUM_CHARS_PER_TOKEN * self._tool_token_limit_before_evict:
+            return None
 
-        if system_prompt:
-            new_system_message = append_to_system_message(request.system_message, system_prompt)
-            request = request.override(system_message=new_system_message)
-
-        return await handler(request)
+        sanitized_id = sanitize_tool_call_id(message.tool_call_id)
+        file_path = f"/large_tool_results/{sanitized_id}"
+        return content_str, file_path
 
     def _process_large_message(
         self,
@@ -1084,52 +1135,16 @@ class FilesystemMiddleware(AgentMiddleware):
             uncommon in tool results. For simplicity, all content is stringified and evicted.
             The model can recover by reading the offloaded file from the backend.
         """
-        # Early exit if eviction not configured
-        if not self._tool_token_limit_before_evict:
+        eviction = self._check_eviction_threshold(message)
+        if eviction is None:
             return message, None
 
-        # Convert content to string once for both size check and eviction
-        # Special case: single text block - extract text directly for readability
-        if (
-            isinstance(message.content, list)
-            and len(message.content) == 1
-            and isinstance(message.content[0], dict)
-            and message.content[0].get("type") == "text"
-            and "text" in message.content[0]
-        ):
-            content_str = str(message.content[0]["text"])
-        elif isinstance(message.content, str):
-            content_str = message.content
-        else:
-            # Multiple blocks or non-text content - stringify entire structure
-            content_str = str(message.content)
-
-        # Check if content exceeds eviction threshold
-        if len(content_str) <= NUM_CHARS_PER_TOKEN * self._tool_token_limit_before_evict:
-            return message, None
-
-        # Write content to filesystem
-        sanitized_id = sanitize_tool_call_id(message.tool_call_id)
-        file_path = f"/large_tool_results/{sanitized_id}"
+        content_str, file_path = eviction
         result = resolved_backend.write(file_path, content_str)
         if result.error:
             return message, None
 
-        # Create preview showing head and tail of the result
-        content_sample = _create_content_preview(content_str)
-        replacement_text = TOO_LARGE_TOOL_MSG.format(
-            tool_call_id=message.tool_call_id,
-            file_path=file_path,
-            content_sample=content_sample,
-        )
-
-        # Always return as plain string after eviction
-        processed_message = ToolMessage(
-            content=replacement_text,
-            tool_call_id=message.tool_call_id,
-            name=message.name,
-        )
-        return processed_message, result.files_update
+        return _build_eviction_message(message, file_path, content_str), result.files_update
 
     async def _aprocess_large_message(
         self,
@@ -1141,51 +1156,39 @@ class FilesystemMiddleware(AgentMiddleware):
         Uses async backend methods to avoid sync calls in async context.
         See _process_large_message for full documentation.
         """
-        # Early exit if eviction not configured
-        if not self._tool_token_limit_before_evict:
+        eviction = self._check_eviction_threshold(message)
+        if eviction is None:
             return message, None
 
-        # Convert content to string once for both size check and eviction
-        # Special case: single text block - extract text directly for readability
-        if (
-            isinstance(message.content, list)
-            and len(message.content) == 1
-            and isinstance(message.content[0], dict)
-            and message.content[0].get("type") == "text"
-            and "text" in message.content[0]
-        ):
-            content_str = str(message.content[0]["text"])
-        elif isinstance(message.content, str):
-            content_str = message.content
-        else:
-            # Multiple blocks or non-text content - stringify entire structure
-            content_str = str(message.content)
-
-        if len(content_str) <= NUM_CHARS_PER_TOKEN * self._tool_token_limit_before_evict:
-            return message, None
-
-        # Write content to filesystem using async method
-        sanitized_id = sanitize_tool_call_id(message.tool_call_id)
-        file_path = f"/large_tool_results/{sanitized_id}"
+        content_str, file_path = eviction
         result = await resolved_backend.awrite(file_path, content_str)
         if result.error:
             return message, None
 
-        # Create preview showing head and tail of the result
-        content_sample = _create_content_preview(content_str)
-        replacement_text = TOO_LARGE_TOOL_MSG.format(
-            tool_call_id=message.tool_call_id,
-            file_path=file_path,
-            content_sample=content_sample,
-        )
+        return _build_eviction_message(message, file_path, content_str), result.files_update
 
-        # Always return as plain string after eviction
-        processed_message = ToolMessage(
-            content=replacement_text,
-            tool_call_id=message.tool_call_id,
-            name=message.name,
-        )
-        return processed_message, result.files_update
+    @staticmethod
+    def _wrap_eviction_result(
+        processed_message: ToolMessage,
+        files_update: dict[str, FileData] | None,
+    ) -> ToolMessage | Command:
+        """Wrap an eviction result into a Command when files were updated.
+
+        Args:
+            processed_message: The (possibly replaced) ToolMessage.
+            files_update: File state updates from eviction, or None.
+
+        Returns:
+            A Command with state update if files changed, otherwise the message.
+        """
+        if files_update is not None:
+            return Command(
+                update={
+                    "files": files_update,
+                    "messages": [processed_message],
+                }
+            )
+        return processed_message
 
     def _intercept_large_tool_result(self, tool_result: ToolMessage | Command, runtime: ToolRuntime) -> ToolMessage | Command:
         """Intercept and process large tool results before they're added to state.
@@ -1205,20 +1208,8 @@ class FilesystemMiddleware(AgentMiddleware):
         """
         if isinstance(tool_result, ToolMessage):
             resolved_backend = self._get_backend(runtime)
-            processed_message, files_update = self._process_large_message(
-                tool_result,
-                resolved_backend,
-            )
-            return (
-                Command(
-                    update={
-                        "files": files_update,
-                        "messages": [processed_message],
-                    }
-                )
-                if files_update is not None
-                else processed_message
-            )
+            processed_message, files_update = self._process_large_message(tool_result, resolved_backend)
+            return self._wrap_eviction_result(processed_message, files_update)
 
         if isinstance(tool_result, Command):
             update = tool_result.update
@@ -1232,16 +1223,14 @@ class FilesystemMiddleware(AgentMiddleware):
                 if not isinstance(message, ToolMessage):
                     processed_messages.append(message)
                     continue
-
-                processed_message, files_update = self._process_large_message(
-                    message,
-                    resolved_backend,
-                )
+                processed_message, files_update = self._process_large_message(message, resolved_backend)
                 processed_messages.append(processed_message)
                 if files_update is not None:
                     accumulated_file_updates.update(files_update)
             return Command(update={**update, "messages": processed_messages, "files": accumulated_file_updates})
-        raise AssertionError(f"Unreachable code reached in _intercept_large_tool_result: for tool_result of type {type(tool_result)}")
+
+        msg = f"Unexpected tool_result type: {type(tool_result)}"
+        raise AssertionError(msg)
 
     async def _aintercept_large_tool_result(self, tool_result: ToolMessage | Command, runtime: ToolRuntime) -> ToolMessage | Command:
         """Async version of _intercept_large_tool_result.
@@ -1251,20 +1240,8 @@ class FilesystemMiddleware(AgentMiddleware):
         """
         if isinstance(tool_result, ToolMessage):
             resolved_backend = self._get_backend(runtime)
-            processed_message, files_update = await self._aprocess_large_message(
-                tool_result,
-                resolved_backend,
-            )
-            return (
-                Command(
-                    update={
-                        "files": files_update,
-                        "messages": [processed_message],
-                    }
-                )
-                if files_update is not None
-                else processed_message
-            )
+            processed_message, files_update = await self._aprocess_large_message(tool_result, resolved_backend)
+            return self._wrap_eviction_result(processed_message, files_update)
 
         if isinstance(tool_result, Command):
             update = tool_result.update
@@ -1278,16 +1255,14 @@ class FilesystemMiddleware(AgentMiddleware):
                 if not isinstance(message, ToolMessage):
                     processed_messages.append(message)
                     continue
-
-                processed_message, files_update = await self._aprocess_large_message(
-                    message,
-                    resolved_backend,
-                )
+                processed_message, files_update = await self._aprocess_large_message(message, resolved_backend)
                 processed_messages.append(processed_message)
                 if files_update is not None:
                     accumulated_file_updates.update(files_update)
             return Command(update={**update, "messages": processed_messages, "files": accumulated_file_updates})
-        raise AssertionError(f"Unreachable code reached in _aintercept_large_tool_result: for tool_result of type {type(tool_result)}")
+
+        msg = f"Unexpected tool_result type: {type(tool_result)}"
+        raise AssertionError(msg)
 
     def wrap_tool_call(
         self,

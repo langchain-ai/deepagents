@@ -735,7 +735,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             if ext in IMAGE_EXTENSIONS:
                 return _build_image_response(
                     resolved_backend.download_files([validated_path]),
-                    validated_path, ext, runtime.tool_call_id,
+                    validated_path,
+                    ext,
+                    runtime.tool_call_id,
                 )
 
             result = resolved_backend.read(validated_path, offset=offset, limit=limit)
@@ -758,7 +760,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             if ext in IMAGE_EXTENSIONS:
                 return _build_image_response(
                     await resolved_backend.adownload_files([validated_path]),
-                    validated_path, ext, runtime.tool_call_id,
+                    validated_path,
+                    ext,
+                    runtime.tool_call_id,
                 )
 
             result = await resolved_backend.aread(validated_path, offset=offset, limit=limit)
@@ -988,7 +992,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             if not _supports_execution(resolved_backend):
                 return _EXECUTION_NOT_AVAILABLE_MSG
             try:
-                result = await resolved_backend.aexecute(command, timeout=timeout) if timeout is not None else await resolved_backend.aexecute(command)
+                result = (
+                    await resolved_backend.aexecute(command, timeout=timeout) if timeout is not None else await resolved_backend.aexecute(command)
+                )
             except NotImplementedError as e:
                 return f"Error: Execution not available. {e}"
             return _format_execute_result(result)
@@ -1011,10 +1017,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         Returns:
             Modified request with filtered tools and updated system prompt.
         """
-        has_execute_tool = any(
-            (tool.name if hasattr(tool, "name") else tool.get("name")) == "execute"
-            for tool in request.tools
-        )
+        has_execute_tool = any((tool.name if hasattr(tool, "name") else tool.get("name")) == "execute" for tool in request.tools)
 
         backend_supports_execution = False
         if has_execute_tool:
@@ -1022,10 +1025,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             backend_supports_execution = _supports_execution(backend)
 
             if not backend_supports_execution:
-                filtered_tools = [
-                    tool for tool in request.tools
-                    if (tool.name if hasattr(tool, "name") else tool.get("name")) != "execute"
-                ]
+                filtered_tools = [tool for tool in request.tools if (tool.name if hasattr(tool, "name") else tool.get("name")) != "execute"]
                 request = request.override(tools=filtered_tools)
                 has_execute_tool = False
 
@@ -1076,7 +1076,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         return await handler(self._prepare_model_request(request))
 
     def _check_eviction_threshold(
-        self, message: ToolMessage,
+        self,
+        message: ToolMessage,
     ) -> tuple[str, str] | None:
         """Check if a message exceeds the eviction threshold and compute paths.
 

@@ -708,8 +708,6 @@ A condensed summary follows:
     def _finalize_offload(
         self,
         path: str,
-        existing_content: str,
-        new_section: str,
         filtered_messages: list[AnyMessage],
         write_result: object,
     ) -> str | None:
@@ -719,8 +717,6 @@ A condensed summary follows:
 
         Args:
             path: File path where history is stored.
-            existing_content: Content that existed before the write.
-            new_section: The new section that was appended.
             filtered_messages: Messages that were offloaded (for logging).
             write_result: Result object from backend write/edit call.
 
@@ -819,7 +815,7 @@ A condensed summary follows:
                 e,
             )
             return None
-        return self._finalize_offload(path, existing_content, new_section, filtered_messages, result)
+        return self._finalize_offload(path, filtered_messages, result)
 
     async def _aoffload_to_backend(
         self,
@@ -855,7 +851,7 @@ A condensed summary follows:
                 e,
             )
             return None
-        return self._finalize_offload(path, existing_content, new_section, filtered_messages, result)
+        return self._finalize_offload(path, filtered_messages, result)
 
     def _prepare_truncated_messages(
         self,

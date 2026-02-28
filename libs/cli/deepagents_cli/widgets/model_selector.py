@@ -527,7 +527,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         try:
             scroll = self.query_one(".model-list", VerticalScroll)
             height = scroll.size.height
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001  # Fallback to default page size on any widget query error
             return default_page_size
         if height <= 0:
             return default_page_size

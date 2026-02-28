@@ -43,7 +43,7 @@ def build_composite_state_backend(runtime: ToolRuntime, *, routes):
 class MockSandboxBackend(SandboxBackendProtocol, StateBackend):
     """Mock sandbox backend that implements SandboxBackendProtocol."""
 
-    def execute(self, command: str, *, timeout: int = 30 * 60) -> ExecuteResponse:
+    def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
         """Mock execute that returns the command as output."""
         return ExecuteResponse(
             output=f"Executed: {command}",
@@ -51,7 +51,7 @@ class MockSandboxBackend(SandboxBackendProtocol, StateBackend):
             truncated=False,
         )
 
-    async def aexecute(self, command: str) -> ExecuteResponse:
+    async def aexecute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:  # noqa: ASYNC109
         """Async mock execute that returns the command as output."""
         return ExecuteResponse(
             output=f"Async Executed: {command}",
@@ -64,7 +64,7 @@ class MockSandboxBackend(SandboxBackendProtocol, StateBackend):
         return "mock_sandbox_backend"
 
 
-async def test_composite_state_backend_routes_and_search_async(tmp_path: Path):
+async def test_composite_state_backend_routes_and_search_async(tmp_path: Path):  # noqa: ARG001  # Pytest fixture
     """Test async operations with composite backend routing."""
     rt = make_runtime("t3")
     be = build_composite_state_backend(rt, routes={"/memories/": (StoreBackend)})
@@ -112,6 +112,17 @@ async def test_composite_backend_filesystem_plus_store_async(tmp_path: Path):
     assert any(i["path"] == "/hello.txt" for i in infos_root)
     infos_mem = await comp.als_info("/memories/")
     assert any(i["path"] == "/memories/notes.md" for i in infos_mem)
+
+    infos_mem_no_slash = await comp.als_info("/memories")
+    assert any(i["path"] == "/memories/notes.md" for i in infos_mem_no_slash)
+
+    # agrep_raw route targeting should accept /memories as the route root
+    gm_mem = await comp.agrep_raw("note", path="/memories")
+    assert any(m["path"] == "/memories/notes.md" for m in gm_mem)
+
+    # aglob_info route targeting should accept /memories as the route root
+    gl_mem = await comp.aglob_info("*.md", path="/memories")
+    assert any(i["path"] == "/memories/notes.md" for i in gl_mem)
 
     # agrep_raw merges
     gm = await comp.agrep_raw("hello", path="/")
@@ -365,6 +376,36 @@ async def test_composite_backend_aexecute_with_sandbox_default_async():
     assert result.truncated is False
 
 
+async def test_composite_backend_aexecute_forwards_timeout_async():
+    """CompositeBackend should forward timeout to the default backend."""
+    rt = make_runtime("t_exec_timeout")
+    sandbox = MockSandboxBackend(rt)
+    store = StoreBackend(rt)
+
+    comp = CompositeBackend(default=sandbox, routes={"/memories/": store})
+
+    captured: dict[str, int | None] = {}
+    original_aexecute = sandbox.aexecute
+
+    async def capturing_aexecute(
+        command: str,
+        *,
+        timeout: int | None = None,  # noqa: ASYNC109
+    ) -> ExecuteResponse:
+        captured["timeout"] = timeout
+        return await original_aexecute(command, timeout=timeout)
+
+    sandbox.aexecute = capturing_aexecute  # type: ignore[assignment]
+
+    await comp.aexecute("ls", timeout=42)
+    assert captured["timeout"] == 42
+
+    # Also verify None is forwarded when timeout is omitted
+    captured.clear()
+    await comp.aexecute("ls")
+    assert captured["timeout"] is None
+
+
 async def test_composite_backend_aexecute_without_sandbox_default_async():
     """Test async execute fails when default doesn't support execution."""
     rt = make_runtime("t_exec2")
@@ -460,7 +501,7 @@ async def test_composite_adownload_routing_async(tmp_path: Path):
 
 async def test_composite_aupload_download_roundtrip_async(tmp_path: Path):
     """Test async upload and download roundtrip through composite backend."""
-    rt = make_runtime("t_roundtrip1")
+    _rt = make_runtime("t_roundtrip1")
     root = tmp_path
 
     fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
@@ -479,7 +520,7 @@ async def test_composite_aupload_download_roundtrip_async(tmp_path: Path):
 
 async def test_composite_partial_success_aupload_async(tmp_path: Path):
     """Test partial success in async batch upload with mixed valid/invalid paths."""
-    rt = make_runtime("t_partial_upload")
+    _rt = make_runtime("t_partial_upload")
     root = tmp_path
 
     fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
@@ -508,7 +549,7 @@ async def test_composite_partial_success_aupload_async(tmp_path: Path):
 
 async def test_composite_partial_success_adownload_async(tmp_path: Path):
     """Test partial success in async batch download with mixed valid/invalid paths."""
-    rt = make_runtime("t_partial_download")
+    _rt = make_runtime("t_partial_download")
     root = tmp_path
 
     fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
@@ -564,7 +605,7 @@ async def test_composite_aupload_download_multiple_routes_async(tmp_path: Path):
 
 async def test_composite_adownload_preserves_original_paths_async(tmp_path: Path):
     """Test async download responses preserve original composite paths."""
-    rt = make_runtime("t_path_preserve")
+    _rt = make_runtime("t_path_preserve")
     root = tmp_path
 
     fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
@@ -707,7 +748,7 @@ async def test_composite_agrep_with_path_none_async(tmp_path: Path) -> None:
 
 async def test_composite_agrep_invalid_regex_async(tmp_path: Path) -> None:
     """Test async grep with special characters (literal search, not regex)."""
-    rt = make_runtime("t_agrep5")
+    _rt = make_runtime("t_agrep5")
     root = tmp_path
 
     fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
@@ -805,7 +846,7 @@ async def test_composite_agrep_route_prefix_restoration_async(tmp_path: Path) ->
 
 async def test_composite_agrep_multiple_matches_per_file_async(tmp_path: Path) -> None:
     """Test async grep returns multiple matches from same file."""
-    rt = make_runtime("t_agrep9")
+    _rt = make_runtime("t_agrep9")
     root = tmp_path
 
     # File with multiple matching lines

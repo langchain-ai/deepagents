@@ -1016,8 +1016,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             if not _supports_execution(resolved_backend):
                 return _EXECUTION_NOT_AVAILABLE_MSG
             try:
-                result = (  # ty: ignore[unresolved-attribute]
-                    await resolved_backend.aexecute(command, timeout=timeout) if timeout is not None else await resolved_backend.aexecute(command)
+                result = (
+                    await resolved_backend.aexecute(command, timeout=timeout) if timeout is not None else await resolved_backend.aexecute(command)  # ty: ignore[unresolved-attribute]
                 )
             except NotImplementedError as e:
                 return f"Error: Execution not available. {e}"

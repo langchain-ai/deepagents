@@ -1,20 +1,16 @@
 """Middleware for providing filesystem tools to an agent."""
 # ruff: noqa: E501
 
-import asyncio
 import base64
-import concurrent.futures
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Annotated, Any, Literal, NotRequired, cast
+from typing import Annotated, Literal, NotRequired
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     AgentState,
-    ContextT,
     ModelRequest,
     ModelResponse,
-    ResponseT,
 )
 from langchain.tools import ToolRuntime
 from langchain.tools.tool_node import ToolCallRequest
@@ -33,7 +29,6 @@ from deepagents.backends.protocol import (
     ExecuteResponse,
     SandboxBackendProtocol,
     WriteResult,
-    execute_accepts_timeout,
 )
 from deepagents.backends.utils import (
     format_content_with_line_numbers,
@@ -362,7 +357,7 @@ def _format_execute_result(result: ExecuteResponse) -> str:
     return "".join(parts)
 
 
-def _format_info_paths(infos: list[dict]) -> str:  # noqa: PYI047
+def _format_info_paths(infos: list[dict]) -> str:
     """Extract paths from file info dicts and truncate if needed.
 
     Args:
@@ -403,7 +398,7 @@ def _truncate_read_result(result: str, limit: int, token_limit: int | None, file
 
 
 def _build_image_response(
-    responses: list,  # noqa: ANN401
+    responses: list,
     validated_path: str,
     ext: str,
     tool_call_id: str,
@@ -716,7 +711,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             coroutine=async_ls,
         )
 
-    def _create_read_file_tool(self) -> BaseTool:  # noqa: C901
+    def _create_read_file_tool(self) -> BaseTool:
         """Create the read_file tool."""
         tool_description = self._custom_tool_descriptions.get("read_file") or READ_FILE_TOOL_DESCRIPTION
         token_limit = self._tool_token_limit_before_evict
@@ -944,11 +939,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             coroutine=async_grep,
         )
 
-    def _create_execute_tool(self) -> BaseTool:  # noqa: C901
+    def _create_execute_tool(self) -> BaseTool:
         """Create the execute tool for sandbox command execution."""
         tool_description = self._custom_tool_descriptions.get("execute") or EXECUTE_TOOL_DESCRIPTION
 
-        def sync_execute(  # noqa: PLR0911 - early returns for distinct error conditions
+        def sync_execute(
             command: Annotated[str, "Shell command to execute in the sandbox environment."],
             runtime: ToolRuntime[None, FilesystemState],
             timeout: Annotated[
@@ -966,12 +961,12 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             if not _supports_execution(resolved_backend):
                 return _EXECUTION_NOT_AVAILABLE_MSG
             try:
-                result = executable.execute(command, timeout=timeout) if timeout is not None else executable.execute(command)
+                result = resolved_backend.execute(command, timeout=timeout) if timeout is not None else resolved_backend.execute(command)
             except NotImplementedError as e:
                 return f"Error: Execution not available. {e}"
             return _format_execute_result(result)
 
-        async def async_execute(  # noqa: PLR0911 - early returns for distinct error conditions
+        async def async_execute(
             command: Annotated[str, "Shell command to execute in the sandbox environment."],
             runtime: ToolRuntime[None, FilesystemState],
             # ASYNC109 - timeout is a semantic parameter forwarded to the
@@ -991,7 +986,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             if not _supports_execution(resolved_backend):
                 return _EXECUTION_NOT_AVAILABLE_MSG
             try:
-                result = await executable.aexecute(command, timeout=timeout) if timeout is not None else await executable.aexecute(command)
+                result = await resolved_backend.aexecute(command, timeout=timeout) if timeout is not None else await resolved_backend.aexecute(command)
             except NotImplementedError as e:
                 return f"Error: Execution not available. {e}"
             return _format_execute_result(result)

@@ -1,18 +1,20 @@
 """Middleware for providing filesystem tools to an agent."""
 # ruff: noqa: E501
 
+import asyncio
 import base64
-import os
-import re
-from collections.abc import Awaitable, Callable, Sequence
+import concurrent.futures
+from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Annotated, Literal, NotRequired
+from typing import Annotated, Any, Literal, NotRequired, cast
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     AgentState,
+    ContextT,
     ModelRequest,
     ModelResponse,
+    ResponseT,
 )
 from langchain.tools import ToolRuntime
 from langchain.tools.tool_node import ToolCallRequest
@@ -31,16 +33,19 @@ from deepagents.backends.protocol import (
     ExecuteResponse,
     SandboxBackendProtocol,
     WriteResult,
+    execute_accepts_timeout,
 )
 from deepagents.backends.utils import (
     format_content_with_line_numbers,
     format_grep_matches,
     sanitize_tool_call_id,
     truncate_if_too_long,
+    validate_path,
 )
 from deepagents.middleware._utils import append_to_system_message
 
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
+GLOB_TIMEOUT = 20.0  # seconds
 LINE_NUMBER_WIDTH = 6
 DEFAULT_READ_OFFSET = 0
 DEFAULT_READ_LIMIT = 100
@@ -117,63 +122,6 @@ def _file_data_reducer(left: dict[str, FileData] | None, right: dict[str, FileDa
         else:
             result[key] = value
     return result
-
-
-def _validate_path(path: str, *, allowed_prefixes: Sequence[str] | None = None) -> str:
-    r"""Validate and normalize file path for security.
-
-    Ensures paths are safe to use by preventing directory traversal attacks
-    and enforcing consistent formatting. All paths are normalized to use
-    forward slashes and start with a leading slash.
-
-    This function is designed for virtual filesystem paths and rejects
-    Windows absolute paths (e.g., C:/..., F:/...) to maintain consistency
-    and prevent path format ambiguity.
-
-    Args:
-        path: The path to validate and normalize.
-        allowed_prefixes: Optional list of allowed path prefixes. If provided,
-            the normalized path must start with one of these prefixes.
-
-    Returns:
-        Normalized canonical path starting with `/` and using forward slashes.
-
-    Raises:
-        ValueError: If path contains traversal sequences (`..` or `~`), is a
-            Windows absolute path (e.g., C:/...), or does not start with an
-            allowed prefix when `allowed_prefixes` is specified.
-
-    Example:
-        ```python
-        validate_path("foo/bar")  # Returns: "/foo/bar"
-        validate_path("/./foo//bar")  # Returns: "/foo/bar"
-        validate_path("../etc/passwd")  # Raises ValueError
-        validate_path(r"C:\\Users\\file.txt")  # Raises ValueError
-        validate_path("/data/file.txt", allowed_prefixes=["/data/"])  # OK
-        validate_path("/etc/file.txt", allowed_prefixes=["/data/"])  # Raises ValueError
-        ```
-    """
-    if ".." in path or path.startswith("~"):
-        msg = f"Path traversal not allowed: {path}"
-        raise ValueError(msg)
-
-    # Reject Windows absolute paths (e.g., C:\..., D:/...)
-    # This maintains consistency in virtual filesystem paths
-    if re.match(r"^[a-zA-Z]:", path):
-        msg = f"Windows absolute paths are not supported: {path}. Please use virtual paths starting with / (e.g., /workspace/file.txt)"
-        raise ValueError(msg)
-
-    normalized = os.path.normpath(path)
-    normalized = normalized.replace("\\", "/")
-
-    if not normalized.startswith("/"):
-        normalized = f"/{normalized}"
-
-    if allowed_prefixes is not None and not any(normalized.startswith(prefix) for prefix in allowed_prefixes):
-        msg = f"Path must start with one of {allowed_prefixes}: {path}"
-        raise ValueError(msg)
-
-    return normalized
 
 
 class FilesystemState(AgentState):
@@ -270,6 +218,7 @@ Usage notes:
   - Commands run in an isolated sandbox environment
   - Returns combined stdout/stderr output with exit code
   - If the output is very large, it may be truncated
+  - For long-running commands, use the optional timeout parameter to override the default timeout (e.g., execute(command="make build", timeout=300))
   - VERY IMPORTANT: You MUST avoid using search commands like find and grep. Instead use the grep, glob tools to search. You MUST avoid read tools like cat, head, tail, and use read_file to read files.
   - When issuing multiple commands, use the ';' or '&&' operator to separate them. DO NOT use newlines (newlines are ok in quoted strings)
     - Use '&&' when commands depend on each other (e.g., "mkdir dir && cd dir")
@@ -281,6 +230,7 @@ Examples:
     - execute(command="pytest /foo/bar/tests")
     - execute(command="python /path/to/script.py")
     - execute(command="npm install && npm test")
+    - execute(command="make build", timeout=300)
 
   Bad examples (avoid these):
     - execute(command="cd /foo/bar && pytest tests")  # Use absolute path instead
@@ -291,7 +241,16 @@ Examples:
 Note: This tool is only available if the backend supports execution (SandboxBackendProtocol).
 If execution is not supported, the tool will return an error message."""
 
-FILESYSTEM_SYSTEM_PROMPT = """## Filesystem Tools `ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`
+FILESYSTEM_SYSTEM_PROMPT = """## Following Conventions
+
+- Read files before editing — understand existing content before making changes
+- Mimic existing style, naming conventions, and patterns
+
+## Tool Usage and File Reading
+
+Follow the tool docs for the available tools. In particular, for filesystem tools, use pagination (offset/limit) when reading large files.
+
+## Filesystem Tools `ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`
 
 You have access to a filesystem which you can interact with using these tools.
 All file paths must start with a /.
@@ -608,7 +567,7 @@ def _create_content_preview(content_str: str, *, head_lines: int = 5, tail_lines
     return head_sample + truncation_notice + tail_sample
 
 
-class FilesystemMiddleware(AgentMiddleware):
+class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]):
     """Middleware for providing filesystem and optional execution tools to an agent.
 
     This middleware adds filesystem tools to the agent: `ls`, `read_file`, `write_file`,
@@ -668,6 +627,7 @@ class FilesystemMiddleware(AgentMiddleware):
         system_prompt: str | None = None,
         custom_tool_descriptions: dict[str, str] | None = None,
         tool_token_limit_before_evict: int | None = 20000,
+        max_execute_timeout: int = 3600,
     ) -> None:
         """Initialize the filesystem middleware.
 
@@ -677,7 +637,18 @@ class FilesystemMiddleware(AgentMiddleware):
             system_prompt: Optional custom system prompt override.
             custom_tool_descriptions: Optional custom tool descriptions override.
             tool_token_limit_before_evict: Optional token limit before evicting a tool result to the filesystem.
+            max_execute_timeout: Maximum allowed value in seconds for per-command timeout
+                overrides on the execute tool.
+
+                Defaults to 3600 seconds (1 hour). Any per-command timeout
+                exceeding this value will be rejected with an error message.
+
+        Raises:
+            ValueError: If `max_execute_timeout` is not positive.
         """
+        if max_execute_timeout <= 0:
+            msg = f"max_execute_timeout must be positive, got {max_execute_timeout}"
+            raise ValueError(msg)
         # Use provided backend or default to StateBackend factory
         self.backend = backend if backend is not None else (StateBackend)
 
@@ -685,6 +656,7 @@ class FilesystemMiddleware(AgentMiddleware):
         self._custom_system_prompt = system_prompt
         self._custom_tool_descriptions = custom_tool_descriptions or {}
         self._tool_token_limit_before_evict = tool_token_limit_before_evict
+        self._max_execute_timeout = max_execute_timeout
 
         self.tools = [
             self._create_ls_tool(),
@@ -696,7 +668,7 @@ class FilesystemMiddleware(AgentMiddleware):
             self._create_execute_tool(),
         ]
 
-    def _get_backend(self, runtime: ToolRuntime) -> BackendProtocol:
+    def _get_backend(self, runtime: ToolRuntime[Any, Any]) -> BackendProtocol:
         """Get the resolved backend instance from backend or factory.
 
         Args:
@@ -706,7 +678,7 @@ class FilesystemMiddleware(AgentMiddleware):
             Resolved backend instance.
         """
         if callable(self.backend):
-            return self.backend(runtime)
+            return self.backend(runtime)  # ty: ignore[call-top-callable]
         return self.backend
 
     def _create_ls_tool(self) -> BaseTool:
@@ -720,7 +692,7 @@ class FilesystemMiddleware(AgentMiddleware):
             """Synchronous wrapper for ls tool."""
             resolved_backend = self._get_backend(runtime)
             try:
-                validated_path = _validate_path(path)
+                validated_path = validate_path(path)
             except ValueError as e:
                 return f"Error: {e}"
             return _format_info_paths(resolved_backend.ls_info(validated_path))
@@ -732,7 +704,7 @@ class FilesystemMiddleware(AgentMiddleware):
             """Asynchronous wrapper for ls tool."""
             resolved_backend = self._get_backend(runtime)
             try:
-                validated_path = _validate_path(path)
+                validated_path = validate_path(path)
             except ValueError as e:
                 return f"Error: {e}"
             return _format_info_paths(await resolved_backend.als_info(validated_path))
@@ -744,7 +716,7 @@ class FilesystemMiddleware(AgentMiddleware):
             coroutine=async_ls,
         )
 
-    def _create_read_file_tool(self) -> BaseTool:
+    def _create_read_file_tool(self) -> BaseTool:  # noqa: C901
         """Create the read_file tool."""
         tool_description = self._custom_tool_descriptions.get("read_file") or READ_FILE_TOOL_DESCRIPTION
         token_limit = self._tool_token_limit_before_evict
@@ -758,7 +730,7 @@ class FilesystemMiddleware(AgentMiddleware):
             """Synchronous wrapper for read_file tool."""
             resolved_backend = self._get_backend(runtime)
             try:
-                validated_path = _validate_path(file_path)
+                validated_path = validate_path(file_path)
             except ValueError as e:
                 return f"Error: {e}"
 
@@ -781,7 +753,7 @@ class FilesystemMiddleware(AgentMiddleware):
             """Asynchronous wrapper for read_file tool."""
             resolved_backend = self._get_backend(runtime)
             try:
-                validated_path = _validate_path(file_path)
+                validated_path = validate_path(file_path)
             except ValueError as e:
                 return f"Error: {e}"
 
@@ -814,7 +786,7 @@ class FilesystemMiddleware(AgentMiddleware):
             """Synchronous wrapper for write_file tool."""
             resolved_backend = self._get_backend(runtime)
             try:
-                validated_path = _validate_path(file_path)
+                validated_path = validate_path(file_path)
             except ValueError as e:
                 return f"Error: {e}"
             return _format_write_result(resolved_backend.write(validated_path, content), runtime.tool_call_id)
@@ -827,7 +799,7 @@ class FilesystemMiddleware(AgentMiddleware):
             """Asynchronous wrapper for write_file tool."""
             resolved_backend = self._get_backend(runtime)
             try:
-                validated_path = _validate_path(file_path)
+                validated_path = validate_path(file_path)
             except ValueError as e:
                 return f"Error: {e}"
             return _format_write_result(await resolved_backend.awrite(validated_path, content), runtime.tool_call_id)
@@ -854,7 +826,7 @@ class FilesystemMiddleware(AgentMiddleware):
             """Synchronous wrapper for edit_file tool."""
             resolved_backend = self._get_backend(runtime)
             try:
-                validated_path = _validate_path(file_path)
+                validated_path = validate_path(file_path)
             except ValueError as e:
                 return f"Error: {e}"
             return _format_edit_result(
@@ -873,7 +845,7 @@ class FilesystemMiddleware(AgentMiddleware):
             """Asynchronous wrapper for edit_file tool."""
             resolved_backend = self._get_backend(runtime)
             try:
-                validated_path = _validate_path(file_path)
+                validated_path = validate_path(file_path)
             except ValueError as e:
                 return f"Error: {e}"
             return _format_edit_result(
@@ -900,7 +872,7 @@ class FilesystemMiddleware(AgentMiddleware):
             """Synchronous wrapper for glob tool."""
             resolved_backend = self._get_backend(runtime)
             try:
-                validated_path = _validate_path(path)
+                validated_path = validate_path(path)
             except ValueError as e:
                 return f"Error: {e}"
             return _format_info_paths(resolved_backend.glob_info(pattern, path=validated_path))
@@ -913,7 +885,7 @@ class FilesystemMiddleware(AgentMiddleware):
             """Asynchronous wrapper for glob tool."""
             resolved_backend = self._get_backend(runtime)
             try:
-                validated_path = _validate_path(path)
+                validated_path = validate_path(path)
             except ValueError as e:
                 return f"Error: {e}"
             return _format_info_paths(await resolved_backend.aglob_info(pattern, path=validated_path))
@@ -945,7 +917,7 @@ class FilesystemMiddleware(AgentMiddleware):
             if isinstance(raw, str):
                 return raw
             formatted = format_grep_matches(raw, output_mode)
-            return truncate_if_too_long(formatted)  # type: ignore[arg-type]
+            return truncate_if_too_long(formatted)
 
         async def async_grep(
             pattern: Annotated[str, "Text pattern to search for (literal string, not regex)."],
@@ -963,7 +935,7 @@ class FilesystemMiddleware(AgentMiddleware):
             if isinstance(raw, str):
                 return raw
             formatted = format_grep_matches(raw, output_mode)
-            return truncate_if_too_long(formatted)  # type: ignore[arg-type]
+            return truncate_if_too_long(formatted)
 
         return StructuredTool.from_function(
             name="grep",
@@ -972,34 +944,54 @@ class FilesystemMiddleware(AgentMiddleware):
             coroutine=async_grep,
         )
 
-    def _create_execute_tool(self) -> BaseTool:
+    def _create_execute_tool(self) -> BaseTool:  # noqa: C901
         """Create the execute tool for sandbox command execution."""
         tool_description = self._custom_tool_descriptions.get("execute") or EXECUTE_TOOL_DESCRIPTION
 
-        def sync_execute(
+        def sync_execute(  # noqa: PLR0911 - early returns for distinct error conditions
             command: Annotated[str, "Shell command to execute in the sandbox environment."],
             runtime: ToolRuntime[None, FilesystemState],
+            timeout: Annotated[
+                int | None, "Optional timeout in seconds for this command. Overrides the default timeout. Use for long-running commands."
+            ] = None,
         ) -> str:
             """Synchronous wrapper for execute tool."""
+            if timeout is not None:
+                if timeout <= 0:
+                    return f"Error: timeout must be positive, got {timeout}."
+                if timeout > self._max_execute_timeout:
+                    return f"Error: timeout {timeout}s exceeds maximum allowed ({self._max_execute_timeout}s)."
+
             resolved_backend = self._get_backend(runtime)
             if not _supports_execution(resolved_backend):
                 return _EXECUTION_NOT_AVAILABLE_MSG
             try:
-                result = resolved_backend.execute(command)
+                result = executable.execute(command, timeout=timeout) if timeout is not None else executable.execute(command)
             except NotImplementedError as e:
                 return f"Error: Execution not available. {e}"
             return _format_execute_result(result)
 
-        async def async_execute(
+        async def async_execute(  # noqa: PLR0911 - early returns for distinct error conditions
             command: Annotated[str, "Shell command to execute in the sandbox environment."],
             runtime: ToolRuntime[None, FilesystemState],
+            # ASYNC109 - timeout is a semantic parameter forwarded to the
+            # backend's implementation, not an asyncio.timeout() contract.
+            timeout: Annotated[  # noqa: ASYNC109
+                int | None, "Optional timeout in seconds for this command. Overrides the default timeout. Use for long-running commands."
+            ] = None,
         ) -> str:
             """Asynchronous wrapper for execute tool."""
+            if timeout is not None:
+                if timeout <= 0:
+                    return f"Error: timeout must be positive, got {timeout}."
+                if timeout > self._max_execute_timeout:
+                    return f"Error: timeout {timeout}s exceeds maximum allowed ({self._max_execute_timeout}s)."
+
             resolved_backend = self._get_backend(runtime)
             if not _supports_execution(resolved_backend):
                 return _EXECUTION_NOT_AVAILABLE_MSG
             try:
-                result = await resolved_backend.aexecute(command)
+                result = await executable.aexecute(command, timeout=timeout) if timeout is not None else await executable.aexecute(command)
             except NotImplementedError as e:
                 return f"Error: Execution not available. {e}"
             return _format_execute_result(result)
@@ -1072,9 +1064,9 @@ class FilesystemMiddleware(AgentMiddleware):
 
     async def awrap_model_call(
         self,
-        request: ModelRequest,
-        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
-    ) -> ModelResponse:
+        request: ModelRequest[ContextT],
+        handler: Callable[[ModelRequest[ContextT]], Awaitable[ModelResponse[ResponseT]]],
+    ) -> ModelResponse[ResponseT]:
         """(async) Update the system prompt and filter tools based on backend capabilities.
 
         Args:

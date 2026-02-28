@@ -6,7 +6,7 @@ from langchain_core.messages import ToolMessage
 from langgraph.store.memory import InMemoryStore
 from langgraph.types import Command
 
-from deepagents.backends.composite import CompositeBackend
+from deepagents.backends.composite import CompositeBackend, _route_for_path
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.protocol import (
     ExecuteResponse,
@@ -40,7 +40,7 @@ def build_composite_state_backend(runtime: ToolRuntime, *, routes):
     return CompositeBackend(default=default_state, routes=built_routes)
 
 
-def test_composite_state_backend_routes_and_search(tmp_path: Path):
+def test_composite_state_backend_routes_and_search(tmp_path: Path):  # noqa: ARG001  # Pytest fixture
     rt = make_runtime("t3")
     # route /memories/ to store
     be = build_composite_state_backend(rt, routes={"/memories/": (StoreBackend)})
@@ -88,6 +88,17 @@ def test_composite_backend_filesystem_plus_store(tmp_path: Path):
     assert any(i["path"] == "/hello.txt" for i in infos_root)
     infos_mem = comp.ls_info("/memories/")
     assert any(i["path"] == "/memories/notes.md" for i in infos_mem)
+
+    infos_mem_no_slash = comp.ls_info("/memories")
+    assert any(i["path"] == "/memories/notes.md" for i in infos_mem_no_slash)
+
+    # grep_raw route targeting should accept /memories as the route root
+    gm_mem = comp.grep_raw("note", path="/memories")
+    assert any(m["path"] == "/memories/notes.md" for m in gm_mem)
+
+    # glob_info route targeting should accept /memories as the route root
+    gl_mem = comp.glob_info("*.md", path="/memories")
+    assert any(i["path"] == "/memories/notes.md" for i in gl_mem)
 
     # grep_raw merges
     gm = comp.grep_raw("hello", path="/")
@@ -573,7 +584,7 @@ def test_composite_download_routing(tmp_path: Path):
 
 def test_composite_upload_download_roundtrip(tmp_path: Path):
     """Test upload and download roundtrip through composite backend."""
-    rt = make_runtime("t_roundtrip1")
+    _rt = make_runtime("t_roundtrip1")
     root = tmp_path
 
     fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
@@ -592,7 +603,7 @@ def test_composite_upload_download_roundtrip(tmp_path: Path):
 
 def test_composite_partial_success_upload(tmp_path: Path):
     """Test partial success in batch upload with mixed valid/invalid paths."""
-    rt = make_runtime("t_partial_upload")
+    _rt = make_runtime("t_partial_upload")
     root = tmp_path
 
     fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
@@ -621,7 +632,7 @@ def test_composite_partial_success_upload(tmp_path: Path):
 
 def test_composite_partial_success_download(tmp_path: Path):
     """Test partial success in batch download with mixed valid/invalid paths."""
-    rt = make_runtime("t_partial_download")
+    _rt = make_runtime("t_partial_download")
     root = tmp_path
 
     fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
@@ -677,7 +688,7 @@ def test_composite_upload_download_multiple_routes(tmp_path: Path):
 
 def test_composite_download_preserves_original_paths(tmp_path: Path):
     """Test that download responses preserve original composite paths."""
-    rt = make_runtime("t_path_preserve")
+    _rt = make_runtime("t_path_preserve")
     root = tmp_path
 
     fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
@@ -820,7 +831,7 @@ def test_composite_grep_with_path_none(tmp_path: Path) -> None:
 
 def test_composite_grep_invalid_regex(tmp_path: Path) -> None:
     """Test grep with special characters (literal search, not regex)."""
-    rt = make_runtime("t_grep5")
+    _rt = make_runtime("t_grep5")
     root = tmp_path
 
     fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
@@ -918,7 +929,7 @@ def test_composite_grep_route_prefix_restoration(tmp_path: Path) -> None:
 
 def test_composite_grep_multiple_matches_per_file(tmp_path: Path) -> None:
     """Test grep returns multiple matches from same file."""
-    rt = make_runtime("t_grep9")
+    _rt = make_runtime("t_grep9")
     root = tmp_path
 
     # File with multiple matching lines
@@ -1106,3 +1117,135 @@ def test_composite_glob_info_nested_path_in_route() -> None:
     result_paths = sorted([fi["path"] for fi in results])
 
     assert result_paths == ["/archive/2024/feb.log", "/archive/2024/jan.log"]
+
+
+# --- Tests for path stripping consistency ---
+
+
+def test_grep_raw_path_stripping_matches_get_backend_and_key() -> None:
+    """Verify grep_raw strips route prefix the same way as _get_backend_and_key."""
+    rt = make_runtime("t_strip1")
+    store = StoreBackend(rt)
+    state = StateBackend(rt)
+    comp = CompositeBackend(default=state, routes={"/memories/": store})
+
+    comp.write("/memories/readme.md", "hello world")
+
+    # Search with trailing slash (exact route prefix)
+    matches = comp.grep_raw("hello", path="/memories/")
+    assert isinstance(matches, list)
+    assert any(m["path"] == "/memories/readme.md" for m in matches)
+
+    # Search with nested path inside route
+    matches2 = comp.grep_raw("hello", path="/memories/readme.md")
+    assert isinstance(matches2, list)
+
+
+def test_glob_info_path_stripping_matches_get_backend_and_key() -> None:
+    """Verify glob_info strips route prefix the same way as _get_backend_and_key."""
+    rt = make_runtime("t_strip2")
+    store = StoreBackend(rt)
+    state = StateBackend(rt)
+    comp = CompositeBackend(default=state, routes={"/memories/": store})
+
+    comp.write("/memories/notes.txt", "content")
+
+    # Glob with trailing slash
+    results = comp.glob_info("*.txt", path="/memories/")
+    assert any(fi["path"] == "/memories/notes.txt" for fi in results)
+
+
+def test_get_backend_and_key_consistency() -> None:
+    """Verify _get_backend_and_key produces correct stripped paths."""
+    rt = make_runtime("t_strip3")
+    store = StoreBackend(rt)
+    state = StateBackend(rt)
+    comp = CompositeBackend(default=state, routes={"/memories/": store})
+
+    # Exact route prefix
+    backend, stripped = comp._get_backend_and_key("/memories/")
+    assert backend is store
+    assert stripped == "/"
+
+    # File inside route
+    backend, stripped = comp._get_backend_and_key("/memories/notes.txt")
+    assert backend is store
+    assert stripped == "/notes.txt"
+
+    # Nested path inside route
+    backend, stripped = comp._get_backend_and_key("/memories/sub/file.txt")
+    assert backend is store
+    assert stripped == "/sub/file.txt"
+
+    # Path not matching any route
+    backend, stripped = comp._get_backend_and_key("/other/file.txt")
+    assert backend is state
+    assert stripped == "/other/file.txt"
+
+
+def test_route_for_path_edge_cases() -> None:
+    rt = make_runtime("t_route_edges")
+    default = StateBackend(rt)
+    mem = StoreBackend(rt)
+    mem_private = StoreBackend(rt)
+
+    sorted_routes = [
+        ("/memories/private/", mem_private),
+        ("/memories/", mem),
+    ]
+
+    # No match -> default backend, path unchanged
+    assert _route_for_path(default=default, sorted_routes=sorted_routes, path="/other/file.txt") == (
+        default,
+        "/other/file.txt",
+        None,
+    )
+
+    # Exact route root without trailing slash -> backend_path "/"
+    assert _route_for_path(default=default, sorted_routes=sorted_routes, path="/memories") == (
+        mem,
+        "/",
+        "/memories/",
+    )
+
+    # Exact route prefix with trailing slash -> backend_path "/"
+    assert _route_for_path(default=default, sorted_routes=sorted_routes, path="/memories/") == (
+        mem,
+        "/",
+        "/memories/",
+    )
+
+    # Nested path in route -> strip and keep leading slash
+    assert _route_for_path(
+        default=default,
+        sorted_routes=sorted_routes,
+        path="/memories/notes.txt",
+    ) == (mem, "/notes.txt", "/memories/")
+
+    # Deep nested path -> strip
+    assert _route_for_path(
+        default=default,
+        sorted_routes=sorted_routes,
+        path="/memories/sub/file.txt",
+    ) == (mem, "/sub/file.txt", "/memories/")
+
+    # Longest-prefix wins
+    assert _route_for_path(
+        default=default,
+        sorted_routes=sorted_routes,
+        path="/memories/private/secret.txt",
+    ) == (mem_private, "/secret.txt", "/memories/private/")
+
+    # Route root for nested route, without trailing slash
+    assert _route_for_path(default=default, sorted_routes=sorted_routes, path="/memories/private") == (
+        mem_private,
+        "/",
+        "/memories/private/",
+    )
+
+    # Prefix boundary: should not match "/memories/" for "/memories2/..."
+    assert _route_for_path(default=default, sorted_routes=sorted_routes, path="/memories2/file.txt") == (
+        default,
+        "/memories2/file.txt",
+        None,
+    )

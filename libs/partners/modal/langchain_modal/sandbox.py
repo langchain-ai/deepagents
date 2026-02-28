@@ -19,7 +19,7 @@ class ModalSandbox(BaseSandbox):
     def __init__(self, *, sandbox: modal.Sandbox) -> None:
         """Create a backend wrapping an existing Modal sandbox."""
         self._sandbox = sandbox
-        self._timeout = 30 * 60
+        self._default_timeout = 30 * 60
 
     def _read_file(self, path: str) -> FileDownloadResponse:
         if not path.startswith("/"):
@@ -72,9 +72,23 @@ class ModalSandbox(BaseSandbox):
         """Return the sandbox id."""
         return self._sandbox.object_id
 
-    def execute(self, command: str) -> ExecuteResponse:
-        """Execute a shell command inside the sandbox."""
-        process = self._sandbox.exec("bash", "-c", command, timeout=self._timeout)
+    def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+        """Execute a shell command inside the sandbox.
+
+        Args:
+            command: Shell command string to execute.
+            timeout: Maximum time in seconds to wait for this command.
+
+                If None, uses the backend's default timeout.
+
+                Note that in Modal's implementation, a timeout of 0 means
+                "wait indefinitely".
+
+        Returns:
+            ExecuteResponse containing output, exit code, and truncation flag.
+        """
+        effective_timeout = timeout if timeout is not None else self._default_timeout
+        process = self._sandbox.exec("bash", "-c", command, timeout=effective_timeout)
         process.wait()
 
         stdout = process.stdout.read()

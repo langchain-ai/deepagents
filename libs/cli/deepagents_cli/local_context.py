@@ -300,21 +300,40 @@ fi"""
 def build_detect_script() -> str:
     """Concatenate all section functions into the full detection script.
 
+    Independent sections run as parallel background jobs writing to temp
+    files, then results are concatenated in the original display order.
+    The header (CWD / IN_GIT) and project section (sets ROOT) run first
+    because later sections depend on their variables.
+
     Returns:
         Complete bash heredoc ready for `backend.execute()`.
     """
-    sections = [
-        _section_header(),
-        _section_project(),
-        _section_package_managers(),
-        _section_runtimes(),
-        _section_git(),
-        _section_test_command(),
-        _section_files(),
-        _section_tree(),
-        _section_makefile(),
+    # Header + project run synchronously (set CWD, IN_GIT, ROOT for others)
+    serial_prefix = f"{_section_header()}\n{_section_project()}"
+
+    # These sections are independent — run them in parallel
+    parallel_sections = [
+        ("02_pkgmgr", _section_package_managers()),
+        ("03_runtimes", _section_runtimes()),
+        ("04_git", _section_git()),
+        ("05_testcmd", _section_test_command()),
+        ("06_files", _section_files()),
+        ("07_tree", _section_tree()),
+        ("08_makefile", _section_makefile()),
     ]
-    body = "\n".join(sections)
+
+    # Build parallel wrapper: each section runs in a subshell writing to a temp file
+    parallel_setup = '_DCT=$(mktemp -d)\ntrap "rm -rf $_DCT" EXIT'
+    parallel_jobs = []
+    cat_args = []
+    for name, section_body in parallel_sections:
+        parallel_jobs.append(f'(\n{section_body}\n) > "$_DCT/{name}" &')
+        cat_args.append(f'"$_DCT/{name}"')
+
+    parallel_block = "\n".join(parallel_jobs)
+    cat_line = "cat " + " ".join(cat_args)
+
+    body = f"{serial_prefix}\n{parallel_setup}\n{parallel_block}\nwait\n{cat_line}"
     return f"bash <<'__DETECT_CONTEXT_EOF__'\n{body}\n__DETECT_CONTEXT_EOF__\n"
 
 

@@ -525,8 +525,6 @@ class CompositeBackend(BackendProtocol):
         results: list[FileUploadResponse | None] = [None] * len(files)
 
         # Group files by backend, tracking original indices
-        from collections import defaultdict
-
         backend_batches: dict[BackendProtocol, list[tuple[int, str, bytes]]] = defaultdict(list)
 
         for idx, (path, content) in enumerate(files):

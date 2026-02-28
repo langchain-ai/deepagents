@@ -723,8 +723,8 @@ A condensed summary follows:
         Returns:
             The file path on success, `None` on failure.
         """
-        if write_result is None or write_result.error:  # ty: ignore[union-attribute]
-            error_msg = write_result.error if write_result else "backend returned None"  # ty: ignore[union-attribute]
+        if write_result is None or write_result.error:  # ty: ignore[unresolved-attribute]
+            error_msg = write_result.error if write_result else "backend returned None"  # ty: ignore[unresolved-attribute]
             logger.warning(
                 "Failed to offload conversation history to %s (%d messages): %s",
                 path,
@@ -913,7 +913,7 @@ A condensed summary follows:
 
         new_event: SummarizationEvent = {
             "cutoff_index": state_cutoff_index,
-            "summary_message": new_messages[0],
+            "summary_message": new_messages[0],  # ty: ignore[invalid-argument-type]
             "file_path": file_path,
         }
 

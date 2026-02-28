@@ -961,7 +961,11 @@ A condensed summary follows:
 
         summary = self._create_summary(messages_to_summarize)
         modified_messages, new_event = self._build_summarization_result(
-            request, summary, file_path, cutoff_index, preserved_messages,
+            request,
+            summary,
+            file_path,
+            cutoff_index,
+            preserved_messages,
         )
 
         response = handler(request.override(messages=modified_messages))
@@ -1015,7 +1019,11 @@ A condensed summary follows:
 
         summary = await self._acreate_summary(messages_to_summarize)
         modified_messages, new_event = self._build_summarization_result(
-            request, summary, file_path, cutoff_index, preserved_messages,
+            request,
+            summary,
+            file_path,
+            cutoff_index,
+            preserved_messages,
         )
 
         response = await handler(request.override(messages=modified_messages))

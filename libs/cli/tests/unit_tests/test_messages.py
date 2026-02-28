@@ -1,11 +1,18 @@
 """Unit tests for message widgets markup safety."""
 
-import pytest
+from unittest.mock import MagicMock, patch
 
+import pytest
+from rich.markup import render
+from rich.style import Style
+from rich.text import Text
+
+from deepagents_cli.config import COLORS
 from deepagents_cli.input import INPUT_HIGHLIGHT_PATTERN
 from deepagents_cli.widgets.messages import (
     AppMessage,
     ErrorMessage,
+    QueuedUserMessage,
     ToolCallMessage,
     UserMessage,
 )
@@ -16,6 +23,7 @@ MARKUP_INJECTION_CASES = [
     "}, [/* deps */]);",
     "array[0] = value[1]",
     "[bold]not markup[/bold]",
+    "[/dim]",
     "const x = arr[i];",
     "[unclosed bracket",
     "nested [[brackets]]",
@@ -85,6 +93,35 @@ class TestToolCallMessageMarkupSafety:
         args = {"code": "arr[0] = val[1]", "file": "test.py"}
         msg = ToolCallMessage("write_file", args)
         assert msg._args == args
+
+    def test_tool_header_escapes_markup_in_label(self) -> None:
+        """Tool header should escape tool label content before Rich parsing."""
+        msg = ToolCallMessage(
+            "task",
+            {"description": "Search for closing tag [/dim] mismatches"},
+        )
+
+        # `task` has no inline args widget, so this validates the header markup.
+        header = next(iter(msg.compose()))
+        content = header._Static__content  # type: ignore[attr-defined]
+        assert isinstance(content, str)
+        rendered = render(content)
+        assert "[/dim]" in rendered.plain
+
+    def test_tool_args_line_escapes_markup_values(self) -> None:
+        """Inline args line should escape bracket content in argument values."""
+        msg = ToolCallMessage(
+            "custom_tool",
+            {"pattern": "[foo]", "note": "raw [/dim] text"},
+        )
+
+        widgets = list(msg.compose())
+        args_widget = widgets[1]
+        content = args_widget._Static__content  # type: ignore[attr-defined]
+        assert isinstance(content, str)
+        rendered = render(content)
+        assert "[foo]" in rendered.plain
+        assert "[/dim]" in rendered.plain
 
 
 class TestToolCallMessageShellCommand:
@@ -237,3 +274,116 @@ class TestUserMessageHighlighting:
         content = "just some normal text here"
         matches = list(INPUT_HIGHLIGHT_PATTERN.finditer(content))
         assert len(matches) == 0
+
+
+def _compose_text(widget: UserMessage | QueuedUserMessage) -> Text:
+    """Extract the Rich `Text` object from a message widget's first yielded Static."""
+    statics = list(widget.compose())
+    assert statics, "compose() yielded no widgets"
+    content = statics[0]._Static__content  # type: ignore[attr-defined]
+    assert isinstance(content, Text)
+    return content
+
+
+class TestUserMessageModeRendering:
+    """Test `UserMessage` renders mode-specific prefix indicators and colors."""
+
+    def test_bash_prefix_renders_bang_indicator(self) -> None:
+        """`UserMessage('!ls')` should render with `'! '` prefix and bash body."""
+        text = _compose_text(UserMessage("!ls"))
+        assert text.plain == "! ls"
+        first_span = text._spans[0]
+        assert COLORS["mode_bash"] in str(first_span.style)
+
+    def test_command_prefix_renders_slash_indicator(self) -> None:
+        """`UserMessage('/help')` should render with `'/ '` prefix and body."""
+        text = _compose_text(UserMessage("/help"))
+        assert text.plain == "/ help"
+        first_span = text._spans[0]
+        assert COLORS["mode_command"] in str(first_span.style)
+
+    def test_normal_message_renders_angle_bracket(self) -> None:
+        """`UserMessage('hello')` should render with `'> '` prefix."""
+        text = _compose_text(UserMessage("hello"))
+        assert text.plain == "> hello"
+        first_span = text._spans[0]
+        assert COLORS["primary"] in str(first_span.style)
+
+    def test_empty_content_renders_angle_bracket(self) -> None:
+        """`UserMessage('')` should not crash and should render `'> '` prefix."""
+        text = _compose_text(UserMessage(""))
+        assert text.plain == "> "
+
+
+class TestQueuedUserMessageModeRendering:
+    """Test `QueuedUserMessage` renders mode-specific prefix indicators (dimmed)."""
+
+    def test_bash_prefix_renders_dimmed_bang(self) -> None:
+        """`QueuedUserMessage('!ls')` should render dimmed `'! '` prefix."""
+        text = _compose_text(QueuedUserMessage("!ls"))
+        assert text.plain == "! ls"
+
+    def test_command_prefix_renders_dimmed_slash(self) -> None:
+        """`QueuedUserMessage('/help')` should render dimmed `'/ '` prefix."""
+        text = _compose_text(QueuedUserMessage("/help"))
+        assert text.plain == "/ help"
+
+    def test_normal_message_renders_dimmed_angle_bracket(self) -> None:
+        """`QueuedUserMessage('hello')` should render dimmed `'> '` prefix."""
+        text = _compose_text(QueuedUserMessage("hello"))
+        assert text.plain == "> hello"
+
+    def test_empty_content_renders_angle_bracket(self) -> None:
+        """`QueuedUserMessage('')` should not crash and should render `'> '`."""
+        text = _compose_text(QueuedUserMessage(""))
+        assert text.plain == "> "
+
+
+class TestAppMessageAutoLinksDisabled:
+    """Tests that `auto_links` is disabled to prevent hover flicker."""
+
+    def test_auto_links_is_false(self) -> None:
+        """`AppMessage` should disable Textual's `auto_links`."""
+        assert AppMessage.auto_links is False
+
+
+_WEBBROWSER_OPEN = "deepagents_cli.widgets._links.webbrowser.open"
+
+
+class TestAppMessageOnClickOpensLink:
+    """Tests for `AppMessage.on_click` opening Rich-style hyperlinks."""
+
+    def test_click_on_link_opens_browser(self) -> None:
+        """Clicking a Rich link should call `webbrowser.open`."""
+        msg = AppMessage("test")
+        event = MagicMock()
+        event.style = Style(link="https://example.com")
+
+        with patch(_WEBBROWSER_OPEN) as mock_open:
+            msg.on_click(event)
+
+        mock_open.assert_called_once_with("https://example.com")
+        event.stop.assert_called_once()
+
+    def test_click_without_link_is_noop(self) -> None:
+        """Clicking on non-link text should not open the browser."""
+        msg = AppMessage("test")
+        event = MagicMock()
+        event.style = Style()
+
+        with patch(_WEBBROWSER_OPEN) as mock_open:
+            msg.on_click(event)
+
+        mock_open.assert_not_called()
+        event.stop.assert_not_called()
+
+    def test_click_with_browser_error_is_graceful(self) -> None:
+        """Browser failure should not crash the widget."""
+        msg = AppMessage("test")
+        event = MagicMock()
+        event.style = Style(link="https://example.com")
+
+        with patch(_WEBBROWSER_OPEN, side_effect=OSError("no display")):
+            msg.on_click(event)  # should not raise
+
+        event.stop.assert_not_called()

@@ -1,24 +1,30 @@
 """CLI commands for skill management.
 
 These commands are registered with the CLI via main.py:
-- deepagents skills list --agent <agent> [--project]
-- deepagents skills create <name>
-- deepagents skills info <name>
+- deepagents skills list [options]
+- deepagents skills create <name> [options]
+- deepagents skills info <name> [options]
+- deepagents skills delete <name> [options]
 """
 
-import argparse
-import functools
-from collections.abc import Callable
-from pathlib import Path
-from typing import Any
+from __future__ import annotations
 
-from deepagents.middleware.skills import SkillMetadata
+import functools
+import shutil
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    import argparse
+    from collections.abc import Callable
+
+    from deepagents.middleware.skills import SkillMetadata
 
 from deepagents_cli.config import COLORS, Settings, console, get_glyphs
-from deepagents_cli.skills.load import list_skills
 from deepagents_cli.ui import (
     build_help_parent,
     show_skills_create_help,
+    show_skills_delete_help,
     show_skills_help,
     show_skills_info_help,
     show_skills_list_help,
@@ -100,16 +106,8 @@ def _validate_skill_path(skill_dir: Path, base_dir: Path) -> tuple[bool, str]:
         resolved_base = base_dir.resolve()
 
         # Check if skill_dir is within base_dir
-        # Use is_relative_to if available (Python 3.9+), otherwise use string comparison
-        if hasattr(resolved_skill, "is_relative_to"):
-            if not resolved_skill.is_relative_to(resolved_base):
-                return False, f"Skill directory must be within {base_dir}"
-        else:
-            # Fallback for older Python versions
-            try:
-                resolved_skill.relative_to(resolved_base)
-            except ValueError:
-                return False, f"Skill directory must be within {base_dir}"
+        if not resolved_skill.is_relative_to(resolved_base):
+            return False, f"Skill directory must be within {base_dir}"
     except (OSError, RuntimeError) as e:
         return False, f"Invalid path: {e}"
     else:
@@ -157,6 +155,11 @@ def _list(agent: str, *, project: bool = False) -> None:
         project: If True, show only project skills.
             If False, show all skills (user + project).
     """
+    # Deferred: skills.load imports the deepagents SDK. This module is
+    # imported at CLI startup for setup_skills_parser(), so a top-level
+    # import here would penalize every command (e.g. `--help`).
+    from deepagents_cli.skills.load import list_skills
+
     settings = Settings.from_environment()
     user_skills_dir = settings.get_user_skills_dir(agent)
     project_skills_dir = settings.get_project_skills_dir()
@@ -457,6 +460,11 @@ def _info(skill_name: str, *, agent: str = "agent", project: bool = False) -> No
         project: If True, only search in project skills.
             If False, search in both user and project skills.
     """
+    # Deferred: skills.load imports the deepagents SDK. This module is
+    # imported at CLI startup for setup_skills_parser(), so a top-level
+    # import here would penalize every command (e.g. `--help`).
+    from deepagents_cli.skills.load import list_skills
+
     settings = Settings.from_environment()
     user_skills_dir = settings.get_user_skills_dir(agent)
     project_skills_dir = settings.get_project_skills_dir()
@@ -519,8 +527,7 @@ def _info(skill_name: str, *, agent: str = "agent", project: bool = False) -> No
                 project_agent_skills_dir=None,
             )
             shadowed_user_skill = any(s["name"] == skill_name for s in user_only)
-        except Exception:  # noqa: BLE001, S110
-            # Intentionally swallowed — shadow detection is cosmetic
+        except Exception:  # noqa: BLE001, S110  # Shadow detection is cosmetic, safe to swallow
             pass
 
     console.print(
@@ -558,8 +565,173 @@ def _info(skill_name: str, *, agent: str = "agent", project: bool = False) -> No
     console.print()
 
 
+def _delete(
+    skill_name: str,
+    *,
+    agent: str = "agent",
+    project: bool = False,
+    force: bool = False,
+) -> None:
+    """Delete a skill directory after validation and optional user confirmation.
+
+    Validates the skill name, locates the skill in user or project directories,
+    confirms the deletion with the user (unless `force` is `True`), and
+    recursively removes the skill directory.
+
+    Args:
+        skill_name: Name of the skill to delete.
+        agent: Agent identifier for skills.
+        project: If `True`, only search in project skills.
+
+            If `False`, search in both user and project skills.
+        force: If `True`, skip confirmation prompt.
+
+    Raises:
+        SystemExit: If the deletion fails or a safety check is violated.
+    """
+    # Validate skill name first (per Agent Skills spec)
+    is_valid, error_msg = _validate_name(skill_name)
+    if not is_valid:
+        console.print(f"[bold red]Error:[/bold red] Invalid skill name: {error_msg}")
+        return
+
+    # Deferred: skills.load imports the deepagents SDK. This module is
+    # imported at CLI startup for setup_skills_parser(), so a top-level
+    # import here would penalize every command (e.g. `--help`).
+    from deepagents_cli.skills.load import list_skills
+
+    settings = Settings.from_environment()
+    user_skills_dir = settings.get_user_skills_dir(agent)
+    project_skills_dir = settings.get_project_skills_dir()
+    user_agent_skills_dir = settings.get_user_agent_skills_dir()
+    project_agent_skills_dir = settings.get_project_agent_skills_dir()
+
+    # Load skills based on --project flag
+    if project:
+        if not project_skills_dir:
+            console.print("[bold red]Error:[/bold red] Not in a project directory.")
+            return
+        skills = list_skills(
+            user_skills_dir=None,
+            project_skills_dir=project_skills_dir,
+            user_agent_skills_dir=None,
+            project_agent_skills_dir=project_agent_skills_dir,
+        )
+    else:
+        skills = list_skills(
+            user_skills_dir=user_skills_dir,
+            project_skills_dir=project_skills_dir,
+            user_agent_skills_dir=user_agent_skills_dir,
+            project_agent_skills_dir=project_agent_skills_dir,
+        )
+
+    # Find the skill
+    skill = next((s for s in skills if s["name"] == skill_name), None)
+
+    if not skill:
+        console.print(f"[bold red]Error:[/bold red] Skill '{skill_name}' not found.")
+        console.print("\n[dim]Available skills:[/dim]", style=COLORS["dim"])
+        for s in skills:
+            source_tag = "[project]" if s["source"] == "project" else "[user]"
+            console.print(f"  - {s['name']} {source_tag}", style=COLORS["dim"])
+        return
+
+    skill_path = Path(skill["path"])
+    skill_dir = skill_path.parent
+
+    # Validate the path is safe to delete
+    base_dir = project_skills_dir if skill["source"] == "project" else user_skills_dir
+    if not base_dir:
+        console.print(
+            "[bold red]Error:[/bold red] Cannot determine base skills directory. "
+            "Refusing to delete."
+        )
+        return
+    is_valid_path, path_error = _validate_skill_path(skill_dir, base_dir)
+    if not is_valid_path:
+        console.print(f"[bold red]Error:[/bold red] {path_error}")
+        return
+
+    # Determine source label
+    source_label = "Project Skill" if skill["source"] == "project" else "User Skill"
+    source_color = "green" if skill["source"] == "project" else "cyan"
+
+    # Count files for the confirmation summary (display-only; a permission
+    # error in a subdirectory should not abort the entire delete flow).
+    try:
+        file_count = sum(1 for f in skill_dir.rglob("*") if f.is_file())
+    except OSError:
+        file_count = -1
+
+    console.print(
+        f"\n[bold]Skill:[/bold] {skill_name}"
+        f" [bold {source_color}]({source_label})[/bold {source_color}]",
+        style=COLORS["primary"],
+    )
+    console.print(
+        f"[bold]Location:[/bold] {skill_dir}/",
+        style=COLORS["dim"],
+    )
+    if file_count >= 0:
+        console.print(
+            f"[bold]Files:[/bold] {file_count} file(s) will be deleted\n",
+            style=COLORS["dim"],
+        )
+    else:
+        console.print(
+            "[bold]Files:[/bold] (unable to count files)\n",
+            style=COLORS["dim"],
+        )
+
+    # Confirmation
+    if not force:
+        console.print(
+            "[yellow]Are you sure you want to delete this skill? (y/N)[/yellow] ",
+            end="",
+        )
+        try:
+            response = input().strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            console.print("\n[dim]Cancelled.[/dim]")
+            return
+
+        if response not in {"y", "yes"}:
+            console.print("[dim]Cancelled.[/dim]")
+            return
+
+    # Re-validate immediately before deletion to narrow the TOCTOU window
+    # (the user may have paused at the confirmation prompt).
+    if skill_dir.is_symlink():
+        console.print(
+            "[bold red]Error:[/bold red] Skill directory is a symlink. "
+            "Refusing to delete for safety."
+        )
+        raise SystemExit(1)
+
+    is_valid_path, path_error = _validate_skill_path(skill_dir, base_dir)
+    if not is_valid_path:
+        console.print(f"[bold red]Error:[/bold red] {path_error}")
+        raise SystemExit(1)
+
+    # Delete the skill directory
+    try:
+        shutil.rmtree(skill_dir)
+        checkmark = get_glyphs().checkmark
+        console.print(
+            f"{checkmark} Skill '{skill_name}' deleted successfully!",
+            style=COLORS["primary"],
+        )
+    except OSError as e:
+        console.print(
+            f"[bold red]Error:[/bold red] Failed to fully delete skill: {e}\n"
+            f"[yellow]Warning:[/yellow] Some files may have been partially removed.\n"
+            f"Please inspect: {skill_dir}/"
+        )
+        raise SystemExit(1) from e
+
+
 def setup_skills_parser(
-    subparsers: Any,
+    subparsers: Any,  # noqa: ANN401  # argparse subparsers uses dynamic typing
     *,
     make_help_action: Callable[[Callable[[], None]], type[argparse.Action]],
 ) -> argparse.ArgumentParser:
@@ -584,7 +756,7 @@ def setup_skills_parser(
     skills_parser = subparsers.add_parser(
         "skills",
         help="Manage agent skills",
-        description="Manage agent skills - create, list, and view skill information.",
+        description="Manage agent skills - list, create, view, and delete skills.",
         add_help=False,
         parents=help_parent(show_skills_help),
     )
@@ -663,6 +835,32 @@ def setup_skills_parser(
         action="store_true",
         help="Search only in project skills",
     )
+
+    # Skills delete
+    delete_parser = skills_subparsers.add_parser(
+        "delete",
+        help="Delete a skill",
+        description="Delete a skill directory and all its contents",
+        add_help=False,
+        parents=help_parent(show_skills_delete_help),
+    )
+    delete_parser.add_argument("name", help="Name of the skill to delete")
+    delete_parser.add_argument(
+        "--agent",
+        default="agent",
+        help="Agent identifier for skills (default: agent)",
+    )
+    delete_parser.add_argument(
+        "--project",
+        action="store_true",
+        help="Search only in project skills",
+    )
+    delete_parser.add_argument(
+        "-f",
+        "--force",
+        action="store_true",
+        help="Skip confirmation prompt",
+    )
     return skills_parser
 
 
@@ -694,6 +892,8 @@ def execute_skills_command(args: argparse.Namespace) -> None:
         _create(args.name, agent=args.agent, project=args.project)
     elif args.skills_command == "info":
         _info(args.name, agent=args.agent, project=args.project)
+    elif args.skills_command == "delete":
+        _delete(args.name, agent=args.agent, project=args.project, force=args.force)
     else:
         # No subcommand provided, show skills help screen
         show_skills_help()

@@ -104,7 +104,7 @@ if TYPE_CHECKING:
     from langchain_core.runnables import RunnableConfig
     from langgraph.runtime import Runtime
 
-    from deepagents.backends.protocol import BACKEND_TYPES, BackendProtocol
+    from deepagents.backends.protocol import BACKEND_TYPES, BackendProtocol, FileInfo
 
 from typing import NotRequired, TypedDict
 
@@ -400,7 +400,7 @@ def _format_skill_annotations(skill: SkillMetadata) -> str:
     return ", ".join(parts)
 
 
-def _build_skill_md_paths(items: list[dict]) -> list[tuple[str, str]]:
+def _build_skill_md_paths(items: list[FileInfo]) -> list[tuple[str, str]]:
     """Build SKILL.md paths from directory listing items.
 
     Filters for directories and constructs the expected SKILL.md path

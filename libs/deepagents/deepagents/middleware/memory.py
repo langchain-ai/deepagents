@@ -302,7 +302,7 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
         results = backend.download_files([path])
         return self._process_download_response(results, path)
 
-    def before_agent(self, state: MemoryState, runtime: Runtime, config: RunnableConfig) -> MemoryStateUpdate | None:
+    def before_agent(self, state: MemoryState, runtime: Runtime, config: RunnableConfig) -> MemoryStateUpdate | None:  # ty: ignore[invalid-method-override]
         """Load memory content before agent execution (synchronous).
 
         Loads memory from all configured sources and stores in state.

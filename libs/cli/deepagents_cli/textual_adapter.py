@@ -443,6 +443,7 @@ async def execute_task_textual(
                                 tool_msg.set_success(output_str)
                             else:
                                 tool_msg.set_error(output_str or "Error")
+                                await dispatch_hook("tool.error", {"tool": tool_msg._tool_name})
                             # Clean up - remove from tracking dict after status update
                             adapter._current_tool_messages.pop(tool_id, None)
 
@@ -620,7 +621,6 @@ async def execute_task_textual(
                                 tool_msg = ToolCallMessage(buffer_name, parsed_args)
                                 await adapter._mount_message(tool_msg)
                                 adapter._current_tool_messages[buffer_id] = tool_msg
-                                await dispatch_hook("tool.call", {"tool": buffer_name})
 
                                 # Sticky scroll after tool call is shown
                                 if adapter._scroll_to_bottom:
@@ -667,6 +667,8 @@ async def execute_task_textual(
                             tool_msg.set_running()
                     else:
                         # Batch approval - one dialog for all parallel tool calls
+                        _tool_names = [r.get("name", "") for r in action_requests]
+                        await dispatch_hook("permission.request", {"tool_name": _tool_names[0] if len(_tool_names) == 1 else ", ".join(filter(None, _tool_names))})
                         future = await adapter._request_approval(
                             action_requests, assistant_id
                         )

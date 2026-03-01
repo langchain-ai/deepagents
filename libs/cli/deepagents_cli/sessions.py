@@ -281,13 +281,19 @@ def get_cached_threads(
     Returns:
         Copy of cached rows when available, otherwise `None`.
     """
+
+    def _copy_with_cached_counts(rows: list[ThreadInfo]) -> list[ThreadInfo]:
+        copied_rows = _copy_threads(rows)
+        apply_cached_thread_message_counts(copied_rows)
+        return copied_rows
+
     thread_limit = limit if limit is not None else get_thread_limit()
     if thread_limit < 1:
         return None
 
     exact = _recent_threads_cache.get((agent_name, thread_limit))
     if exact is not None:
-        return _copy_threads(exact)
+        return _copy_with_cached_counts(exact)
 
     best_key: tuple[str | None, int] | None = None
     for key in _recent_threads_cache:
@@ -300,7 +306,7 @@ def get_cached_threads(
     if best_key is None:
         return None
 
-    return _copy_threads(_recent_threads_cache[best_key][:thread_limit])
+    return _copy_with_cached_counts(_recent_threads_cache[best_key][:thread_limit])
 
 
 def apply_cached_thread_message_counts(threads: list[ThreadInfo]) -> int:

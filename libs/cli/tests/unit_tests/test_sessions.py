@@ -583,6 +583,30 @@ class TestGetCachedThreads:
         finally:
             sessions._recent_threads_cache.clear()
 
+    def test_applies_cached_message_counts_to_snapshot(self) -> None:
+        """Returned snapshot should hydrate counts from message-count cache."""
+        sessions._recent_threads_cache.clear()
+        sessions._message_count_cache.clear()
+        try:
+            sessions._recent_threads_cache[None, 5] = [
+                {
+                    "thread_id": "thread-a",
+                    "agent_name": "agent1",
+                    "updated_at": "2024-01-01T00:00:00+00:00",
+                    "latest_checkpoint_id": "cp_1",
+                }
+            ]
+            sessions._message_count_cache["thread-a"] = ("cp_1", 9)
+
+            rows = sessions.get_cached_threads(limit=5)
+
+            assert rows is not None
+            assert rows[0]["message_count"] == 9
+            assert "message_count" not in sessions._recent_threads_cache[None, 5][0]
+        finally:
+            sessions._recent_threads_cache.clear()
+            sessions._message_count_cache.clear()
+
 
 class TestPrewarmThreadMessageCounts:
     """Tests for prewarm_thread_message_counts error handling."""

@@ -462,14 +462,20 @@ class ChatTextArea(TextArea):
 
     async def _on_paste(self, event: events.Paste) -> None:
         """Handle paste events and detect dragged file paths."""
-        from deepagents_cli.input import parse_pasted_file_paths
+        from deepagents_cli.input import (
+            parse_pasted_file_paths,
+            parse_single_pasted_file_path,
+        )
 
         paths = parse_pasted_file_paths(event.text)
         if not paths:
-            # Don't call super() here — Textual's MRO dispatch already calls
-            # TextArea._on_paste after this handler returns. Calling super()
-            # would insert the text a second time, duplicating the paste.
-            return
+            single_path = parse_single_pasted_file_path(event.text)
+            if single_path is None:
+                # Don't call super() here — Textual's MRO dispatch already calls
+                # TextArea._on_paste after this handler returns. Calling super()
+                # would insert the text a second time, duplicating the paste.
+                return
+            paths = [single_path]
 
         event.prevent_default()
         event.stop()
@@ -738,11 +744,19 @@ class ChatInput(Vertical):
     @staticmethod
     def _is_existing_path_payload(text: str) -> bool:
         """Return whether text is a dropped-path payload for existing files."""
-        from deepagents_cli.input import parse_pasted_file_paths
+        from deepagents_cli.input import (
+            extract_leading_pasted_file_path,
+            parse_pasted_file_paths,
+            parse_single_pasted_file_path,
+        )
 
         if len(text) < 2:  # noqa: PLR2004  # Need at least '/' + one char
             return False
-        return bool(parse_pasted_file_paths(text))
+        return (
+            bool(parse_pasted_file_paths(text))
+            or (parse_single_pasted_file_path(text) is not None)
+            or (extract_leading_pasted_file_path(text) is not None)
+        )
 
     def _is_dropped_path_payload(self, text: str) -> bool:
         """Return whether current text looks like a dropped file-path payload."""
@@ -941,13 +955,20 @@ class ChatInput(Vertical):
         if not self._text_area:
             return False
 
-        from deepagents_cli.input import parse_pasted_file_paths
+        from deepagents_cli.input import (
+            parse_pasted_file_paths,
+            parse_single_pasted_file_path,
+        )
 
         paths = parse_pasted_file_paths(pasted)
         if paths:
             self._insert_pasted_paths(pasted, paths)
         else:
-            self._text_area.insert(pasted)
+            single_path = parse_single_pasted_file_path(pasted)
+            if single_path is None:
+                self._text_area.insert(pasted)
+            else:
+                self._insert_pasted_paths(pasted, [single_path])
 
         self._text_area.focus()
         return True
@@ -1022,16 +1043,28 @@ class ChatInput(Vertical):
         Returns:
             Submitted text with image placeholders when attachment succeeded.
         """
-        from deepagents_cli.input import parse_pasted_file_paths
+        from deepagents_cli.input import (
+            extract_leading_pasted_file_path,
+            parse_pasted_file_paths,
+            parse_single_pasted_file_path,
+        )
 
         paths = parse_pasted_file_paths(value)
         candidate = value
+        if not paths:
+            single = parse_single_pasted_file_path(value)
+            if single is not None:
+                paths = [single]
 
         # Recovery path: if command mode stripped the leading slash from an
         # absolute dropped path, rehydrate it before resolving attachments.
         if not paths and self.mode == "command":
             prefixed = f"/{value.lstrip('/')}"
             paths = parse_pasted_file_paths(prefixed)
+            if not paths:
+                single_prefixed = parse_single_pasted_file_path(prefixed)
+                if single_prefixed is not None:
+                    paths = [single_prefixed]
             if paths:
                 candidate = prefixed
                 logger.debug(
@@ -1045,6 +1078,30 @@ class ChatInput(Vertical):
                 candidate, paths, add_trailing_space=False
             )
             if attached:
+                return replacement.strip()
+
+        leading_match = extract_leading_pasted_file_path(value)
+        leading_candidate = value
+        if leading_match is None and self.mode == "command":
+            prefixed = f"/{value.lstrip('/')}"
+            leading_match = extract_leading_pasted_file_path(prefixed)
+            if leading_match:
+                leading_candidate = prefixed
+                logger.debug(
+                    "Recovering stripped absolute leading path; resetting mode "
+                    "from 'command' to 'normal'"
+                )
+                self.mode = "normal"
+
+        if leading_match:
+            leading_path, token_end = leading_match
+            replacement, attached = self._build_path_replacement(
+                str(leading_path), [leading_path], add_trailing_space=False
+            )
+            if attached:
+                suffix = leading_candidate[token_end:].lstrip()
+                if suffix:
+                    return f"{replacement.strip()} {suffix}".strip()
                 return replacement.strip()
         return value
 

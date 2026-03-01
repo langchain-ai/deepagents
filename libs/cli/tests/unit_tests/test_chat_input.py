@@ -1376,6 +1376,28 @@ class TestDroppedImagePaste:
             assert len(app.tracker.get_images()) == 1
 
     @pytest.mark.asyncio
+    async def test_handle_external_paste_attaches_unquoted_path_with_spaces(
+        self, tmp_path
+    ) -> None:
+        """External paste should attach raw absolute paths that include spaces."""
+        img_path = tmp_path / "Screenshot 1.png"
+        from PIL import Image
+
+        image = Image.new("RGB", (4, 4), color="orange")
+        image.save(img_path, format="PNG")
+
+        app = _ImagePasteApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            assert chat.handle_external_paste(str(img_path))
+            await pilot.pause()
+
+            assert chat._text_area.text.strip() == "[image 1]"
+            assert len(app.tracker.get_images()) == 1
+
+    @pytest.mark.asyncio
     async def test_handle_external_paste_inserts_plain_text(self) -> None:
         """External paste should insert text when payload is not a file path."""
         app = _ImagePasteApp()
@@ -1454,6 +1476,118 @@ class TestDroppedImagePaste:
 
             assert len(app.submitted) == 1
             assert app.submitted[0].value == "[image 1]"
+            assert app.submitted[0].mode == "normal"
+            assert len(app.tracker.get_images()) == 1
+
+    @pytest.mark.asyncio
+    async def test_submit_absolute_path_with_spaces_stays_normal_mode(
+        self, tmp_path
+    ) -> None:
+        """Absolute paths with spaces should not trigger slash-command mode."""
+        img_path = tmp_path / "Screenshot 1.png"
+        from PIL import Image
+
+        image = Image.new("RGB", (3, 3), color="green")
+        image.save(img_path, format="PNG")
+
+        app = _ImagePasteRecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            # Simulate terminals that insert dropped paths as regular text.
+            chat._text_area.text = str(img_path)
+            await pilot.pause()
+
+            assert chat.mode == "normal"
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(app.submitted) == 1
+            assert app.submitted[0].value == "[image 1]"
+            assert app.submitted[0].mode == "normal"
+            assert len(app.tracker.get_images()) == 1
+
+    @pytest.mark.asyncio
+    async def test_submit_absolute_path_with_spaces_and_trailing_text(
+        self, tmp_path
+    ) -> None:
+        """Path-with-spaces plus prompt text should stay normal and attach image."""
+        img_path = tmp_path / "Screenshot 1.png"
+        from PIL import Image
+
+        image = Image.new("RGB", (3, 3), color="green")
+        image.save(img_path, format="PNG")
+
+        app = _ImagePasteRecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.text = f"{img_path} what's in this"
+            await pilot.pause()
+
+            assert chat.mode == "normal"
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(app.submitted) == 1
+            assert app.submitted[0].value == "[image 1] what's in this"
+            assert app.submitted[0].mode == "normal"
+            assert len(app.tracker.get_images()) == 1
+
+    async def test_submit_leading_path_with_trailing_text_attaches_image(
+        self, tmp_path
+    ) -> None:
+        """Leading pasted path should attach while preserving trailing prompt text."""
+        img_path = tmp_path / "leading-path.png"
+        from PIL import Image
+
+        image = Image.new("RGB", (3, 3), color="green")
+        image.save(img_path, format="PNG")
+
+        app = _ImagePasteRecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.text = f"'{img_path}' what's in this image?"
+            await pilot.pause()
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(app.submitted) == 1
+            assert app.submitted[0].value == "[image 1] what's in this image?"
+            assert app.submitted[0].mode == "normal"
+            assert len(app.tracker.get_images()) == 1
+
+    @pytest.mark.asyncio
+    async def test_submit_leading_path_handles_unicode_space_variants(
+        self, tmp_path
+    ) -> None:
+        """Submitted leading path should recover Unicode-space filename variants."""
+        from PIL import Image
+
+        img_path = tmp_path / "Screenshot 2026-02-26 at 2.02.42\u202fAM.png"
+        image = Image.new("RGB", (3, 3), color="green")
+        image.save(img_path, format="PNG")
+
+        pasted_with_ascii_space = str(img_path).replace("\u202f", " ")
+
+        app = _ImagePasteRecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.text = f"'{pasted_with_ascii_space}' analyze this"
+            await pilot.pause()
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(app.submitted) == 1
+            assert app.submitted[0].value == "[image 1] analyze this"
             assert app.submitted[0].mode == "normal"
             assert len(app.tracker.get_images()) == 1
 

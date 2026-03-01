@@ -463,6 +463,7 @@ class DeepAgentsApp(App):
         self._pending_messages: deque[QueuedMessage] = deque()
         self._queued_widgets: deque[QueuedUserMessage] = deque()
         self._processing_pending = False
+        self._thread_switching = False
         # Message virtualization store
         self._message_store = MessageStore()
         # Lazily imported here to avoid pulling image dependencies into
@@ -951,6 +952,15 @@ class DeepAgentsApp(App):
 
         # Reset quit pending state on any input
         self._quit_pending = False
+
+        # Prevent message handling while a thread switch is in-flight.
+        if self._thread_switching:
+            self.notify(
+                "Thread switch in progress. Please wait.",
+                severity="warning",
+                timeout=3,
+            )
+            return
 
         # If agent is running, enqueue message instead of processing immediately
         if self._agent_running:
@@ -1806,14 +1816,29 @@ class DeepAgentsApp(App):
             prefix: Text prefix before thread ID.
             thread_id: Thread ID to resolve.
         """
-        thread_msg = await self._build_thread_message(prefix, thread_id)
-        if not isinstance(thread_msg, Text):
-            return
-        if widget.parent is None:
-            return
-        # Keep serialized content in sync with the rendered content.
-        widget._content = thread_msg
-        widget.update(thread_msg)
+        try:
+            thread_msg = await self._build_thread_message(prefix, thread_id)
+            if not isinstance(thread_msg, Text):
+                logger.debug(
+                    "Skipping thread link upgrade for %s: URL did not resolve",
+                    thread_id,
+                )
+                return
+            if widget.parent is None:
+                logger.debug(
+                    "Skipping thread link upgrade for %s: widget no longer mounted",
+                    thread_id,
+                )
+                return
+            # Keep serialized content in sync with the rendered content.
+            widget._content = thread_msg
+            widget.update(thread_msg)
+        except Exception:
+            logger.warning(
+                "Failed to upgrade thread message link for %s",
+                thread_id,
+                exc_info=True,
+            )
 
     def _schedule_thread_message_link(
         self,
@@ -1822,7 +1847,7 @@ class DeepAgentsApp(App):
         prefix: str,
         thread_id: str,
     ) -> None:
-        """Resolve and apply thread URL link in the background.
+        """Schedule thread URL link resolution and apply updates in the background.
 
         Args:
             widget: The message widget to update.
@@ -1846,10 +1871,11 @@ class DeepAgentsApp(App):
     ) -> None:
         """Load and render message history when resuming a thread.
 
-        This retrieves the checkpoint state from the agent and converts stored
-        messages into lightweight `MessageData` objects, then bulk-loads them
-        into the `MessageStore`. Only the last `WINDOW_SIZE` messages are
-        mounted as widgets, drastically reducing DOM operations for large
+        When `preloaded_data` is provided (e.g., from `_resume_thread`), this
+        reuses that payload. Otherwise, it fetches checkpoint state from the
+        agent and converts stored messages into lightweight `MessageData`
+        objects. The method then bulk-loads into the `MessageStore` and mounts
+        only the last `WINDOW_SIZE` widgets to reduce DOM operations on large
         threads.
 
         Args:
@@ -1860,12 +1886,17 @@ class DeepAgentsApp(App):
         """
         history_thread_id = thread_id or self._lc_thread_id
         if not history_thread_id:
+            logger.debug("Skipping history load: no thread ID available")
             return
         if preloaded_data is None and not self._agent:
+            logger.debug(
+                "Skipping history load for %s: no active agent and no preloaded data",
+                history_thread_id,
+            )
             return
 
         try:
-            # 1-2. Fetch + convert (reuse preloaded payload on thread switch)
+            # Fetch + convert, or reuse preloaded payload on thread switch.
             all_data = (
                 preloaded_data
                 if preloaded_data is not None
@@ -1898,7 +1929,17 @@ class DeepAgentsApp(App):
                 if isinstance(widget, AssistantMessage) and msg_data.content
             ]
             if assistant_updates:
-                await asyncio.gather(*assistant_updates)
+                assistant_results = await asyncio.gather(
+                    *assistant_updates,
+                    return_exceptions=True,
+                )
+                for error in assistant_results:
+                    if isinstance(error, Exception):
+                        logger.warning(
+                            "Failed to render assistant history message for %s: %s",
+                            history_thread_id,
+                            error,
+                        )
 
             # 9. Add footer immediately and resolve link asynchronously
             thread_msg_widget = AppMessage(f"Resumed thread: {history_thread_id}")
@@ -2314,83 +2355,97 @@ class DeepAgentsApp(App):
             await self._mount_message(AppMessage(f"Already on thread: {thread_id}"))
             return
 
+        if self._thread_switching:
+            await self._mount_message(AppMessage("Thread switch already in progress."))
+            return
+
         # Save previous state for rollback on failure
         prev_thread_id = self._lc_thread_id
         prev_session_thread = self._session_state.thread_id
+        self._thread_switching = True
+        if self._chat_input:
+            self._chat_input.set_cursor_active(active=False)
 
         try:
-            self._update_status(f"Loading thread: {thread_id}")
-            prefetched_history = await self._fetch_thread_history_data(thread_id)
-        except Exception as exc:
-            logger.exception("Failed to prefetch history for thread %s", thread_id)
-            self._update_status("")
-            await self._mount_message(
-                AppMessage(
-                    f"Failed to switch to thread {thread_id}: {exc}. "
-                    "Use /threads to try again."
-                )
-            )
-            return
-
-        try:
-            # Clear conversation (similar to /clear, without creating a new thread)
-            self._pending_messages.clear()
-            self._queued_widgets.clear()
-            await self._clear_messages()
-            if self._token_tracker:
-                self._token_tracker.reset()
-            self._update_status("")
-
-            # Switch to the selected thread
-            self._session_state.thread_id = thread_id
-            self._lc_thread_id = thread_id
-
-            # Update welcome banner
             try:
-                banner = self.query_one("#welcome-banner", WelcomeBanner)
-                banner.update_thread_id(thread_id)
-            except NoMatches:
-                logger.debug(
-                    "Welcome banner not found during thread switch to %s",
-                    thread_id,
+                self._update_status(f"Loading thread: {thread_id}")
+                prefetched_history = await self._fetch_thread_history_data(thread_id)
+            except Exception as exc:
+                logger.exception("Failed to prefetch history for thread %s", thread_id)
+                await self._mount_message(
+                    AppMessage(
+                        f"Failed to switch to thread {thread_id}: {exc}. "
+                        "Use /threads to try again."
+                    )
                 )
+                return
 
-            # Load thread history
-            await self._load_thread_history(
-                thread_id=thread_id,
-                preloaded_data=prefetched_history,
-            )
-
-        except Exception as exc:
-            logger.exception("Failed to switch to thread %s", thread_id)
-            # Restore previous thread IDs so the user can retry
-            self._session_state.thread_id = prev_session_thread
-            self._lc_thread_id = prev_thread_id
             try:
-                banner = self.query_one("#welcome-banner", WelcomeBanner)
-                banner.update_thread_id(prev_session_thread)
-            except NoMatches:
-                logger.warning(
-                    "Welcome banner not found during rollback to thread %s; "
-                    "banner may display stale thread ID",
-                    prev_session_thread,
-                )
-            # Attempt to restore the previous thread's visible history
-            try:
+                # Clear conversation (similar to /clear, without creating a new thread)
+                self._pending_messages.clear()
+                self._queued_widgets.clear()
                 await self._clear_messages()
-                await self._load_thread_history(thread_id=prev_session_thread)
-            except Exception:  # noqa: BLE001  # Resilient session state saving
-                logger.debug(
-                    "Could not restore previous thread history after "
-                    "failed switch to %s",
-                    thread_id,
+                if self._token_tracker:
+                    self._token_tracker.reset()
+                self._update_status("")
+
+                # Switch to the selected thread
+                self._session_state.thread_id = thread_id
+                self._lc_thread_id = thread_id
+
+                # Update welcome banner
+                try:
+                    banner = self.query_one("#welcome-banner", WelcomeBanner)
+                    banner.update_thread_id(thread_id)
+                except NoMatches:
+                    logger.debug(
+                        "Welcome banner not found during thread switch to %s",
+                        thread_id,
+                    )
+
+                # Load thread history
+                await self._load_thread_history(
+                    thread_id=thread_id,
+                    preloaded_data=prefetched_history,
                 )
-            await self._mount_message(
-                AppMessage(
-                    f"Failed to switch to thread {thread_id}: {exc}. "
-                    "Use /threads to try again."
-                )
-            )
+
+            except Exception as exc:
+                logger.exception("Failed to switch to thread %s", thread_id)
+                # Restore previous thread IDs so the user can retry
+                self._session_state.thread_id = prev_session_thread
+                self._lc_thread_id = prev_thread_id
+                try:
+                    banner = self.query_one("#welcome-banner", WelcomeBanner)
+                    banner.update_thread_id(prev_session_thread)
+                except NoMatches:
+                    logger.warning(
+                        "Welcome banner not found during rollback to thread %s; "
+                        "banner may display stale thread ID",
+                        prev_session_thread,
+                    )
+                rollback_restore_failed = False
+                # Attempt to restore the previous thread's visible history
+                try:
+                    await self._clear_messages()
+                    await self._load_thread_history(thread_id=prev_session_thread)
+                except Exception:  # Resilient session state saving
+                    rollback_restore_failed = True
+                    logger.warning(
+                        "Could not restore previous thread history after "
+                        "failed switch to %s",
+                        thread_id,
+                        exc_info=True,
+                    )
+                error_message = f"Failed to switch to thread {thread_id}: {exc}."
+                if rollback_restore_failed:
+                    error_message += " Previous thread history could not be restored."
+                error_message += " Use /threads to try again."
+                await self._mount_message(AppMessage(error_message))
+        finally:
+            self._thread_switching = False
+            self._update_status("")
+            if self._chat_input:
+                self._chat_input.set_cursor_active(active=not self._agent_running)
 
     async def _switch_model(self, model_spec: str) -> None:
         """Switch to a new model, preserving conversation history.

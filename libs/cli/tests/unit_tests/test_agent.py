@@ -448,23 +448,33 @@ class TestListAgents:
 
 
 class TestCreateCliAgentSkillsSources:
-    """Test that `create_cli_agent` wires built-in skills as first source."""
+    """Test that `create_cli_agent` wires skills sources in precedence order."""
 
-    def test_built_in_dir_is_first_source(self, tmp_path: Path) -> None:
-        """Built-in skills dir should be the first (lowest-precedence) source.
+    def test_skills_source_precedence_order(self, tmp_path: Path) -> None:
+        """Skills sources should be wired from lowest to highest precedence.
 
-        SkillsMiddleware uses last-one-wins dedup, so first = lowest precedence.
+        SkillsMiddleware uses last-one-wins dedup, so source order matters.
         """
         agent_dir = tmp_path / "agent"
         agent_dir.mkdir()
         skills_dir = tmp_path / "skills"
         skills_dir.mkdir()
+        user_agent_skills_dir = tmp_path / "user-agent-skills"
+        user_agent_skills_dir.mkdir()
+        project_skills_dir = tmp_path / "project-skills"
+        project_skills_dir.mkdir()
+        project_agent_skills_dir = tmp_path / "project-agent-skills"
+        project_agent_skills_dir.mkdir()
         built_in_dir = Settings.get_built_in_skills_dir()
 
         mock_settings = Mock()
         mock_settings.ensure_agent_dir.return_value = agent_dir
         mock_settings.ensure_user_skills_dir.return_value = skills_dir
-        mock_settings.get_project_skills_dir.return_value = None
+        mock_settings.get_user_agent_skills_dir.return_value = user_agent_skills_dir
+        mock_settings.get_project_skills_dir.return_value = project_skills_dir
+        mock_settings.get_project_agent_skills_dir.return_value = (
+            project_agent_skills_dir
+        )
         mock_settings.get_built_in_skills_dir.return_value = built_in_dir
         mock_settings.get_user_agent_md_path.return_value = agent_dir / "AGENTS.md"
         mock_settings.get_project_agent_md_path.return_value = []
@@ -503,10 +513,13 @@ class TestCreateCliAgentSkillsSources:
 
         assert len(captured_sources) == 1
         sources = captured_sources[0]
-        # Built-in dir should be the first source
-        assert sources[0] == str(built_in_dir)
-        # User skills dir should follow
-        assert sources[1] == str(skills_dir)
+        assert sources == [
+            str(built_in_dir),
+            str(skills_dir),
+            str(user_agent_skills_dir),
+            str(project_skills_dir),
+            str(project_agent_skills_dir),
+        ]
 
 
 class TestCreateCliAgentMemorySources:

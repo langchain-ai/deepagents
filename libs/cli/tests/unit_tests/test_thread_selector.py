@@ -1026,8 +1026,12 @@ class TestThreadSelectorPrefetchedRows:
         ]
         app = ThreadSelectorTestApp(current_thread="abc12345")
 
+        # Use an Event gate so the mock cannot resolve until we allow it,
+        # avoiding race conditions across Python versions (3.13 in particular).
+        gate = asyncio.Event()
+
         async def _list_threads(*_args: object, **_kwargs: object) -> list[ThreadInfo]:
-            await asyncio.sleep(0.1)
+            await gate.wait()
             return refreshed
 
         with patch(
@@ -1050,6 +1054,9 @@ class TestThreadSelectorPrefetchedRows:
                 assert len(screen._option_widgets) == 1
                 with pytest.raises(NoMatches):
                     screen.query_one("#thread-loading", Static)
+
+                # Release the mock so the background refresh can complete.
+                gate.set()
 
                 for _ in range(10):
                     if mock_list_threads.await_count >= 1 and len(screen._threads) == 2:

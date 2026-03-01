@@ -708,6 +708,47 @@ class TestFilesystemMiddlewareAsync:
         assert "does not support command execution" in result
 
     @pytest.mark.asyncio
+    async def test_aexecute_tool_forwards_zero_timeout_to_backend(self):
+        """Async execute tool should forward timeout=0 for no-timeout backends."""
+        captured_timeout = {}
+
+        class TimeoutCaptureSandbox(SandboxBackendProtocol, StateBackend):
+            def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+                return ExecuteResponse(output="sync ok", exit_code=0, truncated=False)
+
+            async def aexecute(
+                self,
+                command: str,
+                *,
+                timeout: int | None = None,  # noqa: ASYNC109
+            ) -> ExecuteResponse:
+                captured_timeout["value"] = timeout
+                return ExecuteResponse(output="async ok", exit_code=0, truncated=False)
+
+            @property
+            def id(self):
+                return "timeout-capture-sandbox-backend"
+
+        state = FilesystemState(messages=[], files={})
+        rt = ToolRuntime(
+            state=state,
+            context=None,
+            tool_call_id="test_zero_timeout_async",
+            store=InMemoryStore(),
+            stream_writer=lambda _: None,
+            config={},
+        )
+
+        backend = TimeoutCaptureSandbox(rt)
+        middleware = FilesystemMiddleware(backend=backend)
+
+        execute_tool = next(tool for tool in middleware.tools if tool.name == "execute")
+        result = await execute_tool.ainvoke({"command": "echo hello", "timeout": 0, "runtime": rt})
+
+        assert "async ok" in result
+        assert captured_timeout["value"] == 0
+
+    @pytest.mark.asyncio
     async def test_aexecute_tool_output_formatting(self):
         """Test async execute tool formats output correctly."""
 

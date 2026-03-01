@@ -453,10 +453,14 @@ def create_cli_agent(
 
     # Skills directories (if enabled)
     skills_dir = None
+    user_agent_skills_dir = None
     project_skills_dir = None
+    project_agent_skills_dir = None
     if enable_skills:
         skills_dir = settings.ensure_user_skills_dir(assistant_id)
+        user_agent_skills_dir = settings.get_user_agent_skills_dir()
         project_skills_dir = settings.get_project_skills_dir()
+        project_agent_skills_dir = settings.get_project_agent_skills_dir()
 
     # Load custom subagents from filesystem
     custom_subagents: list[SubAgent | CompiledSubAgent] = []
@@ -493,11 +497,15 @@ def create_cli_agent(
 
     # Add skills middleware
     if enable_skills:
-        # Built-in first (lowest precedence), then user, then project (highest)
+        # Lowest to highest precedence:
+        # built-in -> user .deepagents -> user .agents
+        # -> project .deepagents -> project .agents
         sources = [str(settings.get_built_in_skills_dir())]
-        sources.append(str(skills_dir))
+        sources.extend([str(skills_dir), str(user_agent_skills_dir)])
         if project_skills_dir:
             sources.append(str(project_skills_dir))
+        if project_agent_skills_dir:
+            sources.append(str(project_agent_skills_dir))
 
         agent_middleware.append(
             SkillsMiddleware(

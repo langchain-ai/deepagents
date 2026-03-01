@@ -322,6 +322,9 @@ def _parse_skill_metadata(  # noqa: C901
             for t in raw_tools.split()
             if t.strip(",")
         ]
+    elif isinstance(raw_tools, list):
+        # Support YAML list format (e.g., `- Bash\n- Read`)
+        allowed_tools = [str(t).strip() for t in raw_tools if t is not None and str(t).strip()]
     else:
         if raw_tools is not None:
             logger.warning(

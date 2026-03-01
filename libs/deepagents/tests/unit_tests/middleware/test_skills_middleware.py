@@ -437,7 +437,7 @@ def test_validate_metadata_valid_dict_passthrough() -> None:
     assert result == {"author": "acme"}
 
 
-def test_parse_skill_metadata_allowed_tools_yaml_list_ignored() -> None:
+def test_parse_skill_metadata_allowed_tools_yaml_list_accepted() -> None:
     content = """---
 name: test-skill
 description: A test skill
@@ -452,10 +452,10 @@ Content
 
     result = _parse_skill_metadata(content, "/skills/test-skill/SKILL.md", "test-skill")
     assert result is not None
-    assert result["allowed_tools"] == []
+    assert result["allowed_tools"] == ["Bash", "Read", "Write"]
 
 
-def test_parse_skill_metadata_allowed_tools_yaml_list_non_strings_ignored() -> None:
+def test_parse_skill_metadata_allowed_tools_yaml_list_coerces_non_strings() -> None:
     content = """---
 name: test-skill
 description: A test skill
@@ -473,7 +473,7 @@ Content
 
     result = _parse_skill_metadata(content, "/skills/test-skill/SKILL.md", "test-skill")
     assert result is not None
-    assert result["allowed_tools"] == []
+    assert result["allowed_tools"] == ["Read", "123", "True", "Write"]
 
 
 def test_parse_skill_metadata_license_boolean_coerced() -> None:

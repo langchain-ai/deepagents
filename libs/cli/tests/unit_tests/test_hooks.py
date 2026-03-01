@@ -9,7 +9,6 @@ from unittest.mock import Mock, patch
 import pytest
 
 import deepagents_cli.hooks as hooks_mod
-from deepagents_cli.hooks import _load_hooks, dispatch_hook
 
 
 @pytest.fixture(autouse=True)
@@ -26,7 +25,7 @@ class TestLoadHooks:
     def test_missing_config_file(self, tmp_path):
         """Returns empty list when config file does not exist."""
         with patch.object(hooks_mod, "_HOOKS_PATH", tmp_path / "nonexistent.json"):
-            result = _load_hooks()
+            result = hooks_mod._load_hooks()
 
         assert result == []
 
@@ -37,7 +36,7 @@ class TestLoadHooks:
         cfg_path.write_text(json.dumps(config))
 
         with patch.object(hooks_mod, "_HOOKS_PATH", cfg_path):
-            result = _load_hooks()
+            result = hooks_mod._load_hooks()
 
         assert result == config["hooks"]
 
@@ -47,7 +46,7 @@ class TestLoadHooks:
         cfg_path.write_text("{not json!!")
 
         with patch.object(hooks_mod, "_HOOKS_PATH", cfg_path):
-            result = _load_hooks()
+            result = hooks_mod._load_hooks()
 
         assert result == []
 
@@ -57,7 +56,7 @@ class TestLoadHooks:
         cfg_path.write_text(json.dumps({"other": "data"}))
 
         with patch.object(hooks_mod, "_HOOKS_PATH", cfg_path):
-            result = _load_hooks()
+            result = hooks_mod._load_hooks()
 
         assert result == []
 
@@ -68,10 +67,10 @@ class TestLoadHooks:
         cfg_path.write_text(json.dumps(config))
 
         with patch.object(hooks_mod, "_HOOKS_PATH", cfg_path):
-            first = _load_hooks()
+            first = hooks_mod._load_hooks()
             # Overwrite file — cached result should still be returned.
             cfg_path.write_text(json.dumps({"hooks": []}))
-            second = _load_hooks()
+            second = hooks_mod._load_hooks()
 
         assert first is second
         assert first == config["hooks"]
@@ -85,7 +84,7 @@ class TestLoadHooks:
             patch.object(hooks_mod, "_HOOKS_PATH", cfg_path),
             patch("pathlib.Path.read_text", side_effect=OSError("permission denied")),
         ):
-            result = _load_hooks()
+            result = hooks_mod._load_hooks()
 
         assert result == []
 
@@ -97,7 +96,7 @@ class TestDispatchHook:
         """Dispatch is a no-op when no hooks are loaded."""
         hooks_mod._hooks_config = []
         # Should not raise.
-        await dispatch_hook("session.start", {})
+        await hooks_mod.dispatch_hook("session.start", {})
 
     async def test_matching_event(self):
         """Hook command is called when event matches."""
@@ -110,7 +109,7 @@ class TestDispatchHook:
         with patch(
             "deepagents_cli.hooks.subprocess.Popen", return_value=mock_proc
         ) as mock_popen:
-            await dispatch_hook("session.start", {"thread_id": "abc"})
+            await hooks_mod.dispatch_hook("session.start", {"thread_id": "abc"})
 
         mock_popen.assert_called_once()
         mock_proc.communicate.assert_called_once()
@@ -124,7 +123,7 @@ class TestDispatchHook:
         mock_proc.communicate = Mock()
 
         with patch("deepagents_cli.hooks.subprocess.Popen", return_value=mock_proc):
-            await dispatch_hook("task.complete", {})
+            await hooks_mod.dispatch_hook("task.complete", {})
 
         stdin_bytes = mock_proc.communicate.call_args[1]["input"]
         assert json.loads(stdin_bytes) == {"event": "task.complete"}
@@ -136,7 +135,7 @@ class TestDispatchHook:
         ]
 
         with patch("deepagents_cli.hooks.subprocess.Popen") as mock_popen:
-            await dispatch_hook("session.start", {})
+            await hooks_mod.dispatch_hook("session.start", {})
 
         mock_popen.assert_not_called()
 
@@ -149,7 +148,7 @@ class TestDispatchHook:
         with patch(
             "deepagents_cli.hooks.subprocess.Popen", return_value=mock_proc
         ) as mock_popen:
-            await dispatch_hook("any.event", {})
+            await hooks_mod.dispatch_hook("any.event", {})
 
         mock_popen.assert_called_once()
 
@@ -162,7 +161,7 @@ class TestDispatchHook:
         with patch(
             "deepagents_cli.hooks.subprocess.Popen", return_value=mock_proc
         ) as mock_popen:
-            await dispatch_hook("any.event", {})
+            await hooks_mod.dispatch_hook("any.event", {})
 
         mock_popen.assert_called_once()
 
@@ -171,7 +170,7 @@ class TestDispatchHook:
         hooks_mod._hooks_config = [{"events": ["session.start"]}]
 
         with patch("deepagents_cli.hooks.subprocess.Popen") as mock_popen:
-            await dispatch_hook("session.start", {})
+            await hooks_mod.dispatch_hook("session.start", {})
 
         mock_popen.assert_not_called()
 
@@ -183,7 +182,7 @@ class TestDispatchHook:
 
         with patch("deepagents_cli.hooks.subprocess.Popen", return_value=mock_proc):
             # Should not raise.
-            await dispatch_hook("session.start", {})
+            await hooks_mod.dispatch_hook("session.start", {})
 
     async def test_generic_error_does_not_propagate(self):
         """Unexpected errors are caught and logged, not raised."""
@@ -194,7 +193,7 @@ class TestDispatchHook:
             side_effect=FileNotFoundError("bad"),
         ):
             # Should not raise.
-            await dispatch_hook("session.start", {})
+            await hooks_mod.dispatch_hook("session.start", {})
 
     async def test_multiple_hooks_dispatched(self):
         """All matching hooks fire, not just the first."""
@@ -208,7 +207,7 @@ class TestDispatchHook:
         with patch(
             "deepagents_cli.hooks.subprocess.Popen", return_value=mock_proc
         ) as mock_popen:
-            await dispatch_hook("session.start", {})
+            await hooks_mod.dispatch_hook("session.start", {})
 
         assert mock_popen.call_count == 2
 
@@ -221,7 +220,7 @@ class TestDispatchHook:
         with patch(
             "deepagents_cli.hooks.subprocess.Popen", return_value=mock_proc
         ) as mock_popen:
-            await dispatch_hook("session.start", {})
+            await hooks_mod.dispatch_hook("session.start", {})
 
         call_kwargs = mock_popen.call_args[1]
         assert call_kwargs["stdin"] == subprocess.PIPE

@@ -38,9 +38,8 @@ from rich.text import Text
 from deepagents_cli.agent import DEFAULT_AGENT_NAME, create_cli_agent
 from deepagents_cli.config import (
     SHELL_TOOL_NAMES,
+    build_langsmith_thread_url,
     create_model,
-    fetch_langsmith_project_url,
-    get_langsmith_project_name,
     is_shell_command_allowed,
     settings,
 )
@@ -353,7 +352,7 @@ def _make_hitl_decision(
             return {"type": "approve"}
 
         allowed_list_str = ", ".join(settings.shell_allow_list)
-        console.print(f"\n[red]❌ Shell command rejected:[/red] {command}")
+        console.print(f"\n[red]Shell command rejected:[/red] {command}")
         console.print(f"[yellow]Allowed commands:[/yellow] {allowed_list_str}")
         return {
             "type": "reject",
@@ -508,7 +507,7 @@ def _build_non_interactive_header(assistant_id: str, thread_id: str) -> Text:
     parts.append((" | ", "dim"))
 
     # Attempt to build a clickable thread link via LangSmith
-    thread_url = _get_thread_url(thread_id)
+    thread_url = build_langsmith_thread_url(thread_id)
     if thread_url:
         parts.extend(
             [
@@ -520,32 +519,6 @@ def _build_non_interactive_header(assistant_id: str, thread_id: str) -> Text:
         parts.append((f"Thread: {thread_id}", "dim"))
 
     return Text.assemble(*parts)
-
-
-def _get_thread_url(thread_id: str) -> str | None:
-    """Build a LangSmith thread URL if tracing is configured.
-
-    Delegates to shared helpers in `config` for env-var checks and the
-    LangSmith client call, avoiding duplication with the interactive
-    welcome banner.
-
-    Args:
-        thread_id: Thread identifier to build the URL for.
-
-    Returns:
-        Full thread URL string, or None if LangSmith is not configured.
-    """
-    project_name = get_langsmith_project_name()
-    if not project_name:
-        logger.debug("LangSmith project name not configured, skipping thread URL")
-        return None
-
-    project_url = fetch_langsmith_project_url(project_name)
-    if not project_url:
-        logger.debug("Could not fetch LangSmith project URL for %r", project_name)
-        return None
-
-    return f"{project_url.rstrip('/')}/t/{thread_id}"
 
 
 async def run_non_interactive(
@@ -568,9 +541,9 @@ async def run_non_interactive(
     list; commands not in the list are rejected with an error message sent
     back to the agent.
 
-    Note: `_build_non_interactive_header` makes a synchronous network call
-    to LangSmith (via `fetch_langsmith_project_url`) to resolve the thread
-    URL. This blocks the event loop briefly at startup.
+    Note: when LangSmith tracing is configured, `_build_non_interactive_header`
+    makes a synchronous network call (via `fetch_langsmith_project_url`) to
+    resolve the thread URL. This blocks the event loop briefly at startup.
 
     Args:
         message: The task/message to execute.
@@ -628,7 +601,9 @@ async def run_non_interactive(
     exit_stack = contextlib.ExitStack()
 
     if sandbox_type != "none":
-        from deepagents_cli.integrations.sandbox_factory import (  # noqa: PLC0415
+        # Conditional: sandbox_factory transitively imports provider modules
+        # and SDKs — skip that cost for the common no-sandbox path.
+        from deepagents_cli.integrations.sandbox_factory import (
             create_sandbox,
         )
 
@@ -639,15 +614,19 @@ async def run_non_interactive(
                 setup_script_path=sandbox_setup,
             )
             sandbox_backend = exit_stack.enter_context(sandbox_cm)
-        except (ImportError, ValueError, RuntimeError) as e:
+        except (ImportError, ValueError) as e:
             logger.exception("Sandbox creation failed")
-            console.print(f"[red]❌ Sandbox creation failed: {e}[/red]")
+            console.print(f"[red]Sandbox creation failed: {e}[/red]")
             return 1
         except NotImplementedError as e:
             logger.exception("Unsupported sandbox type %r", sandbox_type)
             console.print(
-                f"[red]❌ Sandbox type '{sandbox_type}' is not yet supported: {e}[/red]"
+                f"[red]Sandbox type '{sandbox_type}' is not yet supported: {e}[/red]"
             )
+            return 1
+        except RuntimeError as e:
+            logger.exception("Sandbox creation failed")
+            console.print(f"[red]Sandbox creation failed: {e}[/red]")
             return 1
 
     try:
@@ -701,11 +680,11 @@ async def run_non_interactive(
         return 1
     except (ValueError, OSError) as e:
         logger.exception("Error during non-interactive execution")
-        console.print(f"\n[red]❌ Error: {e}[/red]")
+        console.print(f"\n[red]Error: {e}[/red]")
         return 1
     except Exception as e:
         logger.exception("Unexpected error during non-interactive execution")
-        console.print(f"\n[red]❌ Unexpected error ({type(e).__name__}): {e}[/red]")
+        console.print(f"\n[red]Unexpected error ({type(e).__name__}): {e}[/red]")
         return 1
     finally:
         try:

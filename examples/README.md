@@ -1,5 +1,9 @@
 <p align="center">
-  <img src="../.github/images/logo-dark.svg" alt="Deep Agents" height="40"/>
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="../.github/images/logo-dark.svg">
+    <source media="(prefers-color-scheme: dark)" srcset="../.github/images/logo-light.svg">
+    <img alt="Deep Agents" src="../.github/images/logo-dark.svg" height="40"/>
+  </picture>
 </p>
 
 <h3 align="center">Examples</h3>

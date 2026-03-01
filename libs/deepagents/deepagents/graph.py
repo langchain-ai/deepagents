@@ -98,8 +98,8 @@ def create_deep_agent(
             If a string, it's concatenated with the base prompt.
         middleware: Additional middleware to apply after the standard middleware stack
             (`TodoListMiddleware`, `FilesystemMiddleware`, `SubAgentMiddleware`,
-            `SummarizationMiddleware`, `AnthropicPromptCachingMiddleware`,
-            `PatchToolCallsMiddleware`).
+            `SummarizationMiddleware`, `PatchToolCallsMiddleware`, and
+            `AnthropicPromptCachingMiddleware` when using an Anthropic model).
         subagents: The subagents to use.
 
             Each subagent should be a `dict` with the following keys:
@@ -181,9 +181,10 @@ def create_deep_agent(
             trim_tokens_to_summarize=None,
             truncate_args_settings=summarization_defaults["truncate_args_settings"],
         ),
-        AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
         PatchToolCallsMiddleware(),
     ]
+    if isinstance(model, ChatAnthropic):
+        gp_middleware.insert(-1, AnthropicPromptCachingMiddleware())
     if skills is not None:
         gp_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
     if interrupt_on is not None:
@@ -221,9 +222,10 @@ def create_deep_agent(
                     trim_tokens_to_summarize=None,
                     truncate_args_settings=subagent_summarization_defaults["truncate_args_settings"],
                 ),
-                AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
                 PatchToolCallsMiddleware(),
             ]
+            if isinstance(subagent_model, ChatAnthropic):
+                subagent_middleware.insert(-1, AnthropicPromptCachingMiddleware())
             subagent_skills = spec.get("skills")
             if subagent_skills:
                 subagent_middleware.append(SkillsMiddleware(backend=backend, sources=subagent_skills))
@@ -263,10 +265,11 @@ def create_deep_agent(
                 trim_tokens_to_summarize=None,
                 truncate_args_settings=summarization_defaults["truncate_args_settings"],
             ),
-            AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
             PatchToolCallsMiddleware(),
         ]
     )
+    if isinstance(model, ChatAnthropic):
+        deepagent_middleware.insert(-1, AnthropicPromptCachingMiddleware())
     if middleware:
         deepagent_middleware.extend(middleware)
     if interrupt_on is not None:

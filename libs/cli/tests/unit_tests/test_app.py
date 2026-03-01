@@ -125,6 +125,7 @@ class TestThreadCachePrewarm:
                 mock_screen_cls.return_value = mock_screen
                 await app._show_thread_selector()
 
+                assert app._session_state is not None
                 mock_screen_cls.assert_called_once_with(
                     current_thread=app._session_state.thread_id,
                     thread_limit=9,

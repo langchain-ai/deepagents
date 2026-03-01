@@ -11,7 +11,6 @@ from deepagents_cli.widgets.autocomplete import (
     FuzzyFileController,
     MultiCompletionManager,
     SlashCommandController,
-    _find_project_root,
     _fuzzy_score,
     _fuzzy_search,
     _is_dotpath,
@@ -154,38 +153,6 @@ class TestHelperFunctions:
         assert _path_depth("src/file.py") == 1
         assert _path_depth("src/utils/file.py") == 2
         assert _path_depth("a/b/c/d/file.py") == 4
-
-
-class TestFindProjectRoot:
-    """Tests for _find_project_root function."""
-
-    def test_finds_git_root(self, tmp_path):
-        """Finds .git directory and returns its parent."""
-        # Create nested structure with .git at root
-        git_dir = tmp_path / ".git"
-        git_dir.mkdir()
-        nested = tmp_path / "src" / "deep" / "nested"
-        nested.mkdir(parents=True)
-
-        result = _find_project_root(nested)
-        assert result == tmp_path
-
-    def test_returns_start_path_when_no_git(self, tmp_path):
-        """Returns start path when no .git found."""
-        nested = tmp_path / "some" / "path"
-        nested.mkdir(parents=True)
-
-        result = _find_project_root(nested)
-        # Should return the path itself (or a parent) since no .git exists
-        assert result == nested or nested.is_relative_to(result)
-
-    def test_handles_root_level_git(self, tmp_path):
-        """Handles .git at the start path itself."""
-        git_dir = tmp_path / ".git"
-        git_dir.mkdir()
-
-        result = _find_project_root(tmp_path)
-        assert result == tmp_path
 
 
 class TestSlashCommandController:

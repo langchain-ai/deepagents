@@ -15,6 +15,8 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
+from deepagents_cli.project_utils import find_project_root
+
 
 def _get_git_executable() -> str | None:
     """Get full path to git executable using shutil.which().
@@ -244,20 +246,6 @@ _MIN_FUZZY_RATIO = 0.4
 _MIN_FUZZY_SCORE = 15  # Minimum score to include in results
 
 
-def _find_project_root(start_path: Path) -> Path:
-    """Find git root or return start_path.
-
-    Thin wrapper around `project_utils.find_project_root` that guarantees a
-    non-None return by falling back to *start_path*.
-
-    Returns:
-        Path to git root directory, or start_path if not in a git repo.
-    """
-    from deepagents_cli.project_utils import find_project_root
-
-    return find_project_root(start_path) or start_path
-
-
 def _get_project_files(root: Path) -> list[str]:
     """Get project files using git ls-files or fallback to glob.
 
@@ -418,7 +406,7 @@ class FuzzyFileController:
         """
         self._view = view
         self._cwd = cwd or Path.cwd()
-        self._project_root = _find_project_root(self._cwd)
+        self._project_root = find_project_root(self._cwd) or self._cwd
         self._suggestions: list[tuple[str, str]] = []
         self._selected_index = 0
         self._file_cache: list[str] | None = None

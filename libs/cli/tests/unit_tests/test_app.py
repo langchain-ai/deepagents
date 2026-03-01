@@ -361,6 +361,26 @@ class TestMessageQueue:
             assert app._pending_messages[0].mode == "normal"
 
     @pytest.mark.asyncio
+    async def test_message_blocked_while_thread_switching(self) -> None:
+        """Submissions should be ignored while thread switching is in-flight."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._thread_switching = True
+            with patch.object(app, "notify") as notify_mock:
+                app.post_message(ChatInput.Submitted("blocked msg", "normal"))
+                await pilot.pause()
+
+                assert len(app._pending_messages) == 0
+                user_msgs = app.query(UserMessage)
+                assert not any(w._content == "blocked msg" for w in user_msgs)
+                notify_mock.assert_called_once_with(
+                    "Thread switch in progress. Please wait.",
+                    severity="warning",
+                    timeout=3,
+                )
+
+    @pytest.mark.asyncio
     async def test_queued_widget_mounted(self) -> None:
         """Queued messages should produce a QueuedUserMessage widget."""
         app = DeepAgentsApp()

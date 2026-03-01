@@ -932,6 +932,7 @@ class TestResumeThread:
         app._clear_messages = AsyncMock()  # type: ignore[assignment]
         app._token_tracker = MagicMock()
         app._update_status = MagicMock()  # type: ignore[assignment]
+        app._fetch_thread_history_data = AsyncMock(return_value=[])  # type: ignore[assignment]
         app._load_thread_history = AsyncMock()  # type: ignore[assignment]
         app._mount_message = AsyncMock()  # type: ignore[assignment]
         app.query_one = MagicMock(side_effect=_NoMatches())  # type: ignore[assignment]
@@ -944,7 +945,11 @@ class TestResumeThread:
         app._queued_widgets.clear.assert_called_once()
         app._clear_messages.assert_awaited_once()
         app._token_tracker.reset.assert_called_once()
-        app._load_thread_history.assert_awaited_once()
+        app._fetch_thread_history_data.assert_awaited_once_with("new-thread")
+        app._load_thread_history.assert_awaited_once_with(
+            thread_id="new-thread",
+            preloaded_data=[],
+        )
 
     @pytest.mark.asyncio
     async def test_failure_restores_previous_thread_ids(self) -> None:
@@ -957,6 +962,7 @@ class TestResumeThread:
         app._session_state.thread_id = "old-thread"
         app._pending_messages = MagicMock()
         app._queued_widgets = MagicMock()
+        app._fetch_thread_history_data = AsyncMock(return_value=[])  # type: ignore[assignment]
         app._clear_messages = AsyncMock(side_effect=RuntimeError("UI gone"))  # type: ignore[assignment]
         app._mount_message = AsyncMock()  # type: ignore[assignment]
         app.query_one = MagicMock(side_effect=_NoMatches())  # type: ignore[assignment]
@@ -983,6 +989,7 @@ class TestResumeThread:
         app._session_state.thread_id = "old-thread"
         app._pending_messages = MagicMock()
         app._queued_widgets = MagicMock()
+        app._fetch_thread_history_data = AsyncMock(return_value=[])  # type: ignore[assignment]
         app._clear_messages = AsyncMock()  # type: ignore[assignment]
         app._token_tracker = MagicMock()
         app._update_status = MagicMock()  # type: ignore[assignment]
@@ -1001,6 +1008,64 @@ class TestResumeThread:
             "Failed to switch" in _get_widget_text(call.args[0])
             for call in app._mount_message.call_args_list  # type: ignore[union-attr]
         )
+
+    @pytest.mark.asyncio
+    async def test_prefetch_failure_keeps_current_thread_visible(self) -> None:
+        """Failed prefetch should not clear current conversation state."""
+        app = DeepAgentsApp(thread_id="old-thread")
+        app._agent = MagicMock()
+        app._session_state = MagicMock()
+        app._session_state.thread_id = "old-thread"
+        fetch_history_mock = AsyncMock(
+            side_effect=RuntimeError("checkpoint read failed")
+        )
+        clear_messages_mock = AsyncMock()
+        mount_message_mock = AsyncMock()
+        app._fetch_thread_history_data = fetch_history_mock  # type: ignore[assignment]
+        app._clear_messages = clear_messages_mock  # type: ignore[assignment]
+        app._mount_message = mount_message_mock  # type: ignore[assignment]
+
+        await app._resume_thread("new-thread")
+
+        assert app._session_state.thread_id == "old-thread"
+        assert app._lc_thread_id == "old-thread"
+        clear_messages_mock.assert_not_awaited()
+        assert any(
+            "Failed to switch" in _get_widget_text(call.args[0])
+            for call in mount_message_mock.call_args_list
+        )
+
+
+class TestLoadThreadHistory:
+    """Tests for DeepAgentsApp._load_thread_history."""
+
+    @pytest.mark.asyncio
+    async def test_preloaded_history_skips_fetch_and_schedules_link(self) -> None:
+        """Preloaded history should render without state fetch round-trip."""
+        from deepagents_cli.widgets.message_store import MessageData, MessageType
+
+        app = DeepAgentsApp(thread_id="tid-1")
+        app._agent = MagicMock()
+        fetch_history_mock = AsyncMock()
+        mount_message_mock = AsyncMock()
+        schedule_link_mock = MagicMock()
+        app._fetch_thread_history_data = fetch_history_mock  # type: ignore[assignment]
+        app._remove_spacer = AsyncMock()  # type: ignore[assignment]
+        app._mount_message = mount_message_mock  # type: ignore[assignment]
+        app._schedule_thread_message_link = schedule_link_mock  # type: ignore[assignment]
+        app.set_timer = MagicMock()  # type: ignore[assignment]
+
+        messages_container = MagicMock()
+        messages_container.mount = AsyncMock()
+        app.query_one = MagicMock(return_value=messages_container)  # type: ignore[assignment]
+
+        preloaded = [MessageData(type=MessageType.USER, content="hello")]
+        await app._load_thread_history(thread_id="tid-1", preloaded_data=preloaded)
+
+        fetch_history_mock.assert_not_awaited()
+        messages_container.mount.assert_awaited_once()
+        mount_message_mock.assert_awaited_once()
+        schedule_link_mock.assert_called_once()
 
 
 class TestBuildThreadMessage:

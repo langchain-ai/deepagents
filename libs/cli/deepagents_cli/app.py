@@ -1768,7 +1768,82 @@ class DeepAgentsApp(App):
 
         return result
 
-    async def _load_thread_history(self) -> None:
+    async def _fetch_thread_history_data(self, thread_id: str) -> list[MessageData]:
+        """Fetch and convert stored messages for a thread.
+
+        Args:
+            thread_id: Thread ID to fetch from checkpoint storage.
+
+        Returns:
+            Converted message data ready for bulk loading.
+        """
+        if not self._agent:
+            return []
+
+        config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
+        state = await self._agent.aget_state(config)
+        if not state or not state.values:
+            return []
+
+        messages = state.values.get("messages", [])
+        if not messages:
+            return []
+
+        # Offload conversion so large histories don't block the UI loop.
+        return await asyncio.to_thread(self._convert_messages_to_data, messages)
+
+    async def _upgrade_thread_message_link(
+        self,
+        widget: AppMessage,
+        *,
+        prefix: str,
+        thread_id: str,
+    ) -> None:
+        """Upgrade a plain thread message to a linked one when URL resolves.
+
+        Args:
+            widget: The already-mounted app message.
+            prefix: Text prefix before thread ID.
+            thread_id: Thread ID to resolve.
+        """
+        thread_msg = await self._build_thread_message(prefix, thread_id)
+        if not isinstance(thread_msg, Text):
+            return
+        if widget.parent is None:
+            return
+        # Keep serialized content in sync with the rendered content.
+        widget._content = thread_msg
+        widget.update(thread_msg)
+
+    def _schedule_thread_message_link(
+        self,
+        widget: AppMessage,
+        *,
+        prefix: str,
+        thread_id: str,
+    ) -> None:
+        """Resolve and apply thread URL link in the background.
+
+        Args:
+            widget: The message widget to update.
+            prefix: Text prefix before thread ID.
+            thread_id: Thread ID to resolve.
+        """
+        self.run_worker(
+            self._upgrade_thread_message_link(
+                widget,
+                prefix=prefix,
+                thread_id=thread_id,
+            ),
+            exclusive=False,
+        )
+
+    async def _load_thread_history(
+        self,
+        *,
+        thread_id: str | None = None,
+        preloaded_data: list[MessageData] | None = None,
+    ) -> None:
         """Load and render message history when resuming a thread.
 
         This retrieves the checkpoint state from the agent and converts stored
@@ -1776,24 +1851,26 @@ class DeepAgentsApp(App):
         into the `MessageStore`. Only the last `WINDOW_SIZE` messages are
         mounted as widgets, drastically reducing DOM operations for large
         threads.
+
+        Args:
+            thread_id: Optional explicit thread ID to load.
+
+                Defaults to current.
+            preloaded_data: Optional pre-fetched history data for the thread.
         """
-        if not self._agent or not self._lc_thread_id:
+        history_thread_id = thread_id or self._lc_thread_id
+        if not history_thread_id:
+            return
+        if preloaded_data is None and not self._agent:
             return
 
-        config: RunnableConfig = {"configurable": {"thread_id": self._lc_thread_id}}
-
         try:
-            # 1. Fetch state (single network call)
-            state = await self._agent.aget_state(config)
-            if not state or not state.values:
-                return
-
-            messages = state.values.get("messages", [])
-            if not messages:
-                return
-
-            # 2. Convert to data (pure computation, no DOM)
-            all_data = self._convert_messages_to_data(messages)
+            # 1-2. Fetch + convert (reuse preloaded payload on thread switch)
+            all_data = (
+                preloaded_data
+                if preloaded_data is not None
+                else await self._fetch_thread_history_data(history_thread_id)
+            )
             if not all_data:
                 return
 
@@ -1810,18 +1887,27 @@ class DeepAgentsApp(App):
                 return
 
             # 6-7. Create and mount only visible widgets (max WINDOW_SIZE)
-            for msg_data in visible:
-                widget = msg_data.to_widget()
-                await messages_container.mount(widget)
-                # 8. Render content for AssistantMessage after mount
-                if isinstance(widget, AssistantMessage) and msg_data.content:
-                    await widget.set_content(msg_data.content)
+            widgets = [msg_data.to_widget() for msg_data in visible]
+            if widgets:
+                await messages_container.mount(*widgets)
 
-            # 9. Add footer — "Resumed thread" message
-            thread_msg = await self._build_thread_message(
-                "Resumed thread", self._lc_thread_id
+            # 8. Render content for AssistantMessage after mount
+            assistant_updates = [
+                widget.set_content(msg_data.content)
+                for widget, msg_data in zip(widgets, visible, strict=False)
+                if isinstance(widget, AssistantMessage) and msg_data.content
+            ]
+            if assistant_updates:
+                await asyncio.gather(*assistant_updates)
+
+            # 9. Add footer immediately and resolve link asynchronously
+            thread_msg_widget = AppMessage(f"Resumed thread: {history_thread_id}")
+            await self._mount_message(thread_msg_widget)
+            self._schedule_thread_message_link(
+                thread_msg_widget,
+                prefix="Resumed thread",
+                thread_id=history_thread_id,
             )
-            await self._mount_message(AppMessage(thread_msg))
 
             # 10. Scroll once
             def scroll_to_end() -> None:
@@ -1832,7 +1918,10 @@ class DeepAgentsApp(App):
             self.set_timer(0.1, scroll_to_end)
 
         except Exception as e:  # Resilient history loading
-            logger.exception("Failed to load thread history for %s", self._lc_thread_id)
+            logger.exception(
+                "Failed to load thread history for %s",
+                history_thread_id,
+            )
             await self._mount_message(AppMessage(f"Could not load history: {e}"))
 
     async def _mount_message(
@@ -2201,8 +2290,9 @@ class DeepAgentsApp(App):
     async def _resume_thread(self, thread_id: str) -> None:
         """Resume a previously saved thread.
 
-        Clears the current conversation, switches to the selected thread,
-        updates the welcome banner, and loads its message history.
+        Fetches the selected thread history, then atomically switches UI state.
+        Prefetching first avoids clearing the active chat when history loading
+        fails.
 
         Args:
             thread_id: The thread ID to resume.
@@ -2229,6 +2319,20 @@ class DeepAgentsApp(App):
         prev_session_thread = self._session_state.thread_id
 
         try:
+            self._update_status(f"Loading thread: {thread_id}")
+            prefetched_history = await self._fetch_thread_history_data(thread_id)
+        except Exception as exc:
+            logger.exception("Failed to prefetch history for thread %s", thread_id)
+            self._update_status("")
+            await self._mount_message(
+                AppMessage(
+                    f"Failed to switch to thread {thread_id}: {exc}. "
+                    "Use /threads to try again."
+                )
+            )
+            return
+
+        try:
             # Clear conversation (similar to /clear, without creating a new thread)
             self._pending_messages.clear()
             self._queued_widgets.clear()
@@ -2252,7 +2356,10 @@ class DeepAgentsApp(App):
                 )
 
             # Load thread history
-            await self._load_thread_history()
+            await self._load_thread_history(
+                thread_id=thread_id,
+                preloaded_data=prefetched_history,
+            )
 
         except Exception as exc:
             logger.exception("Failed to switch to thread %s", thread_id)
@@ -2270,7 +2377,8 @@ class DeepAgentsApp(App):
                 )
             # Attempt to restore the previous thread's visible history
             try:
-                await self._load_thread_history()
+                await self._clear_messages()
+                await self._load_thread_history(thread_id=prev_session_thread)
             except Exception:  # noqa: BLE001  # Resilient session state saving
                 logger.debug(
                     "Could not restore previous thread history after "

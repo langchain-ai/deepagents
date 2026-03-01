@@ -82,7 +82,7 @@ def get_default_model() -> ChatAnthropic:
     )
 
 
-def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic with many conditional branches
+def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly logic with many conditional branches
     model: str | BaseChatModel | None = None,
     tools: Sequence[BaseTool | Callable | dict[str, Any]] | None = None,
     *,
@@ -291,14 +291,7 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
                 backend=backend,
                 subagents=all_subagents,
             ),
-            SummarizationMiddleware(
-                model=model,
-                backend=backend,
-                trigger=summarization_defaults["trigger"],
-                keep=summarization_defaults["keep"],
-                trim_tokens_to_summarize=None,
-                truncate_args_settings=summarization_defaults["truncate_args_settings"],
-            ),
+            summarization_middleware,
             PatchToolCallsMiddleware(),
         ]
     )

@@ -65,7 +65,7 @@ class HarborSandbox(SandboxBackendProtocol):
                 )
             else:
                 result = await self.environment.exec(command)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return ExecuteResponse(
                 output=f"ERROR: Command timed out after {timeout_sec} seconds.\n"
                 f"Command: {command[:200]}{'...' if len(command) > 200 else ''}\n\n"

@@ -25,6 +25,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Static
 
 from deepagents_cli.clipboard import copy_selection_to_clipboard
+from deepagents_cli.hooks import dispatch_hook
 from deepagents_cli.config import (
     DOCS_URL,
     SHELL_TOOL_NAMES,
@@ -952,6 +953,8 @@ class DeepAgentsApp(App):
         # Reset quit pending state on any input
         self._quit_pending = False
 
+        await dispatch_hook("user.prompt", {})
+
         # If agent is running, enqueue message instead of processing immediately
         if self._agent_running:
             self._pending_messages.append(QueuedMessage(text=value, mode=mode))
@@ -1336,6 +1339,7 @@ class DeepAgentsApp(App):
         # Prevent concurrent user input while compaction modifies state
         self._agent_running = True
         try:
+            await dispatch_hook("compact", {})
             await self._set_spinner("Compacting")
 
             from deepagents.middleware.summarization import (
@@ -2039,6 +2043,10 @@ class DeepAgentsApp(App):
         for w in self._queued_widgets:
             w.remove()
         self._queued_widgets.clear()
+
+        asyncio.get_running_loop().create_task(
+            dispatch_hook("session.end", {"thread_id": getattr(self, "_lc_thread_id", "")})
+        )
 
         _write_iterm_escape(_ITERM_CURSOR_GUIDE_ON)
         super().exit(result=result, return_code=return_code, message=message)

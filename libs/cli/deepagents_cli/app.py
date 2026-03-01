@@ -25,7 +25,6 @@ from textual.screen import ModalScreen
 from textual.widgets import Static
 
 from deepagents_cli.clipboard import copy_selection_to_clipboard
-from deepagents_cli.hooks import dispatch_hook
 from deepagents_cli.config import (
     DOCS_URL,
     SHELL_TOOL_NAMES,
@@ -37,6 +36,7 @@ from deepagents_cli.config import (
     is_shell_command_allowed,
     settings,
 )
+from deepagents_cli.hooks import dispatch_hook
 from deepagents_cli.model_config import ModelSpec, save_recent_model
 from deepagents_cli.textual_adapter import TextualUIAdapter, execute_task_textual
 from deepagents_cli.widgets.approval import ApprovalMenu
@@ -2045,7 +2045,9 @@ class DeepAgentsApp(App):
         self._queued_widgets.clear()
 
         asyncio.get_running_loop().create_task(
-            dispatch_hook("session.end", {"thread_id": getattr(self, "_lc_thread_id", "")})
+            dispatch_hook(
+                "session.end", {"thread_id": getattr(self, "_lc_thread_id", "")}
+            )
         )
 
         _write_iterm_escape(_ITERM_CURSOR_GUIDE_ON)

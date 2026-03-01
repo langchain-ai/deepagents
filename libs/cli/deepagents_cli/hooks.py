@@ -7,14 +7,7 @@ but never bubble up to the caller.
 
 Config format (``~/.deepagents/hooks.json``)::
 
-    {
-      "hooks": [
-        {
-          "command": ["bash", "/path/to/adapter.sh"],
-          "events": ["session.start", "task.complete"]
-        }
-      ]
-    }
+    {"hooks": [{"command": ["bash", "adapter.sh"], "events": ["session.start"]}]}
 
 If ``events`` is omitted or empty the hook receives **all** events.
 """
@@ -24,7 +17,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import subprocess
+import subprocess  # noqa: S404
 from typing import Any
 
 from deepagents_cli.model_config import DEFAULT_CONFIG_DIR
@@ -40,8 +33,9 @@ _hooks_config: list[dict[str, Any]] | None = None
 def _load_hooks() -> list[dict[str, Any]]:
     """Load and cache hook definitions from the config file.
 
-    Returns an empty list when the file is missing or malformed so that
-    normal execution is never interrupted.
+    Returns:
+        An empty list when the file is missing or malformed so that
+        normal execution is never interrupted.
     """
     global _hooks_config  # noqa: PLW0603
     if _hooks_config is not None:
@@ -61,7 +55,9 @@ def _load_hooks() -> list[dict[str, Any]]:
     return _hooks_config
 
 
-def _dispatch_hook_sync(event: str, payload_bytes: bytes, hooks: list[dict[str, Any]]) -> None:
+def _dispatch_hook_sync(
+    event: str, payload_bytes: bytes, hooks: list[dict[str, Any]]
+) -> None:
     """Synchronous hook dispatch — runs in a thread to avoid blocking the event loop."""
     for hook in hooks:
         command = hook.get("command")
@@ -74,7 +70,7 @@ def _dispatch_hook_sync(event: str, payload_bytes: bytes, hooks: list[dict[str, 
             continue
 
         try:
-            subprocess.Popen(
+            subprocess.Popen(  # noqa: S603
                 command,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.DEVNULL,
@@ -83,7 +79,7 @@ def _dispatch_hook_sync(event: str, payload_bytes: bytes, hooks: list[dict[str, 
             ).communicate(input=payload_bytes, timeout=5)
         except subprocess.TimeoutExpired:
             logger.debug("Hook command timed out for event %s: %s", event, command)
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.debug(
                 "Hook dispatch failed for event %s: %s",
                 event,

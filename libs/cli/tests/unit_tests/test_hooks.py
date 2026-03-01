@@ -13,7 +13,7 @@ from deepagents_cli.hooks import _load_hooks, dispatch_hook
 
 
 @pytest.fixture(autouse=True)
-def _reset_hooks_cache():
+def _reset_hooks_cache() -> None:
     """Clear the module-level hooks cache before each test."""
     hooks_mod._hooks_config = None
     yield
@@ -107,7 +107,9 @@ class TestDispatchHook:
         mock_proc = Mock()
         mock_proc.communicate = Mock()
 
-        with patch("deepagents_cli.hooks.subprocess.Popen", return_value=mock_proc) as mock_popen:
+        with patch(
+            "deepagents_cli.hooks.subprocess.Popen", return_value=mock_proc
+        ) as mock_popen:
             await dispatch_hook("session.start", {"thread_id": "abc"})
 
         mock_popen.assert_called_once()
@@ -144,7 +146,9 @@ class TestDispatchHook:
         mock_proc = Mock()
         mock_proc.communicate = Mock()
 
-        with patch("deepagents_cli.hooks.subprocess.Popen", return_value=mock_proc) as mock_popen:
+        with patch(
+            "deepagents_cli.hooks.subprocess.Popen", return_value=mock_proc
+        ) as mock_popen:
             await dispatch_hook("any.event", {})
 
         mock_popen.assert_called_once()
@@ -155,7 +159,9 @@ class TestDispatchHook:
         mock_proc = Mock()
         mock_proc.communicate = Mock()
 
-        with patch("deepagents_cli.hooks.subprocess.Popen", return_value=mock_proc) as mock_popen:
+        with patch(
+            "deepagents_cli.hooks.subprocess.Popen", return_value=mock_proc
+        ) as mock_popen:
             await dispatch_hook("any.event", {})
 
         mock_popen.assert_called_once()
@@ -183,7 +189,10 @@ class TestDispatchHook:
         """Unexpected errors are caught and logged, not raised."""
         hooks_mod._hooks_config = [{"command": ["bad"]}]
 
-        with patch("deepagents_cli.hooks.subprocess.Popen", side_effect=FileNotFoundError("bad")):
+        with patch(
+            "deepagents_cli.hooks.subprocess.Popen",
+            side_effect=FileNotFoundError("bad"),
+        ):
             # Should not raise.
             await dispatch_hook("session.start", {})
 
@@ -196,7 +205,9 @@ class TestDispatchHook:
         mock_proc = Mock()
         mock_proc.communicate = Mock()
 
-        with patch("deepagents_cli.hooks.subprocess.Popen", return_value=mock_proc) as mock_popen:
+        with patch(
+            "deepagents_cli.hooks.subprocess.Popen", return_value=mock_proc
+        ) as mock_popen:
             await dispatch_hook("session.start", {})
 
         assert mock_popen.call_count == 2
@@ -207,7 +218,9 @@ class TestDispatchHook:
         mock_proc = Mock()
         mock_proc.communicate = Mock()
 
-        with patch("deepagents_cli.hooks.subprocess.Popen", return_value=mock_proc) as mock_popen:
+        with patch(
+            "deepagents_cli.hooks.subprocess.Popen", return_value=mock_proc
+        ) as mock_popen:
             await dispatch_hook("session.start", {})
 
         call_kwargs = mock_popen.call_args[1]

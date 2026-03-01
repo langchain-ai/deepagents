@@ -4,15 +4,19 @@ from __future__ import annotations
 
 import json
 import subprocess
+from typing import TYPE_CHECKING
 from unittest.mock import Mock, patch
 
 import pytest
+
+if TYPE_CHECKING:
+    from collections.abc import Generator
 
 import deepagents_cli.hooks as hooks_mod
 
 
 @pytest.fixture(autouse=True)
-def _reset_hooks_cache() -> None:
+def _reset_hooks_cache() -> Generator[None]:
     """Clear the module-level hooks cache before each test."""
     hooks_mod._hooks_config = None
     yield

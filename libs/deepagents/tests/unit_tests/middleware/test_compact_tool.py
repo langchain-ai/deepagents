@@ -208,7 +208,12 @@ class TestCompactSuccess:
         assert result.update is not None
         event = result.update["_summarization_event"]
         assert event["cutoff_index"] == 4
-        assert event["summary_message"] is not None
+        # Verify that the summarization event contains the expected values.
+        # summary_message is a HumanMessage wrapping the summary text.
+        summary_msg = event["summary_message"]
+        assert isinstance(summary_msg, HumanMessage)
+        assert "Summary of the conversation." in summary_msg.content
+        assert event["file_path"] == "/conversation_history/test-thread.md"
 
         update_messages = result.update["messages"]
         assert len(update_messages) == 1
@@ -605,7 +610,8 @@ class TestIsEligibleForCompaction:
     def test_no_usage_metadata_falls_through(self) -> None:
         """No usage metadata → not eligible → falls through to cutoff check."""
         mw = _make_middleware_with_trigger(("tokens", 100_000))
-        messages = _make_messages(30)
+        # Explicitly create messages without any usage metadata to test the fallback path.
+        messages = [HumanMessage(content=f"msg {i}") for i in range(30)]
         runtime = _make_runtime(messages)
         with patch.object(mw._summarization, "_determine_cutoff_index", return_value=0):
             result = mw._run_compact(runtime)

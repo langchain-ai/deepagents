@@ -262,7 +262,7 @@ async def prewarm_thread_message_counts(limit: int | None = None) -> None:
     except (OSError, sqlite3.Error):
         logger.debug("Could not prewarm thread message counts", exc_info=True)
     except Exception:
-        logger.debug(
+        logger.warning(
             "Unexpected error while prewarming thread message counts",
             exc_info=True,
         )
@@ -317,7 +317,7 @@ def apply_cached_thread_message_counts(threads: list[ThreadInfo]) -> int:
         if "message_count" in thread:
             continue
         thread_id = thread["thread_id"]
-        freshness = thread.get("latest_checkpoint_id") or thread.get("updated_at")
+        freshness = _thread_freshness(thread)
         cached = _message_count_cache.get(thread_id)
         if cached is None or cached[0] != freshness:
             continue
@@ -334,7 +334,7 @@ async def _populate_message_counts(
     serde = await _get_jsonplus_serializer()
     for thread in threads:
         thread_id = thread["thread_id"]
-        freshness = thread.get("latest_checkpoint_id") or thread.get("updated_at")
+        freshness = _thread_freshness(thread)
         cached = _message_count_cache.get(thread_id)
         if cached is not None and cached[0] == freshness:
             thread["message_count"] = cached[1]
@@ -372,8 +372,14 @@ def _cache_message_count(thread_id: str, freshness: str | None, count: int) -> N
     if len(_message_count_cache) >= _MAX_MESSAGE_COUNT_CACHE and (
         thread_id not in _message_count_cache
     ):
-        _message_count_cache.clear()
+        oldest = next(iter(_message_count_cache))
+        _message_count_cache.pop(oldest, None)
     _message_count_cache[thread_id] = (freshness, count)
+
+
+def _thread_freshness(thread: ThreadInfo) -> str | None:
+    """Return a cache freshness token for a thread row."""
+    return thread.get("latest_checkpoint_id") or thread.get("updated_at")
 
 
 def _cache_recent_threads(

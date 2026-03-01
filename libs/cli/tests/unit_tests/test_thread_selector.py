@@ -571,6 +571,18 @@ class TestThreadSelectorFormatLabel:
         )
         assert "5" in label
 
+    def test_missing_message_count_shows_placeholder(self) -> None:
+        """Rows without loaded counts should show an explicit placeholder."""
+        thread = ThreadInfo(
+            thread_id="abc12345",
+            agent_name="my-agent",
+            updated_at="2025-01-15T10:30:00",
+        )
+        label = ThreadSelectorScreen._format_option_label(
+            thread, selected=False, current=False
+        )
+        assert "..." in label
+
     def test_columns_align_with_header(self) -> None:
         """Option labels should align with the column header."""
         header = ThreadSelectorScreen._format_header()
@@ -953,12 +965,43 @@ class TestThreadSelectorLimit:
                 assert screen._threads[0]["message_count"] == 11
 
 
+class TestThreadSelectorMessageCountErrors:
+    """Tests for thread selector message-count load error handling."""
+
+    @pytest.mark.asyncio
+    async def test_unexpected_message_count_error_logs_warning(self) -> None:
+        """Unexpected count-load errors should be visible at warning level."""
+        screen = ThreadSelectorScreen(
+            initial_threads=[
+                {
+                    "thread_id": "abc12345",
+                    "agent_name": "my-agent",
+                    "updated_at": "2025-01-15T10:30:00",
+                }
+            ]
+        )
+
+        with (
+            patch(
+                "deepagents_cli.sessions.populate_thread_message_counts",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("unexpected type mismatch"),
+            ),
+            patch(
+                "deepagents_cli.widgets.thread_selector.logger.warning"
+            ) as mock_warning,
+        ):
+            await screen._load_message_counts()
+
+        mock_warning.assert_called_once()
+
+
 class TestThreadSelectorPrefetchedRows:
     """Tests for rendering with prefetched rows from startup cache."""
 
     @pytest.mark.asyncio
     async def test_prefetched_rows_render_without_loading_state(self) -> None:
-        """Prefetched rows should skip the loading placeholder."""
+        """Prefetched rows should render immediately, then refresh from SQLite."""
         prefetched: list[ThreadInfo] = [
             {
                 "thread_id": "abc12345",
@@ -967,10 +1010,30 @@ class TestThreadSelectorPrefetchedRows:
                 "message_count": 5,
             }
         ]
+        refreshed: list[ThreadInfo] = [
+            {
+                "thread_id": "new12345",
+                "agent_name": "my-agent",
+                "updated_at": "2025-01-16T12:00:00",
+                "message_count": 6,
+            },
+            {
+                "thread_id": "abc12345",
+                "agent_name": "my-agent",
+                "updated_at": "2025-01-15T10:30:00",
+                "message_count": 5,
+            },
+        ]
         app = ThreadSelectorTestApp(current_thread="abc12345")
+
+        async def _list_threads(*_args: object, **_kwargs: object) -> list[ThreadInfo]:
+            await asyncio.sleep(0.1)
+            return refreshed
+
         with patch(
             "deepagents_cli.sessions.list_threads",
             new_callable=AsyncMock,
+            side_effect=_list_threads,
         ) as mock_list_threads:
             async with app.run_test() as pilot:
                 app.push_screen(
@@ -985,9 +1048,64 @@ class TestThreadSelectorPrefetchedRows:
                 screen = app.screen
                 assert isinstance(screen, ThreadSelectorScreen)
                 assert len(screen._option_widgets) == 1
-                mock_list_threads.assert_not_awaited()
                 with pytest.raises(NoMatches):
                     screen.query_one("#thread-loading", Static)
+
+                for _ in range(10):
+                    if mock_list_threads.await_count >= 1 and len(screen._threads) == 2:
+                        break
+                    await pilot.pause(0.05)
+
+                mock_list_threads.assert_awaited_once_with(
+                    limit=20,
+                    include_message_count=False,
+                )
+                assert len(screen._threads) == 2
+                assert screen._threads[0]["thread_id"] == "new12345"
+
+    @pytest.mark.asyncio
+    async def test_empty_prefetched_snapshot_still_refreshes(self) -> None:
+        """An empty cached snapshot should still hydrate from SQLite in background."""
+        refreshed: list[ThreadInfo] = [
+            {
+                "thread_id": "new12345",
+                "agent_name": "my-agent",
+                "updated_at": "2025-01-16T12:00:00",
+                "message_count": 6,
+            }
+        ]
+        app = ThreadSelectorTestApp(current_thread="abc12345")
+        with patch(
+            "deepagents_cli.sessions.list_threads",
+            new_callable=AsyncMock,
+            return_value=refreshed,
+        ) as mock_list_threads:
+            async with app.run_test() as pilot:
+                app.push_screen(
+                    ThreadSelectorScreen(
+                        current_thread="abc12345",
+                        thread_limit=20,
+                        initial_threads=[],
+                    )
+                )
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                with pytest.raises(NoMatches):
+                    screen.query_one("#thread-loading", Static)
+
+                for _ in range(10):
+                    if mock_list_threads.await_count >= 1 and len(screen._threads) == 1:
+                        break
+                    await pilot.pause(0.05)
+
+                mock_list_threads.assert_awaited_once_with(
+                    limit=20,
+                    include_message_count=False,
+                )
+                assert len(screen._threads) == 1
+                assert screen._threads[0]["thread_id"] == "new12345"
 
 
 def _get_widget_text(widget: Static) -> str:

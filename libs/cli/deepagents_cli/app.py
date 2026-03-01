@@ -2352,6 +2352,29 @@ class DeepAgentsApp(App):
         )
         self.push_screen(screen, handle_result)
 
+    def _update_welcome_banner(
+        self,
+        thread_id: str,
+        *,
+        missing_message: str,
+        warn_if_missing: bool,
+    ) -> None:
+        """Update the welcome banner thread ID when the banner is mounted.
+
+        Args:
+            thread_id: Thread ID to display on the banner.
+            missing_message: Log message template when banner is missing.
+            warn_if_missing: Whether to log missing-banner cases at warning level.
+        """
+        try:
+            banner = self.query_one("#welcome-banner", WelcomeBanner)
+            banner.update_thread_id(thread_id)
+        except NoMatches:
+            if warn_if_missing:
+                logger.warning(missing_message, thread_id)
+            else:
+                logger.debug(missing_message, thread_id)
+
     async def _resume_thread(self, thread_id: str) -> None:
         """Resume a previously saved thread.
 
@@ -2390,11 +2413,36 @@ class DeepAgentsApp(App):
         if self._chat_input:
             self._chat_input.set_cursor_active(active=False)
 
+        prefetched_history: list[MessageData] | None = None
         try:
-            try:
-                self._update_status(f"Loading thread: {thread_id}")
-                prefetched_history = await self._fetch_thread_history_data(thread_id)
-            except Exception as exc:
+            self._update_status(f"Loading thread: {thread_id}")
+            prefetched_history = await self._fetch_thread_history_data(thread_id)
+
+            # Clear conversation (similar to /clear, without creating a new thread)
+            self._pending_messages.clear()
+            self._queued_widgets.clear()
+            await self._clear_messages()
+            if self._token_tracker:
+                self._token_tracker.reset()
+            self._update_status("")
+
+            # Switch to the selected thread
+            self._session_state.thread_id = thread_id
+            self._lc_thread_id = thread_id
+
+            self._update_welcome_banner(
+                thread_id,
+                missing_message="Welcome banner not found during thread switch to %s",
+                warn_if_missing=False,
+            )
+
+            # Load thread history
+            await self._load_thread_history(
+                thread_id=thread_id,
+                preloaded_data=prefetched_history,
+            )
+        except Exception as exc:
+            if prefetched_history is None:
                 logger.exception("Failed to prefetch history for thread %s", thread_id)
                 await self._mount_message(
                     AppMessage(
@@ -2403,68 +2451,35 @@ class DeepAgentsApp(App):
                     )
                 )
                 return
-
+            logger.exception("Failed to switch to thread %s", thread_id)
+            # Restore previous thread IDs so the user can retry
+            self._session_state.thread_id = prev_session_thread
+            self._lc_thread_id = prev_thread_id
+            self._update_welcome_banner(
+                prev_session_thread,
+                missing_message=(
+                    "Welcome banner not found during rollback to thread %s; "
+                    "banner may display stale thread ID"
+                ),
+                warn_if_missing=True,
+            )
+            rollback_restore_failed = False
+            # Attempt to restore the previous thread's visible history
             try:
-                # Clear conversation (similar to /clear, without creating a new thread)
-                self._pending_messages.clear()
-                self._queued_widgets.clear()
                 await self._clear_messages()
-                if self._token_tracker:
-                    self._token_tracker.reset()
-                self._update_status("")
-
-                # Switch to the selected thread
-                self._session_state.thread_id = thread_id
-                self._lc_thread_id = thread_id
-
-                # Update welcome banner
-                try:
-                    banner = self.query_one("#welcome-banner", WelcomeBanner)
-                    banner.update_thread_id(thread_id)
-                except NoMatches:
-                    logger.debug(
-                        "Welcome banner not found during thread switch to %s",
-                        thread_id,
-                    )
-
-                # Load thread history
-                await self._load_thread_history(
-                    thread_id=thread_id,
-                    preloaded_data=prefetched_history,
+                await self._load_thread_history(thread_id=prev_session_thread)
+            except Exception:  # Resilient session state saving
+                rollback_restore_failed = True
+                msg = (
+                    "Could not restore previous thread history after failed "
+                    "switch to %s"
                 )
-
-            except Exception as exc:
-                logger.exception("Failed to switch to thread %s", thread_id)
-                # Restore previous thread IDs so the user can retry
-                self._session_state.thread_id = prev_session_thread
-                self._lc_thread_id = prev_thread_id
-                try:
-                    banner = self.query_one("#welcome-banner", WelcomeBanner)
-                    banner.update_thread_id(prev_session_thread)
-                except NoMatches:
-                    logger.warning(
-                        "Welcome banner not found during rollback to thread %s; "
-                        "banner may display stale thread ID",
-                        prev_session_thread,
-                    )
-                rollback_restore_failed = False
-                # Attempt to restore the previous thread's visible history
-                try:
-                    await self._clear_messages()
-                    await self._load_thread_history(thread_id=prev_session_thread)
-                except Exception:  # Resilient session state saving
-                    rollback_restore_failed = True
-                    logger.warning(
-                        "Could not restore previous thread history after "
-                        "failed switch to %s",
-                        thread_id,
-                        exc_info=True,
-                    )
-                error_message = f"Failed to switch to thread {thread_id}: {exc}."
-                if rollback_restore_failed:
-                    error_message += " Previous thread history could not be restored."
-                error_message += " Use /threads to try again."
-                await self._mount_message(AppMessage(error_message))
+                logger.warning(msg, thread_id, exc_info=True)
+            error_message = f"Failed to switch to thread {thread_id}: {exc}."
+            if rollback_restore_failed:
+                error_message += " Previous thread history could not be restored."
+            error_message += " Use /threads to try again."
+            await self._mount_message(AppMessage(error_message))
         finally:
             self._thread_switching = False
             self._update_status("")

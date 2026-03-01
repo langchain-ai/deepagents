@@ -279,20 +279,31 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         self.focus()
         if self._has_initial_threads:
             self.call_after_refresh(self._scroll_selected_into_view)
-            if self._threads and any("message_count" not in t for t in self._threads):
-                self.run_worker(
-                    self._load_message_counts,
-                    exclusive=True,
-                    group="thread-selector-counts",
-                )
+            self._schedule_message_count_load()
             if self._current_thread:
                 self._resolve_thread_url()
+            # Cached rows are only a startup snapshot; refresh from SQLite.
+            self.run_worker(
+                self._load_threads, exclusive=True, group="thread-selector-load"
+            )
             return
 
         # Defer DB work to a worker so modal paints immediately.
         self.run_worker(
             self._load_threads, exclusive=True, group="thread-selector-load"
         )
+
+    def _schedule_message_count_load(self) -> None:
+        """Schedule background message-count loading when counts are missing."""
+        has_missing_counts = self._threads and any(
+            "message_count" not in thread for thread in self._threads
+        )
+        if has_missing_counts:
+            self.run_worker(
+                self._load_message_counts,
+                exclusive=True,
+                group="thread-selector-counts",
+            )
 
     async def _load_threads(self) -> None:
         """Load thread rows first, then kick off background message counts."""
@@ -325,12 +336,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         await self._build_list()
 
         # Populate message counts after first paint.
-        if self._threads and any("message_count" not in t for t in self._threads):
-            self.run_worker(
-                self._load_message_counts,
-                exclusive=True,
-                group="thread-selector-counts",
-            )
+        self._schedule_message_count_load()
 
         if self._current_thread:
             self._resolve_thread_url()
@@ -351,7 +357,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             )
             return
         except Exception:
-            logger.debug(
+            logger.warning(
                 "Unexpected error loading message counts for thread selector",
                 exc_info=True,
             )
@@ -364,21 +370,16 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         if not self._threads or not self._option_widgets:
             return
 
-        try:
-            for index, thread in enumerate(self._threads):
-                if index >= len(self._option_widgets):
-                    break
-                widget = self._option_widgets[index]
-                widget.update(
-                    self._format_option_label(
-                        thread,
-                        selected=index == self._selected_index,
-                        current=thread["thread_id"] == self._current_thread,
-                    )
+        for index, thread in enumerate(self._threads):
+            if index >= len(self._option_widgets):
+                break
+            widget = self._option_widgets[index]
+            widget.update(
+                self._format_option_label(
+                    thread,
+                    selected=index == self._selected_index,
+                    current=thread["thread_id"] == self._current_thread,
                 )
-        except NoMatches:
-            logger.debug(
-                "Thread list no longer mounted while refreshing message counts"
             )
 
     def _resolve_thread_url(self) -> None:
@@ -555,7 +556,8 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         cursor = f"{glyphs.cursor} " if selected else "  "
         tid = thread["thread_id"][:_COL_TID]
         agent = (thread.get("agent_name") or "unknown")[:_COL_AGENT]
-        msgs = str(thread.get("message_count", 0))
+        raw_count = thread.get("message_count")
+        msgs = str(raw_count) if raw_count is not None else "..."
         timestamp = format_timestamp(thread.get("updated_at"))
 
         label = (

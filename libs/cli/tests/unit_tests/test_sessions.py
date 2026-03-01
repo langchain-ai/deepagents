@@ -584,6 +584,44 @@ class TestGetCachedThreads:
             sessions._recent_threads_cache.clear()
 
 
+class TestPrewarmThreadMessageCounts:
+    """Tests for prewarm_thread_message_counts error handling."""
+
+    @pytest.mark.asyncio
+    async def test_unexpected_errors_log_warning(self) -> None:
+        """Unexpected prewarm failures should be visible at warning level."""
+        with (
+            patch(
+                "deepagents_cli.sessions.list_threads",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("unexpected type mismatch"),
+            ),
+            patch.object(sessions.logger, "warning") as mock_warning,
+        ):
+            await sessions.prewarm_thread_message_counts(limit=3)
+
+        mock_warning.assert_called_once()
+
+
+class TestCacheMessageCount:
+    """Tests for message-count cache eviction behavior."""
+
+    def test_overflow_evicts_oldest_entry_only(self) -> None:
+        """Cache overflow should evict only the oldest key, not clear all keys."""
+        sessions._message_count_cache.clear()
+        try:
+            with patch.object(sessions, "_MAX_MESSAGE_COUNT_CACHE", 2):
+                sessions._cache_message_count("thread-1", "cp_1", 1)
+                sessions._cache_message_count("thread-2", "cp_2", 2)
+                sessions._cache_message_count("thread-3", "cp_3", 3)
+
+            assert "thread-1" not in sessions._message_count_cache
+            assert sessions._message_count_cache["thread-2"] == ("cp_2", 2)
+            assert sessions._message_count_cache["thread-3"] == ("cp_3", 3)
+        finally:
+            sessions._message_count_cache.clear()
+
+
 class TestMessageCountFromCheckpointBlob:
     """Tests for counting messages from checkpoint blob (not writes table).
 

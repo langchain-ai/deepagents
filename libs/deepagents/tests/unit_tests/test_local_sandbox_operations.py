@@ -735,6 +735,19 @@ class TestLocalSandboxOperations:
         assert f"{base_dir}/file[2].txt" in paths
         assert f"{base_dir}/file-3.txt" in paths
 
+    def test_ls_info_path_is_sanitized(self, sandbox: LocalSubprocessSandbox) -> None:
+        """Test that ls_info base64-encodes paths to prevent injection."""
+        malicious_path = "'; import os; os.system('echo INJECTED'); #"
+        result = sandbox.ls_info(malicious_path)
+        assert result == []
+
+    def test_read_path_is_sanitized(self, sandbox: LocalSubprocessSandbox) -> None:
+        """Test that read base64-encodes paths to prevent injection."""
+        malicious_path = "'; import os; os.system('echo INJECTED'); #"
+        result = sandbox.read(malicious_path)
+        assert "Error: File" in result
+        assert "INJECTED" in result
+
     # ==================== grep_raw() tests ====================
 
     def test_grep_basic_search(self, sandbox: LocalSubprocessSandbox) -> None:
@@ -876,6 +889,16 @@ class TestLocalSandboxOperations:
         assert isinstance(result, list)
         assert len(result) == 3
         # Should find matches in all nested levels
+
+    def test_grep_with_globstar_include_pattern(self, sandbox: LocalSubprocessSandbox) -> None:
+        base_dir = "/tmp/test_sandbox_ops/grep_globstar"
+        sandbox.execute(f"mkdir -p {base_dir}/a/b")
+        sandbox.write(f"{base_dir}/a/b/target.py", "needle")
+        sandbox.write(f"{base_dir}/a/ignore.txt", "needle")
+
+        result = sandbox.grep_raw("needle", path=base_dir, glob="*.py")
+
+        assert result == [{"path": f"{base_dir}/a/b/target.py", "line": 1, "text": "needle"}]
 
     def test_grep_with_multiline_matches(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test that grep reports correct line numbers for matches."""

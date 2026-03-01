@@ -16,7 +16,9 @@ integration_test integration_tests: TEST_FILE=tests/integration_tests/
 
 test: ## Run unit tests
 test tests:
-	uv run --group test pytest -vvv --disable-socket --allow-unix-socket $(TEST_FILE)
+	uv run --group test pytest -vvv --disable-socket --allow-unix-socket $(TEST_FILE) \
+		--cov=deepagents \
+		--cov-report=term-missing
 
 update-snapshots: ## Update smoke test snapshots
 	# update snapshots for smoke tests

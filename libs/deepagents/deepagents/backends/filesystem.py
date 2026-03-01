@@ -544,8 +544,10 @@ class FilesystemBackend(BackendProtocol):
                     continue
             except (PermissionError, OSError):
                 continue
-            if include_glob and not wcglob.globmatch(fp.name, include_glob, flags=wcglob.BRACE):
-                continue
+            if include_glob:
+                rel_path = str(fp.relative_to(root))
+                if not wcglob.globmatch(rel_path, include_glob, flags=wcglob.BRACE | wcglob.GLOBSTAR):
+                    continue
             try:
                 if fp.stat().st_size > self.max_file_size_bytes:
                     continue

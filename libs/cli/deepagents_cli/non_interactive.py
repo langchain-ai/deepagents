@@ -44,6 +44,7 @@ from deepagents_cli.config import (
     settings,
 )
 from deepagents_cli.file_ops import FileOpTracker
+from deepagents_cli.hooks import dispatch_hook
 from deepagents_cli.model_config import ModelConfigError
 from deepagents_cli.sessions import generate_thread_id, get_checkpointer
 from deepagents_cli.tools import fetch_url, http_request, web_search
@@ -170,6 +171,7 @@ def _process_interrupts(
                 continue
             state.pending_interrupts[interrupt_obj.id] = validated_request
             state.interrupt_occurred = True
+            dispatch_hook("input.required", {"event": "input.required"})
 
 
 def _process_ai_message(
@@ -452,6 +454,9 @@ async def _run_agent_loop(
         "messages": [{"role": "user", "content": message}]
     }
 
+    thread_id = config.get("configurable", {}).get("thread_id", "")
+    dispatch_hook("session.start", {"event": "session.start", "thread_id": thread_id})
+
     # Initial stream
     await _stream_agent(agent, stream_input, config, state, console, file_op_tracker)
 
@@ -481,6 +486,8 @@ async def _run_agent_loop(
     if not quiet:
         console.print()
         console.print("[green]✓ Task completed[/green]")
+
+    dispatch_hook("task.complete", {"event": "task.complete", "thread_id": thread_id})
 
 
 def _build_non_interactive_header(assistant_id: str, thread_id: str) -> Text:

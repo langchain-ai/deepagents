@@ -1,0 +1,105 @@
+"""Lightweight hook dispatch for external tool integration.
+
+Loads hook configuration from ``~/.deepagents/hooks.json`` and fires
+matching commands with JSON payloads on stdin.  All dispatch is
+fire-and-forget: commands run in the background and failures are logged
+but never bubble up to the caller.
+
+Config format (``~/.deepagents/hooks.json``)::
+
+    {
+      "hooks": [
+        {
+          "command": ["bash", "/path/to/adapter.sh"],
+          "events": ["session.start", "task.complete"]
+        }
+      ]
+    }
+
+If ``events`` is omitted or empty the hook receives **all** events.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any
+
+logger = logging.getLogger(__name__)
+
+_HOOKS_PATH = Path.home() / ".deepagents" / "hooks.json"
+
+# Cached config — loaded lazily on first dispatch.
+_hooks_config: list[dict[str, Any]] | None = None
+
+
+def _load_hooks() -> list[dict[str, Any]]:
+    """Load and cache hook definitions from the config file.
+
+    Returns an empty list when the file is missing or malformed so that
+    normal execution is never interrupted.
+    """
+    global _hooks_config  # noqa: PLW0603
+    if _hooks_config is not None:
+        return _hooks_config
+
+    if not _HOOKS_PATH.is_file():
+        _hooks_config = []
+        return _hooks_config
+
+    try:
+        data = json.loads(_HOOKS_PATH.read_text())
+        _hooks_config = data.get("hooks", [])
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.warning("Failed to load hooks config from %s: %s", _HOOKS_PATH, exc)
+        _hooks_config = []
+
+    return _hooks_config
+
+
+def dispatch_hook(event: str, payload: dict[str, Any]) -> None:
+    """Fire matching hook commands with *payload* serialised as JSON on stdin.
+
+    Each command is started as a detached subprocess (fire-and-forget).
+    Errors are logged at debug level and never propagated.
+
+    Args:
+        event: Dotted event name (e.g. ``"session.start"``).
+        payload: Arbitrary JSON-serialisable dict sent on the command's stdin.
+    """
+    hooks = _load_hooks()
+    if not hooks:
+        return
+
+    payload_bytes = json.dumps(payload).encode()
+
+    for hook in hooks:
+        command = hook.get("command")
+        if not command:
+            continue
+
+        events = hook.get("events")
+        # Empty/missing events list means "subscribe to everything".
+        if events and event not in events:
+            continue
+
+        try:
+            subprocess.Popen(
+                command,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            ).communicate(input=payload_bytes, timeout=5)
+        except subprocess.TimeoutExpired:
+            logger.debug("Hook command timed out for event %s: %s", event, command)
+        except Exception:  # noqa: BLE001
+            logger.debug(
+                "Hook dispatch failed for event %s: %s",
+                event,
+                command,
+                exc_info=True,
+            )

@@ -53,7 +53,8 @@ logger = logging.getLogger(__name__)
 # with `command -v` before use.
 #
 # The script is built from section functions so each piece can be tested
-# independently.
+# independently. Independent sections run as parallel background subshells;
+# see build_detect_script() for the orchestration logic.
 # ---------------------------------------------------------------------------
 
 
@@ -278,7 +279,7 @@ def _section_makefile() -> str:
     """First 20 lines of Makefile (falls back to git root in monorepos).
 
     Returns:
-        Bash snippet (requires `ROOT` from `_section_project`).
+        Bash snippet (requires `ROOT` from `_section_project` and `CWD` from header).
     """
     return r"""# --- Makefile ---
 MK=""
@@ -311,7 +312,10 @@ def build_detect_script() -> str:
     # Header + project run synchronously (set CWD, IN_GIT, ROOT for others)
     serial_prefix = f"{_section_header()}\n{_section_project()}"
 
-    # These sections are independent — run them in parallel
+    # These sections are independent — run them in parallel.
+    # Subshells inherit parent variables (IN_GIT, ROOT, CWD) via fork.
+    # Individual exit codes are not tracked because sections legitimately
+    # exit non-zero when they have nothing to report (e.g. no runtimes).
     parallel_sections = [
         ("02_pkgmgr", _section_package_managers()),
         ("03_runtimes", _section_runtimes()),
@@ -322,16 +326,14 @@ def build_detect_script() -> str:
         ("08_makefile", _section_makefile()),
     ]
 
-    # Build parallel wrapper: each section runs in a subshell writing to a temp file
-    parallel_setup = '_DCT=$(mktemp -d)\ntrap "rm -rf $_DCT" EXIT'
-    parallel_jobs = []
-    cat_args = []
-    for name, section_body in parallel_sections:
-        parallel_jobs.append(f'(\n{section_body}\n) > "$_DCT/{name}" &')
-        cat_args.append(f'"$_DCT/{name}"')
-
-    parallel_block = "\n".join(parallel_jobs)
-    cat_line = "cat " + " ".join(cat_args)
+    # Build parallel wrapper: each section runs in a subshell writing to a
+    # temp file. Stderr is captured per-section to prevent noise leakage.
+    parallel_setup = "_DCT=$(mktemp -d) || exit 1\ntrap 'rm -rf \"$_DCT\"' EXIT"
+    parallel_block = "\n".join(
+        f'(\n{body}\n) > "$_DCT/{name}" 2>"$_DCT/{name}.err" &'
+        for name, body in parallel_sections
+    )
+    cat_line = "cat " + " ".join(f'"$_DCT/{name}"' for name, _ in parallel_sections)
 
     body = f"{serial_prefix}\n{parallel_setup}\n{parallel_block}\nwait\n{cat_line}"
     return f"bash <<'__DETECT_CONTEXT_EOF__'\n{body}\n__DETECT_CONTEXT_EOF__\n"

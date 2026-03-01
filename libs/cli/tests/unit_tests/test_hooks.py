@@ -93,13 +93,13 @@ class TestLoadHooks:
 class TestDispatchHook:
     """Test event dispatch to external hook commands."""
 
-    def test_no_hooks_configured(self):
+    async def test_no_hooks_configured(self):
         """Dispatch is a no-op when no hooks are loaded."""
         hooks_mod._hooks_config = []
         # Should not raise.
-        dispatch_hook("session.start", {"event": "session.start"})
+        await dispatch_hook("session.start", {})
 
-    def test_matching_event(self):
+    async def test_matching_event(self):
         """Hook command is called when event matches."""
         hooks_mod._hooks_config = [
             {"command": ["echo", "hi"], "events": ["session.start"]}
@@ -108,56 +108,68 @@ class TestDispatchHook:
         mock_proc.communicate = Mock()
 
         with patch("deepagents_cli.hooks.subprocess.Popen", return_value=mock_proc) as mock_popen:
-            dispatch_hook("session.start", {"event": "session.start"})
+            await dispatch_hook("session.start", {"thread_id": "abc"})
 
         mock_popen.assert_called_once()
         mock_proc.communicate.assert_called_once()
         stdin_bytes = mock_proc.communicate.call_args[1]["input"]
-        assert json.loads(stdin_bytes) == {"event": "session.start"}
+        assert json.loads(stdin_bytes) == {"event": "session.start", "thread_id": "abc"}
 
-    def test_non_matching_event_skipped(self):
+    async def test_event_key_auto_injected(self):
+        """Event name is automatically added to the payload."""
+        hooks_mod._hooks_config = [{"command": ["echo"]}]
+        mock_proc = Mock()
+        mock_proc.communicate = Mock()
+
+        with patch("deepagents_cli.hooks.subprocess.Popen", return_value=mock_proc):
+            await dispatch_hook("task.complete", {})
+
+        stdin_bytes = mock_proc.communicate.call_args[1]["input"]
+        assert json.loads(stdin_bytes) == {"event": "task.complete"}
+
+    async def test_non_matching_event_skipped(self):
         """Hook command is not called when event does not match."""
         hooks_mod._hooks_config = [
             {"command": ["echo", "hi"], "events": ["task.complete"]}
         ]
 
         with patch("deepagents_cli.hooks.subprocess.Popen") as mock_popen:
-            dispatch_hook("session.start", {"event": "session.start"})
+            await dispatch_hook("session.start", {})
 
         mock_popen.assert_not_called()
 
-    def test_empty_events_matches_everything(self):
+    async def test_empty_events_matches_everything(self):
         """Hook with no events filter receives all events."""
         hooks_mod._hooks_config = [{"command": ["echo", "hi"], "events": []}]
         mock_proc = Mock()
         mock_proc.communicate = Mock()
 
         with patch("deepagents_cli.hooks.subprocess.Popen", return_value=mock_proc) as mock_popen:
-            dispatch_hook("any.event", {"event": "any.event"})
+            await dispatch_hook("any.event", {})
 
         mock_popen.assert_called_once()
 
-    def test_missing_events_key_matches_everything(self):
+    async def test_missing_events_key_matches_everything(self):
         """Hook with omitted events key receives all events."""
         hooks_mod._hooks_config = [{"command": ["echo", "hi"]}]
         mock_proc = Mock()
         mock_proc.communicate = Mock()
 
         with patch("deepagents_cli.hooks.subprocess.Popen", return_value=mock_proc) as mock_popen:
-            dispatch_hook("any.event", {"event": "any.event"})
+            await dispatch_hook("any.event", {})
 
         mock_popen.assert_called_once()
 
-    def test_hook_without_command_skipped(self):
+    async def test_hook_without_command_skipped(self):
         """Hook entry missing 'command' is silently skipped."""
         hooks_mod._hooks_config = [{"events": ["session.start"]}]
 
         with patch("deepagents_cli.hooks.subprocess.Popen") as mock_popen:
-            dispatch_hook("session.start", {"event": "session.start"})
+            await dispatch_hook("session.start", {})
 
         mock_popen.assert_not_called()
 
-    def test_timeout_does_not_propagate(self):
+    async def test_timeout_does_not_propagate(self):
         """TimeoutExpired is caught and logged, not raised."""
         hooks_mod._hooks_config = [{"command": ["sleep", "999"]}]
         mock_proc = Mock()
@@ -165,17 +177,17 @@ class TestDispatchHook:
 
         with patch("deepagents_cli.hooks.subprocess.Popen", return_value=mock_proc):
             # Should not raise.
-            dispatch_hook("session.start", {"event": "session.start"})
+            await dispatch_hook("session.start", {})
 
-    def test_generic_error_does_not_propagate(self):
+    async def test_generic_error_does_not_propagate(self):
         """Unexpected errors are caught and logged, not raised."""
         hooks_mod._hooks_config = [{"command": ["bad"]}]
 
         with patch("deepagents_cli.hooks.subprocess.Popen", side_effect=FileNotFoundError("bad")):
             # Should not raise.
-            dispatch_hook("session.start", {"event": "session.start"})
+            await dispatch_hook("session.start", {})
 
-    def test_multiple_hooks_dispatched(self):
+    async def test_multiple_hooks_dispatched(self):
         """All matching hooks fire, not just the first."""
         hooks_mod._hooks_config = [
             {"command": ["first"]},
@@ -185,18 +197,18 @@ class TestDispatchHook:
         mock_proc.communicate = Mock()
 
         with patch("deepagents_cli.hooks.subprocess.Popen", return_value=mock_proc) as mock_popen:
-            dispatch_hook("session.start", {"event": "session.start"})
+            await dispatch_hook("session.start", {})
 
         assert mock_popen.call_count == 2
 
-    def test_popen_called_with_detach_flags(self):
+    async def test_popen_called_with_detach_flags(self):
         """Subprocess is started detached with correct pipe config."""
         hooks_mod._hooks_config = [{"command": ["echo"]}]
         mock_proc = Mock()
         mock_proc.communicate = Mock()
 
         with patch("deepagents_cli.hooks.subprocess.Popen", return_value=mock_proc) as mock_popen:
-            dispatch_hook("session.start", {})
+            await dispatch_hook("session.start", {})
 
         call_kwargs = mock_popen.call_args[1]
         assert call_kwargs["stdin"] == subprocess.PIPE

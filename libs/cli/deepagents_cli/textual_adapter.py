@@ -305,7 +305,7 @@ async def execute_task_textual(
     thread_id = session_state.thread_id
     config = _build_stream_config(thread_id, assistant_id)
 
-    dispatch_hook("session.start", {"event": "session.start", "thread_id": thread_id})
+    await dispatch_hook("session.start", {"thread_id": thread_id})
 
     captured_input_tokens = 0
     captured_output_tokens = 0
@@ -382,10 +382,7 @@ async def execute_task_textual(
                                         validated_request
                                     )
                                     interrupt_occurred = True
-                                    dispatch_hook(
-                                        "input.required",
-                                        {"event": "input.required"},
-                                    )
+                                    await dispatch_hook("input.required", {})
                                 except ValidationError:  # noqa: TRY203  # Re-raise preserves exception context in handler
                                     raise
 
@@ -623,10 +620,7 @@ async def execute_task_textual(
                                 tool_msg = ToolCallMessage(buffer_name, parsed_args)
                                 await adapter._mount_message(tool_msg)
                                 adapter._current_tool_messages[buffer_id] = tool_msg
-                                dispatch_hook(
-                                    "tool.call",
-                                    {"event": "tool.call", "tool": buffer_name},
-                                )
+                                await dispatch_hook("tool.call", {"tool": buffer_name})
 
                                 # Sticky scroll after tool call is shown
                                 if adapter._scroll_to_bottom:
@@ -789,10 +783,7 @@ async def execute_task_textual(
 
                 stream_input = Command(resume=hitl_response)
             else:
-                dispatch_hook(
-                    "task.complete",
-                    {"event": "task.complete", "thread_id": thread_id},
-                )
+                await dispatch_hook("task.complete", {"thread_id": thread_id})
                 break
 
     except asyncio.CancelledError:

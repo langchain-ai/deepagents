@@ -21,15 +21,17 @@ If ``events`` is omitted or empty the hook receives **all** events.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import subprocess
-from pathlib import Path
 from typing import Any
+
+from deepagents_cli.model_config import DEFAULT_CONFIG_DIR
 
 logger = logging.getLogger(__name__)
 
-_HOOKS_PATH = Path.home() / ".deepagents" / "hooks.json"
+_HOOKS_PATH = DEFAULT_CONFIG_DIR / "hooks.json"
 
 # Cached config — loaded lazily on first dispatch.
 _hooks_config: list[dict[str, Any]] | None = None
@@ -59,22 +61,8 @@ def _load_hooks() -> list[dict[str, Any]]:
     return _hooks_config
 
 
-def dispatch_hook(event: str, payload: dict[str, Any]) -> None:
-    """Fire matching hook commands with *payload* serialised as JSON on stdin.
-
-    Each command is started as a detached subprocess (fire-and-forget).
-    Errors are logged at debug level and never propagated.
-
-    Args:
-        event: Dotted event name (e.g. ``"session.start"``).
-        payload: Arbitrary JSON-serialisable dict sent on the command's stdin.
-    """
-    hooks = _load_hooks()
-    if not hooks:
-        return
-
-    payload_bytes = json.dumps(payload).encode()
-
+def _dispatch_hook_sync(event: str, payload_bytes: bytes, hooks: list[dict[str, Any]]) -> None:
+    """Synchronous hook dispatch — runs in a thread to avoid blocking the event loop."""
     for hook in hooks:
         command = hook.get("command")
         if not command:
@@ -102,3 +90,27 @@ def dispatch_hook(event: str, payload: dict[str, Any]) -> None:
                 command,
                 exc_info=True,
             )
+
+
+async def dispatch_hook(event: str, payload: dict[str, Any]) -> None:
+    """Fire matching hook commands with *payload* serialised as JSON on stdin.
+
+    The *event* name is automatically injected into the payload under the
+    ``"event"`` key so callers don't need to duplicate it.
+
+    The blocking subprocess work is offloaded to a thread so the caller's
+    event loop is never stalled.
+
+    Each command is started as a detached subprocess (fire-and-forget).
+    Errors are logged at debug level and never propagated.
+
+    Args:
+        event: Dotted event name (e.g. ``"session.start"``).
+        payload: Arbitrary JSON-serialisable dict sent on the command's stdin.
+    """
+    hooks = _load_hooks()
+    if not hooks:
+        return
+
+    payload_bytes = json.dumps({"event": event, **payload}).encode()
+    await asyncio.to_thread(_dispatch_hook_sync, event, payload_bytes, hooks)

@@ -8,6 +8,7 @@ import json
 import logging
 import uuid
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -60,7 +61,7 @@ def _build_stream_config(
     Returns:
         Config dict with `configurable` and `metadata` keys.
     """
-    metadata: dict[str, str] = {}
+    metadata: dict[str, str] = {"cwd": str(Path.cwd())}
     if assistant_id:
         metadata.update(
             {

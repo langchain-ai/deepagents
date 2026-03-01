@@ -76,13 +76,16 @@ class TestThreadFunctions:
         earlier = "2024-01-01T10:00:00+00:00"
 
         threads = [
-            ("thread1", "agent1", now),
-            ("thread2", "agent2", earlier),
-            ("thread3", "agent1", earlier),
+            ("thread1", "agent1", now, "/home/user/project-a"),
+            ("thread2", "agent2", earlier, "/tmp/workspace"),
+            ("thread3", "agent1", earlier, None),
         ]
 
-        for tid, agent, updated in threads:
-            metadata = json.dumps({"agent_name": agent, "updated_at": updated})
+        for tid, agent, updated, cwd in threads:
+            meta = {"agent_name": agent, "updated_at": updated}
+            if cwd is not None:
+                meta["cwd"] = cwd
+            metadata = json.dumps(meta)
             conn.execute(
                 "INSERT INTO checkpoints "
                 "(thread_id, checkpoint_ns, checkpoint_id, metadata) "
@@ -116,10 +119,14 @@ class TestThreadFunctions:
             assert threads == []
 
     def test_list_threads(self, temp_db):
-        """List returns all threads."""
+        """List returns all threads with cwd."""
         with patch.object(sessions, "get_db_path", return_value=temp_db):
             threads = asyncio.run(sessions.list_threads())
             assert len(threads) == 3
+            by_id = {t["thread_id"]: t for t in threads}
+            assert by_id["thread1"]["cwd"] == "/home/user/project-a"
+            assert by_id["thread2"]["cwd"] == "/tmp/workspace"
+            assert by_id["thread3"]["cwd"] is None
 
     def test_list_threads_filter_by_agent(self, temp_db):
         """List filters by agent name."""
@@ -235,6 +242,39 @@ class TestFormatTimestamp:
         """Returns empty for invalid timestamp."""
         result = sessions.format_timestamp("not a timestamp")
         assert result == ""
+
+
+class TestFormatPath:
+    """Tests for format_path helper."""
+
+    def test_none(self):
+        """Returns empty for None."""
+        assert sessions.format_path(None) == ""
+
+    def test_empty_string(self):
+        """Returns empty for empty string."""
+        assert sessions.format_path("") == ""
+
+    def test_home_directory(self):
+        """Home directory is shown as ~."""
+        home = str(Path.home())
+        assert sessions.format_path(home) == "~"
+
+    def test_path_under_home(self):
+        """Paths under home are shown relative to ~."""
+        home = str(Path.home())
+        path = home + "/projects/my-app"
+        assert sessions.format_path(path) == "~/projects/my-app"
+
+    def test_path_outside_home(self):
+        """Paths outside home are shown as-is."""
+        assert sessions.format_path("/tmp/workspace") == "/tmp/workspace"
+
+    def test_path_with_similar_prefix(self):
+        """Paths that start like home but aren't under it are shown as-is."""
+        home = str(Path.home())
+        path = home + "-other/projects"
+        assert sessions.format_path(path) == path
 
 
 class TestTextualSessionState:

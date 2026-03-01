@@ -36,6 +36,7 @@ logger = logging.getLogger(__name__)
 _COL_TID = 10
 _COL_AGENT = 14
 _COL_MSGS = 4
+_COL_LOC = 24
 
 
 class ThreadOption(Static):
@@ -113,8 +114,8 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
     }
 
     ThreadSelectorScreen > Vertical {
-        width: 80;
-        max-width: 90%;
+        width: 100;
+        max-width: 95%;
         height: 80%;
         background: $surface;
         border: solid $primary;
@@ -395,7 +396,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         """
         return (
             f"  {'Thread':<{_COL_TID}}  {'Agent':<{_COL_AGENT}}"
-            f"  {'Msgs':>{_COL_MSGS}}  Updated"
+            f"  {'Msgs':>{_COL_MSGS}}  {'Updated':<16}  Location"
         )
 
     @staticmethod
@@ -415,7 +416,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         Returns:
             Rich-markup label string.
         """
-        from deepagents_cli.sessions import format_timestamp
+        from deepagents_cli.sessions import format_path, format_timestamp
 
         glyphs = get_glyphs()
         cursor = f"{glyphs.cursor} " if selected else "  "
@@ -423,10 +424,13 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         agent = (thread.get("agent_name") or "unknown")[:_COL_AGENT]
         msgs = str(thread.get("message_count", 0))
         timestamp = format_timestamp(thread.get("updated_at"))
+        location = format_path(thread.get("cwd"))
+        if len(location) > _COL_LOC:
+            location = "…" + location[-(_COL_LOC - 1) :]
 
         label = (
             f"{cursor}{tid:<{_COL_TID}}  {agent:<{_COL_AGENT}}"
-            f"  {msgs:>{_COL_MSGS}}  {timestamp}"
+            f"  {msgs:>{_COL_MSGS}}  {timestamp:<16}  {location}"
         )
         if current:
             label += " [dim](current)[/dim]"

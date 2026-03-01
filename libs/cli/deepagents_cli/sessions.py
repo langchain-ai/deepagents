@@ -84,6 +84,9 @@ class ThreadInfo(TypedDict):
     message_count: NotRequired[int]
     """Number of messages in the thread."""
 
+    cwd: NotRequired[str | None]
+    """Working directory where the thread was last used."""
+
 
 def format_timestamp(iso_timestamp: str | None) -> str:
     """Format ISO timestamp for display (e.g., 'Dec 30, 6:10pm').
@@ -111,6 +114,34 @@ def format_timestamp(iso_timestamp: str | None) -> str:
             exc_info=True,
         )
         return ""
+
+
+def format_path(path: str | None) -> str:
+    """Format a filesystem path for display.
+
+    Paths under the user's home directory are shown relative to ``~``.
+    All other paths are returned as-is.
+
+    Args:
+        path: Absolute filesystem path, or `None`.
+
+    Returns:
+        Formatted path string or empty string if `None`.
+    """
+    if not path:
+        return ""
+    try:
+        home = Path.home()
+        home_str = str(home)
+        if path == home_str:
+            return "~"
+        prefix = home_str + "/"
+        if path.startswith(prefix):
+            return "~/" + path[len(prefix) :]
+    except (RuntimeError, KeyError):
+        return path
+    else:
+        return path
 
 
 def get_db_path() -> Path:
@@ -169,7 +200,8 @@ async def list_threads(
             query = """
                 SELECT thread_id,
                        json_extract(metadata, '$.agent_name') as agent_name,
-                       MAX(json_extract(metadata, '$.updated_at')) as updated_at
+                       MAX(json_extract(metadata, '$.updated_at')) as updated_at,
+                       json_extract(metadata, '$.cwd') as cwd
                 FROM checkpoints
                 WHERE json_extract(metadata, '$.agent_name') = ?
                 GROUP BY thread_id
@@ -181,7 +213,8 @@ async def list_threads(
             query = """
                 SELECT thread_id,
                        json_extract(metadata, '$.agent_name') as agent_name,
-                       MAX(json_extract(metadata, '$.updated_at')) as updated_at
+                       MAX(json_extract(metadata, '$.updated_at')) as updated_at,
+                       json_extract(metadata, '$.cwd') as cwd
                 FROM checkpoints
                 GROUP BY thread_id
                 ORDER BY updated_at DESC
@@ -192,7 +225,7 @@ async def list_threads(
         async with conn.execute(query, params) as cursor:
             rows = await cursor.fetchall()
             threads: list[ThreadInfo] = [
-                ThreadInfo(thread_id=r[0], agent_name=r[1], updated_at=r[2])
+                ThreadInfo(thread_id=r[0], agent_name=r[1], updated_at=r[2], cwd=r[3])
                 for r in rows
             ]
 
@@ -461,6 +494,7 @@ async def list_threads_command(
     table.add_column("Agent")
     table.add_column("Messages", justify="right")
     table.add_column("Last Used", style="dim")
+    table.add_column("Location", style="dim")
 
     for t in threads:
         table.add_row(
@@ -468,6 +502,7 @@ async def list_threads_command(
             t["agent_name"] or "unknown",
             str(t.get("message_count", 0)),
             format_timestamp(t.get("updated_at")),
+            format_path(t.get("cwd")),
         )
 
     console.print()

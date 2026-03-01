@@ -21,18 +21,21 @@ MOCK_THREADS: list[ThreadInfo] = [
         "agent_name": "my-agent",
         "updated_at": "2025-01-15T10:30:00",
         "message_count": 5,
+        "cwd": "/home/user/projects/foo",
     },
     {
         "thread_id": "def67890",
         "agent_name": "other-agent",
         "updated_at": "2025-01-14T08:00:00",
         "message_count": 12,
+        "cwd": "/tmp/workspace",
     },
     {
         "thread_id": "ghi11111",
         "agent_name": "my-agent",
         "updated_at": "2025-01-13T15:45:00",
         "message_count": 3,
+        "cwd": None,
     },
 ]
 

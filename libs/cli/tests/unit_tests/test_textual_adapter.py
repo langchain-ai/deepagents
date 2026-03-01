@@ -117,6 +117,7 @@ class TestBuildStreamConfig:
         assert config["metadata"]["assistant_id"] == "my-agent"
         assert config["metadata"]["agent_name"] == "my-agent"
         assert "updated_at" in config["metadata"]
+        assert "cwd" in config["metadata"]
 
     def test_updated_at_is_valid_iso_timestamp(self) -> None:
         """`updated_at` should be a valid timezone-aware ISO 8601 timestamp."""
@@ -129,12 +130,16 @@ class TestBuildStreamConfig:
     def test_no_assistant_fields_when_none(self) -> None:
         """Assistant-specific fields should be absent when `assistant_id` is `None`."""
         config = _build_stream_config("t-789", assistant_id=None)
-        assert config["metadata"] == {}
+        assert "assistant_id" not in config["metadata"]
+        assert "agent_name" not in config["metadata"]
+        assert "cwd" in config["metadata"]
 
     def test_no_assistant_fields_when_empty_string(self) -> None:
         """Empty-string `assistant_id` should be treated as absent."""
         config = _build_stream_config("t-000", assistant_id="")
-        assert config["metadata"] == {}
+        assert "assistant_id" not in config["metadata"]
+        assert "agent_name" not in config["metadata"]
+        assert "cwd" in config["metadata"]
 
     def test_configurable_thread_id(self) -> None:
         """`configurable.thread_id` should match the provided thread ID."""

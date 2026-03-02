@@ -8,7 +8,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from deepagents_cli.app import DeepAgentsApp, _format_token_count
+from deepagents_cli.app import DeepAgentsApp, _format_compact_limit, _format_token_count
+from deepagents_cli.config import settings
 from deepagents_cli.widgets.autocomplete import SLASH_COMMANDS
 from deepagents_cli.widgets.messages import AppMessage, ErrorMessage
 
@@ -164,12 +165,18 @@ class TestCompactGuards:
             await pilot.pause()
             _setup_compact_app(app, n_messages=3)
 
-            with _mock_middleware(cutoff=0):
+            with (
+                _mock_middleware(cutoff=0),
+                patch.object(settings, "model_context_limit", 200_000),
+            ):
                 await app._handle_compact()
                 await pilot.pause()
 
             msgs = app.query(AppMessage)
-            assert any("Nothing to compact yet" in str(w._content) for w in msgs)
+            assert any(
+                "compact limit (20.0K tokens (10% of 200.0K))" in str(w._content)
+                for w in msgs
+            )
 
     @pytest.mark.asyncio
     async def test_empty_state_shows_error(self) -> None:
@@ -389,12 +396,18 @@ class TestCompactEdgeCases:
             await pilot.pause()
             _setup_compact_app(app, n_messages=6)
 
-            with _mock_middleware(cutoff=0):
+            with (
+                _mock_middleware(cutoff=0),
+                patch.object(settings, "model_context_limit", 200_000),
+            ):
                 await app._handle_compact()
                 await pilot.pause()
 
             msgs = app.query(AppMessage)
-            assert any("Nothing to compact yet" in str(w._content) for w in msgs)
+            assert any(
+                "compact limit (20.0K tokens (10% of 200.0K))" in str(w._content)
+                for w in msgs
+            )
             app._agent.aupdate_state.assert_not_called()  # type: ignore[union-attr]
 
     @pytest.mark.asyncio
@@ -913,3 +926,22 @@ class TestFormatTokenCount:
 
     def test_above_million(self) -> None:
         assert _format_token_count(2_500_000) == "2.5M"
+
+
+class TestFormatCompactLimit:
+    """Test the _format_compact_limit helper function."""
+
+    def test_format_messages_limit(self) -> None:
+        assert _format_compact_limit(("messages", 6), None) == "last 6 messages"
+
+    def test_format_tokens_limit(self) -> None:
+        assert _format_compact_limit(("tokens", 12_345), None) == "12.3K tokens"
+
+    def test_format_fraction_limit_with_context(self) -> None:
+        assert (
+            _format_compact_limit(("fraction", 0.1), 200_000)
+            == "20.0K tokens (10% of 200.0K)"
+        )
+
+    def test_format_fraction_limit_without_context(self) -> None:
+        assert _format_compact_limit(("fraction", 0.1), None) == "10% of context window"

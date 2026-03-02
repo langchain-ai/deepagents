@@ -1614,6 +1614,36 @@ class TestDroppedImagePaste:
             assert len(app.tracker.get_images()) == 1
 
     @pytest.mark.asyncio
+    async def test_submit_falls_back_to_leading_image_when_full_path_non_image(
+        self, tmp_path
+    ) -> None:
+        """Leading image token should win over full non-image payload resolution."""
+        img_path = tmp_path / "fallback.png"
+        from PIL import Image
+
+        image = Image.new("RGB", (3, 3), color="green")
+        image.save(img_path, format="PNG")
+
+        payload_path = tmp_path / "fallback.png analyze"
+        payload_path.write_text("not an image")
+
+        app = _ImagePasteRecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.text = str(payload_path)
+            await pilot.pause()
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(app.submitted) == 1
+            assert app.submitted[0].value == "[image 1] analyze"
+            assert app.submitted[0].mode == "normal"
+            assert len(app.tracker.get_images()) == 1
+
+    @pytest.mark.asyncio
     async def test_submit_leading_path_handles_unicode_space_variants(
         self, tmp_path
     ) -> None:

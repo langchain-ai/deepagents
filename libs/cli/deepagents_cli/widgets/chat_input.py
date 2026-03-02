@@ -904,6 +904,40 @@ class ChatInput(Vertical):
         self.mode = "normal"
         return prefixed, parsed
 
+    def _extract_leading_dropped_path_with_command_recovery(
+        self, text: str
+    ) -> tuple[str, tuple[Path, int] | None]:
+        """Extract a leading dropped-path token with command-mode recovery.
+
+        Args:
+            text: Input text to parse.
+
+        Returns:
+            Tuple of `(candidate_text, leading_match)`, where `leading_match` is
+            `(path, token_end)` when extraction succeeds, otherwise `None`.
+        """
+        from deepagents_cli.input import extract_leading_pasted_file_path
+
+        leading_match = extract_leading_pasted_file_path(text)
+        candidate = text
+        if leading_match is not None:
+            return candidate, leading_match
+
+        if self.mode != "command":
+            return candidate, None
+
+        prefixed = f"/{text.lstrip('/')}"
+        leading_match = extract_leading_pasted_file_path(prefixed)
+        if leading_match is None:
+            return candidate, None
+
+        logger.debug(
+            "Recovering stripped absolute leading path; resetting mode "
+            "from 'command' to 'normal'"
+        )
+        self.mode = "normal"
+        return prefixed, leading_match
+
     @staticmethod
     def _is_existing_path_payload(text: str) -> bool:
         """Return whether text is a dropped-path payload for existing files."""
@@ -1234,14 +1268,23 @@ class ChatInput(Vertical):
             )
             if attached:
                 return replacement.strip()
-            return value
+            # Even when full-payload parsing resolves, still retry explicit
+            # leading-token extraction before giving up.
+            candidate, leading_match = (
+                self._extract_leading_dropped_path_with_command_recovery(value)
+            )
+            if leading_match is None:
+                return value
+            leading_path, token_end = leading_match
+        else:
+            leading_path = parsed.paths[0]
+            token_end = parsed.token_end
 
-        leading_path = parsed.paths[0]
         replacement, attached = self._build_path_replacement(
             str(leading_path), [leading_path], add_trailing_space=False
         )
         if attached:
-            suffix = candidate[parsed.token_end :].lstrip()
+            suffix = candidate[token_end:].lstrip()
             if suffix:
                 return f"{replacement.strip()} {suffix}".strip()
             return replacement.strip()

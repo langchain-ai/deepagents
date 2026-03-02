@@ -1479,6 +1479,9 @@ class TestDroppedImagePaste:
         self, tmp_path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Fast quoted-path key bursts should flush as `[image N]` placeholders."""
+        # This test exercises burst parsing behavior, not scheduler precision.
+        # CI workers can exceed the default 30ms inter-key gap, which would
+        # flush mid-sequence and make the test flaky.
         monkeypatch.setattr(chat_input_module, "_PASTE_BURST_CHAR_GAP_SECONDS", 1.0)
         monkeypatch.setattr(chat_input_module, "_PASTE_BURST_FLUSH_DELAY_SECONDS", 0.25)
 

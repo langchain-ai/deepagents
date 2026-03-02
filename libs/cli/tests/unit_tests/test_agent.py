@@ -4,6 +4,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import Mock, patch
 
+from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+from langchain_core.messages import AIMessage
+
 if TYPE_CHECKING:
     from langchain.agents.middleware.types import AgentState
     from langchain.messages import ToolCall
@@ -22,6 +25,13 @@ from deepagents_cli.agent import (
     list_agents,
 )
 from deepagents_cli.config import Settings, get_glyphs
+
+
+def _make_fake_chat_model() -> GenericFakeChatModel:
+    """Create a fake chat model compatible with summarization middleware."""
+    model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+    model.profile = {"max_input_tokens": 200000}
+    return model
 
 
 def test_format_write_file_description_create_new_file(tmp_path: Path) -> None:
@@ -497,7 +507,7 @@ class TestCreateCliAgentSkillsSources:
         mock_agent = Mock()
         mock_agent.with_config.return_value = mock_agent
 
-        fake_model = Mock(profile={"max_input_tokens": 200000})
+        fake_model = _make_fake_chat_model()
         with (
             patch("deepagents_cli.agent.settings", mock_settings),
             patch("deepagents_cli.agent.SkillsMiddleware", FakeSkillsMiddleware),
@@ -570,7 +580,7 @@ class TestCreateCliAgentMemorySources:
         mock_agent = Mock()
         mock_agent.with_config.return_value = mock_agent
 
-        fake_model = Mock(profile={"max_input_tokens": 200000})
+        fake_model = _make_fake_chat_model()
         with (
             patch("deepagents_cli.agent.settings", mock_settings),
             patch("deepagents_cli.agent.SkillsMiddleware"),
@@ -636,7 +646,7 @@ class TestCreateCliAgentMemorySources:
         mock_agent = Mock()
         mock_agent.with_config.return_value = mock_agent
 
-        fake_model = Mock(profile={"max_input_tokens": 200000})
+        fake_model = _make_fake_chat_model()
         with (
             patch("deepagents_cli.agent.settings", mock_settings),
             patch("deepagents_cli.agent.SkillsMiddleware"),
@@ -705,7 +715,7 @@ class TestMiddlewareStackConformance:
             agent.with_config.return_value = agent
             return agent
 
-        fake_model = Mock(profile={"max_input_tokens": 200000})
+        fake_model = _make_fake_chat_model()
         with (
             patch("deepagents_cli.agent.settings", mock_settings),
             patch(

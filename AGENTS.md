@@ -14,7 +14,7 @@ deepagents/
 │   ├── deepagents/  # SDK
 │   ├── cli/         # CLI tool
 │   ├── acp/         # Agent Context Protocol support
-│   └── harbor/      # Evaluation/benchmark framework
+│   ├── harbor/      # Evaluation/benchmark framework
 │   └── partners/    # Integration packages
 │       └── daytona/
 │       └── ...

@@ -1021,9 +1021,10 @@ def fetch_langsmith_project_url(project_name: str) -> str | None:
 
     try:
         from langsmith import Client
+        from langsmith.utils import LangSmithError
 
         project = Client().read_project(project_name=project_name)
-    except (ImportError, OSError, ValueError, RuntimeError):
+    except (ImportError, LangSmithError, OSError, ValueError, RuntimeError):
         logger.debug(
             "Could not fetch LangSmith project URL for '%s'",
             project_name,

@@ -593,6 +593,18 @@ class TestFetchLangsmithProjectUrl:
 
         assert result is None
 
+    def test_returns_none_on_project_not_found(self) -> None:
+        """Should return None when the project does not exist yet."""
+        from langsmith.utils import LangSmithNotFoundError
+
+        with patch("langsmith.Client") as mock_client_cls:
+            mock_client_cls.return_value.read_project.side_effect = (
+                LangSmithNotFoundError("Project angus-dacli not found")
+            )
+            result = fetch_langsmith_project_url("angus-dacli")
+
+        assert result is None
+
     def test_returns_none_when_url_is_none(self) -> None:
         """Should return None when the project has no URL."""
 

@@ -47,3 +47,8 @@ jobs:
         working-directory: ${{ inputs.working-directory }}
         run: |
           make lint
+
+      - name: "🔠 Run Type Checker"
+        working-directory: ${{ inputs.working-directory }}
+        run: |
+          make type

@@ -1,4 +1,4 @@
-.PHONY: format lint test tests evals integration_test integration_tests test_watch benchmark help run lint_package lint_tests check_imports coverage typecheck update-snapshots
+.PHONY: format lint test tests evals integration_test integration_tests test_watch benchmark help run lint_package lint_tests check_imports coverage type typecheck update-snapshots
 
 .DEFAULT_GOAL := help
 
@@ -16,7 +16,7 @@ integration_test integration_tests: TEST_FILE=tests/integration_tests/
 
 test: ## Run unit tests
 test tests:
-	uv run --group test pytest -vvv --disable-socket --allow-unix-socket $(TEST_FILE) \
+	uv run --group test pytest -n auto -vvv --disable-socket --allow-unix-socket $(TEST_FILE) \
 		--cov=deepagents \
 		--cov-report=term-missing
 
@@ -67,7 +67,8 @@ lint lint_diff lint_package lint_tests:
 	[ "$(PYTHON_FILES)" = "" ] || uv run --all-groups ruff format $(PYTHON_FILES) --diff
 	uv run --all-groups ty check deepagents
 
-typecheck: ## Run type checker
+type: ## Run type checker
+type typecheck:
 	uv run --all-groups ty check deepagents
 
 format: ## Run code formatters

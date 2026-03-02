@@ -1,0 +1,59 @@
+# Daily evaluation workflow for Deep Agents
+#
+# Runs tests/evals on a cron schedule (once per day).
+# Single job; model/provider is selected via workflow input `model`.
+#
+# Required secrets:
+#   LANGSMITH_API_KEY  — used for tracing
+#   ANTHROPIC_API_KEY  — needed for Anthropic models
+#   OPENAI_API_KEY     — needed for OpenAI models
+
+name: "📊 Evals"
+
+on:
+  schedule:
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+    inputs:
+      model:
+        description: "Model to run evals against (passed to pytest as --model ...)"
+        required: false
+        default: "anthropic:claude-sonnet-4-5-20250929"
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  UV_NO_SYNC: "true"
+
+jobs:
+  eval:
+    name: "📊 Eval"
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    defaults:
+      run:
+        working-directory: libs/deepagents
+    env:
+      PYTEST_ADDOPTS: "--model ${{ inputs.model || 'anthropic:claude-sonnet-4-5-20250929' }}"
+      LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+      LANGSMITH_TRACING_V2: "true"
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+    steps:
+      - name: "📋 Checkout Code"
+        uses: actions/checkout@v6
+
+      - name: "🐍 Set up Python + UV"
+        uses: "./.github/actions/uv_setup"
+        with:
+          python-version: "3.11"
+          cache-suffix: evals
+          working-directory: libs/deepagents
+
+      - name: "📦 Install Dependencies"
+        run: uv sync --group test --locked
+
+      - name: "📊 Run Evals"
+        run: make evals

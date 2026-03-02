@@ -39,6 +39,10 @@ from deepagents_cli.model_config import (  # noqa: E402  # Import after os.envir
     ModelConfigError,
     ModelSpec,
 )
+from deepagents_cli.project_utils import (  # noqa: E402
+    find_project_agent_md as _find_project_agent_md,
+    find_project_root as _find_project_root,
+)
 
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
@@ -171,8 +175,8 @@ _glyphs_cache: Glyphs | None = None
 # Module-level cache for editable install detection
 _editable_cache: bool | None = None
 
-# Module-level cache for LangSmith project URL (None means "not yet fetched")
-_langsmith_url_cache: tuple[str, str | None] | None = None
+# Module-level cache for successful LangSmith project URL lookups
+_langsmith_url_cache: tuple[str, str] | None = None
 
 
 def _is_editable_install() -> bool:
@@ -317,62 +321,6 @@ config: RunnableConfig = {"recursion_limit": 1000}
 
 # Rich console instance
 console = Console(highlight=False)
-
-
-def _find_project_root(start_path: Path | None = None) -> Path | None:
-    """Find the project root by looking for .git directory.
-
-    Walks up the directory tree from start_path (or cwd) looking for a .git
-    directory, which indicates the project root.
-
-    Args:
-        start_path: Directory to start searching from.
-            Defaults to current working directory.
-
-    Returns:
-        Path to the project root if found, None otherwise.
-    """
-    current = Path(start_path or Path.cwd()).resolve()
-
-    # Walk up the directory tree
-    for parent in [current, *list(current.parents)]:
-        git_dir = parent / ".git"
-        if git_dir.exists():
-            return parent
-
-    return None
-
-
-def _find_project_agent_md(project_root: Path) -> list[Path]:
-    """Find project-specific AGENTS.md file(s).
-
-    Checks two locations and returns ALL that exist:
-    1. project_root/.deepagents/AGENTS.md
-    2. project_root/AGENTS.md
-
-    Both files will be loaded and combined if both exist.
-
-    Args:
-        project_root: Path to the project root directory.
-
-    Returns:
-        Existing AGENTS.md paths.
-
-            Empty if neither file exists, one entry if only one is present, or
-            two entries if both locations have the file.
-    """
-    candidates = [
-        project_root / ".deepagents" / "AGENTS.md",
-        project_root / "AGENTS.md",
-    ]
-    paths: list[Path] = []
-    for candidate in candidates:
-        try:
-            if candidate.exists():
-                paths.append(candidate)
-        except OSError:
-            pass
-    return paths
 
 
 def parse_shell_allow_list(allow_list_str: str | None) -> list[str] | None:
@@ -995,8 +943,8 @@ def get_langsmith_project_name() -> str | None:
 def fetch_langsmith_project_url(project_name: str) -> str | None:
     """Fetch the LangSmith project URL via the LangSmith client.
 
-    Results are cached at module level so repeated calls do not make additional
-    network requests. Failed lookups are also cached to avoid retries.
+    Successful results are cached at module level so repeated calls do not
+    make additional network requests.
 
     This is a blocking network call on the first invocation. In async
     contexts, run it in a thread (e.g. via `asyncio.to_thread`).
@@ -1021,19 +969,20 @@ def fetch_langsmith_project_url(project_name: str) -> str | None:
 
     try:
         from langsmith import Client
+        from langsmith.utils import LangSmithError
 
         project = Client().read_project(project_name=project_name)
-    except (ImportError, OSError, ValueError, RuntimeError):
+    except (ImportError, LangSmithError, OSError, ValueError, RuntimeError):
         logger.debug(
             "Could not fetch LangSmith project URL for '%s'",
             project_name,
             exc_info=True,
         )
-        _langsmith_url_cache = (project_name, None)
         return None
     else:
         url = project.url or None
-        _langsmith_url_cache = (project_name, url)
+        if url is not None:
+            _langsmith_url_cache = (project_name, url)
         return url
 
 

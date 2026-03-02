@@ -3,6 +3,7 @@
 import logging
 import re
 import shlex
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
@@ -72,6 +73,22 @@ space code points that look identical to normal spaces when pasted.
 
 _WINDOWS_DRIVE_PATH_PATTERN = re.compile(r"^[A-Za-z]:[\\/]")
 """Pattern for Windows drive-letter paths like `C:\\Users\\...`."""
+
+
+@dataclass(frozen=True)
+class ParsedPastedPathPayload:
+    """Unified parse result for dropped-path payload detection.
+
+    Attributes:
+        paths: Resolved file paths parsed from the input payload.
+        token_end: End index (exclusive) of the parsed leading token when the
+            payload starts with a path followed by trailing text.
+
+            `None` means the entire payload was parsed as path-only content.
+    """
+
+    paths: list[Path]
+    token_end: int | None = None
 
 
 class ImageTracker:
@@ -242,6 +259,43 @@ def parse_pasted_file_paths(text: str) -> list[Path]:
         paths.append(resolved)
 
     return paths
+
+
+def parse_pasted_path_payload(
+    text: str, *, allow_leading_path: bool = False
+) -> ParsedPastedPathPayload | None:
+    """Parse dropped-path payload variants through one entrypoint.
+
+    Parsing order is:
+    1. strict multi-path payload parsing (`parse_pasted_file_paths`)
+    2. single-path normalization/parsing (`parse_single_pasted_file_path`)
+    3. optional leading-path extraction (`extract_leading_pasted_file_path`)
+
+    Args:
+        text: Input payload to parse.
+        allow_leading_path: Whether to parse a leading path token followed by
+            trailing prompt text.
+
+    Returns:
+        Parsed payload details, otherwise `None`.
+    """
+    paths = parse_pasted_file_paths(text)
+    if paths:
+        return ParsedPastedPathPayload(paths=paths)
+
+    single_path = parse_single_pasted_file_path(text)
+    if single_path is not None:
+        return ParsedPastedPathPayload(paths=[single_path])
+
+    if not allow_leading_path:
+        return None
+
+    leading = extract_leading_pasted_file_path(text)
+    if leading is None:
+        return None
+
+    path, token_end = leading
+    return ParsedPastedPathPayload(paths=[path], token_end=token_end)
 
 
 def parse_single_pasted_file_path(text: str) -> Path | None:

@@ -9,6 +9,7 @@ from deepagents_cli.input import (
     normalize_pasted_path,
     parse_file_mentions,
     parse_pasted_file_paths,
+    parse_pasted_path_payload,
     parse_single_pasted_file_path,
 )
 
@@ -353,6 +354,34 @@ def test_parse_single_pasted_file_path_unquoted_posix_path_with_spaces(
     resolved = parse_single_pasted_file_path(str(img))
 
     assert resolved == img.resolve()
+
+
+def test_parse_pasted_path_payload_single_path(tmp_path: Path) -> None:
+    """Payload parser should resolve path-only payloads."""
+    img = tmp_path / "one.png"
+    img.write_bytes(b"img")
+
+    parsed = parse_pasted_path_payload(str(img))
+
+    assert parsed is not None
+    assert parsed.paths == [img.resolve()]
+    assert parsed.token_end is None
+
+
+def test_parse_pasted_path_payload_leading_path_with_suffix(tmp_path: Path) -> None:
+    """Payload parser should extract leading path when enabled."""
+    img = tmp_path / "my image.png"
+    img.write_bytes(b"img")
+    payload = f"'{img}' what's in this image?"
+
+    assert parse_pasted_path_payload(payload) is None
+
+    parsed = parse_pasted_path_payload(payload, allow_leading_path=True)
+
+    assert parsed is not None
+    assert parsed.paths == [img.resolve()]
+    assert parsed.token_end is not None
+    assert payload[parsed.token_end :] == " what's in this image?"
 
 
 def test_extract_leading_pasted_file_path_with_trailing_text(tmp_path: Path) -> None:

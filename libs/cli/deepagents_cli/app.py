@@ -1439,9 +1439,9 @@ class DeepAgentsApp(App):
             if cutoff == 0:
                 await self._mount_message(
                     AppMessage(
-                        "Nothing to compact yet"
-                        " \u2014 conversation is within the compact limit "
-                        f"({compact_limit})"
+                        "Nothing to compact yet \u2014 conversation is within "
+                        "the token budget.\n"
+                        f"Configured retention budget: {compact_limit}"
                     )
                 )
                 return
@@ -1507,11 +1507,12 @@ class DeepAgentsApp(App):
 
             await self._mount_message(
                 AppMessage(
-                    f"Compacted {len(to_summarize)} messages "
-                    f"({summarized_before} \u2192 {summarized_after} tokens)\n"
-                    f"  total context: {before} \u2192 {after} "
-                    f"({pct}% decrease) "
-                    f"\u00b7 {len(to_keep)} messages unchanged"
+                    "Conversation compacted. "
+                    f"Summarized {len(to_summarize)} messages into a concise summary.\n"
+                    f"Summarized context: {summarized_before} \u2192 "
+                    f"{summarized_after} tokens\n"
+                    f"Total context: {before} \u2192 {after} tokens "
+                    f"({pct}% decrease), {len(to_keep)} messages unchanged."
                 )
             )
 

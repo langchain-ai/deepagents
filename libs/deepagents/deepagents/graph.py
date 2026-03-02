@@ -30,10 +30,7 @@ from deepagents.middleware.subagents import (
     SubAgent,
     SubAgentMiddleware,
 )
-from deepagents.middleware.summarization import (
-    SummarizationMiddleware,
-    compute_summarization_defaults,
-)
+from deepagents.middleware.summarization import create_summarization_middleware
 
 BASE_AGENT_PROMPT = """You are a Deep Agent, an AI assistant that helps users accomplish tasks using tools. You respond with text and tool calls. The user can see your responses and tool outputs in real time.
 
@@ -82,6 +79,32 @@ def get_default_model() -> ChatAnthropic:
     )
 
 
+def resolve_model(model: str | BaseChatModel) -> BaseChatModel:
+    """Resolve a model string to a `BaseChatModel` instance.
+
+    If `model` is already a `BaseChatModel`, returns it unchanged.
+
+    String models are resolved via `init_chat_model`, with OpenAI models
+    defaulting to the Responses API. See the `create_deep_agent` docstring for
+    details on how to customize this behavior.
+
+    Args:
+        model: Model name string or pre-configured model instance.
+
+    Returns:
+        Resolved `BaseChatModel` instance.
+    """
+    if isinstance(model, BaseChatModel):
+        return model
+    if model.startswith("openai:"):
+        # Use Responses API by default. To use chat completions, use
+        # `model=init_chat_model("openai:...")`
+        # To disable data retention with the Responses API, use
+        # `model=init_chat_model("openai:...", use_responses_api=True, store=False, include=["reasoning.encrypted_content"])`
+        return init_chat_model(model, use_responses_api=True)
+    return init_chat_model(model)
+
+
 def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic with many conditional branches
     model: str | BaseChatModel | None = None,
     tools: Sequence[BaseTool | Callable | dict[str, Any]] | None = None,
@@ -121,6 +144,15 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
             Defaults to `claude-sonnet-4-5-20250929`.
 
             Use the `provider:model` format (e.g., `openai:gpt-5`) to quickly switch between models.
+
+            If an `openai:` model is used, the agent will use the OpenAI
+            Responses API by default. To use OpenAI chat completions instead,
+            initialize the model with
+            `init_chat_model("openai:...", use_responses_api=False)` and pass
+            the initialized model instance here. To disable data retention with
+            the Responses API, use
+            `init_chat_model("openai:...", use_responses_api=True, store=False, include=["reasoning.encrypted_content"])`
+            and pass the initialized model instance here.
         tools: The tools the agent should have access to.
 
             In addition to custom tools you provide, deep agents include built-in tools for planning,
@@ -176,22 +208,7 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
     Returns:
         A configured deep agent.
     """
-    if model is None:
-        model = get_default_model()
-    elif isinstance(model, str):
-        if model.startswith("openai:"):
-            # Use Responses API by default. To use chat completions, use
-            # `model=init_chat_model("openai:...")`
-            # To disable data retention with the Responses API, use
-            # `model=init_chat_model("openai:...", use_responses_api=True, store=False, include=["reasoning.encrypted_content"])`
-            model_init_params: dict = {"use_responses_api": True}
-        else:
-            model_init_params = {}
-
-        model = init_chat_model(model, **model_init_params)
-
-    # Compute summarization defaults based on model profile
-    summarization_defaults = compute_summarization_defaults(model)
+    model = get_default_model() if model is None else resolve_model(model)
 
     backend = backend if backend is not None else (StateBackend)
 
@@ -199,14 +216,7 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
     gp_middleware: list[AgentMiddleware[Any, Any, Any]] = [
         TodoListMiddleware(),
         FilesystemMiddleware(backend=backend),
-        SummarizationMiddleware(
-            model=model,
-            backend=backend,
-            trigger=summarization_defaults["trigger"],
-            keep=summarization_defaults["keep"],
-            trim_tokens_to_summarize=None,
-            truncate_args_settings=summarization_defaults["truncate_args_settings"],
-        ),
+        create_summarization_middleware(model, backend),
         AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
         PatchToolCallsMiddleware(),
     ]
@@ -231,22 +241,13 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
         else:
             # SubAgent - fill in defaults and prepend base middleware
             subagent_model = spec.get("model", model)
-            if isinstance(subagent_model, str):
-                subagent_model = init_chat_model(subagent_model)
+            subagent_model = resolve_model(subagent_model)
 
             # Build middleware: base stack + skills (if specified) + user's middleware
-            subagent_summarization_defaults = compute_summarization_defaults(subagent_model)
             subagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
                 TodoListMiddleware(),
                 FilesystemMiddleware(backend=backend),
-                SummarizationMiddleware(
-                    model=subagent_model,
-                    backend=backend,
-                    trigger=subagent_summarization_defaults["trigger"],
-                    keep=subagent_summarization_defaults["keep"],
-                    trim_tokens_to_summarize=None,
-                    truncate_args_settings=subagent_summarization_defaults["truncate_args_settings"],
-                ),
+                create_summarization_middleware(subagent_model, backend),
                 AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
                 PatchToolCallsMiddleware(),
             ]
@@ -274,14 +275,6 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
         deepagent_middleware.append(MemoryMiddleware(backend=backend, sources=memory))
     if skills is not None:
         deepagent_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
-    summarization_middleware = SummarizationMiddleware(
-        model=model,
-        backend=backend,
-        trigger=summarization_defaults["trigger"],
-        keep=summarization_defaults["keep"],
-        trim_tokens_to_summarize=None,
-        truncate_args_settings=summarization_defaults["truncate_args_settings"],
-    )
     deepagent_middleware.extend(
         [
             FilesystemMiddleware(backend=backend),
@@ -289,7 +282,7 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
                 backend=backend,
                 subagents=all_subagents,
             ),
-            summarization_middleware,
+            create_summarization_middleware(model, backend),
             AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
             PatchToolCallsMiddleware(),
         ]

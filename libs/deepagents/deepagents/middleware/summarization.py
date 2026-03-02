@@ -166,8 +166,8 @@ def compute_summarization_defaults(model: BaseChatModel) -> SummarizationDefault
 
     Returns:
         Default settings for trigger, keep, and truncate_args_settings.
-        If the model has a profile with max_input_tokens, uses fraction-based
-        settings. Otherwise, uses fixed token/message counts.
+            If the model has a profile with `max_input_tokens`, uses
+            fraction-based settings. Otherwise, uses fixed token/message counts.
     """
     has_profile = (
         model.profile is not None
@@ -185,6 +185,9 @@ def compute_summarization_defaults(model: BaseChatModel) -> SummarizationDefault
                 "keep": ("fraction", 0.10),
             },
         }
+
+    # Defaults for models without profile info are more conservative to avoid
+    # overshooting context limits.
     return {
         "trigger": ("tokens", 170000),
         "keep": ("messages", 6),
@@ -1041,6 +1044,33 @@ A condensed summary follows:
 
 # Public alias
 SummarizationMiddleware = _DeepAgentsSummarizationMiddleware
+
+
+def create_summarization_middleware(
+    model: BaseChatModel,
+    backend: BACKEND_TYPES,
+) -> _DeepAgentsSummarizationMiddleware:
+    """Create a `SummarizationMiddleware` with model-aware defaults.
+
+    Computes trigger, keep, and truncation settings from the model's profile
+    (or uses fixed-token fallbacks) and returns a configured middleware.
+
+    Args:
+        model: Resolved chat model instance.
+        backend: Backend instance or factory for persisting conversation history.
+
+    Returns:
+        Configured `SummarizationMiddleware` instance.
+    """
+    defaults = compute_summarization_defaults(model)
+    return SummarizationMiddleware(
+        model=model,
+        backend=backend,
+        trigger=defaults["trigger"],
+        keep=defaults["keep"],
+        trim_tokens_to_summarize=None,
+        truncate_args_settings=defaults["truncate_args_settings"],
+    )
 
 
 class SummarizationToolMiddleware(AgentMiddleware):

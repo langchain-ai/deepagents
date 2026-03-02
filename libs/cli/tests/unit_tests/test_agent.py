@@ -497,11 +497,16 @@ class TestCreateCliAgentSkillsSources:
         mock_agent = Mock()
         mock_agent.with_config.return_value = mock_agent
 
+        fake_model = Mock(profile={"max_input_tokens": 200000})
         with (
             patch("deepagents_cli.agent.settings", mock_settings),
             patch("deepagents_cli.agent.SkillsMiddleware", FakeSkillsMiddleware),
             patch("deepagents_cli.agent.MemoryMiddleware"),
             patch("deepagents_cli.agent.create_deep_agent", return_value=mock_agent),
+            patch(
+                "deepagents.graph.init_chat_model",
+                return_value=fake_model,
+            ),
         ):
             create_cli_agent(
                 model="fake-model",
@@ -565,6 +570,7 @@ class TestCreateCliAgentMemorySources:
         mock_agent = Mock()
         mock_agent.with_config.return_value = mock_agent
 
+        fake_model = Mock(profile={"max_input_tokens": 200000})
         with (
             patch("deepagents_cli.agent.settings", mock_settings),
             patch("deepagents_cli.agent.SkillsMiddleware"),
@@ -573,6 +579,10 @@ class TestCreateCliAgentMemorySources:
             patch(
                 "deepagents_cli.agent.create_deep_agent",
                 return_value=mock_agent,
+            ),
+            patch(
+                "deepagents.graph.init_chat_model",
+                return_value=fake_model,
             ),
         ):
             create_cli_agent(
@@ -626,6 +636,7 @@ class TestCreateCliAgentMemorySources:
         mock_agent = Mock()
         mock_agent.with_config.return_value = mock_agent
 
+        fake_model = Mock(profile={"max_input_tokens": 200000})
         with (
             patch("deepagents_cli.agent.settings", mock_settings),
             patch("deepagents_cli.agent.SkillsMiddleware"),
@@ -634,6 +645,10 @@ class TestCreateCliAgentMemorySources:
             patch(
                 "deepagents_cli.agent.create_deep_agent",
                 return_value=mock_agent,
+            ),
+            patch(
+                "deepagents.graph.init_chat_model",
+                return_value=fake_model,
             ),
         ):
             create_cli_agent(
@@ -690,11 +705,16 @@ class TestMiddlewareStackConformance:
             agent.with_config.return_value = agent
             return agent
 
+        fake_model = Mock(profile={"max_input_tokens": 200000})
         with (
             patch("deepagents_cli.agent.settings", mock_settings),
             patch(
                 "deepagents_cli.agent.create_deep_agent",
                 side_effect=capture_create_agent,
+            ),
+            patch(
+                "deepagents.graph.init_chat_model",
+                return_value=fake_model,
             ),
         ):
             create_cli_agent(

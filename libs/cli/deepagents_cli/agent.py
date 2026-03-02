@@ -589,6 +589,21 @@ def create_cli_agent(
             routes={},
         )
 
+    from deepagents.graph import resolve_model
+
+    model = resolve_model(model)
+
+    from deepagents.middleware.summarization import (
+        SummarizationToolMiddleware,
+        create_summarization_middleware,
+    )
+
+    agent_middleware.append(
+        SummarizationToolMiddleware(
+            create_summarization_middleware(model, composite_backend)
+        )
+    )
+
     # Create the agent
     # Use provided checkpointer or fallback to InMemorySaver
     final_checkpointer = checkpointer if checkpointer is not None else InMemorySaver()

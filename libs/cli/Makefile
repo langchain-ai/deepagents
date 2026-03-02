@@ -57,7 +57,7 @@ lint: ## Run linters and type checker
 lint lint_diff lint_package lint_tests:
 	[ "$(PYTHON_FILES)" = "" ] || uv run --all-groups ruff check $(PYTHON_FILES)
 	[ "$(PYTHON_FILES)" = "" ] || uv run --all-groups ruff format $(PYTHON_FILES) --diff
-	[ "$(PYTHON_FILES)" = "" ] || uv run --all-groups ty check $(PYTHON_FILES)
+	$(MAKE) type PYTHON_FILES="$(PYTHON_FILES)"
 
 type: ## Run type checker
 type typecheck:

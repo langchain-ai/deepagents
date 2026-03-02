@@ -1,0 +1,48 @@
+# Publishes CLI package to PyPI when a draft GitHub release is published.
+#
+# This enables human-in-the-loop release notes editing:
+# 1. release.yml creates a DRAFT release with auto-generated notes
+# 2. Maintainer edits the release notes in GitHub UI
+# 3. Maintainer clicks "Publish release"
+# 4. This workflow triggers and publishes to PyPI
+
+name: "📦 Publish Release"
+run-name: "Publish ${{ github.event.release.tag_name }}"
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish-cli:
+    # Only run for CLI releases (tag format: deepagents-cli==X.Y.Z)
+    if: startsWith(github.event.release.tag_name, 'deepagents-cli==')
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p dist
+          cd dist
+          gh release download "${{ github.event.release.tag_name }}" \
+            --repo "${{ github.repository }}" \
+            --pattern "*.whl"
+          gh release download "${{ github.event.release.tag_name }}" \
+            --repo "${{ github.repository }}" \
+            --pattern "*.tar.gz"
+          ls -la
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+          skip-existing: true
+          verbose: true
+          print-hash: true
+          attestations: false

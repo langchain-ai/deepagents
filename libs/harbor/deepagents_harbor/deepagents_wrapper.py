@@ -1,17 +1,18 @@
-"""A wrapper for DeepAgents to run in Harbor environments."""
+"""A wrapper for Deep Agents to run in Harbor environments."""
+
+from __future__ import annotations
 
 import json
+import logging
 import os
 import uuid
-from datetime import datetime, timezone
-from pathlib import Path
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any
 
 from deepagents import create_deep_agent
 from deepagents_cli.agent import create_cli_agent
 from dotenv import load_dotenv
 from harbor.agents.base import BaseAgent
-from harbor.environments.base import BaseEnvironment
-from harbor.models.agent.context import AgentContext
 from harbor.models.trajectories import (
     Agent,
     FinalMetrics,
@@ -22,16 +23,26 @@ from harbor.models.trajectories import (
     Trajectory,
 )
 from langchain.chat_models import init_chat_model
-from langchain.messages import UsageMetadata
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-from langchain_core.runnables import RunnableConfig
 from langsmith import trace
 from langsmith.client import Client
 
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from harbor.environments.base import BaseEnvironment
+    from harbor.models.agent.context import AgentContext
+    from langchain.messages import UsageMetadata
+    from langchain_core.runnables import RunnableConfig
+
 from deepagents_harbor.backend import HarborSandbox
+
+logger = logging.getLogger(__name__)
 
 # Load .env file if present
 load_dotenv()
+
+_MAX_FILE_LISTING = 10  # maximum files shown in the system prompt directory context
 
 SYSTEM_MESSAGE = """
 You are an autonomous agent executing tasks in a sandboxed environment. Follow these instructions carefully.
@@ -53,9 +64,9 @@ Your current working directory is:
 
 
 class DeepAgentsWrapper(BaseAgent):
-    """Harbor agent implementation using LangChain DeepAgents.
+    """Harbor agent implementation using LangChain Deep Agents.
 
-    Wraps DeepAgents to execute tasks in Harbor environments.
+    Wraps Deep Agents to execute tasks in Harbor environments.
     """
 
     def __init__(
@@ -65,10 +76,10 @@ class DeepAgentsWrapper(BaseAgent):
         temperature: float = 0.0,
         verbose: bool = True,
         use_cli_agent: bool = True,
-        *args,
-        **kwargs,
+        *args: Any,
+        **kwargs: Any,
     ) -> None:
-        """Initialize DeepAgentsWrapper.
+        """Initialize Deep AgentsWrapper.
 
         Args:
             logs_dir: Directory for storing logs
@@ -76,12 +87,12 @@ class DeepAgentsWrapper(BaseAgent):
             temperature: Temperature setting for the model
             verbose: Enable verbose output
             use_cli_agent: If True, use create_cli_agent from deepagents-cli (default).
-                          If False, use create_deep_agent from SDK.
+                If False, use create_deep_agent from SDK.
         """
         super().__init__(logs_dir, model_name, *args, **kwargs)
 
         if model_name is None:
-            # Use DeepAgents default
+            # Use Deep Agents default
             model_name = "anthropic:claude-sonnet-4-5-20250929"
 
         self._model_name = model_name
@@ -108,12 +119,12 @@ class DeepAgentsWrapper(BaseAgent):
                     instruction = example.inputs.get("instruction") if example.inputs else None
                     if instruction:
                         self._instruction_to_example_id[instruction] = str(example.id)
-            except Exception as e:
-                # Log error but don't fail initialization
-                print(f"Warning: Failed to build instruction->example_id mapping: {e}")
+            except Exception:  # noqa: BLE001  # gracefully degrade when LangSmith is unavailable
+                logger.warning("Failed to build instruction->example_id mapping", exc_info=True)
 
     @staticmethod
     def name() -> str:
+        """Return the agent name identifier."""
         return "deepagent-harbor"
 
     async def setup(self, environment: BaseEnvironment) -> None:
@@ -122,7 +133,6 @@ class DeepAgentsWrapper(BaseAgent):
         Args:
             environment: Harbor environment (Docker, Modal, etc.)
         """
-        pass
 
     def version(self) -> str | None:
         """The version of the agent."""
@@ -141,38 +151,36 @@ class DeepAgentsWrapper(BaseAgent):
         ls_info = await backend.als_info(".")
         current_dir = (await backend.aexecute("pwd")).output
 
-        # Get first 10 files
         total_files = len(ls_info) if ls_info else 0
-        first_10_files = ls_info[:10] if ls_info else []
+        first_files = ls_info[:_MAX_FILE_LISTING] if ls_info else []
 
         # Build file listing header based on actual count
         if total_files == 0:
             file_listing_header = "Current directory is empty."
             file_listing = ""
-        elif total_files <= 10:
+        elif total_files <= _MAX_FILE_LISTING:
             # Show actual count when 10 or fewer
             file_count_text = "1 file" if total_files == 1 else f"{total_files} files"
             file_listing_header = f"Files in current directory ({file_count_text}):"
-            file_listing = "\n".join(f"{i + 1}. {file}" for i, file in enumerate(first_10_files))
+            file_listing = "\n".join(f"{i + 1}. {file}" for i, file in enumerate(first_files))
         else:
-            # Show "First 10 of N" when more than 10
-            file_listing_header = f"Files in current directory (showing first 10 of {total_files}):"
-            file_listing = "\n".join(f"{i + 1}. {file}" for i, file in enumerate(first_10_files))
+            file_listing_header = (
+                f"Files in current directory (showing first {_MAX_FILE_LISTING} of {total_files}):"
+            )
+            file_listing = "\n".join(f"{i + 1}. {file}" for i, file in enumerate(first_files))
 
         # Format the system prompt with context
-        formatted_prompt = SYSTEM_MESSAGE.format(
+        return SYSTEM_MESSAGE.format(
             current_directory=current_dir.strip() if current_dir else "/app",
             file_listing_header=file_listing_header,
             file_listing=file_listing,
         )
 
-        return formatted_prompt
-
     async def run(
         self,
         instruction: str,
         environment: BaseEnvironment,
-        context: AgentContext,
+        context: AgentContext,  # noqa: ARG002  # required by BaseAgent interface
     ) -> None:
         """Execute the Deep Agent on the given instruction.
 
@@ -183,9 +191,8 @@ class DeepAgentsWrapper(BaseAgent):
         """
         configuration = json.loads(environment.trial_paths.config_path.read_text())
         if not isinstance(configuration, dict):
-            raise AssertionError(
-                f"Unexpected configuration format. Expected a dict got {type(configuration)}."
-            )
+            msg = f"Unexpected configuration format. Expected a dict got {type(configuration)}."
+            raise TypeError(msg)
 
         backend = HarborSandbox(environment)
 
@@ -284,7 +291,7 @@ class DeepAgentsWrapper(BaseAgent):
         steps = [
             Step(
                 step_id=1,
-                timestamp=datetime.now(timezone.utc).isoformat(),
+                timestamp=datetime.now(UTC).isoformat(),
                 source="user",
                 message=instruction,
             ),
@@ -332,10 +339,10 @@ class DeepAgentsWrapper(BaseAgent):
                 # Create new step
                 new_step = Step(
                     step_id=steps[-1].step_id + 1 if steps else 0,
-                    timestamp=datetime.now(timezone.utc).isoformat(),
+                    timestamp=datetime.now(UTC).isoformat(),
                     source="agent",
                     message=message,
-                    tool_calls=atf_tool_calls if atf_tool_calls else None,
+                    tool_calls=atf_tool_calls or None,
                 )
 
                 # If this AIMessage has tool calls, make it pending (wait for observations)
@@ -356,9 +363,8 @@ class DeepAgentsWrapper(BaseAgent):
             elif isinstance(msg, HumanMessage):
                 pass
             else:
-                raise NotImplementedError(
-                    f"Message type {type(msg)} not supported for step conversion"
-                )
+                err_msg = f"Message type {type(msg)} not supported for step conversion"
+                raise NotImplementedError(err_msg)
 
         # Add any remaining pending step
         if pending_step is not None:

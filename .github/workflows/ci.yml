@@ -1,16 +1,17 @@
-# Main CI workflow for DeepAgents monorepo
+# Main CI workflow for Deep Agents monorepo
 #
 # Runs on every pull request:
-# - Linting for both packages (deepagents core and deepagents-cli)
-# - Unit Tests for both packages
+# - Linting for changed packages
+# - Unit Tests for changed packages
 #
-# Tests run in parallel for optimal performance
+# Only packages with changes are tested. SDK changes also trigger CLI tests.
+# Pushes to main and workflow changes run full CI.
 
 name: "🔧 CI"
 
 on:
   push:
-    branches: [master]
+    branches: [main]
   pull_request:
   merge_group:
 
@@ -26,64 +27,231 @@ env:
   UV_NO_SYNC: "true"
 
 jobs:
-  # Run linting on both packages in parallel
-  lint:
-    strategy:
-      matrix:
-        include:
-          # Core package: deepagents
-          - working-directory: "libs/deepagents"
-            python-version: "3.11"
-          # CLI package
-          - working-directory: "libs/deepagents-cli"
-            python-version: "3.11"
-          # benchmarking
-          - working-directory: "libs/harbor"
-            python-version: "3.13"
-      fail-fast: false
+  # Detect which packages have changes
+  changes:
+    name: "🔍 Detect Changes"
+    runs-on: ubuntu-latest
+    outputs:
+      deepagents: ${{ steps.filter.outputs.deepagents }}
+      cli: ${{ steps.filter.outputs.cli }}
+      harbor: ${{ steps.filter.outputs.harbor }}
+      daytona: ${{ steps.filter.outputs.daytona }}
+      modal: ${{ steps.filter.outputs.modal }}
+      runloop: ${{ steps.filter.outputs.runloop }}
+    steps:
+      - name: "📋 Checkout Code"
+        uses: actions/checkout@v6
+
+      - name: "🔍 Check for changes"
+        uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          # Each package filter includes workflow/action paths so that CI
+          # infrastructure changes are validated against all packages.
+          filters: |
+            deepagents:
+              - 'libs/deepagents/**'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/_lint.yml'
+              - '.github/workflows/_test.yml'
+              - '.github/actions/**'
+            cli:
+              - 'libs/cli/**'
+              - 'libs/deepagents/**'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/_lint.yml'
+              - '.github/workflows/_test.yml'
+              - '.github/actions/**'
+            harbor:
+              - 'libs/harbor/**'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/_lint.yml'
+              - '.github/workflows/_test.yml'
+              - '.github/actions/**'
+            daytona:
+              - 'libs/partners/daytona/**'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/_lint.yml'
+              - '.github/workflows/_test.yml'
+              - '.github/actions/**'
+            modal:
+              - 'libs/partners/modal/**'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/_lint.yml'
+              - '.github/workflows/_test.yml'
+              - '.github/actions/**'
+            runloop:
+              - 'libs/partners/runloop/**'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/_lint.yml'
+              - '.github/workflows/_test.yml'
+              - '.github/actions/**'
+
+  # Run linting on changed packages
+  lint-deepagents:
+    name: "🧹 Lint deepagents"
+    needs: changes
+    if: needs.changes.outputs.deepagents == 'true' || github.event_name == 'push'
     uses: ./.github/workflows/_lint.yml
     with:
-      working-directory: ${{ matrix.working-directory }}
-      python-version: ${{ matrix.python-version }}
+      working-directory: "libs/deepagents"
+      python-version: "3.11"
 
-  # Run unit tests on both packages in parallel
-  test:
+  lint-cli:
+    name: "🧹 Lint cli"
+    needs: changes
+    if: needs.changes.outputs.cli == 'true' || github.event_name == 'push'
+    uses: ./.github/workflows/_lint.yml
+    with:
+      working-directory: "libs/cli"
+      python-version: "3.11"
+
+  lint-harbor:
+    name: "🧹 Lint harbor"
+    needs: changes
+    if: needs.changes.outputs.harbor == 'true' || github.event_name == 'push'
+    uses: ./.github/workflows/_lint.yml
+    with:
+      working-directory: "libs/harbor"
+      python-version: "3.14"
+
+  lint-daytona:
+    name: "🧹 Lint daytona"
+    needs: changes
+    if: needs.changes.outputs.daytona == 'true' || github.event_name == 'push'
+    uses: ./.github/workflows/_lint.yml
+    with:
+      working-directory: "libs/partners/daytona"
+      python-version: "3.11"
+
+  lint-modal:
+    name: "🧹 Lint modal"
+    needs: changes
+    if: needs.changes.outputs.modal == 'true' || github.event_name == 'push'
+    uses: ./.github/workflows/_lint.yml
+    with:
+      working-directory: "libs/partners/modal"
+      python-version: "3.11"
+
+  lint-runloop:
+    name: "🧹 Lint runloop"
+    needs: changes
+    if: needs.changes.outputs.runloop == 'true' || github.event_name == 'push'
+    uses: ./.github/workflows/_lint.yml
+    with:
+      working-directory: "libs/partners/runloop"
+      python-version: "3.11"
+
+  # Run unit tests on changed packages
+  test-deepagents:
+    name: "🧪 Test deepagents"
+    needs: changes
+    if: needs.changes.outputs.deepagents == 'true' || github.event_name == 'push'
     strategy:
       matrix:
-        include:
-          # Core package: test on multiple Python versions (3.11 = min, 3.13 = max)
-          - working-directory: "libs/deepagents"
-            python-version: "3.11"
-          - working-directory: "libs/deepagents"
-            python-version: "3.12"
-          - working-directory: "libs/deepagents"
-            python-version: "3.13"
-          # CLI package: test on min and max Python versions
-          - working-directory: "libs/deepagents-cli"
-            python-version: "3.11"
-          - working-directory: "libs/deepagents-cli"
-            python-version: "3.13"
-          # benchmarking
-          - working-directory: "libs/harbor"
-            python-version: "3.13"
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
       fail-fast: false
     uses: ./.github/workflows/_test.yml
     with:
-      working-directory: ${{ matrix.working-directory }}
+      working-directory: "libs/deepagents"
+      python-version: ${{ matrix.python-version }}
+
+  test-cli:
+    name: "🧪 Test cli"
+    needs: changes
+    if: needs.changes.outputs.cli == 'true' || github.event_name == 'push'
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+      fail-fast: false
+    uses: ./.github/workflows/_test.yml
+    with:
+      working-directory: "libs/cli"
+      python-version: ${{ matrix.python-version }}
+
+  test-harbor:
+    name: "🧪 Test harbor"
+    needs: changes
+    if: needs.changes.outputs.harbor == 'true' || github.event_name == 'push'
+    strategy:
+      matrix:
+        python-version: ["3.12", "3.13", "3.14"]
+      fail-fast: false
+    uses: ./.github/workflows/_test.yml
+    with:
+      working-directory: "libs/harbor"
+      python-version: ${{ matrix.python-version }}
+
+  test-daytona:
+    name: "🧪 Test daytona"
+    needs: changes
+    if: needs.changes.outputs.daytona == 'true' || github.event_name == 'push'
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+      fail-fast: false
+    uses: ./.github/workflows/_test.yml
+    with:
+      working-directory: "libs/partners/daytona"
+      python-version: ${{ matrix.python-version }}
+
+  test-modal:
+    name: "🧪 Test modal"
+    needs: changes
+    if: needs.changes.outputs.modal == 'true' || github.event_name == 'push'
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+      fail-fast: false
+    uses: ./.github/workflows/_test.yml
+    with:
+      working-directory: "libs/partners/modal"
+      python-version: ${{ matrix.python-version }}
+
+  test-runloop:
+    name: "🧪 Test runloop"
+    needs: changes
+    if: needs.changes.outputs.runloop == 'true' || github.event_name == 'push'
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+      fail-fast: false
+    uses: ./.github/workflows/_test.yml
+    with:
+      working-directory: "libs/partners/runloop"
       python-version: ${{ matrix.python-version }}
 
   # Final status check - ensures all jobs passed
   ci_success:
     name: "✅ CI Success"
-    needs: [lint, test]
+    needs:
+      - changes
+      - lint-deepagents
+      - lint-cli
+      - lint-harbor
+      - lint-daytona
+      - lint-modal
+      - lint-runloop
+      - test-deepagents
+      - test-cli
+      - test-harbor
+      - test-daytona
+      - test-modal
+      - test-runloop
     if: always()
     runs-on: ubuntu-latest
-    env:
-      RESULTS_JSON: ${{ toJSON(needs.*.result) }}
-      EXIT_CODE: ${{ !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && '0' || '1' }}
     steps:
       - name: "🎉 All Checks Passed"
         run: |
-          echo "$RESULTS_JSON"
-          echo "Exiting with $EXIT_CODE"
-          exit $EXIT_CODE
+          # Get all job results (excluding 'changes' which always succeeds)
+          results='${{ toJSON(needs.*.result) }}'
+          echo "Job results: $results"
+
+          # Check for failures or cancellations
+          if echo "$results" | grep -qE '"failure"|"cancelled"'; then
+            echo "Some jobs failed or were cancelled"
+            exit 1
+          fi
+
+          echo "All required checks passed (skipped jobs are OK)"
+          exit 0

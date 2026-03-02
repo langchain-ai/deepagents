@@ -1,0 +1,38 @@
+# Check that all uv.lock files are up-to-date
+#
+# Prevents PRs from being merged when lockfiles are out of sync with pyproject.toml
+
+name: "🔒 Check Lockfiles"
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  merge_group:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check-lockfiles:
+    name: "Verify uv.lock files"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: "📋 Checkout Code"
+        uses: actions/checkout@v6
+
+      - name: "🐍 Set up UV"
+        uses: astral-sh/setup-uv@v7
+
+      - name: "🐍 Set up Python 3.14"
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+
+      - name: "🔍 Check all lockfiles"
+        run: make lock-check

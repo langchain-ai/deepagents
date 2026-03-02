@@ -65,8 +65,8 @@ uv run harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper \
 
 LangSmith provides tracing and observability for agent runs. The workflow:
 
-```
-DeepAgents → Harbor (evaluate) → LangSmith (analyze) → Improve → Repeat
+```txt
+Deep Agents → Harbor (evaluate) → LangSmith (analyze) → Improve → Repeat
 ```
 
 ### Prerequisites
@@ -157,6 +157,6 @@ Makefile shortcuts are available for common workflows:
 
 ## Resources
 
-- [DeepAgents Documentation](https://docs.langchain.com/oss/python/deepagents/overview)
+- [Deep Agents Documentation](https://docs.langchain.com/oss/python/deepagents/overview)
 - [Harbor GitHub](https://github.com/laude-institute/harbor)
 - [LangSmith](https://smith.langchain.com)

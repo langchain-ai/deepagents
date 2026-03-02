@@ -1,0 +1,51 @@
+# Ensures version numbers in pyproject.toml and version.py stay in sync.
+#
+# (Prevents releases with mismatched version numbers)
+
+name: "🔍 Check Version Equality"
+
+on:
+  pull_request:
+    paths:
+      - "libs/deepagents/pyproject.toml"
+      - "libs/deepagents/deepagents/_version.py"
+      - "libs/cli/pyproject.toml"
+      - "libs/cli/deepagents_cli/_version.py"
+
+permissions:
+  contents: read
+
+jobs:
+  check_version_equality:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: "✅ Verify pyproject.toml & _version.py Match"
+        run: |
+          # Check deepagents versions
+          DEEPAGENTS_PYPROJECT_VERSION=$(grep -Po '(?<=^version = ")[^"]*' libs/deepagents/pyproject.toml)
+          DEEPAGENTS_VERSION_PY_VERSION=$(grep -Po '(?<=^__version__ = ")[^"]*' libs/deepagents/deepagents/_version.py)
+
+          if [ "$DEEPAGENTS_PYPROJECT_VERSION" != "$DEEPAGENTS_VERSION_PY_VERSION" ]; then
+            echo "deepagents versions in pyproject.toml and _version.py do not match!"
+            echo "pyproject.toml version: $DEEPAGENTS_PYPROJECT_VERSION"
+            echo "_version.py version: $DEEPAGENTS_VERSION_PY_VERSION"
+            exit 1
+          else
+            echo "deepagents versions match: $DEEPAGENTS_PYPROJECT_VERSION"
+          fi
+
+          # Check deepagents-cli versions
+          CLI_PYPROJECT_VERSION=$(grep -Po '(?<=^version = ")[^"]*' libs/cli/pyproject.toml)
+          CLI_VERSION_PY_VERSION=$(grep -Po '(?<=^__version__ = ")[^"]*' libs/cli/deepagents_cli/_version.py)
+
+          if [ "$CLI_PYPROJECT_VERSION" != "$CLI_VERSION_PY_VERSION" ]; then
+            echo "deepagents-cli versions in pyproject.toml and _version.py do not match!"
+            echo "pyproject.toml version: $CLI_PYPROJECT_VERSION"
+            echo "_version.py version: $CLI_VERSION_PY_VERSION"
+            exit 1
+          else
+            echo "deepagents-cli versions match: $CLI_PYPROJECT_VERSION"
+          fi

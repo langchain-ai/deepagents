@@ -1,27 +1,39 @@
-<p align="center">
-  <img src=".github/images/deepagents-banner.png" alt="Deep Agents" width="600"/>
-</p>
+<div align="center">
+  <a href="https://docs.langchain.com/oss/python/deepagents/overview#deep-agents-overview">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset=".github/images/logo-dark.svg">
+      <source media="(prefers-color-scheme: light)" srcset=".github/images/logo-light.svg">
+      <img alt="Deep Agents Logo" src=".github/images/logo-dark.svg" width="50%">
+    </picture>
+  </a>
+</div>
 
-<p align="center">
-  <img src=".github/images/deepagents_logo.svg" alt="Deep Agents" height="40"/>
-</p>
+<div align="center">
+  <h3>The batteries-included agent harness.</h3>
+</div>
 
-<p align="center">
-  The batteries-included agent harness.
-</p>
+<div align="center">
+  <a href="https://opensource.org/licenses/MIT" target="_blank"><img src="https://img.shields.io/pypi/l/deepagents" alt="PyPI - License"></a>
+  <a href="https://pypistats.org/packages/deepagents" target="_blank"><img src="https://img.shields.io/pepy/dt/deepagents" alt="PyPI - Downloads"></a>
+  <a href="https://pypi.org/project/deepagents/#history" target="_blank"><img src="https://img.shields.io/pypi/v/deepagents?label=%20" alt="Version"></a>
+  <a href="https://x.com/langchain" target="_blank"><img src="https://img.shields.io/twitter/url/https/twitter.com/langchain.svg?style=social&label=Follow%20%40LangChain" alt="Twitter / X"></a>
+</div>
 
-## What is Deep Agents?
+<br>
 
-Deep Agents is an agent harness.  An opinionated, ready-to-run agent out of the box. Instead of wiring up prompts, tools, and context management yourself, you get a working agent immediately and customize what you need.
+Deep Agents is an agent harness. An opinionated, ready-to-run agent out of the box. Instead of wiring up prompts, tools, and context management yourself, you get a working agent immediately and customize what you need.
 
 **What's included:**
 
-- **Planning** — `write_todos` / `read_todos` for task breakdown and progress tracking
+- **Planning** — `write_todos` for task breakdown and progress tracking
 - **Filesystem** — `read_file`, `write_file`, `edit_file`, `ls`, `glob`, `grep` for reading and writing context
 - **Shell access** — `execute` for running commands (with sandboxing)
 - **Sub-agents** — `task` for delegating work with isolated context windows
 - **Smart defaults** — Prompts that teach the model how to use these tools effectively
 - **Context management** — Auto-summarization when conversations get long, large outputs saved to files
+
+> [!NOTE]
+> Looking for the JS/TS library? Check out [deepagents.js](https://github.com/langchain-ai/deepagentsjs).
 
 ## Quickstart
 
@@ -39,6 +51,9 @@ result = agent.invoke({"messages": [{"role": "user", "content": "Research LangGr
 ```
 
 The agent can plan, read/write files, and manage its own context. Add tools, customize prompts, or swap models as needed.
+
+> [!TIP]
+> For developing, debugging, and deploying AI agents and LLM applications, see [LangSmith](https://docs.langchain.com/langsmith/home).
 
 ## Customization
 
@@ -65,7 +80,7 @@ uv tool install deepagents-cli
 deepagents
 ```
 
-The CLI adds conversation resume, web search, remote sandboxes (Modal, Runloop, Daytona), persistent memory, custom skills, and human-in-the-loop approval. See the [CLI documentation](https://docs.langchain.com/oss/python/deepagents/cli) for more.  Using the Deep Agents requires setting an API Key before running (ex: ANTHROPIC_API_KEY).
+The CLI adds conversation resume, web search, remote sandboxes (Modal, Runloop, Daytona, & more), persistent memory, custom skills, headless mode, and human-in-the-loop approval. See the [CLI documentation](https://docs.langchain.com/oss/python/deepagents/cli) for more.
 
 ## LangGraph Native
 
@@ -82,11 +97,42 @@ The CLI adds conversation resume, web search, remote sandboxes (Modal, Runloop, 
 - **Get started in seconds** — `pip install deepagents` or `uv add deepagents` and you have a working agent
 - **Customize in minutes** — Add tools, swap models, tune prompts when you need to
 
-## Resources
+---
 
-- **[Documentation](https://docs.langchain.com/oss/python/deepagents/overview)** — Full API reference and guides
+## Documentation
+
+- [docs.langchain.com](https://docs.langchain.com/oss/python/deepagents/overview) – Comprehensive documentation, including conceptual overviews and guides
+- [reference.langchain.com/python](https://reference.langchain.com/python/deepagents/) – API reference docs for Deep Agents packages
+- [Chat LangChain](https://chat.langchain.com/) – Chat with the LangChain documentation and get answers to your questions
+
+**Discussions**: Visit the [LangChain Forum](https://forum.langchain.com) to connect with the community and share all of your technical questions, ideas, and feedback.
+
+## Additional resources
+
 - **[Examples](examples/)** — Working agents and patterns
-- **[CLI](https://docs.langchain.com/oss/python/deepagents/cli)** — Interactive terminal interface
+- [API Reference](https://reference.langchain.com/python/deepagents/) – Detailed reference on navigating base packages and integrations for LangChain.
+- [Contributing Guide](https://docs.langchain.com/oss/python/contributing/overview) – Learn how to contribute to LangChain projects and find good first issues.
+- [Code of Conduct](https://github.com/langchain-ai/langchain/?tab=coc-ov-file) – Our community guidelines and standards for participation.
+
+## Packages
+
+This is a monorepo containing all Deep Agents packages:
+
+| Package | PyPI | Description |
+| ------- | ---- | ----------- |
+| [`deepagents`](libs/deepagents/) | [![Version](https://img.shields.io/pypi/v/deepagents?label=%20)](https://pypi.org/project/deepagents/) | Core SDK — `create_deep_agent`, middleware, backends |
+| [`deepagents-cli`](libs/cli/) | [![Version](https://img.shields.io/pypi/v/deepagents-cli?label=%20)](https://pypi.org/project/deepagents-cli/) | Interactive terminal interface with TUI, web search, and sandboxes |
+| [`deepagents-acp`](libs/acp/) | [![Version](https://img.shields.io/pypi/v/deepagents-acp?label=%20)](https://pypi.org/project/deepagents-acp/) | [Agent Client Protocol](https://agentclientprotocol.com) integration for editors like Zed |
+| [`deepagents-harbor`](libs/harbor/) | - | [Harbor](https://harborframework.com) evaluation and benchmark framework |
+| [`langchain-daytona`](libs/partners/daytona/) | [![Version](https://img.shields.io/pypi/v/langchain-daytona?label=%20)](https://pypi.org/project/langchain-daytona/) | Daytona sandbox integration |
+| [`langchain-modal`](libs/partners/modal/) | [![Version](https://img.shields.io/pypi/v/langchain-modal?label=%20)](https://pypi.org/project/langchain-modal/) | Modal sandbox integration |
+| [`langchain-runloop`](libs/partners/runloop/) | [![Version](https://img.shields.io/pypi/v/langchain-runloop?label=%20)](https://pypi.org/project/langchain-runloop/) | Runloop sandbox integration |
+
+---
+
+## Acknowledgements
+
+This project was primarily inspired by Claude Code, and initially was largely an attempt to see what made Claude Code general purpose, and make it even more so.
 
 ## Security
 

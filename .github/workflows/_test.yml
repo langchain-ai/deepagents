@@ -30,7 +30,7 @@ jobs:
     name: "Python ${{ inputs.python-version }}"
     steps:
       - name: "📋 Checkout Code"
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: "🐍 Set up Python ${{ inputs.python-version }} + UV"
         uses: "./.github/actions/uv_setup"
@@ -46,6 +46,8 @@ jobs:
 
       - name: "🧪 Run Unit Tests"
         shell: bash
+        env:
+          RUN_SANDBOX_TESTS: "true"
         run: make test
 
       - name: "🧹 Verify Clean Working Directory"

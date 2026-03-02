@@ -2,13 +2,13 @@ repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v4.3.0
     hooks:
-      - id: no-commit-to-branch
-        args: ["--branch", "master"]
-      - id: check-yaml
-        args: ["--unsafe"]
-      - id: check-toml
-      - id: end-of-file-fixer
-      - id: trailing-whitespace
+      - id: no-commit-to-branch # prevent direct commits to protected branches
+        args: ["--branch", "main"]
+      - id: check-yaml # validate YAML syntax
+        args: ["--unsafe"] # allow custom tags
+      - id: check-toml # validate TOML syntax
+      - id: end-of-file-fixer # ensure files end with a newline
+      - id: trailing-whitespace # remove trailing whitespace from lines
         exclude: \.ambr$
 
   - repo: https://github.com/sirosen/texthooks
@@ -28,8 +28,8 @@ repos:
       - id: deepagents-cli
         name: format and lint deepagents-cli
         language: system
-        entry: make -C libs/deepagents-cli format lint
-        files: ^libs/deepagents-cli/
+        entry: make -C libs/cli format lint
+        files: ^libs/cli/
         pass_filenames: false
       - id: harbor
         name: format and lint harbor

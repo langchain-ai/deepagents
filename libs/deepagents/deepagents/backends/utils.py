@@ -5,10 +5,12 @@ helpers used by backends and the composite router. Structured helpers
 enable composition without fragile string parsing.
 """
 
+import os
 import re
+from collections.abc import Sequence
 from datetime import UTC, datetime
-from pathlib import Path
-from typing import Any, Literal
+from pathlib import Path, PurePosixPath
+from typing import Any, Literal, overload
 
 import wcmatch.glob as wcglob
 
@@ -30,8 +32,7 @@ def sanitize_tool_call_id(tool_call_id: str) -> str:
 
     Replaces dangerous characters (., /, \) with underscores.
     """
-    sanitized = tool_call_id.replace(".", "_").replace("/", "_").replace("\\", "_")
-    return sanitized
+    return tool_call_id.replace(".", "_").replace("/", "_").replace("\\", "_")
 
 
 def format_content_with_line_numbers(
@@ -181,7 +182,7 @@ def perform_string_replacement(
     content: str,
     old_string: str,
     new_string: str,
-    replace_all: bool,
+    replace_all: bool = False,  # noqa: FBT001, FBT002
 ) -> tuple[str, int] | str:
     """Perform string replacement with occurrence validation.
 
@@ -200,10 +201,21 @@ def perform_string_replacement(
         return f"Error: String not found in file: '{old_string}'"
 
     if occurrences > 1 and not replace_all:
-        return f"Error: String '{old_string}' appears {occurrences} times in file. Use replace_all=True to replace all instances, or provide a more specific string with surrounding context."
+        return (
+            f"Error: String '{old_string}' appears {occurrences} times in file. "
+            f"Use replace_all=True to replace all instances, or provide a more specific string with surrounding context."
+        )
 
     new_content = content.replace(old_string, new_string)
     return new_content, occurrences
+
+
+@overload
+def truncate_if_too_long(result: list[str]) -> list[str]: ...
+
+
+@overload
+def truncate_if_too_long(result: str) -> str: ...
 
 
 def truncate_if_too_long(result: list[str] | str) -> list[str] | str:
@@ -211,7 +223,7 @@ def truncate_if_too_long(result: list[str] | str) -> list[str] | str:
     if isinstance(result, list):
         total_chars = sum(len(item) for item in result)
         if total_chars > TOOL_RESULT_TOKEN_LIMIT * 4:
-            return result[: len(result) * TOOL_RESULT_TOKEN_LIMIT * 4 // total_chars] + [TRUNCATION_GUIDANCE]
+            return result[: len(result) * TOOL_RESULT_TOKEN_LIMIT * 4 // total_chars] + [TRUNCATION_GUIDANCE]  # noqa: RUF005  # Concatenation preferred for clarity
         return result
     # string
     if len(result) > TOOL_RESULT_TOKEN_LIMIT * 4:
@@ -219,28 +231,135 @@ def truncate_if_too_long(result: list[str] | str) -> list[str] | str:
     return result
 
 
-def _validate_path(path: str | None) -> str:
-    """Validate and normalize a path.
+def validate_path(path: str, *, allowed_prefixes: Sequence[str] | None = None) -> str:
+    r"""Validate and normalize file path for security.
+
+    Ensures paths are safe to use by preventing directory traversal attacks
+    and enforcing consistent formatting. All paths are normalized to use
+    forward slashes and start with a leading slash.
+
+    This function is designed for virtual filesystem paths and rejects
+    Windows absolute paths (e.g., `C:/...`, `F:/...`) to maintain consistency
+    and prevent path format ambiguity.
 
     Args:
-        path: Path to validate
+        path: The path to validate and normalize.
+        allowed_prefixes: Optional list of allowed path prefixes.
+
+            If provided, the normalized path must start with one of
+            these prefixes.
 
     Returns:
-        Normalized path starting with /
+        Normalized canonical path starting with `/` and using forward slashes.
 
     Raises:
-        ValueError: If path is invalid
+        ValueError: If path contains traversal sequences (`..` or `~`), is a
+            Windows absolute path (e.g., `C:/...`), or does not start with an
+            allowed prefix when `allowed_prefixes` is specified.
+
+    Example:
+        ```python
+        validate_path("foo/bar")  # Returns: "/foo/bar"
+        validate_path("/./foo//bar")  # Returns: "/foo/bar"
+        validate_path("../etc/passwd")  # Raises ValueError
+        validate_path(r"C:\\Users\\file.txt")  # Raises ValueError
+        validate_path("/data/file.txt", allowed_prefixes=["/data/"])  # OK
+        validate_path("/etc/file.txt", allowed_prefixes=["/data/"])  # Raises ValueError
+        ```
+    """
+    # Check for traversal as a path component (not substring) to avoid
+    # false-positive rejection of legitimate filenames like "foo..bar.txt"
+    parts = PurePosixPath(path.replace("\\", "/")).parts
+    if ".." in parts or path.startswith("~"):
+        msg = f"Path traversal not allowed: {path}"
+        raise ValueError(msg)
+
+    # Reject Windows absolute paths (e.g., C:\..., D:/...)
+    if re.match(r"^[a-zA-Z]:", path):
+        msg = f"Windows absolute paths are not supported: {path}. Please use virtual paths starting with / (e.g., /workspace/file.txt)"
+        raise ValueError(msg)
+
+    normalized = os.path.normpath(path)
+    normalized = normalized.replace("\\", "/")
+
+    if not normalized.startswith("/"):
+        normalized = f"/{normalized}"
+
+    # Defense-in-depth: verify normpath didn't produce traversal
+    if ".." in normalized.split("/"):
+        msg = f"Path traversal detected after normalization: {path} -> {normalized}"
+        raise ValueError(msg)
+
+    if allowed_prefixes is not None and not any(normalized.startswith(prefix) for prefix in allowed_prefixes):
+        msg = f"Path must start with one of {allowed_prefixes}: {path}"
+        raise ValueError(msg)
+
+    return normalized
+
+
+def _normalize_path(path: str | None) -> str:
+    """Normalize a path to canonical form.
+
+    Converts path to absolute form starting with /, removes trailing slashes
+    (except for root), and validates that the path is not empty.
+
+    Args:
+        path: Path to normalize (None defaults to "/")
+
+    Returns:
+        Normalized path starting with / (without trailing slash unless it's root)
+
+    Raises:
+        ValueError: If path is invalid (empty string after strip)
+
+    Example:
+        _normalize_path(None) -> "/"
+        _normalize_path("/dir/") -> "/dir"
+        _normalize_path("dir") -> "/dir"
+        _normalize_path("/") -> "/"
     """
     path = path or "/"
     if not path or path.strip() == "":
-        raise ValueError("Path cannot be empty")
+        msg = "Path cannot be empty"
+        raise ValueError(msg)
 
     normalized = path if path.startswith("/") else "/" + path
 
-    if not normalized.endswith("/"):
-        normalized += "/"
+    # Only root should have trailing slash
+    if normalized != "/" and normalized.endswith("/"):
+        normalized = normalized.rstrip("/")
 
     return normalized
+
+
+def _filter_files_by_path(files: dict[str, Any], normalized_path: str) -> dict[str, Any]:
+    """Filter files dict by normalized path, handling exact file matches and directory prefixes.
+
+    Expects a normalized path from _normalize_path (no trailing slash except root).
+
+    Args:
+        files: Dictionary mapping file paths to file data
+        normalized_path: Normalized path from _normalize_path (e.g., "/", "/dir", "/dir/file")
+
+    Returns:
+        Filtered dictionary of files matching the path
+
+    Example:
+        files = {"/dir/file": {...}, "/dir/other": {...}}
+        _filter_files_by_path(files, "/dir/file")  # Returns {"/dir/file": {...}}
+        _filter_files_by_path(files, "/dir")       # Returns both files
+    """
+    # Check if path matches an exact file
+    if normalized_path in files:
+        return {normalized_path: files[normalized_path]}
+
+    # Otherwise treat as directory prefix
+    if normalized_path == "/":
+        # Root directory - match all files starting with /
+        return {fp: fd for fp, fd in files.items() if fp.startswith("/")}
+    # Non-root directory - add trailing slash for prefix matching
+    dir_prefix = normalized_path + "/"
+    return {fp: fd for fp, fd in files.items() if fp.startswith(dir_prefix)}
 
 
 def _glob_search_files(
@@ -248,7 +367,7 @@ def _glob_search_files(
     pattern: str,
     path: str = "/",
 ) -> str:
-    """Search files dict for paths matching glob pattern.
+    r"""Search files dict for paths matching glob pattern.
 
     Args:
         files: Dictionary of file paths to FileData.
@@ -267,11 +386,11 @@ def _glob_search_files(
         ```
     """
     try:
-        normalized_path = _validate_path(path)
+        normalized_path = _normalize_path(path)
     except ValueError:
         return "No files found"
 
-    filtered = {fp: fd for fp, fd in files.items() if fp.startswith(normalized_path)}
+    filtered = _filter_files_by_path(files, normalized_path)
 
     # Respect standard glob semantics:
     # - Patterns without path separators (e.g., "*.py") match only in the current
@@ -281,9 +400,17 @@ def _glob_search_files(
 
     matches = []
     for file_path, file_data in filtered.items():
-        relative = file_path[len(normalized_path) :].lstrip("/")
-        if not relative:
+        # Compute relative path for glob matching
+        # If normalized_path is "/dir", we want "/dir/file.txt" -> "file.txt"
+        # If normalized_path is "/dir/file.txt" (exact file), we want "file.txt"
+        if normalized_path == "/":
+            relative = file_path[1:]  # Remove leading slash
+        elif file_path == normalized_path:
+            # Exact file match - use just the filename
             relative = file_path.split("/")[-1]
+        else:
+            # Directory prefix - strip the directory path
+            relative = file_path[len(normalized_path) + 1 :]  # +1 for the slash
 
         if wcglob.globmatch(relative, effective_pattern, flags=wcglob.BRACE | wcglob.GLOBSTAR):
             matches.append((file_path, file_data["modified_at"]))
@@ -357,11 +484,11 @@ def _grep_search_files(
         return f"Invalid regex pattern: {e}"
 
     try:
-        normalized_path = _validate_path(path)
+        normalized_path = _normalize_path(path)
     except ValueError:
         return "No matches found"
 
-    filtered = {fp: fd for fp, fd in files.items() if fp.startswith(normalized_path)}
+    filtered = _filter_files_by_path(files, normalized_path)
 
     if glob:
         filtered = {fp: fd for fp, fd in filtered.items() if wcglob.globmatch(Path(fp).name, glob, flags=wcglob.BRACE)}
@@ -390,21 +517,18 @@ def grep_matches_from_files(
 ) -> list[GrepMatch] | str:
     """Return structured grep matches from an in-memory files mapping.
 
-    Returns a list of GrepMatch on success, or a string for invalid inputs
-    (e.g., invalid regex). We deliberately do not raise here to keep backends
-    non-throwing in tool contexts and preserve user-facing error messages.
+    Performs literal text search (not regex).
+
+    Returns a list of GrepMatch on success, or a string for invalid inputs.
+    We deliberately do not raise here to keep backends non-throwing in tool
+    contexts and preserve user-facing error messages.
     """
     try:
-        regex = re.compile(pattern)
-    except re.error as e:
-        return f"Invalid regex pattern: {e}"
-
-    try:
-        normalized_path = _validate_path(path)
+        normalized_path = _normalize_path(path)
     except ValueError:
         return []
 
-    filtered = {fp: fd for fp, fd in files.items() if fp.startswith(normalized_path)}
+    filtered = _filter_files_by_path(files, normalized_path)
 
     if glob:
         filtered = {fp: fd for fp, fd in filtered.items() if wcglob.globmatch(Path(fp).name, glob, flags=wcglob.BRACE)}
@@ -412,7 +536,7 @@ def grep_matches_from_files(
     matches: list[GrepMatch] = []
     for file_path, file_data in filtered.items():
         for line_num, line in enumerate(file_data["content"], 1):
-            if regex.search(line):
+            if pattern in line:  # Simple substring search for literal matching
                 matches.append({"path": file_path, "line": int(line_num), "text": line})
     return matches
 

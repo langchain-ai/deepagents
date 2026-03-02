@@ -3,7 +3,7 @@
 from langchain_core.tools import StructuredTool
 
 from deepagents.backends.state import StateBackend
-from deepagents.middleware.filesystem import _get_filesystem_tools
+from deepagents.middleware.filesystem import FilesystemMiddleware
 
 
 class TestFilesystemToolSchemas:
@@ -14,9 +14,10 @@ class TestFilesystemToolSchemas:
 
         Uses tool_call_schema.model_json_schema() which is the schema passed to the LLM.
         """
-        # Create a mock backend - we just need to generate the tools
+        # Create the middleware to get the tools
         backend = StateBackend(None)  # type: ignore[arg-type]
-        tools = _get_filesystem_tools(backend)
+        middleware = FilesystemMiddleware(backend=backend)
+        tools = middleware.tools
 
         # Expected tools and their user-facing args (excludes `runtime` which is internal)
         expected_tools = {
@@ -60,7 +61,8 @@ class TestFilesystemToolSchemas:
         the same tool schema if used independently.
         """
         backend = StateBackend(None)  # type: ignore[arg-type]
-        tools = _get_filesystem_tools(backend)
+        middleware = FilesystemMiddleware(backend=backend)
+        tools = middleware.tools
 
         for tool in tools:
             # Create temporary tools from sync and async functions independently

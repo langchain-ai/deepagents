@@ -5,6 +5,8 @@ body:
     attributes:
       value: |
         If you are not a Deep Agents maintainer, employee, or were not asked directly by a maintainer to create an issue, then please start the conversation on the [Deep Agents Forum](https://forum.langchain.com/c/oss-product-help-lc-and-lg/deep-agents/18) instead.
+
+        **Note:** Do not begin work on a PR unless explicitly assigned to this issue by a maintainer.
   - type: checkboxes
     id: privileged
     attributes:
@@ -28,3 +30,7 @@ body:
         - label: deepagents (SDK)
         - label: cli
         - label: Other / not sure / general
+  - type: markdown
+    attributes:
+      value: |
+        Please do not begin work on a PR unless explicitly assigned to this issue by a maintainer.

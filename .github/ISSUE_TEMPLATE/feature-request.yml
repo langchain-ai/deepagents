@@ -18,6 +18,8 @@ body:
         * [LangChain ChatBot](https://chat.langchain.com/)
         * [GitHub search](https://github.com/langchain-ai/deepagents),
         * [Deep Agents Forum](https://forum.langchain.com/c/oss-product-help-lc-and-lg/deep-agents/18),
+
+        **Note:** Do not begin work on a PR unless explicitly assigned to this issue by a maintainer.
   - type: checkboxes
     id: checks
     attributes:
@@ -57,3 +59,7 @@ body:
     attributes:
       label: Additional context (optional)
       description: Links, examples, or related issues
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve Deep Agents.

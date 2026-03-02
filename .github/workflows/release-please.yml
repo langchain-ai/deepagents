@@ -1,0 +1,102 @@
+# Creates release PRs based on conventional commits.
+#
+# When commits land on main, release-please analyzes them and either:
+# - Creates/updates a release PR with changelog and version bump
+# - When a release PR is merged, triggers the release workflow
+#
+# GitHub releases are created by release.yml after all checks pass,
+# not by release-please directly (skip-github-release: true in config).
+
+name: Release Please (CLI ONLY)
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      cli-release: ${{ steps.check-cli-release.outputs.is-release }}
+      pr: ${{ steps.release.outputs.pr }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+      # Detect CLI release by checking if this commit updated the CLI's CHANGELOG.md
+      # release-please ALWAYS updates CHANGELOG.md when merging a release PR
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+
+      - name: Check if CLI release PR was merged
+        id: check-cli-release
+        run: |
+          if git diff --name-only HEAD~1 HEAD | grep -q "^libs/cli/CHANGELOG.md$"; then
+            echo "is-release=true" >> $GITHUB_OUTPUT
+            echo "CLI CHANGELOG.md was modified - this is a release commit"
+          else
+            echo "is-release=false" >> $GITHUB_OUTPUT
+          fi
+
+  # Update uv.lock files when release-please creates/updates a PR
+  # release-please updates pyproject.toml versions but doesn't regenerate lockfiles
+  # https://github.com/googleapis/release-please/issues/2561
+  update-lockfiles:
+    needs: release-please
+    if: needs.release-please.outputs.pr != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout release branch
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ fromJson(needs.release-please.outputs.pr).headBranchName }}
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Update lockfiles
+        run: |
+          for dir in $(find . -name "uv.lock" -type f -exec dirname {} \;); do
+            echo "Updating $dir"
+            if [ "$dir" = "./libs/acp" ]; then
+              uv lock --directory "$dir" --python 3.14
+            else
+              uv lock --directory "$dir" --python 3.12
+            fi
+          done
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "*/uv.lock"
+          if git diff --staged --quiet; then
+            echo "No lockfile changes to commit"
+          else
+            git commit -m "chore: update lockfiles"
+            git push
+          fi
+
+  # Trigger release workflow when CLI release PR is merged
+  # GitHub release is created by release.yml AFTER all checks pass
+  release-deepagents-cli:
+    needs: release-please
+    if: needs.release-please.outputs.cli-release == 'true'
+    uses: ./.github/workflows/release.yml
+    with:
+      package: deepagents-cli
+    permissions:
+      contents: write
+      id-token: write
+      # write needed to update PR label from "autorelease: pending" to "autorelease: tagged"
+      pull-requests: write

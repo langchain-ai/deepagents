@@ -1,4 +1,4 @@
-# DeepAgents SDK Tests
+# Deep Agents SDK Tests
 
 ## API Keys
 

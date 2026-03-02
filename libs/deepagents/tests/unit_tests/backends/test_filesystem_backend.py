@@ -1,7 +1,12 @@
 from pathlib import Path
 
+import pytest
+from langchain.tools import ToolRuntime
+from langchain_core.messages import ToolMessage
+
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.protocol import EditResult, WriteResult
+from deepagents.middleware.filesystem import FilesystemMiddleware
 
 
 def write_file(p: Path, content: str):
@@ -42,12 +47,14 @@ def test_filesystem_backend_normal_mode(tmp_path: Path):
     assert any(i["path"] == str(f2) for i in g)
 
 
-def test_filesystem_backend_virtual_mode(tmp_path: Path):
+def test_filesystem_backend_virtual_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     root = tmp_path
     f1 = root / "a.txt"
     f2 = root / "dir" / "b.md"
     write_file(f1, "hello virtual")
     write_file(f2, "content")
+
+    monkeypatch.setattr(FilesystemBackend, "_ripgrep_search", lambda *_args, **_kwargs: None)
 
     be = FilesystemBackend(root_dir=str(root), virtual_mode=True)
 
@@ -77,16 +84,13 @@ def test_filesystem_backend_virtual_mode(tmp_path: Path):
     g = be.glob_info("**/*.md", path="/")
     assert any(i["path"] == "/dir/b.md" for i in g)
 
-    # invalid regex returns error string
-    err = be.grep_raw("[", path="/")
-    assert isinstance(err, str)
+    # literal search should work with special regex chars like "[" and "("
+    matches_bracket = be.grep_raw("[", path="/")
+    assert isinstance(matches_bracket, list)  # Should not error, returns empty list or matches
 
     # path traversal blocked
-    try:
+    with pytest.raises(ValueError, match="traversal"):
         be.read("/../a.txt")
-        assert False, "expected ValueError for traversal"
-    except ValueError:
-        pass
 
 
 def test_filesystem_backend_ls_nested_directories(tmp_path: Path):
@@ -191,11 +195,6 @@ def test_filesystem_backend_ls_trailing_slash(tmp_path: Path):
 
 def test_filesystem_backend_intercept_large_tool_result(tmp_path: Path):
     """Test that FilesystemBackend properly handles large tool result interception."""
-    from langchain.tools import ToolRuntime
-    from langchain_core.messages import ToolMessage
-
-    from deepagents.middleware.filesystem import FilesystemMiddleware
-
     root = tmp_path
     rt = ToolRuntime(
         state={"messages": [], "files": {}},
@@ -206,7 +205,7 @@ def test_filesystem_backend_intercept_large_tool_result(tmp_path: Path):
         config={},
     )
 
-    middleware = FilesystemMiddleware(backend=lambda r: FilesystemBackend(root_dir=str(root), virtual_mode=True), tool_token_limit_before_evict=1000)
+    middleware = FilesystemMiddleware(backend=lambda r: FilesystemBackend(root_dir=str(root), virtual_mode=True), tool_token_limit_before_evict=1000)  # noqa: ARG005  # Lambda signature matches backend factory pattern
 
     large_content = "f" * 5000
     tool_message = ToolMessage(content=large_content, tool_call_id="test_fs_123")
@@ -254,7 +253,7 @@ def test_filesystem_upload_multiple_files(tmp_path: Path):
     responses = be.upload_files(files)
 
     assert len(responses) == 3
-    for i, (path, content) in enumerate(files):
+    for i, (path, _content) in enumerate(files):
         assert responses[i].path == path
         assert responses[i].error is None
 
@@ -489,3 +488,102 @@ def test_filesystem_download_directory_as_file(tmp_path: Path):
     assert responses[0].path == "/mydir"
     assert responses[0].content is None
     assert responses[0].error == "is_directory"
+
+
+@pytest.mark.parametrize(
+    ("pattern", "expected_file"),
+    [
+        ("def __init__(", "test1.py"),  # Parentheses (not regex grouping)
+        ("str | int", "test2.py"),  # Pipe (not regex OR)
+        ("[a-z]", "test3.py"),  # Brackets (not character class)
+        ("(.*)", "test3.py"),  # Multiple special chars
+        ("$19.99", "test4.txt"),  # Dot and $ (not "any character")
+        ("user@example", "test4.txt"),  # @ character (literal)
+    ],
+)
+def test_grep_literal_search_with_special_chars(tmp_path: Path, pattern: str, expected_file: str) -> None:
+    """Test that grep treats patterns as literal strings, not regex.
+
+    Tests with both ripgrep (if available) and Python fallback.
+    """
+    root = tmp_path
+
+    # Create test files with special regex characters
+    (root / "test1.py").write_text("def __init__(self, arg):\n    pass")
+    (root / "test2.py").write_text("@overload\ndef func(x: str | int):\n    return x")
+    (root / "test3.py").write_text("pattern = r'[a-z]+'\nregex_chars = '(.*)'")
+    (root / "test4.txt").write_text("Price: $19.99\nEmail: user@example.com")
+
+    be = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+
+    # Test literal search with the pattern (uses ripgrep if available, otherwise Python fallback)
+    matches = be.grep_raw(pattern, path="/")
+    assert isinstance(matches, list)
+    assert any(expected_file in m["path"] for m in matches), f"Pattern '{pattern}' not found in {expected_file}"
+
+
+class TestToVirtualPath:
+    """Tests for FilesystemBackend._to_virtual_path."""
+
+    def test_returns_forward_slash_relative_path(self, tmp_path: Path):
+        """Nested path is returned as forward-slash virtual path."""
+        (tmp_path / "src").mkdir()
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        result = be._to_virtual_path(tmp_path / "src" / "file.py")
+        assert result == "/src/file.py"
+
+    def test_cwd_itself_returns_slash_dot(self, tmp_path: Path):
+        """Cwd path returns `/.` since `Path('.').as_posix()` is `'.'`."""
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        result = be._to_virtual_path(tmp_path)
+        assert result == "/."
+
+    def test_outside_cwd_raises_value_error(self, tmp_path: Path):
+        """Path outside cwd raises ValueError."""
+        sub = tmp_path / "sub"
+        sub.mkdir()
+        be = FilesystemBackend(root_dir=str(sub), virtual_mode=True)
+        with pytest.raises(ValueError, match="is not in the subpath of"):
+            be._to_virtual_path(tmp_path / "outside.txt")
+
+
+class TestWindowsPathHandling:
+    """Tests that virtual-mode paths always use forward slashes."""
+
+    @pytest.fixture
+    def backend(self, tmp_path: Path):
+        """Create a backend with nested directories."""
+        (tmp_path / "src" / "utils").mkdir(parents=True)
+        (tmp_path / "src" / "main.py").write_text("print('main')")
+        (tmp_path / "src" / "utils" / "helper.py").write_text("def help(): pass")
+        return FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+    def test_ls_info_paths(self, backend):
+        """ls_info should return forward-slash paths."""
+        infos = backend.ls_info("/src")
+        for info in infos:
+            assert "\\" not in info["path"], f"Backslash in ls_info path: {info['path']}"
+
+    def test_glob_info_paths(self, backend):
+        """glob_info should return forward-slash paths."""
+        result = backend.glob_info("**/*.py", path="/")
+        assert isinstance(result, list)
+        for info in result:
+            assert "\\" not in info["path"], f"Backslash in glob_info path: {info['path']}"
+
+    def test_grep_raw_paths(self, backend):
+        """grep_raw should return forward-slash paths."""
+        matches = backend.grep_raw("def", path="/")
+        assert isinstance(matches, list)
+        for m in matches:
+            assert "\\" not in m["path"], f"Backslash in grep_raw path: {m['path']}"
+
+    def test_deeply_nested_path(self, tmp_path: Path):
+        """Deeply nested paths should still use forward slashes."""
+        deep = tmp_path / "a" / "b" / "c" / "d"
+        deep.mkdir(parents=True)
+        (deep / "file.txt").write_text("content")
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        infos = be.ls_info("/a/b/c/d")
+        for info in infos:
+            assert "\\" not in info["path"], f"Backslash in deep path: {info['path']}"

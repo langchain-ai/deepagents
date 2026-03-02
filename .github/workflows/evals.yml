@@ -1,0 +1,73 @@
+# Daily evaluation workflow for Deep Agents
+#
+# Runs tests/evals on a cron schedule (once per day).
+# Single job; model/provider is selected via workflow input `model`.
+#
+# Required secrets:
+#   LANGSMITH_API_KEY  — used for tracing
+#   ANTHROPIC_API_KEY  — needed for Anthropic models
+#   OPENAI_API_KEY     — needed for OpenAI models
+
+name: "📊 Evals"
+
+on:
+  schedule:
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+    inputs:
+      model:
+        description: "Optional: run evals against a single model (passed to pytest as --model ...)"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  UV_NO_SYNC: "true"
+
+jobs:
+  eval:
+    name: "📊 Eval (${{ matrix.model }})"
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        model:
+          - "anthropic:claude-haiku-4-5-20251001"
+          - "anthropic:claude-opus-4-1"
+          - "anthropic:claude-opus-4-5"
+          - "anthropic:claude-opus-4-6"
+          - "anthropic:claude-sonnet-4-5-20250929"
+          - "openai:gpt-4.1"
+          - "openai:gpt-4o"
+          - "openai:gpt-4o-mini"
+          - "openai:gpt-5.1-codex"
+          - "openai:gpt-5.2-codex"
+    defaults:
+      run:
+        working-directory: libs/deepagents
+    env:
+      PYTEST_ADDOPTS: "--model ${{ inputs.model || matrix.model }}"
+      LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+      LANGSMITH_TRACING_V2: "true"
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+    steps:
+      - name: "📋 Checkout Code"
+        uses: actions/checkout@v6
+
+      - name: "🐍 Set up Python + UV"
+        uses: "./.github/actions/uv_setup"
+        with:
+          python-version: "3.11"
+          cache-suffix: evals
+          working-directory: libs/deepagents
+
+      - name: "📦 Install Dependencies"
+        run: uv sync --group test --locked
+
+      - name: "📊 Run Evals"
+        run: make evals

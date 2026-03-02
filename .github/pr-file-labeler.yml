@@ -10,7 +10,7 @@ deepagents:
 cli:
   - changed-files:
       - any-glob-to-any-file:
-          - "libs/deepagents-cli/**/*"
+          - "libs/cli/**/*"
 
 acp:
   - changed-files:

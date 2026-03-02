@@ -4,10 +4,10 @@ build-backend = "hatchling.build"
 
 [project]
 name = "deepagents-acp"
-version = "0.0.1"
-description = "Agent Client Protocol integration for DeepAgents"
+version = "0.0.4"
+description = "Agent Client Protocol integration for Deep Agents"
 readme = "README.md"
-requires-python = ">=3.14"
+requires-python = ">=3.11"
 license = {text = "MIT"}
 authors = [
 ]
@@ -19,19 +19,17 @@ classifiers = [
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
-    "agent-client-protocol>=0.6.2",
+    "agent-client-protocol>=0.8.0",
     "deepagents",
-    "deepagents-cli",
+    "python-dotenv>=1.2.1",
 ]
 
 [dependency-groups]
-dev = [
-    "batrachian-toad>=0.5.2",
-    "dirty-equals>=0.11",
+test = [
     "pytest>=8.3.4",
     "pytest-asyncio>=0.25.3",
     "pytest-cov>=6.0.0",
@@ -45,26 +43,79 @@ dev = [
 
 
 
+
 [project.urls]
-Homepage = "https://github.com/langchain-ai/deepagents"
+Homepage = "https://docs.langchain.com/oss/python/deepagents/overview"
+Documentation = "https://reference.langchain.com/python/deepagents/"
 Repository = "https://github.com/langchain-ai/deepagents"
 Issues = "https://github.com/langchain-ai/deepagents/issues"
+Twitter = "https://x.com/LangChain"
 
-[project.scripts]
-deepacp = "deepagents_acp.server:cli_main"
+[tool.uv]
+package = true
 
+[tool.ty.environment]
+python-version = "3.11"
+
+[tool.ty.rules]
+# https://docs.astral.sh/ty/rules/
+division-by-zero = "error"
 
 [tool.ruff]
 line-length = 100
 
+[tool.ruff.format]
+docstring-code-format = true
+
 [tool.ruff.lint]
-select = ["E", "F", "I", "TID252"]
-ignore = []
+select = ["ALL"]
+ignore = [
+    "COM812",  # Messes with the formatter
+    "ISC001",  # Messes with the formatter
+    "ANN401",  # Dynamically typed expressions (typing.Any) are disallowed — too strict for generic wrappers
+]
+
+[tool.ruff.lint.flake8-annotations]
+allow-star-arg-any = true
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
 
 [tool.ruff.lint.isort]
 force-single-line = false
 combine-as-imports = true
 known-first-party = ["deepagents_acp"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+ignore-var-parameters = true  # ignore missing documentation for *args and **kwargs parameters
+
+[tool.ruff.lint.per-file-ignores]
+"deepagents_acp/py.typed.py" = [
+    "D100",   # py.typed marker file does not need a docstring
+    "N999",   # py.typed is a PEP 561 convention, not a normal module name
+]
+"tests/**" = [
+    "ANN001",   # Missing type annotation for function argument — not needed in tests
+    "ANN201",   # Missing return type annotation — not needed in tests
+    "ANN202",   # Missing return type annotation for private function — not needed in tests
+    "ANN205",   # Missing return type annotation for staticmethod — not needed in tests
+    "ARG",      # Unused arguments — test stubs/mocks have unused args by design
+    "C901",     # McCabe complexity — test helper code can be complex
+    "D",        # Missing docstrings — not needed in tests
+    "DOC",      # Docstring conventions — not needed in tests
+    "F401",     # Imported but unused — test fixtures may appear unused
+    "PLC0415",  # Import not at top-level — lazy imports in test functions are fine
+    "PLR0912",  # Too many branches — test helper code can be complex
+    "PLR2004",  # Magic value used in comparison — fine in test assertions
+    "PLR6301",  # Method could be a function — test class organization
+    "RUF012",   # Mutable class attributes without ClassVar — test stub classes are fine
+    "RUF100",   # Unused noqa — test files may have conditional noqa directives
+    "S",        # Security warnings — not applicable to tests
+    "SLF001",   # Private member access — tests need access to internals
+    "TC002",    # Move third-party import into TYPE_CHECKING — not needed in tests
+    "W605",     # Invalid escape sequence — regex patterns in test fixtures
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto" # or "strict"

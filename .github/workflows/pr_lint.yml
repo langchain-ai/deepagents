@@ -24,6 +24,7 @@
 #   * chore      — other changes that don't modify source or test files
 #   * revert     — reverts a previous commit
 #   * release    — prepare a new release
+#   * hotfix     — urgent fix that won't trigger a release
 #
 # Allowed Scope(s) (optional):
 #   deepagents, sdk, deepagents-cli, cli, harbor, acp, examples, infra, deps
@@ -73,6 +74,7 @@ jobs:
             chore
             revert
             release
+            hotfix
           scopes: |
             deepagents
             sdk
@@ -83,6 +85,7 @@ jobs:
             examples
             infra
             deps
+            daytona
           requireScope: false
           disallowScopes: |
             release

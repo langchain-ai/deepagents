@@ -20,6 +20,12 @@ dependencies = [
     "langchain-google-genai>=3.1.0",
 ]
 
+[tool.uv]
+override-dependencies = [
+    "nbconvert>=7.17.0",  # CVE-2025-53000
+    "protobuf>=6.33.5",  # CVE-2026-0994
+]
+
 [project.optional-dependencies]
 dev = [
     "mypy>=1.11.1",

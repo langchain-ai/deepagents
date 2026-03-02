@@ -19,6 +19,8 @@ body:
         * [LangChain ChatBot](https://chat.langchain.com/)
         * [GitHub search](https://github.com/langchain-ai/deepagents),
         * [Deep Agents Forum](https://forum.langchain.com/c/oss-product-help-lc-and-lg/deep-agents/18),
+
+        **Note:** For bug fixes, please feel free to open a PR contributing a failing test. However, please do not begin to work on a fix unless explicitly assigned to this issue by a maintainer.
   - type: checkboxes
     id: checks
     attributes:
@@ -43,6 +45,16 @@ body:
       options:
         - label: deepagents (SDK)
         - label: cli
+  - type: textarea
+    id: related
+    validations:
+      required: false
+    attributes:
+      label: Related Issues / PRs
+      description: |
+        If this bug is related to any existing issues or pull requests, please link them here.
+      placeholder: |
+        * e.g. #123, #456
   - type: textarea
     id: reproduction
     validations:
@@ -94,3 +106,7 @@ body:
         Python: 3.x.x
         deepagents: 0.x.y
         deepagents-cli: 0.x.y
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve Deep Agents.

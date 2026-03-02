@@ -1,0 +1,233 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "deepagents-cli"
+version = "0.0.25"
+description = "Terminal interface for Deep Agents - interactive AI agent with file operations, shell access, and sub-agent capabilities."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11,<4.0"
+keywords = ["agents", "ai", "cli", "terminal", "llm", "langgraph", "langchain", "deep-agent"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Terminals",
+]
+dependencies = [
+    # Framework
+    "deepagents==0.4.3",
+    "langchain>=1.2.10,<2.0.0",
+    "langgraph-checkpoint-sqlite>=3.0.0,<4.0.0",
+
+    # Require at least one integration package
+    "langchain-openai>=1.1.8,<2.0.0",
+
+    # UI/Terminal
+    "textual>=8.0.0,<9.0.0",
+    "textual-autocomplete>=3.0.0,<5.0.0",
+    "prompt-toolkit>=3.0.52,<4.0.0",
+    "rich>=14.0.0,<15.0.0",
+    "markdownify>=0.13.0,<2.0.0",
+
+    # Sandbox integrations
+    "langsmith[sandbox]>=0.7.7",
+    "daytona>=0.113.0,<1.0.0",
+    "modal>=0.65.0,<2.0.0",
+    "runloop-api-client>=0.69.0",
+
+    # Tools
+    "tavily-python>=0.7.21,<1.0.0",
+
+    # Clipboard
+    "pyperclip>=1.11.0,<2.0.0",
+
+    # Utilities
+    "python-dotenv>=1.0.0,<2.0.0",
+    "requests>=2.0.0,<3.0.0",
+    "pillow>=10.0.0,<13.0.0",
+    "pyyaml>=6.0.0",
+    "aiosqlite>=0.19.0,<1.0.0",
+    "tomli-w>=1.0.0,<2.0.0",
+]
+
+[project.optional-dependencies]
+# Model providers
+anthropic = ["langchain-anthropic>=1.0.0,<2.0.0"]
+bedrock = ["langchain-aws>=1.0.0,<2.0.0"]
+cohere = ["langchain-cohere>=0.5.0,<1.0.0"]
+deepseek = ["langchain-deepseek>=1.0.0,<2.0.0"]
+fireworks = ["langchain-fireworks>=1.0.0,<2.0.0"]
+google-genai = ["langchain-google-genai>=4.0.0,<5.0.0"]
+groq = ["langchain-groq>=1.0.0,<2.0.0"]
+huggingface = ["langchain-huggingface>=1.0.0,<2.0.0"]
+ibm = ["langchain-ibm>=1.0.0,<2.0.0"]
+mistralai = ["langchain-mistralai>=1.0.0,<2.0.0"]
+nvidia = ["langchain-nvidia-ai-endpoints>=1.0.0,<2.0.0"]
+ollama = ["langchain-ollama>=1.0.0,<2.0.0"]
+openai = ["langchain-openai>=1.1.8,<2.0.0"]
+openrouter = ["langchain-openrouter>=0.0.1,<2.0.0"]
+perplexity = ["langchain-perplexity>=1.0.0,<2.0.0"]
+vertexai = ["langchain-google-vertexai>=3.0.0,<4.0.0"]
+xai = ["langchain-xai>=1.0.0,<2.0.0"]
+all-providers = [
+    "deepagents-cli[anthropic,bedrock,cohere,deepseek,fireworks,google-genai,groq,huggingface,ibm,mistralai,nvidia,ollama,openai,openrouter,perplexity,vertexai,xai]",
+]
+
+[project.scripts]
+deepagents = "deepagents_cli:cli_main"
+deepagents-cli = "deepagents_cli:cli_main"
+
+[project.urls]
+Homepage = "https://docs.langchain.com/oss/python/deepagents/overview"
+Documentation = "https://reference.langchain.com/python/deepagents/"
+Repository = "https://github.com/langchain-ai/deepagents"
+Issues = "https://github.com/langchain-ai/deepagents/issues"
+Changelog = "https://github.com/langchain-ai/deepagents/blob/main/libs/cli/CHANGELOG.md"
+Twitter = "https://x.com/LangChain"
+
+[dependency-groups]
+test = [
+    "build>=1.0.0,<2.0.0",
+    "ruff>=0.14.0,<1.0.0",
+    "ty>=0.0.1,<1.0.0",
+    "pytest>=8.3.4,<10.0.0",
+    "pytest-asyncio>=0.25.3,<2.0.0",
+    "pytest-cov>=6.0.0,<8.0.0",
+    "pytest-mock>=3.14.0,<4.0.0",
+    "pytest-socket>=0.7.0,<1.0.0",
+    "pytest-timeout>=2.3.1,<3.0.0",
+    "pytest-watcher>=0.3.4,<1.0.0",
+    "pytest-xdist>=3.8.0,<4.0.0",
+    "responses>=0.25.0,<1.0.0",
+    "twine>=6.0.0,<7.0.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["deepagents_cli"]
+
+[tool.hatch.build.targets.wheel.shared-data]
+"deepagents_cli/default_agent_prompt.md" = "deepagents_cli/default_agent_prompt.md"
+"deepagents_cli/*.tcss" = "deepagents_cli/"
+
+[tool.uv.sources]
+deepagents = { path = "../deepagents", editable = true }
+
+[tool.ty.environment]
+python-version = "3.11"
+extra-paths = ["../deepagents"]
+
+[tool.ty.rules]
+# https://docs.astral.sh/ty/rules/
+division-by-zero = "error"
+
+[tool.ruff.format]
+docstring-code-format = true
+docstring-code-line-length = 100
+
+[tool.ruff.lint]
+preview = true
+select = ["ALL"]
+ignore = [
+    "C90",     # McCabe complexity
+    "COM812",  # Messes with the formatter
+    "CPY",     # No copyright
+    "FBT",     # Boolean positional arguments (too pedantic)
+    "FIX002",  # Line contains TODO
+    "ISC001",  # Messes with the formatter
+    "PERF203", # Rarely useful
+    "PLC0414", # Inconsistent with how type checkers expect to be notified of intentional re-exports
+    "PLC0415", # Lazy imports are used extensively throughout the CLI for startup performance (deferred heavy imports)
+    "PLR09",   # Too many something (args, branches, returns, statements, etc)
+    "PLR1702", # Too many nested blocks
+    "SLF001",  # Private member access
+    "TD002",   # Missing author in TODO
+    "TD003",   # Missing issue link in TODO
+]
+unfixable = ["B028"] # People should intentionally tune the stacklevel
+
+flake8-annotations.allow-star-arg-any = true
+flake8-annotations.mypy-init-return = true
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
+
+[tool.ruff.lint.isort]
+force-single-line = false
+combine-as-imports = true
+known-first-party = ["deepagents_cli"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+ignore-var-parameters = true
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = [
+    "ANN001",   # Missing type annotation for function argument — not needed in tests
+    "ANN201",   # Missing return type annotation — not needed in tests
+    "D1",       # Missing docstrings — not needed in tests
+    "DOC",      # Docstring conventions — not needed in tests
+    "F401",     # Imported but unused — test fixtures may appear unused
+    "PLC0415",  # Lazy imports — test organization patterns
+    "PLC1901",  # Comparison to empty string — fine in test assertions
+    "PLC2701",  # Private name import — tests need access to internals
+    "PLR2004",  # Magic value used in comparison — fine in test assertions
+    "PLR6201",  # Literal membership test — fine in tests
+    "PLR6301",  # Method could be a function — test class organization
+    "PLW0108",  # Lambda may be unnecessary — fine in test mocks
+    "RUF001",   # Ambiguous characters — fine in test strings
+    "S",        # Security warnings — not applicable to tests
+    "SLF",      # Private member access — tests need access to internals
+]
+"scripts/**" = [
+    "BLE001",   # Blind exception catch — resilience in standalone scripts
+    "INP",      # Missing `__init__.py` — scripts are standalone
+    "S",        # Security warnings — not applicable to scripts
+    "T201",     # `print` found — scripts use print for output
+]
+"examples/**" = [
+    "ANN001",   # Missing type annotation for function argument — examples prioritize clarity
+    "ANN201",   # Missing return type annotation — examples prioritize clarity
+    "BLE001",   # Blind exception catch — resilience in example scripts
+    "INP001",   # Missing `__init__.py` — examples are standalone
+    "N806",     # Variable in function should be lowercase — example naming conventions
+    "PLC0415",  # Lazy import — example organization patterns
+    "PLR2004",  # Magic value used in comparison — fine in examples
+    "T201",     # `print` found — examples use print for output
+    "TRY300",   # Consider moving to `else` block — examples prioritize readability
+]
+"deepagents_cli/built_in_skills/**/scripts/**" = [
+    "ANN001",   # Missing type annotation for function argument — standalone scripts
+    "ANN201",   # Missing return type annotation — standalone scripts
+    "BLE001",   # Blind exception catch — resilience in standalone scripts
+    "INP001",   # Missing `__init__.py` — scripts are standalone
+    "N806",     # Variable in function should be lowercase — script naming conventions
+    "PLR2004",  # Magic value used in comparison — fine in scripts
+    "T201",     # `print` found — scripts use print for output
+]
+
+[tool.coverage.run]
+omit = ["tests/*"]
+
+[tool.pytest.ini_options]
+timeout = 30  # Default timeout for all tests (can be overridden per-test)
+
+addopts = "--strict-markers --strict-config --durations=5"
+# pytest-benchmark warns once per xdist worker that benchmarks are disabled
+# under parallel execution. Both plugins are needed: xdist for `make test`,
+# benchmark for `make benchmark`. Suppress the noise here.
+filterwarnings = [
+    "ignore::pytest_benchmark.logger.PytestBenchmarkWarning",
+]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"

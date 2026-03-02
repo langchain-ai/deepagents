@@ -1,9 +1,22 @@
 [project]
 name = "deepagents-harbor"
 version = "0.0.1"
-description = "Harbor integration with LangChain DeepAgents and LangSmith tracing"
+description = "Harbor integration with LangChain Deep Agents and LangSmith tracing"
 readme = "README.md"
+license = { text = "MIT" }
 requires-python = ">=3.12"
+keywords = ["agents", "ai", "harbor", "llm", "langgraph", "langchain", "langsmith", "tracing"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
 dependencies = [
     # Harbor runtime
     "harbor>=0.1.12",
@@ -28,6 +41,13 @@ test = [
     "pytest-cov>=7.0.0",
 ]
 
+[project.urls]
+Homepage = "https://docs.langchain.com/oss/python/deepagents/overview"
+Documentation = "https://reference.langchain.com/python/deepagents/"
+Repository = "https://github.com/langchain-ai/deepagents"
+Issues = "https://github.com/langchain-ai/deepagents/issues"
+Twitter = "https://x.com/LangChain"
+
 [build-system]
 requires = ["setuptools>=75.0"]
 build-backend = "setuptools.build_meta"
@@ -40,22 +60,69 @@ include = ["deepagents_harbor*"]
 override-dependencies = [
     "openai>=1.109.1,<2.0.0",
     "e2b==2.4.3",
+    # CVE-2026-24486: path traversal vulnerability in < 0.0.22
+    "python-multipart>=0.0.22",
+    # CVE-2026-0994: JSON recursion depth bypass DoS in <= 6.33.4
+    "protobuf>=6.33.5",
 ]
 
 [tool.uv.sources]
-deepagents-cli = { path = "../deepagents-cli" }
+deepagents-cli = { path = "../cli" }
 deepagents = { path = "../deepagents", editable = true }
 
 [tool.ty.environment]
-extra-paths = ["../deepagents", "../deepagents-cli"]
+extra-paths = ["../deepagents", "../cli"]
+
+[tool.ty.rules]
+# https://docs.astral.sh/ty/rules/
+division-by-zero = "error"
 
 [tool.ruff]
 line-length = 100
 target-version = "py312"
 
+[tool.ruff.format]
+docstring-code-format = true
+
 [tool.ruff.lint]
-select = ["E", "F", "I", "TID252"]
-ignore = ["E501"]
+select = ["ALL"]
+ignore = [
+    "C90",     # McCabe complexity — trajectory conversion has inherent branching
+    "COM812",  # Messes with the formatter
+    "ISC001",  # Messes with the formatter
+    "E501",    # Line too long — harbor wraps long shell scripts and command strings
+    "FBT",     # Boolean positional arguments — too pedantic for wrapper APIs matching upstream signatures
+    "FIX002",  # Line contains TODO
+    "PLR09",   # Too many something (args, branches, returns, statements) — wrapper/conversion methods are inherently branchy
+    "TD002",   # Missing author in TODO
+    "TD003",   # Missing issue link in TODO
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+ignore-var-parameters = true  # ignore missing documentation for *args and **kwargs parameters
+
+[tool.ruff.lint.flake8-annotations]
+allow-star-arg-any = true
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = [
+    "ANN001",  # Missing type annotation for function argument — not needed in tests
+    "ANN201",  # Missing return type annotation — not needed in tests
+    "D",       # Docstring conventions — not needed in tests
+    "S101",    # Use of `assert` — expected in tests
+    "PLR2004", # Magic value used in comparison — fine in test assertions
+    "S",       # Security warnings — not applicable to tests
+    "SLF",     # Private member access — tests need access to internals
+]
+"scripts/**" = [
+    "INP001",  # Missing `__init__.py` — scripts are standalone
+    "T201",    # `print` found — scripts use print for output
+    "S",       # Security warnings — not applicable to scripts
+]
 
 [tool.ruff.lint.isort]
 force-single-line = false

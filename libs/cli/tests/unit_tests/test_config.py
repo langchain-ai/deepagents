@@ -632,8 +632,8 @@ class TestFetchLangsmithProjectUrl:
         assert second == first
         mock_client_cls.assert_called_once()
 
-    def test_caches_none_on_failure(self) -> None:
-        """Should cache None on failure so retries don't make network calls."""
+    def test_retries_after_failure(self) -> None:
+        """Should retry after failure instead of caching None."""
         with patch("langsmith.Client") as mock_client_cls:
             mock_client_cls.return_value.read_project.side_effect = OSError("timeout")
             first = fetch_langsmith_project_url("my-project")
@@ -641,7 +641,22 @@ class TestFetchLangsmithProjectUrl:
 
         assert first is None
         assert second is None
-        mock_client_cls.assert_called_once()
+        assert mock_client_cls.return_value.read_project.call_count == 2
+
+    def test_retries_when_url_is_none(self) -> None:
+        """Should retry when the project URL is missing instead of caching None."""
+
+        class FakeProject:
+            url = None
+
+        with patch("langsmith.Client") as mock_client_cls:
+            mock_client_cls.return_value.read_project.return_value = FakeProject()
+            first = fetch_langsmith_project_url("my-project")
+            second = fetch_langsmith_project_url("my-project")
+
+        assert first is None
+        assert second is None
+        assert mock_client_cls.return_value.read_project.call_count == 2
 
     def test_different_project_name_fetches_again(self) -> None:
         """Should fetch again when called with a different project name."""

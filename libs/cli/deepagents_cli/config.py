@@ -171,8 +171,8 @@ _glyphs_cache: Glyphs | None = None
 # Module-level cache for editable install detection
 _editable_cache: bool | None = None
 
-# Module-level cache for LangSmith project URL (None means "not yet fetched")
-_langsmith_url_cache: tuple[str, str | None] | None = None
+# Module-level cache for successful LangSmith project URL lookups
+_langsmith_url_cache: tuple[str, str] | None = None
 
 
 def _is_editable_install() -> bool:
@@ -995,8 +995,8 @@ def get_langsmith_project_name() -> str | None:
 def fetch_langsmith_project_url(project_name: str) -> str | None:
     """Fetch the LangSmith project URL via the LangSmith client.
 
-    Results are cached at module level so repeated calls do not make additional
-    network requests. Failed lookups are also cached to avoid retries.
+    Successful results are cached at module level so repeated calls do not
+    make additional network requests.
 
     This is a blocking network call on the first invocation. In async
     contexts, run it in a thread (e.g. via `asyncio.to_thread`).
@@ -1030,11 +1030,11 @@ def fetch_langsmith_project_url(project_name: str) -> str | None:
             project_name,
             exc_info=True,
         )
-        _langsmith_url_cache = (project_name, None)
         return None
     else:
         url = project.url or None
-        _langsmith_url_cache = (project_name, url)
+        if url is not None:
+            _langsmith_url_cache = (project_name, url)
         return url
 
 

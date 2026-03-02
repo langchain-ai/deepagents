@@ -1330,6 +1330,21 @@ class SummarizationMessage(AppMessage):
     }
     """
 
-    def __init__(self, **kwargs: Any) -> None:
-        """Initialize a summarization notification message."""
-        super().__init__(Text("✓ Summarized conversation", style="bold cyan"), **kwargs)
+    def __init__(self, message: str | Text | None = None, **kwargs: Any) -> None:
+        """Initialize a summarization notification message.
+
+        Args:
+            message: Optional message override used when rehydrating from the
+                message store.
+
+                Defaults to the standard summary notification.
+            **kwargs: Additional arguments passed to parent.
+        """
+        content: Text
+        if message is None:
+            content = Text("✓ Summarized conversation", style="bold cyan")
+        elif isinstance(message, Text):
+            content = message
+        else:
+            content = Text(message, style="bold cyan")
+        super().__init__(content, **kwargs)

@@ -91,7 +91,9 @@ def _is_summarization_chunk(metadata: dict | None) -> bool:
     if metadata.get("lc_source") == "summarization":
         return True
     # Newer traces may only include the middleware node name.
-    node = metadata.get("langgraph_node", "")
+    node = metadata.get("langgraph_node")
+    if not isinstance(node, str):
+        return False
     return "SummarizationMiddleware" in node
 
 
@@ -415,7 +417,13 @@ async def execute_task_textual(
                     if _is_summarization_chunk(metadata):
                         # Summary completion arrives as a synthesized HumanMessage.
                         if isinstance(message, HumanMessage):
-                            await adapter._mount_message(SummarizationMessage())
+                            try:
+                                await adapter._mount_message(SummarizationMessage())
+                            except Exception:
+                                logger.debug(
+                                    "Failed to mount summarization notification",
+                                    exc_info=True,
+                                )
                             if summarization_in_progress and adapter._set_spinner:
                                 await adapter._set_spinner("Thinking")
                             summarization_in_progress = False
@@ -426,6 +434,9 @@ async def execute_task_textual(
                         continue
 
                     # If regular chunks resumed, summarization has finished.
+                    # The HumanMessage completion marker may still arrive
+                    # later and mount the notification; this fallback only
+                    # resets the spinner to avoid a stale "Summarizing" state.
                     if summarization_in_progress:
                         summarization_in_progress = False
                         if adapter._set_spinner:
@@ -660,6 +671,13 @@ async def execute_task_textual(
                             pending_text_by_namespace[ns_key] = ""
                             assistant_message_by_namespace.pop(ns_key, None)
 
+            # Reset summarization state if stream ended mid-summarization
+            # (e.g. middleware error, no HumanMessage marker emitted).
+            if summarization_in_progress:
+                summarization_in_progress = False
+                if adapter._set_spinner:
+                    await adapter._set_spinner("Thinking")
+
             # Flush any remaining text from all namespaces
             for ns_key, pending_text in list(pending_text_by_namespace.items()):
                 if pending_text:
@@ -813,6 +831,10 @@ async def execute_task_textual(
         if adapter._set_active_message:
             adapter._set_active_message(None)
 
+        # Hide spinner (may still show "Summarizing" if interrupted mid-summary)
+        if adapter._set_spinner:
+            await adapter._set_spinner(None)
+
         await adapter._mount_message(AppMessage("Interrupted by user"))
 
         # Save accumulated state before marking tools as rejected (best-effort)
@@ -855,6 +877,10 @@ async def execute_task_textual(
         # blocking all future pruning
         if adapter._set_active_message:
             adapter._set_active_message(None)
+
+        # Hide spinner (may still show "Summarizing" if interrupted mid-summary)
+        if adapter._set_spinner:
+            await adapter._set_spinner(None)
 
         await adapter._mount_message(AppMessage("Interrupted by user"))
 

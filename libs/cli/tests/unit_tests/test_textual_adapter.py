@@ -183,6 +183,11 @@ class TestIsSummarizationChunk:
         metadata = {"langgraph_node": "agent.middleware.MemoryMiddleware.before_model"}
         assert _is_summarization_chunk(metadata) is False
 
+    def test_returns_false_for_none_node_name(self) -> None:
+        """Should return `False` when `langgraph_node` exists but is `None`."""
+        metadata = {"langgraph_node": None}
+        assert _is_summarization_chunk(metadata) is False
+
 
 class _FakeAgent:
     """Minimal async stream agent used for adapter execution tests."""

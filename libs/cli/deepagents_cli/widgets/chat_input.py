@@ -324,6 +324,9 @@ class ChatTextArea(TextArea):
         self._in_history = False
         self._completion_active = False
         self._app_has_focus = True
+        # Buffer quote-prefixed high-frequency key bursts from terminals that
+        # emulate paste via rapid key events instead of dispatching a paste
+        # event.
         self._paste_burst_buffer = ""
         self._paste_burst_last_char_time: float | None = None
         self._paste_burst_timer: Timer | None = None
@@ -387,7 +390,11 @@ class ChatTextArea(TextArea):
         self._schedule_paste_burst_flush()
 
     def _should_start_paste_burst(self, char: str) -> bool:
-        """Return whether a keypress should start paste-burst buffering."""
+        """Return whether a keypress should start paste-burst buffering.
+
+        Restricting to quote-prefixed input at an empty cursor reduces false
+        positives for normal typing and slash-command entry.
+        """
         if char not in _PASTE_BURST_START_CHARS:
             return False
         if self.text or not self.selection.is_empty:
@@ -396,7 +403,11 @@ class ChatTextArea(TextArea):
         return row == 0 and col == 0
 
     def _flush_paste_burst(self) -> None:
-        """Flush buffered burst text through dropped-path parsing."""
+        """Flush buffered burst text through dropped-path parsing.
+
+        When parsing fails, the buffered text is inserted unchanged so regular
+        typing behavior is preserved.
+        """
         payload = self._paste_burst_buffer
         self._paste_burst_buffer = ""
         self._paste_burst_last_char_time = None
@@ -1249,6 +1260,11 @@ class ChatInput(Vertical):
 
     def _replace_submitted_paths_with_images(self, value: str) -> str:
         """Replace dropped-path payloads in submitted text with image placeholders.
+
+        Handles both full-path payloads and leading-path-with-suffix payloads
+        (for example, `'<path>' what is this?`). When command mode previously
+        stripped a leading slash, this method also retries with the slash
+        restored before giving up.
 
         Args:
             value: Stripped submitted text (without mode prefix).

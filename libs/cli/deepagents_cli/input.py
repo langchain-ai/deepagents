@@ -498,6 +498,10 @@ def _leading_token_end(text: str) -> int | None:
 def _extract_unquoted_leading_path_with_spaces(text: str) -> tuple[Path, int] | None:
     """Extract a leading unquoted path that may contain spaces.
 
+    This fallback is intentionally POSIX-oriented (`/` and `~/`) because the
+    slash-command conflict it addresses is specific to inputs that begin with
+    `/`.
+
     Args:
         text: Input text beginning with a potential path.
 

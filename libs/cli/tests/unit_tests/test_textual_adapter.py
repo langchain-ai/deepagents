@@ -1,19 +1,24 @@
 """Unit tests for textual_adapter functions."""
 
+import asyncio
 from asyncio import Future
-from collections.abc import Generator
+from collections.abc import AsyncIterator, Generator
 from datetime import datetime
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+from langchain_core.messages import AIMessage, HumanMessage
 
 from deepagents_cli.textual_adapter import (
     TextualUIAdapter,
     _build_interrupted_ai_message,
     _build_stream_config,
     _is_summarization_chunk,
+    execute_task_textual,
 )
+from deepagents_cli.widgets.messages import SummarizationMessage
 
 
 async def _mock_mount(widget: object) -> None:
@@ -177,6 +182,114 @@ class TestIsSummarizationChunk:
         """Should return `False` for unrelated node names."""
         metadata = {"langgraph_node": "agent.middleware.MemoryMiddleware.before_model"}
         assert _is_summarization_chunk(metadata) is False
+
+
+class _FakeAgent:
+    """Minimal async stream agent used for adapter execution tests."""
+
+    def __init__(self, chunks: list[tuple]) -> None:
+        self._chunks = chunks
+
+    async def astream(self, *_: Any, **__: Any) -> AsyncIterator[tuple[Any, ...]]:
+        """Yield preconfigured stream chunks."""
+        for chunk in self._chunks:
+            yield chunk
+
+
+class TestExecuteTaskTextualSummarizationFeedback:
+    """Tests for summarization spinner and notification feedback."""
+
+    @pytest.mark.asyncio
+    async def test_spinner_transitions_for_summarization_stream(self) -> None:
+        """Spinner should move Thinking -> Summarizing -> Thinking."""
+        statuses: list[str | None] = []
+
+        async def record_spinner(status: str | None) -> None:
+            await asyncio.sleep(0)
+            statuses.append(status)
+
+        async def mount_message(_widget: object) -> None:
+            await asyncio.sleep(0)
+
+        chunks = [
+            (
+                (),
+                "messages",
+                (AIMessage(content="summary chunk"), {"lc_source": "summarization"}),
+            ),
+            ((), "messages", (HumanMessage(content="regular chunk"), {})),
+        ]
+
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=record_spinner,
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+        )
+
+        assert statuses[0] == "Thinking"
+        assert "Summarizing" in statuses
+        assert statuses[-1] == "Thinking"
+
+    @pytest.mark.asyncio
+    async def test_mounts_summarization_notification_on_completion(self) -> None:
+        """Completion marker should render a SummarizationMessage widget."""
+        statuses: list[str | None] = []
+        mounted_widgets: list[object] = []
+
+        async def record_spinner(status: str | None) -> None:
+            await asyncio.sleep(0)
+            statuses.append(status)
+
+        async def mount_message(widget: object) -> None:
+            await asyncio.sleep(0)
+            mounted_widgets.append(widget)
+
+        chunks = [
+            (
+                (),
+                "messages",
+                (AIMessage(content="summary chunk"), {"lc_source": "summarization"}),
+            ),
+            (
+                (),
+                "messages",
+                (
+                    HumanMessage(content="summary complete"),
+                    {"lc_source": "summarization"},
+                ),
+            ),
+        ]
+
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=record_spinner,
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+        )
+
+        assert any(
+            isinstance(widget, SummarizationMessage) for widget in mounted_widgets
+        )
+        assert statuses[0] == "Thinking"
+        assert "Summarizing" in statuses
+        assert statuses[-1] == "Thinking"
 
 
 # ---------------------------------------------------------------------------

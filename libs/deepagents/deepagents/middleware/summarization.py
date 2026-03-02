@@ -1,33 +1,48 @@
-"""Summarization middleware for offloading conversation history.
+"""Summarization middleware for automatic and tool-based conversation compaction.
 
-Persists conversation history to a backend prior to summarization, enabling retrieval of
-full context if needed later by an agent.
+This module provides two middleware classes:
+
+- `SummarizationMiddleware` — automatically compacts the conversation when token
+    usage exceeds a configurable threshold.
+
+    Older messages are summarized via an LLM call and the full history is
+    offloaded to a backend for later retrieval.
+- `SummarizationToolMiddleware` — exposes a `compact_conversation` tool that
+    lets the agent (or a human-in-the-loop approval flow) trigger compaction on
+    demand.
+
+    Composes with a `SummarizationMiddleware` instance and reuses its
+    summarization engine.
 
 ## Usage
 
 ```python
 from deepagents import create_deep_agent
-from deepagents.middleware.summarization import SummarizationMiddleware
+from deepagents.middleware.summarization import (
+    SummarizationMiddleware,
+    SummarizationToolMiddleware,
+)
 from deepagents.backends import FilesystemBackend
 
 backend = FilesystemBackend(root_dir="/data")
 
-middleware = SummarizationMiddleware(
+summ = SummarizationMiddleware(
     model="gpt-4o-mini",
     backend=backend,
     trigger=("fraction", 0.85),
     keep=("fraction", 0.10),
 )
+tool_mw = SummarizationToolMiddleware(summ)
 
-agent = create_deep_agent(middleware=[middleware])
+agent = create_deep_agent(middleware=[summ, tool_mw])
 ```
 
 ## Storage
 
 Offloaded messages are stored as markdown at `/conversation_history/{thread_id}.md`.
 
-Each summarization event appends a new section to this file, creating a running log
-of all evicted messages.
+Each summarization event appends a new section to this file, creating a running
+lo of all evicted messages.
 """
 
 from __future__ import annotations
@@ -73,14 +88,11 @@ logger = logging.getLogger(__name__)
 
 SUMMARIZATION_SYSTEM_PROMPT = """## Compact conversation Tool `compact_conversation`
 
-You have access to a `compact_conversation` tool. This tool refreshes your context
-window to reduce context bloat and costs.
+You have access to a `compact_conversation` tool. This tool refreshes your context window to reduce context bloat and costs.
 
 You should use the tool when:
-- The user asks to move on to a completely new task for which previous context is likely
-irrelevant.
-- You have finished extracting or synthesizing a result and previous working context is
-no longer needed.
+- The user asks to move on to a completely new task for which previous context is likely irrelevant.
+- You have finished extracting or synthesizing a result and previous working context is no longer needed.
 """
 
 
@@ -99,13 +111,27 @@ class SummarizationEvent(TypedDict):
 
 
 class TruncateArgsSettings(TypedDict, total=False):
-    """Settings for truncating large tool arguments in old messages.
+    """Settings for truncating large tool-call arguments in older messages.
 
-    Attributes:
-        trigger: Threshold to trigger argument truncation. If None, truncation is disabled.
-        keep: Context retention policy for message truncation (defaults to last 20 messages).
-        max_length: Maximum character length for tool arguments before truncation (defaults to 2000).
-        truncation_text: Text to replace truncated arguments with (defaults to "...(argument truncated)").
+    This is a lightweight, pre-summarization optimization that fires at a lower
+    token threshold than full conversation compaction. When triggered, only the
+    `args` values on `AIMessage.tool_calls` in messages *before* the keep window
+    are shortened — recent messages are left intact.
+
+    Typical large arguments include `write_file` content, `edit_file` patches,
+    and verbose `execute` outputs.
+
+    Args:
+        trigger: Token/message/fraction threshold that activates truncation.
+
+            Uses the same `ContextSize` format as the summarization trigger.
+
+            If `None`, truncation is disabled.
+        keep: How many recent messages (or tokens/fraction of context) to
+            leave untouched.
+        max_length: Character limit per argument value before it is clipped.
+        truncation_text: Replacement suffix appended after the first 20
+            characters of a truncated argument.
     """
 
     trigger: ContextSize | None

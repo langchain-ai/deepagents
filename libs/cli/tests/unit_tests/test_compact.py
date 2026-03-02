@@ -173,10 +173,7 @@ class TestCompactGuards:
                 await pilot.pause()
 
             msgs = app.query(AppMessage)
-            assert any(
-                "compact limit (20.0K tokens (10% of 200.0K))" in str(w._content)
-                for w in msgs
-            )
+            assert any("within the token budget" in str(w._content) for w in msgs)
 
     @pytest.mark.asyncio
     async def test_empty_state_shows_error(self) -> None:
@@ -328,7 +325,10 @@ class TestCompactSuccess:
                 await pilot.pause()
 
             msgs = app.query(AppMessage)
-            assert any("Compacted 4 messages" in str(w._content) for w in msgs)
+            assert any(
+                "Summarized 4 messages into a concise summary." in str(w._content)
+                for w in msgs
+            )
 
     @pytest.mark.asyncio
     async def test_compaction_updates_token_tracker(self) -> None:
@@ -404,10 +404,7 @@ class TestCompactEdgeCases:
                 await pilot.pause()
 
             msgs = app.query(AppMessage)
-            assert any(
-                "compact limit (20.0K tokens (10% of 200.0K))" in str(w._content)
-                for w in msgs
-            )
+            assert any("within the token budget" in str(w._content) for w in msgs)
             app._agent.aupdate_state.assert_not_called()  # type: ignore[union-attr]
 
     @pytest.mark.asyncio

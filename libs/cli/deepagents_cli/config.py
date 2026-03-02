@@ -377,6 +377,7 @@ class Settings:
         openai_api_key: OpenAI API key if available.
         anthropic_api_key: Anthropic API key if available.
         google_api_key: Google API key if available.
+        nvidia_api_key: NVIDIA API key if available.
         tavily_api_key: Tavily API key if available.
         google_cloud_project: Google Cloud project ID for VertexAI
             authentication.
@@ -395,6 +396,7 @@ class Settings:
     openai_api_key: str | None
     anthropic_api_key: str | None
     google_api_key: str | None
+    nvidia_api_key: str | None
     tavily_api_key: str | None
 
     # Google Cloud configuration (for VertexAI)
@@ -429,6 +431,7 @@ class Settings:
         openai_key = os.environ.get("OPENAI_API_KEY")
         anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
         google_key = os.environ.get("GOOGLE_API_KEY")
+        nvidia_key = os.environ.get("NVIDIA_API_KEY")
         tavily_key = os.environ.get("TAVILY_API_KEY")
         google_cloud_project = os.environ.get("GOOGLE_CLOUD_PROJECT")
 
@@ -453,6 +456,7 @@ class Settings:
             openai_api_key=openai_key,
             anthropic_api_key=anthropic_key,
             google_api_key=google_key,
+            nvidia_api_key=nvidia_key,
             tavily_api_key=tavily_key,
             google_cloud_project=google_cloud_project,
             deepagents_langchain_project=deepagents_langchain_project,
@@ -475,6 +479,11 @@ class Settings:
     def has_google(self) -> bool:
         """Check if Google API key is configured."""
         return self.google_api_key is not None
+
+    @property
+    def has_nvidia(self) -> bool:
+        """Check if NVIDIA API key is configured."""
+        return self.nvidia_api_key is not None
 
     @property
     def has_vertex_ai(self) -> bool:
@@ -1095,11 +1104,13 @@ def _get_default_model_spec() -> str:
         return "google_genai:gemini-3.1-pro-preview"
     if settings.has_vertex_ai:
         return "google_vertexai:gemini-3.1-pro-preview"
+    if settings.has_nvidia:
+        return "nvidia:nvidia/nemotron-3-nano-30b-a3b"
 
     msg = (
         "No credentials configured. Please set one of: "
         "ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY, "
-        "or GOOGLE_CLOUD_PROJECT"
+        "GOOGLE_CLOUD_PROJECT, or NVIDIA_API_KEY"
     )
     raise ModelConfigError(msg)
 
@@ -1245,6 +1256,7 @@ def _create_model_via_init(
             "openai": "langchain-openai",
             "google_genai": "langchain-google-genai",
             "google_vertexai": "langchain-google-vertexai",
+            "nvidia": "langchain-nvidia-ai-endpoints",
         }
         package = package_map.get(provider, f"langchain-{provider}")
         msg = (

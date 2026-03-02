@@ -93,7 +93,8 @@ def show_help() -> None:
         "  --sandbox-setup PATH       Setup script to run in sandbox after creation"
     )
     console.print(
-        "  --mcp-config PATH          Load MCP tools from JSON config file (Claude Desktop format)"
+        "  --mcp-config PATH          Load MCP tools from JSON config file"
+        " (Claude Desktop format)"
     )
     console.print("  -n, --non-interactive MSG  Run a single task and exit")
     console.print(

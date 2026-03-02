@@ -513,11 +513,13 @@ async def run_textual_cli_async(
                 console.print(f"[green]✓ Loaded {len(mcp_tools)} MCP tools[/green]")
             except ImportError:
                 console.print("[yellow]⚠ langchain-mcp-adapters not installed[/yellow]")
-                console.print("[dim]Install: uv pip install langchain-mcp-adapters[/dim]")
+                console.print(
+                    "[dim]Install: uv pip install langchain-mcp-adapters[/dim]"
+                )
             except FileNotFoundError as e:
                 console.print(f"[red]✗ MCP config file not found: {e}[/red]")
                 sys.exit(1)
-            except Exception as e:
+            except RuntimeError as e:
                 console.print(f"[red]✗ Failed to load MCP tools: {e}[/red]")
                 sys.exit(1)
 

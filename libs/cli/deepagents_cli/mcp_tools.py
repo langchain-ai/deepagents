@@ -31,16 +31,18 @@ def _validate_server_config(server_name: str, server_config: dict) -> None:
     # Determine server type - support both "type" and "transport" field names
     server_type = server_config.get("type") or server_config.get("transport", "stdio")
 
-    if server_type in ("sse", "http"):
+    if server_type in {"sse", "http"}:
         # SSE/HTTP server validation - requires url field
         if "url" not in server_config:
             error_msg = (
-                f"Server '{server_name}' with type '{server_type}' missing required 'url' field"
+                f"Server '{server_name}' with type '{server_type}'"
+                " missing required 'url' field"
             )
             raise ValueError(error_msg)
 
         # headers is optional but must be correct type if present
-        if "headers" in server_config and not isinstance(server_config["headers"], dict):
+        headers = server_config.get("headers")
+        if headers is not None and not isinstance(headers, dict):
             error_msg = f"Server '{server_name}' 'headers' must be a dictionary"
             raise TypeError(error_msg)
     else:
@@ -76,6 +78,7 @@ def load_mcp_config(config_path: str) -> dict:
     Raises:
         FileNotFoundError: If config file doesn't exist
         json.JSONDecodeError: If config file contains invalid JSON
+        TypeError: If config fields have wrong types
         ValueError: If config is missing required fields
     """
     path = Path(config_path)
@@ -85,7 +88,7 @@ def load_mcp_config(config_path: str) -> dict:
         raise FileNotFoundError(error_msg)
 
     try:
-        with path.open() as f:
+        with path.open(encoding="utf-8") as f:
             config = json.load(f)
     except json.JSONDecodeError as e:
         error_msg = f"Invalid JSON in MCP config file: {e.msg}"
@@ -152,8 +155,6 @@ async def get_mcp_tools(config_path: str) -> tuple[list[BaseTool], MCPSessionMan
         - session_manager: MCPSessionManager instance (call cleanup() when done)
 
     Raises:
-        FileNotFoundError: If config file doesn't exist
-        ValueError: If config is invalid
         RuntimeError: If MCP server fails to spawn or connect
     """
     # Load and validate config
@@ -163,9 +164,11 @@ async def get_mcp_tools(config_path: str) -> tuple[list[BaseTool], MCPSessionMan
     # Convert Claude Desktop format to langchain-mcp-adapters format
     connections = {}
     for server_name, server_config in config["mcpServers"].items():
-        server_type = server_config.get("type") or server_config.get("transport", "stdio")
+        server_type = server_config.get("type") or server_config.get(
+            "transport", "stdio"
+        )
 
-        if server_type in ("sse", "http"):
+        if server_type in {"sse", "http"}:
             # SSE/HTTP server connection
             # Note: langchain-mcp-adapters uses "streamable_http" for HTTP transport
             transport = "streamable_http" if server_type == "http" else "sse"
@@ -197,7 +200,9 @@ async def get_mcp_tools(config_path: str) -> tuple[list[BaseTool], MCPSessionMan
         all_tools: list[BaseTool] = []
         for server_name in config["mcpServers"]:
             # Create persistent session using AsyncExitStack to manage lifecycle
-            session = await manager.exit_stack.enter_async_context(client.session(server_name))
+            session = await manager.exit_stack.enter_async_context(
+                client.session(server_name)
+            )
             tools = await load_mcp_tools(session)
             all_tools.extend(tools)
 
@@ -206,9 +211,11 @@ async def get_mcp_tools(config_path: str) -> tuple[list[BaseTool], MCPSessionMan
         await manager.cleanup()
         error_msg = (
             f"Failed to connect to MCP servers: {e}\n"
-            "For stdio servers: Check that the command and args are correct, and that "
-            "the MCP server is installed (e.g., run 'npx -y <package>' manually to test).\n"
-            "For sse/http servers: Check that the URL is correct and the server is running."
+            "For stdio servers: Check that the command and args are correct,"
+            " and that the MCP server is installed"
+            " (e.g., run 'npx -y <package>' manually to test).\n"
+            "For sse/http servers: Check that the URL is correct"
+            " and the server is running."
         )
         raise RuntimeError(error_msg) from e
 

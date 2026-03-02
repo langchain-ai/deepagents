@@ -139,7 +139,7 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
 
             - `name`
             - `description` (used by the main agent to decide whether to call the sub agent)
-            - `prompt` (used as the system prompt in the subagent)
+            - `system_prompt` (used as the system prompt in the subagent)
             - (optional) `tools`
             - (optional) `model` (either a `LanguageModelLike` instance or `dict` settings)
             - (optional) `middleware` (list of `AgentMiddleware`)

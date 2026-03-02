@@ -19,12 +19,14 @@ Linting exceptions:
 """
 
 import os
+import re
 import subprocess
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 
-from deepagents.backends.protocol import ExecuteResponse
+from deepagents.backends.protocol import EditResult, ExecuteResponse, FileInfo, GrepMatch, WriteResult
 from deepagents.backends.sandbox import BaseSandbox
 
 # Skip all tests in this module unless RUN_SANDBOX_TESTS=true
@@ -33,6 +35,8 @@ pytestmark = pytest.mark.skipif(
     reason="Sandbox tests only run when RUN_SANDBOX_TESTS=true",
 )
 
+VIRTUAL_SANDBOX_ROOT = "/tmp/test_sandbox_ops"
+
 
 class LocalSubprocessSandbox(BaseSandbox):
     """Local sandbox implementation using subprocess for command execution."""
@@ -40,6 +44,36 @@ class LocalSubprocessSandbox(BaseSandbox):
     def __init__(self) -> None:
         """Initialize the local subprocess sandbox."""
         self._id = "local-subprocess-sandbox"
+        self._virtual_root = VIRTUAL_SANDBOX_ROOT
+        self._real_root = self._virtual_root
+
+    def set_real_root(self, real_root: str) -> None:
+        """Set the on-disk directory used for test file operations."""
+        self._real_root = real_root
+
+    def _translate_command_paths(self, command: str) -> str:
+        """Map virtual sandbox paths in commands to a real test directory."""
+        if self._real_root == self._virtual_root:
+            return command
+        return re.sub(r"/tmp/+test_sandbox_ops", self._real_root, command)
+
+    def _translate_output_paths(self, output: str) -> str:
+        """Map real test directory paths back to the virtual sandbox path."""
+        if self._real_root == self._virtual_root:
+            return output
+        return output.replace(self._real_root, self._virtual_root)
+
+    def _to_real_path(self, path: str) -> str:
+        """Translate a virtual test path to its real on-disk location."""
+        if self._real_root == self._virtual_root:
+            return path
+        return re.sub(r"/tmp/+test_sandbox_ops", self._real_root, path)
+
+    def _to_virtual_path(self, value: str) -> str:
+        """Translate a real on-disk path back to the virtual test path."""
+        if self._real_root == self._virtual_root:
+            return value
+        return value.replace(self._real_root, self._virtual_root)
 
     def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
         """Execute a command using subprocess on the local machine.
@@ -54,10 +88,11 @@ class LocalSubprocessSandbox(BaseSandbox):
             ExecuteResponse with combined output, exit code, and truncation flag.
         """
         effective_timeout = timeout if timeout is not None else 30
+        translated_command = self._translate_command_paths(command)
         try:
             # shell=True mimics real sandbox behavior; only runs in CI, poses no risk
             result = subprocess.run(  # noqa: S602
-                command,
+                translated_command,
                 check=False,
                 shell=True,
                 capture_output=True,
@@ -65,7 +100,7 @@ class LocalSubprocessSandbox(BaseSandbox):
                 timeout=effective_timeout,
             )
             # Combine stdout and stderr
-            output = result.stdout + result.stderr
+            output = self._translate_output_paths(result.stdout + result.stderr)
             return ExecuteResponse(
                 output=output,
                 exit_code=result.returncode,
@@ -84,6 +119,61 @@ class LocalSubprocessSandbox(BaseSandbox):
                 exit_code=1,
                 truncated=False,
             )
+
+    def ls_info(self, path: str) -> list[FileInfo]:
+        """List files while preserving virtual-path expectations in tests."""
+        results = super().ls_info(self._to_real_path(path))
+        for entry in results:
+            entry["path"] = self._to_virtual_path(entry["path"])
+        return results
+
+    def read(self, file_path: str, offset: int = 0, limit: int = 2000) -> str:
+        """Read file content from the mapped real path."""
+        output = super().read(self._to_real_path(file_path), offset=offset, limit=limit)
+        return self._to_virtual_path(output)
+
+    def write(self, file_path: str, content: str) -> WriteResult:
+        """Write file content to the mapped real path."""
+        result = super().write(self._to_real_path(file_path), content)
+        if result.path is not None:
+            result.path = self._to_virtual_path(result.path)
+        if result.error is not None:
+            result.error = self._to_virtual_path(result.error)
+        return result
+
+    def edit(
+        self,
+        file_path: str,
+        old_string: str,
+        new_string: str,
+        replace_all: bool = False,  # noqa: FBT001, FBT002
+    ) -> EditResult:
+        """Edit file content at the mapped real path."""
+        result = super().edit(
+            self._to_real_path(file_path),
+            old_string,
+            new_string,
+            replace_all=replace_all,
+        )
+        if result.path is not None:
+            result.path = self._to_virtual_path(result.path)
+        if result.error is not None:
+            result.error = self._to_virtual_path(result.error)
+        return result
+
+    def grep_raw(self, pattern: str, path: str | None = None, glob: str | None = None) -> list[GrepMatch] | str:
+        """Run grep against mapped real paths and return virtual paths."""
+        mapped_path = self._to_real_path(path) if path is not None else None
+        result = super().grep_raw(pattern, path=mapped_path, glob=glob)
+        if isinstance(result, str):
+            return self._to_virtual_path(result)
+        for match in result:
+            match["path"] = self._to_virtual_path(match["path"])
+        return result
+
+    def glob_info(self, pattern: str, path: str = "/") -> list[FileInfo]:
+        """Run glob against mapped real paths."""
+        return super().glob_info(pattern, path=self._to_real_path(path))
 
     @property
     def id(self) -> str:
@@ -108,8 +198,9 @@ class TestLocalSandboxOperations:
         return LocalSubprocessSandbox()
 
     @pytest.fixture(autouse=True)
-    def setup_test_dir(self, sandbox: LocalSubprocessSandbox) -> None:
+    def setup_test_dir(self, sandbox: LocalSubprocessSandbox, tmp_path: Path) -> None:
         """Set up a clean test directory before each test."""
+        sandbox.set_real_root(str(tmp_path / "sandbox_ops"))
         sandbox.execute("rm -rf /tmp/test_sandbox_ops && mkdir -p /tmp/test_sandbox_ops")
 
     # ==================== write() tests ====================

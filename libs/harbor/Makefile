@@ -1,4 +1,4 @@
-.PHONY: lint format test help test_integration test_watch run-hello-world run-terminal-bench-modal run-terminal-bench-docker run-terminal-bench-daytona run-terminal-bench-runloop format_unsafe
+.PHONY: lint format type typecheck test help test_integration test_watch run-hello-world run-terminal-bench-modal run-terminal-bench-docker run-terminal-bench-daytona run-terminal-bench-runloop format_unsafe
 
 .DEFAULT_GOAL := help
 
@@ -57,6 +57,10 @@ lint lint_diff:
 			uv run --group test ruff check $(PYTHON_FILES) --diff; \
 		fi; \
 	fi
+	$(MAKE) type PYTHON_FILES="$(PYTHON_FILES)"
+
+type: ## Run type checker
+type typecheck:
 	[ "$(PYTHON_FILES)" = "" ] || uv run --group test ty check $(PYTHON_FILES)
 
 format: ## Run code formatters

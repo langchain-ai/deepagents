@@ -11,6 +11,7 @@ from textual.containers import Container
 from textual.widgets import Static
 
 from deepagents_cli.input import ImageTracker
+from deepagents_cli.widgets import chat_input as chat_input_module
 from deepagents_cli.widgets.autocomplete import SLASH_COMMANDS
 from deepagents_cli.widgets.chat_input import (
     ChatInput,
@@ -1475,9 +1476,15 @@ class TestDroppedImagePaste:
 
     @pytest.mark.asyncio
     async def test_key_burst_quoted_path_rewrites_without_showing_raw_path(
-        self, tmp_path
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Fast quoted-path key bursts should flush as `[image N]` placeholders."""
+        # This test exercises burst parsing behavior, not scheduler precision.
+        # CI workers can exceed the default 30ms inter-key gap, which would
+        # flush mid-sequence and make the test flaky.
+        monkeypatch.setattr(chat_input_module, "_PASTE_BURST_CHAR_GAP_SECONDS", 1.0)
+        monkeypatch.setattr(chat_input_module, "_PASTE_BURST_FLUSH_DELAY_SECONDS", 0.25)
+
         img_path = tmp_path / "vscode-burst.png"
         from PIL import Image
 
@@ -1496,7 +1503,7 @@ class TestDroppedImagePaste:
             # Burst text is buffered and should not be inserted verbatim.
             assert chat._text_area.text == ""
 
-            await pilot.pause(0.2)
+            await pilot.pause(0.35)
 
             assert chat._text_area.text == "[image 1] "
             assert len(app.tracker.get_images()) == 1

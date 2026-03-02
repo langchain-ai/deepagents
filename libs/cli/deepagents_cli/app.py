@@ -119,6 +119,41 @@ def _format_token_count(count: int) -> str:
     return str(count)
 
 
+def _format_compact_limit(
+    keep: tuple[str, int | float], context_limit: int | None
+) -> str:
+    """Format compact retention settings into a human-readable limit string.
+
+    Args:
+        keep: Retention policy tuple from summarization defaults.
+        context_limit: Model context limit when available.
+
+    Returns:
+        A short display string describing the compact retention limit.
+    """
+    keep_type, keep_value = keep
+
+    if keep_type == "messages":
+        count = int(keep_value)
+        noun = "message" if count == 1 else "messages"
+        return f"last {count} {noun}"
+
+    if keep_type == "tokens":
+        return f"{_format_token_count(int(keep_value))} tokens"
+
+    if keep_type == "fraction":
+        percent = float(keep_value) * 100
+        if context_limit is not None:
+            token_limit = max(1, int(context_limit * float(keep_value)))
+            return (
+                f"{_format_token_count(token_limit)} tokens "
+                f"({percent:.0f}% of {_format_token_count(context_limit)})"
+            )
+        return f"{percent:.0f}% of context window"
+
+    return "current retention threshold"
+
+
 def _write_iterm_escape(sequence: str) -> None:
     """Write an iTerm2 escape sequence to stderr.
 
@@ -1327,7 +1362,7 @@ class DeepAgentsApp(App):
         Compaction is a no-op when the conversation's total token count is
         within the `keep` budget (by default 10% of the model's
         `max_input_tokens`). Until that threshold is exceeded the user sees
-        "Nothing to compact yet".
+        "Nothing to compact yet" plus the active compact limit.
         """
         if not self._agent or not self._lc_thread_id or not self._backend:
             await self._mount_message(
@@ -1396,12 +1431,17 @@ class DeepAgentsApp(App):
             effective = middleware._apply_event_to_messages(messages, event)
 
             cutoff = middleware._determine_cutoff_index(effective)
+            compact_limit = _format_compact_limit(
+                defaults["keep"],
+                settings.model_context_limit,
+            )
 
             if cutoff == 0:
                 await self._mount_message(
                     AppMessage(
                         "Nothing to compact yet"
-                        " \u2014 conversation is within the token budget"
+                        " \u2014 conversation is within the compact limit "
+                        f"({compact_limit})"
                     )
                 )
                 return

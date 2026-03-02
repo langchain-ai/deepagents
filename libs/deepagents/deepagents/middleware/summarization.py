@@ -1062,6 +1062,12 @@ def create_summarization_middleware(
     Returns:
         Configured `SummarizationMiddleware` instance.
     """
+    from langchain.chat_models import BaseChatModel as RuntimeBaseChatModel  # noqa: PLC0415
+
+    if not isinstance(model, RuntimeBaseChatModel):
+        msg = "`create_summarization_middleware` expects `model` to be a `BaseChatModel` instance."
+        raise TypeError(msg)
+
     defaults = compute_summarization_defaults(model)
     return SummarizationMiddleware(
         model=model,

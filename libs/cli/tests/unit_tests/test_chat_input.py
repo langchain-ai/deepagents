@@ -1451,6 +1451,57 @@ class TestDroppedImagePaste:
             assert app.tracker.get_images() == []
 
     @pytest.mark.asyncio
+    async def test_inline_quoted_path_payload_rewrites_to_placeholder(
+        self, tmp_path
+    ) -> None:
+        """Quoted dropped path text should rewrite inline to `[image N]`."""
+        img_path = tmp_path / "vscode-drop.png"
+        from PIL import Image
+
+        image = Image.new("RGB", (3, 3), color="teal")
+        image.save(img_path, format="PNG")
+
+        app = _ImagePasteApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            # Simulate terminals that drop paths as plain quoted text.
+            chat._text_area.text = f"'{img_path}'"
+            await pilot.pause()
+
+            assert chat._text_area.text == "[image 1] "
+            assert len(app.tracker.get_images()) == 1
+
+    @pytest.mark.asyncio
+    async def test_key_burst_quoted_path_rewrites_without_showing_raw_path(
+        self, tmp_path
+    ) -> None:
+        """Fast quoted-path key bursts should flush as `[image N]` placeholders."""
+        img_path = tmp_path / "vscode-burst.png"
+        from PIL import Image
+
+        image = Image.new("RGB", (3, 3), color="navy")
+        image.save(img_path, format="PNG")
+
+        app = _ImagePasteApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            payload = f"'{img_path}'"
+            for char in payload:
+                await chat._text_area._on_key(events.Key(char, char))
+
+            # Burst text is buffered and should not be inserted verbatim.
+            assert chat._text_area.text == ""
+
+            await pilot.pause(0.2)
+
+            assert chat._text_area.text == "[image 1] "
+            assert len(app.tracker.get_images()) == 1
+
+    @pytest.mark.asyncio
     async def test_submit_absolute_path_without_paste_event_attaches_image(
         self, tmp_path
     ) -> None:

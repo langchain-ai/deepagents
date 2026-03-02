@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -42,10 +43,20 @@ _IMAGE_PLACEHOLDER_PATTERN = re.compile(r"\[image \d+\]")
 Used to locate tokens for atomic backspace/delete handling.
 """
 
+_PASTE_BURST_CHAR_GAP_SECONDS = 0.03
+"""Maximum time between chars to treat input as a paste-like burst."""
+
+_PASTE_BURST_FLUSH_DELAY_SECONDS = 0.08
+"""Idle timeout before flushing buffered burst text."""
+
+_PASTE_BURST_START_CHARS = {"'", '"'}
+"""Characters that can start dropped-path payloads."""
+
 if TYPE_CHECKING:
     from textual import events
     from textual.app import ComposeResult
     from textual.events import Click
+    from textual.timer import Timer
 
     from deepagents_cli.input import ImageTracker
 
@@ -313,6 +324,9 @@ class ChatTextArea(TextArea):
         self._in_history = False
         self._completion_active = False
         self._app_has_focus = True
+        self._paste_burst_buffer = ""
+        self._paste_burst_last_char_time: float | None = None
+        self._paste_burst_timer: Timer | None = None
 
     def set_app_focus(self, *, has_focus: bool) -> None:
         """Set whether the app should show the cursor as active.
@@ -343,8 +357,103 @@ class ChatTextArea(TextArea):
         end_col = len(lines[end_row])
         self.selection = Selection(start=(0, 0), end=(end_row, end_col))
 
+    def _cancel_paste_burst_timer(self) -> None:
+        """Cancel any scheduled paste-burst flush timer."""
+        if self._paste_burst_timer is None:
+            return
+        self._paste_burst_timer.stop()
+        self._paste_burst_timer = None
+
+    def _schedule_paste_burst_flush(self) -> None:
+        """Schedule idle-time flush for buffered paste-burst text."""
+        self._cancel_paste_burst_timer()
+        self._paste_burst_timer = self.set_timer(
+            _PASTE_BURST_FLUSH_DELAY_SECONDS, self._flush_paste_burst
+        )
+
+    def _start_paste_burst(self, char: str, now: float) -> None:
+        """Start buffering a paste-like keystroke burst."""
+        self._paste_burst_buffer = char
+        self._paste_burst_last_char_time = now
+        self._schedule_paste_burst_flush()
+
+    def _append_paste_burst(self, text: str, now: float) -> None:
+        """Append text to an active paste-burst buffer."""
+        if not self._paste_burst_buffer:
+            self._start_paste_burst(text, now)
+            return
+        self._paste_burst_buffer += text
+        self._paste_burst_last_char_time = now
+        self._schedule_paste_burst_flush()
+
+    def _should_start_paste_burst(self, char: str) -> bool:
+        """Return whether a keypress should start paste-burst buffering."""
+        if char not in _PASTE_BURST_START_CHARS:
+            return False
+        if self.text or not self.selection.is_empty:
+            return False
+        row, col = self.cursor_location
+        return row == 0 and col == 0
+
+    def _flush_paste_burst(self) -> None:
+        """Flush buffered burst text through dropped-path parsing."""
+        payload = self._paste_burst_buffer
+        self._paste_burst_buffer = ""
+        self._paste_burst_last_char_time = None
+        self._cancel_paste_burst_timer()
+        if not payload:
+            return
+
+        from deepagents_cli.input import (
+            parse_pasted_file_paths,
+            parse_single_pasted_file_path,
+        )
+
+        paths = parse_pasted_file_paths(payload)
+        if not paths:
+            single_path = parse_single_pasted_file_path(payload)
+            if single_path is not None:
+                paths = [single_path]
+
+        if paths:
+            self.post_message(self.PastedPaths(payload, paths))
+            return
+
+        self.insert(payload)
+
     async def _on_key(self, event: events.Key) -> None:
         """Handle key events."""
+        now = time.monotonic()
+        if self._paste_burst_buffer:
+            if event.key == "enter":
+                self._append_paste_burst("\n", now)
+                event.prevent_default()
+                event.stop()
+                return
+
+            if event.is_printable and event.character is not None:
+                last_time = self._paste_burst_last_char_time
+                if (
+                    last_time is not None
+                    and (now - last_time) <= _PASTE_BURST_CHAR_GAP_SECONDS
+                ):
+                    self._append_paste_burst(event.character, now)
+                    event.prevent_default()
+                    event.stop()
+                    return
+
+            self._flush_paste_burst()
+
+        if (
+            event.is_printable
+            and event.character is not None
+            and self._should_start_paste_burst(event.character)
+        ):
+            self._start_paste_burst(event.character, now)
+            event.prevent_default()
+            event.stop()
+            return
+
         # Modifier+Enter inserts newline (Ctrl+J is most reliable across terminals)
         if event.key in {"shift+enter", "ctrl+j", "alt+enter", "ctrl+enter"}:
             event.prevent_default()
@@ -462,6 +571,9 @@ class ChatTextArea(TextArea):
 
     async def _on_paste(self, event: events.Paste) -> None:
         """Handle paste events and detect dragged file paths."""
+        if self._paste_burst_buffer:
+            self._flush_paste_burst()
+
         from deepagents_cli.input import (
             parse_pasted_file_paths,
             parse_single_pasted_file_path,
@@ -483,6 +595,9 @@ class ChatTextArea(TextArea):
 
     def set_text_from_history(self, text: str) -> None:
         """Set text from history navigation."""
+        self._paste_burst_buffer = ""
+        self._paste_burst_last_char_time = None
+        self._cancel_paste_burst_timer()
         self._navigating_history = True
         self.text = text
         # Move cursor to end
@@ -495,6 +610,9 @@ class ChatTextArea(TextArea):
     def clear_text(self) -> None:
         """Clear the text area."""
         self._in_history = False
+        self._paste_burst_buffer = ""
+        self._paste_burst_last_char_time = None
+        self._cancel_paste_burst_timer()
         self.text = ""
         self.move_cursor((0, 0))
 
@@ -650,6 +768,11 @@ class ChatInput(Vertical):
         # completion controller calls (0 for normal, 1 for bash/command).
         self._completion_prefix_len = 0
 
+        # Guard flag: set while replacing a dropped path payload with an
+        # inline image placeholder so the resulting change event doesn't
+        # immediately recurse into the same replacement path.
+        self._applying_inline_path_replacement = False
+
         # Track current suggestions for click handling
         self._current_suggestions: list[tuple[str, str]] = []
         self._current_selected_index = 0
@@ -702,6 +825,11 @@ class ChatInput(Vertical):
             if self._completion_manager:
                 self._completion_manager.reset()
             self.scroll_visible()
+            return
+
+        if self._applying_inline_path_replacement:
+            self._applying_inline_path_replacement = False
+        elif self._apply_inline_dropped_path_replacement(text):
             return
 
         # Checked after the guards above so we skip the (potentially slow)
@@ -971,6 +1099,47 @@ class ChatInput(Vertical):
                 self._insert_pasted_paths(pasted, [single_path])
 
         self._text_area.focus()
+        return True
+
+    def _apply_inline_dropped_path_replacement(self, text: str) -> bool:
+        """Replace full dropped-path payload text with image placeholders.
+
+        Some terminals insert drag-and-drop payloads as plain text rather than
+        dispatching a dedicated paste event. When the current text resolves to
+        one or more file paths and at least one path is an image, rewrite the
+        text inline to `[image N]` placeholders.
+
+        Args:
+            text: Current text area content.
+
+        Returns:
+            `True` if text was rewritten inline, otherwise `False`.
+        """
+        if not self._text_area:
+            return False
+
+        from deepagents_cli.input import (
+            parse_pasted_file_paths,
+            parse_single_pasted_file_path,
+        )
+
+        paths = parse_pasted_file_paths(text)
+        if not paths:
+            single_path = parse_single_pasted_file_path(text)
+            if single_path is None:
+                return False
+            paths = [single_path]
+
+        replacement, attached = self._build_path_replacement(
+            text, paths, add_trailing_space=True
+        )
+        if not attached or replacement == text:
+            return False
+
+        self._applying_inline_path_replacement = True
+        self._text_area.text = replacement
+        lines = replacement.split("\n")
+        self._text_area.move_cursor((len(lines) - 1, len(lines[-1])))
         return True
 
     def _insert_pasted_paths(self, raw_text: str, paths: list[Path]) -> None:

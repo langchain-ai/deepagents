@@ -16,9 +16,9 @@ on:
   workflow_dispatch:
     inputs:
       model:
-        description: "Model to run evals against (passed to pytest as --model ...)"
+        description: "Optional: run evals against a single model (passed to pytest as --model ...)"
         required: false
-        default: "anthropic:claude-sonnet-4-5-20250929"
+        default: ""
         type: string
 
 permissions:
@@ -29,14 +29,28 @@ env:
 
 jobs:
   eval:
-    name: "📊 Eval"
+    name: "📊 Eval (${{ matrix.model }})"
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        model:
+          - "anthropic:claude-haiku-4-5-20251001"
+          - "anthropic:claude-opus-4-1"
+          - "anthropic:claude-opus-4-5"
+          - "anthropic:claude-opus-4-6"
+          - "anthropic:claude-sonnet-4-5-20250929"
+          - "openai:gpt-4.1"
+          - "openai:gpt-4o"
+          - "openai:gpt-4o-mini"
+          - "openai:gpt-5.1-codex"
+          - "openai:gpt-5.2-codex"
     defaults:
       run:
         working-directory: libs/deepagents
     env:
-      PYTEST_ADDOPTS: "--model ${{ inputs.model || 'anthropic:claude-sonnet-4-5-20250929' }}"
+      PYTEST_ADDOPTS: "--model ${{ inputs.model || matrix.model }}"
       LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
       LANGSMITH_TRACING_V2: "true"
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}

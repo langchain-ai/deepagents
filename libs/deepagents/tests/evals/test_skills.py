@@ -118,12 +118,13 @@ def test_update_skill_typo_fix_no_read(model: str) -> None:
         },
         query=(
             "Fix the typo in /skills/user/testing/SKILL.md: replace the exact string 'test suiet' with 'test suite'. "
-            "Do not read the file before editing it. Edit the file directly."
+            "Do not read the file before editing it. Edit the file directly. "
+            "After editing, do NOT add any explanation; reply DONE only."
         ),
         expect=(
-            TrajectoryExpectations(num_agent_steps=2, num_tool_call_requests=1).require_tool_call(
-                step=1, name="edit_file", args_contains={"file_path": "/skills/user/testing/SKILL.md"}
-            )
+            TrajectoryExpectations(num_agent_steps=2, num_tool_call_requests=1)
+            .require_tool_call(step=1, name="edit_file", args_contains={"file_path": "/skills/user/testing/SKILL.md"})
+            .require_final_text_contains("DONE")
         ),
     )
     assert "test suiet" not in trajectory.files["/skills/user/testing/SKILL.md"]

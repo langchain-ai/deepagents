@@ -655,6 +655,7 @@ evals = [
     { name = "langchain-deepseek" },
     { name = "langchain-groq" },
     { name = "langchain-mistralai" },
+    { name = "langchain-ollama" },
     { name = "langchain-xai" },
 ]
 test = [

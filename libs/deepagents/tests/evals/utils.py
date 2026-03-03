@@ -308,7 +308,7 @@ def run_agent(
     config = {"configurable": {"thread_id": thread_id}}
 
     logged_inputs = dict(invoke_inputs)
-    logged_inputs["model"] = str(model.model)
+    logged_inputs["model"] = str(getattr(model, "model", None) or getattr(model, "model_name", ""))
 
     t.log_inputs(logged_inputs)
     result = agent.invoke(invoke_inputs, config)

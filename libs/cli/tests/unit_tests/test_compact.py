@@ -156,7 +156,7 @@ class TestCompactGuards:
             )
 
     async def test_cutoff_zero_shows_not_enough(self) -> None:
-        """Should show error when middleware cutoff is zero."""
+        """Should show info when middleware cutoff is zero (within budget)."""
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -165,12 +165,13 @@ class TestCompactGuards:
             with (
                 _mock_middleware(cutoff=0),
                 patch.object(settings, "model_context_limit", 200_000),
+                patch(_TOKEN_COUNT_PATH, return_value=45),
             ):
                 await app._handle_compact()
                 await pilot.pause()
 
             msgs = app.query(AppMessage)
-            assert any("within the token budget" in str(w._content) for w in msgs)
+            assert any("within the retention budget" in str(w._content) for w in msgs)
 
     async def test_empty_state_shows_error(self) -> None:
         """Should show error when state has no values."""
@@ -389,13 +390,38 @@ class TestCompactEdgeCases:
             with (
                 _mock_middleware(cutoff=0),
                 patch.object(settings, "model_context_limit", 200_000),
+                patch(_TOKEN_COUNT_PATH, return_value=45),
             ):
                 await app._handle_compact()
                 await pilot.pause()
 
             msgs = app.query(AppMessage)
-            assert any("within the token budget" in str(w._content) for w in msgs)
+            assert any("within the retention budget" in str(w._content) for w in msgs)
             app._agent.aupdate_state.assert_not_called()  # type: ignore[union-attr]
+
+    async def test_cutoff_zero_overhead_dominated(self) -> None:
+        """Show overhead message when context exceeds limit."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _setup_compact_app(app, n_messages=3)
+
+            # Simulate total context (system prompt + tools) far exceeding
+            # the model limit while conversation tokens are tiny
+            tracker = MagicMock()
+            tracker.current_context = 14_000
+            app._token_tracker = tracker
+
+            with (
+                _mock_middleware(cutoff=0),
+                patch.object(settings, "model_context_limit", 4_096),
+                patch(_TOKEN_COUNT_PATH, return_value=45),
+            ):
+                await app._handle_compact()
+                await pilot.pause()
+
+            msgs = app.query(AppMessage)
+            assert any("compaction cannot reduce" in str(w._content) for w in msgs)
 
     async def test_cutoff_one_compacts_single_message(self) -> None:
         """With cutoff=1, event should have cutoff_index=1."""

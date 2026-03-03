@@ -1277,11 +1277,19 @@ class DeepAgentsApp(App):
                 if context_limit is not None:
                     limit_str = _format_token_count(context_limit)
                     pct = count / context_limit * 100
-                    usage = f"{formatted} / {limit_str} tokens ({pct:.0f}%)"
+                    usage = (
+                        f"{formatted} / {limit_str} tokens "
+                        f"({pct:.0f}%, includes system prompt + tools)"
+                    )
                 else:
-                    usage = f"{formatted} tokens used"
+                    usage = f"{formatted} tokens used (includes system prompt + tools)"
 
                 msg = f"{usage} · {model_name}" if model_name else usage
+
+                # Append conversation-only token count when available
+                conv_line = await self._get_conversation_token_line()
+                if conv_line:
+                    msg = f"{msg}\n{conv_line}"
 
                 await self._mount_message(AppMessage(msg))
             else:
@@ -1360,6 +1368,34 @@ class DeepAgentsApp(App):
                 pass
 
         self.call_after_refresh(_scroll_after_command)
+
+    async def _get_conversation_token_line(self) -> str | None:
+        """Return a short string with the conversation-only token count.
+
+        Returns:
+            Formatted line like `"Conversation only: ~18 tokens"`, or
+            `None` if state is unavailable.
+        """
+        if not self._agent:
+            return None
+        try:
+            from langchain_core.messages.utils import (
+                count_tokens_approximately,
+            )
+
+            config: RunnableConfig = {
+                "configurable": {"thread_id": self._lc_thread_id},
+            }
+            state = await self._agent.aget_state(config)
+            if not state or not state.values:
+                return None
+            messages = state.values.get("messages", [])
+            if not messages:
+                return None
+            conv_tokens = count_tokens_approximately(messages)
+            return f"Conversation only: ~{_format_token_count(conv_tokens)} tokens"
+        except Exception:  # noqa: BLE001
+            return None
 
     async def _handle_compact(self) -> None:
         """Compact the conversation by summarizing old messages.
@@ -1470,13 +1506,41 @@ class DeepAgentsApp(App):
             )
 
             if cutoff == 0:
-                await self._mount_message(
-                    AppMessage(
-                        "Nothing to compact yet \u2014 conversation is within "
-                        "the token budget.\n"
-                        f"Configured retention budget: {compact_limit}"
-                    )
+                conv_tokens = count_tokens_approximately(effective)
+                conv_str = _format_token_count(conv_tokens)
+                total_context = (
+                    self._token_tracker.current_context if self._token_tracker else 0
                 )
+                context_limit = settings.model_context_limit
+
+                if (
+                    total_context > 0
+                    and context_limit is not None
+                    and total_context > context_limit
+                ):
+                    # Case A: overhead-dominated — total context exceeds
+                    # limit but conversation itself is small
+                    total_str = _format_token_count(total_context)
+                    await self._mount_message(
+                        AppMessage(
+                            f"Nothing to compact \u2014 conversation is only "
+                            f"~{conv_str} tokens.\n"
+                            f"Total context ({total_str}) is mostly system "
+                            f"prompt and tool overhead, which compaction "
+                            f"cannot reduce.\n"
+                            f"Retention budget: {compact_limit}"
+                        )
+                    )
+                else:
+                    # Case B: genuinely within budget
+                    await self._mount_message(
+                        AppMessage(
+                            "Nothing to compact yet \u2014 conversation is "
+                            "within the retention budget.\n"
+                            f"Conversation: ~{conv_str} tokens \u00b7 "
+                            f"Retention budget: {compact_limit}"
+                        )
+                    )
                 return
 
             to_summarize, to_keep = middleware._partition_messages(effective, cutoff)

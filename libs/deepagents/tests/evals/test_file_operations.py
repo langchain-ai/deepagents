@@ -381,3 +381,44 @@ Clues: about programming readability; software craftsmanship.
         ),
     )
     assert trajectory.answer.strip() == "/quotes/q3.txt"
+
+
+@pytest.mark.langsmith
+def test_read_file_truncation_recovery_with_pagination(model: str) -> None:
+    """Requires paging to retrieve a value that is only present at the end of a long file.
+
+    Note: This could be made more efficient in the future if `read_file` returned
+    file metadata (e.g., total line count / size) so the agent could jump directly
+    to the tail in a single call. With the current tool surface, the agent has to
+    iteratively page to discover where the end is.
+    """
+    agent = create_deep_agent(model=model)
+    last_line = "opal-fox-91"
+    initial = "x\n" * 300
+    initial_files = {"/big.txt": initial + last_line + "\n"}
+    run_agent(
+        agent,
+        model=model,
+        initial_files=initial_files,
+        query=("Read /big.txt and tell me the exact contents of the last non-empty line. Reply with that line only."),
+        expect=(
+            TrajectoryExpectations(num_agent_steps=4, num_tool_call_requests=3)
+            .require_tool_call(step=1, name="read_file", args_contains={"file_path": "/big.txt"})
+            .require_tool_call(step=2, name="read_file", args_contains={"file_path": "/big.txt"})
+            .require_tool_call(step=3, name="read_file", args_contains={"file_path": "/big.txt"})
+            .require_final_text_contains(last_line)
+        ),
+    )
+
+
+@pytest.mark.langsmith
+def test_read_file_empty_file_reports_empty(model: str) -> None:
+    """Empty files should be reported as empty rather than hallucinated."""
+    agent = create_deep_agent(model=model)
+    run_agent(
+        agent,
+        model=model,
+        initial_files={"/empty.txt": ""},
+        query=("Read /empty.txt. If it is empty, reply with exactly: EMPTY. Do not fabricate any content."),
+        expect=TrajectoryExpectations(num_agent_steps=2, num_tool_call_requests=1).require_final_text_contains("EMPTY"),
+    )

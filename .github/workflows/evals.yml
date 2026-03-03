@@ -7,6 +7,11 @@
 #   LANGSMITH_API_KEY  — used for tracing
 #   ANTHROPIC_API_KEY  — needed for Anthropic models
 #   OPENAI_API_KEY     — needed for OpenAI models
+#   GOOGLE_API_KEY     — needed for Google models
+#   XAI_API_KEY        — needed for xAI/Grok models
+#   MISTRAL_API_KEY    — needed for Mistral models
+#   DEEPSEEK_API_KEY   — needed for DeepSeek models
+#   GROQ_API_KEY       — needed for Groq-hosted models
 
 name: "📊 Evals"
 
@@ -30,16 +35,41 @@ jobs:
       fail-fast: false
       matrix:
         model:
+          # Anthropic
           - "anthropic:claude-haiku-4-5-20251001"
-          - "anthropic:claude-opus-4-1"
-          - "anthropic:claude-opus-4-5"
-          - "anthropic:claude-opus-4-6"
+          - "anthropic:claude-sonnet-4-20250514"
           - "anthropic:claude-sonnet-4-5-20250929"
-          - "openai:gpt-4.1"
+          - "anthropic:claude-sonnet-4-6"
+          - "anthropic:claude-opus-4-1"
+          - "anthropic:claude-opus-4-5-20251101"
+          - "anthropic:claude-opus-4-6"
+          # OpenAI
           - "openai:gpt-4o"
           - "openai:gpt-4o-mini"
+          - "openai:gpt-4.1"
+          - "openai:o3"
+          - "openai:o4-mini"
+          - "openai:gpt-5"
           - "openai:gpt-5.1-codex"
           - "openai:gpt-5.2-codex"
+          # Google (API key not configured yet)
+          # - "google:gemini-2.5-flash"
+          # - "google:gemini-2.5-pro"
+          # - "google:gemini-3-pro-preview"
+          # xAI
+          - "xai:grok-4"
+          - "xai:grok-3-mini-fast"
+          # Mistral (API key not configured yet)
+          # - "mistral:mistral-large-2512"
+          # - "mistral:mistral-medium-2508"
+          # - "mistral:codestral-latest"
+          # DeepSeek (API key not configured yet)
+          # - "deepseek:deepseek-chat"
+          # - "deepseek:deepseek-reasoner"
+          # Groq
+          - "groq:openai/gpt-oss-120b"
+          - "groq:qwen/qwen3-32b"
+          - "groq:moonshotai/kimi-k2-instruct"
     defaults:
       run:
         working-directory: libs/deepagents
@@ -49,6 +79,11 @@ jobs:
       LANGSMITH_TRACING_V2: "true"
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+      XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
+      MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
     steps:
       - name: "📋 Checkout Code"
         uses: actions/checkout@v6

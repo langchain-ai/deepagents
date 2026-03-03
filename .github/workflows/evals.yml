@@ -14,12 +14,6 @@ on:
   schedule:
     - cron: "0 0 * * *"
   workflow_dispatch:
-    inputs:
-      model:
-        description: "Optional: run evals against a single model (passed to pytest as --model ...)"
-        required: false
-        default: ""
-        type: string
 
 permissions:
   contents: read
@@ -50,7 +44,7 @@ jobs:
       run:
         working-directory: libs/deepagents
     env:
-      PYTEST_ADDOPTS: "--model ${{ inputs.model || matrix.model }} --evals-report-file evals_report.json"
+      PYTEST_ADDOPTS: "--model ${{ matrix.model }} --evals-report-file evals_report.json"
       LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
       LANGSMITH_TRACING_V2: "true"
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -76,7 +70,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: evals-report-${{ matrix.model }}
+          name: evals-report-${{ strategy.job-index }}
           path: libs/deepagents/evals_report.json
           if-no-files-found: error
 
@@ -86,10 +80,20 @@ jobs:
     needs: [eval]
     if: always()
     steps:
+      - name: "📋 Checkout Code"
+        uses: actions/checkout@v6
+
       - name: "📥 Download eval artifacts"
         uses: actions/download-artifact@v7
         with:
           path: evals_artifacts
 
+      - name: "🐍 Set up Python + UV"
+        uses: "./.github/actions/uv_setup"
+        with:
+          python-version: "3.11"
+          cache-suffix: evals-aggregate
+          working-directory: libs/deepagents
+
       - name: "🧾 Write summary"
-        run: python .github/scripts/aggregate_evals.py
+        run: uv run --with tabulate python .github/scripts/aggregate_evals.py

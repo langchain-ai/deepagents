@@ -1,5 +1,6 @@
 """Tests for config module including project discovery utilities."""
 
+import logging
 import time
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -414,6 +415,275 @@ class TestCreateModelProfileExtraction:
 
         result = create_model("anthropic:claude-sonnet-4-5")
         assert result.context_limit is None
+
+
+class TestCreateModelProfileOverrides:
+    """Tests for profile overrides from config.toml in create_model."""
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_profile_override_sets_context_limit(
+        self, mock_init_chat_model: Mock, tmp_path: Path
+    ) -> None:
+        """Profile override for max_input_tokens flows to context_limit."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.anthropic.profile]
+max_input_tokens = 4096
+""")
+        mock_model = Mock()
+        mock_model.profile = {"max_input_tokens": 200000, "tool_calling": True}
+        mock_init_chat_model.return_value = mock_model
+
+        clear_caches()
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            result = create_model("anthropic:claude-sonnet-4-5")
+
+        assert result.context_limit == 4096
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_per_model_profile_override_takes_precedence(
+        self, mock_init_chat_model: Mock, tmp_path: Path
+    ) -> None:
+        """Per-model profile override wins over provider-wide default."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.anthropic.profile]
+max_input_tokens = 4096
+
+[models.providers.anthropic.profile."claude-sonnet-4-5"]
+max_input_tokens = 8192
+""")
+        mock_model = Mock()
+        mock_model.profile = {"max_input_tokens": 200000, "tool_calling": True}
+        mock_init_chat_model.return_value = mock_model
+
+        clear_caches()
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            result = create_model("anthropic:claude-sonnet-4-5")
+
+        assert result.context_limit == 8192
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_no_profile_override_preserves_original(
+        self, mock_init_chat_model: Mock, tmp_path: Path
+    ) -> None:
+        """Without config overrides, original profile value is used."""
+        config_path = tmp_path / "config.toml"  # Does not exist — empty config
+        mock_model = Mock()
+        mock_model.profile = {"max_input_tokens": 200000, "tool_calling": True}
+        mock_init_chat_model.return_value = mock_model
+
+        clear_caches()
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            result = create_model("anthropic:claude-sonnet-4-5")
+        assert result.context_limit == 200000
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_profile_override_on_model_without_profile(
+        self, mock_init_chat_model: Mock, tmp_path: Path
+    ) -> None:
+        """Profile override is applied even when model has no profile attr."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.anthropic.profile]
+max_input_tokens = 4096
+""")
+        mock_model = Mock(spec=["invoke"])  # No profile attribute
+        mock_init_chat_model.return_value = mock_model
+
+        clear_caches()
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            result = create_model("anthropic:claude-sonnet-4-5")
+
+        assert result.context_limit == 4096
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_profile_override_preserves_non_overridden_keys(
+        self, mock_init_chat_model: Mock, tmp_path: Path
+    ) -> None:
+        """Override merges into existing profile without dropping other keys."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.anthropic.profile]
+max_input_tokens = 4096
+""")
+        mock_model = Mock()
+        mock_model.profile = {"max_input_tokens": 200000, "tool_calling": True}
+        mock_init_chat_model.return_value = mock_model
+
+        clear_caches()
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            create_model("anthropic:claude-sonnet-4-5")
+
+        assert mock_model.profile == {"max_input_tokens": 4096, "tool_calling": True}
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_profile_override_when_profile_is_none(
+        self, mock_init_chat_model: Mock, tmp_path: Path
+    ) -> None:
+        """Override is applied when model.profile is explicitly None."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.anthropic.profile]
+max_input_tokens = 4096
+""")
+        mock_model = Mock()
+        mock_model.profile = None
+        mock_init_chat_model.return_value = mock_model
+
+        clear_caches()
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            result = create_model("anthropic:claude-sonnet-4-5")
+
+        assert result.context_limit == 4096
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_profile_override_logs_warning_on_frozen_model(
+        self,
+        mock_init_chat_model: Mock,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Graceful warning when model rejects attribute assignment."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.anthropic.profile]
+max_input_tokens = 4096
+""")
+        mock_model = Mock()
+        # Make .profile read return a dict but assignment raises
+        type(mock_model).profile = property(
+            fget=lambda _: {"max_input_tokens": 200000},
+            fset=lambda _, __: (_ for _ in ()).throw(AttributeError("frozen")),
+        )
+        mock_init_chat_model.return_value = mock_model
+
+        clear_caches()
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            caplog.at_level(logging.WARNING, logger="deepagents_cli.config"),
+        ):
+            result = create_model("anthropic:claude-sonnet-4-5")
+
+        assert any(
+            "Could not apply" in r.message and "profile overrides" in r.message
+            for r in caplog.records
+        )
+        # Falls back to original profile extraction
+        assert result.context_limit == 200000
+
+
+class TestCreateModelCLIProfileOverrides:
+    """Tests for CLI --profile-override in create_model."""
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_cli_profile_override_sets_context_limit(
+        self, mock_init_chat_model: Mock, tmp_path: Path
+    ) -> None:
+        """CLI profile override for max_input_tokens flows to context_limit."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("")  # empty config
+        mock_model = Mock()
+        mock_model.profile = {"max_input_tokens": 200000, "tool_calling": True}
+        mock_init_chat_model.return_value = mock_model
+
+        clear_caches()
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            result = create_model(
+                "anthropic:claude-sonnet-4-5",
+                profile_overrides={"max_input_tokens": 4096},
+            )
+
+        assert result.context_limit == 4096
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_cli_profile_override_beats_config_toml(
+        self, mock_init_chat_model: Mock, tmp_path: Path
+    ) -> None:
+        """CLI --profile-override wins over config.toml profile."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.anthropic.profile]
+max_input_tokens = 8192
+""")
+        mock_model = Mock()
+        mock_model.profile = {"max_input_tokens": 200000, "tool_calling": True}
+        mock_init_chat_model.return_value = mock_model
+
+        clear_caches()
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            result = create_model(
+                "anthropic:claude-sonnet-4-5",
+                profile_overrides={"max_input_tokens": 4096},
+            )
+
+        # CLI (4096) beats config.toml (8192)
+        assert result.context_limit == 4096
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_cli_profile_override_preserves_other_keys(
+        self, mock_init_chat_model: Mock, tmp_path: Path
+    ) -> None:
+        """CLI override merges into profile without dropping other keys."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("")
+        mock_model = Mock()
+        mock_model.profile = {"max_input_tokens": 200000, "tool_calling": True}
+        mock_init_chat_model.return_value = mock_model
+
+        clear_caches()
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            create_model(
+                "anthropic:claude-sonnet-4-5",
+                profile_overrides={"max_input_tokens": 4096},
+            )
+
+        assert mock_model.profile == {"max_input_tokens": 4096, "tool_calling": True}
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_cli_profile_override_on_model_without_profile(
+        self, mock_init_chat_model: Mock, tmp_path: Path
+    ) -> None:
+        """CLI override applied even when model has no profile attr."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("")
+        mock_model = Mock(spec=["invoke"])
+        mock_init_chat_model.return_value = mock_model
+
+        clear_caches()
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            result = create_model(
+                "anthropic:claude-sonnet-4-5",
+                profile_overrides={"max_input_tokens": 4096},
+            )
+
+        assert result.context_limit == 4096
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_cli_profile_override_raises_on_frozen_model(
+        self,
+        mock_init_chat_model: Mock,
+        tmp_path: Path,
+    ) -> None:
+        """CLI --profile-override raises when model rejects assignment."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("")
+        mock_model = Mock()
+        type(mock_model).profile = property(
+            fget=lambda _: {"max_input_tokens": 200000},
+            fset=lambda _, __: (_ for _ in ()).throw(AttributeError("frozen")),
+        )
+        mock_init_chat_model.return_value = mock_model
+
+        clear_caches()
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            pytest.raises(ModelConfigError, match="Could not apply CLI"),
+        ):
+            create_model(
+                "anthropic:claude-sonnet-4-5",
+                profile_overrides={"max_input_tokens": 4096},
+            )
 
 
 class TestParseShellAllowList:

@@ -223,6 +223,10 @@ The CLI must stay fast to launch. Never import heavy packages (e.g., `deepagents
 - Defer heavy imports to the point where they are actually needed (inside functions/methods).
 - To read another package's version without importing it, use `importlib.metadata.version("package-name")`.
 
+**CLI help screen:**
+
+The `deepagents --help` screen is hand-maintained in `ui.show_help()`, separate from the argparse definitions in `main.parse_args()`. When adding a new CLI flag, update **both** files. A drift-detection test (`test_args.TestHelpScreenDrift`) fails if a flag is registered in argparse but missing from the help screen.
+
 **Building chat/streaming interfaces:**
 
 - Blog post: [Anatomy of a Textual User Interface](https://textual.textualize.io/blog/2024/09/15/anatomy-of-a-textual-user-interface/) - demonstrates building an AI chat interface with streaming responses

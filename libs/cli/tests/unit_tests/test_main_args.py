@@ -236,6 +236,34 @@ class TestProfileOverrideArgument:
             assert parsed.model == "gpt-4o"
             assert parsed.profile_override == '{"max_input_tokens": 4096}'
 
+    def test_invalid_json_exits(self) -> None:
+        """--profile-override with invalid JSON exits with code 1."""
+        from deepagents_cli.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        with (
+            patch.object(sys, "argv", ["deepagents", "--profile-override", "{bad"]),
+            patch.object(sys, "stdin", mock_stdin),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+        assert exc_info.value.code == 1
+
+    def test_non_dict_json_exits(self) -> None:
+        """--profile-override with JSON array exits with code 1."""
+        from deepagents_cli.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        with (
+            patch.object(sys, "argv", ["deepagents", "--profile-override", "[1,2]"]),
+            patch.object(sys, "stdin", mock_stdin),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+        assert exc_info.value.code == 1
+
 
 def _make_args(
     *,

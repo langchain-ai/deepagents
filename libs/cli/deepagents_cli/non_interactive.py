@@ -586,11 +586,11 @@ async def run_non_interactive(
     assistant_id: str = "agent",
     model_name: str | None = None,
     model_params: dict[str, Any] | None = None,
-    profile_override: dict[str, Any] | None = None,
     sandbox_type: str = "none",  # str (not None) to match argparse choices
     sandbox_id: str | None = None,
     sandbox_setup: str | None = None,
     *,
+    profile_override: dict[str, Any] | None = None,
     quiet: bool = False,
     stream: bool = True,
 ) -> int:
@@ -613,14 +613,14 @@ async def run_non_interactive(
         model_params: Extra kwargs from `--model-params` to pass to the model.
 
             These override config file values.
-        profile_override: Extra profile fields from `--profile-override`.
-
-            Merged on top of config file profile overrides.
         sandbox_type: Type of sandbox (`'none'`, `'modal'`,
             `'runloop'`, `'daytona'`, `'langsmith'`).
         sandbox_id: Optional existing sandbox ID to reuse.
         sandbox_setup: Optional path to setup script to run in the sandbox
             after creation.
+        profile_override: Extra profile fields from `--profile-override`.
+
+            Merged on top of config file profile overrides.
         quiet: When `True`, all console output (headers, status messages,
             tool notifications, HITL decisions, errors) is redirected to
             stderr so that only the agent's response text appears on stdout.

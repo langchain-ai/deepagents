@@ -566,7 +566,8 @@ max_input_tokens = 4096
             result = create_model("anthropic:claude-sonnet-4-5")
 
         assert any(
-            "Could not apply profile overrides" in r.message for r in caplog.records
+            "Could not apply" in r.message and "profile overrides" in r.message
+            for r in caplog.records
         )
         # Falls back to original profile extraction
         assert result.context_limit == 200000
@@ -657,6 +658,32 @@ max_input_tokens = 8192
             )
 
         assert result.context_limit == 4096
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_cli_profile_override_raises_on_frozen_model(
+        self,
+        mock_init_chat_model: Mock,
+        tmp_path: Path,
+    ) -> None:
+        """CLI --profile-override raises when model rejects assignment."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("")
+        mock_model = Mock()
+        type(mock_model).profile = property(
+            fget=lambda _: {"max_input_tokens": 200000},
+            fset=lambda _, __: (_ for _ in ()).throw(AttributeError("frozen")),
+        )
+        mock_init_chat_model.return_value = mock_model
+
+        clear_caches()
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            pytest.raises(ModelConfigError, match="Could not apply CLI"),
+        ):
+            create_model(
+                "anthropic:claude-sonnet-4-5",
+                profile_overrides={"max_input_tokens": 4096},
+            )
 
 
 class TestParseShellAllowList:

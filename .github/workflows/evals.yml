@@ -16,10 +16,22 @@ on:
   workflow_dispatch:
     inputs:
       model:
-        description: "Optional: run evals against a single model (passed to pytest as --model ...)"
+        description: "Which model to run evals against (select 'all' to run the full matrix)"
         required: false
-        default: ""
-        type: string
+        default: all
+        type: choice
+        options:
+          - all
+          - "anthropic:claude-haiku-4-5-20251001"
+          - "anthropic:claude-opus-4-1"
+          - "anthropic:claude-opus-4-5"
+          - "anthropic:claude-opus-4-6"
+          - "anthropic:claude-sonnet-4-5-20250929"
+          - "openai:gpt-4.1"
+          - "openai:gpt-4o"
+          - "openai:gpt-4o-mini"
+          - "openai:gpt-5.1-codex"
+          - "openai:gpt-5.2-codex"
 
 permissions:
   contents: read
@@ -30,6 +42,7 @@ env:
 jobs:
   eval:
     name: "📊 Eval (${{ matrix.model }})"
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.model == 'all' || matrix.model == inputs.model }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
     strategy:
@@ -50,7 +63,7 @@ jobs:
       run:
         working-directory: libs/deepagents
     env:
-      PYTEST_ADDOPTS: "--model ${{ inputs.model || matrix.model }} --evals-report-file evals_report.json"
+      PYTEST_ADDOPTS: "--model ${{ matrix.model }} --evals-report-file evals_report.json"
       LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
       LANGSMITH_TRACING_V2: "true"
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -85,6 +98,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [eval]
     if: always()
+    env: {}
     steps:
       - name: "📋 Checkout Code"
         uses: actions/checkout@v6
@@ -94,5 +108,13 @@ jobs:
         with:
           path: evals_artifacts
 
+      - name: "🐍 Set up Python + UV"
+        uses: "./.github/actions/uv_setup"
+        with:
+          python-version: "3.11"
+          cache-suffix: evals-aggregate
+          working-directory: libs/deepagents
+
       - name: "🧾 Write summary"
-        run: python .github/scripts/aggregate_evals.py
+        env: {}
+        run: uv run --with tabulate python .github/scripts/aggregate_evals.py

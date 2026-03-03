@@ -8,10 +8,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from deepagents_cli.config import build_stream_config
 from deepagents_cli.textual_adapter import (
     TextualUIAdapter,
     _build_interrupted_ai_message,
-    _build_stream_config,
     _is_summarization_chunk,
 )
 
@@ -109,18 +109,18 @@ class TestTextualUIAdapterInit:
 
 
 class TestBuildStreamConfig:
-    """Tests for `_build_stream_config` metadata construction."""
+    """Tests for `build_stream_config` metadata construction."""
 
     def test_assistant_fields_present(self) -> None:
         """Assistant-specific metadata should be present when `assistant_id` is set."""
-        config = _build_stream_config("t-456", assistant_id="my-agent")
+        config = build_stream_config("t-456", assistant_id="my-agent")
         assert config["metadata"]["assistant_id"] == "my-agent"
         assert config["metadata"]["agent_name"] == "my-agent"
         assert "updated_at" in config["metadata"]
 
     def test_updated_at_is_valid_iso_timestamp(self) -> None:
         """`updated_at` should be a valid timezone-aware ISO 8601 timestamp."""
-        config = _build_stream_config("t-456", assistant_id="my-agent")
+        config = build_stream_config("t-456", assistant_id="my-agent")
         raw = config["metadata"]["updated_at"]
         assert isinstance(raw, str)
         parsed = datetime.fromisoformat(raw)
@@ -128,17 +128,45 @@ class TestBuildStreamConfig:
 
     def test_no_assistant_fields_when_none(self) -> None:
         """Assistant-specific fields should be absent when `assistant_id` is `None`."""
-        config = _build_stream_config("t-789", assistant_id=None)
-        assert config["metadata"] == {}
+        config = build_stream_config("t-789", assistant_id=None)
+        assert "assistant_id" not in config["metadata"]
+        assert "agent_name" not in config["metadata"]
+        assert "updated_at" not in config["metadata"]
 
     def test_no_assistant_fields_when_empty_string(self) -> None:
         """Empty-string `assistant_id` should be treated as absent."""
-        config = _build_stream_config("t-000", assistant_id="")
-        assert config["metadata"] == {}
+        config = build_stream_config("t-000", assistant_id="")
+        assert "assistant_id" not in config["metadata"]
+        assert "agent_name" not in config["metadata"]
+        assert "updated_at" not in config["metadata"]
+
+    def test_versions_dict_always_present(self) -> None:
+        """Nested `versions` dict should be present regardless of `assistant_id`."""
+        from deepagents_cli._version import __version__
+
+        config = build_stream_config("t-100", assistant_id=None)
+        versions = config["metadata"]["versions"]
+        assert versions["deepagents-cli"] == __version__
+
+    def test_versions_dict_with_assistant(self) -> None:
+        """`versions` dict should coexist with assistant-specific metadata."""
+        config = build_stream_config("t-200", assistant_id="my-agent")
+        assert "versions" in config["metadata"]
+        assert config["metadata"]["assistant_id"] == "my-agent"
+
+    def test_sdk_version_not_set_by_cli(self) -> None:
+        """SDK version should not be set by the CLI; the SDK owns that key.
+
+        The SDK attaches its version via `create_deep_agent`'s
+        `with_config` and langchain-core's `merge_configs` deep-merges
+        the `versions` dicts so both survive.
+        """
+        config = build_stream_config("t-300", assistant_id=None)
+        assert "deepagents" not in config["metadata"]["versions"]
 
     def test_configurable_thread_id(self) -> None:
         """`configurable.thread_id` should match the provided thread ID."""
-        config = _build_stream_config("t-abc", assistant_id=None)
+        config = build_stream_config("t-abc", assistant_id=None)
         assert config["configurable"]["thread_id"] == "t-abc"
 
 

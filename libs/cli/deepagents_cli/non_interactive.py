@@ -24,7 +24,6 @@ import contextlib
 import logging
 import sys
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 
 from langchain.agents.middleware.human_in_the_loop import ActionRequest, HITLRequest
@@ -39,6 +38,7 @@ from deepagents_cli.agent import DEFAULT_AGENT_NAME, create_cli_agent
 from deepagents_cli.config import (
     SHELL_TOOL_NAMES,
     build_langsmith_thread_url,
+    build_stream_config,
     create_model,
     is_shell_command_allowed,
     settings,
@@ -582,14 +582,7 @@ async def run_non_interactive(
     result.apply_to_settings()
     thread_id = generate_thread_id()
 
-    config: RunnableConfig = {
-        "configurable": {"thread_id": thread_id},
-        "metadata": {
-            "assistant_id": assistant_id,
-            "agent_name": assistant_id,
-            "updated_at": datetime.now(UTC).isoformat(),
-        },
-    }
+    config: RunnableConfig = build_stream_config(thread_id, assistant_id)
 
     if not quiet:
         console.print("[dim]Running task non-interactively...[/dim]")

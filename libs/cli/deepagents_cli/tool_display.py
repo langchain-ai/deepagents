@@ -129,6 +129,8 @@ def format_tool_display(tool_name: str, tool_args: dict) -> str:
             command = truncate_value(command, 120)
             timeout = tool_args.get("timeout")
             if timeout is not None and timeout != DEFAULT_EXECUTE_TIMEOUT:
+                if not isinstance(timeout, int):
+                    timeout = int(timeout)
                 timeout_str = _format_timeout(timeout)
                 return f'{prefix} {tool_name}("{command}", timeout={timeout_str})'
             return f'{prefix} {tool_name}("{command}")'

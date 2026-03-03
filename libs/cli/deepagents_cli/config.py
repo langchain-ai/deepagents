@@ -1327,10 +1327,58 @@ class ModelResult:
         settings.model_context_limit = self.context_limit
 
 
+def _apply_profile_overrides(
+    model: BaseChatModel,
+    overrides: dict[str, Any],
+    model_name: str,
+    *,
+    label: str,
+    raise_on_failure: bool = False,
+) -> None:
+    """Merge `overrides` into `model.profile`.
+
+    If the model already has a dict profile, overrides are layered on top
+    so existing keys (e.g., `tool_calling`) are preserved unchanged.
+
+    Args:
+        model: The chat model whose profile will be updated.
+        overrides: Key/value pairs to merge into the profile.
+        model_name: Model name used in log/error messages.
+        label: Human-readable source label for messages
+            (e.g., `"config.toml"`, `"CLI --profile-override"`).
+        raise_on_failure: When `True`, raise `ModelConfigError` instead
+            of logging a warning if assignment fails.
+
+    Raises:
+        ModelConfigError: If `raise_on_failure` is `True` and the model
+            rejects profile assignment.
+    """
+    logger.debug("Applying %s profile overrides: %s", label, overrides)
+    profile = getattr(model, "profile", None)
+    merged = {**profile, **overrides} if isinstance(profile, dict) else overrides
+    try:
+        model.profile = merged  # type: ignore[union-attr]
+    except (AttributeError, TypeError, ValueError) as exc:
+        if raise_on_failure:
+            msg = (
+                f"Could not apply {label} to model '{model_name}': {exc}. "
+                f"The model may not support profile assignment."
+            )
+            raise ModelConfigError(msg) from exc
+        logger.warning(
+            "Could not apply %s profile overrides to model '%s': %s. "
+            "Overrides will be ignored.",
+            label,
+            model_name,
+            exc,
+        )
+
+
 def create_model(
     model_spec: str | None = None,
     *,
     extra_kwargs: dict[str, Any] | None = None,
+    profile_overrides: dict[str, Any] | None = None,
 ) -> ModelResult:
     """Create a chat model.
 
@@ -1349,6 +1397,9 @@ def create_model(
         extra_kwargs: Additional kwargs to pass to the model constructor.
 
             These take highest priority, overriding values from the config file.
+        profile_overrides: Extra profile fields from `--profile-override`.
+
+            Merged on top of config file profile overrides (CLI wins).
 
     Returns:
         A `ModelResult` containing the model and its metadata.
@@ -1412,35 +1463,26 @@ def create_model(
 
     # Apply profile overrides from config.toml (e.g., max_input_tokens)
     if provider:
-        profile_overrides = config.get_profile_overrides(
+        config_profile_overrides = config.get_profile_overrides(
             provider, model_name=model_name
         )
-        if profile_overrides:
-            logger.debug(
-                "Applying profile overrides for '%s' (provider '%s'): %s",
+        if config_profile_overrides:
+            _apply_profile_overrides(
+                model,
+                config_profile_overrides,
                 model_name,
-                provider,
-                profile_overrides,
+                label=f"config.toml (provider '{provider}')",
             )
-            # Intentionally over-defensive
-            profile = getattr(model, "profile", None)
-            if isinstance(profile, dict):
-                # Copy original profile and overlay config overrides on top.
-                # Duplicate keys use the override value; keys only in the
-                # original (e.g., tool_calling) are preserved unchanged.
-                merged = {**profile, **profile_overrides}
-            else:
-                merged = profile_overrides
-            try:
-                model.profile = merged  # type: ignore[union-attr]
-            except (AttributeError, TypeError, ValueError) as exc:
-                logger.warning(
-                    "Could not apply profile overrides to model '%s' "
-                    "(provider '%s'): %s. Overrides will be ignored.",
-                    model_name,
-                    provider,
-                    exc,
-                )
+
+    # CLI --profile-override takes highest priority (on top of config.toml)
+    if profile_overrides:
+        _apply_profile_overrides(
+            model,
+            profile_overrides,
+            model_name,
+            label="CLI --profile-override",
+            raise_on_failure=True,
+        )
 
     # Extract context limit from model profile (if available)
     context_limit: int | None = None

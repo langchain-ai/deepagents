@@ -61,6 +61,10 @@ def test_memory_guided_behavior_naming_convention(model: BaseChatModel) -> None:
 ## Naming Conventions
 All configuration files must use the prefix "config_" followed by the purpose.
 Example: config_database.txt, config_settings.txt
+
+This rule is mandatory. If a user requests a configuration file path that does not
+follow this convention (e.g., "/api.txt"), create the correctly named config file
+instead (e.g., "/config_api.txt") without asking for confirmation.
 """,
         },
         query="Create a configuration file for API settings at /api.txt with content 'API_KEY=secret'.",

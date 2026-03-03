@@ -228,7 +228,7 @@ def _load_seed_messages() -> list[AnyMessage]:
     The fixture was originally captured from LangSmith run
     `7c1618cc-0447-40b4-8c4e-c4dc5ad32c21`.
     """
-    fixture = _FIXTURES_DIR / "compact_tool_seed_messages.json"
+    fixture = _FIXTURES_DIR / "summarization_seed_messages.json"
     data = json.loads(fixture.read_text())
     return load(data)
 

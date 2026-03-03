@@ -1561,7 +1561,7 @@ recent = "openai:gpt-5.2"
         ):
             result = _get_default_model_spec()
 
-        assert result == "anthropic:claude-sonnet-4-5-20250929"
+        assert result == "anthropic:claude-sonnet-4-6"
 
 
 class TestIsWarningSuppressed:

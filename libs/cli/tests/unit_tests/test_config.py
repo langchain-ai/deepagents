@@ -1,5 +1,6 @@
 """Tests for config module including project discovery utilities."""
 
+import time
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -604,6 +605,32 @@ class TestFetchLangsmithProjectUrl:
                 LangSmithNotFoundError("Project angus-dacli not found")
             )
             result = fetch_langsmith_project_url("angus-dacli")
+
+        assert result is None
+
+    def test_returns_none_on_unexpected_exception(self) -> None:
+        """Should return None on unexpected SDK exceptions."""
+        with patch("langsmith.Client") as mock_client_cls:
+            mock_client_cls.return_value.read_project.side_effect = TypeError(
+                "unexpected SDK type error"
+            )
+            result = fetch_langsmith_project_url("my-project")
+
+        assert result is None
+
+    def test_returns_none_when_lookup_times_out(self) -> None:
+        """Should return None when LangSmith lookup exceeds timeout."""
+        with (
+            patch(
+                "deepagents_cli.config._LANGSMITH_URL_LOOKUP_TIMEOUT_SECONDS",
+                0.01,
+            ),
+            patch("langsmith.Client") as mock_client_cls,
+        ):
+            mock_client_cls.return_value.read_project.side_effect = lambda **_kwargs: (
+                time.sleep(0.1)
+            )
+            result = fetch_langsmith_project_url("my-project")
 
         assert result is None
 

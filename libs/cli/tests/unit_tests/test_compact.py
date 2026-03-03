@@ -924,7 +924,6 @@ class TestCompactProfileOverride:
     profile — when computing the retention budget and cutoff index.
     """
 
-    @pytest.mark.asyncio
     async def test_compact_applies_context_limit_to_model_profile(self) -> None:
         """Model profile should be patched to settings.model_context_limit."""
         app = DeepAgentsApp()
@@ -960,7 +959,6 @@ class TestCompactProfileOverride:
             assert len(captured_models) == 1
             assert captured_models[0].profile["max_input_tokens"] == 4096
 
-    @pytest.mark.asyncio
     async def test_compact_matching_override_preserves_original_profile(self) -> None:
         """When override matches native profile value, no mutation occurs."""
         app = DeepAgentsApp()
@@ -995,7 +993,6 @@ class TestCompactProfileOverride:
 
             assert captured_models[0].profile["max_input_tokens"] == 200_000
 
-    @pytest.mark.asyncio
     async def test_compact_override_triggers_compaction(self) -> None:
         """With a small override, conversation 'within budget' should compact."""
         app = DeepAgentsApp()
@@ -1042,7 +1039,6 @@ class TestCompactProfileOverride:
             # State should have been updated (compaction happened)
             app._agent.aupdate_state.assert_called_once()  # type: ignore[union-attr]
 
-    @pytest.mark.asyncio
     async def test_compact_override_none_uses_model_profile(self) -> None:
         """When model_context_limit is None, model profile is untouched."""
         app = DeepAgentsApp()
@@ -1076,7 +1072,6 @@ class TestCompactProfileOverride:
 
             assert captured_models[0].profile["max_input_tokens"] == 200_000
 
-    @pytest.mark.asyncio
     async def test_compact_override_with_no_model_profile(self) -> None:
         """When model.profile is None, override creates a new profile dict."""
         app = DeepAgentsApp()

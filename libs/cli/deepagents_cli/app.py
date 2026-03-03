@@ -1427,12 +1427,14 @@ class DeepAgentsApp(App):
                 )
                 return
 
-            # Apply profile override so summarization uses the same context
-            # limit shown by /tokens (from --profile-override or config.toml).
-            # create_model() above builds a fresh model without these overrides.
+            # create_model() applies config.toml overrides but not CLI
+            # --profile-override (the raw CLI dict isn't retained after
+            # startup). Patch settings.model_context_limit — which reflects
+            # both sources — into the fresh model
             ctx = settings.model_context_limit
             if ctx is not None:
-                # Intentionally over-defensively checking for profile attribute
+                # Guard against models that lack a profile dict
+                # (custom/non-standard providers)
                 profile = getattr(model, "profile", None)
                 native = (
                     profile.get("max_input_tokens")

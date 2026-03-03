@@ -961,12 +961,10 @@ class TestCompactProfileOverride:
             _setup_compact_app(app, n_messages=5)
 
             mock_model = MagicMock()
-            # Original profile has a large context window
             mock_model.profile = {"max_input_tokens": 200_000}
             mock_result = MagicMock()
             mock_result.model = mock_model
 
-            # Middleware that records the model it received
             captured_models: list[Any] = []
 
             def capture_defaults(model: MagicMock) -> dict[str, Any]:
@@ -987,13 +985,12 @@ class TestCompactProfileOverride:
                 await app._handle_compact()
                 await pilot.pause()
 
-            # The model's profile should have been updated to the override
             assert len(captured_models) == 1
             assert captured_models[0].profile["max_input_tokens"] == 4096
 
     @pytest.mark.asyncio
-    async def test_compact_no_override_preserves_original_profile(self) -> None:
-        """Without an override, model profile should remain unchanged."""
+    async def test_compact_matching_override_preserves_original_profile(self) -> None:
+        """When override matches native profile value, no mutation occurs."""
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -1018,13 +1015,12 @@ class TestCompactProfileOverride:
                 patch(_CREATE_MODEL_PATH, return_value=mock_result),
                 patch(_COMPUTE_DEFAULTS_PATH, side_effect=capture_defaults),
                 patch(_LC_MIDDLEWARE_PATH, return_value=mock_mw),
-                # No override — model_context_limit matches model profile
+                # Override matches native value — no mutation expected
                 patch.object(settings, "model_context_limit", 200_000),
             ):
                 await app._handle_compact()
                 await pilot.pause()
 
-            # Profile should stay at original value
             assert captured_models[0].profile["max_input_tokens"] == 200_000
 
     @pytest.mark.asyncio
@@ -1106,5 +1102,39 @@ class TestCompactProfileOverride:
                 await app._handle_compact()
                 await pilot.pause()
 
-            # Profile should remain untouched
             assert captured_models[0].profile["max_input_tokens"] == 200_000
+
+    @pytest.mark.asyncio
+    async def test_compact_override_with_no_model_profile(self) -> None:
+        """When model.profile is None, override creates a new profile dict."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _setup_compact_app(app, n_messages=5)
+
+            mock_model = MagicMock()
+            mock_model.profile = None
+            mock_result = MagicMock()
+            mock_result.model = mock_model
+
+            captured_models: list[Any] = []
+
+            def capture_defaults(model: MagicMock) -> dict[str, Any]:
+                captured_models.append(model)
+                return {"keep": ("fraction", 0.10)}
+
+            mock_mw = MagicMock()
+            mock_mw._determine_cutoff_index.return_value = 0
+            mock_mw._apply_event_to_messages.side_effect = lambda msgs, _ev: list(msgs)
+
+            with (
+                patch(_CREATE_MODEL_PATH, return_value=mock_result),
+                patch(_COMPUTE_DEFAULTS_PATH, side_effect=capture_defaults),
+                patch(_LC_MIDDLEWARE_PATH, return_value=mock_mw),
+                patch.object(settings, "model_context_limit", 4096),
+            ):
+                await app._handle_compact()
+                await pilot.pause()
+
+            assert len(captured_models) == 1
+            assert captured_models[0].profile == {"max_input_tokens": 4096}

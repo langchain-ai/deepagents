@@ -687,10 +687,10 @@ def apply_stdin_pipe(args: argparse.Namespace) -> None:
 def _print_session_stats(stats: Any, console: Any) -> None:  # noqa: ANN401
     """Print a session-level usage stats table to the console after the TUI exits.
 
-    Mirrors the Gemini CLI "Model Usage" table shown at session end.  When the
-    user switched models mid-session each model gets its own row; otherwise a
-    single-row flat table is printed.  Only printed when there is meaningful
-    data to display.
+    Prints a "Model Usage" table at session end.  When the user switched
+    models mid-session each model gets its own row; otherwise a single-row
+    flat table is printed.  Only printed when there is meaningful data to
+    display.
 
     Args:
         stats: The cumulative session stats from the Textual app.

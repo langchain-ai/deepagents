@@ -405,7 +405,7 @@ def create_cli_agent(
     both internally and from external code (e.g., benchmarking frameworks).
 
     Args:
-        model: LLM model to use (e.g., `'anthropic:claude-sonnet-4-5-20250929'`)
+        model: LLM model to use (e.g., `'anthropic:claude-sonnet-4-6'`)
         assistant_id: Agent identifier for memory/state storage
         tools: Additional tools to provide to agent
         sandbox: Optional sandbox backend for remote execution

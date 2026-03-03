@@ -301,7 +301,7 @@ class TestGetSystemPromptModelIdentity:
     def test_includes_model_identity_when_all_settings_present(self) -> None:
         """Test that model identity section is included when all settings are set."""
         mock_settings = Mock()
-        mock_settings.model_name = "claude-sonnet-4-5-20250929"
+        mock_settings.model_name = "claude-sonnet-4-6"
         mock_settings.model_provider = "anthropic"
         mock_settings.model_context_limit = 200000
 
@@ -309,7 +309,7 @@ class TestGetSystemPromptModelIdentity:
             prompt = get_system_prompt("test-agent")
 
         assert "### Model Identity" in prompt
-        assert "claude-sonnet-4-5-20250929" in prompt
+        assert "claude-sonnet-4-6" in prompt
         assert "(provider: anthropic)" in prompt
         assert "Your context window is 200,000 tokens." in prompt
 

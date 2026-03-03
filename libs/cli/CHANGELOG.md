@@ -1,5 +1,40 @@
 # Changelog
 
+## [0.0.26](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.25...deepagents-cli==0.0.26) (2026-03-03)
+
+
+### Features
+
+* **cli,sdk:** compaction hook ([#1420](https://github.com/langchain-ai/deepagents/issues/1420)) ([e87cdad](https://github.com/langchain-ai/deepagents/commit/e87cdaddb9a984c4fd189b4f71303881edb32cb2))
+* **cli:** `/compact` command ([#1579](https://github.com/langchain-ai/deepagents/issues/1579)) ([46e9e95](https://github.com/langchain-ai/deepagents/commit/46e9e950087e973175d49d6a863cfa9d2f241528))
+* **cli:** add `--profile-override` CLI flag ([#1605](https://github.com/langchain-ai/deepagents/issues/1605)) ([1984099](https://github.com/langchain-ai/deepagents/commit/1984099ae9ac4b0c13dc08722abb9d56055da7b7))
+* **cli:** add model profile overrides to config ([#1603](https://github.com/langchain-ai/deepagents/issues/1603)) ([d3d6899](https://github.com/langchain-ai/deepagents/commit/d3d6899209b7cf97447da0eee642b3f55261ffbc))
+* **cli:** show summarization status and notification    ([#919](https://github.com/langchain-ai/deepagents/issues/919)) ([2e3cb74](https://github.com/langchain-ai/deepagents/commit/2e3cb743eff8e0a33b215359132cee13a673a4df))
+
+
+### Bug Fixes
+
+* **cli:** add missing flags to help screen ([#1619](https://github.com/langchain-ai/deepagents/issues/1619)) ([6067749](https://github.com/langchain-ai/deepagents/commit/60677492b3f49adc8535b34156029271a0728923))
+* **cli:** align compaction messaging across `/compact` and `compact_conversation` ([#1583](https://github.com/langchain-ai/deepagents/issues/1583)) ([d455a6b](https://github.com/langchain-ai/deepagents/commit/d455a6b117dbca2dfb5156050273a84946adc247))
+* **cli:** apply profile overrides in `/compact` ([#1612](https://github.com/langchain-ai/deepagents/issues/1612)) ([a9dc2c5](https://github.com/langchain-ai/deepagents/commit/a9dc2c5a1ad6d37f3f682491664b3f709cad8552))
+* **cli:** coerce execute timeout to int before formatting tool display ([#1588](https://github.com/langchain-ai/deepagents/issues/1588)) ([04b8c72](https://github.com/langchain-ai/deepagents/commit/04b8c72361f7eb60b86fa560ef3f6283912c3395)), closes [#1586](https://github.com/langchain-ai/deepagents/issues/1586)
+* **cli:** disambiguate `/tokens` vs `/compact` token reporting ([#1618](https://github.com/langchain-ai/deepagents/issues/1618)) ([51c3347](https://github.com/langchain-ai/deepagents/commit/51c3347e5a402115d4ecbb09f0074c607270f992))
+* **cli:** image path pasting qualms ([#1560](https://github.com/langchain-ai/deepagents/issues/1560)) ([8caaf3e](https://github.com/langchain-ai/deepagents/commit/8caaf3e71ae7f5a26c20ca86700cc51f3c6f37ed))
+* **cli:** load `.agents` skill alias directories at interactive startup ([#1556](https://github.com/langchain-ai/deepagents/issues/1556)) ([af0a759](https://github.com/langchain-ai/deepagents/commit/af0a759ee231cfe8860da34fe39dbcff38726102))
+* **cli:** make langsmith URL lookups non-blocking ([#1595](https://github.com/langchain-ai/deepagents/issues/1595)) ([572eaee](https://github.com/langchain-ai/deepagents/commit/572eaeefbe2f9318555733977e4771815879273c))
+* **cli:** only exit input mode on backspace, not text clear ([#1479](https://github.com/langchain-ai/deepagents/issues/1479)) ([da0965e](https://github.com/langchain-ai/deepagents/commit/da0965ee33e6bdf7aec30865bed44a1bd38a7d12))
+* **cli:** retry langsmith project url lookup until project exists ([#1562](https://github.com/langchain-ai/deepagents/issues/1562)) ([e137a63](https://github.com/langchain-ai/deepagents/commit/e137a633fdadda205b8e05a9fdabc4b978726a37))
+* **cli:** show model info in `/tokens` before first usage ([#1607](https://github.com/langchain-ai/deepagents/issues/1607)) ([7b01ae7](https://github.com/langchain-ai/deepagents/commit/7b01ae7258ed079046262d1c174f1c406101294c))
+* **sdk,cli,deps:** support `timeout=0` for sandbox `execute()` ([#1558](https://github.com/langchain-ai/deepagents/issues/1558)) ([ed14443](https://github.com/langchain-ai/deepagents/commit/ed14443b5aec8afde1f74bb2e12a17cb7d1829b6))
+* Unreachable `except` block ([#1535](https://github.com/langchain-ai/deepagents/issues/1535)) ([0e17e35](https://github.com/langchain-ai/deepagents/commit/0e17e352fa2ae4e34320a27d272586a10a0a7aec))
+
+
+### Performance Improvements
+
+* **cli:** optimize thread resume path with prefetch and batched hydration ([#1561](https://github.com/langchain-ai/deepagents/issues/1561)) ([068d112](https://github.com/langchain-ai/deepagents/commit/068d1128177de0f0a01f533a01184039c2a2f09f))
+* **cli:** parallelize detect script for faster first-turn ([#1541](https://github.com/langchain-ai/deepagents/issues/1541)) ([dad8b6e](https://github.com/langchain-ai/deepagents/commit/dad8b6e15a78d26921c0cb831579648927caa551))
+* **cli:** speed up `/threads` first-open ([#1481](https://github.com/langchain-ai/deepagents/issues/1481)) ([b248b15](https://github.com/langchain-ai/deepagents/commit/b248b15fd70de3c4d055b68a0dae04f00e41ea9e))
+
 ## [0.0.25](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.24...deepagents-cli==0.0.25) (2026-02-20)
 
 ### Features

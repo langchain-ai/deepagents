@@ -9,6 +9,7 @@ import os
 import re
 import shlex
 import sys
+import threading
 import uuid
 from dataclasses import dataclass
 from enum import StrEnum
@@ -71,7 +72,6 @@ MODE_PREFIXES: dict[str, str] = {
 """Maps each non-normal mode to its trigger character."""
 
 
-# Charset mode configuration
 class CharsetMode(StrEnum):
     """Character set mode for TUI display."""
 
@@ -169,14 +169,21 @@ ASCII_GLYPHS = Glyphs(
     tree_vertical="|   ",
 )
 
-# Module-level cache for detected glyphs
 _glyphs_cache: Glyphs | None = None
+"""Module-level cache for detected glyphs."""
 
-# Module-level cache for editable install detection
 _editable_cache: bool | None = None
+"""Module-level cache for editable install detection."""
 
-# Module-level cache for successful LangSmith project URL lookups
 _langsmith_url_cache: tuple[str, str] | None = None
+"""Module-level cache for successful LangSmith project URL lookups."""
+
+_LANGSMITH_URL_LOOKUP_TIMEOUT_SECONDS = 2.0
+"""
+Maximum time to wait for LangSmith project URL lookup.
+
+Keep this short so tracing metadata can never stall CLI flows.
+"""
 
 
 def _is_editable_install() -> bool:
@@ -946,8 +953,8 @@ def fetch_langsmith_project_url(project_name: str) -> str | None:
     Successful results are cached at module level so repeated calls do not
     make additional network requests.
 
-    This is a blocking network call on the first invocation. In async
-    contexts, run it in a thread (e.g. via `asyncio.to_thread`).
+    To prevent LangSmith outages from stalling the CLI, lookup runs in a
+    daemon thread with a hard timeout.
 
     Returns None (with a debug log) on any expected failure: missing
     `langsmith` package, network errors, invalid project names, or client
@@ -969,21 +976,54 @@ def fetch_langsmith_project_url(project_name: str) -> str | None:
 
     try:
         from langsmith import Client
-        from langsmith.utils import LangSmithError
-
-        project = Client().read_project(project_name=project_name)
-    except (ImportError, LangSmithError, OSError, ValueError, RuntimeError):
+    except ImportError:
         logger.debug(
             "Could not fetch LangSmith project URL for '%s'",
             project_name,
             exc_info=True,
         )
         return None
-    else:
-        url = project.url or None
-        if url is not None:
-            _langsmith_url_cache = (project_name, url)
-        return url
+
+    result: str | None = None
+    lookup_error: Exception | None = None
+    done = threading.Event()
+
+    def _lookup_url() -> None:
+        nonlocal result, lookup_error
+        try:
+            project = Client().read_project(project_name=project_name)
+            result = project.url or None
+        except Exception as exc:  # noqa: BLE001  # LangSmith SDK error types are not stable
+            lookup_error = exc
+        finally:
+            done.set()
+
+    thread = threading.Thread(target=_lookup_url, daemon=True)
+    thread.start()
+
+    if not done.wait(_LANGSMITH_URL_LOOKUP_TIMEOUT_SECONDS):
+        logger.debug(
+            "Timed out fetching LangSmith project URL for '%s' after %.1fs",
+            project_name,
+            _LANGSMITH_URL_LOOKUP_TIMEOUT_SECONDS,
+        )
+        return None
+
+    if lookup_error is not None:
+        logger.debug(
+            "Could not fetch LangSmith project URL for '%s'",
+            project_name,
+            exc_info=(
+                type(lookup_error),
+                lookup_error,
+                lookup_error.__traceback__,
+            ),
+        )
+        return None
+
+    if result is not None:
+        _langsmith_url_cache = (project_name, result)
+    return result
 
 
 def build_langsmith_thread_url(thread_id: str) -> str | None:

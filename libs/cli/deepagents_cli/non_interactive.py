@@ -23,6 +23,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import sys
+import threading
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
@@ -131,6 +132,41 @@ class StreamState:
         default_factory=dict
     )
     interrupt_occurred: bool = False
+
+
+@dataclass
+class ThreadUrlLookupState:
+    """Best-effort background LangSmith thread URL lookup state."""
+
+    done: threading.Event = field(default_factory=threading.Event)
+    url: str | None = None
+
+
+def _start_langsmith_thread_url_lookup(thread_id: str) -> ThreadUrlLookupState:
+    """Start background LangSmith URL resolution without blocking.
+
+    Args:
+        thread_id: Thread identifier to resolve.
+
+    Returns:
+        Mutable lookup state that can be polled for completion.
+    """
+    state = ThreadUrlLookupState()
+
+    def _resolve() -> None:
+        try:
+            state.url = build_langsmith_thread_url(thread_id)
+        except Exception:
+            logger.debug(
+                "Could not resolve LangSmith thread URL for '%s'",
+                thread_id,
+                exc_info=True,
+            )
+        finally:
+            state.done.set()
+
+    threading.Thread(target=_resolve, daemon=True).start()
+    return state
 
 
 def _process_interrupts(
@@ -426,6 +462,7 @@ async def _run_agent_loop(
     *,
     quiet: bool = False,
     stream: bool = True,
+    thread_url_lookup: ThreadUrlLookupState | None = None,
 ) -> None:
     """Run the agent and handle HITL interrupts until the task completes.
 
@@ -443,6 +480,8 @@ async def _run_agent_loop(
 
             When `False`, the full response is buffered and flushed at
             the end.
+        thread_url_lookup: Optional non-blocking lookup state for rendering
+            a fast-follow LangSmith thread link.
 
     Raises:
         HITLIterationLimitError: If the HITL iteration limit is exceeded.
@@ -480,18 +519,36 @@ async def _run_agent_loop(
 
     if not quiet:
         console.print()
+        if (
+            thread_url_lookup is not None
+            and thread_url_lookup.done.is_set()
+            and thread_url_lookup.url
+        ):
+            link_text = Text("View in LangSmith: ", style="dim")
+            link_text.append(
+                thread_url_lookup.url,
+                style=Style(dim=True, link=thread_url_lookup.url),
+            )
+            console.print(link_text)
         console.print("[green]✓ Task completed[/green]")
 
 
-def _build_non_interactive_header(assistant_id: str, thread_id: str) -> Text:
+def _build_non_interactive_header(
+    assistant_id: str,
+    thread_id: str,
+    *,
+    include_thread_link: bool = False,
+) -> Text:
     """Build the non-interactive mode header with model, agent, and thread info.
 
-    The thread ID is rendered as a clickable hyperlink when LangSmith tracing
-    is configured.
+    By default, this function avoids LangSmith network lookups and renders the
+    thread ID as plain text. Callers can opt in to hyperlink resolution.
 
     Args:
         assistant_id: Agent identifier.
         thread_id: Thread identifier.
+        include_thread_link: Whether to resolve and render a LangSmith link for
+            the thread ID.
 
     Returns:
         Rich Text object with the formatted header line.
@@ -506,8 +563,7 @@ def _build_non_interactive_header(assistant_id: str, thread_id: str) -> Text:
 
     parts.append((" | ", "dim"))
 
-    # Attempt to build a clickable thread link via LangSmith
-    thread_url = build_langsmith_thread_url(thread_id)
+    thread_url = build_langsmith_thread_url(thread_id) if include_thread_link else None
     if thread_url:
         parts.extend(
             [
@@ -541,9 +597,8 @@ async def run_non_interactive(
     list; commands not in the list are rejected with an error message sent
     back to the agent.
 
-    Note: when LangSmith tracing is configured, `_build_non_interactive_header`
-    makes a synchronous network call (via `fetch_langsmith_project_url`) to
-    resolve the thread URL. This blocks the event loop briefly at startup.
+    Note: startup header rendering avoids LangSmith URL lookups to keep startup
+    non-blocking.
 
     Args:
         message: The task/message to execute.
@@ -591,7 +646,9 @@ async def run_non_interactive(
         },
     }
 
+    thread_url_lookup: ThreadUrlLookupState | None = None
     if not quiet:
+        thread_url_lookup = _start_langsmith_thread_url_lookup(thread_id)
         console.print("[dim]Running task non-interactively...[/dim]")
         header = _build_non_interactive_header(assistant_id, thread_id)
         console.print(header)
@@ -664,6 +721,7 @@ async def run_non_interactive(
                 file_op_tracker,
                 quiet=quiet,
                 stream=stream,
+                thread_url_lookup=thread_url_lookup,
             )
             return 0
 

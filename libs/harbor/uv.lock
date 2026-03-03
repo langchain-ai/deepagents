@@ -707,6 +707,12 @@ requires-dist = [
 ]
 
 [package.metadata.requires-dev]
+evals = [
+    { name = "langchain-deepseek" },
+    { name = "langchain-groq" },
+    { name = "langchain-mistralai" },
+    { name = "langchain-xai" },
+]
 test = [
     { name = "build" },
     { name = "langchain-openai" },

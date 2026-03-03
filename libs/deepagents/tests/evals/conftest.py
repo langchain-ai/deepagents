@@ -1,6 +1,14 @@
 from __future__ import annotations
 
+import os
+from typing import TYPE_CHECKING
+
 import pytest
+from langchain.chat_models import init_chat_model
+from langchain_openai import ChatOpenAI
+
+if TYPE_CHECKING:
+    from langchain_core.language_models import BaseChatModel
 
 from deepagents.graph import get_default_model
 
@@ -17,14 +25,25 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 
 
 def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
-    if "model" not in metafunc.fixturenames:
+    if "model_name" not in metafunc.fixturenames:
         return
 
     model_opt = metafunc.config.getoption("--model")
-    model = model_opt or str(get_default_model().model)
-    metafunc.parametrize("model", [model])
+    model_name = model_opt or str(get_default_model().model)
+    metafunc.parametrize("model_name", [model_name])
 
 
 @pytest.fixture
-def model(request: pytest.FixtureRequest) -> str:
+def model_name(request: pytest.FixtureRequest) -> str:
     return str(request.param)
+
+
+@pytest.fixture
+def model(model_name: str) -> BaseChatModel:
+    if model_name == "nvidia/nemotron-3-super-120b-a12b":
+        return ChatOpenAI(
+            model="private/nvidia/nemotron-3-super-120b-a12b",
+            base_url="https://integrate.api.nvidia.com/v1",
+            api_key=os.environ["NVIDIA_API_KEY"],
+        )
+    return init_chat_model(model_name)

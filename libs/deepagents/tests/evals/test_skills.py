@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import pytest
 
 from deepagents import create_deep_agent
+
+if TYPE_CHECKING:
+    from langchain_core.language_models import BaseChatModel
 from tests.evals.utils import TrajectoryExpectations, run_agent
 
 
@@ -12,7 +17,7 @@ def _skill_content(name: str, description: str, body: str) -> str:
 
 
 @pytest.mark.langsmith
-def test_read_skill_full_content(model: str) -> None:
+def test_read_skill_full_content(model: BaseChatModel) -> None:
     """Agent reads a skill's SKILL.md and retrieves specific embedded content."""
     agent = create_deep_agent(model=model, skills=["/skills/user/"])
     run_agent(
@@ -38,7 +43,7 @@ def test_read_skill_full_content(model: str) -> None:
 
 
 @pytest.mark.langsmith
-def test_read_skill_by_name(model: str) -> None:
+def test_read_skill_by_name(model: BaseChatModel) -> None:
     """Agent finds and reads the correct skill by name when multiple skills are available."""
     agent = create_deep_agent(model=model, skills=["/skills/user/"])
     trajectory = run_agent(
@@ -70,7 +75,7 @@ def test_read_skill_by_name(model: str) -> None:
 
 
 @pytest.mark.langsmith
-def test_combine_two_skills(model: str) -> None:
+def test_combine_two_skills(model: BaseChatModel) -> None:
     """Agent reads two skills in parallel and combines their information to answer a query."""
     agent = create_deep_agent(model=model, skills=["/skills/user/"])
     run_agent(
@@ -103,7 +108,7 @@ def test_combine_two_skills(model: str) -> None:
 
 
 @pytest.mark.langsmith
-def test_update_skill_typo_fix_no_read(model: str) -> None:
+def test_update_skill_typo_fix_no_read(model: BaseChatModel) -> None:
     """Agent fixes a known typo with a single direct edit, without reading first."""
     agent = create_deep_agent(model=model, skills=["/skills/user/"])
     trajectory = run_agent(
@@ -132,7 +137,7 @@ def test_update_skill_typo_fix_no_read(model: str) -> None:
 
 
 @pytest.mark.langsmith
-def test_update_skill_typo_fix_requires_read(model: str) -> None:
+def test_update_skill_typo_fix_requires_read(model: BaseChatModel) -> None:
     """Agent must read a skill file to discover and fix an unknown typo."""
     agent = create_deep_agent(model=model, skills=["/skills/user/"])
     trajectory = run_agent(
@@ -161,7 +166,7 @@ def test_update_skill_typo_fix_requires_read(model: str) -> None:
 
 
 @pytest.mark.langsmith
-def test_find_skill_in_correct_path(model: str) -> None:
+def test_find_skill_in_correct_path(model: BaseChatModel) -> None:
     """Agent uses the skill path shown in the system prompt to update the right skill file.
 
     Two source paths are configured: /skills/base/ and /skills/project/. The

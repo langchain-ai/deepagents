@@ -21,6 +21,7 @@ class ToolCallExpectation:
 
 
 if TYPE_CHECKING:
+    from langchain_core.language_models import BaseChatModel
     from langgraph.graph.state import CompiledStateGraph
 
 
@@ -289,7 +290,7 @@ def run_agent(
     agent: CompiledStateGraph[Any, Any],
     *,
     query: str | list[AnyMessage],
-    model: str,
+    model: BaseChatModel,
     initial_files: dict[str, str] | None = None,
     expect: TrajectoryExpectations | None = None,
     thread_id: str | None = None,
@@ -307,7 +308,7 @@ def run_agent(
     config = {"configurable": {"thread_id": thread_id}}
 
     logged_inputs = dict(invoke_inputs)
-    logged_inputs["model"] = model
+    logged_inputs["model"] = str(model.model)
 
     t.log_inputs(logged_inputs)
     result = agent.invoke(invoke_inputs, config)

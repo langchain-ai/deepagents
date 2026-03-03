@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import pytest
 
 from deepagents import create_deep_agent
+
+if TYPE_CHECKING:
+    from langchain_core.language_models import BaseChatModel
 from tests.evals.utils import TrajectoryExpectations, run_agent
 
 
 @pytest.mark.langsmith
-def test_read_file_seeded_state_backend_file(model: str) -> None:
+def test_read_file_seeded_state_backend_file(model: BaseChatModel) -> None:
     """Reads a seeded file and answers a question."""
     agent = create_deep_agent(model=model)
     run_agent(
@@ -26,7 +31,7 @@ def test_read_file_seeded_state_backend_file(model: str) -> None:
 
 
 @pytest.mark.langsmith
-def test_tool_error_recovery_read_file_then_ls(model: str) -> None:
+def test_tool_error_recovery_read_file_then_ls(model: BaseChatModel) -> None:
     """User supplies a misspelled file path; agent recovers via ls instead of guessing."""
     agent = create_deep_agent(model=model)
     run_agent(
@@ -54,7 +59,7 @@ Important: The MAGIC_TOKEN is SAPPHIRE-13.
 
 
 @pytest.mark.langsmith
-def test_write_file_simple(model: str) -> None:
+def test_write_file_simple(model: BaseChatModel) -> None:
     """Writes a file then answers a follow-up."""
     agent = create_deep_agent(model=model, system_prompt="Your name is Foo Bar.")
     trajectory = run_agent(
@@ -147,7 +152,7 @@ def test_write_files_in_parallel_ambiguous_confirmation(model: str) -> None:
 
 
 @pytest.mark.langsmith
-def test_ls_directory_contains_file_yes_no(model: str) -> None:
+def test_ls_directory_contains_file_yes_no(model: BaseChatModel) -> None:
     """Uses ls then answers YES/NO about a directory entry."""
     agent = create_deep_agent(model=model)
     run_agent(
@@ -169,7 +174,7 @@ def test_ls_directory_contains_file_yes_no(model: str) -> None:
 
 
 @pytest.mark.langsmith
-def test_ls_directory_missing_file_yes_no(model: str) -> None:
+def test_ls_directory_missing_file_yes_no(model: BaseChatModel) -> None:
     """Uses ls then answers YES/NO about a missing directory entry."""
     agent = create_deep_agent(model=model)
     run_agent(
@@ -188,7 +193,7 @@ def test_ls_directory_missing_file_yes_no(model: str) -> None:
 
 
 @pytest.mark.langsmith
-def test_edit_file_replace_text(model: str) -> None:
+def test_edit_file_replace_text(model: BaseChatModel) -> None:
     """Edits a file by replacing text, then validates the edit."""
     agent = create_deep_agent(model=model)
     trajectory = run_agent(
@@ -208,7 +213,7 @@ def test_edit_file_replace_text(model: str) -> None:
 
 
 @pytest.mark.langsmith
-def test_read_then_write_derived_output(model: str) -> None:
+def test_read_then_write_derived_output(model: BaseChatModel) -> None:
     """Reads a file and writes a derived output file."""
     agent = create_deep_agent(model=model)
     trajectory = run_agent(
@@ -225,7 +230,7 @@ def test_read_then_write_derived_output(model: str) -> None:
 
 
 @pytest.mark.langsmith
-def test_avoid_unnecessary_tool_calls(model: str) -> None:
+def test_avoid_unnecessary_tool_calls(model: BaseChatModel) -> None:
     """Answers a trivial question without using tools."""
     agent = create_deep_agent(model=model)
     trajectory = run_agent(
@@ -240,7 +245,7 @@ def test_avoid_unnecessary_tool_calls(model: str) -> None:
 
 
 @pytest.mark.langsmith
-def test_read_files_in_parallel(model: str) -> None:
+def test_read_files_in_parallel(model: BaseChatModel) -> None:
     """Performs two independent read_file calls in a single agent step."""
     agent = create_deep_agent(model=model)
     run_agent(
@@ -264,7 +269,7 @@ def test_read_files_in_parallel(model: str) -> None:
 
 
 @pytest.mark.langsmith
-def test_grep_finds_matching_paths(model: str) -> None:
+def test_grep_finds_matching_paths(model: BaseChatModel) -> None:
     """Uses grep to find matching files and reports the matching paths."""
     agent = create_deep_agent(model=model)
     trajectory = run_agent(
@@ -289,7 +294,7 @@ def test_grep_finds_matching_paths(model: str) -> None:
 
 
 @pytest.mark.langsmith
-def test_glob_lists_markdown_files(model: str) -> None:
+def test_glob_lists_markdown_files(model: BaseChatModel) -> None:
     """Uses glob to list files matching a pattern."""
     agent = create_deep_agent(model=model)
     trajectory = run_agent(
@@ -314,7 +319,7 @@ def test_glob_lists_markdown_files(model: str) -> None:
 
 
 @pytest.mark.langsmith
-def test_find_magic_phrase_deep_nesting(model: str) -> None:
+def test_find_magic_phrase_deep_nesting(model: BaseChatModel) -> None:
     """Finds a magic phrase in a deeply nested directory efficiently."""
     agent = create_deep_agent(model=model)
     magic_phrase = "cobalt-otter-17"
@@ -342,7 +347,7 @@ def test_find_magic_phrase_deep_nesting(model: str) -> None:
 
 
 @pytest.mark.langsmith
-def test_identify_quote_author_from_directory_parallel_reads(model: str) -> None:
+def test_identify_quote_author_from_directory_parallel_reads(model: BaseChatModel) -> None:
     """Identifies which quote matches a target author by reading a directory efficiently."""
     agent = create_deep_agent(model=model)
     run_agent(
@@ -389,7 +394,7 @@ Clues: about programming readability; software craftsmanship.
 
 
 @pytest.mark.langsmith
-def test_identify_quote_author_from_directory_unprompted_efficiency(model: str) -> None:
+def test_identify_quote_author_from_directory_unprompted_efficiency(model: BaseChatModel) -> None:
     """Identifies which quote matches a target author without explicit efficiency instructions."""
     agent = create_deep_agent(model=model)
     run_agent(

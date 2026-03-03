@@ -577,8 +577,9 @@ class ModelConfig:
                     class_path,
                 )
 
-            params = provider.get("params", {})
             models = set(provider.get("models", []))
+
+            params = provider.get("params", {})
             for key, value in params.items():
                 if isinstance(value, dict) and key not in models:
                     logger.warning(
@@ -694,7 +695,6 @@ class ModelConfig:
         if not provider:
             return {}
         params = provider.get("params", {})
-        # Flat keys are provider-wide defaults; dict values are per-model overrides
         result = {k: v for k, v in params.items() if not isinstance(v, dict)}
         if model_name:
             overrides = params.get(model_name)

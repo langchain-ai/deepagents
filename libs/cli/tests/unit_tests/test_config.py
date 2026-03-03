@@ -1,5 +1,6 @@
 """Tests for config module including project discovery utilities."""
 
+import logging
 import time
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -495,6 +496,80 @@ max_input_tokens = 4096
             result = create_model("anthropic:claude-sonnet-4-5")
 
         assert result.context_limit == 4096
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_profile_override_preserves_non_overridden_keys(
+        self, mock_init_chat_model: Mock, tmp_path: Path
+    ) -> None:
+        """Override merges into existing profile without dropping other keys."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.anthropic.profile]
+max_input_tokens = 4096
+""")
+        mock_model = Mock()
+        mock_model.profile = {"max_input_tokens": 200000, "tool_calling": True}
+        mock_init_chat_model.return_value = mock_model
+
+        clear_caches()
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            create_model("anthropic:claude-sonnet-4-5")
+
+        assert mock_model.profile == {"max_input_tokens": 4096, "tool_calling": True}
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_profile_override_when_profile_is_none(
+        self, mock_init_chat_model: Mock, tmp_path: Path
+    ) -> None:
+        """Override is applied when model.profile is explicitly None."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.anthropic.profile]
+max_input_tokens = 4096
+""")
+        mock_model = Mock()
+        mock_model.profile = None
+        mock_init_chat_model.return_value = mock_model
+
+        clear_caches()
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            result = create_model("anthropic:claude-sonnet-4-5")
+
+        assert result.context_limit == 4096
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_profile_override_logs_warning_on_frozen_model(
+        self,
+        mock_init_chat_model: Mock,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Graceful warning when model rejects attribute assignment."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.anthropic.profile]
+max_input_tokens = 4096
+""")
+        mock_model = Mock()
+        # Make .profile read return a dict but assignment raises
+        type(mock_model).profile = property(
+            fget=lambda _: {"max_input_tokens": 200000},
+            fset=lambda _, __: (_ for _ in ()).throw(AttributeError("frozen")),
+        )
+        mock_init_chat_model.return_value = mock_model
+
+        clear_caches()
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            caplog.at_level(logging.WARNING, logger="deepagents_cli.config"),
+        ):
+            result = create_model("anthropic:claude-sonnet-4-5")
+
+        assert any(
+            "Could not apply profile overrides" in r.message for r in caplog.records
+        )
+        # Falls back to original profile extraction
+        assert result.context_limit == 200000
 
 
 class TestParseShellAllowList:

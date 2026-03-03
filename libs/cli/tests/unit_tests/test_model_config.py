@@ -1100,6 +1100,26 @@ max_input_tokens = 8192
         overrides = config.get_profile_overrides("anthropic", model_name=None)
         assert overrides == {"max_input_tokens": 4096}
 
+    def test_multiple_flat_keys_with_model_subtable(self, tmp_path):
+        """Multiple flat keys returned; model sub-table merges on top."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.anthropic]
+models = ["claude-sonnet-4-5"]
+
+[models.providers.anthropic.profile]
+max_input_tokens = 4096
+supports_thinking = true
+
+[models.providers.anthropic.profile."claude-sonnet-4-5"]
+max_input_tokens = 8192
+""")
+        config = ModelConfig.load(config_path)
+        overrides = config.get_profile_overrides(
+            "anthropic", model_name="claude-sonnet-4-5"
+        )
+        assert overrides == {"max_input_tokens": 8192, "supports_thinking": True}
+
 
 class TestModelConfigValidateParams:
     """Tests for _validate() params warnings."""

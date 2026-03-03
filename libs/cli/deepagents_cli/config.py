@@ -1411,13 +1411,36 @@ def create_model(
     resolved_provider = provider or getattr(model, "_model_provider", provider)
 
     # Apply profile overrides from config.toml (e.g., max_input_tokens)
-    profile_overrides = config.get_profile_overrides(provider, model_name=model_name)
-    if profile_overrides:
-        profile = getattr(model, "profile", None)
-        if isinstance(profile, dict):
-            profile.update(profile_overrides)
-        else:
-            model.profile = profile_overrides  # type: ignore[union-attr]
+    if provider:
+        profile_overrides = config.get_profile_overrides(
+            provider, model_name=model_name
+        )
+        if profile_overrides:
+            logger.debug(
+                "Applying profile overrides for '%s' (provider '%s'): %s",
+                model_name,
+                provider,
+                profile_overrides,
+            )
+            # Intentionally over-defensive
+            profile = getattr(model, "profile", None)
+            if isinstance(profile, dict):
+                # Copy original profile and overlay config overrides on top.
+                # Duplicate keys use the override value; keys only in the
+                # original (e.g., tool_calling) are preserved unchanged.
+                merged = {**profile, **profile_overrides}
+            else:
+                merged = profile_overrides
+            try:
+                model.profile = merged  # type: ignore[union-attr]
+            except (AttributeError, TypeError, ValueError) as exc:
+                logger.warning(
+                    "Could not apply profile overrides to model '%s' "
+                    "(provider '%s'): %s. Overrides will be ignored.",
+                    model_name,
+                    provider,
+                    exc,
+                )
 
     # Extract context limit from model profile (if available)
     context_limit: int | None = None

@@ -215,6 +215,10 @@ def send_email(to: str, msg: str, *, priority: str = "normal") -> bool:
 - **Message passing** for widget communication - see [Events guide](https://textual.textualize.io/guide/events/)
 - **Reactive attributes** for state management - see [Reactivity guide](https://textual.textualize.io/guide/reactivity/)
 
+**SDK dependency pin:**
+
+The CLI pins an exact `deepagents==X.Y.Z` version in `libs/cli/pyproject.toml`. When developing CLI features that depend on new SDK functionality, bump this pin as part of the same PR. A CI check verifies the pin matches the current SDK version at release time (unless bypassed with `dangerous-skip-sdk-pin-check`).
+
 **Startup performance:**
 
 The CLI must stay fast to launch. Never import heavy packages (e.g., `deepagents`, LangChain, LangGraph) at module level or in the argument-parsing path. These imports pull in large dependency trees and add seconds to every invocation, including trivial commands like `deepagents -v`.

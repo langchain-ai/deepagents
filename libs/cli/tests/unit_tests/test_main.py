@@ -125,7 +125,6 @@ class TestAppResult:
 class TestRunTextualAppReturnType:
     """Test that run_textual_app returns AppResult."""
 
-    @pytest.mark.asyncio
     async def test_run_textual_app_returns_app_result(self) -> None:
         """run_textual_app should return an AppResult."""
         sig = inspect.signature(run_textual_app)

@@ -13,6 +13,7 @@
 #   DEEPSEEK_API_KEY   — needed for DeepSeek models
 #   GROQ_API_KEY       — needed for Groq-hosted models
 #   OLLAMA_API_KEY     — needed for Ollama Cloud models
+#   OLLAMA_HOST        — set to https://ollama.com for cloud inference
 
 name: "📊 Evals"
 
@@ -72,12 +73,12 @@ jobs:
           - "groq:qwen/qwen3-32b"
           - "groq:moonshotai/kimi-k2-instruct"
           # Ollama Cloud
-          - "ollama-cloud:glm-5"
-          - "ollama-cloud:minimax-m2.5"
-          - "ollama-cloud:nemotron-3-nano:30b"
-          - "ollama-cloud:cogito-2.1:671b"
-          - "ollama-cloud:devstral-2:123b"
-          - "ollama-cloud:ministral-3:14b"
+          - "ollama:glm-5"
+          - "ollama:minimax-m2.5"
+          - "ollama:nemotron-3-nano:30b"
+          - "ollama:cogito-2.1:671b"
+          - "ollama:devstral-2:123b"
+          - "ollama:ministral-3:14b"
     defaults:
       run:
         working-directory: libs/deepagents
@@ -93,6 +94,7 @@ jobs:
       DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
       OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
+      OLLAMA_HOST: "https://ollama.com"
     steps:
       - name: "📋 Checkout Code"
         uses: actions/checkout@v6

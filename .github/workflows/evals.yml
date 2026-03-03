@@ -98,7 +98,6 @@ jobs:
     runs-on: ubuntu-latest
     needs: [eval]
     if: always()
-    env: {}
     steps:
       - name: "📋 Checkout Code"
         uses: actions/checkout@v6
@@ -116,5 +115,4 @@ jobs:
           working-directory: libs/deepagents
 
       - name: "🧾 Write summary"
-        env: {}
         run: uv run --with tabulate python .github/scripts/aggregate_evals.py

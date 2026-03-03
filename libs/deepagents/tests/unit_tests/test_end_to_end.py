@@ -664,7 +664,6 @@ class TestDeepAgentEndToEnd:
             assert "AttributeError" not in glob_result
             assert "'list' object has no attribute 'items'" not in glob_result
 
-    @pytest.mark.asyncio
     async def test_deep_agent_two_turns_no_initial_files_async(self) -> None:
         """Async version: Test deepagent with two conversation turns without specifying files.
 
@@ -741,7 +740,6 @@ class TestDeepAgentEndToEnd:
         # Should either find files or return "No files found", not crash
         assert "AttributeError" not in glob_result
 
-    @pytest.mark.asyncio
     async def test_deep_agent_two_turns_state_backend_edge_case_async(self) -> None:
         """Async version: Test StateBackend with two turns to reproduce potential state corruption.
 
@@ -991,7 +989,6 @@ class TestDeepAgentEndToEnd:
         assert "Output was truncated due to size limits" in file_content
         assert "reformatting" in file_content.lower() or "reformat" in file_content.lower()
 
-    @pytest.mark.asyncio
     @pytest.mark.parametrize("backend_factory", BACKEND_FACTORIES)
     async def test_deep_agent_read_file_truncation_async(self, tmp_path: Path, backend_factory: Callable[[Path], BackendProtocol]) -> None:
         """Test that read_file truncates large files in async mode."""

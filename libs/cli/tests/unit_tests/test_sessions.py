@@ -611,7 +611,6 @@ class TestGetCachedThreads:
 class TestPrewarmThreadMessageCounts:
     """Tests for prewarm_thread_message_counts error handling."""
 
-    @pytest.mark.asyncio
     async def test_unexpected_errors_log_warning(self) -> None:
         """Unexpected prewarm failures should be visible at warning level."""
         with (

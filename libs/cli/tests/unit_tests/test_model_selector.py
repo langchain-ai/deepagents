@@ -80,7 +80,6 @@ class AppWithEscapeBinding(App):
 class TestModelSelectorEscapeKey:
     """Tests for ESC key dismissing the modal."""
 
-    @pytest.mark.asyncio
     async def test_escape_dismisses_modal(self) -> None:
         """Pressing ESC should dismiss the modal with None result."""
         app = ModelSelectorTestApp()
@@ -95,7 +94,6 @@ class TestModelSelectorEscapeKey:
             assert app.dismissed is True
             assert app.result is None
 
-    @pytest.mark.asyncio
     async def test_escape_works_when_input_focused(self) -> None:
         """ESC should work even when the filter input is focused."""
         app = ModelSelectorTestApp()
@@ -114,7 +112,6 @@ class TestModelSelectorEscapeKey:
             assert app.dismissed is True
             assert app.result is None
 
-    @pytest.mark.asyncio
     async def test_escape_with_conflicting_app_binding(self) -> None:
         """ESC should dismiss modal even when app has its own escape binding.
 
@@ -140,7 +137,6 @@ class TestModelSelectorEscapeKey:
 class TestModelSelectorKeyboardNavigation:
     """Tests for keyboard navigation in the modal."""
 
-    @pytest.mark.asyncio
     async def test_down_arrow_moves_selection(self) -> None:
         """Down arrow should move selection down."""
         app = ModelSelectorTestApp()
@@ -157,7 +153,6 @@ class TestModelSelectorKeyboardNavigation:
 
             assert screen._selected_index == initial_index + 1
 
-    @pytest.mark.asyncio
     async def test_up_arrow_moves_selection(self) -> None:
         """Up arrow should move selection up (wrapping to end if at 0)."""
         app = ModelSelectorTestApp()
@@ -177,7 +172,6 @@ class TestModelSelectorKeyboardNavigation:
             expected = (initial_index - 1) % count
             assert screen._selected_index == expected
 
-    @pytest.mark.asyncio
     async def test_enter_selects_model(self) -> None:
         """Enter should select the current model and dismiss."""
         app = ModelSelectorTestApp()
@@ -197,7 +191,6 @@ class TestModelSelectorKeyboardNavigation:
 class TestModelSelectorFiltering:
     """Tests for search filtering."""
 
-    @pytest.mark.asyncio
     async def test_typing_filters_models(self) -> None:
         """Typing in the filter input should filter models."""
         app = ModelSelectorTestApp()
@@ -214,7 +207,6 @@ class TestModelSelectorFiltering:
 
             assert screen._filter_text == "claude"
 
-    @pytest.mark.asyncio
     async def test_custom_model_spec_entry(self) -> None:
         """User can enter a custom provider:model spec."""
         app = ModelSelectorTestApp()
@@ -234,7 +226,6 @@ class TestModelSelectorFiltering:
             assert app.dismissed is True
             assert app.result == ("custom:my-model", "custom")
 
-    @pytest.mark.asyncio
     async def test_enter_selects_highlighted_model_not_filter_text(self) -> None:
         """Enter selects highlighted model, not raw filter text."""
         app = ModelSelectorTestApp()
@@ -268,7 +259,6 @@ class TestModelSelectorFiltering:
 class TestModelSelectorCurrentModelPreselection:
     """Tests for pre-selecting the current model when opening the selector."""
 
-    @pytest.mark.asyncio
     async def test_current_model_is_preselected(self) -> None:
         """Opening the selector should pre-select the current model, not first."""
         app = ModelSelectorTestApp()
@@ -294,7 +284,6 @@ class TestModelSelectorCurrentModelPreselection:
                 f"but index {screen._selected_index} was selected instead"
             )
 
-    @pytest.mark.asyncio
     async def test_clearing_filter_reselects_current_model(self) -> None:
         """Clearing the filter should re-select the current model."""
         app = ModelSelectorTestApp()

@@ -28,6 +28,7 @@ deepagents/
 - `make` – Task runner for common development commands. Feel free to look at the `Makefile` for available commands and usage patterns.
 - `ruff` – Fast Python linter and formatter
 - `ty` – Static type checking
+- Do NOT use Sphinx-style double backtick formatting (` ``code`` `). Use single backticks (`code`) for inline code references in docstrings and comments.
 
 #### Suppressing ruff lint rules
 
@@ -87,6 +88,8 @@ fix(cli): resolve type hinting issue
 chore(harbor): update infrastructure dependencies
 ```
 
+- Do NOT use Sphinx-style double backtick formatting (` ``code`` `). Use single backticks (`code`) for inline code references in docstrings and comments.
+
 #### Pull request guidelines
 
 - Always add a disclaimer to the PR description mentioning how AI agents are involved with the contribution.
@@ -142,6 +145,7 @@ Every new feature or bugfix MUST be covered by unit tests.
 - Unit tests: `tests/unit_tests/` (no network calls allowed)
 - Integration tests: `tests/integration_tests/` (network calls permitted)
 - We use `pytest` as the testing framework; if in doubt, check other existing tests for examples.
+- Do NOT add `@pytest.mark.asyncio` to async tests — every package sets `asyncio_mode = "auto"` in `pyproject.toml`, so pytest-asyncio discovers them automatically.
 - The testing file structure should mirror the source code structure.
 - Avoid mocks as much as possible
 - Test actual implementation, do not duplicate logic into tests
@@ -190,7 +194,7 @@ def send_email(to: str, msg: str, *, priority: str = "normal") -> bool:
 - Document all parameters, return values, and exceptions
 - Keep descriptions concise but clear
 - Ensure American English spelling (e.g., "behavior", not "behaviour")
-- Do NOT use Sphinx-style double backtick formatting (` ``code`` `). Use single backticks (`` `code` ``) for inline code references in docstrings and comments.
+- Do NOT use Sphinx-style double backtick formatting (` ``code`` `). Use single backticks (`code`) for inline code references in docstrings and comments.
 
 ## Package-specific guidance
 
@@ -233,3 +237,5 @@ The CLI must stay fast to launch. Never import heavy packages (e.g., `deepagents
 - **Documentation:** https://docs.langchain.com/oss/python/deepagents/overview and source at https://github.com/langchain-ai/docs or `../docs/`. Prefer the local install and use file search tools for best results. If needed, use the docs MCP server as defined in `.mcp.json` for programmatic access.
 - **Contributing Guide:** [Contributing Guide](https://docs.langchain.com/oss/python/contributing/overview)
 - **CLI Release Process:** See `.github/RELEASING.md` for the full CLI release workflow (release-please, version bumping, troubleshooting failed releases, and label management).
+
+- Do NOT use Sphinx-style double backtick formatting (` ``code`` `). Use single backticks (`code`) for inline code references in docstrings and comments.

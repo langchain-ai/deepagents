@@ -192,7 +192,6 @@ class _FakeAgent:
 class TestExecuteTaskTextualSummarizationFeedback:
     """Tests for summarization spinner and notification feedback."""
 
-    @pytest.mark.asyncio
     async def test_spinner_transitions_for_summarization_stream(self) -> None:
         """Spinner should move Thinking -> Summarizing -> Thinking."""
         statuses: list[str | None] = []
@@ -232,7 +231,6 @@ class TestExecuteTaskTextualSummarizationFeedback:
         assert "Summarizing" in statuses
         assert statuses[-1] == "Thinking"
 
-    @pytest.mark.asyncio
     async def test_mounts_summarization_notification_on_regular_chunk(self) -> None:
         """Notification should render when regular chunks resume after summarization."""
         statuses: list[str | None] = []
@@ -278,8 +276,6 @@ class TestExecuteTaskTextualSummarizationFeedback:
         assert "Summarizing" in statuses
         assert statuses[-1] == "Thinking"
 
-    @pytest.mark.asyncio
-    @pytest.mark.asyncio
     async def test_mounts_notification_when_stream_ends_mid_summarization(self) -> None:
         """Notification should still render if stream exhausts during summarization."""
         mounted_widgets: list[object] = []

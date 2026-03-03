@@ -1410,6 +1410,15 @@ def create_model(
 
     resolved_provider = provider or getattr(model, "_model_provider", provider)
 
+    # Apply profile overrides from config.toml (e.g., max_input_tokens)
+    profile_overrides = config.get_profile_overrides(provider, model_name=model_name)
+    if profile_overrides:
+        profile = getattr(model, "profile", None)
+        if isinstance(profile, dict):
+            profile.update(profile_overrides)
+        else:
+            model.profile = profile_overrides  # type: ignore[union-attr]
+
     # Extract context limit from model profile (if available)
     context_limit: int | None = None
     profile = getattr(model, "profile", None)

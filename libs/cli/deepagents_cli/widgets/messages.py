@@ -1252,7 +1252,7 @@ class ErrorMessage(Static):
         margin: 1 0;
         background: #7f1d1d;
         color: white;
-        border-left: thick $error;
+        border-left: wide $error;
     }
     """
 
@@ -1325,7 +1325,7 @@ class SummarizationMessage(AppMessage):
         margin: 1 0;
         color: $primary;
         background: $surface;
-        border-left: thick $primary;
+        border-left: wide $primary;
         text-style: bold;
     }
     """

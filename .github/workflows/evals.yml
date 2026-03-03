@@ -14,24 +14,6 @@ on:
   schedule:
     - cron: "0 0 * * *"
   workflow_dispatch:
-    inputs:
-      model:
-        description: "Which model to run evals against (select 'all' to run the full matrix)"
-        required: false
-        default: all
-        type: choice
-        options:
-          - all
-          - "anthropic:claude-haiku-4-5-20251001"
-          - "anthropic:claude-opus-4-1"
-          - "anthropic:claude-opus-4-5"
-          - "anthropic:claude-opus-4-6"
-          - "anthropic:claude-sonnet-4-5-20250929"
-          - "openai:gpt-4.1"
-          - "openai:gpt-4o"
-          - "openai:gpt-4o-mini"
-          - "openai:gpt-5.1-codex"
-          - "openai:gpt-5.2-codex"
 
 permissions:
   contents: read
@@ -42,7 +24,6 @@ env:
 jobs:
   eval:
     name: "📊 Eval (${{ matrix.model }})"
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.model == 'all' || matrix.model == inputs.model }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
     strategy:

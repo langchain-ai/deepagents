@@ -341,6 +341,23 @@ async def execute_task_textual(
     # Track summarization lifecycle so spinner status and notification stay in sync.
     summarization_in_progress = False
 
+    async def _handle_summarization_abort(reason: str) -> None:
+        """Clear summarization UI state when streaming aborts unexpectedly.
+
+        Args:
+            reason: Short reason string for debug logging.
+        """
+        nonlocal summarization_in_progress
+        if not summarization_in_progress:
+            return
+        summarization_in_progress = False
+        logger.debug(
+            "Summarization stream aborted before regular chunks resumed: %s",
+            reason,
+        )
+        if adapter._set_spinner:
+            await adapter._set_spinner(None)
+
     try:
         while True:
             interrupt_occurred = False
@@ -826,6 +843,8 @@ async def execute_task_textual(
                 break
 
     except asyncio.CancelledError:
+        await _handle_summarization_abort("cancelled")
+
         # Clear active message immediately so it won't block pruning
         # If we don't do this, the store still thinks it's actice and protects
         # from pruning, which breaks get_messages_to_prune(), potentially
@@ -873,6 +892,8 @@ async def execute_task_textual(
         return
 
     except KeyboardInterrupt:
+        await _handle_summarization_abort("keyboard_interrupt")
+
         # Clear active message immediately so it won't block pruning
         # If we don't do this, the store still thinks it's actice and protects
         # from pruning, which breaks get_messages_to_prune(), potentially
@@ -918,6 +939,9 @@ async def execute_task_textual(
             else:
                 adapter._token_tracker.show()  # Restore previous value
         return
+    except Exception as exc:  # Preserve existing caller-level error handling
+        await _handle_summarization_abort(f"error:{type(exc).__name__}")
+        raise
 
     # Update token tracker
     if adapter._token_tracker and (captured_input_tokens or captured_output_tokens):

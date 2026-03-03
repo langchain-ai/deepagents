@@ -180,13 +180,24 @@ class TestIsSummarizationChunk:
 class _FakeAgent:
     """Minimal async stream agent used for adapter execution tests."""
 
-    def __init__(self, chunks: list[tuple]) -> None:
+    def __init__(
+        self,
+        chunks: list[tuple],
+        stream_error: BaseException | None = None,
+    ) -> None:
         self._chunks = chunks
+        self._stream_error = stream_error
 
     async def astream(self, *_: Any, **__: Any) -> AsyncIterator[tuple[Any, ...]]:
         """Yield preconfigured stream chunks."""
         for chunk in self._chunks:
             yield chunk
+        if self._stream_error is not None:
+            raise self._stream_error
+
+    async def aupdate_state(self, *_: Any, **__: Any) -> None:
+        """Provide minimal async API used in cancellation paths."""
+        return
 
 
 class TestExecuteTaskTextualSummarizationFeedback:
@@ -318,6 +329,87 @@ class TestExecuteTaskTextualSummarizationFeedback:
         assert any(
             isinstance(widget, SummarizationMessage) for widget in mounted_widgets
         )
+
+    @pytest.mark.asyncio
+    async def test_hides_spinner_when_stream_errors_mid_summarization(self) -> None:
+        """Spinner should hide if stream aborts after summary chunks begin."""
+        statuses: list[str | None] = []
+
+        async def record_spinner(status: str | None) -> None:
+            await asyncio.sleep(0)
+            statuses.append(status)
+
+        async def mount_message(_widget: object) -> None:
+            await asyncio.sleep(0)
+
+        chunks = [
+            (
+                (),
+                "messages",
+                (AIMessage(content="summary chunk"), {"lc_source": "summarization"}),
+            ),
+        ]
+
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=record_spinner,
+        )
+
+        with pytest.raises(RuntimeError, match="provider error"):
+            await execute_task_textual(
+                user_input="hello",
+                agent=_FakeAgent(
+                    chunks, stream_error=RuntimeError("provider error before token")
+                ),
+                assistant_id="assistant",
+                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                adapter=adapter,
+            )
+
+        assert statuses[0] == "Thinking"
+        assert "Summarizing" in statuses
+        assert statuses[-1] is None
+
+    @pytest.mark.asyncio
+    async def test_hides_spinner_when_cancelled_mid_summarization(self) -> None:
+        """Spinner should hide if cancellation occurs while summarizing."""
+        statuses: list[str | None] = []
+
+        async def record_spinner(status: str | None) -> None:
+            await asyncio.sleep(0)
+            statuses.append(status)
+
+        async def mount_message(_widget: object) -> None:
+            await asyncio.sleep(0)
+
+        chunks = [
+            (
+                (),
+                "messages",
+                (AIMessage(content="summary chunk"), {"lc_source": "summarization"}),
+            ),
+        ]
+
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=record_spinner,
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=_FakeAgent(chunks, stream_error=asyncio.CancelledError()),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+        )
+
+        assert statuses[0] == "Thinking"
+        assert "Summarizing" in statuses
+        assert statuses[-1] is None
 
 
 # ---------------------------------------------------------------------------

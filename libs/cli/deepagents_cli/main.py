@@ -684,6 +684,87 @@ def apply_stdin_pipe(args: argparse.Namespace) -> None:
             )
 
 
+def _print_session_stats(stats: Any, console: Any) -> None:  # noqa: ANN401
+    """Print a session-level usage stats table to the console after the TUI exits.
+
+    Mirrors the Gemini CLI "Model Usage" table shown at session end.  When the
+    user switched models mid-session each model gets its own row; otherwise a
+    single-row flat table is printed.  Only printed when there is meaningful
+    data to display.
+
+    Args:
+        stats: The cumulative session stats from the Textual app.
+        console: Rich console for output.
+    """
+    from rich.table import Table
+
+    from deepagents_cli.textual_adapter import SessionStats
+
+    if not isinstance(stats, SessionStats):
+        return
+    has_time = stats.wall_time_seconds >= 0.1  # noqa: PLR2004
+    if not (stats.request_count or stats.input_tokens or has_time):
+        return
+
+    multi_model = len(stats.per_model) > 1
+
+    table = Table(
+        show_header=True,
+        header_style="bold",
+        box=None,
+        padding=(0, 2, 0, 0),
+        show_edge=False,
+    )
+    table.add_column("Model", style="dim")
+    table.add_column("Reqs", justify="right", style="dim")
+    table.add_column("Input Tokens", justify="right", style="dim")
+    table.add_column("Output Tokens", justify="right", style="dim")
+
+    if multi_model:
+        for model_name, ms in stats.per_model.items():
+            table.add_row(
+                model_name,
+                str(ms.request_count),
+                _format_token_count_main(ms.input_tokens),
+                _format_token_count_main(ms.output_tokens),
+            )
+        # Totals row
+        table.add_row(
+            "Total",
+            str(stats.request_count),
+            _format_token_count_main(stats.input_tokens),
+            _format_token_count_main(stats.output_tokens),
+        )
+    else:
+        model_label = next(iter(stats.per_model), "") or "unknown"
+        table.add_row(
+            model_label,
+            str(stats.request_count),
+            _format_token_count_main(stats.input_tokens),
+            _format_token_count_main(stats.output_tokens),
+        )
+
+    console.print()
+    console.print("[bold]Model Usage[/bold]")
+    console.print(table)
+    if has_time:
+        console.print()
+        console.print(f"[dim]Agent active  {stats.wall_time_seconds:.1f}s[/dim]")
+
+
+def _format_token_count_main(count: int) -> str:
+    """Format token count with K/M suffixes for main.py teardown output.
+
+    Returns:
+        Formatted string with K or M suffix, e.g. ``"12.5K"`` or ``"1.2M"``.
+    """
+    if count >= 1_000_000:  # noqa: PLR2004
+        return f"{count / 1_000_000:.1f}M"
+    if count >= 1000:  # noqa: PLR2004
+        return f"{count / 1000:.1f}K"
+    return str(count)
+
+
 def cli_main() -> None:
     """Entry point for console script."""
     # Fix for gRPC fork issue on macOS
@@ -985,6 +1066,7 @@ def cli_main() -> None:
                 # The user may have switched threads via /threads during the
                 # session; use the final thread ID for teardown messages.
                 thread_id = result.thread_id or thread_id
+                _print_session_stats(result.session_stats, console)
             except Exception as e:  # noqa: BLE001  # Top-level error handler for the application
                 error_msg = Text("\nApplication error: ", style="red")
                 error_msg.append(str(e))

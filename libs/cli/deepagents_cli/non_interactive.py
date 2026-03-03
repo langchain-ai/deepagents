@@ -24,6 +24,7 @@ import contextlib
 import logging
 import sys
 import threading
+import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
@@ -47,6 +48,7 @@ from deepagents_cli.config import (
 from deepagents_cli.file_ops import FileOpTracker
 from deepagents_cli.model_config import ModelConfigError
 from deepagents_cli.sessions import generate_thread_id, get_checkpointer
+from deepagents_cli.textual_adapter import ModelStats
 from deepagents_cli.tools import fetch_url, http_request, web_search
 
 if TYPE_CHECKING:
@@ -132,6 +134,14 @@ class StreamState:
         default_factory=dict
     )
     interrupt_occurred: bool = False
+    request_count: int = 0
+    """Number of LLM API requests seen (counted via usage_metadata presence)."""
+    input_tokens: int = 0
+    """Cumulative input tokens across all LLM API calls."""
+    output_tokens: int = 0
+    """Cumulative output tokens across all LLM API calls."""
+    per_model: dict[str, ModelStats] = field(default_factory=dict)
+    """Per-model token breakdown keyed by model name."""
 
 
 @dataclass
@@ -229,6 +239,30 @@ def _process_ai_message(
         state: Stream state for accumulating response text and tool-call buffers.
         console: Rich console for formatted output.
     """
+    # Extract token usage for stats accumulation
+    usage = getattr(message_obj, "usage_metadata", None)
+    if usage:
+        input_toks = usage.get("input_tokens", 0)
+        output_toks = usage.get("output_tokens", 0)
+        total_toks = usage.get("total_tokens", 0)
+        active_model = settings.model_name or ""
+        if input_toks or output_toks:
+            state.input_tokens += input_toks
+            state.output_tokens += output_toks
+            state.request_count += 1
+            if active_model:
+                entry = state.per_model.setdefault(active_model, ModelStats())
+                entry.request_count += 1
+                entry.input_tokens += input_toks
+                entry.output_tokens += output_toks
+        elif total_toks:
+            state.input_tokens += total_toks
+            state.request_count += 1
+            if active_model:
+                entry = state.per_model.setdefault(active_model, ModelStats())
+                entry.request_count += 1
+                entry.input_tokens += total_toks
+
     if not hasattr(message_obj, "content_blocks"):
         logger.debug("AIMessage missing content_blocks attribute, skipping")
         return
@@ -495,6 +529,8 @@ async def _run_agent_loop(
         "messages": [{"role": "user", "content": message}]
     }
 
+    start_time = time.monotonic()
+
     # Initial stream
     await _stream_agent(agent, stream_input, config, state, console, file_op_tracker)
 
@@ -516,6 +552,8 @@ async def _run_agent_loop(
             agent, stream_input, config, state, console, file_op_tracker
         )
 
+    wall_time = time.monotonic() - start_time
+
     if state.full_response:
         if not state.stream:
             _write_text("".join(state.full_response))
@@ -535,6 +573,89 @@ async def _run_agent_loop(
             )
             console.print(link_text)
         console.print("[green]✓ Task completed[/green]")
+        _print_usage_stats(state, wall_time, console)
+
+
+def _format_token_count_ni(count: int) -> str:
+    """Format a token count with K/M suffixes for non-interactive console output.
+
+    Args:
+        count: Number of tokens.
+
+    Returns:
+        Formatted string like ``"12.5K"``, ``"1.2M"``, or ``"500"``.
+    """
+    if count >= 1_000_000:  # noqa: PLR2004
+        return f"{count / 1_000_000:.1f}M"
+    if count >= 1000:  # noqa: PLR2004
+        return f"{count / 1000:.1f}K"
+    return str(count)
+
+
+def _print_usage_stats(
+    state: StreamState,
+    wall_time: float,
+    console: Console,
+) -> None:
+    """Print a usage stats table after task completion.
+
+    Respects the quiet flag automatically via the console (stderr vs stdout
+    routing is determined by the caller when constructing the console).
+
+    Args:
+        state: The final stream state with accumulated token counts.
+        wall_time: Total wall-clock time in seconds.
+        console: Rich console for output.
+    """
+    from rich.table import Table
+
+    if not (state.request_count or state.input_tokens or wall_time >= 0.1):  # noqa: PLR2004
+        return
+
+    multi_model = len(state.per_model) > 1
+
+    table = Table(
+        show_header=True,
+        header_style="bold",
+        box=None,
+        padding=(0, 2, 0, 0),
+        show_edge=False,
+    )
+    table.add_column("Model", style="dim")
+    table.add_column("Reqs", justify="right", style="dim")
+    table.add_column("Input Tokens", justify="right", style="dim")
+    table.add_column("Output Tokens", justify="right", style="dim")
+
+    if multi_model:
+        for model_name, ms in state.per_model.items():
+            table.add_row(
+                model_name,
+                str(ms.request_count),
+                _format_token_count_ni(ms.input_tokens),
+                _format_token_count_ni(ms.output_tokens),
+            )
+        # Totals row
+        table.add_row(
+            "Total",
+            str(state.request_count),
+            _format_token_count_ni(state.input_tokens),
+            _format_token_count_ni(state.output_tokens),
+        )
+    else:
+        model_label = next(iter(state.per_model), "") or "unknown"
+        table.add_row(
+            model_label,
+            str(state.request_count),
+            _format_token_count_ni(state.input_tokens),
+            _format_token_count_ni(state.output_tokens),
+        )
+
+    console.print()
+    console.print("[bold]Model Usage[/bold]")
+    console.print(table)
+    if wall_time >= 0.1:  # noqa: PLR2004
+        console.print()
+        console.print(f"[dim]Agent active  {wall_time:.1f}s[/dim]")
 
 
 def _build_non_interactive_header(

@@ -6,7 +6,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 import uuid
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -24,6 +26,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.types import Command, Interrupt
 from pydantic import TypeAdapter, ValidationError
 
+from deepagents_cli.config import settings
 from deepagents_cli.file_ops import FileOpTracker
 from deepagents_cli.image_utils import create_multimodal_content
 from deepagents_cli.input import ImageTracker, parse_file_mentions
@@ -36,6 +39,72 @@ from deepagents_cli.widgets.messages import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ModelStats:
+    """Token stats for a single model within a session.
+
+    Attributes:
+        request_count: Number of LLM API requests made to this model.
+        input_tokens: Cumulative input tokens sent to this model.
+        output_tokens: Cumulative output tokens received from this model.
+    """
+
+    request_count: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+
+
+@dataclass
+class SessionStats:
+    """Stats accumulated over a single agent turn (or full session).
+
+    Attributes:
+        request_count: Total LLM API requests made (each chunk with
+            usage_metadata counts as one completed request).
+        input_tokens: Cumulative input tokens across all LLM requests.
+        output_tokens: Cumulative output tokens across all LLM requests.
+        wall_time_seconds: Wall-clock duration from stream start to end.
+        per_model: Per-model breakdown keyed by model name.  Populated
+            only when usage_metadata includes a ``model_name`` field or
+            when the active ``settings.model_name`` is captured at the
+            point of each request.  Empty dict means single-model session
+            (no breakdown available).
+    """
+
+    request_count: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    wall_time_seconds: float = 0.0
+    per_model: dict[str, ModelStats] = field(default_factory=dict)
+
+    def record_request(
+        self,
+        model_name: str,
+        input_toks: int,
+        output_toks: int,
+    ) -> None:
+        """Accumulate token counts for one completed LLM request.
+
+        Updates both the session totals and the per-model breakdown.
+
+        Args:
+            model_name: The model that served this request (used as the
+                per-model key).  Pass an empty string to skip the
+                per-model breakdown for this request.
+            input_toks: Input tokens for this request.
+            output_toks: Output tokens for this request.
+        """
+        self.request_count += 1
+        self.input_tokens += input_toks
+        self.output_tokens += output_toks
+        if model_name:
+            entry = self.per_model.setdefault(model_name, ModelStats())
+            entry.request_count += 1
+            entry.input_tokens += input_toks
+            entry.output_tokens += output_toks
+
 
 # Type alias matching HITLResponse["decisions"] element type
 HITLDecision = ApproveDecision | EditDecision | RejectDecision
@@ -239,7 +308,7 @@ async def execute_task_textual(
     adapter: TextualUIAdapter,
     backend: Any = None,  # noqa: ANN401  # Dynamic backend type
     image_tracker: ImageTracker | None = None,
-) -> None:
+) -> SessionStats:
     """Execute a task with output directed to Textual UI.
 
     This is the Textual-compatible version of execute_task() that uses
@@ -253,6 +322,10 @@ async def execute_task_textual(
         adapter: The TextualUIAdapter for UI operations
         backend: Optional backend for file operations
         image_tracker: Optional tracker for images
+
+    Returns:
+        Stats accumulated over this turn (request count, token counts,
+        wall-clock time).
 
     Raises:
         ValidationError: If HITL request validation fails (re-raised).
@@ -306,6 +379,8 @@ async def execute_task_textual(
 
     captured_input_tokens = 0
     captured_output_tokens = 0
+    turn_stats = SessionStats()
+    start_time = time.monotonic()
 
     # Show spinner
     if adapter._set_spinner:
@@ -461,24 +536,27 @@ async def execute_task_textual(
 
                     # Extract token usage (before content_blocks check
                     # - usage may be on any chunk)
-                    if adapter._token_tracker and hasattr(message, "usage_metadata"):
+                    if hasattr(message, "usage_metadata"):
                         usage = message.usage_metadata
                         if usage:
-                            # Use total_tokens which includes input + output
+                            input_toks = usage.get("input_tokens", 0)
+                            output_toks = usage.get("output_tokens", 0)
                             total_toks = usage.get("total_tokens", 0)
-                            if total_toks:
+                            active_model = settings.model_name or ""
+                            if input_toks or output_toks:
+                                # Model gives split counts — preferred path
+                                turn_stats.record_request(
+                                    active_model, input_toks, output_toks
+                                )
+                                captured_input_tokens = max(
+                                    captured_input_tokens, input_toks + output_toks
+                                )
+                            elif total_toks:
+                                # Fallback: model gives only total (no split)
+                                turn_stats.record_request(active_model, total_toks, 0)
                                 captured_input_tokens = max(
                                     captured_input_tokens, total_toks
                                 )
-                            else:
-                                # Fallback to input + output if total not provided
-                                input_toks = usage.get("input_tokens", 0)
-                                output_toks = usage.get("output_tokens", 0)
-                                if input_toks or output_toks:
-                                    total = input_toks + output_toks
-                                    captured_input_tokens = max(
-                                        captured_input_tokens, total
-                                    )
 
                     # Check if this is an AIMessageChunk with content
                     if not hasattr(message, "content_blocks"):
@@ -774,7 +852,8 @@ async def execute_task_textual(
                             "Command rejected. Tell the agent what you'd like instead."
                         )
                     )
-                    return
+                    turn_stats.wall_time_seconds = time.monotonic() - start_time
+                    return turn_stats
 
                 stream_input = Command(resume=hitl_response)
             else:
@@ -814,6 +893,7 @@ async def execute_task_textual(
         adapter._current_tool_messages.clear()
 
         # Report tokens even on interrupt (or restore display if none captured)
+        turn_stats.wall_time_seconds = time.monotonic() - start_time
         if adapter._token_tracker:
             if captured_input_tokens or captured_output_tokens:
                 adapter._token_tracker.add(
@@ -821,7 +901,7 @@ async def execute_task_textual(
                 )
             else:
                 adapter._token_tracker.show()  # Restore previous value
-        return
+        return turn_stats
 
     except KeyboardInterrupt:
         # Clear active message immediately so it won't block pruning
@@ -857,6 +937,7 @@ async def execute_task_textual(
         adapter._current_tool_messages.clear()
 
         # Report tokens even on interrupt (or restore display if none captured)
+        turn_stats.wall_time_seconds = time.monotonic() - start_time
         if adapter._token_tracker:
             if captured_input_tokens or captured_output_tokens:
                 adapter._token_tracker.add(
@@ -864,11 +945,13 @@ async def execute_task_textual(
                 )
             else:
                 adapter._token_tracker.show()  # Restore previous value
-        return
+        return turn_stats
 
-    # Update token tracker
+    # Update token tracker and return stats
+    turn_stats.wall_time_seconds = time.monotonic() - start_time
     if adapter._token_tracker and (captured_input_tokens or captured_output_tokens):
         adapter._token_tracker.add(captured_input_tokens, captured_output_tokens)
+    return turn_stats
 
 
 async def _flush_assistant_text_ns(

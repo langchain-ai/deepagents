@@ -12,7 +12,7 @@ import uuid
 import webbrowser
 from collections import deque
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
@@ -37,7 +37,12 @@ from deepagents_cli.config import (
     settings,
 )
 from deepagents_cli.model_config import ModelSpec, save_recent_model
-from deepagents_cli.textual_adapter import TextualUIAdapter, execute_task_textual
+from deepagents_cli.textual_adapter import (
+    ModelStats,
+    SessionStats,
+    TextualUIAdapter,
+    execute_task_textual,
+)
 from deepagents_cli.widgets.approval import ApprovalMenu
 from deepagents_cli.widgets.chat_input import ChatInput
 from deepagents_cli.widgets.loading import LoadingWidget
@@ -117,6 +122,29 @@ def _format_token_count(count: int) -> str:
     if count >= 1000:  # noqa: PLR2004
         return f"{count / 1000:.1f}K"
     return str(count)
+
+
+def _format_session_stats(stats: SessionStats) -> str:
+    """Format SessionStats as a compact one-line summary for the chat.
+
+    Args:
+        stats: The turn stats to format.
+
+    Returns:
+        A string like ``"3 requests · 12.5K in · 2.1K out · 4.3s"``,
+        or an empty string if there is nothing meaningful to display.
+    """
+    parts = []
+    if stats.request_count:
+        noun = "request" if stats.request_count == 1 else "requests"
+        parts.append(f"{stats.request_count} {noun}")
+    if stats.input_tokens:
+        parts.append(f"{_format_token_count(stats.input_tokens)} in")
+    if stats.output_tokens:
+        parts.append(f"{_format_token_count(stats.output_tokens)} out")
+    if stats.wall_time_seconds >= 0.1:  # noqa: PLR2004
+        parts.append(f"{stats.wall_time_seconds:.1f}s")
+    return " · ".join(parts)
 
 
 def _format_compact_limit(
@@ -494,6 +522,8 @@ class DeepAgentsApp(App):
         self._agent_running = False
         self._loading_widget: LoadingWidget | None = None
         self._token_tracker: TextualTokenTracker | None = None
+        # Cumulative usage stats across all turns in this session
+        self._session_stats: SessionStats = SessionStats()
         # User message queue for sequential processing
         self._pending_messages: deque[QueuedMessage] = deque()
         self._queued_widgets: deque[QueuedUserMessage] = deque()
@@ -1665,8 +1695,9 @@ class DeepAgentsApp(App):
         # Caller ensures _ui_adapter is set (checked in _handle_user_message)
         if self._ui_adapter is None:
             return
+        turn_stats: SessionStats | None = None
         try:
-            await execute_task_textual(
+            turn_stats = await execute_task_textual(
                 user_input=message,
                 agent=self._agent,
                 assistant_id=self._assistant_id,
@@ -1684,6 +1715,18 @@ class DeepAgentsApp(App):
         finally:
             # Clean up loading widget and agent state
             await self._cleanup_agent_task()
+
+        # Accumulate stats across all turns; printed once at session end
+        if isinstance(turn_stats, SessionStats):
+            self._session_stats.request_count += turn_stats.request_count
+            self._session_stats.input_tokens += turn_stats.input_tokens
+            self._session_stats.output_tokens += turn_stats.output_tokens
+            self._session_stats.wall_time_seconds += turn_stats.wall_time_seconds
+            for model, ms in turn_stats.per_model.items():
+                entry = self._session_stats.per_model.setdefault(model, ModelStats())
+                entry.request_count += ms.request_count
+                entry.input_tokens += ms.input_tokens
+                entry.output_tokens += ms.output_tokens
 
     async def _process_next_from_queue(self) -> None:
         """Process the next message from the queue if any exist.
@@ -2731,10 +2774,12 @@ class AppResult:
         return_code: Exit code (0 for success, non-zero for error).
         thread_id: The final thread ID at shutdown. May differ from the
             initial thread ID if the user switched threads via `/threads`.
+        session_stats: Cumulative usage stats across all turns in the session.
     """
 
     return_code: int
     thread_id: str | None
+    session_stats: SessionStats = field(default_factory=SessionStats)
 
 
 async def run_textual_app(
@@ -2786,6 +2831,7 @@ async def run_textual_app(
     return AppResult(
         return_code=app.return_code or 0,
         thread_id=app._lc_thread_id,
+        session_stats=app._session_stats,
     )
 
 

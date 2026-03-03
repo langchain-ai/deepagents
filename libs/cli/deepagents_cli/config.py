@@ -179,10 +179,9 @@ _langsmith_url_cache: tuple[str, str] | None = None
 """Module-level cache for successful LangSmith project URL lookups."""
 
 _LANGSMITH_URL_LOOKUP_TIMEOUT_SECONDS = 2.0
-"""
-Maximum time to wait for LangSmith project URL lookup.
+"""Max seconds to wait for LangSmith project URL lookup.
 
-Keep this short so tracing metadata can never stall CLI flows.
+Kept short so tracing metadata can never stall CLI flows.
 """
 
 
@@ -953,12 +952,13 @@ def fetch_langsmith_project_url(project_name: str) -> str | None:
     Successful results are cached at module level so repeated calls do not
     make additional network requests.
 
-    To prevent LangSmith outages from stalling the CLI, lookup runs in a
-    daemon thread with a hard timeout.
+    The network call runs in a daemon thread with a hard timeout of
+    `_LANGSMITH_URL_LOOKUP_TIMEOUT_SECONDS`, so this function blocks the
+    calling thread for at most that duration even if LangSmith is unreachable.
 
-    Returns None (with a debug log) on any expected failure: missing
-    `langsmith` package, network errors, invalid project names, or client
-    initialization issues.
+    Returns None (with a debug log) on any failure: missing `langsmith` package,
+    network errors, invalid project names, client initialization issues,
+    or timeouts.
 
     Args:
         project_name: LangSmith project name to look up.

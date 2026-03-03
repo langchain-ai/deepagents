@@ -136,7 +136,11 @@ class StreamState:
 
 @dataclass
 class ThreadUrlLookupState:
-    """Best-effort background LangSmith thread URL lookup state."""
+    """Best-effort background LangSmith thread URL lookup state.
+
+    Thread safety: the background thread sets `url` then calls `done.set()`.
+    Consumers must check `done.is_set()` before reading `url`.
+    """
 
     done: threading.Event = field(default_factory=threading.Event)
     url: str | None = None
@@ -149,14 +153,14 @@ def _start_langsmith_thread_url_lookup(thread_id: str) -> ThreadUrlLookupState:
         thread_id: Thread identifier to resolve.
 
     Returns:
-        Mutable lookup state that can be polled for completion.
+        Mutable lookup state whose completion can be checked later.
     """
     state = ThreadUrlLookupState()
 
     def _resolve() -> None:
         try:
             state.url = build_langsmith_thread_url(thread_id)
-        except Exception:
+        except Exception:  # build_langsmith_thread_url already handles known errors
             logger.debug(
                 "Could not resolve LangSmith thread URL for '%s'",
                 thread_id,
@@ -597,8 +601,9 @@ async def run_non_interactive(
     list; commands not in the list are rejected with an error message sent
     back to the agent.
 
-    Note: startup header rendering avoids LangSmith URL lookups to keep startup
-    non-blocking.
+    Note: startup header rendering avoids synchronous LangSmith URL lookups.
+    A background thread resolves the thread URL concurrently and the result is
+    displayed after task completion if available.
 
     Args:
         message: The task/message to execute.

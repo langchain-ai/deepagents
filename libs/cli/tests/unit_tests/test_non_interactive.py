@@ -4,7 +4,6 @@ import io
 import sys
 from collections.abc import AsyncIterator, Generator
 from contextlib import contextmanager
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -15,8 +14,10 @@ from rich.text import Text
 
 from deepagents_cli.config import ModelResult
 from deepagents_cli.non_interactive import (
+    ThreadUrlLookupState,
     _build_non_interactive_header,
     _make_hitl_decision,
+    _start_langsmith_thread_url_lookup,
     run_non_interactive,
 )
 
@@ -591,9 +592,10 @@ class TestFastFollowLangsmithLink:
     async def test_prints_link_when_lookup_ready(self) -> None:
         """Should print LangSmith link before completion when ready."""
         mock_console = MagicMock(spec=Console)
-        ready_state = SimpleNamespace(
-            done=SimpleNamespace(is_set=lambda: True),
-            url="https://smith.langchain.com/o/org/projects/p/proj/t/test-thread",
+        ready_state = ThreadUrlLookupState()
+        ready_state.done.set()
+        ready_state.url = (
+            "https://smith.langchain.com/o/org/projects/p/proj/t/test-thread"
         )
 
         with (
@@ -652,9 +654,9 @@ class TestFastFollowLangsmithLink:
     async def test_skips_link_when_lookup_not_ready(self) -> None:
         """Should not wait for or print link when lookup is still in flight."""
         mock_console = MagicMock(spec=Console)
-        pending_state = SimpleNamespace(
-            done=SimpleNamespace(is_set=lambda: False),
-            url="https://smith.langchain.com/o/org/projects/p/proj/t/test-thread",
+        pending_state = ThreadUrlLookupState()
+        pending_state.url = (
+            "https://smith.langchain.com/o/org/projects/p/proj/t/test-thread"
         )
 
         with (
@@ -708,6 +710,151 @@ class TestFastFollowLangsmithLink:
             str(call.args[0]) for call in mock_console.print.call_args_list if call.args
         ]
         assert not any("View in LangSmith:" in line for line in printed)
+
+    @pytest.mark.asyncio
+    async def test_skips_link_when_lookup_done_but_url_none(self) -> None:
+        """Should not print link when lookup completed but URL is None."""
+        mock_console = MagicMock(spec=Console)
+        done_no_url = ThreadUrlLookupState()
+        done_no_url.done.set()
+
+        with (
+            patch(
+                "deepagents_cli.non_interactive.Console",
+                return_value=mock_console,
+            ),
+            patch(
+                "deepagents_cli.non_interactive.create_model",
+                return_value=ModelResult(
+                    model=MagicMock(),
+                    model_name="test-model",
+                    provider="test",
+                ),
+            ),
+            patch(
+                "deepagents_cli.non_interactive.generate_thread_id",
+                return_value="test-thread",
+            ),
+            patch(
+                "deepagents_cli.non_interactive.settings",
+            ) as mock_settings,
+            patch(
+                "deepagents_cli.non_interactive._start_langsmith_thread_url_lookup",
+                return_value=done_no_url,
+            ),
+            patch(
+                "deepagents_cli.non_interactive.get_checkpointer",
+            ) as mock_checkpointer,
+            patch(
+                "deepagents_cli.non_interactive.create_cli_agent",
+            ) as mock_create_agent,
+        ):
+            mock_settings.shell_allow_list = None
+            mock_settings.has_tavily = False
+            mock_settings.model_name = None
+
+            mock_cp = MagicMock()
+            mock_checkpointer_cm = AsyncMock()
+            mock_checkpointer_cm.__aenter__.return_value = mock_cp
+            mock_checkpointer_cm.__aexit__.return_value = None
+            mock_checkpointer.return_value = mock_checkpointer_cm
+
+            mock_agent = MagicMock()
+            mock_agent.astream = MagicMock(return_value=_async_iter([]))
+            mock_create_agent.return_value = (mock_agent, MagicMock())
+
+            await run_non_interactive(message="test", quiet=False)
+
+        printed = [
+            str(call.args[0]) for call in mock_console.print.call_args_list if call.args
+        ]
+        assert not any("View in LangSmith:" in line for line in printed)
+
+    @pytest.mark.asyncio
+    async def test_quiet_mode_skips_thread_url_lookup(self) -> None:
+        """Should not start LangSmith URL lookup when quiet=True."""
+        with (
+            patch(
+                "deepagents_cli.non_interactive.Console",
+                return_value=MagicMock(spec=Console),
+            ),
+            patch(
+                "deepagents_cli.non_interactive.create_model",
+                return_value=ModelResult(
+                    model=MagicMock(),
+                    model_name="test-model",
+                    provider="test",
+                ),
+            ),
+            patch(
+                "deepagents_cli.non_interactive.generate_thread_id",
+                return_value="test-thread",
+            ),
+            patch(
+                "deepagents_cli.non_interactive.settings",
+            ) as mock_settings,
+            patch(
+                "deepagents_cli.non_interactive._start_langsmith_thread_url_lookup",
+            ) as mock_lookup,
+            patch(
+                "deepagents_cli.non_interactive.get_checkpointer",
+            ) as mock_checkpointer,
+            patch(
+                "deepagents_cli.non_interactive.create_cli_agent",
+            ) as mock_create_agent,
+        ):
+            mock_settings.shell_allow_list = None
+            mock_settings.has_tavily = False
+            mock_settings.model_name = None
+
+            mock_cp = MagicMock()
+            mock_checkpointer_cm = AsyncMock()
+            mock_checkpointer_cm.__aenter__.return_value = mock_cp
+            mock_checkpointer_cm.__aexit__.return_value = None
+            mock_checkpointer.return_value = mock_checkpointer_cm
+
+            mock_agent = MagicMock()
+            mock_agent.astream = MagicMock(return_value=_async_iter([]))
+            mock_create_agent.return_value = (mock_agent, MagicMock())
+
+            await run_non_interactive(message="test", quiet=True)
+
+        mock_lookup.assert_not_called()
+
+
+class TestStartLangsmithThreadUrlLookup:
+    """Tests for _start_langsmith_thread_url_lookup."""
+
+    def test_sets_url_on_success(self) -> None:
+        """Should populate state.url when build succeeds."""
+        url = "https://smith.langchain.com/o/org/projects/p/proj/t/tid"
+        with patch(
+            "deepagents_cli.non_interactive.build_langsmith_thread_url",
+            return_value=url,
+        ):
+            state = _start_langsmith_thread_url_lookup("tid")
+            assert state.done.wait(timeout=2.0)
+        assert state.url == url
+
+    def test_signals_done_on_exception(self) -> None:
+        """Should signal done and leave url as None when build raises."""
+        with patch(
+            "deepagents_cli.non_interactive.build_langsmith_thread_url",
+            side_effect=RuntimeError("boom"),
+        ):
+            state = _start_langsmith_thread_url_lookup("tid")
+            assert state.done.wait(timeout=2.0)
+        assert state.url is None
+
+    def test_signals_done_when_url_is_none(self) -> None:
+        """Should signal done when build returns None."""
+        with patch(
+            "deepagents_cli.non_interactive.build_langsmith_thread_url",
+            return_value=None,
+        ):
+            state = _start_langsmith_thread_url_lookup("tid")
+            assert state.done.wait(timeout=2.0)
+        assert state.url is None
 
 
 async def _async_iter(items: list[object]) -> AsyncIterator[object]:  # noqa: RUF029

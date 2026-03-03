@@ -217,9 +217,31 @@ def _assert_counts(trajectory: AgentTrajectory, expect: TrajectoryExpectations) 
             )
 
 
+def _strip_common_zero_width(text: str) -> str:
+    """Remove common zero-width characters that can break string comparisons.
+
+    Some models insert invisible Unicode characters (e.g., zero-width spaces) into
+    strings that look like paths or URLs. This is typically a formatting heuristic
+    to prevent auto-linking or to stabilize rendering in downstream UIs.
+
+    Our eval expectations are literal substring checks. Stripping these characters
+    makes the checks robust to formatting-only differences while preserving the
+    semantic content of the answer.
+    """
+    return text.translate(
+        {
+            ord("\u200b"): None,  # zero-width space
+            ord("\u200c"): None,  # zero-width non-joiner
+            ord("\u200d"): None,  # zero-width joiner
+            ord("\ufeff"): None,  # zero-width no-break space / BOM
+        }
+    )
+
+
 def _assert_final_text(trajectory: AgentTrajectory, expect: TrajectoryExpectations) -> None:
-    final_text = trajectory.steps[-1].action.text
+    final_text = _strip_common_zero_width(trajectory.steps[-1].action.text)
     for text, case_insensitive in expect.final_text_contains:
+        text = _strip_common_zero_width(text)
         haystack = final_text.lower() if case_insensitive else final_text
         needle = text.lower() if case_insensitive else text
         if needle not in haystack:

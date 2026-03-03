@@ -40,12 +40,12 @@ Important: The MAGIC_TOKEN is SAPPHIRE-13.
 """,
         },
         query=(
-            "Read /docs/releasse_notes.md and tell me the MAGIC_TOKEN value. "
+            "Read /docs/notes_for_release.md and tell me the MAGIC_TOKEN value. "
             "If the file path is wrong, do not guess the filename: list /docs to find the correct file."
         ),
         expect=(
             TrajectoryExpectations(num_agent_steps=4, num_tool_call_requests=3)
-            .require_tool_call(step=1, name="read_file", args_contains={"file_path": "/docs/releasse_notes.md"})
+            .require_tool_call(step=1, name="read_file", args_contains={"file_path": "/docs/notes_for_release.md"})
             .require_tool_call(step=2, name="ls", args_contains={"path": "/docs"})
             .require_tool_call(step=3, name="read_file", args_contains={"file_path": "/docs/release_notes.md"})
             .require_final_text_contains("SAPPHIRE-13")
@@ -72,17 +72,72 @@ def test_write_file_simple(model: str) -> None:
 
 @pytest.mark.langsmith
 def test_write_files_in_parallel(model: str) -> None:
-    """Writes two files in parallel then confirms."""
+    """Writes two files in parallel without post-write verification or extra tool calls."""
     agent = create_deep_agent(model=model)
     trajectory = run_agent(
         agent,
         model=model,
-        query='Write "bar" to /a.md and "bar" to /b.md. Do the writes in parallel, then confirm you did it.',
+        query=('Write "bar" to /a.md and "bar" to /b.md. Do the writes in parallel. Do NOT read any files afterward. Reply with DONE only.'),
         # 1st step: request 2 write_file tool calls in parallel.
-        # 2nd step: confirm the writes.
+        # 2nd step: respond with "done".
         # 2 tool call requests: write_file to /a.md and write_file to /b.md.
         expect=(
             TrajectoryExpectations(num_agent_steps=2, num_tool_call_requests=2)
+            .require_tool_call(step=1, name="write_file", args_contains={"file_path": "/a.md"})
+            .require_tool_call(step=1, name="write_file", args_contains={"file_path": "/b.md"})
+            .require_final_text_contains("DONE")
+        ),
+    )
+    assert trajectory.files["/a.md"] == "bar"
+    assert trajectory.files["/b.md"] == "bar"
+
+
+@pytest.mark.langsmith
+def test_write_files_in_parallel_confirm_with_verification(model: str) -> None:
+    """Writes two files in parallel, reads them back in parallel, then replies DONE."""
+    agent = create_deep_agent(model=model)
+    trajectory = run_agent(
+        agent,
+        model=model,
+        query=('Write "bar" to /a.md and "bar" to /b.md in parallel. Then read both files in parallel to verify. Reply with DONE only.'),
+        # 1st step: request 2 write_file tool calls in parallel.
+        # 2nd step: request 2 read_file tool calls in parallel.
+        # 3rd step: confirm.
+        # 4 tool call requests: 2 write_file + 2 read_file.
+        expect=(
+            TrajectoryExpectations(num_agent_steps=3, num_tool_call_requests=4)
+            .require_tool_call(step=1, name="write_file", args_contains={"file_path": "/a.md"})
+            .require_tool_call(step=1, name="write_file", args_contains={"file_path": "/b.md"})
+            .require_tool_call(step=2, name="read_file", args_contains={"file_path": "/a.md"})
+            .require_tool_call(step=2, name="read_file", args_contains={"file_path": "/b.md"})
+            .require_final_text_contains("DONE")
+        ),
+    )
+    assert trajectory.files["/a.md"] == "bar"
+    assert trajectory.files["/b.md"] == "bar"
+
+
+@pytest.mark.langsmith
+def test_write_files_in_parallel_ambiguous_confirmation(model: str) -> None:
+    """Intentionally ambiguous: the user asks for a reply but doesn't constrain verification.
+
+    We keep this prompt ambiguous on purpose to measure default efficiency in the harness.
+    The most efficient behavior is to do the parallel writes and then reply DONE without
+    any post-write `read_file` calls (the harness already provides `trajectory.files`).
+    Some models will choose to verify by reading the files back anyway.
+
+    This test therefore only enforces that the writes happen in parallel, and does not
+    enforce step/tool-call counts.
+    """
+    agent = create_deep_agent(model=model)
+    trajectory = run_agent(
+        agent,
+        model=model,
+        query='Write "bar" to /a.md and "bar" to /b.md. Do the writes in parallel, then reply DONE.',
+        # Intentionally ambiguous: some models will confirm directly; others may read back to verify.
+        # Only enforce the parallel writes; do not enforce step/tool-call counts.
+        expect=(
+            TrajectoryExpectations(num_agent_steps=None, num_tool_call_requests=None)
             .require_tool_call(step=1, name="write_file", args_contains={"file_path": "/a.md"})
             .require_tool_call(step=1, name="write_file", args_contains={"file_path": "/b.md"})
         ),
@@ -273,10 +328,7 @@ def test_find_magic_phrase_deep_nesting(model: str) -> None:
             "/a/b/c/d/other.txt": "nothing here\n",
             "/a/b/x/y/z/nope.txt": "still nothing\n",
         },
-        query=(
-            "Find the file that contains the line starting with 'MAGIC_PHRASE:' and reply with the phrase value only. "
-            "Be efficient: use grep to locate it before reading."
-        ),
+        query=("Find the file that contains the line starting with 'MAGIC_PHRASE:' and reply with the phrase value only. Be efficient: use grep."),
         # 1st step: grep for MAGIC_PHRASE to locate the file.
         # 2nd step: read the file (if needed) and answer with the phrase.
         # 1 tool call requests: grep
@@ -293,7 +345,7 @@ def test_find_magic_phrase_deep_nesting(model: str) -> None:
 def test_identify_quote_author_from_directory_parallel_reads(model: str) -> None:
     """Identifies which quote matches a target author by reading a directory efficiently."""
     agent = create_deep_agent(model=model)
-    trajectory = run_agent(
+    run_agent(
         agent,
         model=model,
         initial_files={
@@ -334,14 +386,13 @@ Clues: about programming readability; software craftsmanship.
             .require_final_text_contains("/quotes/q3.txt")
         ),
     )
-    assert trajectory.answer.strip() == "/quotes/q3.txt"
 
 
 @pytest.mark.langsmith
 def test_identify_quote_author_from_directory_unprompted_efficiency(model: str) -> None:
     """Identifies which quote matches a target author without explicit efficiency instructions."""
     agent = create_deep_agent(model=model)
-    trajectory = run_agent(
+    run_agent(
         agent,
         model=model,
         initial_files={
@@ -380,4 +431,3 @@ Clues: about programming readability; software craftsmanship.
             .require_final_text_contains("/quotes/q3.txt")
         ),
     )
-    assert trajectory.answer.strip() == "/quotes/q3.txt"

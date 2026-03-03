@@ -240,12 +240,12 @@ def _strip_common_zero_width(text: str) -> str:
 
 def _assert_final_text(trajectory: AgentTrajectory, expect: TrajectoryExpectations) -> None:
     final_text = _strip_common_zero_width(trajectory.steps[-1].action.text)
-    for text, case_insensitive in expect.final_text_contains:
-        text = _strip_common_zero_width(text)
+    for expected_text, case_insensitive in expect.final_text_contains:
+        normalized_expected_text = _strip_common_zero_width(expected_text)
         haystack = final_text.lower() if case_insensitive else final_text
-        needle = text.lower() if case_insensitive else text
+        needle = normalized_expected_text.lower() if case_insensitive else normalized_expected_text
         if needle not in haystack:
-            msg = f"Expected final text to contain {text!r} (case_insensitive={case_insensitive}), got: {final_text!r}"
+            msg = f"Expected final text to contain {normalized_expected_text!r} (case_insensitive={case_insensitive}), got: {final_text!r}"
             raise AssertionError(msg)
 
 

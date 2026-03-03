@@ -466,7 +466,7 @@ async def run_textual_cli_async(
     from deepagents_cli.config import console, create_model, settings
     from deepagents_cli.model_config import ModelConfigError
     from deepagents_cli.sessions import get_checkpointer
-    from deepagents_cli.tools import fetch_url, http_request, web_search
+    from deepagents_cli.tools import fetch_url, web_search
 
     try:
         result = create_model(model_name, extra_kwargs=model_params)
@@ -492,7 +492,7 @@ async def run_textual_cli_async(
     # Use async context manager for checkpointer
     async with get_checkpointer() as checkpointer:
         # Create agent with conditional tools
-        tools: list[Callable[..., Any] | dict[str, Any]] = [http_request, fetch_url]
+        tools: list[Callable[..., Any] | dict[str, Any]] = [fetch_url]
         if settings.has_tavily:
             tools.append(web_search)
 

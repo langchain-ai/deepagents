@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     import pytest
 
 from deepagents._version import __version__
+from deepagents.graph import get_default_model
 
 _RESULTS: dict[str, int] = {
     "passed": 0,
@@ -54,7 +55,7 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     payload: dict[str, object] = {
         "created_at": datetime.now(UTC).isoformat(),
         "sdk_version": __version__,
-        "model": session.config.getoption("--model"),
+        "model": session.config.getoption("--model") or str(session.config._inicache.get("model", "")) or str(get_default_model().model),
         "exit_code": int(exitstatus),
         **_RESULTS,
         "accuracy": accuracy,

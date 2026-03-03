@@ -1331,6 +1331,7 @@ def create_model(
     model_spec: str | None = None,
     *,
     extra_kwargs: dict[str, Any] | None = None,
+    profile_overrides: dict[str, Any] | None = None,
 ) -> ModelResult:
     """Create a chat model.
 
@@ -1349,6 +1350,9 @@ def create_model(
         extra_kwargs: Additional kwargs to pass to the model constructor.
 
             These take highest priority, overriding values from the config file.
+        profile_overrides: Extra profile fields from `--profile-override`.
+
+            Merged on top of config file profile overrides (CLI wins).
 
     Returns:
         A `ModelResult` containing the model and its metadata.
@@ -1412,15 +1416,15 @@ def create_model(
 
     # Apply profile overrides from config.toml (e.g., max_input_tokens)
     if provider:
-        profile_overrides = config.get_profile_overrides(
+        config_profile_overrides = config.get_profile_overrides(
             provider, model_name=model_name
         )
-        if profile_overrides:
+        if config_profile_overrides:
             logger.debug(
                 "Applying profile overrides for '%s' (provider '%s'): %s",
                 model_name,
                 provider,
-                profile_overrides,
+                config_profile_overrides,
             )
             # Intentionally over-defensive
             profile = getattr(model, "profile", None)
@@ -1428,9 +1432,9 @@ def create_model(
                 # Copy original profile and overlay config overrides on top.
                 # Duplicate keys use the override value; keys only in the
                 # original (e.g., tool_calling) are preserved unchanged.
-                merged = {**profile, **profile_overrides}
+                merged = {**profile, **config_profile_overrides}
             else:
-                merged = profile_overrides
+                merged = config_profile_overrides
             try:
                 model.profile = merged  # type: ignore[union-attr]
             except (AttributeError, TypeError, ValueError) as exc:
@@ -1441,6 +1445,27 @@ def create_model(
                     provider,
                     exc,
                 )
+
+    # CLI --profile-override takes highest priority (on top of config.toml)
+    if profile_overrides:
+        logger.debug(
+            "Applying CLI --profile-override: %s",
+            profile_overrides,
+        )
+        profile = getattr(model, "profile", None)
+        if isinstance(profile, dict):
+            merged = {**profile, **profile_overrides}
+        else:
+            merged = profile_overrides
+        try:
+            model.profile = merged  # type: ignore[union-attr]
+        except (AttributeError, TypeError, ValueError) as exc:
+            logger.warning(
+                "Could not apply CLI profile overrides to model '%s': %s. "
+                "Overrides will be ignored.",
+                model_name,
+                exc,
+            )
 
     # Extract context limit from model profile (if available)
     context_limit: int | None = None

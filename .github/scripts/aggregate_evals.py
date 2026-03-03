@@ -17,7 +17,7 @@ def main() -> None:
         payload = json.loads(Path(file).read_text(encoding="utf-8"))
         rows.append(payload)
 
-    rows.sort(key=lambda r: str(r.get("model", "")))
+    rows.sort(key=lambda r: (str(r.get("model", "")).split(":")[0], -float(r.get("accuracy", 0.0))))
 
     headers = [
         "model",

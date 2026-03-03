@@ -1002,8 +1002,9 @@ class ToolCallMessage(Vertical):
         if "content" in data:
             content = str(data["content"])
             if is_preview and len(content) > _MAX_WEB_PREVIEW_LEN:
+                snippet = content[:_MAX_WEB_PREVIEW_LEN]
                 return FormattedOutput(
-                    content=escape_markup(content[:_MAX_WEB_PREVIEW_LEN]),
+                    content=escape_markup(snippet),
                     truncation="more",
                 )
             return FormattedOutput(content=escape_markup(content))

@@ -1427,6 +1427,27 @@ class DeepAgentsApp(App):
                 )
                 return
 
+            # Apply profile override so summarization uses the same context
+            # limit shown by /tokens (from --profile-override or config.toml).
+            # create_model() above builds a fresh model without these overrides.
+            ctx = settings.model_context_limit
+            if ctx is not None:
+                # Intentionally over-defensively checking for profile attribute
+                profile = getattr(model, "profile", None)
+                native = (
+                    profile.get("max_input_tokens")
+                    if isinstance(profile, dict)
+                    else None
+                )
+                if native != ctx:
+                    merged = (
+                        {**profile, "max_input_tokens": ctx}
+                        if isinstance(profile, dict)
+                        else {"max_input_tokens": ctx}
+                    )
+                    with suppress(AttributeError, TypeError, ValueError):
+                        model.profile = merged  # type: ignore[union-attr]
+
             defaults = compute_summarization_defaults(model)
             middleware = SummarizationMiddleware(
                 model=model,

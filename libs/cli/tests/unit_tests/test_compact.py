@@ -942,3 +942,169 @@ class TestFormatCompactLimit:
 
     def test_format_fraction_limit_without_context(self) -> None:
         assert _format_compact_limit(("fraction", 0.1), None) == "10% of context window"
+
+
+class TestCompactProfileOverride:
+    """Verify /compact respects profile overrides (--profile-override / config.toml).
+
+    When the user overrides `max_input_tokens` via a profile override, the
+    `/compact` command must use the overridden value — not the model's native
+    profile — when computing the retention budget and cutoff index.
+    """
+
+    @pytest.mark.asyncio
+    async def test_compact_applies_context_limit_to_model_profile(self) -> None:
+        """Model profile should be patched to settings.model_context_limit."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _setup_compact_app(app, n_messages=5)
+
+            mock_model = MagicMock()
+            # Original profile has a large context window
+            mock_model.profile = {"max_input_tokens": 200_000}
+            mock_result = MagicMock()
+            mock_result.model = mock_model
+
+            # Middleware that records the model it received
+            captured_models: list[Any] = []
+
+            def capture_defaults(model: MagicMock) -> dict[str, Any]:
+                captured_models.append(model)
+                return {"keep": ("fraction", 0.10)}
+
+            mock_mw = MagicMock()
+            mock_mw._determine_cutoff_index.return_value = 0
+            mock_mw._apply_event_to_messages.side_effect = lambda msgs, _ev: list(msgs)
+
+            with (
+                patch(_CREATE_MODEL_PATH, return_value=mock_result),
+                patch(_COMPUTE_DEFAULTS_PATH, side_effect=capture_defaults),
+                patch(_LC_MIDDLEWARE_PATH, return_value=mock_mw),
+                # Override context limit to 4096 (simulates --profile-override)
+                patch.object(settings, "model_context_limit", 4096),
+            ):
+                await app._handle_compact()
+                await pilot.pause()
+
+            # The model's profile should have been updated to the override
+            assert len(captured_models) == 1
+            assert captured_models[0].profile["max_input_tokens"] == 4096
+
+    @pytest.mark.asyncio
+    async def test_compact_no_override_preserves_original_profile(self) -> None:
+        """Without an override, model profile should remain unchanged."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _setup_compact_app(app, n_messages=5)
+
+            mock_model = MagicMock()
+            mock_model.profile = {"max_input_tokens": 200_000}
+            mock_result = MagicMock()
+            mock_result.model = mock_model
+
+            captured_models: list[Any] = []
+
+            def capture_defaults(model: MagicMock) -> dict[str, Any]:
+                captured_models.append(model)
+                return {"keep": ("fraction", 0.10)}
+
+            mock_mw = MagicMock()
+            mock_mw._determine_cutoff_index.return_value = 0
+            mock_mw._apply_event_to_messages.side_effect = lambda msgs, _ev: list(msgs)
+
+            with (
+                patch(_CREATE_MODEL_PATH, return_value=mock_result),
+                patch(_COMPUTE_DEFAULTS_PATH, side_effect=capture_defaults),
+                patch(_LC_MIDDLEWARE_PATH, return_value=mock_mw),
+                # No override — model_context_limit matches model profile
+                patch.object(settings, "model_context_limit", 200_000),
+            ):
+                await app._handle_compact()
+                await pilot.pause()
+
+            # Profile should stay at original value
+            assert captured_models[0].profile["max_input_tokens"] == 200_000
+
+    @pytest.mark.asyncio
+    async def test_compact_override_triggers_compaction(self) -> None:
+        """With a small override, conversation 'within budget' should compact."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _setup_compact_app(app, n_messages=8)
+
+            mock_model = MagicMock()
+            mock_model.profile = {"max_input_tokens": 200_000}
+            mock_result = MagicMock()
+            mock_result.model = mock_model
+
+            mock_mw = MagicMock()
+            # cutoff > 0 means compaction will proceed
+            mock_mw._determine_cutoff_index.return_value = 4
+            mock_mw._apply_event_to_messages.side_effect = lambda msgs, _ev: list(msgs)
+            mock_mw._partition_messages.side_effect = lambda msgs, idx: (
+                msgs[:idx],
+                msgs[idx:],
+            )
+            mock_mw._acreate_summary = AsyncMock(return_value="Summary.")
+            mock_mw._build_new_messages_with_path.side_effect = _real_build_summary_msg
+            mock_mw._compute_state_cutoff.side_effect = lambda _event, cutoff: cutoff
+
+            with (
+                patch(_CREATE_MODEL_PATH, return_value=mock_result),
+                patch(
+                    _COMPUTE_DEFAULTS_PATH,
+                    return_value={"keep": ("fraction", 0.10)},
+                ),
+                patch(_LC_MIDDLEWARE_PATH, return_value=mock_mw),
+                patch(_TOKEN_COUNT_PATH, return_value=100),
+                patch.object(settings, "model_context_limit", 4096),
+                patch.object(
+                    app,
+                    "_offload_messages_for_compact",
+                    new_callable=AsyncMock,
+                    return_value=None,
+                ),
+            ):
+                await app._handle_compact()
+                await pilot.pause()
+
+            # State should have been updated (compaction happened)
+            app._agent.aupdate_state.assert_called_once()  # type: ignore[union-attr]
+
+    @pytest.mark.asyncio
+    async def test_compact_override_none_uses_model_profile(self) -> None:
+        """When model_context_limit is None, model profile is untouched."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _setup_compact_app(app, n_messages=5)
+
+            mock_model = MagicMock()
+            mock_model.profile = {"max_input_tokens": 200_000}
+            mock_result = MagicMock()
+            mock_result.model = mock_model
+
+            captured_models: list[Any] = []
+
+            def capture_defaults(model: MagicMock) -> dict[str, Any]:
+                captured_models.append(model)
+                return {"keep": ("fraction", 0.10)}
+
+            mock_mw = MagicMock()
+            mock_mw._determine_cutoff_index.return_value = 0
+            mock_mw._apply_event_to_messages.side_effect = lambda msgs, _ev: list(msgs)
+
+            with (
+                patch(_CREATE_MODEL_PATH, return_value=mock_result),
+                patch(_COMPUTE_DEFAULTS_PATH, side_effect=capture_defaults),
+                patch(_LC_MIDDLEWARE_PATH, return_value=mock_mw),
+                patch.object(settings, "model_context_limit", None),
+            ):
+                await app._handle_compact()
+                await pilot.pause()
+
+            # Profile should remain untouched
+            assert captured_models[0].profile["max_input_tokens"] == 200_000

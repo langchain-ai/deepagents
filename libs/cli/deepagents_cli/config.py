@@ -1090,7 +1090,7 @@ def _get_default_model_spec() -> str:
     if settings.has_openai:
         return "openai:gpt-5.2"
     if settings.has_anthropic:
-        return "anthropic:claude-sonnet-4-5-20250929"
+        return "anthropic:claude-sonnet-4-6"
     if settings.has_google:
         return "google_genai:gemini-3.1-pro-preview"
     if settings.has_vertex_ai:

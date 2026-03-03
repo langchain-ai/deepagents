@@ -160,13 +160,6 @@ class TestIsSummarizationChunk:
         assert _is_summarization_chunk(None) is False
         assert _is_summarization_chunk({}) is False
 
-    def test_returns_true_for_summarization_node_name(self) -> None:
-        """Should return `True` when summarization middleware node is present."""
-        metadata = {
-            "langgraph_node": "agent.middleware.SummarizationMiddleware.before_model"
-        }
-        assert _is_summarization_chunk(metadata) is True
-
     def test_returns_false_for_none_lc_source(self) -> None:
         """Should return `False` when `lc_source` is not `'summarization'`."""
         metadata_none = {"lc_source": None}
@@ -178,15 +171,10 @@ class TestIsSummarizationChunk:
         metadata_missing = {"other_key": "value"}
         assert _is_summarization_chunk(metadata_missing) is False
 
-    def test_returns_false_for_non_summarization_node(self) -> None:
-        """Should return `False` for unrelated node names."""
-        metadata = {"langgraph_node": "agent.middleware.MemoryMiddleware.before_model"}
-        assert _is_summarization_chunk(metadata) is False
-
-    def test_returns_false_for_none_node_name(self) -> None:
-        """Should return `False` when `langgraph_node` exists but is `None`."""
-        metadata = {"langgraph_node": None}
-        assert _is_summarization_chunk(metadata) is False
+    def test_returns_false_for_unrelated_metadata(self) -> None:
+        """Should return `False` when only unrelated keys are present."""
+        assert _is_summarization_chunk({"langgraph_node": "model"}) is False
+        assert _is_summarization_chunk({"langgraph_node": None}) is False
 
 
 class _FakeAgent:
@@ -245,8 +233,8 @@ class TestExecuteTaskTextualSummarizationFeedback:
         assert statuses[-1] == "Thinking"
 
     @pytest.mark.asyncio
-    async def test_mounts_summarization_notification_on_completion(self) -> None:
-        """Completion marker should render a SummarizationMessage widget."""
+    async def test_mounts_summarization_notification_on_regular_chunk(self) -> None:
+        """Notification should render when regular chunks resume after summarization."""
         statuses: list[str | None] = []
         mounted_widgets: list[object] = []
 
@@ -264,14 +252,8 @@ class TestExecuteTaskTextualSummarizationFeedback:
                 "messages",
                 (AIMessage(content="summary chunk"), {"lc_source": "summarization"}),
             ),
-            (
-                (),
-                "messages",
-                (
-                    HumanMessage(content="summary complete"),
-                    {"lc_source": "summarization"},
-                ),
-            ),
+            # Regular chunk from the actual model — signals summarization ended.
+            ((), "messages", (HumanMessage(content="regular"), {})),
         ]
 
         adapter = TextualUIAdapter(
@@ -295,6 +277,47 @@ class TestExecuteTaskTextualSummarizationFeedback:
         assert statuses[0] == "Thinking"
         assert "Summarizing" in statuses
         assert statuses[-1] == "Thinking"
+
+    @pytest.mark.asyncio
+    @pytest.mark.asyncio
+    async def test_mounts_notification_when_stream_ends_mid_summarization(self) -> None:
+        """Notification should still render if stream exhausts during summarization."""
+        mounted_widgets: list[object] = []
+
+        async def record_spinner(_status: str | None) -> None:
+            await asyncio.sleep(0)
+
+        async def mount_message(widget: object) -> None:
+            await asyncio.sleep(0)
+            mounted_widgets.append(widget)
+
+        # Only summarization chunks, no regular chunks follow.
+        chunks = [
+            (
+                (),
+                "messages",
+                (AIMessage(content="summary chunk"), {"lc_source": "summarization"}),
+            ),
+        ]
+
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=record_spinner,
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+        )
+
+        assert any(
+            isinstance(widget, SummarizationMessage) for widget in mounted_widgets
+        )
 
 
 # ---------------------------------------------------------------------------

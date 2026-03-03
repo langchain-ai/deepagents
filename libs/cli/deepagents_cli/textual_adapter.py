@@ -79,6 +79,11 @@ def _build_stream_config(
 def _is_summarization_chunk(metadata: dict | None) -> bool:
     """Check if a message chunk is from summarization middleware.
 
+    The summarization model is invoked with
+    `config={"metadata": {"lc_source": "summarization"}}`
+    (see `langchain.agents.middleware.summarization`), which
+    LangChain's callback system merges into the stream metadata dict.
+
     Args:
         metadata: The metadata dict from the stream chunk.
 
@@ -87,14 +92,7 @@ def _is_summarization_chunk(metadata: dict | None) -> bool:
     """
     if metadata is None:
         return False
-    # Check lc_source for backward compatibility.
-    if metadata.get("lc_source") == "summarization":
-        return True
-    # Newer traces may only include the middleware node name.
-    node = metadata.get("langgraph_node")
-    if not isinstance(node, str):
-        return False
-    return "SummarizationMiddleware" in node
+    return metadata.get("lc_source") == "summarization"
 
 
 class TextualUIAdapter:
@@ -414,31 +412,28 @@ async def execute_task_textual(
                     message, metadata = data
 
                     # Filter out summarization model output, but keep UI feedback.
+                    # The summarization model streams AIMessage chunks tagged
+                    # with lc_source="summarization" in the callback metadata.
+                    # These are hidden from the user; only the spinner and a
+                    # notification widget provide feedback.
                     if _is_summarization_chunk(metadata):
-                        # Summary completion arrives as a synthesized HumanMessage.
-                        if isinstance(message, HumanMessage):
-                            try:
-                                await adapter._mount_message(SummarizationMessage())
-                            except Exception:
-                                logger.debug(
-                                    "Failed to mount summarization notification",
-                                    exc_info=True,
-                                )
-                            if summarization_in_progress and adapter._set_spinner:
-                                await adapter._set_spinner("Thinking")
-                            summarization_in_progress = False
-                        elif not summarization_in_progress:
+                        if not summarization_in_progress:
                             summarization_in_progress = True
                             if adapter._set_spinner:
                                 await adapter._set_spinner("Summarizing")
                         continue
 
-                    # If regular chunks resumed, summarization has finished.
-                    # The HumanMessage completion marker may still arrive
-                    # later and mount the notification; this fallback only
-                    # resets the spinner to avoid a stale "Summarizing" state.
+                    # Regular (non-summarization) chunks resumed — summarization
+                    # has finished. Mount the notification and reset the spinner.
                     if summarization_in_progress:
                         summarization_in_progress = False
+                        try:
+                            await adapter._mount_message(SummarizationMessage())
+                        except Exception:
+                            logger.debug(
+                                "Failed to mount summarization notification",
+                                exc_info=True,
+                            )
                         if adapter._set_spinner:
                             await adapter._set_spinner("Thinking")
 
@@ -672,9 +667,16 @@ async def execute_task_textual(
                             assistant_message_by_namespace.pop(ns_key, None)
 
             # Reset summarization state if stream ended mid-summarization
-            # (e.g. middleware error, no HumanMessage marker emitted).
+            # (e.g. middleware error, stream exhausted before regular chunks).
             if summarization_in_progress:
                 summarization_in_progress = False
+                try:
+                    await adapter._mount_message(SummarizationMessage())
+                except Exception:
+                    logger.debug(
+                        "Failed to mount summarization notification",
+                        exc_info=True,
+                    )
                 if adapter._set_spinner:
                     await adapter._set_spinner("Thinking")
 

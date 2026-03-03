@@ -1285,7 +1285,17 @@ class DeepAgentsApp(App):
 
                 await self._mount_message(AppMessage(msg))
             else:
-                await self._mount_message(AppMessage("No token usage yet"))
+                model_name = settings.model_name
+                context_limit = settings.model_context_limit
+
+                parts: list[str] = ["No token usage yet"]
+                if context_limit is not None:
+                    limit_str = _format_token_count(context_limit)
+                    parts.append(f"{limit_str} context window")
+                if model_name:
+                    parts.append(model_name)
+
+                await self._mount_message(AppMessage(" · ".join(parts)))
         elif cmd == "/remember" or cmd.startswith("/remember "):
             # Extract any additional context after /remember
             additional_context = ""

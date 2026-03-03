@@ -96,7 +96,7 @@ jobs:
           working-directory: libs/deepagents
 
       - name: "📦 Install Dependencies"
-        run: uv sync --group test --locked
+        run: uv sync --group test --group evals --locked
 
       - name: "📊 Run Evals"
         run: make evals

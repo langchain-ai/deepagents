@@ -50,7 +50,7 @@ jobs:
       run:
         working-directory: libs/deepagents
     env:
-      PYTEST_ADDOPTS: "--model ${{ inputs.model || matrix.model }} --evals-report-file ${{ runner.temp }}/evals_report.json"
+      PYTEST_ADDOPTS: "--model ${{ inputs.model || matrix.model }} --evals-report-file evals_report.json"
       LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
       LANGSMITH_TRACING_V2: "true"
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -77,7 +77,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: evals-report-${{ matrix.model }}
-          path: ${{ runner.temp }}/evals_report.json
+          path: libs/deepagents/evals_report.json
           if-no-files-found: error
 
   aggregate:

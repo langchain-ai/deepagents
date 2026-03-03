@@ -46,6 +46,7 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
 
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    _ = exitstatus
     if session.exitstatus == 1:
         session.exitstatus = 0
 
@@ -53,10 +54,9 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     median_duration_s = round(statistics.median(_DURATIONS_S), 4) if _DURATIONS_S else 0.0
 
     payload: dict[str, object] = {
-        "created_at": datetime.now(UTC).isoformat(),
+        "created_at": datetime.now(UTC).replace(microsecond=0).isoformat(),
         "sdk_version": __version__,
         "model": session.config.getoption("--model") or str(session.config._inicache.get("model", "")) or str(get_default_model().model),
-        "exit_code": int(exitstatus),
         **_RESULTS,
         "accuracy": accuracy,
         "median_duration_s": median_duration_s,
@@ -73,7 +73,6 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         )
         terminal_reporter.write_line(f"accuracy: {payload['accuracy']:.2f}")
         terminal_reporter.write_line(f"median_duration_s: {payload['median_duration_s']:.4f}")
-        terminal_reporter.write_line(f"exit_code: {payload['exit_code']}")
 
     report_path_opt = session.config.getoption("--evals-report-file")
     if not report_path_opt:

@@ -12,10 +12,11 @@ from tests.evals.utils import TrajectoryExpectations, run_agent
 
 if TYPE_CHECKING:
     from langchain.tools import ToolRuntime
+    from langchain_core.language_models import BaseChatModel
 
 
 @pytest.mark.langsmith
-def test_memory_basic_recall(model: str) -> None:
+def test_memory_basic_recall(model: BaseChatModel) -> None:
     """Agent recalls project context from memory."""
     agent = create_deep_agent(
         model=model,
@@ -45,7 +46,7 @@ This is the TurboWidget project. The main goal is to process widgets efficiently
 
 
 @pytest.mark.langsmith
-def test_memory_guided_behavior_naming_convention(model: str) -> None:
+def test_memory_guided_behavior_naming_convention(model: BaseChatModel) -> None:
     """Agent follows naming convention guidelines from memory."""
     agent = create_deep_agent(
         model=model,
@@ -76,7 +77,7 @@ Example: config_database.txt, config_settings.txt
 
 
 @pytest.mark.langsmith
-def test_memory_influences_file_content(model: str) -> None:
+def test_memory_influences_file_content(model: BaseChatModel) -> None:
     """Agent applies code style guidelines from memory when creating files."""
     agent = create_deep_agent(
         model=model,
@@ -103,7 +104,7 @@ Every function must start with a comment line that says "# Purpose: " followed b
 
 
 @pytest.mark.langsmith
-def test_memory_multiple_sources_combined(model: str) -> None:
+def test_memory_multiple_sources_combined(model: BaseChatModel) -> None:
     """Agent accesses information from multiple memory sources."""
     agent = create_deep_agent(
         model=model,
@@ -134,7 +135,7 @@ The project uses the FastAPI framework.
 
 
 @pytest.mark.langsmith
-def test_memory_with_missing_file_graceful(model: str) -> None:
+def test_memory_with_missing_file_graceful(model: BaseChatModel) -> None:
     """Agent handles missing memory files gracefully and still functions."""
     agent = create_deep_agent(
         model=model,
@@ -151,7 +152,7 @@ def test_memory_with_missing_file_graceful(model: str) -> None:
 
 
 @pytest.mark.langsmith
-def test_memory_prevents_unnecessary_file_reads(model: str) -> None:
+def test_memory_prevents_unnecessary_file_reads(model: BaseChatModel) -> None:
     """Agent uses memory context instead of reading documentation files."""
     agent = create_deep_agent(
         model=model,
@@ -182,7 +183,7 @@ def test_memory_prevents_unnecessary_file_reads(model: str) -> None:
 
 
 @pytest.mark.langsmith
-def test_memory_middleware_composite_backend(model: str) -> None:
+def test_memory_middleware_composite_backend(model: BaseChatModel) -> None:
     """Test that agent can access memory from store backend via composite backend routing."""
     store = InMemoryStore()
     now = datetime.now(UTC).isoformat()

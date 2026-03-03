@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import pytest
 from langchain_core.tools import tool
+
+if TYPE_CHECKING:
+    from langchain_core.language_models import BaseChatModel
 
 from deepagents import create_deep_agent
 from tests.evals.utils import TrajectoryExpectations, run_agent
@@ -14,7 +19,7 @@ def get_weather_fake(location: str) -> str:  # noqa: ARG001
 
 
 @pytest.mark.langsmith
-def test_task_calls_weather_subagent(model: str) -> None:
+def test_task_calls_weather_subagent(model: BaseChatModel) -> None:
     """Requests a named subagent via task."""
     agent = create_deep_agent(
         model=model,
@@ -44,7 +49,7 @@ def test_task_calls_weather_subagent(model: str) -> None:
 
 
 @pytest.mark.langsmith
-def test_task_calls_general_purpose_subagent(model: str) -> None:
+def test_task_calls_general_purpose_subagent(model: BaseChatModel) -> None:
     """Requests the general-purpose subagent via task."""
     agent = create_deep_agent(model=model, tools=[get_weather_fake])
     run_agent(

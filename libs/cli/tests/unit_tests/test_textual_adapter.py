@@ -290,7 +290,6 @@ class TestExecuteTaskTextualSummarizationFeedback:
         assert statuses[-1] == "Thinking"
 
     @pytest.mark.asyncio
-    @pytest.mark.asyncio
     async def test_mounts_notification_when_stream_ends_mid_summarization(self) -> None:
         """Notification should still render if stream exhausts during summarization."""
         mounted_widgets: list[object] = []

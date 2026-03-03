@@ -1330,21 +1330,25 @@ class SummarizationMessage(AppMessage):
     }
     """
 
+    _DEFAULT_CONTENT = "✓ Summarized conversation"
+    _STYLE = "bold cyan"
+
     def __init__(self, message: str | Text | None = None, **kwargs: Any) -> None:
         """Initialize a summarization notification message.
 
         Args:
-            message: Optional message override used when rehydrating from the
-                message store.
+            message: Content to display. When `None`, uses the default
+                "Summarized conversation" text.
 
-                Defaults to the standard summary notification.
+                A `str` or `Text` value is used as-is (e.g., when restoring from
+                the message store).
             **kwargs: Additional arguments passed to parent.
         """
         content: Text
         if message is None:
-            content = Text("✓ Summarized conversation", style="bold cyan")
+            content = Text(self._DEFAULT_CONTENT, style=self._STYLE)
         elif isinstance(message, Text):
             content = message
         else:
-            content = Text(message, style="bold cyan")
+            content = Text(message, style=self._STYLE)
         super().__init__(content, **kwargs)

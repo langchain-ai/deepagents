@@ -80,9 +80,9 @@ def _is_summarization_chunk(metadata: dict | None) -> bool:
     """Check if a message chunk is from summarization middleware.
 
     The summarization model is invoked with
-    `config={"metadata": {"lc_source": "summarization"}}`
-    (see `langchain.agents.middleware.summarization`), which
-    LangChain's callback system merges into the stream metadata dict.
+    `config={"metadata": {"lc_source": "summarization"}}` by the LangChain
+    summarization middleware, which merges the tag into the stream metadata dict
+    visible to callback handlers.
 
     Args:
         metadata: The metadata dict from the stream chunk.
@@ -344,6 +344,8 @@ async def execute_task_textual(
     async def _handle_summarization_abort(reason: str) -> None:
         """Clear summarization UI state when streaming aborts unexpectedly.
 
+        No-op if summarization is not currently in progress.
+
         Args:
             reason: Short reason string for debug logging.
         """
@@ -447,7 +449,7 @@ async def execute_task_textual(
                         try:
                             await adapter._mount_message(SummarizationMessage())
                         except Exception:
-                            logger.debug(
+                            logger.warning(
                                 "Failed to mount summarization notification",
                                 exc_info=True,
                             )
@@ -685,12 +687,13 @@ async def execute_task_textual(
 
             # Reset summarization state if stream ended mid-summarization
             # (e.g. middleware error, stream exhausted before regular chunks).
+            # Still mounts the notification so the user sees summarization completed.
             if summarization_in_progress:
                 summarization_in_progress = False
                 try:
                     await adapter._mount_message(SummarizationMessage())
                 except Exception:
-                    logger.debug(
+                    logger.warning(
                         "Failed to mount summarization notification",
                         exc_info=True,
                     )
@@ -852,7 +855,8 @@ async def execute_task_textual(
         if adapter._set_active_message:
             adapter._set_active_message(None)
 
-        # Hide spinner (may still show "Summarizing" if interrupted mid-summary)
+        # Hide spinner unconditionally — abort handler covers mid-summarization,
+        # but spinner may still show "Thinking" from normal streaming.
         if adapter._set_spinner:
             await adapter._set_spinner(None)
 
@@ -901,7 +905,8 @@ async def execute_task_textual(
         if adapter._set_active_message:
             adapter._set_active_message(None)
 
-        # Hide spinner (may still show "Summarizing" if interrupted mid-summary)
+        # Hide spinner unconditionally — abort handler covers mid-summarization,
+        # but spinner may still show "Thinking" from normal streaming.
         if adapter._set_spinner:
             await adapter._set_spinner(None)
 

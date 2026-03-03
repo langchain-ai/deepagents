@@ -76,7 +76,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: evals-report-${{ matrix.model }}
+          name: evals-report-${{ replace(matrix.model, ':', '-') }}
           path: libs/deepagents/evals_report.json
           if-no-files-found: error
 

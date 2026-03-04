@@ -1,6 +1,6 @@
 # Threat Model: Deep Agents
 
-> Generated: 2026-03-04 | Commit: d455a6b1 | Scope: Full monorepo (libs/deepagents, libs/cli, libs/harbor, libs/acp, libs/partners) | Mode: Open Source
+> Generated: 2026-03-04 | Commit: d455a6b1 | Scope: Full monorepo (libs/deepagents, libs/cli, libs/acp, libs/partners) | Mode: Open Source
 
 ## Scope
 
@@ -9,7 +9,6 @@
 - `libs/deepagents/` — Core SDK: `create_deep_agent()`, middleware stack, backends, tool framework
 - `libs/cli/deepagents_cli/` — Terminal CLI: TUI, non-interactive mode, HTTP tools, sandbox integrations
 - `libs/acp/deepagents_acp/` — Agent Client Protocol server bridge
-- `libs/harbor/deepagents_harbor/` — Harbor benchmark evaluation harness
 - `libs/partners/{modal,daytona,runloop}/` — Cloud sandbox partner integrations
 
 ### Out of Scope
@@ -19,12 +18,13 @@
 - User's deployment infrastructure, network topology, firewall rules
 - Third-party service security (Modal, Daytona, Runloop, LangSmith platform internals)
 - Tavily API internals
+- `libs/harbor/deepagents_harbor/` — Internal benchmarking code, not a shipped package
 - `deepagentsjs` (separate repository)
 
 ### Assumptions
 
 1. The project is used as a library/framework — users control their own application code, model selection, and deployment.
-2. `LocalShellBackend` is the default for CLI usage; users who want isolation must opt into a sandbox backend (`--sandbox modal|daytona|runloop|langsmith`).
+2. `LocalShellBackend` is the default for CLI usage; users who want isolation must opt into a sandbox backend (`--sandbox modal|daytona|runloop|langsmith`). However, sandbox backends do not fully isolate — tools that run CLI-side (e.g., `fetch_url`, `http_request`, `web_search`) still execute on the host, so SSRF and local network attacks apply regardless of sandbox mode.
 3. Human-in-the-loop (HITL) is the primary security control for the CLI; `auto_approve=False` is the default.
 4. LLM output is untrusted — the framework executes tool calls decided by the LLM.
 5. API keys are provided via environment variables and are the user's responsibility to protect.
@@ -83,7 +83,6 @@ Deep Agents is an opinionated agent harness built on LangGraph. It provides an L
 | C6 | HTTP Tools | `http_request()`, `fetch_url()`, `web_search()` — outbound HTTP from CLI | framework-controlled | `tools.py:35`, `tools.py:183`, `tools.py:104` |
 | C7 | Sandbox Backends | Modal, Daytona, Runloop, LangSmith sandbox integrations | external | `integrations/sandbox_factory.py:68` — `create_sandbox()` |
 | C8 | ACP Server | Agent Client Protocol bridge for IDE integration | framework-controlled | `server.py:432` — `prompt()` |
-| C9 | Harbor Benchmark | Evaluation harness running agents in sandbox with LangSmith tracing | framework-controlled | `deepagents_wrapper.py:179` — `DeepAgentsWrapper.run()` |
 
 ---
 
@@ -114,7 +113,7 @@ Deep Agents is an opinionated agent harness built on LangGraph. It provides an L
 #### TB3: Framework ↔ Cloud Sandbox
 
 - **Inside**: `create_sandbox()` context manager (`sandbox_factory.py:68`) manages lifecycle. Setup scripts are expanded with `string.Template.safe_substitute(os.environ)` (`sandbox_factory.py:22-54`) and executed via `bash -c`. Partner backends use `shlex.quote()` for path arguments in some operations.
-- **Outside**: Sandbox isolation is entirely the responsibility of the cloud provider. The framework trusts that commands execute in an isolated container.
+- **Outside**: Sandbox isolation is entirely the responsibility of the cloud provider for shell/filesystem operations. However, tools that run CLI-side (HTTP tools: `fetch_url`, `http_request`, `web_search`) are **not isolated by sandbox backends** and still execute on the host.
 - **Crossing mechanism**: SDK API calls (Modal `sandbox.exec()`, Daytona `sandbox.process.exec()`, Runloop `client.devboxes.execute_and_await_completion()`, LangSmith `sandbox.run()`).
 
 #### TB4: Framework ↔ User Code
@@ -192,17 +191,17 @@ Deep Agents is an opinionated agent harness built on LangGraph. It provides an L
 #### T2: SSRF via HTTP Tools
 
 - **Flow**: DF2 (LLM → HTTP Tools)
-- **Description**: `http_request()` (`tools.py:71`) and `fetch_url()` (`tools.py:219`) make outbound HTTP requests to arbitrary URLs. An LLM could request `http://169.254.169.254/` (cloud metadata), `http://localhost:8080/admin`, or other internal endpoints.
+- **Description**: `http_request()` (`tools.py:71`) and `fetch_url()` (`tools.py:219`) make outbound HTTP requests to arbitrary URLs. An LLM could request `http://169.254.169.254/` (cloud metadata), `http://localhost:8080/admin`, or other internal endpoints. **These tools run CLI-side even when a sandbox backend is active**, so sandbox mode does not mitigate SSRF.
 - **Preconditions**: The host must have network access to internal services. HITL must be disabled or the reviewer must approve the URL.
 - **Mitigations**: HITL approval gate for `fetch_url` and `http_request` (`agent.py:324`).
-- **Residual risk**: No programmatic URL allowlist, no private IP range blocking, no DNS rebinding protection. HITL is the only control. Correlates with existing advisories: GHSA-rwf7-34c7-w69c, GHSA-h4f5-v92m-cprc.
+- **Residual risk**: No programmatic URL allowlist, no private IP range blocking, no DNS rebinding protection. HITL is the only control. Sandbox backends do not help because HTTP tools execute on the CLI host, not in the sandbox. Correlates with existing advisories: GHSA-rwf7-34c7-w69c, GHSA-h4f5-v92m-cprc.
 
 #### T3: Sensitive File Read
 
 - **Flow**: DF3 (LLM → Filesystem Tools)
 - **Description**: `read_file` is not gated by HITL (`agent.py:324` — only `write_file`/`edit_file` are gated). With `LocalShellBackend` (`virtual_mode=False`), the agent can read any file accessible to the process: `~/.ssh/id_rsa`, `~/.aws/credentials`, `.env` files.
 - **Preconditions**: Default configuration with `LocalShellBackend`.
-- **Mitigations**: None programmatic. Users can use sandbox backends for isolation. `validate_path()` blocks `..` traversal but absolute paths are allowed.
+- **Mitigations**: None programmatic. `validate_path()` blocks `..` traversal but absolute paths are allowed. Sandbox backends isolate shell and filesystem operations but HTTP tools (which can also leak file contents indirectly) still run locally.
 - **Residual risk**: By-design tradeoff — the agent needs broad file access for developer productivity. Sensitive file exposure is possible if the LLM is manipulated (e.g., via fetched web content containing prompt injection).
 
 #### T4: Environment Variable Leakage to Subprocesses
@@ -271,3 +270,4 @@ Threats that appear valid in isolation but fall outside project responsibility b
 | Date | Author | Changes |
 |------|--------|---------|
 | 2026-03-04 | Generated by langster-threat-model | Initial threat model |
+| 2026-03-04 | Team review | Moved Harbor to out-of-scope (internal benchmarking, not shipped). Corrected assumption #2: sandbox backends don't fully isolate — HTTP tools run CLI-side. Updated T2 (SSRF) and TB3 to reflect incomplete sandbox isolation. |

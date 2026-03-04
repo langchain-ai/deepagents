@@ -278,7 +278,7 @@ async def test_store_backend_agrep_invalid_regex():
 async def test_store_backend_intercept_large_tool_result_async():
     """Test that StoreBackend properly handles large tool result interception in async context."""
     rt = make_runtime()
-    middleware = FilesystemMiddleware(backend=lambda r: StoreBackend(r), tool_token_limit_before_evict=1000)
+    middleware = FilesystemMiddleware(backend=StoreBackend, tool_token_limit_before_evict=1000)
 
     large_content = "y" * 5000
     tool_message = ToolMessage(content=large_content, tool_call_id="test_456")
@@ -296,10 +296,20 @@ async def test_store_backend_intercept_large_tool_result_async():
 async def test_store_backend_aintercept_large_tool_result_async():
     """Test async intercept path uses async store methods (fixes InvalidStateError with BatchedStore)."""
     rt = make_runtime()
-    middleware = FilesystemMiddleware(backend=lambda r: StoreBackend(r), tool_token_limit_before_evict=1000)
+    middleware = FilesystemMiddleware(backend=StoreBackend, tool_token_limit_before_evict=1000)
 
     large_content = "z" * 5000
-    tool_message = ToolMessage(content=large_content, tool_call_id="test_async_789", name="example_tool")
+    artifact_payload = {"kind": "structured", "value": {"key": "v"}}
+    tool_message = ToolMessage(
+        content=large_content,
+        tool_call_id="test_async_789",
+        name="example_tool",
+        id="tool_msg_async_1",
+        artifact=artifact_payload,
+        status="error",
+        additional_kwargs={"trace": "abc"},
+        response_metadata={"provider": "mock"},
+    )
 
     # Use the async intercept path (what awrap_tool_call uses)
     result = await middleware._aintercept_large_tool_result(tool_message, rt)
@@ -308,6 +318,11 @@ async def test_store_backend_aintercept_large_tool_result_async():
     assert "Tool result too large" in result.content
     assert "/large_tool_results/test_async_789" in result.content
     assert result.name == "example_tool"
+    assert result.id == "tool_msg_async_1"
+    assert result.artifact == artifact_payload
+    assert result.status == "error"
+    assert result.additional_kwargs == {"trace": "abc"}
+    assert result.response_metadata == {"provider": "mock"}
 
     # Verify content was stored via async path
     stored_content = await rt.store.aget(("filesystem",), "/large_tool_results/test_async_789")

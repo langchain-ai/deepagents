@@ -1,5 +1,7 @@
 """Daytona sandbox integration for Deep Agents."""
 
-from langchain_daytona.sandbox import DaytonaBackend, DaytonaProvider
+from langchain_daytona.sandbox import (
+    DaytonaSandbox,
+)
 
-__all__ = ["DaytonaBackend", "DaytonaProvider"]
+__all__ = ["DaytonaSandbox"]

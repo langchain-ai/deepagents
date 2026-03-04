@@ -30,24 +30,81 @@ from deepagents.middleware.subagents import (
     SubAgent,
     SubAgentMiddleware,
 )
-from deepagents.middleware.summarization import SummarizationMiddleware, _compute_summarization_defaults
+from deepagents.middleware.summarization import create_summarization_middleware
 
-BASE_AGENT_PROMPT = "In order to complete the objective that the user asks of you, you have access to a number of standard tools."
+BASE_AGENT_PROMPT = """You are a Deep Agent, an AI assistant that helps users accomplish tasks using tools. You respond with text and tool calls. The user can see your responses and tool outputs in real time.
+
+## Core Behavior
+
+- Be concise and direct. Don't over-explain unless asked.
+- NEVER add unnecessary preamble (\"Sure!\", \"Great question!\", \"I'll now...\").
+- Don't say \"I'll now do X\" — just do it.
+- If the request is ambiguous, ask questions before acting.
+- If asked how to approach something, explain first, then act.
+
+## Professional Objectivity
+
+- Prioritize accuracy over validating the user's beliefs
+- Disagree respectfully when the user is incorrect
+- Avoid unnecessary superlatives, praise, or emotional validation
+
+## Doing Tasks
+
+When the user asks you to do something:
+
+1. **Understand first** — read relevant files, check existing patterns. Quick but thorough — gather enough evidence to start, then iterate.
+2. **Act** — implement the solution. Work quickly but accurately.
+3. **Verify** — check your work against what was asked, not against your own output. Your first attempt is rarely correct — iterate.
+
+Keep working until the task is fully complete. Don't stop partway and explain what you would do — just do it. Only yield back to the user when the task is done or you're genuinely blocked.
+
+**When things go wrong:**
+- If something fails repeatedly, stop and analyze *why* — don't keep retrying the same approach.
+- If you're blocked, tell the user what's wrong and ask for guidance.
+
+## Progress Updates
+
+For longer tasks, provide brief progress updates at reasonable intervals — a concise sentence recapping what you've done and what's next."""  # noqa: E501
 
 
 def get_default_model() -> ChatAnthropic:
     """Get the default model for deep agents.
 
     Returns:
-        `ChatAnthropic` instance configured with Claude Sonnet 4.5.
+        `ChatAnthropic` instance configured with Claude Sonnet 4.6.
     """
     return ChatAnthropic(
-        model_name="claude-sonnet-4-5-20250929",
-        max_tokens=20000,  # type: ignore[call-arg]
+        model_name="claude-sonnet-4-6",
     )
 
 
-def create_deep_agent(
+def resolve_model(model: str | BaseChatModel) -> BaseChatModel:
+    """Resolve a model string to a `BaseChatModel` instance.
+
+    If `model` is already a `BaseChatModel`, returns it unchanged.
+
+    String models are resolved via `init_chat_model`, with OpenAI models
+    defaulting to the Responses API. See the `create_deep_agent` docstring for
+    details on how to customize this behavior.
+
+    Args:
+        model: Model name string or pre-configured model instance.
+
+    Returns:
+        Resolved `BaseChatModel` instance.
+    """
+    if isinstance(model, BaseChatModel):
+        return model
+    if model.startswith("openai:"):
+        # Use Responses API by default. To use chat completions, use
+        # `model=init_chat_model("openai:...")`
+        # To disable data retention with the Responses API, use
+        # `model=init_chat_model("openai:...", use_responses_api=True, store=False, include=["reasoning.encrypted_content"])`
+        return init_chat_model(model, use_responses_api=True)
+    return init_chat_model(model)
+
+
+def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic with many conditional branches
     model: str | BaseChatModel | None = None,
     tools: Sequence[BaseTool | Callable | dict[str, Any]] | None = None,
     *,
@@ -83,9 +140,18 @@ def create_deep_agent(
     Args:
         model: The model to use.
 
-            Defaults to `claude-sonnet-4-5-20250929`.
+            Defaults to `claude-sonnet-4-6`.
 
             Use the `provider:model` format (e.g., `openai:gpt-5`) to quickly switch between models.
+
+            If an `openai:` model is used, the agent will use the OpenAI
+            Responses API by default. To use OpenAI chat completions instead,
+            initialize the model with
+            `init_chat_model("openai:...", use_responses_api=False)` and pass
+            the initialized model instance here. To disable data retention with
+            the Responses API, use
+            `init_chat_model("openai:...", use_responses_api=True, store=False, include=["reasoning.encrypted_content"])`
+            and pass the initialized model instance here.
         tools: The tools the agent should have access to.
 
             In addition to custom tools you provide, deep agents include built-in tools for planning,
@@ -104,7 +170,7 @@ def create_deep_agent(
 
             - `name`
             - `description` (used by the main agent to decide whether to call the sub agent)
-            - `prompt` (used as the system prompt in the subagent)
+            - `system_prompt` (used as the system prompt in the subagent)
             - (optional) `tools`
             - (optional) `model` (either a `LanguageModelLike` instance or `dict` settings)
             - (optional) `middleware` (list of `AgentMiddleware`)
@@ -141,28 +207,15 @@ def create_deep_agent(
     Returns:
         A configured deep agent.
     """
-    if model is None:
-        model = get_default_model()
-    elif isinstance(model, str):
-        model = init_chat_model(model)
+    model = get_default_model() if model is None else resolve_model(model)
 
-    # Compute summarization defaults based on model profile
-    summarization_defaults = _compute_summarization_defaults(model)
-
-    backend = backend if backend is not None else (lambda rt: StateBackend(rt))
+    backend = backend if backend is not None else (StateBackend)
 
     # Build general-purpose subagent with default middleware stack
-    gp_middleware: list[AgentMiddleware] = [
+    gp_middleware: list[AgentMiddleware[Any, Any, Any]] = [
         TodoListMiddleware(),
         FilesystemMiddleware(backend=backend),
-        SummarizationMiddleware(
-            model=model,
-            backend=backend,
-            trigger=summarization_defaults["trigger"],
-            keep=summarization_defaults["keep"],
-            trim_tokens_to_summarize=None,
-            truncate_args_settings=summarization_defaults["truncate_args_settings"],
-        ),
+        create_summarization_middleware(model, backend),
         AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
         PatchToolCallsMiddleware(),
     ]
@@ -171,7 +224,7 @@ def create_deep_agent(
     if interrupt_on is not None:
         gp_middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
 
-    general_purpose_spec: SubAgent = {
+    general_purpose_spec: SubAgent = {  # ty: ignore[missing-typed-dict-key]
         **GENERAL_PURPOSE_SUBAGENT,
         "model": model,
         "tools": tools or [],
@@ -187,22 +240,13 @@ def create_deep_agent(
         else:
             # SubAgent - fill in defaults and prepend base middleware
             subagent_model = spec.get("model", model)
-            if isinstance(subagent_model, str):
-                subagent_model = init_chat_model(subagent_model)
+            subagent_model = resolve_model(subagent_model)
 
             # Build middleware: base stack + skills (if specified) + user's middleware
-            subagent_summarization_defaults = _compute_summarization_defaults(subagent_model)
-            subagent_middleware: list[AgentMiddleware] = [
+            subagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
                 TodoListMiddleware(),
                 FilesystemMiddleware(backend=backend),
-                SummarizationMiddleware(
-                    model=subagent_model,
-                    backend=backend,
-                    trigger=subagent_summarization_defaults["trigger"],
-                    keep=subagent_summarization_defaults["keep"],
-                    trim_tokens_to_summarize=None,
-                    truncate_args_settings=subagent_summarization_defaults["truncate_args_settings"],
-                ),
+                create_summarization_middleware(subagent_model, backend),
                 AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
                 PatchToolCallsMiddleware(),
             ]
@@ -211,7 +255,7 @@ def create_deep_agent(
                 subagent_middleware.append(SkillsMiddleware(backend=backend, sources=subagent_skills))
             subagent_middleware.extend(spec.get("middleware", []))
 
-            processed_spec: SubAgent = {
+            processed_spec: SubAgent = {  # ty: ignore[missing-typed-dict-key]
                 **spec,
                 "model": subagent_model,
                 "tools": spec.get("tools", tools or []),
@@ -223,7 +267,7 @@ def create_deep_agent(
     all_subagents: list[SubAgent | CompiledSubAgent] = [general_purpose_spec, *processed_subagents]
 
     # Build main agent middleware stack
-    deepagent_middleware: list[AgentMiddleware] = [
+    deepagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
         TodoListMiddleware(),
     ]
     if memory is not None:
@@ -237,18 +281,12 @@ def create_deep_agent(
                 backend=backend,
                 subagents=all_subagents,
             ),
-            SummarizationMiddleware(
-                model=model,
-                backend=backend,
-                trigger=summarization_defaults["trigger"],
-                keep=summarization_defaults["keep"],
-                trim_tokens_to_summarize=None,
-                truncate_args_settings=summarization_defaults["truncate_args_settings"],
-            ),
+            create_summarization_middleware(model, backend),
             AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
             PatchToolCallsMiddleware(),
         ]
     )
+
     if middleware:
         deepagent_middleware.extend(middleware)
     if interrupt_on is not None:
@@ -258,12 +296,7 @@ def create_deep_agent(
     if system_prompt is None:
         final_system_prompt: str | SystemMessage = BASE_AGENT_PROMPT
     elif isinstance(system_prompt, SystemMessage):
-        # SystemMessage: append BASE_AGENT_PROMPT to content_blocks
-        new_content = [
-            *system_prompt.content_blocks,
-            {"type": "text", "text": f"\n\n{BASE_AGENT_PROMPT}"},
-        ]
-        final_system_prompt = SystemMessage(content=new_content)
+        final_system_prompt = SystemMessage(content_blocks=[*system_prompt.content_blocks, {"type": "text", "text": f"\n\n{BASE_AGENT_PROMPT}"}])
     else:
         # String: simple concatenation
         final_system_prompt = system_prompt + "\n\n" + BASE_AGENT_PROMPT

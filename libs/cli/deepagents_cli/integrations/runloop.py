@@ -19,12 +19,13 @@ from deepagents.backends.protocol import (
     FileUploadResponse,
     SandboxBackendProtocol,
 )
-from deepagents.backends.sandbox import (
-    BaseSandbox,
-    SandboxListResponse,
+from deepagents.backends.sandbox import BaseSandbox
+from runloop_api_client import Runloop
+
+from deepagents_cli.integrations.sandbox_provider import (
+    SandboxNotFoundError,
     SandboxProvider,
 )
-from runloop_api_client import Runloop
 
 
 class RunloopBackend(BaseSandbox):
@@ -65,7 +66,7 @@ class RunloopBackend(BaseSandbox):
 
         self._client = client
         self._devbox_id = devbox_id
-        self._timeout = 30 * 60
+        self._default_timeout = 30 * 60
 
     @property
     def id(self) -> str:
@@ -75,20 +76,25 @@ class RunloopBackend(BaseSandbox):
     def execute(
         self,
         command: str,
+        *,
+        timeout: int | None = None,
     ) -> ExecuteResponse:
         """Execute a command in the devbox and return ExecuteResponse.
 
         Args:
             command: Full shell command string to execute.
+            timeout: Maximum time in seconds to wait for the command to complete.
+
+                If None, uses the backend's default timeout.
 
         Returns:
-            ExecuteResponse with combined output, exit code, optional signal,
-                and truncation flag.
+            ExecuteResponse with combined output, exit code, and truncation flag.
         """
+        effective_timeout = timeout if timeout is not None else self._default_timeout
         result = self._client.devboxes.execute_and_await_completion(
             devbox_id=self._devbox_id,
             command=command,
-            timeout=self._timeout,
+            timeout=effective_timeout,
         )
         # Combine stdout and stderr
         output = result.stdout or ""
@@ -147,7 +153,7 @@ class RunloopBackend(BaseSandbox):
         return responses
 
 
-class RunloopProvider(SandboxProvider[dict[str, Any]]):
+class RunloopProvider(SandboxProvider):
     """Runloop sandbox provider implementation.
 
     Manages Runloop devbox lifecycle using the Runloop SDK.
@@ -168,26 +174,12 @@ class RunloopProvider(SandboxProvider[dict[str, Any]]):
             raise ValueError(msg)
         self._client = Runloop(bearer_token=self._api_key)
 
-    def list(
-        self,
-        *,
-        cursor: str | None = None,
-        **kwargs: Any,
-    ) -> SandboxListResponse[dict[str, Any]]:
-        """List available Runloop devboxes.
-
-        Raises:
-            NotImplementedError: Runloop SDK doesn't expose a list API yet.
-        """
-        msg = "Listing with Runloop SDK not yet implemented"
-        raise NotImplementedError(msg)
-
     def get_or_create(
         self,
         *,
         sandbox_id: str | None = None,
         timeout: int = 180,
-        **kwargs: Any,  # noqa: ARG002
+        **kwargs: Any,  # noqa: ARG002  # Required by SandboxFactory interface
     ) -> SandboxBackendProtocol:
         """Get existing or create new Runloop devbox.
 
@@ -201,9 +193,13 @@ class RunloopProvider(SandboxProvider[dict[str, Any]]):
 
         Raises:
             RuntimeError: Devbox startup failed
+            SandboxNotFoundError: If sandbox_id is provided but does not exist
         """
         if sandbox_id:
-            devbox = self._client.devboxes.retrieve(id=sandbox_id)
+            try:
+                devbox = self._client.devboxes.retrieve(id=sandbox_id)
+            except KeyError as e:
+                raise SandboxNotFoundError(sandbox_id) from e
         else:
             devbox = self._client.devboxes.create()
 
@@ -220,7 +216,7 @@ class RunloopProvider(SandboxProvider[dict[str, Any]]):
 
         return RunloopBackend(devbox_id=devbox.id, client=self._client)
 
-    def delete(self, *, sandbox_id: str, **kwargs: Any) -> None:  # noqa: ARG002
+    def delete(self, *, sandbox_id: str, **kwargs: Any) -> None:  # noqa: ARG002  # Required by SandboxFactory interface
         """Delete a Runloop devbox.
 
         Args:

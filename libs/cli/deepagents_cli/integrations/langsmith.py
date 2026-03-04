@@ -13,11 +13,9 @@ from deepagents.backends.protocol import (
     FileUploadResponse,
     SandboxBackendProtocol,
 )
-from deepagents.backends.sandbox import (
-    BaseSandbox,
-    SandboxListResponse,
-    SandboxProvider,
-)
+from deepagents.backends.sandbox import BaseSandbox
+
+from deepagents_cli.integrations.sandbox_provider import SandboxProvider
 
 if TYPE_CHECKING:
     from langsmith.sandbox import Sandbox, SandboxClient, SandboxTemplate
@@ -42,23 +40,29 @@ class LangSmithBackend(BaseSandbox):
             sandbox: LangSmith Sandbox instance
         """
         self._sandbox = sandbox
-        self._timeout: int = 30 * 60  # 30 mins default
+        self._default_timeout: int = 30 * 60  # 30 mins default
 
     @property
     def id(self) -> str:
         """Unique identifier for the sandbox backend."""
         return self._sandbox.name
 
-    def execute(self, command: str) -> ExecuteResponse:
+    def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
         """Execute a command in the sandbox and return ExecuteResponse.
 
         Args:
             command: Full shell command string to execute.
+            timeout: Maximum time in seconds to wait for the command to complete.
+
+                If None, uses the backend's default timeout.
+                A value of 0 disables the command timeout when the
+                `langsmith[sandbox]` extra is installed.
 
         Returns:
             ExecuteResponse with combined output, exit code, and truncation flag.
         """
-        result = self._sandbox.run(command, timeout=self._timeout)
+        effective_timeout = timeout if timeout is not None else self._default_timeout
+        result = self._sandbox.run(command, timeout=effective_timeout)
 
         # Combine stdout and stderr (matching other backends' approach)
         output = result.stdout or ""
@@ -126,7 +130,7 @@ class LangSmithBackend(BaseSandbox):
         return responses
 
 
-class LangSmithProvider(SandboxProvider[dict[str, Any]]):
+class LangSmithProvider(SandboxProvider):
     """LangSmith sandbox provider implementation.
 
     Manages LangSmith sandbox lifecycle using the LangSmith SDK.
@@ -148,20 +152,6 @@ class LangSmithProvider(SandboxProvider[dict[str, Any]]):
             msg = "LANGSMITH_API_KEY environment variable not set"
             raise ValueError(msg)
         self._client: SandboxClient = sandbox.SandboxClient(api_key=self._api_key)
-
-    def list(
-        self,
-        *,
-        cursor: str | None = None,
-        **kwargs: Any,
-    ) -> SandboxListResponse[dict[str, Any]]:
-        """List available LangSmith sandboxes.
-
-        Raises:
-            NotImplementedError: LangSmith SDK list API not yet implemented.
-        """
-        msg = "Listing with LangSmith SDK not yet implemented"
-        raise NotImplementedError(msg)
 
     def get_or_create(
         self,
@@ -224,8 +214,7 @@ class LangSmithProvider(SandboxProvider[dict[str, Any]]):
                 result = sandbox.run("echo ready", timeout=5)
                 if result.exit_code == 0:
                     break
-            except Exception:  # noqa: S110, BLE001
-                # Sandbox not ready yet, continue polling
+            except Exception:  # noqa: S110, BLE001  # Sandbox not ready yet, continue polling
                 pass
             time.sleep(2)
         else:
@@ -237,7 +226,7 @@ class LangSmithProvider(SandboxProvider[dict[str, Any]]):
 
         return LangSmithBackend(sandbox)
 
-    def delete(self, *, sandbox_id: str, **kwargs: Any) -> None:  # noqa: ARG002
+    def delete(self, *, sandbox_id: str, **kwargs: Any) -> None:  # noqa: ARG002  # Required by SandboxFactory interface
         """Delete a LangSmith sandbox.
 
         Args:

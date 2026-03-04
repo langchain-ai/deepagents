@@ -12,9 +12,9 @@ from deepagents.backends.protocol import (
     FileUploadResponse,
     SandboxBackendProtocol,
 )
-from deepagents.backends.sandbox import (
-    BaseSandbox,
-    SandboxListResponse,
+from deepagents.backends.sandbox import BaseSandbox
+
+from deepagents_cli.integrations.sandbox_provider import (
     SandboxProvider,
 )
 
@@ -36,7 +36,7 @@ class DaytonaBackend(BaseSandbox):
             sandbox: Daytona sandbox instance
         """
         self._sandbox = sandbox
-        self._timeout: int = 30 * 60  # 30 mins
+        self._default_timeout: int = 30 * 60  # 30 mins
 
     @property
     def id(self) -> str:
@@ -46,17 +46,25 @@ class DaytonaBackend(BaseSandbox):
     def execute(
         self,
         command: str,
+        *,
+        timeout: int | None = None,
     ) -> ExecuteResponse:
         """Execute a command in the sandbox and return ExecuteResponse.
 
         Args:
             command: Full shell command string to execute.
+            timeout: Maximum time in seconds to wait for the command to complete.
+
+                If None, uses the backend's default timeout.
+
+                Note that in Daytona's implementation, a timeout of 0 means
+                "wait indefinitely".
 
         Returns:
-            ExecuteResponse with combined output, exit code, optional signal, and
-                truncation flag.
+            ExecuteResponse with combined output, exit code, and truncation flag.
         """
-        result = self._sandbox.process.exec(command, timeout=self._timeout)
+        effective_timeout = timeout if timeout is not None else self._default_timeout
+        result = self._sandbox.process.exec(command, timeout=effective_timeout)
 
         return ExecuteResponse(
             output=result.result,  # Daytona combines stdout/stderr
@@ -92,7 +100,9 @@ class DaytonaBackend(BaseSandbox):
         return [
             FileDownloadResponse(
                 path=resp.source,
-                content=resp.result,
+                content=resp.result.encode()
+                if isinstance(resp.result, str)
+                else resp.result,
                 error=None,  # TODO: map resp.error to FileOperationError
             )
             for resp in daytona_responses
@@ -127,7 +137,7 @@ class DaytonaBackend(BaseSandbox):
         return [FileUploadResponse(path=path, error=None) for path, _ in files]
 
 
-class DaytonaProvider(SandboxProvider[dict[str, Any]]):
+class DaytonaProvider(SandboxProvider):
     """Daytona sandbox provider implementation.
 
     Manages Daytona sandbox lifecycle using the Daytona SDK.
@@ -150,26 +160,12 @@ class DaytonaProvider(SandboxProvider[dict[str, Any]]):
             raise ValueError(msg)
         self._client = Daytona(DaytonaConfig(api_key=self._api_key))
 
-    def list(
-        self,
-        *,
-        cursor: str | None = None,
-        **kwargs: Any,
-    ) -> SandboxListResponse[dict[str, Any]]:
-        """List available Daytona sandboxes.
-
-        Raises:
-            NotImplementedError: Daytona SDK doesn't expose a list API yet.
-        """
-        msg = "Listing with Daytona SDK not yet implemented"
-        raise NotImplementedError(msg)
-
     def get_or_create(
         self,
         *,
         sandbox_id: str | None = None,
         timeout: int = 180,
-        **kwargs: Any,  # noqa: ARG002
+        **kwargs: Any,  # noqa: ARG002  # Required by SandboxFactory interface
     ) -> SandboxBackendProtocol:
         """Get existing or create new Daytona sandbox.
 
@@ -200,8 +196,7 @@ class DaytonaProvider(SandboxProvider[dict[str, Any]]):
                 result = sandbox.process.exec("echo ready", timeout=5)
                 if result.exit_code == 0:
                     break
-            except Exception:  # noqa: S110, BLE001
-                # Sandbox not ready yet, continue polling
+            except Exception:  # noqa: S110, BLE001  # Sandbox not ready yet, continue polling
                 pass
             time.sleep(2)
         else:
@@ -213,7 +208,7 @@ class DaytonaProvider(SandboxProvider[dict[str, Any]]):
 
         return DaytonaBackend(sandbox)
 
-    def delete(self, *, sandbox_id: str, **kwargs: Any) -> None:  # noqa: ARG002
+    def delete(self, *, sandbox_id: str, **kwargs: Any) -> None:  # noqa: ARG002  # Required by SandboxFactory interface
         """Delete a Daytona sandbox.
 
         Args:

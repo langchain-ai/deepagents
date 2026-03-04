@@ -5,13 +5,8 @@
 [![PyPI - Downloads](https://img.shields.io/pepy/dt/deepagents-cli)](https://pypistats.org/packages/deepagents-cli)
 [![Twitter](https://img.shields.io/twitter/url/https/twitter.com/langchain.svg?style=social&label=Follow%20%40LangChain)](https://x.com/langchain)
 
-Looking for the JS/TS version? Check out [Deep Agents CLI.js](https://github.com/langchain-ai/deepagentsjs).
-
-To help you ship LangChain apps to production faster, check out [LangSmith](https://smith.langchain.com).
-LangSmith is a unified developer platform for building, testing, and monitoring LLM applications.
-
 <p align="center">
-  <img src="https://raw.githubusercontent.com/langchain-ai/deepagents/master/libs/cli/images/cli.png" alt="Deep Agents CLI" width="600"/>
+  <img src="https://raw.githubusercontent.com/langchain-ai/deepagents/main/libs/cli/images/cli.png" alt="Deep Agents CLI" width="600"/>
 </p>
 
 ## Quick Install
@@ -33,8 +28,9 @@ Applications like "Deep Research", "Manus", and "Claude Code" have gotten around
 
 ## 📖 Resources
 
-- **[Documentation](https://docs.langchain.com/oss/python/deepagents/cli)** — Full documentation
-- **[Deep Agents](https://github.com/langchain-ai/deepagents)** — The underlying agent harness
+- **[CLI Documentation](https://docs.langchain.com/oss/python/deepagents/cli/overview)** — Full documentation
+- **[CLI Source](https://github.com/langchain-ai/deepagents/tree/main/libs/cli)** — Full source code
+- **[Deep Agents SDK](https://github.com/langchain-ai/deepagents)** — The underlying agent harness
 - **[Chat LangChain](https://chat.langchain.com)** - Chat interactively with the docs
 
 ## 📕 Releases & Versioning

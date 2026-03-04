@@ -11,9 +11,9 @@ from deepagents.backends.protocol import (
     FileUploadResponse,
     SandboxBackendProtocol,
 )
-from deepagents.backends.sandbox import (
-    BaseSandbox,
-    SandboxListResponse,
+from deepagents.backends.sandbox import BaseSandbox
+
+from deepagents_cli.integrations.sandbox_provider import (
     SandboxProvider,
 )
 
@@ -35,7 +35,7 @@ class ModalBackend(BaseSandbox):
             sandbox: Active Modal Sandbox instance
         """
         self._sandbox = sandbox
-        self._timeout = 30 * 60
+        self._default_timeout = 30 * 60
 
     @property
     def id(self) -> str:
@@ -45,17 +45,26 @@ class ModalBackend(BaseSandbox):
     def execute(
         self,
         command: str,
+        *,
+        timeout: int | None = None,
     ) -> ExecuteResponse:
         """Execute a command in the sandbox and return ExecuteResponse.
 
         Args:
             command: Full shell command string to execute.
+            timeout: Maximum time in seconds to wait for the command to complete.
+
+                If None, uses the backend's default timeout.
+
+                Note that in Modal's implementation, a timeout of 0 means
+                "wait indefinitely".
 
         Returns:
             ExecuteResponse with combined output, exit code, and truncation flag.
         """
         # Execute command using Modal's exec API
-        process = self._sandbox.exec("bash", "-c", command, timeout=self._timeout)
+        effective_timeout = timeout if timeout is not None else self._default_timeout
+        process = self._sandbox.exec("bash", "-c", command, timeout=effective_timeout)
 
         # Wait for process to complete
         process.wait()
@@ -136,7 +145,7 @@ class ModalBackend(BaseSandbox):
         return responses
 
 
-class ModalProvider(SandboxProvider[dict[str, Any]]):
+class ModalProvider(SandboxProvider):
     """Modal sandbox provider implementation.
 
     Manages Modal sandbox lifecycle using the Modal SDK.
@@ -153,27 +162,13 @@ class ModalProvider(SandboxProvider[dict[str, Any]]):
         self._app_name = app_name
         self.app = modal.App.lookup(name=app_name, create_if_missing=True)
 
-    def list(
-        self,
-        *,
-        cursor: str | None = None,
-        **kwargs: Any,
-    ) -> SandboxListResponse[dict[str, Any]]:
-        """List available Modal sandboxes.
-
-        Raises:
-            NotImplementedError: Modal doesn't provide a list API.
-        """
-        msg = "Listing Modal sandboxes is not supported yet."
-        raise NotImplementedError(msg)
-
     def get_or_create(
         self,
         *,
         sandbox_id: str | None = None,
         workdir: str = "/workspace",
         timeout: int = 180,
-        **kwargs: Any,  # noqa: ARG002
+        **kwargs: Any,  # noqa: ARG002  # Required by SandboxFactory interface
     ) -> SandboxBackendProtocol:
         """Get existing or create new Modal sandbox.
 
@@ -192,7 +187,7 @@ class ModalProvider(SandboxProvider[dict[str, Any]]):
         import modal
 
         if sandbox_id:
-            sandbox = modal.Sandbox.from_id(sandbox_id=sandbox_id, app=self.app)  # type: ignore[call-arg]
+            sandbox = modal.Sandbox.from_id(sandbox_id=sandbox_id, app=self.app)  # type: ignore[call-arg]  # Modal SDK typing incomplete
         else:
             sandbox = modal.Sandbox.create(app=self.app, workdir=workdir)
 
@@ -206,8 +201,7 @@ class ModalProvider(SandboxProvider[dict[str, Any]]):
                     process.wait()
                     if process.returncode == 0:
                         break
-                except Exception:  # noqa: S110, BLE001
-                    # Sandbox not ready yet, continue polling
+                except Exception:  # noqa: S110, BLE001  # Sandbox not ready yet, continue polling
                     pass
                 time.sleep(2)
             else:
@@ -217,7 +211,7 @@ class ModalProvider(SandboxProvider[dict[str, Any]]):
 
         return ModalBackend(sandbox)
 
-    def delete(self, *, sandbox_id: str, **kwargs: Any) -> None:  # noqa: ARG002
+    def delete(self, *, sandbox_id: str, **kwargs: Any) -> None:  # noqa: ARG002  # Required by SandboxFactory interface
         """Delete a Modal sandbox.
 
         Args:
@@ -226,5 +220,5 @@ class ModalProvider(SandboxProvider[dict[str, Any]]):
         """
         import modal
 
-        sandbox = modal.Sandbox.from_id(sandbox_id=sandbox_id, app=self.app)  # type: ignore[call-arg]
+        sandbox = modal.Sandbox.from_id(sandbox_id=sandbox_id, app=self.app)  # type: ignore[call-arg]  # Modal SDK typing incomplete
         sandbox.terminate()

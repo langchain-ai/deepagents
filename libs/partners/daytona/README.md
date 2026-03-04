@@ -14,11 +14,13 @@ pip install langchain_daytona
 ```
 
 ```python
-from langchain_daytona import DaytonaProvider
+from daytona import Daytona
 
-provider = DaytonaProvider()
-sandbox = provider.get_or_create()
-result = sandbox.execute("echo hello")
+from langchain_daytona import DaytonaSandbox
+
+sandbox = Daytona().create()
+backend = DaytonaSandbox(sandbox)
+result = backend.execute("echo hello")
 print(result.output)
 ```
 

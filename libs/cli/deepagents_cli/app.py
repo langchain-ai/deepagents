@@ -5,9 +5,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-
-# S404: subprocess is required for user-initiated shell commands via ! prefix
-import subprocess  # noqa: S404
+import signal
+import sys
 import uuid
 import webbrowser
 from collections import deque
@@ -481,6 +480,10 @@ class DeepAgentsApp(App):
         # Agent task tracking for interruption
         self._agent_worker: Worker[None] | None = None
         self._agent_running = False
+        # Bash process tracking for interruption (! commands)
+        self._bash_process: asyncio.subprocess.Process | None = None
+        self._bash_worker: Worker[None] | None = None
+        self._bash_running = False
         self._loading_widget: LoadingWidget | None = None
         self._token_tracker: TextualTokenTracker | None = None
         # Cumulative usage stats across all turns in this session
@@ -1004,8 +1007,8 @@ class DeepAgentsApp(App):
             )
             return
 
-        # If agent is running, enqueue message instead of processing immediately
-        if self._agent_running:
+        # If agent or bash command is running, enqueue instead of processing
+        if self._agent_running or self._bash_running:
             self._pending_messages.append(QueuedMessage(text=value, mode=mode))
             queued_widget = QueuedUserMessage(value)
             self._queued_widgets.append(queued_widget)
@@ -1036,56 +1039,139 @@ class DeepAgentsApp(App):
     async def _handle_bash_command(self, command: str) -> None:
         """Handle a bash command (! prefix).
 
-        Args:
-            command: The bash command to execute
-        """
-        # Mount user message showing the bash command
-        await self._mount_message(UserMessage(f"!{command}"))
+        Thin dispatcher that mounts the user message and spawns a worker
+        so the event loop stays free for key events (Esc/Ctrl+C).
 
-        # Execute bash command (user explicitly requested via ! prefix)
-        # S604: shell=True is intentional - user requested shell execution via ! prefix
+        Args:
+            command: The bash command to execute.
+        """
+        await self._mount_message(UserMessage(f"!{command}"))
+        self._bash_running = True
+
+        if self._chat_input:
+            self._chat_input.set_cursor_active(active=False)
+
+        self._bash_worker = self.run_worker(
+            self._run_bash_task(command),
+            exclusive=False,
+        )
+
+    async def _run_bash_task(self, command: str) -> None:
+        """Run a bash command in a background worker.
+
+        This mirrors `_run_agent_task`: running in a worker keeps the event
+        loop free so Esc/Ctrl+C can cancel the worker → raise
+        `CancelledError` → kill the process.
+
+        Args:
+            command: The shell command to execute.
+
+        Raises:
+            CancelledError: If the command is interrupted by the user.
+        """
         try:
-            result = await asyncio.to_thread(  # noqa: S604
-                subprocess.run,
+            proc = await asyncio.create_subprocess_shell(
                 command,
-                shell=True,
-                capture_output=True,
-                text=True,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
                 cwd=self._cwd,
-                timeout=60,
+                start_new_session=(sys.platform != "win32"),
             )
-            # text=True ensures stdout/stderr are str, not bytes
-            stdout = result.stdout
-            stderr = result.stderr
-            if not isinstance(stdout, str):
-                stdout = stdout.decode() if stdout else ""
-            output = stdout.strip()
-            if stderr:
-                if not isinstance(stderr, str):
-                    stderr = stderr.decode() if stderr else ""
-                output += f"\n[stderr]\n{stderr.strip()}"
+            self._bash_process = proc
+
+            try:
+                stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                    proc.communicate(), timeout=60
+                )
+            except TimeoutError:
+                await self._kill_bash_process()
+                await self._mount_message(ErrorMessage("Command timed out (60s limit)"))
+                return
+            except asyncio.CancelledError:
+                await self._kill_bash_process()
+                raise
+
+            output = (stdout_bytes or b"").decode(errors="replace").strip()
+            stderr_text = (stderr_bytes or b"").decode(errors="replace").strip()
+            if stderr_text:
+                output += f"\n[stderr]\n{stderr_text}"
 
             if output:
-                # Display output as assistant message (uses markdown for code blocks)
                 msg = AssistantMessage(f"```\n{output}\n```")
                 await self._mount_message(msg)
                 await msg.write_initial_content()
             else:
                 await self._mount_message(AppMessage("Command completed (no output)"))
 
-            if result.returncode != 0:
-                await self._mount_message(
-                    ErrorMessage(f"Exit code: {result.returncode}")
-                )
+            if proc.returncode and proc.returncode != 0:
+                await self._mount_message(ErrorMessage(f"Exit code: {proc.returncode}"))
 
             # Scroll to show the output (user-initiated command, so scroll is expected)
             chat = self.query_one("#chat", VerticalScroll)
             chat.scroll_end(animate=False)
 
-        except subprocess.TimeoutExpired:
-            await self._mount_message(ErrorMessage("Command timed out (60s limit)"))
         except OSError as e:
-            await self._mount_message(ErrorMessage(str(e)))
+            logger.exception("Failed to execute bash command: %s", command)
+            err_msg = f"Failed to run command: {e}"
+            await self._mount_message(ErrorMessage(err_msg))
+        finally:
+            await self._cleanup_bash_task()
+
+    async def _cleanup_bash_task(self) -> None:
+        """Clean up after bash task completes or is cancelled."""
+        was_interrupted = self._bash_process is not None and (
+            self._bash_worker is not None and self._bash_worker.is_cancelled
+        )
+        self._bash_process = None
+        self._bash_running = False
+        self._bash_worker = None
+        if was_interrupted:
+            await self._mount_message(AppMessage("Command interrupted"))
+        if self._chat_input:
+            self._chat_input.set_cursor_active(active=True)
+        await self._process_next_from_queue()
+
+    async def _kill_bash_process(self) -> None:
+        """Terminate the running bash process.
+
+        On POSIX, sends SIGTERM to the entire process group (killing children).
+        On Windows, terminates only the root process. No-op if the process
+        has already exited. Waits up to 5s for clean shutdown, then escalates
+        to SIGKILL.
+        """
+        proc = self._bash_process
+        if proc is None or proc.returncode is not None:
+            return
+
+        try:
+            if sys.platform != "win32":
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            else:
+                proc.terminate()
+        except ProcessLookupError:
+            return
+        except OSError:
+            logger.warning(
+                "Failed to terminate bash process (pid=%s)", proc.pid, exc_info=True
+            )
+            return
+
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=5)
+        except TimeoutError:
+            logger.warning(
+                "Bash process (pid=%s) did not exit after SIGTERM; sending SIGKILL",
+                proc.pid,
+            )
+            with suppress(ProcessLookupError, OSError):
+                if sys.platform != "win32":
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                else:
+                    proc.kill()
+            with suppress(ProcessLookupError, OSError):
+                await proc.wait()
+        except (ProcessLookupError, OSError):
+            pass
 
     async def _open_url_command(self, command: str, cmd: str) -> None:
         """Open a URL in the browser and display a clickable link.
@@ -1805,10 +1891,11 @@ class DeepAgentsApp(App):
         finally:
             self._processing_pending = False
 
-        # Bash/command mode messages complete synchronously without spawning
-        # a worker, so _cleanup_agent_task won't fire again. Continue
-        # draining the queue if no worker was started.
-        if not self._agent_running and self._pending_messages:
+        # Command mode messages complete synchronously without spawning
+        # a worker, so cleanup won't fire again. Continue draining the
+        # queue if no worker was started.
+        busy = self._agent_running or self._bash_running
+        if not busy and self._pending_messages:
             await self._process_next_from_queue()
 
     async def _cleanup_agent_task(self) -> None:
@@ -2235,11 +2322,22 @@ class DeepAgentsApp(App):
         """Handle Ctrl+C - interrupt agent, reject approval, or quit on double press.
 
         Priority order:
-        1. If agent is running, interrupt it (preserve input)
-        2. If approval menu is active, reject it
-        3. If double press (quit_pending), quit
-        4. Otherwise show quit hint
+        1. If bash process is running, kill it
+        2. If agent is running, interrupt it (preserve input)
+        3. If approval menu is active, reject it
+        4. If double press (quit_pending), quit
+        5. Otherwise show quit hint
         """
+        # If bash command is running, cancel the worker
+        if self._bash_running and self._bash_worker:
+            self._pending_messages.clear()
+            for w in self._queued_widgets:
+                w.remove()
+            self._queued_widgets.clear()
+            self._bash_worker.cancel()
+            self._quit_pending = False
+            return
+
         # If agent is running, interrupt it and discard queued messages
         if self._agent_running and self._agent_worker:
             self._pending_messages.clear()
@@ -2266,9 +2364,12 @@ class DeepAgentsApp(App):
     def action_interrupt(self) -> None:
         """Handle escape key.
 
-        Dismiss completion popup, dismiss modal, interrupt agent,
-        or reject approval. This is the primary way to stop a
-        running agent.
+        Priority order:
+        1. If modal screen is active, dismiss it
+        2. If completion popup is open, dismiss it
+        3. If bash process is running, kill it
+        4. If agent is running, interrupt it
+        5. If approval menu is active, reject it
         """
         # If a modal screen is active, dismiss it
         if isinstance(self.screen, ModalScreen):
@@ -2277,6 +2378,15 @@ class DeepAgentsApp(App):
 
         # Close completion popup before interrupting the agent
         if self._chat_input and self._chat_input.dismiss_completion():
+            return
+
+        # If bash command is running, cancel the worker
+        if self._bash_running and self._bash_worker:
+            self._pending_messages.clear()
+            for w in self._queued_widgets:
+                w.remove()
+            self._queued_widgets.clear()
+            self._bash_worker.cancel()
             return
 
         # If agent is running, interrupt it and discard queued messages

@@ -70,10 +70,10 @@ class SessionStats:
         output_tokens: Cumulative output tokens across all LLM requests.
         wall_time_seconds: Wall-clock duration from stream start to end.
         per_model: Per-model breakdown keyed by model name.
-            Populated only when usage_metadata includes a `model_name` field or
-            when the active `settings.model_name` is captured at the point of
-            each request. Empty dict means single-model session (no breakdown
-            available).
+            Populated only when `record_request` receives a non-empty
+            `model_name`. Empty dict means no named-model requests were
+            recorded; `print_usage_table` omits the model table in that case and
+            shows only the wall-time line (if applicable).
     """
 
     request_count: int = 0

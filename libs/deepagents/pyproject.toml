@@ -52,7 +52,6 @@ test = [
   "langchain-openai",
   "twine",
   "build",
-  "langchain-fireworks>=1.1.0",
 ]
 
 evals = [
@@ -61,6 +60,7 @@ evals = [
   "langchain-deepseek",
   "langchain-groq",
   "langchain-ollama",
+  "langchain-fireworks",
 ]
 
 [build-system]

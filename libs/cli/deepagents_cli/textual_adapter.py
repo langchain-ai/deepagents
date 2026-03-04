@@ -175,8 +175,8 @@ def print_usage_table(
     )
     table.add_column("Model", style="dim")
     table.add_column("Reqs", justify="right", style="dim")
-    table.add_column("Input Tokens", justify="right", style="dim")
-    table.add_column("Output Tokens", justify="right", style="dim")
+    table.add_column("InputTok", justify="right", style="dim")
+    table.add_column("OutputTok", justify="right", style="dim")
 
     if multi_model:
         for model_name, ms in stats.per_model.items():

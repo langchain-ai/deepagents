@@ -1,4 +1,4 @@
-"""Tests for HistoryManager substring search."""
+"""Unit tests for HistoryManager."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from deepagents_cli.widgets.history import HistoryManager
 
 @pytest.fixture
 def history(tmp_path: Path) -> HistoryManager:
-    """Create a HistoryManager with sample entries."""
+    """Create a HistoryManager with sample entries for substring tests."""
     hm = HistoryManager(tmp_path / "history.jsonl")
     for cmd in [
         "git checkout main",
@@ -25,6 +25,14 @@ def history(tmp_path: Path) -> HistoryManager:
         hm.add(cmd)
     hm.reset_navigation()
     return hm
+
+
+@pytest.fixture
+def simple_history(tmp_path: Path) -> HistoryManager:
+    """Create a HistoryManager with simple seed entries."""
+    mgr = HistoryManager(tmp_path / "history.jsonl")
+    mgr._entries = ["first", "second", "third"]
+    return mgr
 
 
 class TestSubstringMatch:
@@ -133,3 +141,66 @@ class TestQueryCapturedOnce:
         # Second call with different query — should still use "compose"
         entry = history.get_previous("compose", query="git")
         assert entry == "docker compose up"
+
+
+class TestInHistoryProperty:
+    """Test HistoryManager.in_history property."""
+
+    def test_initial_state_is_false(self, tmp_path: Path) -> None:
+        """in_history should be False before any navigation."""
+        mgr = HistoryManager(tmp_path / "history.jsonl")
+        assert mgr.in_history is False
+
+    def test_true_after_get_previous(self, simple_history: HistoryManager) -> None:
+        """in_history should be True after get_previous returns an entry."""
+        entry = simple_history.get_previous("")
+        assert entry is not None
+        assert simple_history.in_history is True
+
+    def test_true_while_browsing(self, simple_history: HistoryManager) -> None:
+        """in_history should stay True while navigating through entries."""
+        simple_history.get_previous("")
+        assert simple_history.in_history is True
+
+        simple_history.get_previous("")
+        assert simple_history.in_history is True
+
+    def test_false_after_get_next_past_end(
+        self, simple_history: HistoryManager
+    ) -> None:
+        """in_history should be False after navigating past the newest entry."""
+        simple_history.get_previous("current text")
+        assert simple_history.in_history is True
+
+        # Navigate forward past the end — returns to original input
+        simple_history.get_next()
+        assert simple_history.in_history is False
+
+    def test_false_after_reset_navigation(self, simple_history: HistoryManager) -> None:
+        """in_history should be False after explicit reset."""
+        simple_history.get_previous("")
+        assert simple_history.in_history is True
+
+        simple_history.reset_navigation()
+        assert simple_history.in_history is False
+
+    def test_false_after_add(self, simple_history: HistoryManager) -> None:
+        """in_history should be False after add() since it calls reset_navigation."""
+        simple_history.get_previous("")
+        assert simple_history.in_history is True
+
+        simple_history.add("new entry")
+        assert simple_history.in_history is False
+
+    def test_true_at_oldest_entry(self, simple_history: HistoryManager) -> None:
+        """in_history should stay True when at the oldest entry with no older match."""
+        # Navigate to oldest
+        simple_history.get_previous("")
+        simple_history.get_previous("")
+        simple_history.get_previous("")
+        assert simple_history.in_history is True
+
+        # Try to go further back — returns None but stays in history
+        result = simple_history.get_previous("")
+        assert result is None
+        assert simple_history.in_history is True

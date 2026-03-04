@@ -4,7 +4,14 @@ from pathlib import Path
 
 import pytest
 
-from deepagents_cli.input import parse_file_mentions
+from deepagents_cli.input import (
+    extract_leading_pasted_file_path,
+    normalize_pasted_path,
+    parse_file_mentions,
+    parse_pasted_file_paths,
+    parse_pasted_path_payload,
+    parse_single_pasted_file_path,
+)
 
 
 def test_parse_file_mentions_with_chinese_sentence(
@@ -243,3 +250,165 @@ def test_parse_file_mentions_handles_bad_tilde_user(
     mock_console.print.assert_called_once()
     call_arg = mock_console.print.call_args[0][0]
     assert "nonexistentuser12345" in call_arg
+
+
+def test_parse_pasted_file_paths_with_quoted_paths(tmp_path: Path) -> None:
+    """Quoted dropped paths should resolve correctly."""
+    img = tmp_path / "my image.png"
+    img.write_bytes(b"img")
+
+    result = parse_pasted_file_paths(f'"{img}"')
+
+    assert result == [img.resolve()]
+
+
+def test_parse_pasted_file_paths_with_file_url(tmp_path: Path) -> None:
+    """`file://` dropped paths should be URL-decoded and resolved."""
+    img = tmp_path / "space name.png"
+    img.write_bytes(b"img")
+
+    result = parse_pasted_file_paths(f"file://{str(img).replace(' ', '%20')}")
+
+    assert result == [img.resolve()]
+
+
+def test_parse_pasted_file_paths_with_multiple_lines(tmp_path: Path) -> None:
+    """Multiple dropped paths separated by newlines should all resolve."""
+    first = tmp_path / "a.png"
+    second = tmp_path / "b.png"
+    first.write_bytes(b"a")
+    second.write_bytes(b"b")
+
+    result = parse_pasted_file_paths(f"{first}\n{second}")
+
+    assert result == [first.resolve(), second.resolve()]
+
+
+def test_parse_pasted_file_paths_returns_empty_for_text_payload() -> None:
+    """Normal prose should not be interpreted as dropped file paths."""
+    assert parse_pasted_file_paths("please inspect this image") == []
+
+
+def test_parse_pasted_file_paths_returns_empty_for_missing_file(tmp_path: Path) -> None:
+    """Missing dropped files should fall back to regular text paste."""
+    missing = tmp_path / "missing.png"
+    assert parse_pasted_file_paths(str(missing)) == []
+
+
+def test_parse_pasted_file_paths_returns_empty_for_empty_string() -> None:
+    """Empty string should return an empty list."""
+    assert parse_pasted_file_paths("") == []
+
+
+def test_parse_pasted_file_paths_returns_empty_for_whitespace() -> None:
+    """Whitespace-only payloads should return an empty list."""
+    assert parse_pasted_file_paths("   \n\t  ") == []
+
+
+def test_parse_pasted_file_paths_handles_angle_bracket_wrapped_path(
+    tmp_path: Path,
+) -> None:
+    """Angle-bracket wrapped paths (e.g. from some terminals) should resolve."""
+    img = tmp_path / "bracketed.png"
+    img.write_bytes(b"img")
+
+    result = parse_pasted_file_paths(f"<{img}>")
+
+    assert result == [img.resolve()]
+
+
+def test_normalize_pasted_path_rejects_mixed_payload() -> None:
+    """Single-path normalizer should reject path+prose mixed payloads."""
+    assert normalize_pasted_path("'/tmp/a.png' what's this") is None
+
+
+def test_normalize_pasted_path_accepts_windows_drive_payload() -> None:
+    """Unquoted Windows drive path with spaces should parse as one path token."""
+    payload = r"C:\Users\Alice\My Pictures\example image.png"
+    result = normalize_pasted_path(payload)
+    assert result == Path(payload)
+
+
+def test_parse_single_pasted_file_path_resolves_unicode_space_variant(
+    tmp_path: Path,
+) -> None:
+    """ASCII-space paste should resolve files with lookalike Unicode spaces."""
+    unicode_name = "Screenshot 2026-02-26 at 2.02.42\u202fAM.png"
+    img = tmp_path / unicode_name
+    img.write_bytes(b"img")
+
+    pasted_path = str(img).replace("\u202f", " ")
+    pasted = f"'{pasted_path}'"
+    resolved = parse_single_pasted_file_path(pasted)
+
+    assert resolved == img.resolve()
+
+
+def test_parse_single_pasted_file_path_unquoted_posix_path_with_spaces(
+    tmp_path: Path,
+) -> None:
+    """Raw POSIX absolute paths with spaces should resolve as one file path."""
+    img = tmp_path / "Screenshot 1.png"
+    img.write_bytes(b"img")
+
+    resolved = parse_single_pasted_file_path(str(img))
+
+    assert resolved == img.resolve()
+
+
+def test_parse_pasted_path_payload_single_path(tmp_path: Path) -> None:
+    """Payload parser should resolve path-only payloads."""
+    img = tmp_path / "one.png"
+    img.write_bytes(b"img")
+
+    parsed = parse_pasted_path_payload(str(img))
+
+    assert parsed is not None
+    assert parsed.paths == [img.resolve()]
+    assert parsed.token_end is None
+
+
+def test_parse_pasted_path_payload_leading_path_with_suffix(tmp_path: Path) -> None:
+    """Payload parser should extract leading path when enabled."""
+    img = tmp_path / "my image.png"
+    img.write_bytes(b"img")
+    payload = f"'{img}' what's in this image?"
+
+    assert parse_pasted_path_payload(payload) is None
+
+    parsed = parse_pasted_path_payload(payload, allow_leading_path=True)
+
+    assert parsed is not None
+    assert parsed.paths == [img.resolve()]
+    assert parsed.token_end is not None
+    assert payload[parsed.token_end :] == " what's in this image?"
+
+
+def test_extract_leading_pasted_file_path_with_trailing_text(tmp_path: Path) -> None:
+    """Leading path token should be extracted while preserving trailing text."""
+    img = tmp_path / "my image.png"
+    img.write_bytes(b"img")
+    payload = f"'{img}' what's in this image?"
+
+    result = extract_leading_pasted_file_path(payload)
+
+    assert result is not None
+    resolved, end = result
+    assert resolved == img.resolve()
+    assert payload[end:] == " what's in this image?"
+
+
+def test_extract_leading_pasted_file_path_unquoted_path_with_spaces(
+    tmp_path: Path,
+) -> None:
+    """Unquoted absolute paths with spaces should be extracted from leading text."""
+    img = tmp_path / "Screenshot 1.png"
+    img.write_bytes(b"img")
+    payload = f"{img} what's in this"
+
+    result = extract_leading_pasted_file_path(payload)
+
+    assert result is not None
+    resolved, end = result
+    assert resolved == img.resolve()
+    assert payload[end:] == " what's in this"

@@ -67,10 +67,10 @@ class SessionStats:
         input_tokens: Cumulative input tokens across all LLM requests.
         output_tokens: Cumulative output tokens across all LLM requests.
         wall_time_seconds: Wall-clock duration from stream start to end.
-        per_model: Per-model breakdown keyed by model name.  Populated
-            only when usage_metadata includes a ``model_name`` field or
-            when the active ``settings.model_name`` is captured at the
-            point of each request.  Empty dict means single-model session
+        per_model: Per-model breakdown keyed by model name.
+            Populated only when usage_metadata includes a `model_name` field or
+            when the active `settings.model_name` is captured at the point of
+            each request. Empty dict means single-model session
             (no breakdown available).
     """
 
@@ -92,8 +92,8 @@ class SessionStats:
 
         Args:
             model_name: The model that served this request (used as the
-                per-model key).  Pass an empty string to skip the
-                per-model breakdown for this request.
+                per-model key). Pass an empty string to skip the per-model
+                breakdown for this request.
             input_toks: Input tokens for this request.
             output_toks: Output tokens for this request.
         """
@@ -331,7 +331,7 @@ async def execute_task_textual(
 
     Returns:
         Stats accumulated over this turn (request count, token counts,
-        wall-clock time).
+            wall-clock time).
 
     Raises:
         ValidationError: If HITL request validation fails (re-raised).

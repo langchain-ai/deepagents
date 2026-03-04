@@ -125,14 +125,14 @@ def _format_token_count(count: int) -> str:
 
 
 def _format_session_stats(stats: SessionStats) -> str:
-    """Format SessionStats as a compact one-line summary for the chat.
+    """Format `SessionStats` as a compact one-line summary for the chat.
 
     Args:
         stats: The turn stats to format.
 
     Returns:
-        A string like ``"3 requests · 12.5K in · 2.1K out · 4.3s"``,
-        or an empty string if there is nothing meaningful to display.
+        A string like `"3 requests · 12.5K in · 2.1K out · 4.3s"`, or an empty
+            string if there is nothing meaningful to display.
     """
     parts = []
     if stats.request_count:

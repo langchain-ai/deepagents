@@ -2338,7 +2338,7 @@ class DeepAgentsApp(App):
             self._quit_pending = False
             return
 
-        # If approval menu is active, reject it before cancelling the worker.
+        # If approval menu is active, reject it before cancelling the agent worker.
         # During HITL the agent worker remains active while awaiting approval,
         # so this must be checked before the worker cancellation branch to
         # avoid leaving a stale approval widget interactive after interruption.
@@ -2396,7 +2396,7 @@ class DeepAgentsApp(App):
             self._bash_worker.cancel()
             return
 
-        # If approval menu is active, reject it before cancelling the worker.
+        # If approval menu is active, reject it before cancelling the agent worker.
         # During HITL the agent worker remains active while awaiting approval,
         # so this must be checked before the worker cancellation branch to
         # avoid leaving a stale approval widget interactive after interruption.

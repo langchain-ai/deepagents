@@ -1201,3 +1201,38 @@ class TestInterruptApprovalPriority:
         queued_w2.remove.assert_called_once()
         assert len(app._pending_messages) == 0
         assert len(app._queued_widgets) == 0
+
+    async def test_escape_rejects_approval_when_no_worker(self) -> None:
+        """Approval rejection works even without an active agent worker."""
+        app = DeepAgentsApp()
+        approval = MagicMock()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            app._pending_approval_widget = approval
+            app._agent_running = False
+            app._agent_worker = None
+
+            app.action_interrupt()
+
+        approval.action_select_reject.assert_called_once()
+
+    async def test_ctrl_c_rejects_approval_before_canceling_worker(self) -> None:
+        """Ctrl+C should also reject approval before canceling worker."""
+        app = DeepAgentsApp()
+        approval = MagicMock()
+        worker = MagicMock()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            app._pending_approval_widget = approval
+            app._agent_running = True
+            app._agent_worker = worker
+
+            app.action_quit_or_interrupt()
+
+        approval.action_select_reject.assert_called_once()
+        worker.cancel.assert_not_called()
+        assert app._quit_pending is False

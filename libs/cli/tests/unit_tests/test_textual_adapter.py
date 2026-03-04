@@ -20,6 +20,7 @@ from deepagents_cli.textual_adapter import (
     _is_summarization_chunk,
     execute_task_textual,
     format_token_count,
+    print_usage_table,
 )
 from deepagents_cli.widgets.messages import SummarizationMessage
 
@@ -566,3 +567,54 @@ class TestFormatTokenCount:
 
     def test_zero(self) -> None:
         assert format_token_count(0) == "0"
+
+
+# ---------------------------------------------------------------------------
+# print_usage_table tests
+# ---------------------------------------------------------------------------
+
+
+class TestPrintUsageTable:
+    """Tests for `print_usage_table` output."""
+
+    def test_no_model_called_skips_unknown_row(self) -> None:
+        """When no model was called, the table should not show 'unknown'."""
+        from io import StringIO
+
+        from rich.console import Console
+
+        stats = SessionStats()
+        buf = StringIO()
+        console = Console(file=buf, force_terminal=True)
+        print_usage_table(stats, wall_time=1.5, console=console)
+        output = buf.getvalue()
+        assert "unknown" not in output
+        assert "Agent active" in output
+
+    def test_single_model_shows_name(self) -> None:
+        """Single-model session should display the model name."""
+        from io import StringIO
+
+        from rich.console import Console
+
+        stats = SessionStats()
+        stats.record_request("gpt-4", 100, 50)
+        buf = StringIO()
+        console = Console(file=buf, force_terminal=True)
+        print_usage_table(stats, wall_time=2.0, console=console)
+        output = buf.getvalue()
+        assert "gpt-4" in output
+        assert "unknown" not in output
+
+    def test_no_requests_no_time_prints_nothing(self) -> None:
+        """Empty stats with negligible wall time should print nothing."""
+        from io import StringIO
+
+        from rich.console import Console
+
+        stats = SessionStats()
+        buf = StringIO()
+        console = Console(file=buf, force_terminal=True)
+        print_usage_table(stats, wall_time=0.01, console=console)
+        output = buf.getvalue()
+        assert output.strip() == ""

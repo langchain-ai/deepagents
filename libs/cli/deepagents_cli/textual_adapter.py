@@ -164,46 +164,47 @@ def print_usage_table(
     if not (stats.request_count or stats.input_tokens or has_time):
         return
 
-    multi_model = len(stats.per_model) > 1
+    if stats.per_model:
+        multi_model = len(stats.per_model) > 1
 
-    table = Table(
-        show_header=True,
-        header_style="bold",
-        box=None,
-        padding=(0, 2, 0, 0),
-        show_edge=False,
-    )
-    table.add_column("Model", style="dim")
-    table.add_column("Reqs", justify="right", style="dim")
-    table.add_column("InputTok", justify="right", style="dim")
-    table.add_column("OutputTok", justify="right", style="dim")
+        table = Table(
+            show_header=True,
+            header_style="bold",
+            box=None,
+            padding=(0, 2, 0, 0),
+            show_edge=False,
+        )
+        table.add_column("Model", style="dim")
+        table.add_column("Reqs", justify="right", style="dim")
+        table.add_column("InputTok", justify="right", style="dim")
+        table.add_column("OutputTok", justify="right", style="dim")
 
-    if multi_model:
-        for model_name, ms in stats.per_model.items():
+        if multi_model:
+            for model_name, ms in stats.per_model.items():
+                table.add_row(
+                    model_name,
+                    str(ms.request_count),
+                    format_token_count(ms.input_tokens),
+                    format_token_count(ms.output_tokens),
+                )
             table.add_row(
-                model_name,
-                str(ms.request_count),
-                format_token_count(ms.input_tokens),
-                format_token_count(ms.output_tokens),
+                "Total",
+                str(stats.request_count),
+                format_token_count(stats.input_tokens),
+                format_token_count(stats.output_tokens),
             )
-        table.add_row(
-            "Total",
-            str(stats.request_count),
-            format_token_count(stats.input_tokens),
-            format_token_count(stats.output_tokens),
-        )
-    else:
-        model_label = next(iter(stats.per_model), "") or "unknown"
-        table.add_row(
-            model_label,
-            str(stats.request_count),
-            format_token_count(stats.input_tokens),
-            format_token_count(stats.output_tokens),
-        )
+        else:
+            model_label = next(iter(stats.per_model))
+            table.add_row(
+                model_label,
+                str(stats.request_count),
+                format_token_count(stats.input_tokens),
+                format_token_count(stats.output_tokens),
+            )
 
-    console.print()
-    console.print("[bold]Usage Stats[/bold]")
-    console.print(table)
+        console.print()
+        console.print("[bold]Usage Stats[/bold]")
+        console.print(table)
     if has_time:
         console.print()
         console.print(f"[dim]Agent active  {wall_time:.1f}s[/dim]")

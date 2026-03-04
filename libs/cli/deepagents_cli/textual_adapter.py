@@ -202,7 +202,7 @@ def print_usage_table(
         )
 
     console.print()
-    console.print("[bold]Model Usage[/bold]")
+    console.print("[bold]Usage Stats[/bold]")
     console.print(table)
     if has_time:
         console.print()

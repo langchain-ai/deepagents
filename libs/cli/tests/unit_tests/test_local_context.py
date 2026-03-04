@@ -223,7 +223,6 @@ class TestLocalContextMiddleware:
         handler.assert_called_once_with(request)
         assert result == "response"
 
-    @pytest.mark.asyncio
     async def test_awrap_model_call_with_local_context(self) -> None:
         """Test that awrap_model_call appends local context to system prompt."""
         backend = _make_backend()
@@ -249,7 +248,6 @@ class TestLocalContextMiddleware:
         handler.assert_called_once_with(overridden_request)
         assert result == "async response"
 
-    @pytest.mark.asyncio
     async def test_awrap_model_call_without_local_context(self) -> None:
         """Test that awrap_model_call passes through when no local context."""
         backend = _make_backend()

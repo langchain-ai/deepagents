@@ -308,6 +308,14 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--profile-override",
+        metavar="JSON",
+        help="Override model profile fields as a JSON string "
+        "(e.g., '{\"max_input_tokens\": 4096}'). "
+        "Merged on top of config file profile overrides.",
+    )
+
+    parser.add_argument(
         "--default-model",
         metavar="MODEL",
         nargs="?",
@@ -434,6 +442,7 @@ async def run_textual_cli_async(
     sandbox_setup: str | None = None,
     model_name: str | None = None,
     model_params: dict[str, Any] | None = None,
+    profile_override: dict[str, Any] | None = None,
     thread_id: str | None = None,
     is_resumed: bool = False,
     initial_prompt: str | None = None,
@@ -452,6 +461,9 @@ async def run_textual_cli_async(
         model_params: Extra kwargs from `--model-params` to pass to the model.
 
             These override config file values.
+        profile_override: Extra profile fields from `--profile-override`.
+
+            Merged on top of config file profile overrides.
         thread_id: Thread ID to use (new or resumed)
         is_resumed: Whether this is a resumed session
         initial_prompt: Optional prompt to auto-submit when session starts
@@ -469,7 +481,11 @@ async def run_textual_cli_async(
     from deepagents_cli.tools import fetch_url, http_request, web_search
 
     try:
-        result = create_model(model_name, extra_kwargs=model_params)
+        result = create_model(
+            model_name,
+            extra_kwargs=model_params,
+            profile_overrides=profile_override,
+        )
     except ModelConfigError as e:
         from deepagents_cli.app import AppResult
 
@@ -824,6 +840,24 @@ def cli_main() -> None:
                 )
                 sys.exit(1)
 
+        profile_override: dict[str, Any] | None = None
+        raw_profile = getattr(args, "profile_override", None)
+        if raw_profile:
+            try:
+                profile_override = json.loads(raw_profile)
+            except json.JSONDecodeError as e:
+                console.print(
+                    "[bold red]Error:[/bold red] "
+                    f"--profile-override is not valid JSON: {e}"
+                )
+                sys.exit(1)
+            if not isinstance(profile_override, dict):
+                console.print(
+                    "[bold red]Error:[/bold red] "
+                    "--profile-override must be a JSON object"
+                )
+                sys.exit(1)
+
         apply_stdin_pipe(args)
 
         if (args.quiet or args.no_stream) and not args.non_interactive_message:
@@ -958,6 +992,7 @@ def cli_main() -> None:
                     assistant_id=args.agent,
                     model_name=getattr(args, "model", None),
                     model_params=model_params,
+                    profile_override=profile_override,
                     sandbox_type=args.sandbox,
                     sandbox_id=args.sandbox_id,
                     sandbox_setup=getattr(args, "sandbox_setup", None),
@@ -1057,6 +1092,7 @@ def cli_main() -> None:
                         sandbox_setup=getattr(args, "sandbox_setup", None),
                         model_name=getattr(args, "model", None),
                         model_params=model_params,
+                        profile_override=profile_override,
                         thread_id=thread_id,
                         is_resumed=is_resumed,
                         initial_prompt=getattr(args, "initial_prompt", None),

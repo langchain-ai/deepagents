@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-import pytest
 from textual import events
 from textual.app import App, ComposeResult
 from textual.containers import Container
@@ -20,6 +19,7 @@ from deepagents_cli.widgets.chat_input import (
 )
 
 if TYPE_CHECKING:
+    import pytest
     from textual.pilot import Pilot
 
 
@@ -80,7 +80,6 @@ class TestCompletionPopup:
 class TestCompletionPopupIntegration:
     """Integration tests for CompletionPopup with Textual."""
 
-    @pytest.mark.asyncio
     async def test_update_suggestions_shows_popup(self) -> None:
         """update_suggestions should show the popup when given suggestions."""
 
@@ -105,7 +104,6 @@ class TestCompletionPopupIntegration:
             # Should be visible
             assert popup.styles.display == "block"
 
-    @pytest.mark.asyncio
     async def test_update_suggestions_creates_option_widgets(self) -> None:
         """update_suggestions should create CompletionOption widgets."""
 
@@ -128,7 +126,6 @@ class TestCompletionPopupIntegration:
             options = popup.query(CompletionOption)
             assert len(options) == 2
 
-    @pytest.mark.asyncio
     async def test_empty_suggestions_hides_popup(self) -> None:
         """Empty suggestions should hide the popup."""
 
@@ -158,7 +155,6 @@ class TestCompletionPopupIntegration:
 class TestCompletionOptionClick:
     """Test click handling on CompletionOption."""
 
-    @pytest.mark.asyncio
     async def test_click_on_option_posts_message(self) -> None:
         """Clicking on an option should post a Clicked message."""
 
@@ -263,7 +259,6 @@ def _prompt_text(prompt: Static) -> str:
 class TestPromptIndicator:
     """Test that the prompt indicator reflects the current input mode."""
 
-    @pytest.mark.asyncio
     async def test_prompt_shows_bang_in_bash_mode(self) -> None:
         """Setting mode to 'bash' should change prompt to '!' and apply bash styling."""
         app = _ChatInputTestApp()
@@ -279,7 +274,6 @@ class TestPromptIndicator:
             assert _prompt_text(prompt) == "!"
             assert chat_input.has_class("mode-bash")
 
-    @pytest.mark.asyncio
     async def test_prompt_shows_slash_in_command_mode(self) -> None:
         """Setting mode to 'command' should change prompt and styling."""
         app = _ChatInputTestApp()
@@ -292,7 +286,6 @@ class TestPromptIndicator:
             assert _prompt_text(prompt) == "/"
             assert chat_input.has_class("mode-command")
 
-    @pytest.mark.asyncio
     async def test_prompt_reverts_to_default_on_normal_mode(self) -> None:
         """Resetting mode to 'normal' should revert indicator and classes."""
         app = _ChatInputTestApp()
@@ -311,7 +304,6 @@ class TestPromptIndicator:
             assert not chat_input.has_class("mode-bash")
             assert not chat_input.has_class("mode-command")
 
-    @pytest.mark.asyncio
     async def test_mode_change_posts_message(self) -> None:
         """Setting mode should post a ModeChanged message."""
         messages: list[ChatInput.ModeChanged] = []
@@ -335,7 +327,6 @@ class TestPromptIndicator:
 class TestHistoryNavigationFlag:
     """Test that _navigating_history resets when history is exhausted."""
 
-    @pytest.mark.asyncio
     async def test_down_arrow_at_bottom_resets_navigating_flag(self) -> None:
         """Pressing down with no history should not leave _navigating_history stuck."""
         app = _ChatInputTestApp()
@@ -351,7 +342,6 @@ class TestHistoryNavigationFlag:
 
             assert not text_area._navigating_history
 
-    @pytest.mark.asyncio
     async def test_autocomplete_works_after_down_arrow(self) -> None:
         """Typing '/' after pressing down should still trigger completions."""
         app = _ChatInputTestApp()
@@ -378,7 +368,6 @@ class TestHistoryNavigationFlag:
 class TestHistoryBoundaryNavigation:
     """Test that history navigation only triggers at input boundaries."""
 
-    @pytest.mark.asyncio
     async def test_up_arrow_only_triggers_at_cursor_start(self) -> None:
         """Up arrow should only navigate history when cursor is at (0, 0)."""
         app = _ChatInputTestApp()
@@ -398,7 +387,6 @@ class TestHistoryBoundaryNavigation:
             await pilot.pause()
             assert chat._text_area.text == "hello"
 
-    @pytest.mark.asyncio
     async def test_up_arrow_triggers_at_cursor_zero(self) -> None:
         """Up arrow should navigate history when cursor is at (0, 0)."""
         app = _ChatInputTestApp()
@@ -419,7 +407,6 @@ class TestHistoryBoundaryNavigation:
             await pilot.pause()
             assert chat._text_area.text == "previous entry"
 
-    @pytest.mark.asyncio
     async def test_down_arrow_navigates_from_start_when_in_history(self) -> None:
         """Down arrow at start navigates history when `_in_history` is True."""
         app = _ChatInputTestApp()
@@ -443,7 +430,6 @@ class TestHistoryBoundaryNavigation:
             await pilot.pause()
             assert chat._text_area.text == ""
 
-    @pytest.mark.asyncio
     async def test_down_arrow_does_not_trigger_at_non_end(self) -> None:
         """Down arrow should not navigate history when cursor is not at end."""
         app = _ChatInputTestApp()
@@ -466,7 +452,6 @@ class TestHistoryBoundaryNavigation:
             await pilot.pause()
             assert chat._text_area.text == "hello world"
 
-    @pytest.mark.asyncio
     async def test_down_arrow_at_end_triggers_history(self) -> None:
         """Down arrow at end of text should navigate history forward."""
         app = _ChatInputTestApp()
@@ -489,7 +474,6 @@ class TestHistoryBoundaryNavigation:
             await pilot.pause()
             assert chat._text_area.text == "second"
 
-    @pytest.mark.asyncio
     async def test_up_at_middle_of_multiline_does_not_trigger(self) -> None:
         """Up arrow on a middle line should not navigate history."""
         app = _ChatInputTestApp()
@@ -510,7 +494,6 @@ class TestHistoryBoundaryNavigation:
             await pilot.pause()
             assert chat._text_area.text == "line one\nline two\nline three"
 
-    @pytest.mark.asyncio
     async def test_in_history_allows_up_from_end(self) -> None:
         """When browsing history, up arrow at end should also navigate."""
         app = _ChatInputTestApp()
@@ -532,7 +515,6 @@ class TestHistoryBoundaryNavigation:
             await pilot.pause()
             assert chat._text_area.text == "first"
 
-    @pytest.mark.asyncio
     async def test_in_history_resets_after_submission(self) -> None:
         """Submitting should clear the _in_history flag."""
         app = _RecordingApp()
@@ -550,7 +532,6 @@ class TestHistoryBoundaryNavigation:
             await pilot.pause()
             assert chat._text_area._in_history is False
 
-    @pytest.mark.asyncio
     async def test_in_history_resets_after_navigating_past_end(self) -> None:
         """Pressing down past history end should set `_in_history` to False."""
         app = _ChatInputTestApp()
@@ -576,7 +557,6 @@ class TestHistoryBoundaryNavigation:
 class TestCompletionPopupClickBubbling:
     """Test that clicks on options bubble up through the popup."""
 
-    @pytest.mark.asyncio
     async def test_popup_receives_option_click_and_posts_message(self) -> None:
         """Popup should receive option clicks and post OptionClicked message."""
 
@@ -618,7 +598,6 @@ class TestCompletionPopupClickBubbling:
 class TestDismissCompletion:
     """Test ChatInput.dismiss_completion edge cases."""
 
-    @pytest.mark.asyncio
     async def test_dismiss_returns_false_when_no_suggestions(self) -> None:
         """dismiss_completion returns False when nothing is shown."""
         app = _ChatInputTestApp()
@@ -626,7 +605,6 @@ class TestDismissCompletion:
             chat = app.query_one("#chat-input", ChatInput)
             assert chat.dismiss_completion() is False
 
-    @pytest.mark.asyncio
     async def test_dismiss_clears_popup_and_state(self) -> None:
         """dismiss_completion hides popup and resets all state."""
         app = _ChatInputTestApp()
@@ -654,7 +632,6 @@ class TestDismissCompletion:
             assert popup.styles.display == "none"
             assert chat._text_area._completion_active is False
 
-    @pytest.mark.asyncio
     async def test_dismiss_is_idempotent(self) -> None:
         """Calling dismiss_completion twice is safe."""
         app = _ChatInputTestApp()
@@ -670,7 +647,6 @@ class TestDismissCompletion:
             # Second call is a no-op
             assert chat.dismiss_completion() is False
 
-    @pytest.mark.asyncio
     async def test_completion_reappears_after_dismiss(self) -> None:
         """Typing / after dismiss_completion re-opens the menu."""
         app = _ChatInputTestApp()
@@ -704,7 +680,6 @@ class TestDismissCompletion:
             assert len(chat._current_suggestions) == len(SLASH_COMMANDS)
             assert popup.styles.display == "block"
 
-    @pytest.mark.asyncio
     async def test_popup_hide_cancels_pending_rebuild(self) -> None:
         """Hiding the popup clears pending suggestions so a stale rebuild is a no-op."""
         app = _ChatInputTestApp()
@@ -727,7 +702,6 @@ class TestDismissCompletion:
 class TestModePrefixStripping:
     """Test that mode-trigger characters are stripped from text input."""
 
-    @pytest.mark.asyncio
     async def test_typing_bang_strips_prefix_and_sets_bash_mode(self) -> None:
         """Setting text to `'!ls'` should strip to `'ls'` and enter bash mode."""
         app = _ChatInputTestApp()
@@ -741,7 +715,6 @@ class TestModePrefixStripping:
             assert chat.mode == "bash"
             assert chat._text_area.text == "ls"
 
-    @pytest.mark.asyncio
     async def test_typing_slash_strips_prefix_and_sets_command_mode(self) -> None:
         """Setting text to `'/'` should strip to `''` and enter command mode."""
         app = _ChatInputTestApp()
@@ -755,7 +728,6 @@ class TestModePrefixStripping:
             assert chat.mode == "command"
             assert chat._text_area.text == ""
 
-    @pytest.mark.asyncio
     async def test_mode_stays_on_empty_text(self) -> None:
         """Clearing text after entering bash mode should stay in mode."""
         app = _ChatInputTestApp()
@@ -773,7 +745,6 @@ class TestModePrefixStripping:
             await pilot.pause()
             assert chat.mode == "bash"
 
-    @pytest.mark.asyncio
     async def test_backspace_on_empty_exits_mode(self) -> None:
         """Backspace on empty input in bash mode should reset to normal."""
         app = _ChatInputTestApp()
@@ -796,7 +767,6 @@ class TestModePrefixStripping:
             await pilot.pause()
             assert chat.mode == "normal"
 
-    @pytest.mark.asyncio
     async def test_backspace_on_single_char_stays_in_mode(self) -> None:
         """Deleting last char in command mode should stay in mode, not exit."""
         app = _ChatInputTestApp()
@@ -824,7 +794,6 @@ class TestModePrefixStripping:
             await pilot.pause()
             assert chat.mode == "normal"
 
-    @pytest.mark.asyncio
     async def test_backspace_exit_mode_dismisses_completion(self) -> None:
         """Exiting mode via backspace-on-empty should hide the completion popup."""
         app = _ChatInputTestApp()
@@ -846,7 +815,6 @@ class TestModePrefixStripping:
             assert chat._current_suggestions == []
             assert popup.styles.display == "none"
 
-    @pytest.mark.asyncio
     async def test_slash_completion_works_after_strip(self) -> None:
         """Entering command mode and typing `'h'` should trigger completions."""
         app = _ChatInputTestApp()
@@ -868,7 +836,6 @@ class TestModePrefixStripping:
             labels = [s[0] for s in chat._current_suggestions]
             assert "/help" in labels
 
-    @pytest.mark.asyncio
     async def test_submission_prepends_bash_prefix(self) -> None:
         """Submitting in bash mode should prepend `'!'` to the value."""
         app = _RecordingApp()
@@ -891,7 +858,6 @@ class TestModePrefixStripping:
             assert app.submitted[0].value == "!ls"
             assert app.submitted[0].mode == "bash"
 
-    @pytest.mark.asyncio
     async def test_submission_prepends_command_prefix(self) -> None:
         """Submitting in command mode should prepend `'/'` to the value."""
         app = _RecordingApp()
@@ -920,7 +886,6 @@ class TestModePrefixStripping:
             assert app.submitted[0].value == "/help"
             assert app.submitted[0].mode == "command"
 
-    @pytest.mark.asyncio
     async def test_mode_resets_after_submission(self) -> None:
         """Mode should reset to normal after submitting."""
         app = _ChatInputTestApp()
@@ -939,7 +904,6 @@ class TestModePrefixStripping:
             assert chat.mode == "normal"
             assert chat._text_area.text == ""
 
-    @pytest.mark.asyncio
     async def test_mode_sticky_during_typing(self) -> None:
         """Mode should persist while typing in bash/command mode."""
         app = _ChatInputTestApp()
@@ -958,7 +922,6 @@ class TestModePrefixStripping:
             await pilot.pause()
             assert chat.mode == "bash"
 
-    @pytest.mark.asyncio
     async def test_bash_mode_does_not_trigger_completions(self) -> None:
         """Typing in bash mode should not trigger completions."""
         app = _ChatInputTestApp()
@@ -971,7 +934,6 @@ class TestModePrefixStripping:
             assert chat.mode == "bash"
             assert chat._current_suggestions == []
 
-    @pytest.mark.asyncio
     async def test_submission_does_not_double_prefix(self) -> None:
         """If text already starts with prefix, submission should not add another."""
         app = _RecordingApp()
@@ -995,7 +957,6 @@ class TestModePrefixStripping:
 class TestHistoryRecallModeReset:
     """Regression: history recall must not inherit a stale bash/command mode."""
 
-    @pytest.mark.asyncio
     async def test_history_non_prefixed_entry_resets_bash_mode(self) -> None:
         """Recalling a normal-mode entry while in bash mode should reset to normal."""
         app = _RecordingApp()
@@ -1028,7 +989,6 @@ class TestHistoryRecallModeReset:
             assert app.submitted[0].value == "echo hello"
             assert app.submitted[0].mode == "normal"
 
-    @pytest.mark.asyncio
     async def test_history_prefixed_entry_keeps_mode(self) -> None:
         """Recalling a bash-prefixed entry should re-enter bash mode."""
         app = _RecordingApp()
@@ -1054,7 +1014,6 @@ class TestHistoryRecallModeReset:
             assert app.submitted[0].value == "!ls"
             assert app.submitted[0].mode == "bash"
 
-    @pytest.mark.asyncio
     async def test_history_non_prefixed_entry_resets_command_mode(self) -> None:
         """Recalling a normal entry while in command mode should reset to normal."""
         app = _RecordingApp()
@@ -1090,7 +1049,6 @@ class TestHistoryRecallModeReset:
 class TestSlashCompletionCursorMapping:
     """Regression: virtual-to-real index translation for slash replacement."""
 
-    @pytest.mark.asyncio
     async def test_tab_completion_mid_token_preserves_suffix(self) -> None:
         """Applying slash completion mid-token should keep text after cursor."""
         app = _ChatInputTestApp()
@@ -1114,7 +1072,6 @@ class TestSlashCompletionCursorMapping:
 
             assert chat._text_area.text == "help e"
 
-    @pytest.mark.asyncio
     async def test_click_completion_mid_token_preserves_suffix(self) -> None:
         """Click-selecting slash completion mid-token should keep suffix text."""
         app = _ChatInputTestApp()
@@ -1136,7 +1093,6 @@ class TestSlashCompletionCursorMapping:
 
             assert chat._text_area.text == "help e"
 
-    @pytest.mark.asyncio
     async def test_tab_completion_at_end_replaces_whole_token(self) -> None:
         """Tab-completing at end should replace all typed command text."""
         app = _ChatInputTestApp()
@@ -1157,7 +1113,6 @@ class TestSlashCompletionCursorMapping:
 
             assert chat._text_area.text == "help "
 
-    @pytest.mark.asyncio
     async def test_normal_mode_replace_is_unaffected(self) -> None:
         """In normal mode (no prefix), coordinates pass through unchanged."""
         app = _ChatInputTestApp()
@@ -1179,7 +1134,6 @@ class TestSlashCompletionCursorMapping:
 class TestHistorySlashPrefixRecall:
     """Test that recalling a slash-prefixed history entry enters command mode."""
 
-    @pytest.mark.asyncio
     async def test_history_slash_prefixed_entry_enters_command_mode(self) -> None:
         """Recalling a `/help` history entry should enter command mode."""
         app = _RecordingApp()
@@ -1207,7 +1161,6 @@ class TestHistorySlashPrefixRecall:
 class TestCompletionIndexToTextIndex:
     """Edge-case tests for _completion_index_to_text_index clamping."""
 
-    @pytest.mark.asyncio
     async def test_negative_mapped_index_clamps_to_zero(self) -> None:
         """A completion index below the prefix length should clamp to 0."""
         app = _ChatInputTestApp()
@@ -1223,7 +1176,6 @@ class TestCompletionIndexToTextIndex:
             # index=0 in completion space -> 0 - 1 = -1 -> clamped to 0
             assert chat._completion_index_to_text_index(0) == 0
 
-    @pytest.mark.asyncio
     async def test_overflow_index_clamps_to_text_length(self) -> None:
         """A completion index beyond text length should clamp to len(text)."""
         app = _ChatInputTestApp()
@@ -1237,7 +1189,6 @@ class TestCompletionIndexToTextIndex:
             # index=100 -> 100 - 1 = 99 -> clamped to 2
             assert chat._completion_index_to_text_index(100) == 2
 
-    @pytest.mark.asyncio
     async def test_normal_mode_passes_through(self) -> None:
         """In normal mode (prefix_len=0), index maps 1:1."""
         app = _ChatInputTestApp()
@@ -1253,7 +1204,6 @@ class TestCompletionIndexToTextIndex:
 class TestHistoryRecallSuppressesCompletions:
     """Test that history navigation does not trigger completions."""
 
-    @pytest.mark.asyncio
     async def test_history_recall_does_not_trigger_completions(self) -> None:
         """Recalling a history entry with '@' should not open file completions."""
         app = _ChatInputTestApp()
@@ -1273,7 +1223,6 @@ class TestHistoryRecallSuppressesCompletions:
 class TestDroppedImagePaste:
     """Tests for drag/drop image-path handling via paste events."""
 
-    @pytest.mark.asyncio
     async def test_forward_delete_removes_placeholder(self, tmp_path) -> None:
         """Forward-delete should remove `[image N]` as a single token."""
         img_path = tmp_path / "fwddelete.png"
@@ -1303,7 +1252,6 @@ class TestDroppedImagePaste:
             assert app.tracker.get_images() == []
             assert app.tracker.next_id == 1
 
-    @pytest.mark.asyncio
     async def test_backspace_removes_full_image_placeholder(self, tmp_path) -> None:
         """Backspace should remove `[image N]` as a single token."""
         img_path = tmp_path / "backspace.png"
@@ -1328,7 +1276,6 @@ class TestDroppedImagePaste:
             assert app.tracker.get_images() == []
             assert app.tracker.next_id == 1
 
-    @pytest.mark.asyncio
     async def test_readding_after_delete_restarts_image_counter(self, tmp_path) -> None:
         """Re-adding after deleting all placeholders should restart at `[image 1]`."""
         img_path = tmp_path / "readd.png"
@@ -1356,7 +1303,6 @@ class TestDroppedImagePaste:
             assert len(app.tracker.get_images()) == 1
             assert app.tracker.next_id == 2
 
-    @pytest.mark.asyncio
     async def test_handle_external_paste_attaches_dropped_image(self, tmp_path) -> None:
         """External paste routing should attach dropped images."""
         img_path = tmp_path / "external.png"
@@ -1376,7 +1322,6 @@ class TestDroppedImagePaste:
             assert chat._text_area.text.strip() == "[image 1]"
             assert len(app.tracker.get_images()) == 1
 
-    @pytest.mark.asyncio
     async def test_handle_external_paste_attaches_unquoted_path_with_spaces(
         self, tmp_path
     ) -> None:
@@ -1398,7 +1343,6 @@ class TestDroppedImagePaste:
             assert chat._text_area.text.strip() == "[image 1]"
             assert len(app.tracker.get_images()) == 1
 
-    @pytest.mark.asyncio
     async def test_handle_external_paste_inserts_plain_text(self) -> None:
         """External paste should insert text when payload is not a file path."""
         app = _ImagePasteApp()
@@ -1412,7 +1356,6 @@ class TestDroppedImagePaste:
             assert chat._text_area.text == "hello world"
             assert app.tracker.get_images() == []
 
-    @pytest.mark.asyncio
     async def test_paste_image_path_attaches_image_and_inserts_placeholder(
         self, tmp_path
     ) -> None:
@@ -1434,7 +1377,6 @@ class TestDroppedImagePaste:
             assert chat._text_area.text.strip() == "[image 1]"
             assert len(app.tracker.get_images()) == 1
 
-    @pytest.mark.asyncio
     async def test_paste_non_image_path_keeps_original_text(self, tmp_path) -> None:
         """Non-image dropped paths should keep the default path paste behavior."""
         file_path = tmp_path / "notes.txt"
@@ -1451,7 +1393,6 @@ class TestDroppedImagePaste:
             assert chat._text_area.text.endswith(str(file_path).lstrip("/"))
             assert app.tracker.get_images() == []
 
-    @pytest.mark.asyncio
     async def test_inline_quoted_path_payload_rewrites_to_placeholder(
         self, tmp_path
     ) -> None:
@@ -1474,7 +1415,6 @@ class TestDroppedImagePaste:
             assert chat._text_area.text == "[image 1] "
             assert len(app.tracker.get_images()) == 1
 
-    @pytest.mark.asyncio
     async def test_key_burst_quoted_path_rewrites_without_showing_raw_path(
         self, tmp_path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1508,7 +1448,6 @@ class TestDroppedImagePaste:
             assert chat._text_area.text == "[image 1] "
             assert len(app.tracker.get_images()) == 1
 
-    @pytest.mark.asyncio
     async def test_submit_absolute_path_without_paste_event_attaches_image(
         self, tmp_path
     ) -> None:
@@ -1537,7 +1476,6 @@ class TestDroppedImagePaste:
             assert app.submitted[0].mode == "normal"
             assert len(app.tracker.get_images()) == 1
 
-    @pytest.mark.asyncio
     async def test_submit_absolute_path_with_spaces_stays_normal_mode(
         self, tmp_path
     ) -> None:
@@ -1566,7 +1504,6 @@ class TestDroppedImagePaste:
             assert app.submitted[0].mode == "normal"
             assert len(app.tracker.get_images()) == 1
 
-    @pytest.mark.asyncio
     async def test_submit_absolute_path_with_spaces_and_trailing_text(
         self, tmp_path
     ) -> None:
@@ -1620,7 +1557,6 @@ class TestDroppedImagePaste:
             assert app.submitted[0].mode == "normal"
             assert len(app.tracker.get_images()) == 1
 
-    @pytest.mark.asyncio
     async def test_submit_falls_back_to_leading_image_when_full_path_non_image(
         self, tmp_path
     ) -> None:
@@ -1650,7 +1586,6 @@ class TestDroppedImagePaste:
             assert app.submitted[0].mode == "normal"
             assert len(app.tracker.get_images()) == 1
 
-    @pytest.mark.asyncio
     async def test_submit_leading_path_handles_unicode_space_variants(
         self, tmp_path
     ) -> None:
@@ -1679,7 +1614,6 @@ class TestDroppedImagePaste:
             assert app.submitted[0].mode == "normal"
             assert len(app.tracker.get_images()) == 1
 
-    @pytest.mark.asyncio
     async def test_sync_resumes_after_submit_skip(self, tmp_path) -> None:
         """Image tracker sync should resume after the post-submit skip event."""
         img_path = tmp_path / "sync_resume.png"
@@ -1711,7 +1645,6 @@ class TestDroppedImagePaste:
             assert app.tracker.get_images() == []
             assert app.tracker.next_id == 1
 
-    @pytest.mark.asyncio
     async def test_submit_recovers_if_command_mode_already_stripped_path(
         self, tmp_path
     ) -> None:

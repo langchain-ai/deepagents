@@ -711,6 +711,7 @@ async def run_non_interactive(
     sandbox_id: str | None = None,
     sandbox_setup: str | None = None,
     *,
+    profile_override: dict[str, Any] | None = None,
     quiet: bool = False,
     stream: bool = True,
 ) -> int:
@@ -738,6 +739,9 @@ async def run_non_interactive(
         sandbox_id: Optional existing sandbox ID to reuse.
         sandbox_setup: Optional path to setup script to run in the sandbox
             after creation.
+        profile_override: Extra profile fields from `--profile-override`.
+
+            Merged on top of config file profile overrides.
         quiet: When `True`, all console output (headers, status messages,
             tool notifications, HITL decisions, errors) is redirected to
             stderr so that only the agent's response text appears on stdout.
@@ -754,7 +758,11 @@ async def run_non_interactive(
     # uses _write_text() -> sys.stdout directly.
     console = Console(stderr=True) if quiet else Console()
     try:
-        result = create_model(model_name, extra_kwargs=model_params)
+        result = create_model(
+            model_name,
+            extra_kwargs=model_params,
+            profile_overrides=profile_override,
+        )
     except ModelConfigError as e:
         console.print(f"[bold red]Error:[/bold red] {e}")
         return 1

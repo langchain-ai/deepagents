@@ -205,7 +205,6 @@ class TestBuildNonInteractiveHeader:
 class TestSandboxSetupForwarding:
     """Test that sandbox_setup is forwarded to create_sandbox."""
 
-    @pytest.mark.asyncio
     async def test_sandbox_setup_passed_to_create_sandbox(self) -> None:
         """run_non_interactive should forward sandbox_setup to create_sandbox.
 
@@ -287,7 +286,6 @@ class TestSandboxSetupForwarding:
 class TestQuietMode:
     """Tests for --quiet flag in run_non_interactive."""
 
-    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         ("quiet", "expected_kwargs"),
         [
@@ -348,7 +346,6 @@ class TestQuietMode:
 
         mock_console_cls.assert_called_once_with(**expected_kwargs)
 
-    @pytest.mark.asyncio
     async def test_quiet_stdout_contains_only_agent_text(self) -> None:
         """In quiet mode, stdout should have only agent text."""
         # Build a fake AI message with a text block followed by a tool-call block
@@ -429,7 +426,6 @@ class TestQuietMode:
 class TestNoStreamMode:
     """Tests for --no-stream flag in run_non_interactive."""
 
-    @pytest.mark.asyncio
     async def test_no_stream_buffers_output(self) -> None:
         """In no-stream mode, stdout should receive text only after completion."""
         # Build two text chunks to verify buffering vs streaming
@@ -507,7 +503,6 @@ class TestNoStreamMode:
         assert len(text_writes) == 1
         assert text_writes[0] == "Hello world"
 
-    @pytest.mark.asyncio
     async def test_stream_mode_writes_incrementally(self) -> None:
         """Default stream mode should write text chunks as they arrive."""
         ai_msg1 = MagicMock(spec=AIMessage)
@@ -588,7 +583,6 @@ class TestNoStreamMode:
 class TestFastFollowLangsmithLink:
     """Tests for best-effort fast-follow LangSmith link output."""
 
-    @pytest.mark.asyncio
     async def test_prints_link_when_lookup_ready(self) -> None:
         """Should print LangSmith link before completion when ready."""
         mock_console = MagicMock(spec=Console)
@@ -650,7 +644,6 @@ class TestFastFollowLangsmithLink:
         ]
         assert any("View in LangSmith:" in line for line in printed)
 
-    @pytest.mark.asyncio
     async def test_skips_link_when_lookup_not_ready(self) -> None:
         """Should not wait for or print link when lookup is still in flight."""
         mock_console = MagicMock(spec=Console)
@@ -711,7 +704,6 @@ class TestFastFollowLangsmithLink:
         ]
         assert not any("View in LangSmith:" in line for line in printed)
 
-    @pytest.mark.asyncio
     async def test_skips_link_when_lookup_done_but_url_none(self) -> None:
         """Should not print link when lookup completed but URL is None."""
         mock_console = MagicMock(spec=Console)
@@ -770,7 +762,6 @@ class TestFastFollowLangsmithLink:
         ]
         assert not any("View in LangSmith:" in line for line in printed)
 
-    @pytest.mark.asyncio
     async def test_quiet_mode_skips_thread_url_lookup(self) -> None:
         """Should not start LangSmith URL lookup when quiet=True."""
         with (

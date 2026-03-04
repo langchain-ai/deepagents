@@ -5,6 +5,8 @@ import json
 import os
 from pathlib import Path
 
+from tabulate import tabulate
+
 
 def main() -> None:
     """Generate an aggregated report."""
@@ -15,29 +17,45 @@ def main() -> None:
         payload = json.loads(Path(file).read_text(encoding="utf-8"))
         rows.append(payload)
 
-    rows.sort(key=lambda r: str(r.get("model", "")))
+    rows.sort(key=lambda r: (str(r.get("model", "")).split(":")[0], -float(r.get("accuracy", 0.0))))
+
+    headers = [
+        "model",
+        "passed",
+        "failed",
+        "skipped",
+        "total",
+        "accuracy",
+        "median_duration_s",
+    ]
+
+    table_rows: list[list[object]] = [
+        [
+            str(r.get("model", "")),
+            r.get("passed", 0),
+            r.get("failed", 0),
+            r.get("skipped", 0),
+            r.get("total", 0),
+            r.get("accuracy", 0.0),
+            r.get("median_duration_s", 0.0),
+        ]
+        for r in rows
+    ]
 
     lines: list[str] = []
     lines.append("## Evals summary")
     lines.append("")
-    lines.append("| model | passed | failed | skipped | total | accuracy | median_duration_s |")
-    lines.append("|---|---:|---:|---:|---:|---:|---:|")
 
-    for r in rows:
-        model = r.get("model", "")
-        passed = r.get("passed", 0)
-        failed = r.get("failed", 0)
-        skipped = r.get("skipped", 0)
-        total = r.get("total", 0)
-        accuracy = r.get("accuracy", 0.0)
-        median_duration_s =r.get("median_duration_s", 0.0)
-
+    if table_rows:
         lines.append(
-            f"| {model} | {passed} | {failed} | {skipped} | {total} | {accuracy:.2f} | {median_duration_s:.4f} |"
+            tabulate(
+                table_rows,
+                headers=headers,
+                tablefmt="github",
+                colalign=("left", "right", "right", "right", "right", "right", "right"),
+            )
         )
-
-    if not rows:
-        lines.append("")
+    else:
         lines.append("_No eval artifacts found._")
 
     summary_file = os.environ.get("GITHUB_STEP_SUMMARY")

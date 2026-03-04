@@ -568,6 +568,14 @@ class DeepAgentsApp(App):
                 group="startup-thread-prewarm",
             )
 
+        # Background update check (opt-out via DEEPAGENTS_NO_UPDATE_CHECK)
+        if not os.environ.get("DEEPAGENTS_NO_UPDATE_CHECK"):
+            self.run_worker(
+                self._check_for_updates,
+                exclusive=True,
+                group="startup-update-check",
+            )
+
         # Focus the input (autocomplete is now built into ChatInput)
         self._chat_input.focus_input()
 
@@ -630,6 +638,24 @@ class DeepAgentsApp(App):
         )
 
         await prewarm_thread_message_counts(limit=get_thread_limit())
+
+    async def _check_for_updates(self) -> None:
+        """Check PyPI for a newer deepagents-cli version and notify the user."""
+        try:
+            from deepagents_cli.update_check import is_update_available
+
+            available, latest = await asyncio.to_thread(is_update_available)
+            if available:
+                from deepagents_cli._version import __version__ as cli_version
+
+                self.notify(
+                    f"Update available: v{latest} (current: v{cli_version}). "
+                    "Run: uv tool upgrade deepagents-cli",
+                    severity="information",
+                    timeout=15,
+                )
+        except Exception:
+            logger.debug("Background update check failed", exc_info=True)
 
     def on_scroll_up(self, _event: ScrollUp) -> None:
         """Handle scroll up to check if we need to hydrate older messages."""

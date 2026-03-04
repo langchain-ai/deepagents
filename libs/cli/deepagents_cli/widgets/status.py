@@ -76,7 +76,7 @@ class StatusBar(Horizontal):
     }
 
     StatusBar .status-cwd {
-        width: 1fr;
+        width: auto;
         text-align: right;
         color: $text-muted;
     }

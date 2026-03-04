@@ -2,6 +2,11 @@
 
 Prints a single line: matrix={"model":["provider:model-name", ...]}
 suitable for appending to $GITHUB_OUTPUT.
+
+Reads the EVAL_MODELS env var to determine which models to include:
+  - "all" (default): every model in MODELS
+  - "set1": a curated subset of flagship models
+  - any other value: treated as a single "provider:model" spec
 """
 
 from __future__ import annotations
@@ -52,9 +57,39 @@ MODELS: list[str] = [
     "ollama:deepseek-v3.2:cloud",
 ]
 
+SET1: list[str] = [
+    "anthropic:claude-sonnet-4-6",
+    "anthropic:claude-opus-4-6",
+    "openai:gpt-4.1",
+    "openai:o3",
+    "openai:gpt-5",
+    "google_genai:gemini-2.5-pro",
+    "xai:grok-4",
+]
+
+
+def _resolve_models(selection: str) -> list[str]:
+    """Return the list of models for the given selection string.
+
+    Accepts "all", "set1", a single model spec, or comma-separated model specs.
+    """
+    selection = selection.strip()
+    if selection == "all":
+        return MODELS
+    if selection == "set1":
+        return SET1
+    specs = [s.strip() for s in selection.split(",") if s.strip()]
+    unknown = [s for s in specs if s not in MODELS]
+    if unknown:
+        msg = f"Unknown model(s): {', '.join(repr(s) for s in unknown)}"
+        raise ValueError(msg)
+    return specs
+
 
 def main() -> None:
-    matrix = {"model": MODELS}
+    selection = os.environ.get("EVAL_MODELS", "all")
+    models = _resolve_models(selection)
+    matrix = {"model": models}
     github_output = os.environ.get("GITHUB_OUTPUT")
     line = f"matrix={json.dumps(matrix, separators=(',', ':'))}"
     if github_output:

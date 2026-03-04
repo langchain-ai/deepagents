@@ -14,7 +14,6 @@
 #   GROQ_API_KEY       — needed for Groq-hosted models
 #   OLLAMA_API_KEY     — needed for Ollama Cloud models
 #   OLLAMA_HOST        — set to https://ollama.com for cloud inference
-#   FIREWORKS_API_KEY  — needed for Fireworks AI models
 
 name: "📊 Evals"
 
@@ -103,7 +102,6 @@ jobs:
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
       OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
       OLLAMA_HOST: "https://ollama.com"
-      FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
     steps:
       - name: "📋 Checkout Code"
         uses: actions/checkout@v6

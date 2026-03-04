@@ -476,7 +476,7 @@ class DeepAgentsApp(App):
         self._quit_pending = False
         self._session_state: TextualSessionState | None = None
         self._ui_adapter: TextualUIAdapter | None = None
-        self._pending_approval_widget: Any = None
+        self._pending_approval_widget: ApprovalMenu | None = None
         # Agent task tracking for interruption
         self._agent_worker: Worker[None] | None = None
         self._agent_running = False

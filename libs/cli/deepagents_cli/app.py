@@ -291,7 +291,7 @@ Scan the conversation for:
 
 For each best practice or learning, choose the right destination:
 
-### → Memory (AGENTS.md) for preferences and guidelines
+### -> Memory (AGENTS.md) for preferences and guidelines
 Use memory when the knowledge is:
 - A preference or guideline (not a multi-step process)
 - Something to always keep in mind
@@ -300,7 +300,7 @@ Use memory when the knowledge is:
 **Global** (`~/.deepagents/agent/AGENTS.md`): Universal preferences across all projects
 **Project** (`.deepagents/AGENTS.md`): Project-specific conventions and decisions
 
-### → Skill for reusable workflows and methodologies
+### -> Skill for reusable workflows and methodologies
 **Create a skill when** we developed:
 - A multi-step process worth reusing
 - A methodology for a specific type of task
@@ -1060,8 +1060,8 @@ class DeepAgentsApp(App):
         """Run a bash command in a background worker.
 
         This mirrors `_run_agent_task`: running in a worker keeps the event
-        loop free so Esc/Ctrl+C can cancel the worker → raise
-        `CancelledError` → kill the process.
+        loop free so Esc/Ctrl+C can cancel the worker -> raise
+        `CancelledError` -> kill the process.
 
         Args:
             command: The shell command to execute.
@@ -1135,8 +1135,8 @@ class DeepAgentsApp(App):
         """Terminate the running bash process.
 
         On POSIX, sends SIGTERM to the entire process group (killing children).
-        On Windows, terminates only the root process. No-op if the process
-        has already exited. Waits up to 5s for clean shutdown, then escalates
+        On Windows, terminates only the root process. No-op if the process has
+        already exited. Waits up to 5s for clean shutdown, then escalates
         to SIGKILL.
         """
         proc = self._bash_process

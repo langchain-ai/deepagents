@@ -405,7 +405,7 @@ def create_cli_agent(
     both internally and from external code (e.g., benchmarking frameworks).
 
     Args:
-        model: LLM model to use (e.g., `'anthropic:claude-sonnet-4-5-20250929'`)
+        model: LLM model to use (e.g., `'anthropic:claude-sonnet-4-6'`)
         assistant_id: Agent identifier for memory/state storage
         tools: Additional tools to provide to agent
         sandbox: Optional sandbox backend for remote execution
@@ -588,6 +588,21 @@ def create_cli_agent(
             default=backend,
             routes={},
         )
+
+    from deepagents.graph import resolve_model
+
+    model = resolve_model(model)
+
+    from deepagents.middleware.summarization import (
+        SummarizationToolMiddleware,
+        create_summarization_middleware,
+    )
+
+    agent_middleware.append(
+        SummarizationToolMiddleware(
+            create_summarization_middleware(model, composite_backend)
+        )
+    )
 
     # Create the agent
     # Use provided checkpointer or fallback to InMemorySaver

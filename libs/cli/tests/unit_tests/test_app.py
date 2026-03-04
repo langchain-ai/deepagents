@@ -35,7 +35,6 @@ from deepagents_cli.widgets.messages import (
 class TestInitialPromptOnMount:
     """Test that -m initial prompt is submitted on mount."""
 
-    @pytest.mark.asyncio
     async def test_initial_prompt_triggers_handle_user_message(self) -> None:
         """When initial_prompt is set, the prompt should be auto-submitted."""
         mock_agent = MagicMock()
@@ -63,7 +62,6 @@ class TestInitialPromptOnMount:
 class TestAppCSSValidation:
     """Test that app CSS is valid and doesn't cause runtime errors."""
 
-    @pytest.mark.asyncio
     async def test_app_css_validates_on_mount(self) -> None:
         """App should mount without CSS validation errors.
 
@@ -81,7 +79,6 @@ class TestAppCSSValidation:
 class TestThreadCachePrewarm:
     """Tests for startup thread-cache prewarming."""
 
-    @pytest.mark.asyncio
     async def test_prewarm_uses_current_thread_limit(self) -> None:
         """Prewarm helper should pass the resolved thread limit through."""
         app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
@@ -97,7 +94,6 @@ class TestThreadCachePrewarm:
 
         mock_prewarm.assert_awaited_once_with(limit=7)
 
-    @pytest.mark.asyncio
     async def test_show_thread_selector_uses_cached_rows(self) -> None:
         """Thread selector should receive prefetched rows when available."""
         cached_threads = [
@@ -271,7 +267,6 @@ class TestModalScreenEscapeDismissal:
     """Test that escape key dismisses modal screens."""
 
     @staticmethod
-    @pytest.mark.asyncio
     async def test_escape_dismisses_modal_screen() -> None:
         """Escape should dismiss any active ModalScreen.
 
@@ -339,7 +334,6 @@ class TestMountMessageNoMatches:
     (e.g. #messages container no longer exists), this should not crash.
     """
 
-    @pytest.mark.asyncio
     async def test_mount_message_no_crash_when_messages_missing(self) -> None:
         """_mount_message should not raise NoMatches when #messages is absent."""
         app = DeepAgentsApp()
@@ -361,7 +355,6 @@ class TestMountMessageNoMatches:
             # Before the fix, this raises NoMatches
             await app._mount_message(AppMessage("Interrupted by user"))
 
-    @pytest.mark.asyncio
     async def test_mount_error_message_no_crash_when_messages_missing(
         self,
     ) -> None:
@@ -401,7 +394,6 @@ class TestQueuedMessage:
 class TestMessageQueue:
     """Test message queue behavior in DeepAgentsApp."""
 
-    @pytest.mark.asyncio
     async def test_message_queued_when_agent_running(self) -> None:
         """Messages should be queued when agent is running."""
         app = DeepAgentsApp()
@@ -416,7 +408,6 @@ class TestMessageQueue:
             assert app._pending_messages[0].text == "queued msg"
             assert app._pending_messages[0].mode == "normal"
 
-    @pytest.mark.asyncio
     async def test_message_blocked_while_thread_switching(self) -> None:
         """Submissions should be ignored while thread switching is in-flight."""
         app = DeepAgentsApp()
@@ -436,7 +427,6 @@ class TestMessageQueue:
                     timeout=3,
                 )
 
-    @pytest.mark.asyncio
     async def test_queued_widget_mounted(self) -> None:
         """Queued messages should produce a QueuedUserMessage widget."""
         app = DeepAgentsApp()
@@ -451,7 +441,6 @@ class TestMessageQueue:
             assert len(widgets) == 1
             assert len(app._queued_widgets) == 1
 
-    @pytest.mark.asyncio
     async def test_immediate_processing_when_agent_idle(self) -> None:
         """Messages should process immediately when agent is not running."""
         app = DeepAgentsApp()
@@ -468,7 +457,6 @@ class TestMessageQueue:
             user_msgs = app.query(UserMessage)
             assert any(w._content == "direct msg" for w in user_msgs)
 
-    @pytest.mark.asyncio
     async def test_fifo_order(self) -> None:
         """Queued messages should process in FIFO order."""
         app = DeepAgentsApp()
@@ -485,7 +473,6 @@ class TestMessageQueue:
             assert app._pending_messages[0].text == "first"
             assert app._pending_messages[1].text == "second"
 
-    @pytest.mark.asyncio
     async def test_queue_cleared_on_interrupt(self) -> None:
         """Interrupt should clear the message queue."""
         app = DeepAgentsApp()
@@ -510,7 +497,6 @@ class TestMessageQueue:
             assert len(app._queued_widgets) == 0
             mock_worker.cancel.assert_called_once()
 
-    @pytest.mark.asyncio
     async def test_interrupt_dismisses_completion_without_stopping_agent(self) -> None:
         """Esc should dismiss completion popup without interrupting the agent."""
         app = DeepAgentsApp()
@@ -535,7 +521,6 @@ class TestMessageQueue:
             mock_worker.cancel.assert_not_called()
             assert app._agent_running is True
 
-    @pytest.mark.asyncio
     async def test_interrupt_falls_through_when_no_completion(self) -> None:
         """Esc should interrupt the agent when completion is not active."""
         app = DeepAgentsApp()
@@ -554,7 +539,6 @@ class TestMessageQueue:
 
             mock_worker.cancel.assert_called_once()
 
-    @pytest.mark.asyncio
     async def test_queue_cleared_on_ctrl_c(self) -> None:
         """Ctrl+C should clear the message queue."""
         app = DeepAgentsApp()
@@ -572,7 +556,6 @@ class TestMessageQueue:
             assert len(app._pending_messages) == 0
             assert len(app._queued_widgets) == 0
 
-    @pytest.mark.asyncio
     async def test_process_next_from_queue_removes_widget(self) -> None:
         """Processing a queued message should remove its ephemeral widget."""
         app = DeepAgentsApp()
@@ -591,7 +574,6 @@ class TestMessageQueue:
 
             assert len(app._queued_widgets) == 0
 
-    @pytest.mark.asyncio
     async def test_bash_command_continues_chain(self) -> None:
         """Bash/command messages should not break the queue processing chain."""
         app = DeepAgentsApp()
@@ -617,7 +599,6 @@ class TestMessageQueue:
 class TestTraceCommand:
     """Test /trace slash command."""
 
-    @pytest.mark.asyncio
     async def test_trace_opens_browser_when_configured(self) -> None:
         """Should open the LangSmith thread URL in the browser."""
         app = DeepAgentsApp()
@@ -645,7 +626,6 @@ class TestTraceCommand:
                 for w in app_msgs
             )
 
-    @pytest.mark.asyncio
     async def test_trace_shows_error_when_not_configured(self) -> None:
         """Should show configuration hint when LangSmith is not set up."""
         app = DeepAgentsApp()
@@ -663,7 +643,6 @@ class TestTraceCommand:
             app_msgs = app.query(AppMessage)
             assert any("LANGSMITH_API_KEY" in str(w._content) for w in app_msgs)
 
-    @pytest.mark.asyncio
     async def test_trace_shows_error_when_no_session(self) -> None:
         """Should show error when there is no active session."""
         app = DeepAgentsApp()
@@ -677,7 +656,6 @@ class TestTraceCommand:
             app_msgs = app.query(AppMessage)
             assert any("No active session" in str(w._content) for w in app_msgs)
 
-    @pytest.mark.asyncio
     async def test_trace_shows_link_when_browser_fails(self) -> None:
         """Should still display the URL link even if the browser cannot open."""
         app = DeepAgentsApp()
@@ -704,7 +682,6 @@ class TestTraceCommand:
                 for w in app_msgs
             )
 
-    @pytest.mark.asyncio
     async def test_trace_shows_error_when_url_build_raises(self) -> None:
         """Should show error message when build_langsmith_thread_url raises."""
         app = DeepAgentsApp()
@@ -722,7 +699,6 @@ class TestTraceCommand:
             app_msgs = app.query(AppMessage)
             assert any("Failed to resolve" in str(w._content) for w in app_msgs)
 
-    @pytest.mark.asyncio
     async def test_trace_routed_from_handle_command(self) -> None:
         """'/trace' should be correctly routed through _handle_command."""
         app = DeepAgentsApp()
@@ -740,7 +716,6 @@ class TestTraceCommand:
 class TestRunAgentTaskImageTracker:
     """Tests image tracker wiring from app into textual execution."""
 
-    @pytest.mark.asyncio
     async def test_run_agent_task_passes_image_tracker(self) -> None:
         """`_run_agent_task` should forward the shared image tracker."""
         app = DeepAgentsApp(agent=MagicMock())
@@ -757,7 +732,6 @@ class TestRunAgentTaskImageTracker:
             assert mock_execute.await_args is not None
             assert mock_execute.await_args.kwargs["image_tracker"] is app._image_tracker
 
-    @pytest.mark.asyncio
     async def test_run_agent_task_finalizes_pending_tools_on_error(self) -> None:
         """Unexpected agent errors should stop/clear in-flight tool widgets."""
         app = DeepAgentsApp(agent=MagicMock())
@@ -786,7 +760,6 @@ class TestRunAgentTaskImageTracker:
 class TestAppFocusRestoresChatInput:
     """Test `on_app_focus` restores chat input focus after terminal regains focus."""
 
-    @pytest.mark.asyncio
     async def test_app_focus_restores_chat_input(self) -> None:
         """Regaining terminal focus should re-focus the chat input."""
         app = DeepAgentsApp()
@@ -805,7 +778,6 @@ class TestAppFocusRestoresChatInput:
             # chat_input.focus_input should have been called
             assert app._chat_input._text_area.has_focus
 
-    @pytest.mark.asyncio
     async def test_app_focus_skips_when_modal_open(self) -> None:
         """Regaining focus should not steal focus from an open modal."""
         app = DeepAgentsApp()
@@ -827,7 +799,6 @@ class TestAppFocusRestoresChatInput:
 
             mock_focus.assert_not_called()
 
-    @pytest.mark.asyncio
     async def test_app_focus_skips_when_approval_pending(self) -> None:
         """Regaining focus should not steal focus from the approval widget."""
         app = DeepAgentsApp()
@@ -847,7 +818,6 @@ class TestAppFocusRestoresChatInput:
 class TestPasteRouting:
     """Tests app-level paste routing when chat input focus lags."""
 
-    @pytest.mark.asyncio
     async def test_on_paste_routes_unfocused_event_to_chat_input(self) -> None:
         """Unfocused paste events should be forwarded to chat input handler."""
         app = DeepAgentsApp()
@@ -870,7 +840,6 @@ class TestPasteRouting:
             mock_prevent.assert_called_once()
             mock_stop.assert_called_once()
 
-    @pytest.mark.asyncio
     async def test_on_paste_does_not_route_when_input_already_focused(self) -> None:
         """Focused input should keep normal TextArea paste handling path."""
         app = DeepAgentsApp()

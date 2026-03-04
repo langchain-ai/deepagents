@@ -12,7 +12,7 @@ import uuid
 import webbrowser
 from collections import deque
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
@@ -37,7 +37,12 @@ from deepagents_cli.config import (
     settings,
 )
 from deepagents_cli.model_config import ModelSpec, save_recent_model
-from deepagents_cli.textual_adapter import TextualUIAdapter, execute_task_textual
+from deepagents_cli.textual_adapter import (
+    SessionStats,
+    TextualUIAdapter,
+    execute_task_textual,
+    format_token_count,
+)
 from deepagents_cli.widgets.approval import ApprovalMenu
 from deepagents_cli.widgets.chat_input import ChatInput
 from deepagents_cli.widgets.loading import LoadingWidget
@@ -103,20 +108,39 @@ _ITERM_CURSOR_GUIDE_OFF = "\x1b]1337;HighlightCursorLine=no\x1b\\"
 _ITERM_CURSOR_GUIDE_ON = "\x1b]1337;HighlightCursorLine=yes\x1b\\"
 
 
-def _format_token_count(count: int) -> str:
-    """Format a token count into a human-readable short string.
+def _format_compact_limit(
+    keep: tuple[str, int | float], context_limit: int | None
+) -> str:
+    """Format compact retention settings into a human-readable limit string.
 
     Args:
-        count: Number of tokens.
+        keep: Retention policy tuple from summarization defaults.
+        context_limit: Model context limit when available.
 
     Returns:
-        Formatted string like `"12.5K"`, `"1.2M"`, or `"500"`.
+        A short display string describing the compact retention limit.
     """
-    if count >= 1_000_000:  # noqa: PLR2004
-        return f"{count / 1_000_000:.1f}M"
-    if count >= 1000:  # noqa: PLR2004
-        return f"{count / 1000:.1f}K"
-    return str(count)
+    keep_type, keep_value = keep
+
+    if keep_type == "messages":
+        count = int(keep_value)
+        noun = "message" if count == 1 else "messages"
+        return f"last {count} {noun}"
+
+    if keep_type == "tokens":
+        return f"{format_token_count(int(keep_value))} tokens"
+
+    if keep_type == "fraction":
+        percent = float(keep_value) * 100
+        if context_limit is not None:
+            token_limit = max(1, int(context_limit * float(keep_value)))
+            return (
+                f"{format_token_count(token_limit)} tokens "
+                f"({percent:.0f}% of {format_token_count(context_limit)})"
+            )
+        return f"{percent:.0f}% of context window"
+
+    return "current retention threshold"
 
 
 def _write_iterm_escape(sequence: str) -> None:
@@ -459,6 +483,8 @@ class DeepAgentsApp(App):
         self._agent_running = False
         self._loading_widget: LoadingWidget | None = None
         self._token_tracker: TextualTokenTracker | None = None
+        # Cumulative usage stats across all turns in this session
+        self._session_stats: SessionStats = SessionStats()
         # User message queue for sequential processing
         self._pending_messages: deque[QueuedMessage] = deque()
         self._queued_widgets: deque[QueuedUserMessage] = deque()
@@ -1234,23 +1260,41 @@ class DeepAgentsApp(App):
             await self._mount_message(UserMessage(command))
             if self._token_tracker and self._token_tracker.current_context > 0:
                 count = self._token_tracker.current_context
-                formatted = _format_token_count(count)
+                formatted = format_token_count(count)
 
                 model_name = settings.model_name
                 context_limit = settings.model_context_limit
 
                 if context_limit is not None:
-                    limit_str = _format_token_count(context_limit)
+                    limit_str = format_token_count(context_limit)
                     pct = count / context_limit * 100
-                    usage = f"{formatted} / {limit_str} tokens ({pct:.0f}%)"
+                    usage = (
+                        f"{formatted} / {limit_str} tokens "
+                        f"({pct:.0f}%, includes system prompt + tools)"
+                    )
                 else:
-                    usage = f"{formatted} tokens used"
+                    usage = f"{formatted} tokens used (includes system prompt + tools)"
 
                 msg = f"{usage} · {model_name}" if model_name else usage
 
+                # Append conversation-only token count when available
+                conv_line = await self._get_conversation_token_line()
+                if conv_line:
+                    msg = f"{msg}\n{conv_line}"
+
                 await self._mount_message(AppMessage(msg))
             else:
-                await self._mount_message(AppMessage("No token usage yet"))
+                model_name = settings.model_name
+                context_limit = settings.model_context_limit
+
+                parts: list[str] = ["No token usage yet"]
+                if context_limit is not None:
+                    limit_str = format_token_count(context_limit)
+                    parts.append(f"{limit_str} context window")
+                if model_name:
+                    parts.append(model_name)
+
+                await self._mount_message(AppMessage(" · ".join(parts)))
         elif cmd == "/remember" or cmd.startswith("/remember "):
             # Extract any additional context after /remember
             additional_context = ""
@@ -1316,6 +1360,34 @@ class DeepAgentsApp(App):
 
         self.call_after_refresh(_scroll_after_command)
 
+    async def _get_conversation_token_line(self) -> str | None:
+        """Return a short string with the conversation-only token count.
+
+        Returns:
+            Formatted line like `"Conversation only: ~18 tokens"`, or
+            `None` if state is unavailable.
+        """
+        if not self._agent:
+            return None
+        try:
+            from langchain_core.messages.utils import (
+                count_tokens_approximately,
+            )
+
+            config: RunnableConfig = {
+                "configurable": {"thread_id": self._lc_thread_id},
+            }
+            state = await self._agent.aget_state(config)
+            if not state or not state.values:
+                return None
+            messages = state.values.get("messages", [])
+            if not messages:
+                return None
+            conv_tokens = count_tokens_approximately(messages)
+            return f"Conversation only: ~{format_token_count(conv_tokens)} tokens"
+        except Exception:  # noqa: BLE001
+            return None
+
     async def _handle_compact(self) -> None:
         """Compact the conversation by summarizing old messages.
 
@@ -1327,7 +1399,7 @@ class DeepAgentsApp(App):
         Compaction is a no-op when the conversation's total token count is
         within the `keep` budget (by default 10% of the model's
         `max_input_tokens`). Until that threshold is exceeded the user sees
-        "Nothing to compact yet".
+        "Nothing to compact yet" plus the active compact limit.
         """
         if not self._agent or not self._lc_thread_id or not self._backend:
             await self._mount_message(
@@ -1382,6 +1454,29 @@ class DeepAgentsApp(App):
                 )
                 return
 
+            # create_model() applies config.toml overrides but not CLI
+            # --profile-override (the raw CLI dict isn't retained after
+            # startup). Patch settings.model_context_limit — which reflects
+            # both sources — into the fresh model
+            ctx = settings.model_context_limit
+            if ctx is not None:
+                # Guard against models that lack a profile dict
+                # (custom/non-standard providers)
+                profile = getattr(model, "profile", None)
+                native = (
+                    profile.get("max_input_tokens")
+                    if isinstance(profile, dict)
+                    else None
+                )
+                if native != ctx:
+                    merged = (
+                        {**profile, "max_input_tokens": ctx}
+                        if isinstance(profile, dict)
+                        else {"max_input_tokens": ctx}
+                    )
+                    with suppress(AttributeError, TypeError, ValueError):
+                        model.profile = merged  # type: ignore[union-attr]
+
             defaults = compute_summarization_defaults(model)
             middleware = SummarizationMiddleware(
                 model=model,
@@ -1396,14 +1491,47 @@ class DeepAgentsApp(App):
             effective = middleware._apply_event_to_messages(messages, event)
 
             cutoff = middleware._determine_cutoff_index(effective)
+            compact_limit = _format_compact_limit(
+                defaults["keep"],
+                settings.model_context_limit,
+            )
 
             if cutoff == 0:
-                await self._mount_message(
-                    AppMessage(
-                        "Nothing to compact yet"
-                        " \u2014 conversation is within the token budget"
-                    )
+                conv_tokens = count_tokens_approximately(effective)
+                conv_str = format_token_count(conv_tokens)
+                total_context = (
+                    self._token_tracker.current_context if self._token_tracker else 0
                 )
+                context_limit = settings.model_context_limit
+
+                if (
+                    total_context > 0
+                    and context_limit is not None
+                    and total_context > context_limit
+                ):
+                    # Case A: overhead-dominated — total context exceeds
+                    # limit but conversation itself is small
+                    total_str = format_token_count(total_context)
+                    await self._mount_message(
+                        AppMessage(
+                            f"Nothing to compact \u2014 conversation is only "
+                            f"~{conv_str} tokens.\n"
+                            f"Total context ({total_str}) is mostly system "
+                            f"prompt and tool overhead, which compaction "
+                            f"cannot reduce.\n"
+                            f"Retention budget: {compact_limit}"
+                        )
+                    )
+                else:
+                    # Case B: genuinely within budget
+                    await self._mount_message(
+                        AppMessage(
+                            "Nothing to compact yet \u2014 conversation is "
+                            "within the retention budget.\n"
+                            f"Conversation: ~{conv_str} tokens \u00b7 "
+                            f"Retention budget: {compact_limit}"
+                        )
+                    )
                 return
 
             to_summarize, to_keep = middleware._partition_messages(effective, cutoff)
@@ -1437,15 +1565,15 @@ class DeepAgentsApp(App):
             # model is aware of how much context was reclaimed.
             tokens_summary = count_tokens_approximately([summary_msg])
             tokens_after = tokens_summary + tokens_kept
-            before = _format_token_count(tokens_before)
-            after = _format_token_count(tokens_after)
+            before = format_token_count(tokens_before)
+            after = format_token_count(tokens_after)
             pct = (
                 round((tokens_before - tokens_after) / tokens_before * 100)
                 if tokens_before > 0
                 else 0
             )
-            summarized_before = _format_token_count(tokens_summarized)
-            summarized_after = _format_token_count(tokens_summary)
+            summarized_before = format_token_count(tokens_summarized)
+            summarized_after = format_token_count(tokens_summary)
             savings_note = (
                 f"\n\n{len(to_summarize)} messages were compacted "
                 f"({summarized_before} \u2192 {summarized_after} tokens). "
@@ -1467,11 +1595,12 @@ class DeepAgentsApp(App):
 
             await self._mount_message(
                 AppMessage(
-                    f"Compacted {len(to_summarize)} messages "
-                    f"({summarized_before} \u2192 {summarized_after} tokens)\n"
-                    f"  total context: {before} \u2192 {after} "
-                    f"({pct}% decrease) "
-                    f"\u00b7 {len(to_keep)} messages unchanged"
+                    "Conversation compacted. "
+                    f"Summarized {len(to_summarize)} messages into a concise summary.\n"
+                    f"Summarized context: {summarized_before} \u2192 "
+                    f"{summarized_after} tokens\n"
+                    f"Total context: {before} \u2192 {after} tokens "
+                    f"({pct}% decrease), {len(to_keep)} messages unchanged."
                 )
             )
 
@@ -1624,8 +1753,9 @@ class DeepAgentsApp(App):
         # Caller ensures _ui_adapter is set (checked in _handle_user_message)
         if self._ui_adapter is None:
             return
+        turn_stats: SessionStats | None = None
         try:
-            await execute_task_textual(
+            turn_stats = await execute_task_textual(
                 user_input=message,
                 agent=self._agent,
                 assistant_id=self._assistant_id,
@@ -1643,6 +1773,10 @@ class DeepAgentsApp(App):
         finally:
             # Clean up loading widget and agent state
             await self._cleanup_agent_task()
+
+        # Accumulate stats across all turns; printed once at session end
+        if isinstance(turn_stats, SessionStats):
+            self._session_stats.merge(turn_stats)
 
     async def _process_next_from_queue(self) -> None:
         """Process the next message from the queue if any exist.
@@ -2690,10 +2824,12 @@ class AppResult:
         return_code: Exit code (0 for success, non-zero for error).
         thread_id: The final thread ID at shutdown. May differ from the
             initial thread ID if the user switched threads via `/threads`.
+        session_stats: Cumulative usage stats across all turns in the session.
     """
 
     return_code: int
     thread_id: str | None
+    session_stats: SessionStats = field(default_factory=SessionStats)
 
 
 async def run_textual_app(
@@ -2745,6 +2881,7 @@ async def run_textual_app(
     return AppResult(
         return_code=app.return_code or 0,
         thread_id=app._lc_thread_id,
+        session_stats=app._session_stats,
     )
 
 

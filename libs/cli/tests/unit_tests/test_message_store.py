@@ -14,6 +14,7 @@ from deepagents_cli.widgets.messages import (
     AssistantMessage,
     DiffMessage,
     ErrorMessage,
+    SummarizationMessage,
     ToolCallMessage,
     UserMessage,
 )
@@ -137,6 +138,20 @@ class TestMessageData:
         assert restored._diff_content == diff_content
         assert restored._file_path == "src/file.py"
         assert restored.id == "test-diff-1"
+
+    def test_summarization_message_roundtrip(self):
+        """Test SummarizationMessage serialization and deserialization."""
+        original = SummarizationMessage(id="test-summary-1")
+
+        data = MessageData.from_widget(original)
+        assert data.type == MessageType.SUMMARIZATION
+        assert data.content == "✓ Summarized conversation"
+        assert data.id == "test-summary-1"
+
+        restored = data.to_widget()
+        assert isinstance(restored, SummarizationMessage)
+        assert str(restored._content) == "✓ Summarized conversation"
+        assert restored.id == "test-summary-1"
 
     def test_message_data_defaults(self):
         """Test MessageData default values."""

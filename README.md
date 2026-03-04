@@ -76,6 +76,13 @@ MCP is supported via [`langchain-mcp-adapters`](https://github.com/langchain-ai/
 Try Deep Agents instantly from the terminal:
 
 ```bash
+curl -LsSf https://raw.githubusercontent.com/langchain-ai/deepagents/main/scripts/install.sh | bash
+deepagents
+```
+
+Or install directly with `uv`:
+
+```bash
 uv tool install deepagents-cli
 deepagents
 ```

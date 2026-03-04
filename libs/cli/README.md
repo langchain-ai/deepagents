@@ -12,6 +12,13 @@
 ## Quick Install
 
 ```bash
+curl -LsSf https://raw.githubusercontent.com/langchain-ai/deepagents/main/scripts/install.sh | bash
+deepagents
+```
+
+Or install directly with `uv`:
+
+```bash
 uv tool install deepagents-cli
 deepagents
 ```

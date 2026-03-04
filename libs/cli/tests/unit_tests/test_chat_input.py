@@ -967,10 +967,14 @@ class TestHistoryRecallModeReset:
             # Seed history with a normal-mode entry
             chat._history._entries.append("echo hello")
 
-            # Enter bash mode
+            # Enter bash mode, then clear text so the history query is
+            # empty (matches all entries) — we're testing mode reset, not
+            # substring filtering.
             chat._text_area.text = "!ls"
             await _pause_for_strip(pilot)
             assert chat.mode == "bash"
+            chat._text_area.text = ""
+            await pilot.pause()
 
             # Press up to recall the non-prefixed history entry through
             # the ChatInput handler (which normalizes mode).

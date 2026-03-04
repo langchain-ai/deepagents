@@ -7,7 +7,7 @@ lookup / search tools (no filesystem) and must chain them to answer questions.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, List
+from typing import TYPE_CHECKING
 
 import pytest
 from langchain_core.tools import ToolException, tool
@@ -172,21 +172,24 @@ def _get_user(user_id: int) -> dict:
     for user in USER_DATA:
         if user["id"] == user_id:
             return user
-    raise ToolException(f"User ID {user_id} cannot be resolved")
+    msg = f"User ID {user_id} cannot be resolved"
+    raise ToolException(msg)
 
 
 def _get_location(location_id: int) -> dict:
     for loc in LOCATION_DATA:
         if loc["id"] == location_id:
             return loc
-    raise ToolException(f"Location ID {location_id} cannot be resolved")
+    msg = f"Location ID {location_id} cannot be resolved"
+    raise ToolException(msg)
 
 
 def _get_food(food_id: int) -> dict:
     for food in FOOD_DATA:
         if food["id"] == food_id:
             return food
-    raise ToolException(f"Food ID {food_id} cannot be resolved")
+    msg = f"Food ID {food_id} cannot be resolved"
+    raise ToolException(msg)
 
 
 # ---------------------------------------------------------------------------
@@ -205,7 +208,7 @@ def get_user_name(user_id: int) -> str:
 
 
 @tool
-def list_user_ids() -> List[int]:
+def list_user_ids() -> list[int]:
     """List all the user IDs."""
     return [u["id"] for u in USER_DATA]
 
@@ -271,7 +274,7 @@ def get_user_favorite_color(user_id: int) -> str:
 
 
 @tool
-def get_user_favorite_foods(user_id: int) -> List[int]:
+def get_user_favorite_foods(user_id: int) -> list[int]:
     """Get the list of favorite food IDs of the user with the given user ID.
 
     Args:
@@ -331,7 +334,7 @@ def get_food_calories(food_id: int) -> int:
 
 
 @tool
-def get_food_allergic_ingredients(food_id: int) -> List[str]:
+def get_food_allergic_ingredients(food_id: int) -> list[str]:
     """Get the list of allergic ingredients for the food with the given food ID.
 
     Args:
@@ -616,10 +619,7 @@ def test_four_tools_find_user_food_name_and_calories(model: BaseChatModel) -> No
     run_agent(
         agent,
         model=model,
-        query=(
-            "How many calories per serving does Frank The Cat's favorite food have? "
-            "Also tell me the name of the food."
-        ),
+        query=("How many calories per serving does Frank The Cat's favorite food have? Also tell me the name of the food."),
         # 1st step: find_users_by_name("Frank The Cat") -> [{id: 43, ...}, ...].
         # 2nd step: get_user_favorite_foods(43) -> [3].
         # 3rd step: get_food_name(3) and get_food_calories(3) in parallel.
@@ -646,9 +646,7 @@ def test_four_tools_current_user_location_time_and_weather(model: BaseChatModel)
     run_agent(
         agent,
         model=model,
-        query=(
-            "What is the current time and weather where the current user lives?"
-        ),
+        query=("What is the current time and weather where the current user lives?"),
         # 1st step: get_current_user_id -> 35.
         # 2nd step: get_user_location(35) -> 3.
         # 3rd step: get_current_time_for_location(3) and
@@ -676,10 +674,7 @@ def test_five_steps_current_user_food_names_and_calories(model: BaseChatModel) -
     run_agent(
         agent,
         model=model,
-        query=(
-            "For each of the current user's favorite foods, tell me the food name "
-            "and how many calories per serving it has."
-        ),
+        query=("For each of the current user's favorite foods, tell me the food name and how many calories per serving it has."),
         # 1st step: get_current_user_id -> 35.
         # 2nd step: get_user_favorite_foods(35) -> [3, 7, 2].
         # 3rd step: get_food_name and get_food_calories for each food ID, all 6 in parallel.
@@ -713,10 +708,7 @@ def test_four_steps_find_user_city_and_weather(model: BaseChatModel) -> None:
     run_agent(
         agent,
         model=model,
-        query=(
-            "Find Bob and tell me what city he lives in, the current time there, "
-            "and the current weather."
-        ),
+        query=("Find Bob and tell me what city he lives in, the current time there, and the current weather."),
         # 1st step: find_users_by_name("Bob") -> [{id: 21, ...}, ...].
         # 2nd step: get_user_location(21) -> 2.
         # 3rd step: get_city_for_location(2), get_current_time_for_location(2),
@@ -746,10 +738,7 @@ def test_four_steps_find_user_food_allergies(model: BaseChatModel) -> None:
     run_agent(
         agent,
         model=model,
-        query=(
-            "What are the names and allergic ingredients of all of Alice's "
-            "favorite foods?"
-        ),
+        query=("What are the names and allergic ingredients of all of Alice's favorite foods?"),
         # 1st step: find_users_by_name("Alice") -> [{id: 1, ...}, ...].
         # 2nd step: get_user_favorite_foods(1) -> [1, 2, 3].
         # 3rd step: get_food_name and get_food_allergic_ingredients for each, all 6 in parallel.

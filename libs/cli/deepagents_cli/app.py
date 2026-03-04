@@ -2369,8 +2369,8 @@ class DeepAgentsApp(App):
         2. If completion popup is open, dismiss it
         3. If input is in command/bash mode, exit to normal mode
         4. If bash process is running, kill it
-        5. If agent is running, interrupt it
-        6. If approval menu is active, reject it
+        5. If approval menu is active, reject it
+        6. If agent is running, interrupt it
         """
         # If a modal screen is active, dismiss it
         if isinstance(self.screen, ModalScreen):
@@ -2393,6 +2393,14 @@ class DeepAgentsApp(App):
             self._bash_worker.cancel()
             return
 
+        # If approval menu is active, reject it first. During HITL the agent
+        # worker remains active while awaiting approval, so this must be
+        # checked before the worker cancellation branch to avoid leaving a
+        # stale approval widget interactive after interruption.
+        if self._pending_approval_widget:
+            self._pending_approval_widget.action_select_reject()
+            return
+
         # If agent is running, interrupt it and discard queued messages
         if self._agent_running and self._agent_worker:
             self._pending_messages.clear()
@@ -2401,10 +2409,6 @@ class DeepAgentsApp(App):
             self._queued_widgets.clear()
             self._agent_worker.cancel()
             return
-
-        # If approval menu is active, reject it
-        if self._pending_approval_widget:
-            self._pending_approval_widget.action_select_reject()
 
     def action_quit_app(self) -> None:
         """Handle quit action (Ctrl+D)."""

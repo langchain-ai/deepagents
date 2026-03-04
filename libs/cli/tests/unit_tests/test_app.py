@@ -1154,3 +1154,50 @@ class TestBashCommandInterrupt:
             await pilot.pause()
 
             mock_worker.cancel.assert_called_once()
+
+
+class TestInterruptApprovalPriority:
+    """Tests for escape interrupt priority when HITL approval is pending."""
+
+    async def test_escape_rejects_approval_before_canceling_worker(self) -> None:
+        """When both HITL approval and worker are active, reject approval first."""
+        app = DeepAgentsApp()
+        approval = MagicMock()
+        worker = MagicMock()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            app._pending_approval_widget = approval
+            app._agent_running = True
+            app._agent_worker = worker
+
+            app.action_interrupt()
+
+        approval.action_select_reject.assert_called_once()
+        worker.cancel.assert_not_called()
+
+    async def test_escape_cancels_worker_when_no_approval_pending(self) -> None:
+        """Escape cancels active worker and clears queued messages when no approval."""
+        app = DeepAgentsApp()
+        worker = MagicMock()
+        queued_w1 = MagicMock()
+        queued_w2 = MagicMock()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            app._pending_approval_widget = None
+            app._agent_running = True
+            app._agent_worker = worker
+            app._pending_messages.append(QueuedMessage(text="q", mode="normal"))
+            app._queued_widgets.append(queued_w1)
+            app._queued_widgets.append(queued_w2)
+
+            app.action_interrupt()
+
+        worker.cancel.assert_called_once()
+        queued_w1.remove.assert_called_once()
+        queued_w2.remove.assert_called_once()
+        assert len(app._pending_messages) == 0
+        assert len(app._queued_widgets) == 0

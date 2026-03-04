@@ -13,11 +13,11 @@
 
 ```bash
 curl -LsSf https://raw.githubusercontent.com/langchain-ai/deepagents/main/scripts/install.sh | bash
+```
 
+```bash
 # With model provider extras (OpenAI is included by default)
 DEEPAGENTS_EXTRAS="anthropic,groq" curl -LsSf https://raw.githubusercontent.com/langchain-ai/deepagents/main/scripts/install.sh | bash
-
-deepagents
 ```
 
 Or install directly with `uv`:
@@ -25,6 +25,11 @@ Or install directly with `uv`:
 ```bash
 # Install with chosen model providers (OpenAI is included by default)
 uv tool install 'deepagents-cli[anthropic,groq]'
+```
+
+Run the CLI:
+
+```bash
 deepagents
 ```
 

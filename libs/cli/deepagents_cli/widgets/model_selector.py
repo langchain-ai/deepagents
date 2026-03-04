@@ -317,27 +317,37 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         self.dismiss((event.model_spec, event.provider))
 
     def _update_filtered_list(self) -> None:
-        """Update the filtered models based on search text using fuzzy matching."""
-        if not self._filter_text.strip():
+        """Update the filtered models based on search text using fuzzy matching.
+
+        Results are sorted by match score (best first).
+        """
+        query = self._filter_text.strip()
+        if not query:
             self._filtered_models = list(self._all_models)
             self._selected_index = self._find_current_model_index()
-        else:
-            matcher = Matcher(self._filter_text, case_sensitive=False)
+            return
+
+        try:
+            matcher = Matcher(query, case_sensitive=False)
             scored = [
                 (matcher.match(spec), spec, provider)
                 for spec, provider in self._all_models
             ]
-            self._filtered_models = [
-                (spec, provider)
-                for score, spec, provider in sorted(scored, reverse=True)
-                if score > 0
-            ]
-            if self._filtered_models:
-                self._selected_index = min(
-                    self._selected_index, len(self._filtered_models) - 1
-                )
-            else:
-                self._selected_index = 0
+        except Exception:  # noqa: BLE001
+            # graceful fallback if Matcher fails on edge-case input
+            self._filtered_models = list(self._all_models)
+            self._selected_index = self._find_current_model_index()
+            return
+
+        self._filtered_models = [
+            (spec, provider)
+            for score, spec, provider in sorted(scored, reverse=True)
+            if score > 0
+        ]
+        if self._filtered_models:
+            self._selected_index = 0
+        else:
+            self._selected_index = 0
 
     async def _update_display(self) -> None:
         """Render the model list grouped by provider.

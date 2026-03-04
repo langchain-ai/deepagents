@@ -2,7 +2,6 @@
 
 from typing import ClassVar
 
-import pytest
 from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Container
@@ -321,7 +320,6 @@ class TestModelSelectorCurrentModelPreselection:
 class TestModelSelectorFuzzyMatching:
     """Tests for fuzzy search filtering."""
 
-    @pytest.mark.asyncio
     async def test_fuzzy_exact_substring_still_works(self) -> None:
         """Exact substring matches should still work with fuzzy matching."""
         app = ModelSelectorTestApp()
@@ -341,7 +339,6 @@ class TestModelSelectorFuzzyMatching:
                 f"'claude' substring should match. Got: {specs}"
             )
 
-    @pytest.mark.asyncio
     async def test_fuzzy_subsequence_match(self) -> None:
         """Subsequence queries like 'cs45' should match 'claude-sonnet-4-5'."""
         app = ModelSelectorTestApp()
@@ -361,7 +358,6 @@ class TestModelSelectorFuzzyMatching:
                 f"'cs45' should fuzzy-match claude-sonnet-4-5. Got: {specs}"
             )
 
-    @pytest.mark.asyncio
     async def test_fuzzy_across_hyphen(self) -> None:
         """Queries should match across hyphens (e.g., 'gpt4' matches 'gpt-4o')."""
         app = ModelSelectorTestApp()
@@ -381,7 +377,6 @@ class TestModelSelectorFuzzyMatching:
                 f"'gpt4' should fuzzy-match gpt-4 models. Got: {specs}"
             )
 
-    @pytest.mark.asyncio
     async def test_fuzzy_case_insensitive(self) -> None:
         """Fuzzy matching should be case-insensitive."""
         app = ModelSelectorTestApp()
@@ -402,7 +397,6 @@ class TestModelSelectorFuzzyMatching:
                 f"'CLAUDE' should case-insensitively match claude models. Got: {specs}"
             )
 
-    @pytest.mark.asyncio
     async def test_fuzzy_no_match(self) -> None:
         """A query that matches nothing should produce an empty filtered list."""
         app = ModelSelectorTestApp()
@@ -419,7 +413,6 @@ class TestModelSelectorFuzzyMatching:
 
             assert len(screen._filtered_models) == 0
 
-    @pytest.mark.asyncio
     async def test_fuzzy_ranking_better_match_first(self) -> None:
         """Better fuzzy matches should rank higher than weaker matches."""
         app = ModelSelectorTestApp()
@@ -435,12 +428,10 @@ class TestModelSelectorFuzzyMatching:
             await pilot.pause()
 
             specs = [spec for spec, _ in screen._filtered_models]
-            # All results should contain "claude" as a subsequence
             assert len(specs) > 0
-            # The first result should be a strong match (contains "claude")
+            # First result should be a strong match containing the query
             assert "claude" in specs[0].lower()
 
-    @pytest.mark.asyncio
     async def test_empty_filter_shows_all(self) -> None:
         """Empty filter should show all models in original order."""
         app = ModelSelectorTestApp()
@@ -454,7 +445,6 @@ class TestModelSelectorFuzzyMatching:
             total = len(screen._filtered_models)
             assert total == len(screen._all_models)
 
-    @pytest.mark.asyncio
     async def test_whitespace_filter_shows_all(self) -> None:
         """Whitespace-only filter should be treated as empty."""
         app = ModelSelectorTestApp()
@@ -470,7 +460,6 @@ class TestModelSelectorFuzzyMatching:
 
             assert len(screen._filtered_models) == len(screen._all_models)
 
-    @pytest.mark.asyncio
     async def test_selection_clamped_on_filter(self) -> None:
         """Selected index should stay valid when filter results shrink."""
         app = ModelSelectorTestApp()
@@ -491,10 +480,11 @@ class TestModelSelectorFuzzyMatching:
                 await pilot.press(char)
             await pilot.pause()
 
-            count = len(screen._filtered_models)
-            assert screen._selected_index < count or count == 0
+            assert screen._filtered_models, "Filter should match claude models"
+            assert screen._selected_index == 0, (
+                "Fuzzy filter should reset selection to best match (index 0)"
+            )
 
-    @pytest.mark.asyncio
     async def test_enter_selects_fuzzy_result(self) -> None:
         """Pressing Enter after fuzzy filtering should select the top result."""
         app = ModelSelectorTestApp()
@@ -519,7 +509,6 @@ class TestModelSelectorFuzzyMatching:
             model_spec, _ = app.result
             assert "claude" in model_spec.lower()
 
-    @pytest.mark.asyncio
     async def test_navigation_after_fuzzy_filter(self) -> None:
         """Arrow keys should work correctly on fuzzy-filtered results."""
         app = ModelSelectorTestApp()
@@ -535,8 +524,8 @@ class TestModelSelectorFuzzyMatching:
             await pilot.pause()
 
             count = len(screen._filtered_models)
-            if count > 1:
-                initial = screen._selected_index
-                await pilot.press("down")
-                await pilot.pause()
-                assert screen._selected_index == (initial + 1) % count
+            assert count > 1, "Need multiple claude matches to test navigation"
+            initial = screen._selected_index
+            await pilot.press("down")
+            await pilot.pause()
+            assert screen._selected_index == (initial + 1) % count

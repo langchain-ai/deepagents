@@ -52,6 +52,7 @@ test = [
   "langchain-openai",
   "twine",
   "build",
+  "langchain-fireworks>=1.1.0",
 ]
 
 evals = [

@@ -45,21 +45,6 @@ Use a **plain tool** when:
 * The function is stateless and self-contained
 * No system-prompt or request modification is needed
 * The tool is specific to a single consumer (e.g. CLI-only)
-
-## Middleware in this package
-
-* `FilesystemMiddleware` -- ls, read_file, write_file, edit_file, glob,
-  grep, execute. Filters the `execute` tool based on whether the backend
-  implements `SandboxBackendProtocol`.
-* `MemoryMiddleware` -- Injects memory file contents and memory-management
-  guidelines into the system prompt.
-* `SkillsMiddleware` -- Injects skill documentation into the system prompt.
-* `SubAgentMiddleware` -- Provides the `task` tool for spawning ephemeral
-  subagents.
-* `SummarizationMiddleware` -- Manages context-window pressure via
-  summarization and message offloading. Stateful.
-* `SummarizationToolMiddleware` -- Exposes a `compact_conversation` tool for
-  on-demand compaction. Composes with `SummarizationMiddleware`.
 """
 
 from deepagents.middleware.filesystem import FilesystemMiddleware

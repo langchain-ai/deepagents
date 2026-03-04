@@ -1216,41 +1216,37 @@ class TestOpenRouterHeaders:
         """Clear model config cache before each test."""
         clear_caches()
 
-    def test_injects_default_headers(self) -> None:
-        """Injects HTTP-Referer and X-Title for openrouter provider."""
+    def test_injects_attribution_kwargs(self) -> None:
+        """Injects app_url and app_title for openrouter provider."""
         kwargs = _get_provider_kwargs("openrouter")
 
-        assert "default_headers" in kwargs
-        assert kwargs["default_headers"]["HTTP-Referer"] == (
-            "https://github.com/langchain-ai/deepagents"
-        )
-        assert kwargs["default_headers"]["X-Title"] == "Deep Agents CLI"
+        assert kwargs["app_url"] == "https://github.com/langchain-ai/deepagents"
+        assert kwargs["app_title"] == "Deep Agents CLI"
 
-    def test_per_model_headers_override_defaults(self, tmp_path: Path) -> None:
-        """Per-model default_headers override built-in defaults."""
+    def test_per_model_attribution_overrides_defaults(self, tmp_path: Path) -> None:
+        """Per-model app_title overrides built-in default."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
 [models.providers.openrouter]
 models = ["deepseek/deepseek-chat"]
 
 [models.providers.openrouter.params."deepseek/deepseek-chat"]
-default_headers = {X-Title = "My Custom App"}
+app_title = "My Custom App"
 """)
         with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
             kwargs = _get_provider_kwargs(
                 "openrouter", model_name="deepseek/deepseek-chat"
             )
 
-        assert kwargs["default_headers"]["X-Title"] == "My Custom App"
-        # Built-in HTTP-Referer should still be present
-        assert kwargs["default_headers"]["HTTP-Referer"] == (
-            "https://github.com/langchain-ai/deepagents"
-        )
+        assert kwargs["app_title"] == "My Custom App"
+        # Built-in app_url should still be present
+        assert kwargs["app_url"] == "https://github.com/langchain-ai/deepagents"
 
-    def test_no_headers_for_other_providers(self) -> None:
-        """Other providers do not get OpenRouter attribution headers."""
+    def test_no_attribution_for_other_providers(self) -> None:
+        """Other providers do not get OpenRouter attribution kwargs."""
         kwargs = _get_provider_kwargs("openai")
-        assert "default_headers" not in kwargs
+        assert "app_url" not in kwargs
+        assert "app_title" not in kwargs
 
 
 class TestCreateModelFromClass:

@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from deepagents import create_deep_agent
+from deepagents.graph import get_default_model
 from deepagents_cli.agent import create_cli_agent
 from dotenv import load_dotenv
 from harbor.agents.base import BaseAgent
@@ -92,14 +93,20 @@ class DeepAgentsWrapper(BaseAgent):
         super().__init__(logs_dir, model_name, *args, **kwargs)
 
         if model_name is None:
-            # Use Deep Agents default
-            model_name = "anthropic:claude-sonnet-4-5-20250929"
+            # Keep Harbor default aligned with the SDK default model.
+            model = get_default_model()
+            # Apply Harbor's runtime temperature knob to the SDK default when supported.
+            if hasattr(model, "temperature"):
+                model = model.model_copy(update={"temperature": temperature})
+            self._model = model
+            self._model_name = model.model
+        else:
+            self._model_name = model_name
+            self._model = init_chat_model(model_name, temperature=temperature)
 
-        self._model_name = model_name
         self._temperature = temperature
         self._verbose = verbose
         self._use_cli_agent = use_cli_agent
-        self._model = init_chat_model(model_name, temperature=temperature)
 
         # LangSmith run tracking for feedback
         self._langsmith_run_id: str | None = None

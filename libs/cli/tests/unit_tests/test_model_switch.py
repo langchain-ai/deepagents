@@ -27,7 +27,6 @@ def _restore_settings() -> Iterator[None]:
 class TestModelSwitchNoOp:
     """Tests for no-op when switching to the same model."""
 
-    @pytest.mark.asyncio
     async def test_no_message_when_switching_to_same_model(self) -> None:
         """Switching to the already-active model should not print 'Switched to'.
 
@@ -72,7 +71,6 @@ class TestModelSwitchNoOp:
 class TestModelSwitchErrorHandling:
     """Tests for error handling in _switch_model."""
 
-    @pytest.mark.asyncio
     async def test_missing_credentials_shows_error(self) -> None:
         """_switch_model shows error when provider credentials are missing."""
         app = DeepAgentsApp()
@@ -108,7 +106,6 @@ class TestModelSwitchErrorHandling:
         assert "Missing credentials" in captured_errors[0]
         assert "ANTHROPIC_API_KEY" in captured_errors[0]
 
-    @pytest.mark.asyncio
     async def test_create_model_config_error_shows_error(self) -> None:
         """_switch_model shows error when create_model raises ModelConfigError."""
         app = DeepAgentsApp()
@@ -141,7 +138,6 @@ class TestModelSwitchErrorHandling:
         assert len(captured_errors) == 1
         assert "Missing package" in captured_errors[0]
 
-    @pytest.mark.asyncio
     async def test_create_model_exception_shows_error(self) -> None:
         """_switch_model shows error when create_model raises an exception."""
         app = DeepAgentsApp()
@@ -175,7 +171,6 @@ class TestModelSwitchErrorHandling:
         assert "Failed to create model" in captured_errors[0]
         assert "Invalid model" in captured_errors[0]
 
-    @pytest.mark.asyncio
     async def test_agent_recreation_failure_shows_error_and_preserves_settings(
         self,
     ) -> None:
@@ -226,7 +221,6 @@ class TestModelSwitchErrorHandling:
         assert settings.model_provider == "openai"
         assert settings.model_context_limit == 128_000
 
-    @pytest.mark.asyncio
     async def test_context_limit_cleared_when_new_model_has_none(self) -> None:
         """Switching to a model without a context limit clears the old value."""
         app = DeepAgentsApp()
@@ -262,7 +256,6 @@ class TestModelSwitchErrorHandling:
 
         assert settings.model_context_limit is None
 
-    @pytest.mark.asyncio
     async def test_agent_failure_rollback_with_none_context_limit(self) -> None:
         """Rollback restores previous context limit when new model has None."""
         app = DeepAgentsApp()
@@ -295,7 +288,6 @@ class TestModelSwitchErrorHandling:
 
         assert settings.model_context_limit == 128_000
 
-    @pytest.mark.asyncio
     async def test_no_checkpointer_saves_preference(self) -> None:
         """_switch_model without checkpointer saves preference but doesn't hot-swap."""
         app = DeepAgentsApp()
@@ -328,7 +320,6 @@ class TestModelSwitchErrorHandling:
         assert "Model preference set" in captured_messages[0]
         assert "Restart" in captured_messages[0]
 
-    @pytest.mark.asyncio
     async def test_no_checkpointer_save_failure_shows_error(self) -> None:
         """_switch_model without checkpointer shows error when save fails."""
         app = DeepAgentsApp()
@@ -359,7 +350,6 @@ class TestModelSwitchErrorHandling:
         assert len(captured_errors) == 1
         assert "Could not save model preference" in captured_errors[0]
 
-    @pytest.mark.asyncio
     async def test_hot_swap_save_failure_warns_in_message(self) -> None:
         """Successful hot-swap warns when save_recent_model fails."""
         app = DeepAgentsApp()
@@ -413,7 +403,6 @@ class TestModelSwitchConfigProvider:
         """Clear model config cache before each test."""
         clear_caches()
 
-    @pytest.mark.asyncio
     async def test_switch_to_config_provider_no_whitelist_error(self, tmp_path) -> None:
         """Switching to a provider not in PROVIDER_API_KEY_ENV succeeds.
 
@@ -466,7 +455,6 @@ api_key_env = "FIREWORKS_API_KEY"
         assert any("Switched to" in m for m in captured_messages)
         assert not any("Unknown provider" in m for m in captured_messages)
 
-    @pytest.mark.asyncio
     async def test_switch_config_provider_missing_credentials(self, tmp_path) -> None:
         """Config provider with missing credentials shows appropriate error."""
         config_path = tmp_path / "config.toml"
@@ -501,7 +489,6 @@ api_key_env = "FIREWORKS_API_KEY"
         assert "Missing credentials" in captured_errors[0]
         assert "FIREWORKS_API_KEY" in captured_errors[0]
 
-    @pytest.mark.asyncio
     async def test_switch_to_ollama_no_key_required(self, tmp_path) -> None:
         """Ollama (no api_key_env) passes credential check."""
         config_path = tmp_path / "config.toml"
@@ -550,7 +537,6 @@ models = ["llama3"]
 class TestModelSwitchBareModelName:
     """Tests for _switch_model with bare model names (no provider prefix)."""
 
-    @pytest.mark.asyncio
     async def test_bare_model_name_auto_detects_provider(self) -> None:
         """Bare model name like 'gpt-4o' auto-detects provider and succeeds."""
         app = DeepAgentsApp()
@@ -594,7 +580,6 @@ class TestModelSwitchBareModelName:
 
         assert any("Switched to" in m for m in captured_messages)
 
-    @pytest.mark.asyncio
     async def test_bare_model_name_missing_credentials(self) -> None:
         """Bare model name shows credential error when provider creds are missing."""
         app = DeepAgentsApp()
@@ -630,7 +615,6 @@ class TestModelSwitchBareModelName:
         assert "Missing credentials" in captured_errors[0]
         assert "OPENAI_API_KEY" in captured_errors[0]
 
-    @pytest.mark.asyncio
     async def test_bare_model_name_already_using(self) -> None:
         """Bare model name matching current model shows 'Already using'."""
         app = DeepAgentsApp()

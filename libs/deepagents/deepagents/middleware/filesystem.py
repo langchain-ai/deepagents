@@ -1,7 +1,9 @@
 """Middleware for providing filesystem tools to an agent."""
 # ruff: noqa: E501
 
+import asyncio
 import base64
+import concurrent.futures
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Annotated, Any, Literal, NotRequired, cast
@@ -42,6 +44,7 @@ from deepagents.backends.utils import (
 from deepagents.middleware._utils import append_to_system_message
 
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
+GLOB_TIMEOUT = 20.0  # seconds
 LINE_NUMBER_WIDTH = 6
 DEFAULT_READ_OFFSET = 0
 DEFAULT_READ_LIMIT = 100
@@ -215,6 +218,7 @@ Usage notes:
   - Returns combined stdout/stderr output with exit code
   - If the output is very large, it may be truncated
   - For long-running commands, use the optional timeout parameter to override the default timeout (e.g., execute(command="make build", timeout=300))
+  - A timeout of 0 may disable timeouts on backends that support no-timeout execution
   - VERY IMPORTANT: You MUST avoid using search commands like find and grep. Instead use the grep, glob tools to search. You MUST avoid read tools like cat, head, tail, and use read_file to read files.
   - When issuing multiple commands, use the ';' or '&&' operator to separate them. DO NOT use newlines (newlines are ok in quoted strings)
     - Use '&&' when commands depend on each other (e.g., "mkdir dir && cd dir")
@@ -469,7 +473,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             Resolved backend instance.
         """
         if callable(self.backend):
-            return self.backend(runtime)
+            return self.backend(runtime)  # ty: ignore[call-top-callable]
         return self.backend
 
     def _create_ls_tool(self) -> BaseTool:
@@ -780,7 +784,12 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 validated_path = validate_path(path)
             except ValueError as e:
                 return f"Error: {e}"
-            infos = resolved_backend.glob_info(pattern, path=validated_path)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(resolved_backend.glob_info, pattern, path=validated_path)
+                try:
+                    infos = future.result(timeout=GLOB_TIMEOUT)
+                except concurrent.futures.TimeoutError:
+                    return f"Error: glob timed out after {GLOB_TIMEOUT}s. Try a more specific pattern or a narrower path."
             paths = [fi.get("path", "") for fi in infos]
             result = truncate_if_too_long(paths)
             return str(result)
@@ -796,7 +805,13 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 validated_path = validate_path(path)
             except ValueError as e:
                 return f"Error: {e}"
-            infos = await resolved_backend.aglob_info(pattern, path=validated_path)
+            try:
+                infos = await asyncio.wait_for(
+                    resolved_backend.aglob_info(pattern, path=validated_path),
+                    timeout=GLOB_TIMEOUT,
+                )
+            except TimeoutError:
+                return f"Error: glob timed out after {GLOB_TIMEOUT}s. Try a more specific pattern or a narrower path."
             paths = [fi.get("path", "") for fi in infos]
             result = truncate_if_too_long(paths)
             return str(result)
@@ -863,13 +878,14 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             command: Annotated[str, "Shell command to execute in the sandbox environment."],
             runtime: ToolRuntime[None, FilesystemState],
             timeout: Annotated[
-                int | None, "Optional timeout in seconds for this command. Overrides the default timeout. Use for long-running commands."
+                int | None,
+                "Optional timeout in seconds for this command. Overrides the default timeout. Use 0 for no-timeout execution on backends that support it.",
             ] = None,
         ) -> str:
             """Synchronous wrapper for execute tool."""
             if timeout is not None:
-                if timeout <= 0:
-                    return f"Error: timeout must be positive, got {timeout}."
+                if timeout < 0:
+                    return f"Error: timeout must be non-negative, got {timeout}."
                 if timeout > self._max_execute_timeout:
                     return f"Error: timeout {timeout}s exceeds maximum allowed ({self._max_execute_timeout}s)."
 
@@ -918,13 +934,14 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             # ASYNC109 - timeout is a semantic parameter forwarded to the
             # backend's implementation, not an asyncio.timeout() contract.
             timeout: Annotated[  # noqa: ASYNC109
-                int | None, "Optional timeout in seconds for this command. Overrides the default timeout. Use for long-running commands."
+                int | None,
+                "Optional timeout in seconds for this command. Overrides the default timeout. Use 0 for no-timeout execution on backends that support it.",
             ] = None,
         ) -> str:
             """Asynchronous wrapper for execute tool."""
             if timeout is not None:
-                if timeout <= 0:
-                    return f"Error: timeout must be positive, got {timeout}."
+                if timeout < 0:
+                    return f"Error: timeout must be non-negative, got {timeout}."
                 if timeout > self._max_execute_timeout:
                     return f"Error: timeout {timeout}s exceeds maximum allowed ({self._max_execute_timeout}s)."
 
@@ -1138,6 +1155,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             content=replacement_text,
             tool_call_id=message.tool_call_id,
             name=message.name,
+            id=message.id,
+            artifact=message.artifact,
+            status=message.status,
+            additional_kwargs=dict(message.additional_kwargs),
+            response_metadata=dict(message.response_metadata),
         )
         return processed_message, result.files_update
 
@@ -1194,6 +1216,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             content=replacement_text,
             tool_call_id=message.tool_call_id,
             name=message.name,
+            id=message.id,
+            artifact=message.artifact,
+            status=message.status,
+            additional_kwargs=dict(message.additional_kwargs),
+            response_metadata=dict(message.response_metadata),
         )
         return processed_message, result.files_update
 

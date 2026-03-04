@@ -82,6 +82,14 @@ class TestFormatToolDisplayExecute:
         result = format_tool_display("execute", {"command": "make test", "timeout": 30})
         assert result == f'{prefix} execute("make test", timeout=30s)'
 
+    def test_execute_with_timeout_string_coerced(self) -> None:
+        """Test execute display coerces numeric timeout strings."""
+        prefix = get_glyphs().tool_prefix
+        result = format_tool_display(
+            "execute", {"command": "make test", "timeout": "300"}
+        )
+        assert result == f'{prefix} execute("make test", timeout=5m)'
+
     def test_execute_with_timeout_hours(self) -> None:
         """Test execute display formats timeout in hours when appropriate."""
         prefix = get_glyphs().tool_prefix
@@ -103,6 +111,22 @@ class TestFormatToolDisplayExecute:
         prefix = get_glyphs().tool_prefix
         result = format_tool_display(
             "execute", {"command": "echo hello", "timeout": 120}
+        )
+        assert result == f'{prefix} execute("echo hello")'
+
+    def test_execute_with_default_timeout_string_hidden(self) -> None:
+        """Test execute display excludes timeout when default arrives as a string."""
+        prefix = get_glyphs().tool_prefix
+        result = format_tool_display(
+            "execute", {"command": "echo hello", "timeout": "120"}
+        )
+        assert result == f'{prefix} execute("echo hello")'
+
+    def test_execute_with_invalid_timeout_string_hidden(self) -> None:
+        """Test execute display ignores invalid timeout strings instead of crashing."""
+        prefix = get_glyphs().tool_prefix
+        result = format_tool_display(
+            "execute", {"command": "echo hello", "timeout": "10s"}
         )
         assert result == f'{prefix} execute("echo hello")'
 

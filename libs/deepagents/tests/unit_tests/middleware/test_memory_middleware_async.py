@@ -363,3 +363,39 @@ async def test_memory_middleware_order_matters_async(tmp_path: Path) -> None:
     assert first_pos > 0
     assert second_pos > 0
     assert first_pos < second_pos
+
+
+class _AsyncSpyBackend(FilesystemBackend):
+    """FilesystemBackend that counts adownload_files calls."""
+
+    def __init__(self, root_dir: str) -> None:
+        super().__init__(root_dir=root_dir, virtual_mode=False)
+        self.adownload_files_call_count = 0
+
+    async def adownload_files(self, paths: list[str]) -> list:
+        self.adownload_files_call_count += 1
+        return self.download_files(paths)
+
+
+async def test_abefore_agent_batches_download_into_single_call(tmp_path: Path) -> None:
+    """Verify that abefore_agent calls adownload_files exactly once for all sources."""
+    backend = _AsyncSpyBackend(root_dir=str(tmp_path))
+
+    path_a = str(tmp_path / "a" / "AGENTS.md")
+    path_b = str(tmp_path / "b" / "AGENTS.md")
+    path_c = str(tmp_path / "c" / "AGENTS.md")
+
+    backend.upload_files(
+        [
+            (path_a, b"# Memory A\nContent A"),
+            (path_b, b"# Memory B\nContent B"),
+            (path_c, b"# Memory C\nContent C"),
+        ]
+    )
+
+    middleware = MemoryMiddleware(backend=backend, sources=[path_a, path_b, path_c])
+    result = await middleware.abefore_agent({}, None, {})  # type: ignore[arg-type]
+
+    assert result is not None
+    assert len(result["memory_contents"]) == 3
+    assert backend.adownload_files_call_count == 1

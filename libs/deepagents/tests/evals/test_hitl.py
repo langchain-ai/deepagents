@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import uuid
+from typing import TYPE_CHECKING
 
 import pytest
 from langgraph.checkpoint.memory import MemorySaver
+
+if TYPE_CHECKING:
+    from langchain_core.language_models import BaseChatModel
+
 from langgraph.types import Command
 
 from deepagents import create_deep_agent
@@ -18,7 +23,7 @@ SAMPLE_TOOL_CONFIG = {
 
 
 @pytest.mark.langsmith
-def test_hitl_agent(model: str) -> None:
+def test_hitl_agent(model: BaseChatModel) -> None:
     """Test that agent respects interrupt_on configuration and waits for human approval."""
     checkpointer = MemorySaver()
     agent = create_deep_agent(
@@ -81,7 +86,7 @@ def test_hitl_agent(model: str) -> None:
 
 
 @pytest.mark.langsmith
-def test_subagent_with_hitl(model: str) -> None:
+def test_subagent_with_hitl(model: BaseChatModel) -> None:
     """Test that subagent respects parent's interrupt_on configuration."""
     checkpointer = MemorySaver()
     agent = create_deep_agent(
@@ -137,7 +142,7 @@ def test_subagent_with_hitl(model: str) -> None:
 
 
 @pytest.mark.langsmith
-def test_subagent_with_custom_interrupt_on(model: str) -> None:
+def test_subagent_with_custom_interrupt_on(model: BaseChatModel) -> None:
     """Test that subagent can have its own custom interrupt_on configuration."""
     checkpointer = MemorySaver()
     agent = create_deep_agent(

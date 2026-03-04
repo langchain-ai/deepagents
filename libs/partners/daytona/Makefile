@@ -1,4 +1,4 @@
-.PHONY: format lint test tests integration_test integration_tests test_watch benchmark help lint_package
+.PHONY: format lint type typecheck test tests integration_test integration_tests test_watch benchmark help lint_package
 
 .DEFAULT_GOAL := help
 
@@ -41,6 +41,10 @@ lint: ## Run linters and type checker
 lint lint_diff lint_package:
 	[ "$(PYTHON_FILES)" = "" ] || uv run --all-groups ruff check $(PYTHON_FILES)
 	[ "$(PYTHON_FILES)" = "" ] || uv run --all-groups ruff format $(PYTHON_FILES) --diff
+	$(MAKE) type
+
+type: ## Run type checker
+type typecheck:
 	uv run --all-groups ty check langchain_daytona
 
 format: ## Run code formatters

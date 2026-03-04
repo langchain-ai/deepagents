@@ -1,3 +1,6 @@
+import time
+from unittest.mock import patch
+
 import pytest
 from langchain.agents import create_agent
 from langchain.agents.middleware.types import ToolCallRequest
@@ -12,6 +15,7 @@ from langchain_core.messages import (
 from langgraph.store.memory import InMemoryStore
 from langgraph.types import Command, Overwrite
 
+import deepagents.middleware.filesystem as filesystem_middleware
 from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
 from deepagents.backends.protocol import (
     ExecuteResponse,
@@ -410,6 +414,32 @@ class TestFilesystemMiddleware:
             }
         )
         assert result == str([])
+
+    def test_glob_timeout_returns_error_message(self):
+        state = FilesystemState(messages=[], files={})
+        middleware = FilesystemMiddleware()
+        glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
+        backend = middleware._get_backend(
+            ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={})
+        )
+
+        def slow_glob_info(*_args: object, **_kwargs: object) -> list[dict[str, str]]:
+            time.sleep(2)
+            return []
+
+        with (
+            patch.object(filesystem_middleware, "GLOB_TIMEOUT", 0.5),
+            patch.object(middleware, "_get_backend", return_value=backend),
+            patch.object(backend, "glob_info", side_effect=slow_glob_info),
+        ):
+            result = glob_search_tool.invoke(
+                {
+                    "pattern": "**/*",
+                    "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+                }
+            )
+
+        assert result == "Error: glob timed out after 0.5s. Try a more specific pattern or a narrower path."
 
     def test_glob_search_truncates_large_results(self):
         """Test that glob results are truncated when they exceed token limit."""
@@ -928,6 +958,35 @@ class TestFilesystemMiddleware:
 
         assert isinstance(result, Command)
         assert result.update["messages"][0].name == "example_tool"
+
+    def test_intercept_long_toolmessage_preserves_artifact_and_metadata(self):
+        """Test that ToolMessage artifact and metadata fields are preserved after eviction."""
+        middleware = FilesystemMiddleware(tool_token_limit_before_evict=1000)
+        state = FilesystemState(messages=[], files={})
+        runtime = ToolRuntime(state=state, context=None, tool_call_id="test_123", store=None, stream_writer=lambda _: None, config={})
+
+        large_content = "x" * 5000
+        artifact_payload = {"urls": ["https://example.com"], "ids": [42]}
+        tool_message = ToolMessage(
+            content=large_content,
+            tool_call_id="test_123",
+            name="example_tool",
+            id="tool_msg_1",
+            artifact=artifact_payload,
+            status="error",
+            additional_kwargs={"source": "unit-test"},
+            response_metadata={"provider": "mock"},
+        )
+        result = middleware._intercept_large_tool_result(tool_message, runtime)
+
+        assert isinstance(result, Command)
+        processed_message = result.update["messages"][0]
+        assert isinstance(processed_message, ToolMessage)
+        assert processed_message.artifact == artifact_payload
+        assert processed_message.id == "tool_msg_1"
+        assert processed_message.status == "error"
+        assert processed_message.additional_kwargs == {"source": "unit-test"}
+        assert processed_message.response_metadata == {"provider": "mock"}
 
     def test_intercept_command_with_short_toolmessage(self):
         """Test that Commands with small messages pass through unchanged."""
@@ -1723,11 +1782,13 @@ class TestBuiltinTruncationTools:
         # Verify the message has the tool name preserved
         assert result.update["messages"][0].name == "execute"
 
-    def test_execute_tool_rejects_zero_timeout(self):
-        """Middleware should return a friendly error for timeout=0, not crash."""
+    def test_execute_tool_forwards_zero_timeout_to_backend(self):
+        """Middleware should forward timeout=0 for backends that support no-timeout."""
+        captured_timeout = {}
 
         class TimeoutCaptureSandbox(SandboxBackendProtocol, StateBackend):
             def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+                captured_timeout["value"] = timeout
                 return ExecuteResponse(output="ok", exit_code=0, truncated=False)
 
             @property
@@ -1748,11 +1809,11 @@ class TestBuiltinTruncationTools:
         middleware = FilesystemMiddleware(backend=backend)
 
         execute_tool = next(tool for tool in middleware.tools if tool.name == "execute")
-        # Should return a friendly error string, NOT raise an exception
         result = execute_tool.invoke({"command": "echo hello", "timeout": 0, "runtime": rt})
 
         assert isinstance(result, str)
-        assert "error" in result.lower()
+        assert "ok" in result
+        assert captured_timeout["value"] == 0
 
     def test_execute_tool_rejects_negative_timeout(self):
         """Middleware should return a friendly error for negative timeout."""
@@ -1783,6 +1844,7 @@ class TestBuiltinTruncationTools:
 
         assert isinstance(result, str)
         assert "error" in result.lower()
+        assert "non-negative" in result.lower()
 
     def test_execute_tool_forwards_valid_timeout_to_backend(self):
         """Middleware should forward a valid timeout to the backend."""

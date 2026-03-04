@@ -13,6 +13,7 @@ from deepagents_cli.widgets.messages import (
     AppMessage,
     ErrorMessage,
     QueuedUserMessage,
+    SummarizationMessage,
     ToolCallMessage,
     UserMessage,
 )
@@ -76,6 +77,20 @@ class TestAppMessageMarkupSafety:
         content = "Status: processing items[0-10]"
         msg = AppMessage(content)
         assert msg is not None
+
+
+class TestSummarizationMessage:
+    """Tests for summarization notification widget."""
+
+    def test_summarization_message_instantiates(self) -> None:
+        """SummarizationMessage should instantiate with default content."""
+        msg = SummarizationMessage()
+        assert msg is not None
+
+    def test_summarization_message_is_app_message(self) -> None:
+        """SummarizationMessage should be treated like an AppMessage."""
+        msg = SummarizationMessage()
+        assert isinstance(msg, AppMessage)
 
 
 class TestToolCallMessageMarkupSafety:

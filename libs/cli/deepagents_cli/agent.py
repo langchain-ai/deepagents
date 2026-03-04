@@ -43,6 +43,9 @@ from deepagents_cli.subagents import list_subagents
 DEFAULT_AGENT_NAME = "agent"
 """The default agent name used when no `-a` flag is provided."""
 
+REQUIRE_COMPACT_TOOL_APPROVAL: bool = True
+"""When `True`, `compact_conversation` requires HITL approval like other gated tools."""
+
 
 def list_agents() -> None:
     """List all available agents."""
@@ -359,7 +362,7 @@ def _add_interrupt_on() -> dict[str, InterruptOnConfig]:
         "description": _format_task_description,  # type: ignore[typeddict-item]  # Callable description narrower than TypedDict expects
     }
 
-    return {
+    interrupt_map: dict[str, InterruptOnConfig] = {
         "execute": execute_interrupt_config,
         "write_file": write_file_interrupt_config,
         "edit_file": edit_file_interrupt_config,
@@ -367,6 +370,19 @@ def _add_interrupt_on() -> dict[str, InterruptOnConfig]:
         "fetch_url": fetch_url_interrupt_config,
         "task": task_interrupt_config,
     }
+
+    if REQUIRE_COMPACT_TOOL_APPROVAL:
+        interrupt_map["compact_conversation"] = {
+            "allowed_decisions": ["approve", "reject"],
+            "description": (
+                "Summarizes older messages into a shorter summary "
+                "using an LLM call, then replaces them in context. "
+                "Recent messages are kept as-is. Full history is "
+                "written to backend storage for agent retrieval."
+            ),
+        }
+
+    return interrupt_map
 
 
 def create_cli_agent(
@@ -389,7 +405,7 @@ def create_cli_agent(
     both internally and from external code (e.g., benchmarking frameworks).
 
     Args:
-        model: LLM model to use (e.g., `'anthropic:claude-sonnet-4-5-20250929'`)
+        model: LLM model to use (e.g., `'anthropic:claude-sonnet-4-6'`)
         assistant_id: Agent identifier for memory/state storage
         tools: Additional tools to provide to agent
         sandbox: Optional sandbox backend for remote execution
@@ -437,10 +453,14 @@ def create_cli_agent(
 
     # Skills directories (if enabled)
     skills_dir = None
+    user_agent_skills_dir = None
     project_skills_dir = None
+    project_agent_skills_dir = None
     if enable_skills:
         skills_dir = settings.ensure_user_skills_dir(assistant_id)
+        user_agent_skills_dir = settings.get_user_agent_skills_dir()
         project_skills_dir = settings.get_project_skills_dir()
+        project_agent_skills_dir = settings.get_project_agent_skills_dir()
 
     # Load custom subagents from filesystem
     custom_subagents: list[SubAgent | CompiledSubAgent] = []
@@ -477,11 +497,15 @@ def create_cli_agent(
 
     # Add skills middleware
     if enable_skills:
-        # Built-in first (lowest precedence), then user, then project (highest)
+        # Lowest to highest precedence:
+        # built-in -> user .deepagents -> user .agents
+        # -> project .deepagents -> project .agents
         sources = [str(settings.get_built_in_skills_dir())]
-        sources.append(str(skills_dir))
+        sources.extend([str(skills_dir), str(user_agent_skills_dir)])
         if project_skills_dir:
             sources.append(str(project_skills_dir))
+        if project_agent_skills_dir:
+            sources.append(str(project_agent_skills_dir))
 
         agent_middleware.append(
             SkillsMiddleware(
@@ -564,6 +588,21 @@ def create_cli_agent(
             default=backend,
             routes={},
         )
+
+    from deepagents.graph import resolve_model
+
+    model = resolve_model(model)
+
+    from deepagents.middleware.summarization import (
+        SummarizationToolMiddleware,
+        create_summarization_middleware,
+    )
+
+    agent_middleware.append(
+        SummarizationToolMiddleware(
+            create_summarization_middleware(model, composite_backend)
+        )
+    )
 
     # Create the agent
     # Use provided checkpointer or fallback to InMemorySaver

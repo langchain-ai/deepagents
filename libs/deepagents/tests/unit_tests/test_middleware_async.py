@@ -1,10 +1,13 @@
 """Async tests for middleware filesystem tools."""
 
-import pytest
+import asyncio
+from unittest.mock import patch
+
 from langchain.tools import ToolRuntime
 from langgraph.store.memory import InMemoryStore
 from langgraph.types import Command
 
+import deepagents.middleware.filesystem as filesystem_middleware
 from deepagents.backends import CompositeBackend, StateBackend
 from deepagents.backends.protocol import ExecuteResponse, SandboxBackendProtocol
 from deepagents.middleware.filesystem import FileData, FilesystemMiddleware, FilesystemState
@@ -24,7 +27,6 @@ def build_composite_state_backend(runtime: ToolRuntime, *, routes):
 class TestFilesystemMiddlewareAsync:
     """Async tests for filesystem middleware tools."""
 
-    @pytest.mark.asyncio
     async def test_als_shortterm(self):
         """Test async ls tool with state backend."""
         state = FilesystemState(
@@ -49,7 +51,6 @@ class TestFilesystemMiddlewareAsync:
         )
         assert result == str(["/test.txt", "/test2.txt"])
 
-    @pytest.mark.asyncio
     async def test_als_shortterm_with_path(self):
         """Test async ls tool with specific path."""
         state = FilesystemState(
@@ -91,7 +92,6 @@ class TestFilesystemMiddlewareAsync:
         assert "/pokemon/water/squirtle.txt" not in result  # In subdirectory
         assert "/pokemon/water/" in result
 
-    @pytest.mark.asyncio
     async def test_als_shortterm_lists_directories(self):
         """Test async ls lists directories with trailing /."""
         state = FilesystemState(
@@ -135,7 +135,6 @@ class TestFilesystemMiddlewareAsync:
         assert "/pokemon/charmander.txt" not in result
         assert "/pokemon/water/squirtle.txt" not in result
 
-    @pytest.mark.asyncio
     async def test_aglob_search_shortterm_simple_pattern(self):
         """Test async glob with simple pattern."""
         state = FilesystemState(
@@ -174,7 +173,6 @@ class TestFilesystemMiddlewareAsync:
         # Standard glob: *.py only matches files in root directory, not subdirectories
         assert result == str(["/test.py"])
 
-    @pytest.mark.asyncio
     async def test_aglob_search_shortterm_wildcard_pattern(self):
         """Test async glob with wildcard pattern."""
         state = FilesystemState(
@@ -209,7 +207,6 @@ class TestFilesystemMiddlewareAsync:
         assert "/src/utils/helper.py" in result
         assert "/tests/test_main.py" in result
 
-    @pytest.mark.asyncio
     async def test_aglob_search_shortterm_with_path(self):
         """Test async glob with specific path."""
         state = FilesystemState(
@@ -245,7 +242,6 @@ class TestFilesystemMiddlewareAsync:
         assert "/src/utils/helper.py" not in result
         assert "/tests/test_main.py" not in result
 
-    @pytest.mark.asyncio
     async def test_aglob_search_shortterm_brace_expansion(self):
         """Test async glob with brace expansion."""
         state = FilesystemState(
@@ -280,7 +276,6 @@ class TestFilesystemMiddlewareAsync:
         assert "/test.pyi" in result
         assert "/test.txt" not in result
 
-    @pytest.mark.asyncio
     async def test_aglob_search_shortterm_no_matches(self):
         """Test async glob with no matches."""
         state = FilesystemState(
@@ -303,7 +298,31 @@ class TestFilesystemMiddlewareAsync:
         )
         assert result == str([])
 
-    @pytest.mark.asyncio
+    async def test_glob_timeout_returns_error_message_async(self):
+        state = FilesystemState(messages=[], files={})
+        middleware = FilesystemMiddleware()
+        glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
+        backend_runtime = ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={})
+        backend = middleware._get_backend(backend_runtime)
+
+        async def slow_aglob_info(*_args: object, **_kwargs: object) -> list[dict[str, str]]:
+            await asyncio.sleep(2)
+            return []
+
+        with (
+            patch.object(filesystem_middleware, "GLOB_TIMEOUT", 0.5),
+            patch.object(middleware, "_get_backend", return_value=backend),
+            patch.object(backend, "aglob_info", side_effect=slow_aglob_info),
+        ):
+            result = await glob_search_tool.ainvoke(
+                {
+                    "pattern": "**/*",
+                    "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+                }
+            )
+
+        assert result == "Error: glob timed out after 0.5s. Try a more specific pattern or a narrower path."
+
     async def test_agrep_search_shortterm_files_with_matches(self):
         """Test async grep with files_with_matches mode."""
         state = FilesystemState(
@@ -338,7 +357,6 @@ class TestFilesystemMiddlewareAsync:
         assert "/helper.txt" in result
         assert "/main.py" not in result
 
-    @pytest.mark.asyncio
     async def test_agrep_search_shortterm_content_mode(self):
         """Test async grep with content mode."""
         state = FilesystemState(
@@ -364,7 +382,6 @@ class TestFilesystemMiddlewareAsync:
         assert "2: import sys" in result
         assert "print" not in result
 
-    @pytest.mark.asyncio
     async def test_agrep_search_shortterm_count_mode(self):
         """Test async grep with count mode."""
         state = FilesystemState(
@@ -394,7 +411,6 @@ class TestFilesystemMiddlewareAsync:
         assert "/test.py:2" in result or "/test.py: 2" in result
         assert "/main.py:1" in result or "/main.py: 1" in result
 
-    @pytest.mark.asyncio
     async def test_agrep_search_shortterm_with_include(self):
         """Test async grep with glob filter."""
         state = FilesystemState(
@@ -424,7 +440,6 @@ class TestFilesystemMiddlewareAsync:
         assert "/test.py" in result
         assert "/test.txt" not in result
 
-    @pytest.mark.asyncio
     async def test_agrep_search_shortterm_with_path(self):
         """Test async grep with specific path."""
         state = FilesystemState(
@@ -454,7 +469,6 @@ class TestFilesystemMiddlewareAsync:
         assert "/src/main.py" in result
         assert "/tests/test.py" not in result
 
-    @pytest.mark.asyncio
     async def test_agrep_search_shortterm_regex_pattern(self):
         """Test async grep with literal pattern (not regex)."""
         state = FilesystemState(
@@ -481,7 +495,6 @@ class TestFilesystemMiddlewareAsync:
         assert "2: def world():" in result
         assert "x = 5" not in result
 
-    @pytest.mark.asyncio
     async def test_agrep_search_shortterm_no_matches(self):
         """Test async grep with no matches."""
         state = FilesystemState(
@@ -504,7 +517,6 @@ class TestFilesystemMiddlewareAsync:
         )
         assert result == "No matches found"
 
-    @pytest.mark.asyncio
     async def test_agrep_search_shortterm_invalid_regex(self):
         """Test async grep with special characters (literal search, not regex)."""
         state = FilesystemState(
@@ -528,7 +540,6 @@ class TestFilesystemMiddlewareAsync:
         )
         assert "No matches found" in result
 
-    @pytest.mark.asyncio
     async def test_aread_file(self):
         """Test async read_file tool."""
         state = FilesystemState(
@@ -553,7 +564,6 @@ class TestFilesystemMiddlewareAsync:
         assert "Line 2" in result
         assert "Line 3" in result
 
-    @pytest.mark.asyncio
     async def test_aread_file_with_offset(self):
         """Test async read_file tool with offset."""
         state = FilesystemState(
@@ -581,7 +591,6 @@ class TestFilesystemMiddlewareAsync:
         assert "Line 1" not in result
         assert "Line 4" not in result
 
-    @pytest.mark.asyncio
     async def test_awrite_file(self):
         """Test async write_file tool."""
         state = FilesystemState(messages=[], files={})
@@ -598,7 +607,6 @@ class TestFilesystemMiddlewareAsync:
         assert isinstance(result, Command)
         assert "/test.txt" in result.update["files"]
 
-    @pytest.mark.asyncio
     async def test_aedit_file(self):
         """Test async edit_file tool."""
         state = FilesystemState(
@@ -625,7 +633,6 @@ class TestFilesystemMiddlewareAsync:
         assert isinstance(result, Command)
         assert "/test.txt" in result.update["files"]
 
-    @pytest.mark.asyncio
     async def test_aedit_file_replace_all(self):
         """Test async edit_file tool with replace_all."""
         state = FilesystemState(
@@ -652,7 +659,6 @@ class TestFilesystemMiddlewareAsync:
         assert isinstance(result, Command)
         assert "/test.txt" in result.update["files"]
 
-    @pytest.mark.asyncio
     async def test_aexecute_tool_returns_error_when_backend_doesnt_support(self):
         """Test async execute tool returns friendly error instead of raising exception."""
         state = FilesystemState(messages=[], files={})
@@ -678,7 +684,46 @@ class TestFilesystemMiddlewareAsync:
         assert "Error: Execution not available" in result
         assert "does not support command execution" in result
 
-    @pytest.mark.asyncio
+    async def test_aexecute_tool_forwards_zero_timeout_to_backend(self):
+        """Async execute tool should forward timeout=0 for no-timeout backends."""
+        captured_timeout = {}
+
+        class TimeoutCaptureSandbox(SandboxBackendProtocol, StateBackend):
+            def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+                return ExecuteResponse(output="sync ok", exit_code=0, truncated=False)
+
+            async def aexecute(
+                self,
+                command: str,
+                *,
+                timeout: int | None = None,  # noqa: ASYNC109
+            ) -> ExecuteResponse:
+                captured_timeout["value"] = timeout
+                return ExecuteResponse(output="async ok", exit_code=0, truncated=False)
+
+            @property
+            def id(self):
+                return "timeout-capture-sandbox-backend"
+
+        state = FilesystemState(messages=[], files={})
+        rt = ToolRuntime(
+            state=state,
+            context=None,
+            tool_call_id="test_zero_timeout_async",
+            store=InMemoryStore(),
+            stream_writer=lambda _: None,
+            config={},
+        )
+
+        backend = TimeoutCaptureSandbox(rt)
+        middleware = FilesystemMiddleware(backend=backend)
+
+        execute_tool = next(tool for tool in middleware.tools if tool.name == "execute")
+        result = await execute_tool.ainvoke({"command": "echo hello", "timeout": 0, "runtime": rt})
+
+        assert "async ok" in result
+        assert captured_timeout["value"] == 0
+
     async def test_aexecute_tool_output_formatting(self):
         """Test async execute tool formats output correctly."""
 
@@ -722,7 +767,6 @@ class TestFilesystemMiddlewareAsync:
         assert "succeeded" in result
         assert "exit code 0" in result
 
-    @pytest.mark.asyncio
     async def test_aexecute_tool_output_formatting_with_failure(self):
         """Test async execute tool formats failure output correctly."""
 
@@ -766,7 +810,6 @@ class TestFilesystemMiddlewareAsync:
         assert "failed" in result
         assert "exit code 127" in result
 
-    @pytest.mark.asyncio
     async def test_aexecute_tool_output_formatting_with_truncation(self):
         """Test async execute tool formats truncated output correctly."""
 

@@ -14,7 +14,7 @@ deepagents/
 │   ├── deepagents/  # SDK
 │   ├── cli/         # CLI tool
 │   ├── acp/         # Agent Context Protocol support
-│   └── harbor/      # Evaluation/benchmark framework
+│   ├── harbor/      # Evaluation/benchmark framework
 │   └── partners/    # Integration packages
 │       └── daytona/
 │       └── ...
@@ -28,6 +28,7 @@ deepagents/
 - `make` – Task runner for common development commands. Feel free to look at the `Makefile` for available commands and usage patterns.
 - `ruff` – Fast Python linter and formatter
 - `ty` – Static type checking
+- Do NOT use Sphinx-style double backtick formatting (` ``code`` `). Use single backticks (`code`) for inline code references in docstrings and comments.
 
 #### Suppressing ruff lint rules
 
@@ -87,6 +88,8 @@ fix(cli): resolve type hinting issue
 chore(harbor): update infrastructure dependencies
 ```
 
+- Do NOT use Sphinx-style double backtick formatting (` ``code`` `). Use single backticks (`code`) for inline code references in docstrings and comments.
+
 #### Pull request guidelines
 
 - Always add a disclaimer to the PR description mentioning how AI agents are involved with the contribution.
@@ -142,6 +145,7 @@ Every new feature or bugfix MUST be covered by unit tests.
 - Unit tests: `tests/unit_tests/` (no network calls allowed)
 - Integration tests: `tests/integration_tests/` (network calls permitted)
 - We use `pytest` as the testing framework; if in doubt, check other existing tests for examples.
+- Do NOT add `@pytest.mark.asyncio` to async tests — every package sets `asyncio_mode = "auto"` in `pyproject.toml`, so pytest-asyncio discovers them automatically.
 - The testing file structure should mirror the source code structure.
 - Avoid mocks as much as possible
 - Test actual implementation, do not duplicate logic into tests
@@ -190,7 +194,7 @@ def send_email(to: str, msg: str, *, priority: str = "normal") -> bool:
 - Document all parameters, return values, and exceptions
 - Keep descriptions concise but clear
 - Ensure American English spelling (e.g., "behavior", not "behaviour")
-- Do NOT use Sphinx-style double backtick formatting (` ``code`` `). Use single backticks (`` `code` ``) for inline code references in docstrings and comments.
+- Do NOT use Sphinx-style double backtick formatting (` ``code`` `). Use single backticks (`code`) for inline code references in docstrings and comments.
 
 ## Package-specific guidance
 
@@ -211,6 +215,10 @@ def send_email(to: str, msg: str, *, priority: str = "normal") -> bool:
 - **Message passing** for widget communication - see [Events guide](https://textual.textualize.io/guide/events/)
 - **Reactive attributes** for state management - see [Reactivity guide](https://textual.textualize.io/guide/reactivity/)
 
+**SDK dependency pin:**
+
+The CLI pins an exact `deepagents==X.Y.Z` version in `libs/cli/pyproject.toml`. When developing CLI features that depend on new SDK functionality, bump this pin as part of the same PR. A CI check verifies the pin matches the current SDK version at release time (unless bypassed with `dangerous-skip-sdk-pin-check`).
+
 **Startup performance:**
 
 The CLI must stay fast to launch. Never import heavy packages (e.g., `deepagents`, LangChain, LangGraph) at module level or in the argument-parsing path. These imports pull in large dependency trees and add seconds to every invocation, including trivial commands like `deepagents -v`.
@@ -218,6 +226,10 @@ The CLI must stay fast to launch. Never import heavy packages (e.g., `deepagents
 - Keep top-level imports in `main.py` and other entry-point modules minimal.
 - Defer heavy imports to the point where they are actually needed (inside functions/methods).
 - To read another package's version without importing it, use `importlib.metadata.version("package-name")`.
+
+**CLI help screen:**
+
+The `deepagents --help` screen is hand-maintained in `ui.show_help()`, separate from the argparse definitions in `main.parse_args()`. When adding a new CLI flag, update **both** files. A drift-detection test (`test_args.TestHelpScreenDrift`) fails if a flag is registered in argparse but missing from the help screen.
 
 **Building chat/streaming interfaces:**
 
@@ -233,3 +245,5 @@ The CLI must stay fast to launch. Never import heavy packages (e.g., `deepagents
 - **Documentation:** https://docs.langchain.com/oss/python/deepagents/overview and source at https://github.com/langchain-ai/docs or `../docs/`. Prefer the local install and use file search tools for best results. If needed, use the docs MCP server as defined in `.mcp.json` for programmatic access.
 - **Contributing Guide:** [Contributing Guide](https://docs.langchain.com/oss/python/contributing/overview)
 - **CLI Release Process:** See `.github/RELEASING.md` for the full CLI release workflow (release-please, version bumping, troubleshooting failed releases, and label management).
+
+- Do NOT use Sphinx-style double backtick formatting (` ``code`` `). Use single backticks (`code`) for inline code references in docstrings and comments.

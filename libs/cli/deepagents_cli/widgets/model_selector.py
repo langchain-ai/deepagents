@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, ClassVar
 
 from textual.binding import Binding, BindingType
@@ -9,6 +10,7 @@ from textual.containers import Container, Vertical, VerticalScroll
 from textual.events import (
     Click,  # noqa: TC002 - needed at runtime for Textual event dispatch
 )
+from textual.fuzzy import Matcher
 from textual.message import Message
 from textual.screen import ModalScreen
 from textual.widgets import Input, Static
@@ -24,6 +26,8 @@ from deepagents_cli.model_config import (
     has_provider_credentials,
     save_default_model,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class ModelOption(Static):
@@ -292,7 +296,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         Args:
             event: The input changed event.
         """
-        self._filter_text = event.value.lower()
+        self._filter_text = event.value
         self._update_filtered_list()
         self._rebuild_needed = True
         self.call_after_refresh(self._update_display)
@@ -316,20 +320,40 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         self.dismiss((event.model_spec, event.provider))
 
     def _update_filtered_list(self) -> None:
-        """Update the filtered models based on search text."""
-        if not self._filter_text:
+        """Update the filtered models based on search text using fuzzy matching.
+
+        Results are sorted by match score (best first).
+        """
+        query = self._filter_text.strip()
+        if not query:
             self._filtered_models = list(self._all_models)
-            # Re-select current model when filter is cleared
             self._selected_index = self._find_current_model_index()
-        else:
-            self._filtered_models = [
-                (model_spec, provider)
-                for model_spec, provider in self._all_models
-                if self._filter_text in model_spec.lower()
-            ]
-            # Reset selection if out of bounds
-            if self._selected_index >= len(self._filtered_models):
-                self._selected_index = max(0, len(self._filtered_models) - 1)
+            return
+
+        tokens = query.split()
+
+        try:
+            matchers = [Matcher(token, case_sensitive=False) for token in tokens]
+            scored: list[tuple[float, str, str]] = []
+            for spec, provider in self._all_models:
+                scores = [m.match(spec) for m in matchers]
+                if all(s > 0 for s in scores):
+                    scored.append((min(scores), spec, provider))
+        except Exception:
+            # graceful fallback if Matcher fails on edge-case input
+            logger.warning(
+                "Fuzzy matcher failed for query %r, falling back to full list",
+                query,
+                exc_info=True,
+            )
+            self._filtered_models = list(self._all_models)
+            self._selected_index = self._find_current_model_index()
+            return
+
+        self._filtered_models = [
+            (spec, provider) for score, spec, provider in sorted(scored, reverse=True)
+        ]
+        self._selected_index = 0
 
     async def _update_display(self) -> None:
         """Render the model list grouped by provider.

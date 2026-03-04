@@ -15,6 +15,8 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
+from deepagents_cli.project_utils import find_project_root
+
 
 def _get_git_executable() -> str | None:
     """Get full path to git executable using shutil.which().
@@ -96,6 +98,7 @@ SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/help", "Show help"),
     ("/changelog", "Open changelog in browser"),
     ("/clear", "Clear chat and start new thread"),
+    ("/compact", "Summarize conversation to reduce context usage"),
     ("/docs", "Open documentation in browser"),
     ("/feedback", "Submit a bug report or feature request"),
     ("/model", "Switch model, show selector, or set default (--default)"),
@@ -241,19 +244,6 @@ class SlashCommandController:
 _MAX_FALLBACK_FILES = 1000
 _MIN_FUZZY_RATIO = 0.4
 _MIN_FUZZY_SCORE = 15  # Minimum score to include in results
-
-
-def _find_project_root(start_path: Path) -> Path:
-    """Find git root or return start_path.
-
-    Returns:
-        Path to git root directory, or start_path if not in a git repo.
-    """
-    current = start_path.resolve()
-    for parent in [current, *list(current.parents)]:
-        if (parent / ".git").exists():
-            return parent
-    return start_path
 
 
 def _get_project_files(root: Path) -> list[str]:
@@ -416,7 +406,7 @@ class FuzzyFileController:
         """
         self._view = view
         self._cwd = cwd or Path.cwd()
-        self._project_root = _find_project_root(self._cwd)
+        self._project_root = find_project_root(self._cwd) or self._cwd
         self._suggestions: list[tuple[str, str]] = []
         self._selected_index = 0
         self._file_cache: list[str] | None = None

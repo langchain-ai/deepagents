@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import pytest
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages import AIMessage, AnyMessage, ToolMessage
 from langsmith import testing as t
 
 from deepagents.backends.utils import create_file_data, file_data_to_string
@@ -21,6 +21,7 @@ class ToolCallExpectation:
 
 
 if TYPE_CHECKING:
+    from langchain_core.language_models import BaseChatModel
     from langgraph.graph.state import CompiledStateGraph
 
 
@@ -217,13 +218,35 @@ def _assert_counts(trajectory: AgentTrajectory, expect: TrajectoryExpectations) 
             )
 
 
+def _strip_common_zero_width(text: str) -> str:
+    """Remove common zero-width characters that can break string comparisons.
+
+    Some models insert invisible Unicode characters (e.g., zero-width spaces) into
+    strings that look like paths or URLs. This is typically a formatting heuristic
+    to prevent auto-linking or to stabilize rendering in downstream UIs.
+
+    Our eval expectations are literal substring checks. Stripping these characters
+    makes the checks robust to formatting-only differences while preserving the
+    semantic content of the answer.
+    """
+    return text.translate(
+        {
+            ord("\u200b"): None,  # zero-width space
+            ord("\u200c"): None,  # zero-width non-joiner
+            ord("\u200d"): None,  # zero-width joiner
+            ord("\ufeff"): None,  # zero-width no-break space / BOM
+        }
+    )
+
+
 def _assert_final_text(trajectory: AgentTrajectory, expect: TrajectoryExpectations) -> None:
-    final_text = trajectory.steps[-1].action.text
-    for text, case_insensitive in expect.final_text_contains:
+    final_text = _strip_common_zero_width(trajectory.steps[-1].action.text)
+    for expected_text, case_insensitive in expect.final_text_contains:
+        normalized_expected_text = _strip_common_zero_width(expected_text)
         haystack = final_text.lower() if case_insensitive else final_text
-        needle = text.lower() if case_insensitive else text
+        needle = normalized_expected_text.lower() if case_insensitive else normalized_expected_text
         if needle not in haystack:
-            msg = f"Expected final text to contain {text!r} (case_insensitive={case_insensitive}), got: {final_text!r}"
+            msg = f"Expected final text to contain {normalized_expected_text!r} (case_insensitive={case_insensitive}), got: {final_text!r}"
             raise AssertionError(msg)
 
 
@@ -266,14 +289,17 @@ def _assert_expectations(trajectory: AgentTrajectory, expect: TrajectoryExpectat
 def run_agent(
     agent: CompiledStateGraph[Any, Any],
     *,
-    query: str,
-    model: str,
+    query: str | list[AnyMessage],
+    model: BaseChatModel,
     initial_files: dict[str, str] | None = None,
     expect: TrajectoryExpectations | None = None,
     thread_id: str | None = None,
 ) -> AgentTrajectory:
     """Run agent eval against the given query."""
-    invoke_inputs: dict[str, object] = {"messages": [{"role": "user", "content": query}]}
+    if isinstance(query, str):
+        invoke_inputs: dict[str, object] = {"messages": [{"role": "user", "content": query}]}
+    else:
+        invoke_inputs = {"messages": query}
     if initial_files is not None:
         invoke_inputs["files"] = {path: create_file_data(content) for path, content in initial_files.items()}
 
@@ -282,7 +308,7 @@ def run_agent(
     config = {"configurable": {"thread_id": thread_id}}
 
     logged_inputs = dict(invoke_inputs)
-    logged_inputs["model"] = model
+    logged_inputs["model"] = str(getattr(model, "model", None) or getattr(model, "model_name", ""))
 
     t.log_inputs(logged_inputs)
     result = agent.invoke(invoke_inputs, config)

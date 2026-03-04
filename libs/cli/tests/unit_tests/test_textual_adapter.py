@@ -4,12 +4,14 @@ import asyncio
 from asyncio import Future
 from collections.abc import AsyncIterator, Generator
 from datetime import datetime
+from io import StringIO
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
+from rich.console import Console
 
 from deepagents_cli.textual_adapter import (
     ModelStats,
@@ -20,6 +22,7 @@ from deepagents_cli.textual_adapter import (
     _is_summarization_chunk,
     execute_task_textual,
     format_token_count,
+    print_usage_table,
 )
 from deepagents_cli.widgets.messages import SummarizationMessage
 
@@ -566,3 +569,68 @@ class TestFormatTokenCount:
 
     def test_zero(self) -> None:
         assert format_token_count(0) == "0"
+
+
+# ---------------------------------------------------------------------------
+# print_usage_table tests
+# ---------------------------------------------------------------------------
+
+
+class TestPrintUsageTable:
+    """Tests for `print_usage_table` output."""
+
+    def test_no_model_called_skips_unknown_row(self) -> None:
+        """When no model was called, the table should not show 'unknown'."""
+        stats = SessionStats()
+        buf = StringIO()
+        console = Console(file=buf, force_terminal=True)
+        print_usage_table(stats, wall_time=1.5, console=console)
+        output = buf.getvalue()
+        assert "unknown" not in output
+        assert "Usage Stats" not in output
+        assert "Agent active" in output
+
+    def test_single_model_shows_name(self) -> None:
+        """Single-model session should display the model name."""
+        stats = SessionStats()
+        stats.record_request("gpt-4", 100, 50)
+        buf = StringIO()
+        console = Console(file=buf, force_terminal=True)
+        print_usage_table(stats, wall_time=2.0, console=console)
+        output = buf.getvalue()
+        assert "gpt-4" in output
+        assert "unknown" not in output
+
+    def test_multi_model_shows_all_names_and_total(self) -> None:
+        """Multi-model session should show each model and a Total row."""
+        stats = SessionStats()
+        stats.record_request("gpt-4", 100, 50)
+        stats.record_request("claude-opus-4-6", 200, 80)
+        buf = StringIO()
+        console = Console(file=buf, force_terminal=True)
+        print_usage_table(stats, wall_time=2.0, console=console)
+        output = buf.getvalue()
+        assert "gpt-4" in output
+        assert "claude-opus-4-6" in output
+        assert "Total" in output
+        assert "unknown" not in output
+
+    def test_tokens_with_no_wall_time_omits_timing_line(self) -> None:
+        """Token table should print but timing line should be absent."""
+        stats = SessionStats()
+        stats.record_request("gpt-4", 100, 50)
+        buf = StringIO()
+        console = Console(file=buf, force_terminal=True)
+        print_usage_table(stats, wall_time=0.0, console=console)
+        output = buf.getvalue()
+        assert "gpt-4" in output
+        assert "Agent active" not in output
+
+    def test_no_requests_no_time_prints_nothing(self) -> None:
+        """Empty stats with negligible wall time should print nothing."""
+        stats = SessionStats()
+        buf = StringIO()
+        console = Console(file=buf, force_terminal=True)
+        print_usage_table(stats, wall_time=0.01, console=console)
+        output = buf.getvalue()
+        assert output.strip() == ""

@@ -394,7 +394,7 @@ class TestHistoryBoundaryNavigation:
             chat = app.query_one(ChatInput)
             assert chat._text_area is not None
 
-            chat._history._entries.append("previous entry")
+            chat._history._entries.append("say hello world")
 
             # Type text then move cursor to start
             chat._text_area.insert("hello")
@@ -405,7 +405,7 @@ class TestHistoryBoundaryNavigation:
             # Up arrow should trigger history (cursor at start)
             await pilot.press("up")
             await pilot.pause()
-            assert chat._text_area.text == "previous entry"
+            assert chat._text_area.text == "say hello world"
 
     async def test_down_arrow_navigates_from_start_when_in_history(self) -> None:
         """Down arrow at start navigates history when `_in_history` is True."""

@@ -12,11 +12,14 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
 from deepagents_cli.textual_adapter import (
+    ModelStats,
+    SessionStats,
     TextualUIAdapter,
     _build_interrupted_ai_message,
     _build_stream_config,
     _is_summarization_chunk,
     execute_task_textual,
+    format_token_count,
 )
 from deepagents_cli.widgets.messages import SummarizationMessage
 
@@ -452,3 +455,114 @@ class TestDictIterationSafety:
         """Returns None when there is no text and no tool calls."""
         result = _build_interrupted_ai_message({}, {})
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# SessionStats tests
+# ---------------------------------------------------------------------------
+
+
+class TestSessionStats:
+    """Tests for `SessionStats` recording and merging."""
+
+    def test_record_request_named_model(self) -> None:
+        """record_request updates totals and per_model for a named model."""
+        stats = SessionStats()
+        stats.record_request("gpt-4", 100, 50)
+
+        assert stats.request_count == 1
+        assert stats.input_tokens == 100
+        assert stats.output_tokens == 50
+        assert "gpt-4" in stats.per_model
+        assert stats.per_model["gpt-4"].request_count == 1
+        assert stats.per_model["gpt-4"].input_tokens == 100
+        assert stats.per_model["gpt-4"].output_tokens == 50
+
+    def test_record_request_empty_model(self) -> None:
+        """record_request with empty model skips per_model entry."""
+        stats = SessionStats()
+        stats.record_request("", 200, 80)
+
+        assert stats.request_count == 1
+        assert stats.input_tokens == 200
+        assert stats.output_tokens == 80
+        assert stats.per_model == {}
+
+    def test_record_request_multiple_models(self) -> None:
+        """Multiple models create separate per_model entries."""
+        stats = SessionStats()
+        stats.record_request("gpt-4", 100, 50)
+        stats.record_request("claude-opus-4-6", 200, 80)
+
+        assert stats.request_count == 2
+        assert stats.input_tokens == 300
+        assert stats.output_tokens == 130
+        assert len(stats.per_model) == 2
+        assert stats.per_model["gpt-4"].request_count == 1
+        assert stats.per_model["claude-opus-4-6"].request_count == 1
+
+    def test_merge(self) -> None:
+        """merge() folds another SessionStats into self."""
+        a = SessionStats(
+            request_count=1, input_tokens=100, output_tokens=50, wall_time_seconds=1.0
+        )
+        a.per_model["gpt-4"] = ModelStats(
+            request_count=1, input_tokens=100, output_tokens=50
+        )
+
+        b = SessionStats(
+            request_count=2, input_tokens=300, output_tokens=120, wall_time_seconds=2.5
+        )
+        b.per_model["claude-opus-4-6"] = ModelStats(
+            request_count=2, input_tokens=300, output_tokens=120
+        )
+
+        a.merge(b)
+
+        assert a.request_count == 3
+        assert a.input_tokens == 400
+        assert a.output_tokens == 170
+        assert a.wall_time_seconds == pytest.approx(3.5)
+        assert len(a.per_model) == 2
+        assert a.per_model["claude-opus-4-6"].request_count == 2
+
+    def test_merge_overlapping_models(self) -> None:
+        """merge() combines per_model entries for the same model."""
+        a = SessionStats()
+        a.record_request("gpt-4", 100, 50)
+
+        b = SessionStats()
+        b.record_request("gpt-4", 200, 80)
+
+        a.merge(b)
+
+        assert a.request_count == 2
+        assert a.input_tokens == 300
+        assert a.output_tokens == 130
+        assert a.per_model["gpt-4"].request_count == 2
+        assert a.per_model["gpt-4"].input_tokens == 300
+        assert a.per_model["gpt-4"].output_tokens == 130
+
+
+# ---------------------------------------------------------------------------
+# format_token_count tests
+# ---------------------------------------------------------------------------
+
+
+class TestFormatTokenCount:
+    """Tests for `format_token_count` shared formatter."""
+
+    def test_small_count(self) -> None:
+        assert format_token_count(500) == "500"
+
+    def test_thousands(self) -> None:
+        assert format_token_count(12_500) == "12.5K"
+
+    def test_millions(self) -> None:
+        assert format_token_count(1_200_000) == "1.2M"
+
+    def test_exact_thousand(self) -> None:
+        assert format_token_count(1000) == "1.0K"
+
+    def test_zero(self) -> None:
+        assert format_token_count(0) == "0"

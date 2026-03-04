@@ -38,10 +38,10 @@ from deepagents_cli.config import (
 )
 from deepagents_cli.model_config import ModelSpec, save_recent_model
 from deepagents_cli.textual_adapter import (
-    ModelStats,
     SessionStats,
     TextualUIAdapter,
     execute_task_textual,
+    format_token_count,
 )
 from deepagents_cli.widgets.approval import ApprovalMenu
 from deepagents_cli.widgets.chat_input import ChatInput
@@ -108,45 +108,6 @@ _ITERM_CURSOR_GUIDE_OFF = "\x1b]1337;HighlightCursorLine=no\x1b\\"
 _ITERM_CURSOR_GUIDE_ON = "\x1b]1337;HighlightCursorLine=yes\x1b\\"
 
 
-def _format_token_count(count: int) -> str:
-    """Format a token count into a human-readable short string.
-
-    Args:
-        count: Number of tokens.
-
-    Returns:
-        Formatted string like `"12.5K"`, `"1.2M"`, or `"500"`.
-    """
-    if count >= 1_000_000:  # noqa: PLR2004
-        return f"{count / 1_000_000:.1f}M"
-    if count >= 1000:  # noqa: PLR2004
-        return f"{count / 1000:.1f}K"
-    return str(count)
-
-
-def _format_session_stats(stats: SessionStats) -> str:
-    """Format `SessionStats` as a compact one-line summary for the chat.
-
-    Args:
-        stats: The turn stats to format.
-
-    Returns:
-        A string like `"3 requests · 12.5K in · 2.1K out · 4.3s"`, or an empty
-            string if there is nothing meaningful to display.
-    """
-    parts = []
-    if stats.request_count:
-        noun = "request" if stats.request_count == 1 else "requests"
-        parts.append(f"{stats.request_count} {noun}")
-    if stats.input_tokens:
-        parts.append(f"{_format_token_count(stats.input_tokens)} in")
-    if stats.output_tokens:
-        parts.append(f"{_format_token_count(stats.output_tokens)} out")
-    if stats.wall_time_seconds >= 0.1:  # noqa: PLR2004
-        parts.append(f"{stats.wall_time_seconds:.1f}s")
-    return " · ".join(parts)
-
-
 def _format_compact_limit(
     keep: tuple[str, int | float], context_limit: int | None
 ) -> str:
@@ -167,15 +128,15 @@ def _format_compact_limit(
         return f"last {count} {noun}"
 
     if keep_type == "tokens":
-        return f"{_format_token_count(int(keep_value))} tokens"
+        return f"{format_token_count(int(keep_value))} tokens"
 
     if keep_type == "fraction":
         percent = float(keep_value) * 100
         if context_limit is not None:
             token_limit = max(1, int(context_limit * float(keep_value)))
             return (
-                f"{_format_token_count(token_limit)} tokens "
-                f"({percent:.0f}% of {_format_token_count(context_limit)})"
+                f"{format_token_count(token_limit)} tokens "
+                f"({percent:.0f}% of {format_token_count(context_limit)})"
             )
         return f"{percent:.0f}% of context window"
 
@@ -1299,13 +1260,13 @@ class DeepAgentsApp(App):
             await self._mount_message(UserMessage(command))
             if self._token_tracker and self._token_tracker.current_context > 0:
                 count = self._token_tracker.current_context
-                formatted = _format_token_count(count)
+                formatted = format_token_count(count)
 
                 model_name = settings.model_name
                 context_limit = settings.model_context_limit
 
                 if context_limit is not None:
-                    limit_str = _format_token_count(context_limit)
+                    limit_str = format_token_count(context_limit)
                     pct = count / context_limit * 100
                     usage = (
                         f"{formatted} / {limit_str} tokens "
@@ -1328,7 +1289,7 @@ class DeepAgentsApp(App):
 
                 parts: list[str] = ["No token usage yet"]
                 if context_limit is not None:
-                    limit_str = _format_token_count(context_limit)
+                    limit_str = format_token_count(context_limit)
                     parts.append(f"{limit_str} context window")
                 if model_name:
                     parts.append(model_name)
@@ -1423,7 +1384,7 @@ class DeepAgentsApp(App):
             if not messages:
                 return None
             conv_tokens = count_tokens_approximately(messages)
-            return f"Conversation only: ~{_format_token_count(conv_tokens)} tokens"
+            return f"Conversation only: ~{format_token_count(conv_tokens)} tokens"
         except Exception:  # noqa: BLE001
             return None
 
@@ -1537,7 +1498,7 @@ class DeepAgentsApp(App):
 
             if cutoff == 0:
                 conv_tokens = count_tokens_approximately(effective)
-                conv_str = _format_token_count(conv_tokens)
+                conv_str = format_token_count(conv_tokens)
                 total_context = (
                     self._token_tracker.current_context if self._token_tracker else 0
                 )
@@ -1550,7 +1511,7 @@ class DeepAgentsApp(App):
                 ):
                     # Case A: overhead-dominated — total context exceeds
                     # limit but conversation itself is small
-                    total_str = _format_token_count(total_context)
+                    total_str = format_token_count(total_context)
                     await self._mount_message(
                         AppMessage(
                             f"Nothing to compact \u2014 conversation is only "
@@ -1604,15 +1565,15 @@ class DeepAgentsApp(App):
             # model is aware of how much context was reclaimed.
             tokens_summary = count_tokens_approximately([summary_msg])
             tokens_after = tokens_summary + tokens_kept
-            before = _format_token_count(tokens_before)
-            after = _format_token_count(tokens_after)
+            before = format_token_count(tokens_before)
+            after = format_token_count(tokens_after)
             pct = (
                 round((tokens_before - tokens_after) / tokens_before * 100)
                 if tokens_before > 0
                 else 0
             )
-            summarized_before = _format_token_count(tokens_summarized)
-            summarized_after = _format_token_count(tokens_summary)
+            summarized_before = format_token_count(tokens_summarized)
+            summarized_after = format_token_count(tokens_summary)
             savings_note = (
                 f"\n\n{len(to_summarize)} messages were compacted "
                 f"({summarized_before} \u2192 {summarized_after} tokens). "
@@ -1815,15 +1776,7 @@ class DeepAgentsApp(App):
 
         # Accumulate stats across all turns; printed once at session end
         if isinstance(turn_stats, SessionStats):
-            self._session_stats.request_count += turn_stats.request_count
-            self._session_stats.input_tokens += turn_stats.input_tokens
-            self._session_stats.output_tokens += turn_stats.output_tokens
-            self._session_stats.wall_time_seconds += turn_stats.wall_time_seconds
-            for model, ms in turn_stats.per_model.items():
-                entry = self._session_stats.per_model.setdefault(model, ModelStats())
-                entry.request_count += ms.request_count
-                entry.input_tokens += ms.input_tokens
-                entry.output_tokens += ms.output_tokens
+            self._session_stats.merge(turn_stats)
 
     async def _process_next_from_queue(self) -> None:
         """Process the next message from the queue if any exist.

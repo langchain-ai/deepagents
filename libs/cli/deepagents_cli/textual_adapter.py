@@ -15,6 +15,8 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
+    from rich.console import Console
+
 from langchain.agents.middleware.human_in_the_loop import (
     ApproveDecision,
     EditDecision,
@@ -70,8 +72,8 @@ class SessionStats:
         per_model: Per-model breakdown keyed by model name.
             Populated only when usage_metadata includes a `model_name` field or
             when the active `settings.model_name` is captured at the point of
-            each request. Empty dict means single-model session
-            (no breakdown available).
+            each request. Empty dict means single-model session (no breakdown
+            available).
     """
 
     request_count: int = 0
@@ -105,6 +107,106 @@ class SessionStats:
             entry.request_count += 1
             entry.input_tokens += input_toks
             entry.output_tokens += output_toks
+
+    def merge(self, other: SessionStats) -> None:
+        """Merge another `SessionStats` into this one (mutates *self*).
+
+        Used to accumulate per-turn stats into a session-level total.
+
+        Args:
+            other: The stats to fold in.
+        """
+        self.request_count += other.request_count
+        self.input_tokens += other.input_tokens
+        self.output_tokens += other.output_tokens
+        self.wall_time_seconds += other.wall_time_seconds
+        for model, ms in other.per_model.items():
+            entry = self.per_model.setdefault(model, ModelStats())
+            entry.request_count += ms.request_count
+            entry.input_tokens += ms.input_tokens
+            entry.output_tokens += ms.output_tokens
+
+
+def format_token_count(count: int) -> str:
+    """Format a token count into a human-readable short string.
+
+    Args:
+        count: Number of tokens.
+
+    Returns:
+        Formatted string like `"12.5K"`, `"1.2M"`, or `"500"`.
+    """
+    if count >= 1_000_000:  # noqa: PLR2004
+        return f"{count / 1_000_000:.1f}M"
+    if count >= 1000:  # noqa: PLR2004
+        return f"{count / 1000:.1f}K"
+    return str(count)
+
+
+def print_usage_table(
+    stats: SessionStats,
+    wall_time: float,
+    console: Console,
+) -> None:
+    """Print a model-usage stats table to a Rich console.
+
+    When the session spans multiple models each gets its own row with a
+    totals row appended; single-model sessions show one row.
+
+    Args:
+        stats: Cumulative session stats.
+        wall_time: Total wall-clock time in seconds.
+        console: Rich console for output.
+    """
+    from rich.table import Table
+
+    has_time = wall_time >= 0.1  # noqa: PLR2004
+    if not (stats.request_count or stats.input_tokens or has_time):
+        return
+
+    multi_model = len(stats.per_model) > 1
+
+    table = Table(
+        show_header=True,
+        header_style="bold",
+        box=None,
+        padding=(0, 2, 0, 0),
+        show_edge=False,
+    )
+    table.add_column("Model", style="dim")
+    table.add_column("Reqs", justify="right", style="dim")
+    table.add_column("Input Tokens", justify="right", style="dim")
+    table.add_column("Output Tokens", justify="right", style="dim")
+
+    if multi_model:
+        for model_name, ms in stats.per_model.items():
+            table.add_row(
+                model_name,
+                str(ms.request_count),
+                format_token_count(ms.input_tokens),
+                format_token_count(ms.output_tokens),
+            )
+        table.add_row(
+            "Total",
+            str(stats.request_count),
+            format_token_count(stats.input_tokens),
+            format_token_count(stats.output_tokens),
+        )
+    else:
+        model_label = next(iter(stats.per_model), "") or "unknown"
+        table.add_row(
+            model_label,
+            str(stats.request_count),
+            format_token_count(stats.input_tokens),
+            format_token_count(stats.output_tokens),
+        )
+
+    console.print()
+    console.print("[bold]Model Usage[/bold]")
+    console.print(table)
+    if has_time:
+        console.print()
+        console.print(f"[dim]Agent active  {wall_time:.1f}s[/dim]")
 
 
 # Type alias matching HITLResponse["decisions"] element type

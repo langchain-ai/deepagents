@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, ClassVar
 
 from textual.binding import Binding, BindingType
@@ -25,6 +26,8 @@ from deepagents_cli.model_config import (
     has_provider_credentials,
     save_default_model,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class ModelOption(Static):
@@ -333,8 +336,13 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 (matcher.match(spec), spec, provider)
                 for spec, provider in self._all_models
             ]
-        except Exception:  # noqa: BLE001
+        except Exception:
             # graceful fallback if Matcher fails on edge-case input
+            logger.warning(
+                "Fuzzy matcher failed for query %r, falling back to full list",
+                query,
+                exc_info=True,
+            )
             self._filtered_models = list(self._all_models)
             self._selected_index = self._find_current_model_index()
             return
@@ -344,10 +352,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             for score, spec, provider in sorted(scored, reverse=True)
             if score > 0
         ]
-        if self._filtered_models:
-            self._selected_index = 0
-        else:
-            self._selected_index = 0
+        self._selected_index = 0
 
     async def _update_display(self) -> None:
         """Render the model list grouped by provider.

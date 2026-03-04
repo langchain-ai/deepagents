@@ -48,7 +48,7 @@ from deepagents_cli.config import (
 from deepagents_cli.file_ops import FileOpTracker
 from deepagents_cli.model_config import ModelConfigError
 from deepagents_cli.sessions import generate_thread_id, get_checkpointer
-from deepagents_cli.textual_adapter import ModelStats
+from deepagents_cli.textual_adapter import SessionStats, print_usage_table
 from deepagents_cli.tools import fetch_url, http_request, web_search
 
 if TYPE_CHECKING:
@@ -100,48 +100,48 @@ def _write_newline() -> None:
 
 @dataclass
 class StreamState:
-    """Mutable state accumulated while iterating over the agent stream.
-
-    Attributes:
-        quiet: When `True`, diagnostic formatting that would otherwise go
-            to stdout (e.g. separator newlines before tool notifications)
-            is suppressed so that stdout contains only agent response text.
-        stream: When `True` (default), text chunks are written to stdout
-            as they arrive. When `False`, text is buffered in `full_response`
-            and flushed after the agent finishes.
-        full_response: Accumulated text fragments from the AI message stream.
-        tool_call_buffers: Maps a tool-call index or ID to its name/ID
-            metadata for in-progress tool calls.
-        pending_interrupts: Maps interrupt IDs to their validated HITL
-            requests that are awaiting decisions.
-        hitl_response: Maps interrupt IDs to dicts containing a `'decisions'`
-            key with a list of decision dicts (each having a `'type'` key of
-            `'approve'` or `'reject'`).
-
-            Used to resume the agent after HITL processing.
-        interrupt_occurred: Flag indicating whether any HITL interrupt was
-            received during the current stream pass.
-    """
+    """Mutable state accumulated while iterating over the agent stream."""
 
     quiet: bool = False
+    """When `True`, diagnostic formatting that would otherwise go to stdout
+    (e.g. separator newlines before tool notifications) is suppressed so that
+    stdout contains only agent response text."""
+
     stream: bool = True
+    """When `True` (default), text chunks are written to stdout as they arrive.
+
+    When `False`, text is buffered in `full_response` and flushed after the
+    agent finishes.
+    """
+
     full_response: list[str] = field(default_factory=list)
+    """Accumulated text fragments from the AI message stream."""
+
     tool_call_buffers: dict[int | str, dict[str, str | None]] = field(
         default_factory=dict
     )
+    """Maps a tool-call index or ID to its name/ID metadata for in-progress
+    tool calls."""
+
     pending_interrupts: dict[str, HITLRequest] = field(default_factory=dict)
+    """Maps interrupt IDs to their validated HITL requests that are awaiting
+    decisions."""
+
     hitl_response: dict[str, dict[str, list[dict[str, str]]]] = field(
         default_factory=dict
     )
+    """Maps interrupt IDs to dicts containing a `'decisions'` key with a list of
+    decision dicts (each having a `'type'` key of `'approve'` or `'reject'`).
+
+    Used to resume the agent after HITL processing.
+    """
+
     interrupt_occurred: bool = False
-    request_count: int = 0
-    """Number of LLM API requests seen (counted via usage_metadata presence)."""
-    input_tokens: int = 0
-    """Cumulative input tokens across all LLM API calls."""
-    output_tokens: int = 0
-    """Cumulative output tokens across all LLM API calls."""
-    per_model: dict[str, ModelStats] = field(default_factory=dict)
-    """Per-model token breakdown keyed by model name."""
+    """Flag indicating whether any HITL interrupt was received during the
+    current stream pass."""
+
+    stats: SessionStats = field(default_factory=SessionStats)
+    """Accumulated model usage stats for this stream."""
 
 
 @dataclass
@@ -247,21 +247,9 @@ def _process_ai_message(
         total_toks = usage.get("total_tokens", 0)
         active_model = settings.model_name or ""
         if input_toks or output_toks:
-            state.input_tokens += input_toks
-            state.output_tokens += output_toks
-            state.request_count += 1
-            if active_model:
-                entry = state.per_model.setdefault(active_model, ModelStats())
-                entry.request_count += 1
-                entry.input_tokens += input_toks
-                entry.output_tokens += output_toks
+            state.stats.record_request(active_model, input_toks, output_toks)
         elif total_toks:
-            state.input_tokens += total_toks
-            state.request_count += 1
-            if active_model:
-                entry = state.per_model.setdefault(active_model, ModelStats())
-                entry.request_count += 1
-                entry.input_tokens += total_toks
+            state.stats.record_request(active_model, total_toks, 0)
 
     if not hasattr(message_obj, "content_blocks"):
         logger.debug("AIMessage missing content_blocks attribute, skipping")
@@ -573,89 +561,7 @@ async def _run_agent_loop(
             )
             console.print(link_text)
         console.print("[green]✓ Task completed[/green]")
-        _print_usage_stats(state, wall_time, console)
-
-
-def _format_token_count_ni(count: int) -> str:
-    """Format a token count with K/M suffixes for non-interactive console output.
-
-    Args:
-        count: Number of tokens.
-
-    Returns:
-        Formatted string like ``"12.5K"``, ``"1.2M"``, or ``"500"``.
-    """
-    if count >= 1_000_000:  # noqa: PLR2004
-        return f"{count / 1_000_000:.1f}M"
-    if count >= 1000:  # noqa: PLR2004
-        return f"{count / 1000:.1f}K"
-    return str(count)
-
-
-def _print_usage_stats(
-    state: StreamState,
-    wall_time: float,
-    console: Console,
-) -> None:
-    """Print a usage stats table after task completion.
-
-    Respects the quiet flag automatically via the console (stderr vs stdout
-    routing is determined by the caller when constructing the console).
-
-    Args:
-        state: The final stream state with accumulated token counts.
-        wall_time: Total wall-clock time in seconds.
-        console: Rich console for output.
-    """
-    from rich.table import Table
-
-    if not (state.request_count or state.input_tokens or wall_time >= 0.1):  # noqa: PLR2004
-        return
-
-    multi_model = len(state.per_model) > 1
-
-    table = Table(
-        show_header=True,
-        header_style="bold",
-        box=None,
-        padding=(0, 2, 0, 0),
-        show_edge=False,
-    )
-    table.add_column("Model", style="dim")
-    table.add_column("Reqs", justify="right", style="dim")
-    table.add_column("Input Tokens", justify="right", style="dim")
-    table.add_column("Output Tokens", justify="right", style="dim")
-
-    if multi_model:
-        for model_name, ms in state.per_model.items():
-            table.add_row(
-                model_name,
-                str(ms.request_count),
-                _format_token_count_ni(ms.input_tokens),
-                _format_token_count_ni(ms.output_tokens),
-            )
-        # Totals row
-        table.add_row(
-            "Total",
-            str(state.request_count),
-            _format_token_count_ni(state.input_tokens),
-            _format_token_count_ni(state.output_tokens),
-        )
-    else:
-        model_label = next(iter(state.per_model), "") or "unknown"
-        table.add_row(
-            model_label,
-            str(state.request_count),
-            _format_token_count_ni(state.input_tokens),
-            _format_token_count_ni(state.output_tokens),
-        )
-
-    console.print()
-    console.print("[bold]Model Usage[/bold]")
-    console.print(table)
-    if wall_time >= 0.1:  # noqa: PLR2004
-        console.print()
-        console.print(f"[dim]Agent active  {wall_time:.1f}s[/dim]")
+        print_usage_table(state.stats, wall_time, console)
 
 
 def _build_non_interactive_header(

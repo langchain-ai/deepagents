@@ -1,19 +1,24 @@
 """Unit tests for textual_adapter functions."""
 
+import asyncio
 from asyncio import Future
-from collections.abc import Generator
+from collections.abc import AsyncIterator, Generator
 from datetime import datetime
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+from langchain_core.messages import AIMessage, HumanMessage
 
 from deepagents_cli.textual_adapter import (
     TextualUIAdapter,
     _build_interrupted_ai_message,
     _build_stream_config,
     _is_summarization_chunk,
+    execute_task_textual,
 )
+from deepagents_cli.widgets.messages import SummarizationMessage
 
 
 async def _mock_mount(widget: object) -> None:
@@ -86,6 +91,27 @@ class TestTextualUIAdapterInit:
         adapter.set_token_tracker(mock_tracker)
         assert adapter._token_tracker is mock_tracker
 
+    def test_finalize_pending_tools_with_error_marks_and_clears(self) -> None:
+        """Pending tool widgets should be marked error and then cleared."""
+        set_active = MagicMock()
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_active_message=set_active,
+        )
+
+        tool_1 = MagicMock()
+        tool_2 = MagicMock()
+        adapter._current_tool_messages = {"a": tool_1, "b": tool_2}
+
+        adapter.finalize_pending_tools_with_error("Agent error: boom")
+
+        tool_1.set_error.assert_called_once_with("Agent error: boom")
+        tool_2.set_error.assert_called_once_with("Agent error: boom")
+        assert adapter._current_tool_messages == {}
+        set_active.assert_called_once_with(None)
+
 
 class TestBuildStreamConfig:
     """Tests for `_build_stream_config` metadata construction."""
@@ -144,6 +170,150 @@ class TestIsSummarizationChunk:
 
         metadata_missing = {"other_key": "value"}
         assert _is_summarization_chunk(metadata_missing) is False
+
+    def test_returns_false_for_unrelated_metadata(self) -> None:
+        """Should return `False` when only unrelated keys are present."""
+        assert _is_summarization_chunk({"langgraph_node": "model"}) is False
+        assert _is_summarization_chunk({"langgraph_node": None}) is False
+
+
+class _FakeAgent:
+    """Minimal async stream agent used for adapter execution tests."""
+
+    def __init__(self, chunks: list[tuple]) -> None:
+        self._chunks = chunks
+
+    async def astream(self, *_: Any, **__: Any) -> AsyncIterator[tuple[Any, ...]]:
+        """Yield preconfigured stream chunks."""
+        for chunk in self._chunks:
+            yield chunk
+
+
+class TestExecuteTaskTextualSummarizationFeedback:
+    """Tests for summarization spinner and notification feedback."""
+
+    async def test_spinner_transitions_for_summarization_stream(self) -> None:
+        """Spinner should move Thinking -> Summarizing -> Thinking."""
+        statuses: list[str | None] = []
+
+        async def record_spinner(status: str | None) -> None:
+            await asyncio.sleep(0)
+            statuses.append(status)
+
+        async def mount_message(_widget: object) -> None:
+            await asyncio.sleep(0)
+
+        chunks = [
+            (
+                (),
+                "messages",
+                (AIMessage(content="summary chunk"), {"lc_source": "summarization"}),
+            ),
+            ((), "messages", (HumanMessage(content="regular chunk"), {})),
+        ]
+
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=record_spinner,
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+        )
+
+        assert statuses[0] == "Thinking"
+        assert "Summarizing" in statuses
+        assert statuses[-1] == "Thinking"
+
+    async def test_mounts_summarization_notification_on_regular_chunk(self) -> None:
+        """Notification should render when regular chunks resume after summarization."""
+        statuses: list[str | None] = []
+        mounted_widgets: list[object] = []
+
+        async def record_spinner(status: str | None) -> None:
+            await asyncio.sleep(0)
+            statuses.append(status)
+
+        async def mount_message(widget: object) -> None:
+            await asyncio.sleep(0)
+            mounted_widgets.append(widget)
+
+        chunks = [
+            (
+                (),
+                "messages",
+                (AIMessage(content="summary chunk"), {"lc_source": "summarization"}),
+            ),
+            # Regular chunk from the actual model — signals summarization ended.
+            ((), "messages", (HumanMessage(content="regular"), {})),
+        ]
+
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=record_spinner,
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+        )
+
+        assert any(
+            isinstance(widget, SummarizationMessage) for widget in mounted_widgets
+        )
+        assert statuses[0] == "Thinking"
+        assert "Summarizing" in statuses
+        assert statuses[-1] == "Thinking"
+
+    async def test_mounts_notification_when_stream_ends_mid_summarization(self) -> None:
+        """Notification should still render if stream exhausts during summarization."""
+        mounted_widgets: list[object] = []
+
+        async def record_spinner(_status: str | None) -> None:
+            await asyncio.sleep(0)
+
+        async def mount_message(widget: object) -> None:
+            await asyncio.sleep(0)
+            mounted_widgets.append(widget)
+
+        # Only summarization chunks, no regular chunks follow.
+        chunks = [
+            (
+                (),
+                "messages",
+                (AIMessage(content="summary chunk"), {"lc_source": "summarization"}),
+            ),
+        ]
+
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=record_spinner,
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+        )
+
+        assert any(
+            isinstance(widget, SummarizationMessage) for widget in mounted_widgets
+        )
 
 
 # ---------------------------------------------------------------------------

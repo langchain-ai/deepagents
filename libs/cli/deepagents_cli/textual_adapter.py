@@ -27,11 +27,12 @@ from pydantic import TypeAdapter, ValidationError
 from deepagents_cli.file_ops import FileOpTracker
 from deepagents_cli.image_utils import create_multimodal_content
 from deepagents_cli.input import ImageTracker, parse_file_mentions
-from deepagents_cli.ui import format_tool_message_content
+from deepagents_cli.tool_display import format_tool_message_content
 from deepagents_cli.widgets.messages import (
     AppMessage,
     AssistantMessage,
     DiffMessage,
+    SummarizationMessage,
     ToolCallMessage,
 )
 
@@ -77,6 +78,11 @@ def _build_stream_config(
 
 def _is_summarization_chunk(metadata: dict | None) -> bool:
     """Check if a message chunk is from summarization middleware.
+
+    The summarization model is invoked with
+    `config={"metadata": {"lc_source": "summarization"}}`
+    (see `langchain.agents.middleware.summarization`), which
+    LangChain's callback system merges into the stream metadata dict.
 
     Args:
         metadata: The metadata dict from the stream chunk.
@@ -173,9 +179,26 @@ class TextualUIAdapter:
         self._current_tool_messages: dict[str, ToolCallMessage] = {}
         self._token_tracker: Any = None
 
-    def set_token_tracker(self, tracker: Any) -> None:
+    def set_token_tracker(self, tracker: Any) -> None:  # noqa: ANN401  # Dynamic tracker type from Textual
         """Set the token tracker for usage tracking."""
         self._token_tracker = tracker
+
+    def finalize_pending_tools_with_error(self, error: str) -> None:
+        """Mark all pending/running tool widgets as error and clear tracking.
+
+        This is used as a safety net when an unexpected exception aborts
+        streaming before matching `ToolMessage` results are received.
+
+        Args:
+            error: Error text to display in each pending tool widget.
+        """
+        for tool_msg in list(self._current_tool_messages.values()):
+            tool_msg.set_error(error)
+        self._current_tool_messages.clear()
+
+        # Clear active streaming message to avoid stale "active" state in the store.
+        if self._set_active_message:
+            self._set_active_message(None)
 
 
 def _build_interrupted_ai_message(
@@ -216,11 +239,11 @@ def _build_interrupted_ai_message(
 
 async def execute_task_textual(
     user_input: str,
-    agent: Any,
+    agent: Any,  # noqa: ANN401  # Dynamic agent graph type
     assistant_id: str | None,
-    session_state: Any,
+    session_state: Any,  # noqa: ANN401  # Dynamic session state type
     adapter: TextualUIAdapter,
-    backend: Any = None,
+    backend: Any = None,  # noqa: ANN401  # Dynamic backend type
     image_tracker: ImageTracker | None = None,
 ) -> None:
     """Execute a task with output directed to Textual UI.
@@ -267,7 +290,7 @@ async def execute_task_textual(
                         f"\n### {file_path.name}\n"
                         f"Path: `{file_path}`\n```\n{content}\n```"
                     )
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001  # Resilient adapter error handling
                 context_parts.append(
                     f"\n### {file_path.name}\n[Error reading file: {e}]"
                 )
@@ -315,6 +338,9 @@ async def execute_task_textual(
         "messages": [{"role": "user", "content": message_content}]
     }
 
+    # Track summarization lifecycle so spinner status and notification stay in sync.
+    summarization_in_progress = False
+
     try:
         while True:
             interrupt_occurred = False
@@ -329,7 +355,7 @@ async def execute_task_textual(
                 config=config,
                 durability="exit",
             ):
-                if not isinstance(chunk, tuple) or len(chunk) != 3:
+                if not isinstance(chunk, tuple) or len(chunk) != 3:  # noqa: PLR2004  # Retry count threshold
                     continue
 
                 namespace, current_stream_mode, data = chunk
@@ -362,7 +388,7 @@ async def execute_task_textual(
                                         validated_request
                                     )
                                     interrupt_occurred = True
-                                except ValidationError:
+                                except ValidationError:  # noqa: TRY203  # Re-raise preserves exception context in handler
                                     raise
 
                     # Check for todo updates (not yet implemented in Textual UI)
@@ -380,14 +406,36 @@ async def execute_task_textual(
                     if not is_main_agent:
                         continue
 
-                    if not isinstance(data, tuple) or len(data) != 2:
+                    if not isinstance(data, tuple) or len(data) != 2:  # noqa: PLR2004  # Tool call part index
                         continue
 
                     message, metadata = data
 
-                    # Filter out summarization LLM output
+                    # Filter out summarization model output, but keep UI feedback.
+                    # The summarization model streams AIMessage chunks tagged
+                    # with lc_source="summarization" in the callback metadata.
+                    # These are hidden from the user; only the spinner and a
+                    # notification widget provide feedback.
                     if _is_summarization_chunk(metadata):
+                        if not summarization_in_progress:
+                            summarization_in_progress = True
+                            if adapter._set_spinner:
+                                await adapter._set_spinner("Summarizing")
                         continue
+
+                    # Regular (non-summarization) chunks resumed — summarization
+                    # has finished. Mount the notification and reset the spinner.
+                    if summarization_in_progress:
+                        summarization_in_progress = False
+                        try:
+                            await adapter._mount_message(SummarizationMessage())
+                        except Exception:
+                            logger.debug(
+                                "Failed to mount summarization notification",
+                                exc_info=True,
+                            )
+                        if adapter._set_spinner:
+                            await adapter._set_spinner("Thinking")
 
                     if isinstance(message, HumanMessage):
                         content = message.text
@@ -618,6 +666,20 @@ async def execute_task_textual(
                             pending_text_by_namespace[ns_key] = ""
                             assistant_message_by_namespace.pop(ns_key, None)
 
+            # Reset summarization state if stream ended mid-summarization
+            # (e.g. middleware error, stream exhausted before regular chunks).
+            if summarization_in_progress:
+                summarization_in_progress = False
+                try:
+                    await adapter._mount_message(SummarizationMessage())
+                except Exception:
+                    logger.debug(
+                        "Failed to mount summarization notification",
+                        exc_info=True,
+                    )
+                if adapter._set_spinner:
+                    await adapter._set_spinner("Thinking")
+
             # Flush any remaining text from all namespaces
             for ns_key, pending_text in list(pending_text_by_namespace.items()):
                 if pending_text:
@@ -771,6 +833,10 @@ async def execute_task_textual(
         if adapter._set_active_message:
             adapter._set_active_message(None)
 
+        # Hide spinner (may still show "Summarizing" if interrupted mid-summary)
+        if adapter._set_spinner:
+            await adapter._set_spinner(None)
+
         await adapter._mount_message(AppMessage("Interrupted by user"))
 
         # Save accumulated state before marking tools as rejected (best-effort)
@@ -813,6 +879,10 @@ async def execute_task_textual(
         # blocking all future pruning
         if adapter._set_active_message:
             adapter._set_active_message(None)
+
+        # Hide spinner (may still show "Summarizing" if interrupted mid-summary)
+        if adapter._set_spinner:
+            await adapter._set_spinner(None)
 
         await adapter._mount_message(AppMessage("Interrupted by user"))
 

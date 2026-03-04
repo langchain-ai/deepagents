@@ -1,5 +1,7 @@
 """Configuration, constants, and model creation for the CLI."""
 
+from __future__ import annotations
+
 import importlib
 import json
 import logging
@@ -7,12 +9,13 @@ import os
 import re
 import shlex
 import sys
+import threading
 import uuid
 from dataclasses import dataclass
 from enum import StrEnum
 from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import dotenv
 from rich.console import Console
@@ -32,20 +35,23 @@ if _deepagents_project:
     # Override LANGSMITH_PROJECT for agent traces
     os.environ["LANGSMITH_PROJECT"] = _deepagents_project
 
-# E402: Now safe to import LangChain modules
-from langchain.chat_models import init_chat_model  # noqa: E402
-from langchain_core.language_models import BaseChatModel  # noqa: E402
-from langchain_core.runnables import RunnableConfig  # noqa: E402
-
-from deepagents_cli.model_config import (  # noqa: E402
+from deepagents_cli.model_config import (  # noqa: E402  # Import after os.environ setup above
     ModelConfig,
     ModelConfigError,
     ModelSpec,
 )
+from deepagents_cli.project_utils import (  # noqa: E402
+    find_project_agent_md as _find_project_agent_md,
+    find_project_root as _find_project_root,
+)
+
+if TYPE_CHECKING:
+    from langchain_core.language_models import BaseChatModel
+    from langchain_core.runnables import RunnableConfig
 
 DOCS_URL = "https://docs.langchain.com/oss/python/deepagents/cli"
+"""URL for deepagents-cli documentation."""
 
-# Color scheme
 COLORS = {
     "primary": "#10b981",
     "primary_dev": "#f97316",
@@ -54,10 +60,18 @@ COLORS = {
     "agent": "#10b981",
     "thinking": "#34d399",
     "tool": "#fbbf24",
+    "mode_bash": "#ff1493",
+    "mode_command": "#8b5cf6",
 }
+"""App color scheme."""
+
+MODE_PREFIXES: dict[str, str] = {
+    "bash": "!",
+    "command": "/",
+}
+"""Maps each non-normal mode to its trigger character."""
 
 
-# Charset mode configuration
 class CharsetMode(StrEnum):
     """Character set mode for TUI display."""
 
@@ -117,7 +131,7 @@ UNICODE_GLYPHS = Glyphs(
     arrow_up="↑",
     arrow_down="↓",
     bullet="•",
-    cursor="›",  # noqa: RUF001
+    cursor="›",  # noqa: RUF001  # Intentional Unicode glyph
     # Box-drawing characters
     box_vertical="│",
     box_horizontal="─",
@@ -155,14 +169,20 @@ ASCII_GLYPHS = Glyphs(
     tree_vertical="|   ",
 )
 
-# Module-level cache for detected glyphs
 _glyphs_cache: Glyphs | None = None
+"""Module-level cache for detected glyphs."""
 
-# Module-level cache for editable install detection
 _editable_cache: bool | None = None
+"""Module-level cache for editable install detection."""
 
-# Module-level cache for LangSmith project URL (None means "not yet fetched")
-_langsmith_url_cache: tuple[str, str | None] | None = None
+_langsmith_url_cache: tuple[str, str] | None = None
+"""Module-level cache for successful LangSmith project URL lookups."""
+
+_LANGSMITH_URL_LOOKUP_TIMEOUT_SECONDS = 2.0
+"""Max seconds to wait for LangSmith project URL lookup.
+
+Kept short so tracing metadata can never stall CLI flows.
+"""
 
 
 def _is_editable_install() -> bool:
@@ -173,7 +193,7 @@ def _is_editable_install() -> bool:
     Returns:
         True if installed in editable mode, False otherwise.
     """
-    global _editable_cache  # noqa: PLW0603
+    global _editable_cache  # noqa: PLW0603  # Module-level cache requires global statement
     if _editable_cache is not None:
         return _editable_cache
 
@@ -219,7 +239,7 @@ def get_glyphs() -> Glyphs:
     Returns:
         The appropriate Glyphs instance based on charset mode detection.
     """
-    global _glyphs_cache  # noqa: PLW0603
+    global _glyphs_cache  # noqa: PLW0603  # Module-level cache requires global statement
     if _glyphs_cache is not None:
         return _glyphs_cache
 
@@ -230,7 +250,7 @@ def get_glyphs() -> Glyphs:
 
 def reset_glyphs_cache() -> None:
     """Reset the glyphs cache (for testing)."""
-    global _glyphs_cache  # noqa: PLW0603
+    global _glyphs_cache  # noqa: PLW0603  # Module-level cache requires global statement
     _glyphs_cache = None
 
 
@@ -307,60 +327,6 @@ config: RunnableConfig = {"recursion_limit": 1000}
 
 # Rich console instance
 console = Console(highlight=False)
-
-
-def _find_project_root(start_path: Path | None = None) -> Path | None:
-    """Find the project root by looking for .git directory.
-
-    Walks up the directory tree from start_path (or cwd) looking for a .git
-    directory, which indicates the project root.
-
-    Args:
-        start_path: Directory to start searching from.
-            Defaults to current working directory.
-
-    Returns:
-        Path to the project root if found, None otherwise.
-    """
-    current = Path(start_path or Path.cwd()).resolve()
-
-    # Walk up the directory tree
-    for parent in [current, *list(current.parents)]:
-        git_dir = parent / ".git"
-        if git_dir.exists():
-            return parent
-
-    return None
-
-
-def _find_project_agent_md(project_root: Path) -> list[Path]:
-    """Find project-specific AGENTS.md file(s).
-
-    Checks two locations and returns ALL that exist:
-    1. project_root/.deepagents/AGENTS.md
-    2. project_root/AGENTS.md
-
-    Both files will be loaded and combined if both exist.
-
-    Args:
-        project_root: Path to the project root directory.
-
-    Returns:
-        List of paths to project AGENTS.md files (may contain 0, 1, or 2 paths).
-    """
-    paths = []
-
-    # Check .deepagents/AGENTS.md (preferred)
-    deepagents_md = project_root / ".deepagents" / "AGENTS.md"
-    if deepagents_md.exists():
-        paths.append(deepagents_md)
-
-    # Check root AGENTS.md (fallback, but also include if both exist)
-    root_md = project_root / "AGENTS.md"
-    if root_md.exists():
-        paths.append(root_md)
-
-    return paths
 
 
 def parse_shell_allow_list(allow_list_str: str | None) -> list[str] | None:
@@ -456,7 +422,7 @@ class Settings:
     shell_allow_list: list[str] | None = None
 
     @classmethod
-    def from_environment(cls, *, start_path: Path | None = None) -> "Settings":
+    def from_environment(cls, *, start_path: Path | None = None) -> Settings:
         """Create settings by detecting the current environment.
 
         Args:
@@ -554,17 +520,24 @@ class Settings:
         """
         return Path.home() / ".deepagents" / agent_name / "AGENTS.md"
 
-    def get_project_agent_md_path(self) -> Path | None:
-        """Get project-level AGENTS.md path.
+    def get_project_agent_md_path(self) -> list[Path]:
+        """Get project-level AGENTS.md paths.
 
-        Returns path regardless of whether the file exists.
+        Checks both `{project_root}/.deepagents/AGENTS.md` and
+        `{project_root}/AGENTS.md`, returning all that exist. If both are
+        present, both are loaded and their instructions are combined, with
+        `.deepagents/AGENTS.md` first.
 
         Returns:
-            Path to {project_root}/.deepagents/AGENTS.md, or None if not in a project
+            Existing AGENTS.md paths.
+
+                Empty if neither file exists or not in a project, one entry if
+                only one is present, or two entries if both locations have the
+                file.
         """
         if not self.project_root:
-            return None
-        return self.project_root / ".deepagents" / "AGENTS.md"
+            return []
+        return _find_project_agent_md(self.project_root)
 
     @staticmethod
     def _is_valid_agent_name(agent_name: str) -> bool:
@@ -976,15 +949,16 @@ def get_langsmith_project_name() -> str | None:
 def fetch_langsmith_project_url(project_name: str) -> str | None:
     """Fetch the LangSmith project URL via the LangSmith client.
 
-    Results are cached at module level so repeated calls do not make additional
-    network requests. Failed lookups are also cached to avoid retries.
+    Successful results are cached at module level so repeated calls do not
+    make additional network requests.
 
-    This is a blocking network call on the first invocation. In async
-    contexts, run it in a thread (e.g. via `asyncio.to_thread`).
+    The network call runs in a daemon thread with a hard timeout of
+    `_LANGSMITH_URL_LOOKUP_TIMEOUT_SECONDS`, so this function blocks the
+    calling thread for at most that duration even if LangSmith is unreachable.
 
-    Returns None (with a debug log) on any expected failure: missing
-    `langsmith` package, network errors, invalid project names, or client
-    initialization issues.
+    Returns None (with a debug log) on any failure: missing `langsmith` package,
+    network errors, invalid project names, client initialization issues,
+    or timeouts.
 
     Args:
         project_name: LangSmith project name to look up.
@@ -992,7 +966,7 @@ def fetch_langsmith_project_url(project_name: str) -> str | None:
     Returns:
         Project URL string if found, None otherwise.
     """
-    global _langsmith_url_cache  # noqa: PLW0603
+    global _langsmith_url_cache  # noqa: PLW0603  # Module-level cache requires global statement
 
     if _langsmith_url_cache is not None:
         cached_name, cached_url = _langsmith_url_cache
@@ -1002,20 +976,54 @@ def fetch_langsmith_project_url(project_name: str) -> str | None:
 
     try:
         from langsmith import Client
-
-        project = Client().read_project(project_name=project_name)
-    except (ImportError, OSError, ValueError, RuntimeError):
+    except ImportError:
         logger.debug(
             "Could not fetch LangSmith project URL for '%s'",
             project_name,
             exc_info=True,
         )
-        _langsmith_url_cache = (project_name, None)
         return None
-    else:
-        url = project.url or None
-        _langsmith_url_cache = (project_name, url)
-        return url
+
+    result: str | None = None
+    lookup_error: Exception | None = None
+    done = threading.Event()
+
+    def _lookup_url() -> None:
+        nonlocal result, lookup_error
+        try:
+            project = Client().read_project(project_name=project_name)
+            result = project.url or None
+        except Exception as exc:  # noqa: BLE001  # LangSmith SDK error types are not stable
+            lookup_error = exc
+        finally:
+            done.set()
+
+    thread = threading.Thread(target=_lookup_url, daemon=True)
+    thread.start()
+
+    if not done.wait(_LANGSMITH_URL_LOOKUP_TIMEOUT_SECONDS):
+        logger.debug(
+            "Timed out fetching LangSmith project URL for '%s' after %.1fs",
+            project_name,
+            _LANGSMITH_URL_LOOKUP_TIMEOUT_SECONDS,
+        )
+        return None
+
+    if lookup_error is not None:
+        logger.debug(
+            "Could not fetch LangSmith project URL for '%s'",
+            project_name,
+            exc_info=(
+                type(lookup_error),
+                lookup_error,
+                lookup_error.__traceback__,
+            ),
+        )
+        return None
+
+    if result is not None:
+        _langsmith_url_cache = (project_name, result)
+    return result
 
 
 def build_langsmith_thread_url(thread_id: str) -> str | None:
@@ -1039,12 +1047,12 @@ def build_langsmith_thread_url(thread_id: str) -> str | None:
     if not project_url:
         return None
 
-    return f"{project_url.rstrip('/')}/t/{thread_id}"
+    return f"{project_url.rstrip('/')}/t/{thread_id}?utm_source=deepagents-cli"
 
 
 def reset_langsmith_url_cache() -> None:
     """Reset the LangSmith URL cache (for testing)."""
-    global _langsmith_url_cache  # noqa: PLW0603
+    global _langsmith_url_cache  # noqa: PLW0603  # Module-level cache requires global statement
     _langsmith_url_cache = None
 
 
@@ -1120,17 +1128,13 @@ def _get_default_model_spec() -> str:
         return config.recent_model
 
     if settings.has_openai:
-        model = os.environ.get("OPENAI_MODEL", "gpt-5.2")
-        return f"openai:{model}"
+        return "openai:gpt-5.2"
     if settings.has_anthropic:
-        model = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-5-20250929")
-        return f"anthropic:{model}"
+        return "anthropic:claude-sonnet-4-6"
     if settings.has_google:
-        model = os.environ.get("GOOGLE_MODEL", "gemini-3-pro-preview")
-        return f"google_genai:{model}"
+        return "google_genai:gemini-3.1-pro-preview"
     if settings.has_vertex_ai:
-        model = os.environ.get("VERTEX_AI_MODEL", "gemini-3-pro-preview")
-        return f"google_vertexai:{model}"
+        return "google_vertexai:gemini-3.1-pro-preview"
 
     msg = (
         "No credentials configured. Please set one of: "
@@ -1138,6 +1142,16 @@ def _get_default_model_spec() -> str:
         "or GOOGLE_CLOUD_PROJECT"
     )
     raise ModelConfigError(msg)
+
+
+_OPENROUTER_DEFAULT_HEADERS: dict[str, str] = {
+    "HTTP-Referer": "https://github.com/langchain-ai/deepagents",
+    "X-Title": "Deep Agents CLI",
+}
+"""Default attribution headers sent with every OpenRouter request.
+
+See https://openrouter.ai/docs/app-attribution for details.
+"""
 
 
 def _get_provider_kwargs(
@@ -1150,6 +1164,10 @@ def _get_provider_kwargs(
 
     When `model_name` is provided, per-model overrides from the `params`
     sub-table are shallow-merged on top.
+
+    For the `openrouter` provider, default attribution headers (`HTTP-Referer`
+    and `X-Title`) are injected automatically. User-supplied `default_headers`
+    in config take precedence.
 
     Args:
         provider: Provider name (e.g., openai, anthropic, fireworks, ollama).
@@ -1168,6 +1186,11 @@ def _get_provider_kwargs(
         api_key = os.environ.get(api_key_env)
         if api_key:
             result["api_key"] = api_key
+
+    if provider == "openrouter":
+        user_headers = result.get("default_headers") or {}
+        result["default_headers"] = {**_OPENROUTER_DEFAULT_HEADERS, **user_headers}
+
     return result
 
 
@@ -1192,6 +1215,10 @@ def _create_model_from_class(
         ModelConfigError: If the class cannot be imported, is not a
             `BaseChatModel` subclass, or fails to instantiate.
     """
+    from langchain_core.language_models import (
+        BaseChatModel as _BaseChatModel,  # Runtime import; module level is typing only
+    )
+
     if ":" not in class_path:
         msg = (
             f"Invalid class_path '{class_path}' for provider '{provider}': "
@@ -1215,7 +1242,7 @@ def _create_model_from_class(
         )
         raise ModelConfigError(msg)
 
-    if not (isinstance(cls, type) and issubclass(cls, BaseChatModel)):
+    if not (isinstance(cls, type) and issubclass(cls, _BaseChatModel)):
         msg = (
             f"'{class_path}' is not a BaseChatModel subclass (got {type(cls).__name__})"
         )
@@ -1246,6 +1273,8 @@ def _create_model_via_init(
     Raises:
         ModelConfigError: On import, value, or runtime errors.
     """
+    from langchain.chat_models import init_chat_model
+
     try:
         if provider:
             return init_chat_model(model_name, model_provider=provider, **kwargs)
@@ -1298,10 +1327,58 @@ class ModelResult:
         settings.model_context_limit = self.context_limit
 
 
+def _apply_profile_overrides(
+    model: BaseChatModel,
+    overrides: dict[str, Any],
+    model_name: str,
+    *,
+    label: str,
+    raise_on_failure: bool = False,
+) -> None:
+    """Merge `overrides` into `model.profile`.
+
+    If the model already has a dict profile, overrides are layered on top
+    so existing keys (e.g., `tool_calling`) are preserved unchanged.
+
+    Args:
+        model: The chat model whose profile will be updated.
+        overrides: Key/value pairs to merge into the profile.
+        model_name: Model name used in log/error messages.
+        label: Human-readable source label for messages
+            (e.g., `"config.toml"`, `"CLI --profile-override"`).
+        raise_on_failure: When `True`, raise `ModelConfigError` instead
+            of logging a warning if assignment fails.
+
+    Raises:
+        ModelConfigError: If `raise_on_failure` is `True` and the model
+            rejects profile assignment.
+    """
+    logger.debug("Applying %s profile overrides: %s", label, overrides)
+    profile = getattr(model, "profile", None)
+    merged = {**profile, **overrides} if isinstance(profile, dict) else overrides
+    try:
+        model.profile = merged  # type: ignore[union-attr]
+    except (AttributeError, TypeError, ValueError) as exc:
+        if raise_on_failure:
+            msg = (
+                f"Could not apply {label} to model '{model_name}': {exc}. "
+                f"The model may not support profile assignment."
+            )
+            raise ModelConfigError(msg) from exc
+        logger.warning(
+            "Could not apply %s profile overrides to model '%s': %s. "
+            "Overrides will be ignored.",
+            label,
+            model_name,
+            exc,
+        )
+
+
 def create_model(
     model_spec: str | None = None,
     *,
     extra_kwargs: dict[str, Any] | None = None,
+    profile_overrides: dict[str, Any] | None = None,
 ) -> ModelResult:
     """Create a chat model.
 
@@ -1320,6 +1397,9 @@ def create_model(
         extra_kwargs: Additional kwargs to pass to the model constructor.
 
             These take highest priority, overriding values from the config file.
+        profile_overrides: Extra profile fields from `--profile-override`.
+
+            Merged on top of config file profile overrides (CLI wins).
 
     Returns:
         A `ModelResult` containing the model and its metadata.
@@ -1381,6 +1461,29 @@ def create_model(
 
     resolved_provider = provider or getattr(model, "_model_provider", provider)
 
+    # Apply profile overrides from config.toml (e.g., max_input_tokens)
+    if provider:
+        config_profile_overrides = config.get_profile_overrides(
+            provider, model_name=model_name
+        )
+        if config_profile_overrides:
+            _apply_profile_overrides(
+                model,
+                config_profile_overrides,
+                model_name,
+                label=f"config.toml (provider '{provider}')",
+            )
+
+    # CLI --profile-override takes highest priority (on top of config.toml)
+    if profile_overrides:
+        _apply_profile_overrides(
+            model,
+            profile_overrides,
+            model_name,
+            label="CLI --profile-override",
+            raise_on_failure=True,
+        )
+
     # Extract context limit from model profile (if available)
     context_limit: int | None = None
     profile = getattr(model, "profile", None)
@@ -1440,7 +1543,7 @@ def validate_model_capabilities(model: BaseChatModel, model_name: str) -> None:
 
     # Warn about potentially limited context (< 8k tokens)
     max_input_tokens = profile.get("max_input_tokens")
-    if max_input_tokens and max_input_tokens < 8000:
+    if max_input_tokens and max_input_tokens < 8000:  # noqa: PLR2004  # Model context window default
         console.print(
             f"[dim][yellow]Warning:[/yellow] Model '{model_name}' has limited context "
             f"({max_input_tokens:,} tokens). Agent performance may be affected.[/dim]"

@@ -23,6 +23,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import sys
+import threading
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
@@ -131,6 +132,45 @@ class StreamState:
         default_factory=dict
     )
     interrupt_occurred: bool = False
+
+
+@dataclass
+class ThreadUrlLookupState:
+    """Best-effort background LangSmith thread URL lookup state.
+
+    Thread safety: the background thread sets `url` then calls `done.set()`.
+    Consumers must check `done.is_set()` before reading `url`.
+    """
+
+    done: threading.Event = field(default_factory=threading.Event)
+    url: str | None = None
+
+
+def _start_langsmith_thread_url_lookup(thread_id: str) -> ThreadUrlLookupState:
+    """Start background LangSmith URL resolution without blocking.
+
+    Args:
+        thread_id: Thread identifier to resolve.
+
+    Returns:
+        Mutable lookup state whose completion can be checked later.
+    """
+    state = ThreadUrlLookupState()
+
+    def _resolve() -> None:
+        try:
+            state.url = build_langsmith_thread_url(thread_id)
+        except Exception:  # build_langsmith_thread_url already handles known errors
+            logger.debug(
+                "Could not resolve LangSmith thread URL for '%s'",
+                thread_id,
+                exc_info=True,
+            )
+        finally:
+            state.done.set()
+
+    threading.Thread(target=_resolve, daemon=True).start()
+    return state
 
 
 def _process_interrupts(
@@ -352,7 +392,7 @@ def _make_hitl_decision(
             return {"type": "approve"}
 
         allowed_list_str = ", ".join(settings.shell_allow_list)
-        console.print(f"\n[red]❌ Shell command rejected:[/red] {command}")
+        console.print(f"\n[red]Shell command rejected:[/red] {command}")
         console.print(f"[yellow]Allowed commands:[/yellow] {allowed_list_str}")
         return {
             "type": "reject",
@@ -426,6 +466,7 @@ async def _run_agent_loop(
     *,
     quiet: bool = False,
     stream: bool = True,
+    thread_url_lookup: ThreadUrlLookupState | None = None,
 ) -> None:
     """Run the agent and handle HITL interrupts until the task completes.
 
@@ -443,6 +484,8 @@ async def _run_agent_loop(
 
             When `False`, the full response is buffered and flushed at
             the end.
+        thread_url_lookup: Optional non-blocking lookup state for rendering
+            a fast-follow LangSmith thread link.
 
     Raises:
         HITLIterationLimitError: If the HITL iteration limit is exceeded.
@@ -480,18 +523,36 @@ async def _run_agent_loop(
 
     if not quiet:
         console.print()
+        if (
+            thread_url_lookup is not None
+            and thread_url_lookup.done.is_set()
+            and thread_url_lookup.url
+        ):
+            link_text = Text("View in LangSmith: ", style="dim")
+            link_text.append(
+                thread_url_lookup.url,
+                style=Style(dim=True, link=thread_url_lookup.url),
+            )
+            console.print(link_text)
         console.print("[green]✓ Task completed[/green]")
 
 
-def _build_non_interactive_header(assistant_id: str, thread_id: str) -> Text:
+def _build_non_interactive_header(
+    assistant_id: str,
+    thread_id: str,
+    *,
+    include_thread_link: bool = False,
+) -> Text:
     """Build the non-interactive mode header with model, agent, and thread info.
 
-    The thread ID is rendered as a clickable hyperlink when LangSmith tracing
-    is configured.
+    By default, this function avoids LangSmith network lookups and renders the
+    thread ID as plain text. Callers can opt in to hyperlink resolution.
 
     Args:
         assistant_id: Agent identifier.
         thread_id: Thread identifier.
+        include_thread_link: Whether to resolve and render a LangSmith link for
+            the thread ID.
 
     Returns:
         Rich Text object with the formatted header line.
@@ -506,8 +567,7 @@ def _build_non_interactive_header(assistant_id: str, thread_id: str) -> Text:
 
     parts.append((" | ", "dim"))
 
-    # Attempt to build a clickable thread link via LangSmith
-    thread_url = build_langsmith_thread_url(thread_id)
+    thread_url = build_langsmith_thread_url(thread_id) if include_thread_link else None
     if thread_url:
         parts.extend(
             [
@@ -530,6 +590,7 @@ async def run_non_interactive(
     sandbox_id: str | None = None,
     sandbox_setup: str | None = None,
     *,
+    profile_override: dict[str, Any] | None = None,
     quiet: bool = False,
     stream: bool = True,
 ) -> int:
@@ -541,9 +602,9 @@ async def run_non_interactive(
     list; commands not in the list are rejected with an error message sent
     back to the agent.
 
-    Note: `_build_non_interactive_header` makes a synchronous network call
-    to LangSmith (via `fetch_langsmith_project_url`) to resolve the thread
-    URL. This blocks the event loop briefly at startup.
+    Note: startup header rendering avoids synchronous LangSmith URL lookups.
+    A background thread resolves the thread URL concurrently and the result is
+    displayed after task completion if available.
 
     Args:
         message: The task/message to execute.
@@ -557,6 +618,9 @@ async def run_non_interactive(
         sandbox_id: Optional existing sandbox ID to reuse.
         sandbox_setup: Optional path to setup script to run in the sandbox
             after creation.
+        profile_override: Extra profile fields from `--profile-override`.
+
+            Merged on top of config file profile overrides.
         quiet: When `True`, all console output (headers, status messages,
             tool notifications, HITL decisions, errors) is redirected to
             stderr so that only the agent's response text appears on stdout.
@@ -573,7 +637,11 @@ async def run_non_interactive(
     # uses _write_text() -> sys.stdout directly.
     console = Console(stderr=True) if quiet else Console()
     try:
-        result = create_model(model_name, extra_kwargs=model_params)
+        result = create_model(
+            model_name,
+            extra_kwargs=model_params,
+            profile_overrides=profile_override,
+        )
     except ModelConfigError as e:
         console.print(f"[bold red]Error:[/bold red] {e}")
         return 1
@@ -591,7 +659,9 @@ async def run_non_interactive(
         },
     }
 
+    thread_url_lookup: ThreadUrlLookupState | None = None
     if not quiet:
+        thread_url_lookup = _start_langsmith_thread_url_lookup(thread_id)
         console.print("[dim]Running task non-interactively...[/dim]")
         header = _build_non_interactive_header(assistant_id, thread_id)
         console.print(header)
@@ -601,7 +671,9 @@ async def run_non_interactive(
     exit_stack = contextlib.ExitStack()
 
     if sandbox_type != "none":
-        from deepagents_cli.integrations.sandbox_factory import (  # noqa: PLC0415
+        # Conditional: sandbox_factory transitively imports provider modules
+        # and SDKs — skip that cost for the common no-sandbox path.
+        from deepagents_cli.integrations.sandbox_factory import (
             create_sandbox,
         )
 
@@ -612,15 +684,19 @@ async def run_non_interactive(
                 setup_script_path=sandbox_setup,
             )
             sandbox_backend = exit_stack.enter_context(sandbox_cm)
-        except (ImportError, ValueError, RuntimeError) as e:
+        except (ImportError, ValueError) as e:
             logger.exception("Sandbox creation failed")
-            console.print(f"[red]❌ Sandbox creation failed: {e}[/red]")
+            console.print(f"[red]Sandbox creation failed: {e}[/red]")
             return 1
         except NotImplementedError as e:
             logger.exception("Unsupported sandbox type %r", sandbox_type)
             console.print(
-                f"[red]❌ Sandbox type '{sandbox_type}' is not yet supported: {e}[/red]"
+                f"[red]Sandbox type '{sandbox_type}' is not yet supported: {e}[/red]"
             )
+            return 1
+        except RuntimeError as e:
+            logger.exception("Sandbox creation failed")
+            console.print(f"[red]Sandbox creation failed: {e}[/red]")
             return 1
 
     try:
@@ -658,6 +734,7 @@ async def run_non_interactive(
                 file_op_tracker,
                 quiet=quiet,
                 stream=stream,
+                thread_url_lookup=thread_url_lookup,
             )
             return 0
 
@@ -674,11 +751,11 @@ async def run_non_interactive(
         return 1
     except (ValueError, OSError) as e:
         logger.exception("Error during non-interactive execution")
-        console.print(f"\n[red]❌ Error: {e}[/red]")
+        console.print(f"\n[red]Error: {e}[/red]")
         return 1
     except Exception as e:
         logger.exception("Unexpected error during non-interactive execution")
-        console.print(f"\n[red]❌ Unexpected error ({type(e).__name__}): {e}[/red]")
+        console.print(f"\n[red]Unexpected error ({type(e).__name__}): {e}[/red]")
         return 1
     finally:
         try:

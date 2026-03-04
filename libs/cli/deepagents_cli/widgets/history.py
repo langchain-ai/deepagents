@@ -149,6 +149,11 @@ class HistoryManager:
         self.reset_navigation()
         return result
 
+    @property
+    def in_history(self) -> bool:
+        """Whether currently navigating history entries."""
+        return self._current_index >= 0
+
     def reset_navigation(self) -> None:
         """Reset navigation state."""
         self._current_index = -1

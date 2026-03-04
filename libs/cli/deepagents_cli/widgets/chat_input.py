@@ -1445,6 +1445,22 @@ class ChatInput(Vertical):
         if self._text_area:
             self._text_area.set_app_focus(has_focus=active)
 
+    def exit_mode(self) -> bool:
+        """Exit the current input mode (command/bash) back to normal.
+
+        Returns:
+            True if mode was non-normal and has been reset.
+        """
+        if self.mode == "normal":
+            return False
+        self.mode = "normal"
+        if self._completion_manager:
+            self._completion_manager.reset()
+        self.clear_completion_suggestions()
+        if self._text_area:
+            self._text_area.clear()
+        return True
+
     def dismiss_completion(self) -> bool:
         """Dismiss completion: clear view and reset controller state.
 

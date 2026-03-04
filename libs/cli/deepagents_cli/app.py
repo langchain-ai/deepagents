@@ -2367,18 +2367,22 @@ class DeepAgentsApp(App):
         Priority order:
         1. If modal screen is active, dismiss it
         2. If completion popup is open, dismiss it
-        3. If bash process is running, kill it
-        4. If agent is running, interrupt it
-        5. If approval menu is active, reject it
+        3. If input is in command/bash mode, exit to normal mode
+        4. If bash process is running, kill it
+        5. If agent is running, interrupt it
+        6. If approval menu is active, reject it
         """
         # If a modal screen is active, dismiss it
         if isinstance(self.screen, ModalScreen):
             self.screen.dismiss(None)
             return
 
-        # Close completion popup before interrupting the agent
-        if self._chat_input and self._chat_input.dismiss_completion():
-            return
+        # Close completion popup or exit slash/bash mode
+        if self._chat_input:
+            if self._chat_input.dismiss_completion():
+                return
+            if self._chat_input.exit_mode():
+                return
 
         # If bash command is running, cancel the worker
         if self._bash_running and self._bash_worker:

@@ -87,7 +87,7 @@ jobs:
 #          - "ollama:deepseek-v3.2:cloud"
           # Fireworks AI
           - "fireworks:accounts/fireworks/models/qwen3-vl-235b-a22b-instruct"
-          - "fireworks:accounts/fireworks/models/qwen3-vl-235b-a22b-thinking"
+          - "fireworks:accounts/eugene-fbb3f2/deployments/f5za6ksj"
 
     defaults:
       run:

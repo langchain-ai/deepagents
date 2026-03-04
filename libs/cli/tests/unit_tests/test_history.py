@@ -89,6 +89,10 @@ class TestNoMatch:
         entry = history.get_previous("xyz", query="xyz")
         assert entry is None
 
+    def test_empty_history_returns_none(self, tmp_path: Path) -> None:
+        mgr = HistoryManager(tmp_path / "empty.jsonl")
+        assert mgr.get_previous("text", query="text") is None
+
 
 class TestForwardNavigation:
     """`get_next()` reuses the stored query."""
@@ -102,12 +106,26 @@ class TestForwardNavigation:
         entry = history.get_next()
         assert entry == "docker compose UP -d"
 
+    def test_full_forward_walk(self, history: HistoryManager) -> None:
+        """Walk back to oldest match, then forward through all matches."""
+        history.get_previous("x", query="compose")  # -> "docker compose UP -d"
+        history.get_previous("x", query="compose")  # -> "docker compose up"
+        assert history.get_previous("x", query="compose") is None
+
+        assert history.get_next() == "docker compose UP -d"
+        assert history.get_next() == "x"  # original input restored
+
     def test_restores_original_input(self, history: HistoryManager) -> None:
         history.get_previous("my input", query="up")
 
         # Navigate forward past newest match
         entry = history.get_next()
         assert entry == "my input"
+
+    def test_get_next_without_previous_returns_none(
+        self, history: HistoryManager
+    ) -> None:
+        assert history.get_next() is None
 
 
 class TestResetClearsQuery:
@@ -191,6 +209,15 @@ class TestInHistoryProperty:
 
         simple_history.add("new entry")
         assert simple_history.in_history is False
+
+    def test_in_history_stays_true_when_filtered_exhausted(
+        self, history: HistoryManager
+    ) -> None:
+        """in_history stays True when a filtered query exhausts all matches."""
+        history.get_previous("up", query="up")
+        history.get_previous("up", query="up")
+        history.get_previous("up", query="up")  # None — no more matches
+        assert history.in_history is True
 
     def test_true_at_oldest_entry(self, simple_history: HistoryManager) -> None:
         """in_history should stay True when at the oldest entry with no older match."""

@@ -105,12 +105,13 @@ class HistoryManager:
         """Get the previous history entry matching a substring query.
 
         The query is captured on the first call of a navigation session
-        (when ``_current_index == -1``) and reused for all subsequent
-        calls until `reset_navigation`. Passing a different value on
-        later calls has no effect.
+        (when `_current_index == -1`) and reused for all subsequent calls until
+        `reset_navigation`. Passing a different value on later calls has
+        no effect.
 
         Args:
-            current_input: Current input text (saved on first navigation).
+            current_input: Current input text. Saved only on the first call of a
+                navigation session; ignored on subsequent calls.
             query: Substring to match against history entries.
                 Captured once on the first call of a navigation session.
 
@@ -140,7 +141,10 @@ class HistoryManager:
         Uses the query captured by the most recent `get_previous` call.
 
         Returns:
-            Next matching entry, original input at end, or `None`.
+            The next matching entry, or the original input when past the newest
+                match.
+
+                `None` if not currently navigating history.
         """
         if self._current_index == -1:
             return None

@@ -330,12 +330,15 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             self._selected_index = self._find_current_model_index()
             return
 
+        tokens = query.split()
+
         try:
-            matcher = Matcher(query, case_sensitive=False)
-            scored = [
-                (matcher.match(spec), spec, provider)
-                for spec, provider in self._all_models
-            ]
+            matchers = [Matcher(token, case_sensitive=False) for token in tokens]
+            scored: list[tuple[float, str, str]] = []
+            for spec, provider in self._all_models:
+                scores = [m.match(spec) for m in matchers]
+                if all(s > 0 for s in scores):
+                    scored.append((min(scores), spec, provider))
         except Exception:
             # graceful fallback if Matcher fails on edge-case input
             logger.warning(
@@ -348,9 +351,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             return
 
         self._filtered_models = [
-            (spec, provider)
-            for score, spec, provider in sorted(scored, reverse=True)
-            if score > 0
+            (spec, provider) for score, spec, provider in sorted(scored, reverse=True)
         ]
         self._selected_index = 0
 

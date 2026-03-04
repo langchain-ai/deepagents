@@ -2434,6 +2434,13 @@ class DeepAgentsApp(App):
             w.remove()
         self._queued_widgets.clear()
 
+        # Cancel active workers so their subprocesses are terminated
+        # (SIGTERM → SIGKILL) instead of being orphaned.
+        if self._bash_running and self._bash_worker:
+            self._bash_worker.cancel()
+        if self._agent_running and self._agent_worker:
+            self._agent_worker.cancel()
+
         _write_iterm_escape(_ITERM_CURSOR_GUIDE_ON)
         super().exit(result=result, return_code=return_code, message=message)
 

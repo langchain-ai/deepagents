@@ -15,6 +15,8 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
+from deepagents_cli.project_utils import find_project_root
+
 
 def _get_git_executable() -> str | None:
     """Get full path to git executable using shutil.which().
@@ -94,12 +96,17 @@ class CompletionController(Protocol):
 
 SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/help", "Show help"),
+    ("/changelog", "Open changelog in browser"),
     ("/clear", "Clear chat and start new thread"),
+    ("/compact", "Summarize conversation to reduce context usage"),
+    ("/docs", "Open documentation in browser"),
+    ("/feedback", "Submit a bug report or feature request"),
     ("/model", "Switch model, show selector, or set default (--default)"),
     ("/remember", "Update memory and skills from conversation"),
     ("/quit", "Exit app"),
     ("/tokens", "Token usage"),
-    ("/threads", "Show thread info"),
+    ("/threads", "Browse and resume previous threads"),
+    ("/trace", "Open current thread in LangSmith"),
     ("/version", "Show version"),
 ]
 """Built-in slash commands with descriptions."""
@@ -127,7 +134,7 @@ class SlashCommandController:
         self._selected_index = 0
 
     @staticmethod
-    def can_handle(text: str, cursor_index: int) -> bool:  # noqa: ARG004
+    def can_handle(text: str, cursor_index: int) -> bool:  # noqa: ARG004  # Required by AutocompleteProvider interface
         """Handle input that starts with /.
 
         Returns:
@@ -161,9 +168,6 @@ class SlashCommandController:
             for cmd, desc in self._commands
             if cmd.lower().startswith("/" + search)
         ]
-
-        if len(suggestions) > MAX_SUGGESTIONS:
-            suggestions = suggestions[:MAX_SUGGESTIONS]
 
         if suggestions:
             self._suggestions = suggestions
@@ -242,19 +246,6 @@ _MIN_FUZZY_RATIO = 0.4
 _MIN_FUZZY_SCORE = 15  # Minimum score to include in results
 
 
-def _find_project_root(start_path: Path) -> Path:
-    """Find git root or return start_path.
-
-    Returns:
-        Path to git root directory, or start_path if not in a git repo.
-    """
-    current = start_path.resolve()
-    for parent in [current, *list(current.parents)]:
-        if (parent / ".git").exists():
-            return parent
-    return start_path
-
-
 def _get_project_files(root: Path) -> list[str]:
     """Get project files using git ls-files or fallback to glob.
 
@@ -285,7 +276,7 @@ def _get_project_files(root: Path) -> list[str]:
         for pattern in ["*", "*/*", "*/*/*", "*/*/*/*"]:
             for p in root.glob(pattern):
                 if p.is_file() and not any(part.startswith(".") for part in p.parts):
-                    files.append(str(p.relative_to(root)))
+                    files.append(p.relative_to(root).as_posix())
                 if len(files) >= _MAX_FALLBACK_FILES:
                     break
             if len(files) >= _MAX_FALLBACK_FILES:
@@ -302,10 +293,12 @@ def _fuzzy_score(query: str, candidate: str) -> float:
         Score value where higher indicates better match quality.
     """
     query_lower = query.lower()
-    candidate_lower = candidate.lower()
+    # Normalize path separators for cross-platform support
+    candidate_normalized = candidate.replace("\\", "/")
+    candidate_lower = candidate_normalized.lower()
 
     # Extract filename for matching (prioritize filename over full path)
-    filename = candidate.rsplit("/", 1)[-1].lower()
+    filename = candidate_normalized.rsplit("/", 1)[-1].lower()
     filename_start = candidate_lower.rfind("/") + 1
 
     # Check filename first (higher priority)
@@ -413,7 +406,7 @@ class FuzzyFileController:
         """
         self._view = view
         self._cwd = cwd or Path.cwd()
-        self._project_root = _find_project_root(self._cwd)
+        self._project_root = find_project_root(self._cwd) or self._cwd
         self._suggestions: list[tuple[str, str]] = []
         self._selected_index = 0
         self._file_cache: list[str] | None = None

@@ -1,0 +1,40 @@
+# Ensures optional extras stay in sync with required dependencies.
+#
+# When a package appears in both [project.dependencies] and
+# [project.optional-dependencies], the version constraints must match.
+# Only runs when pyproject.toml is modified.
+
+name: "🔍 Check Extras Sync"
+
+on:
+  pull_request:
+    paths:
+      - "libs/cli/pyproject.toml"
+  push:
+    branches: [main]
+    paths:
+      - "libs/cli/pyproject.toml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check-extras-sync:
+    name: "Verify extras match required deps"
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: "📋 Checkout Code"
+        uses: actions/checkout@v6
+
+      - name: "🐍 Set up Python 3.14"
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+
+      - name: "🔍 Check extras sync"
+        run: python .github/scripts/check_extras_sync.py libs/cli/pyproject.toml

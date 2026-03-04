@@ -1,6 +1,6 @@
 """Unit tests for the welcome banner widget."""
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from rich.style import Style
 from rich.text import Text
@@ -83,7 +83,7 @@ class TestBuildBannerThreadLink:
         thread_id_end = thread_id_start + len("99999")
         links = _extract_links(banner, thread_id_start, thread_id_end)
         assert links, "Expected a link style on the thread ID text"
-        assert links[0] == f"{project_url}/t/99999"
+        assert links[0] == f"{project_url}/t/99999?utm_source=deepagents-cli"
 
     def test_no_thread_line_when_thread_id_is_none(self) -> None:
         """Banner should not contain a thread line when `thread_id` is `None`."""
@@ -126,7 +126,7 @@ class TestBuildBannerThreadLink:
         thread_id_end = thread_id_start + len("77777")
         links = _extract_links(banner, thread_id_start, thread_id_end)
         assert links
-        assert links[0] == f"{project_url}/t/77777"
+        assert links[0] == f"{project_url}/t/77777?utm_source=deepagents-cli"
 
 
 class TestUpdateThreadId:
@@ -162,7 +162,7 @@ class TestUpdateThreadId:
         thread_end = thread_start + len("new_id")
         links = _extract_links(banner, thread_start, thread_end)
         assert links
-        assert links[0] == f"{project_url}/t/new_id"
+        assert links[0] == f"{project_url}/t/new_id?utm_source=deepagents-cli"
 
 
 class TestBuildBannerReturnType:
@@ -173,3 +173,53 @@ class TestBuildBannerReturnType:
         widget = _make_banner(thread_id="abc")
         result = widget._build_banner()
         assert isinstance(result, Text)
+
+
+class TestAutoLinksDisabled:
+    """Tests that `auto_links` is disabled to prevent hover flicker."""
+
+    def test_auto_links_is_false(self) -> None:
+        """`WelcomeBanner` should disable Textual's `auto_links`."""
+        assert WelcomeBanner.auto_links is False
+
+
+_WEBBROWSER_OPEN = "deepagents_cli.widgets._links.webbrowser.open"
+
+
+class TestOnClickOpensLink:
+    """Tests for `WelcomeBanner.on_click` opening Rich-style hyperlinks."""
+
+    def test_click_on_link_opens_browser(self) -> None:
+        """Clicking a Rich link should call `webbrowser.open`."""
+        widget = _make_banner(thread_id="abc")
+        event = MagicMock()
+        event.style = Style(link="https://example.com")
+
+        with patch(_WEBBROWSER_OPEN) as mock_open:
+            widget.on_click(event)
+
+        mock_open.assert_called_once_with("https://example.com")
+        event.stop.assert_called_once()
+
+    def test_click_without_link_is_noop(self) -> None:
+        """Clicking on non-link text should not open the browser."""
+        widget = _make_banner(thread_id="abc")
+        event = MagicMock()
+        event.style = Style()
+
+        with patch(_WEBBROWSER_OPEN) as mock_open:
+            widget.on_click(event)
+
+        mock_open.assert_not_called()
+        event.stop.assert_not_called()
+
+    def test_click_with_browser_error_is_graceful(self) -> None:
+        """Browser failure should not crash the widget."""
+        widget = _make_banner(thread_id="abc")
+        event = MagicMock()
+        event.style = Style(link="https://example.com")
+
+        with patch(_WEBBROWSER_OPEN, side_effect=OSError("no display")):
+            widget.on_click(event)  # should not raise
+
+        event.stop.assert_not_called()

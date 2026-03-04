@@ -1,3 +1,6 @@
+import time
+from unittest.mock import patch
+
 import pytest
 from langchain.agents import create_agent
 from langchain.agents.middleware.types import ToolCallRequest
@@ -12,8 +15,13 @@ from langchain_core.messages import (
 from langgraph.store.memory import InMemoryStore
 from langgraph.types import Command, Overwrite
 
+import deepagents.middleware.filesystem as filesystem_middleware
 from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
-from deepagents.backends.protocol import ExecuteResponse, SandboxBackendProtocol
+from deepagents.backends.protocol import (
+    ExecuteResponse,
+    FileDownloadResponse,
+    SandboxBackendProtocol,
+)
 from deepagents.backends.utils import (
     TRUNCATION_GUIDANCE,
     create_file_data,
@@ -66,7 +74,7 @@ class TestAddMiddleware:
             )
         ]
         agent = create_agent(model="claude-sonnet-4-20250514", middleware=middleware, tools=[])
-        assert "task" in agent.nodes["tools"].bound._tools_by_name.keys()
+        assert "task" in agent.nodes["tools"].bound._tools_by_name
 
     def test_multiple_middleware(self):
         middleware = [
@@ -96,7 +104,9 @@ class TestFilesystemMiddleware:
         assert len(middleware.tools) == 7  # All tools including execute
 
     def test_init_with_composite_backend(self):
-        backend_factory = lambda rt: build_composite_state_backend(rt, routes={"/memories/": StoreBackend})
+        def backend_factory(rt):
+            return build_composite_state_backend(rt, routes={"/memories/": StoreBackend})
+
         middleware = FilesystemMiddleware(backend=backend_factory)
         assert callable(middleware.backend)
         assert middleware._custom_system_prompt is None
@@ -109,7 +119,9 @@ class TestFilesystemMiddleware:
         assert len(middleware.tools) == 7  # All tools including execute
 
     def test_init_custom_system_prompt_with_composite(self):
-        backend_factory = lambda rt: build_composite_state_backend(rt, routes={"/memories/": StoreBackend})
+        def backend_factory(rt):
+            return build_composite_state_backend(rt, routes={"/memories/": StoreBackend})
+
         middleware = FilesystemMiddleware(backend=backend_factory, system_prompt="Custom system prompt")
         assert callable(middleware.backend)
         assert middleware._custom_system_prompt == "Custom system prompt"
@@ -123,7 +135,9 @@ class TestFilesystemMiddleware:
         assert ls_tool.description == "Custom ls tool description"
 
     def test_init_custom_tool_descriptions_with_composite(self):
-        backend_factory = lambda rt: build_composite_state_backend(rt, routes={"/memories/": StoreBackend})
+        def backend_factory(rt):
+            return build_composite_state_backend(rt, routes={"/memories/": StoreBackend})
+
         middleware = FilesystemMiddleware(backend=backend_factory, custom_tool_descriptions={"ls": "Custom ls tool description"})
         assert callable(middleware.backend)
         assert middleware._custom_system_prompt is None
@@ -267,7 +281,6 @@ class TestFilesystemMiddleware:
         )
         middleware = FilesystemMiddleware()
         glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
-        print(glob_search_tool)
         result_raw = glob_search_tool.invoke(
             {
                 "pattern": "*.py",
@@ -400,8 +413,33 @@ class TestFilesystemMiddleware:
                 "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
             }
         )
-        print(glob_search_tool)
         assert result == str([])
+
+    def test_glob_timeout_returns_error_message(self):
+        state = FilesystemState(messages=[], files={})
+        middleware = FilesystemMiddleware()
+        glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
+        backend = middleware._get_backend(
+            ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={})
+        )
+
+        def slow_glob_info(*_args: object, **_kwargs: object) -> list[dict[str, str]]:
+            time.sleep(2)
+            return []
+
+        with (
+            patch.object(filesystem_middleware, "GLOB_TIMEOUT", 0.5),
+            patch.object(middleware, "_get_backend", return_value=backend),
+            patch.object(backend, "glob_info", side_effect=slow_glob_info),
+        ):
+            result = glob_search_tool.invoke(
+                {
+                    "pattern": "**/*",
+                    "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+                }
+            )
+
+        assert result == "Error: glob timed out after 0.5s. Try a more specific pattern or a narrower path."
 
     def test_glob_search_truncates_large_results(self):
         """Test that glob results are truncated when they exceed token limit."""
@@ -599,7 +637,6 @@ class TestFilesystemMiddleware:
                 "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
             }
         )
-        print(result)
         assert "1: def hello():" in result
         assert "2: def world():" in result
         assert "x = 5" not in result
@@ -922,6 +959,35 @@ class TestFilesystemMiddleware:
         assert isinstance(result, Command)
         assert result.update["messages"][0].name == "example_tool"
 
+    def test_intercept_long_toolmessage_preserves_artifact_and_metadata(self):
+        """Test that ToolMessage artifact and metadata fields are preserved after eviction."""
+        middleware = FilesystemMiddleware(tool_token_limit_before_evict=1000)
+        state = FilesystemState(messages=[], files={})
+        runtime = ToolRuntime(state=state, context=None, tool_call_id="test_123", store=None, stream_writer=lambda _: None, config={})
+
+        large_content = "x" * 5000
+        artifact_payload = {"urls": ["https://example.com"], "ids": [42]}
+        tool_message = ToolMessage(
+            content=large_content,
+            tool_call_id="test_123",
+            name="example_tool",
+            id="tool_msg_1",
+            artifact=artifact_payload,
+            status="error",
+            additional_kwargs={"source": "unit-test"},
+            response_metadata={"provider": "mock"},
+        )
+        result = middleware._intercept_large_tool_result(tool_message, runtime)
+
+        assert isinstance(result, Command)
+        processed_message = result.update["messages"][0]
+        assert isinstance(processed_message, ToolMessage)
+        assert processed_message.artifact == artifact_payload
+        assert processed_message.id == "tool_msg_1"
+        assert processed_message.status == "error"
+        assert processed_message.additional_kwargs == {"source": "unit-test"}
+        assert processed_message.response_metadata == {"provider": "mock"}
+
     def test_intercept_command_with_short_toolmessage(self):
         """Test that Commands with small messages pass through unchanged."""
         middleware = FilesystemMiddleware(tool_token_limit_before_evict=1000)
@@ -1113,6 +1179,67 @@ class TestFilesystemMiddleware:
         assert "'type': 'text'" in file_text
         assert "'type': 'image'" in file_text
 
+    def test_read_file_image_returns_standard_image_content_block(self):
+        """Test image reads return standard image blocks with base64 + mime_type."""
+
+        class ImageBackend(StateBackend):
+            def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
+                return [
+                    FileDownloadResponse(
+                        path=paths[0],
+                        content=b"fake-image-bytes",
+                        error=None,
+                    )
+                ]
+
+        middleware = FilesystemMiddleware(backend=lambda rt: ImageBackend(rt))  # noqa: PLW0108
+        state = FilesystemState(messages=[], files={})
+        runtime = ToolRuntime(
+            state=state,
+            context=None,
+            tool_call_id="img-read-1",
+            store=None,
+            stream_writer=lambda _: None,
+            config={},
+        )
+
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+        result = read_file_tool.invoke({"file_path": "/app/frame_001.jpg", "runtime": runtime})
+
+        assert isinstance(result, ToolMessage)
+        assert result.name == "read_file"
+        assert result.tool_call_id == "img-read-1"
+        assert result.additional_kwargs["read_file_path"] == "/app/frame_001.jpg"
+        assert result.additional_kwargs["read_file_media_type"] == "image/jpeg"
+        assert isinstance(result.content, list)
+        assert result.content[0]["type"] == "image"
+        assert result.content[0]["mime_type"] == "image/jpeg"
+        assert result.content[0]["base64"] == "ZmFrZS1pbWFnZS1ieXRlcw=="
+
+    def test_read_file_image_returns_error_when_download_fails(self):
+        """Image reads should return a clear backend error string."""
+
+        class ImageBackend(StateBackend):
+            def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
+                return [FileDownloadResponse(path=paths[0], content=None, error="file_not_found")]
+
+        middleware = FilesystemMiddleware(backend=lambda rt: ImageBackend(rt))  # noqa: PLW0108
+        state = FilesystemState(messages=[], files={})
+        runtime = ToolRuntime(
+            state=state,
+            context=None,
+            tool_call_id="img-read-err",
+            store=None,
+            stream_writer=lambda _: None,
+            config={},
+        )
+
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+        result = read_file_tool.invoke({"file_path": "/app/missing.png", "runtime": runtime})
+
+        assert isinstance(result, str)
+        assert result == "Error reading image: file_not_found"
+
     def test_execute_tool_returns_error_when_backend_doesnt_support(self):
         """Test that execute tool returns friendly error instead of raising exception."""
         state = FilesystemState(messages=[], files={})
@@ -1143,7 +1270,7 @@ class TestFilesystemMiddleware:
 
         # Mock sandbox backend that returns specific output
         class FormattingMockSandboxBackend(SandboxBackendProtocol, StateBackend):
-            def execute(self, command: str) -> ExecuteResponse:
+            def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
                 return ExecuteResponse(
                     output="Hello world\nLine 2",
                     exit_code=0,
@@ -1179,7 +1306,7 @@ class TestFilesystemMiddleware:
 
         # Mock sandbox backend that returns failure
         class FailureMockSandboxBackend(SandboxBackendProtocol, StateBackend):
-            def execute(self, command: str) -> ExecuteResponse:
+            def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
                 return ExecuteResponse(
                     output="Error: command not found",
                     exit_code=127,
@@ -1215,7 +1342,7 @@ class TestFilesystemMiddleware:
 
         # Mock sandbox backend that returns truncated output
         class TruncatedMockSandboxBackend(SandboxBackendProtocol, StateBackend):
-            def execute(self, command: str) -> ExecuteResponse:
+            def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
                 return ExecuteResponse(
                     output="Very long output...",
                     exit_code=0,
@@ -1250,7 +1377,7 @@ class TestFilesystemMiddleware:
 
         # Mock sandbox backend
         class TestSandboxBackend(SandboxBackendProtocol, StateBackend):
-            def execute(self, command: str) -> ExecuteResponse:
+            def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
                 return ExecuteResponse(output="test", exit_code=0, truncated=False)
 
             @property
@@ -1654,3 +1781,201 @@ class TestBuiltinTruncationTools:
 
         # Verify the message has the tool name preserved
         assert result.update["messages"][0].name == "execute"
+
+    def test_execute_tool_forwards_zero_timeout_to_backend(self):
+        """Middleware should forward timeout=0 for backends that support no-timeout."""
+        captured_timeout = {}
+
+        class TimeoutCaptureSandbox(SandboxBackendProtocol, StateBackend):
+            def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+                captured_timeout["value"] = timeout
+                return ExecuteResponse(output="ok", exit_code=0, truncated=False)
+
+            @property
+            def id(self):
+                return "timeout-capture-sandbox"
+
+        state = FilesystemState(messages=[], files={})
+        rt = ToolRuntime(
+            state=state,
+            context=None,
+            tool_call_id="test_zero_timeout",
+            store=InMemoryStore(),
+            stream_writer=lambda _: None,
+            config={},
+        )
+
+        backend = TimeoutCaptureSandbox(rt)
+        middleware = FilesystemMiddleware(backend=backend)
+
+        execute_tool = next(tool for tool in middleware.tools if tool.name == "execute")
+        result = execute_tool.invoke({"command": "echo hello", "timeout": 0, "runtime": rt})
+
+        assert isinstance(result, str)
+        assert "ok" in result
+        assert captured_timeout["value"] == 0
+
+    def test_execute_tool_rejects_negative_timeout(self):
+        """Middleware should return a friendly error for negative timeout."""
+
+        class TimeoutCaptureSandbox(SandboxBackendProtocol, StateBackend):
+            def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+                return ExecuteResponse(output="ok", exit_code=0, truncated=False)
+
+            @property
+            def id(self):
+                return "timeout-capture-sandbox"
+
+        state = FilesystemState(messages=[], files={})
+        rt = ToolRuntime(
+            state=state,
+            context=None,
+            tool_call_id="test_neg_timeout",
+            store=InMemoryStore(),
+            stream_writer=lambda _: None,
+            config={},
+        )
+
+        backend = TimeoutCaptureSandbox(rt)
+        middleware = FilesystemMiddleware(backend=backend)
+
+        execute_tool = next(tool for tool in middleware.tools if tool.name == "execute")
+        result = execute_tool.invoke({"command": "echo hello", "timeout": -5, "runtime": rt})
+
+        assert isinstance(result, str)
+        assert "error" in result.lower()
+        assert "non-negative" in result.lower()
+
+    def test_execute_tool_forwards_valid_timeout_to_backend(self):
+        """Middleware should forward a valid timeout to the backend."""
+        captured_timeout = {}
+
+        class TimeoutCaptureSandbox(SandboxBackendProtocol, StateBackend):
+            def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+                captured_timeout["value"] = timeout
+                return ExecuteResponse(output="ok", exit_code=0, truncated=False)
+
+            @property
+            def id(self):
+                return "timeout-capture-sandbox"
+
+        state = FilesystemState(messages=[], files={})
+        rt = ToolRuntime(
+            state=state,
+            context=None,
+            tool_call_id="test_fwd_timeout",
+            store=InMemoryStore(),
+            stream_writer=lambda _: None,
+            config={},
+        )
+
+        backend = TimeoutCaptureSandbox(rt)
+        middleware = FilesystemMiddleware(backend=backend)
+
+        execute_tool = next(tool for tool in middleware.tools if tool.name == "execute")
+        execute_tool.invoke({"command": "echo hello", "timeout": 300, "runtime": rt})
+
+        assert captured_timeout["value"] == 300
+
+    def test_execute_tool_rejects_timeout_exceeding_max(self):
+        """Middleware should return a friendly error when timeout exceeds max_execute_timeout."""
+
+        class TimeoutCaptureSandbox(SandboxBackendProtocol, StateBackend):
+            def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+                return ExecuteResponse(output="ok", exit_code=0, truncated=False)
+
+            @property
+            def id(self):
+                return "timeout-capture-sandbox"
+
+        state = FilesystemState(messages=[], files={})
+        rt = ToolRuntime(
+            state=state,
+            context=None,
+            tool_call_id="test_max_execute_timeout",
+            store=InMemoryStore(),
+            stream_writer=lambda _: None,
+            config={},
+        )
+
+        backend = TimeoutCaptureSandbox(rt)
+        middleware = FilesystemMiddleware(backend=backend, max_execute_timeout=600)
+
+        execute_tool = next(tool for tool in middleware.tools if tool.name == "execute")
+        result = execute_tool.invoke({"command": "echo hello", "timeout": 601, "runtime": rt})
+
+        assert isinstance(result, str)
+        assert "error" in result.lower()
+        assert "601" in result
+        assert "600" in result
+
+    def test_execute_tool_accepts_timeout_at_max(self):
+        """Middleware should accept timeout exactly equal to max_execute_timeout."""
+        captured_timeout = {}
+
+        class TimeoutCaptureSandbox(SandboxBackendProtocol, StateBackend):
+            def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+                captured_timeout["value"] = timeout
+                return ExecuteResponse(output="ok", exit_code=0, truncated=False)
+
+            @property
+            def id(self):
+                return "timeout-capture-sandbox"
+
+        state = FilesystemState(messages=[], files={})
+        rt = ToolRuntime(
+            state=state,
+            context=None,
+            tool_call_id="test_at_max_execute_timeout",
+            store=InMemoryStore(),
+            stream_writer=lambda _: None,
+            config={},
+        )
+
+        backend = TimeoutCaptureSandbox(rt)
+        middleware = FilesystemMiddleware(backend=backend, max_execute_timeout=300)
+
+        execute_tool = next(tool for tool in middleware.tools if tool.name == "execute")
+        execute_tool.invoke({"command": "echo hello", "timeout": 300, "runtime": rt})
+
+        assert captured_timeout["value"] == 300
+
+    def test_execute_tool_none_timeout_skips_max_check(self):
+        """Middleware should not reject None timeout against max_execute_timeout."""
+        captured_timeout = {}
+
+        class TimeoutCaptureSandbox(SandboxBackendProtocol, StateBackend):
+            def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+                captured_timeout["value"] = timeout
+                return ExecuteResponse(output="ok", exit_code=0, truncated=False)
+
+            @property
+            def id(self):
+                return "timeout-capture-sandbox"
+
+        state = FilesystemState(messages=[], files={})
+        rt = ToolRuntime(
+            state=state,
+            context=None,
+            tool_call_id="test_none_timeout",
+            store=InMemoryStore(),
+            stream_writer=lambda _: None,
+            config={},
+        )
+
+        backend = TimeoutCaptureSandbox(rt)
+        middleware = FilesystemMiddleware(backend=backend, max_execute_timeout=10)
+
+        execute_tool = next(tool for tool in middleware.tools if tool.name == "execute")
+        execute_tool.invoke({"command": "echo hello", "runtime": rt})
+
+        # None should be forwarded without max_execute_timeout rejection
+        assert captured_timeout["value"] is None
+
+    def test_max_execute_timeout_init_validation(self):
+        """FilesystemMiddleware should reject non-positive max_execute_timeout at init."""
+        with pytest.raises(ValueError, match="max_execute_timeout must be positive"):
+            FilesystemMiddleware(max_execute_timeout=0)
+
+        with pytest.raises(ValueError, match="max_execute_timeout must be positive"):
+            FilesystemMiddleware(max_execute_timeout=-1)

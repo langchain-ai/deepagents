@@ -1,7 +1,7 @@
 # Label PRs based on their titles.
 #
-# Uses conventional commit types from PR titles to apply labels.
-# Note: Scope-based labeling (e.g., integration labels) is handled by pr_labeler_file.yml
+# Uses conventional commit types AND scopes from PR titles to apply labels.
+# File-based labeling is handled separately by pr_labeler_file.yml
 
 name: "PR Title Labeler"
 
@@ -42,3 +42,40 @@ jobs:
               "breaking": "breaking"
             }
           ignored_types: '[]'
+
+      - name: Label PR based on scope
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const title = context.payload.pull_request.title;
+            const match = title.match(/^\w+\(([^)]+)\)/);
+            if (!match) return;
+
+            const scopes = match[1].split(",").map(s => s.trim());
+
+            const scopeToLabel = {
+              "deepagents": "deepagents",
+              "sdk": "deepagents",
+              "deepagents-cli": "cli",
+              "cli": "cli",
+              "harbor": "harbor",
+              "acp": "acp",
+            };
+
+            const labels = [...new Set(
+              scopes.map(s => scopeToLabel[s]).filter(Boolean)
+            )];
+
+            if (labels.length === 0) return;
+
+            const current = context.payload.pull_request.labels.map(l => l.name);
+            const toAdd = labels.filter(l => !current.includes(l));
+
+            if (toAdd.length > 0) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.pull_request.number,
+                labels: toAdd,
+              });
+            }

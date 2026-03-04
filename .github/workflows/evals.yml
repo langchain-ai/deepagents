@@ -79,12 +79,12 @@ jobs:
 #          - "ollama:nemotron-3-nano:30b"
 #          - "ollama:cogito-2.1:671b"
 #          - "ollama:devstral-2:123b"
-          - "ollama:ministral-3:14b"
+#          - "ollama:ministral-3:14b"
           - "ollama:qwen3-next:80b"
-          - "ollama:qwen3-coder"
-          - "ollama:qwen3.5"
-          - "ollama:deepseek-v3.2"
-          - "ollama:deepseek-v3.1"
+          - "ollama:qwen3-coder:480b-cloud"
+          - "ollama:qwen3.5:397b-cloud"
+          - "ollama:deepseek-v3.2:cloud"
+
     defaults:
       run:
         working-directory: libs/deepagents

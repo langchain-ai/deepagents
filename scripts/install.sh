@@ -5,7 +5,7 @@
 #   curl -LsSf https://raw.githubusercontent.com/langchain-ai/deepagents/main/scripts/install.sh | bash
 #
 # Environment variables:
-#   DEEPAGENTS_EXTRAS  — optional pip extras in bracket format, e.g. "[anthropic]"
+#   DEEPAGENTS_EXTRAS  — comma-separated pip extras, e.g. "anthropic" or "anthropic,groq"
 #                        (see pyproject.toml for available extras)
 #   DEEPAGENTS_PYTHON  — Python version to use (default: 3.13)
 #   UV_BIN             — path to uv binary (auto-detected if unset)
@@ -14,10 +14,16 @@ set -euo pipefail
 EXTRAS="${DEEPAGENTS_EXTRAS:-}"
 PYTHON_VERSION="${DEEPAGENTS_PYTHON:-3.13}"
 
-# Validate extras format if provided (must be bracket-enclosed, e.g. [anthropic])
-if [[ -n "$EXTRAS" && ! "$EXTRAS" =~ ^\[[-a-zA-Z0-9,]+\]$ ]]; then
-  echo "Error: DEEPAGENTS_EXTRAS must be in pip extras format, e.g. '[anthropic]'" >&2
-  exit 1
+# Validate and normalize extras: accept bare CSV, wrap in brackets for pip
+if [[ -n "$EXTRAS" ]]; then
+  # Strip brackets if the user passed them anyway
+  EXTRAS="${EXTRAS#[}"
+  EXTRAS="${EXTRAS%]}"
+  if [[ ! "$EXTRAS" =~ ^[-a-zA-Z0-9,]+$ ]]; then
+    echo "Error: DEEPAGENTS_EXTRAS must be comma-separated extra names, e.g. 'anthropic,groq'" >&2
+    exit 1
+  fi
+  EXTRAS="[${EXTRAS}]"
 fi
 
 install_uv() {

@@ -80,8 +80,11 @@ def _route_for_path(
         prefix_no_slash = route_prefix.rstrip("/")
         if path == prefix_no_slash:
             return backend, "/", route_prefix
-        if path.startswith(route_prefix):
-            suffix = path[len(route_prefix) :]
+
+        # Ensure route_prefix ends with / for startswith check to enforce boundary
+        normalized_prefix = route_prefix if route_prefix.endswith("/") else f"{route_prefix}/"
+        if path.startswith(normalized_prefix):
+            suffix = path[len(normalized_prefix) :]
             backend_path = f"/{suffix}" if suffix else "/"
             return backend, backend_path, route_prefix
     return default, path, None

@@ -1249,3 +1249,60 @@ def test_route_for_path_edge_cases() -> None:
         "/memories2/file.txt",
         None,
     )
+
+
+def test_route_for_path_no_trailing_slash_boundary() -> None:
+    """Route without trailing slash must not match at non-boundary positions.
+
+    Regression test for https://github.com/langchain-ai/deepagents/issues/1654.
+    """
+    rt = make_runtime("t_route_boundary")
+    default = StateBackend(rt)
+    store = StoreBackend(rt)
+
+    sorted_routes = [("/abcd", store)]
+
+    # /abcde/file.txt must NOT match /abcd (different path segment)
+    assert _route_for_path(default=default, sorted_routes=sorted_routes, path="/abcde/file.txt") == (
+        default,
+        "/abcde/file.txt",
+        None,
+    )
+
+    # /abcd/file.txt SHOULD match /abcd and strip correctly
+    assert _route_for_path(default=default, sorted_routes=sorted_routes, path="/abcd/file.txt") == (
+        store,
+        "/file.txt",
+        "/abcd",
+    )
+
+    # Exact match still works
+    assert _route_for_path(default=default, sorted_routes=sorted_routes, path="/abcd") == (
+        store,
+        "/",
+        "/abcd",
+    )
+
+    # Same boundary issue with a more realistic prefix
+    sorted_routes_mem = [("/memories", store)]
+
+    assert _route_for_path(default=default, sorted_routes=sorted_routes_mem, path="/memories-backup/file.txt") == (
+        default,
+        "/memories-backup/file.txt",
+        None,
+    )
+
+    assert _route_for_path(default=default, sorted_routes=sorted_routes_mem, path="/memories/file.txt") == (
+        store,
+        "/file.txt",
+        "/memories",
+    )
+
+    # Trailing-slash route should already work correctly
+    sorted_routes_slash = [("/abcd/", store)]
+
+    assert _route_for_path(default=default, sorted_routes=sorted_routes_slash, path="/abcde/file.txt") == (
+        default,
+        "/abcde/file.txt",
+        None,
+    )

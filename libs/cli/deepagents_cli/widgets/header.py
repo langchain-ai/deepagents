@@ -91,7 +91,7 @@ class DeepAgentsHeader(Horizontal):
         """Update the time display with current localized time."""
         try:
             time_widget = self.query_one("#header-time", Static)
-            current_time = datetime.now().strftime("%H:%M:%S")
+            current_time = datetime.now().astimezone().strftime("%H:%M:%S")
             time_widget.update(current_time)
         except Exception as e:  # noqa: BLE001
             # Silently fail if widget is not available

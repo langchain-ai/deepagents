@@ -2678,7 +2678,9 @@ class DeepAgentsApp(App):
             thread_id: Thread ID to display in the header.
         """
         if not hasattr(self, "_header") or not self._header:
-            logger.debug("Header not available when updating thread ID to %s", thread_id)
+            logger.debug(
+                "Header not available when updating thread ID to %s", thread_id
+            )
             return
         try:
             self._header.update_thread_id(thread_id)

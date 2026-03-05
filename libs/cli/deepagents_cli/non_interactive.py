@@ -24,6 +24,7 @@ import contextlib
 import logging
 import sys
 import threading
+import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
@@ -47,6 +48,7 @@ from deepagents_cli.config import (
 from deepagents_cli.file_ops import FileOpTracker
 from deepagents_cli.model_config import ModelConfigError
 from deepagents_cli.sessions import generate_thread_id, get_checkpointer
+from deepagents_cli.textual_adapter import SessionStats, print_usage_table
 from deepagents_cli.tools import fetch_url, http_request, web_search
 
 if TYPE_CHECKING:
@@ -98,40 +100,48 @@ def _write_newline() -> None:
 
 @dataclass
 class StreamState:
-    """Mutable state accumulated while iterating over the agent stream.
-
-    Attributes:
-        quiet: When `True`, diagnostic formatting that would otherwise go
-            to stdout (e.g. separator newlines before tool notifications)
-            is suppressed so that stdout contains only agent response text.
-        stream: When `True` (default), text chunks are written to stdout
-            as they arrive. When `False`, text is buffered in `full_response`
-            and flushed after the agent finishes.
-        full_response: Accumulated text fragments from the AI message stream.
-        tool_call_buffers: Maps a tool-call index or ID to its name/ID
-            metadata for in-progress tool calls.
-        pending_interrupts: Maps interrupt IDs to their validated HITL
-            requests that are awaiting decisions.
-        hitl_response: Maps interrupt IDs to dicts containing a `'decisions'`
-            key with a list of decision dicts (each having a `'type'` key of
-            `'approve'` or `'reject'`).
-
-            Used to resume the agent after HITL processing.
-        interrupt_occurred: Flag indicating whether any HITL interrupt was
-            received during the current stream pass.
-    """
+    """Mutable state accumulated while iterating over the agent stream."""
 
     quiet: bool = False
+    """When `True`, diagnostic formatting that would otherwise go to stdout
+    (e.g. separator newlines before tool notifications) is suppressed so that
+    stdout contains only agent response text."""
+
     stream: bool = True
+    """When `True` (default), text chunks are written to stdout as they arrive.
+
+    When `False`, text is buffered in `full_response` and flushed after the
+    agent finishes.
+    """
+
     full_response: list[str] = field(default_factory=list)
+    """Accumulated text fragments from the AI message stream."""
+
     tool_call_buffers: dict[int | str, dict[str, str | None]] = field(
         default_factory=dict
     )
+    """Maps a tool-call index or ID to its name/ID metadata for in-progress
+    tool calls."""
+
     pending_interrupts: dict[str, HITLRequest] = field(default_factory=dict)
+    """Maps interrupt IDs to their validated HITL requests that are awaiting
+    decisions."""
+
     hitl_response: dict[str, dict[str, list[dict[str, str]]]] = field(
         default_factory=dict
     )
+    """Maps interrupt IDs to dicts containing a `'decisions'` key with a list of
+    decision dicts (each having a `'type'` key of `'approve'` or `'reject'`).
+
+    Used to resume the agent after HITL processing.
+    """
+
     interrupt_occurred: bool = False
+    """Flag indicating whether any HITL interrupt was received during the
+    current stream pass."""
+
+    stats: SessionStats = field(default_factory=SessionStats)
+    """Accumulated model usage stats for this stream."""
 
 
 @dataclass
@@ -229,6 +239,18 @@ def _process_ai_message(
         state: Stream state for accumulating response text and tool-call buffers.
         console: Rich console for formatted output.
     """
+    # Extract token usage for stats accumulation
+    usage = getattr(message_obj, "usage_metadata", None)
+    if usage:
+        input_toks = usage.get("input_tokens", 0)
+        output_toks = usage.get("output_tokens", 0)
+        total_toks = usage.get("total_tokens", 0)
+        active_model = settings.model_name or ""
+        if input_toks or output_toks:
+            state.stats.record_request(active_model, input_toks, output_toks)
+        elif total_toks:
+            state.stats.record_request(active_model, total_toks, 0)
+
     if not hasattr(message_obj, "content_blocks"):
         logger.debug("AIMessage missing content_blocks attribute, skipping")
         return
@@ -495,6 +517,8 @@ async def _run_agent_loop(
         "messages": [{"role": "user", "content": message}]
     }
 
+    start_time = time.monotonic()
+
     # Initial stream
     await _stream_agent(agent, stream_input, config, state, console, file_op_tracker)
 
@@ -516,6 +540,8 @@ async def _run_agent_loop(
             agent, stream_input, config, state, console, file_op_tracker
         )
 
+    wall_time = time.monotonic() - start_time
+
     if state.full_response:
         if not state.stream:
             _write_text("".join(state.full_response))
@@ -535,6 +561,7 @@ async def _run_agent_loop(
             )
             console.print(link_text)
         console.print("[green]✓ Task completed[/green]")
+        print_usage_table(state.stats, wall_time, console)
 
 
 def _build_non_interactive_header(

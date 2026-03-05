@@ -1103,7 +1103,7 @@ class ChatInput(Vertical):
         self, event: ChatTextArea.HistoryPrevious
     ) -> None:
         """Handle history previous request."""
-        entry = self._history.get_previous(event.current_text)
+        entry = self._history.get_previous(event.current_text, query=event.current_text)
         if entry is not None and self._text_area:
             mode, display_text = self._history_entry_mode_and_text(entry)
             self.mode = mode
@@ -1444,6 +1444,22 @@ class ChatInput(Vertical):
         """
         if self._text_area:
             self._text_area.set_app_focus(has_focus=active)
+
+    def exit_mode(self) -> bool:
+        """Exit the current input mode (command/bash) back to normal.
+
+        Returns:
+            True if mode was non-normal and has been reset.
+        """
+        if self.mode == "normal":
+            return False
+        self.mode = "normal"
+        if self._completion_manager:
+            self._completion_manager.reset()
+        self.clear_completion_suggestions()
+        if self._text_area:
+            self._text_area.clear()
+        return True
 
     def dismiss_completion(self) -> bool:
         """Dismiss completion: clear view and reset controller state.

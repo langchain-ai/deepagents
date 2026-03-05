@@ -40,14 +40,10 @@ def test_tool_error_recovery_read_file_then_ls(model: BaseChatModel) -> None:
         initial_files={
             "/docs/readme.md": "hello\n",
             "/docs/release_notes.md": """Version: 1.2.3
-
-Important: The MAGIC_TOKEN is SAPPHIRE-13.
+alpha beta SAPPHIRE-13 delta
 """,
         },
-        query=(
-            "Read /docs/notes_for_release.md and tell me the MAGIC_TOKEN value. "
-            "If the file path is wrong, do not guess the filename: list /docs to find the correct file."
-        ),
+        query="First, try reading /docs/notes_for_release.md and tell me the third word on the second line.",
         expect=(
             TrajectoryExpectations(num_agent_steps=4, num_tool_call_requests=3)
             .require_tool_call(step=1, name="read_file", args_contains={"file_path": "/docs/notes_for_release.md"})
@@ -163,7 +159,7 @@ def test_ls_directory_contains_file_yes_no(model: BaseChatModel) -> None:
             "/foo/b.md": "b",
             "/foo/c.md": "c",
         },
-        query="Is there a file named c.md in /foo? Answer with [YES] or [NO] only.",
+        query="Is there a file named c.md in /foo? Answer with `[YES]` or `[NO]` only.",
         # 1st step: request a tool call to list /foo.
         # 2nd step: answer YES/NO.
         # 1 tool call request: ls.
@@ -184,7 +180,7 @@ def test_ls_directory_missing_file_yes_no(model: BaseChatModel) -> None:
             "/foo/a.md": "a",
             "/foo/b.md": "b",
         },
-        query="Is there a file named c.md in /foo? Answer with [YES] or [NO] only.",
+        query="Is there a file named c.md in /foo? Answer with `[YES]` or `[NO]` only.",
         # 1st step: request a tool call to list /foo.
         # 2nd step: answer YES/NO.
         # 1 tool call request: ls.
@@ -255,7 +251,7 @@ def test_read_files_in_parallel(model: BaseChatModel) -> None:
             "/a.md": "same",
             "/b.md": "same",
         },
-        query="Read /a.md and /b.md in parallel and tell me if they are identical. Answer with [YES] or [NO] only.",
+        query="Read /a.md and /b.md in parallel and tell me if they are identical. Answer with `[YES]` or `[NO]` only.",
         # 1st step: request 2 read_file tool calls in parallel.
         # 2nd step: answer YES/NO.
         # 2 tool call requests: read_file /a.md and read_file /b.md.

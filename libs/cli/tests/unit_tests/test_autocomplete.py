@@ -237,6 +237,14 @@ class TestSlashCommandController:
         suggestions = mock_view.render_completion_suggestions.call_args[0][0]
         assert len(suggestions) == min(len(SLASH_COMMANDS), MAX_SUGGESTIONS)
 
+    def test_hidden_keyword_match_continue(self, controller, mock_view):
+        """Typing 'continue' surfaces /threads via hidden keyword."""
+        controller.on_text_changed("/continue", 9)
+
+        mock_view.render_completion_suggestions.assert_called()
+        suggestions = mock_view.render_completion_suggestions.call_args[0][0]
+        assert any("/threads" in s[0] for s in suggestions)
+
     def test_substring_description_match_exit(self, controller, mock_view):
         """Typing 'exit' surfaces /quit via substring match on 'Exit app'."""
         controller.on_text_changed("/exit", 5)
@@ -320,15 +328,33 @@ class TestScoreCommand:
         score = self.score("hlep", "/help", "Show help")
         assert 0 < score < 100  # fuzzy tier, not substring/prefix
 
+    def test_hidden_keyword_prefix_match(self):
+        assert (
+            self.score("cont", "/threads", "Browse threads", "continue history") == 120
+        )
+
+    def test_hidden_keyword_substring_match(self):
+        assert (
+            self.score("hist", "/threads", "Browse threads", "continue history") == 120
+        )
+
+    def test_hidden_keyword_ignored_when_empty(self):
+        assert self.score("cont", "/threads", "Browse threads", "") == 0
+
+    def test_hidden_keyword_requires_min_length(self):
+        """Single-char queries do not match hidden keywords."""
+        assert self.score("c", "/threads", "Browse threads", "continue") == 0
+
     def test_tiers_ordering(self):
-        """Prefix > substring-name > substring-desc > fuzzy."""
+        """Prefix > substring-name > keyword > substring-desc > fuzzy."""
         prefix = self.score("hel", "/help", "Show help")
         substr_name = self.score("omp", "/compact", "Summarize conversation")
+        keyword = self.score("cont", "/threads", "Browse threads", "continue")
         desc_boundary = self.score("exit", "/quit", "Exit app")
         compact_desc = "Summarize conversation to reduce context usage"
         desc_mid = self.score("ex", "/compact", compact_desc)
         fuzzy = self.score("hlep", "/help", "Show help")
-        assert prefix > substr_name > desc_boundary > desc_mid > fuzzy > 0
+        assert prefix > substr_name > keyword > desc_boundary > desc_mid > fuzzy > 0
 
 
 class TestFuzzyFileControllerCanHandle:

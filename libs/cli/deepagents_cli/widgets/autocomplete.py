@@ -94,22 +94,26 @@ class CompletionController(Protocol):
 # Slash Command Completion
 # ============================================================================
 
-SLASH_COMMANDS: list[tuple[str, str]] = [
-    ("/help", "Show help"),
-    ("/changelog", "Open changelog in browser"),
-    ("/clear", "Clear chat and start new thread"),
-    ("/compact", "Summarize conversation to reduce context usage"),
-    ("/docs", "Open documentation in browser"),
-    ("/feedback", "Submit a bug report or feature request"),
-    ("/model", "Switch model, show selector, or set default (--default)"),
-    ("/remember", "Update memory and skills from conversation"),
-    ("/quit", "Exit app"),
-    ("/tokens", "Token usage"),
-    ("/threads", "Browse and resume previous threads"),
-    ("/trace", "Open current thread in LangSmith"),
-    ("/version", "Show version"),
+SLASH_COMMANDS: list[tuple[str, str, str]] = [
+    ("/help", "Show help", ""),
+    ("/changelog", "Open changelog in browser", ""),
+    ("/clear", "Clear chat and start new thread", "reset"),
+    ("/compact", "Summarize conversation to reduce context usage", ""),
+    ("/docs", "Open documentation in browser", ""),
+    ("/feedback", "Submit a bug report or feature request", ""),
+    ("/model", "Switch model, show selector, or set default (--default)", ""),
+    ("/remember", "Update memory and skills from conversation", ""),
+    ("/quit", "Exit app", "close leave"),
+    ("/tokens", "Token usage", "cost"),
+    ("/threads", "Browse and resume previous threads", "continue history"),
+    ("/trace", "Open current thread in LangSmith", ""),
+    ("/version", "Show version", ""),
 ]
-"""Built-in slash commands with descriptions."""
+"""Built-in slash commands: (name, description, hidden_keywords).
+
+Hidden keywords are space-separated terms that participate in fuzzy matching
+but are never displayed to the user.
+"""
 
 MAX_SUGGESTIONS = 10
 """UI cap so the completion popup doesn't get unwieldy."""
@@ -126,14 +130,14 @@ class SlashCommandController:
 
     def __init__(
         self,
-        commands: list[tuple[str, str]],
+        commands: list[tuple[str, str, str]],
         view: CompletionView,
     ) -> None:
         """Initialize the slash command controller.
 
         Args:
-            commands: List of (command, description) tuples
-            view: View to render suggestions to
+            commands: List of `(command, description, hidden_keywords)` tuples.
+            view: View to render suggestions to.
         """
         self._commands = commands
         self._view = view
@@ -157,13 +161,14 @@ class SlashCommandController:
             self._view.clear_completion_suggestions()
 
     @staticmethod
-    def _score_command(search: str, cmd: str, desc: str) -> float:
+    def _score_command(search: str, cmd: str, desc: str, keywords: str = "") -> float:
         """Score a command against a search string. Higher = better match.
 
         Args:
             search: Lowercase search string (without leading `/`).
             cmd: Command name (e.g. `'/help'`).
             desc: Command description text.
+            keywords: Space-separated hidden keywords for matching.
 
         Returns:
             Score value where higher indicates better match quality.
@@ -178,6 +183,11 @@ class SlashCommandController:
         # Substring match on command name
         if search in name:
             return 150.0
+        # Hidden keyword match — treated like a word-boundary description match
+        if keywords and len(search) >= _MIN_DESC_SEARCH_LEN:
+            for kw in keywords.lower().split():
+                if kw.startswith(search) or search in kw:
+                    return 120.0
         # Substring match on description (require ≥2 chars to avoid single-letter noise)
         if len(search) >= _MIN_DESC_SEARCH_LEN and search in lower_desc:
             idx = lower_desc.find(search)
@@ -205,14 +215,16 @@ class SlashCommandController:
         search = text[1:cursor_index].lower()
 
         if not search:
-            # No search text — show all commands
-            suggestions = list(self._commands)[:MAX_SUGGESTIONS]
+            # No search text — show all commands (display only cmd + desc)
+            suggestions = [(cmd, desc) for cmd, desc, _ in self._commands][
+                :MAX_SUGGESTIONS
+            ]
         else:
             # Score and filter commands using fuzzy matching
             scored = [
                 (score, cmd, desc)
-                for cmd, desc in self._commands
-                if (score := self._score_command(search, cmd, desc)) > 0
+                for cmd, desc, kw in self._commands
+                if (score := self._score_command(search, cmd, desc, kw)) > 0
             ]
             scored.sort(key=lambda x: -x[0])
             suggestions = [(cmd, desc) for _, cmd, desc in scored[:MAX_SUGGESTIONS]]

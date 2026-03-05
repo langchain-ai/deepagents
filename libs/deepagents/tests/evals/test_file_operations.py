@@ -40,11 +40,10 @@ def test_tool_error_recovery_read_file_then_ls(model: BaseChatModel) -> None:
         initial_files={
             "/docs/readme.md": "hello\n",
             "/docs/release_notes.md": """Version: 1.2.3
-
-Important: The MAGIC_TOKEN is SAPPHIRE-13.
+alpha beta SAPPHIRE-13 delta
 """,
         },
-        query=("First, try reading /docs/notes_for_release.md and tell me the MAGIC_TOKEN value."),
+        query="First, try reading /docs/notes_for_release.md and tell me the third word on the second line.",
         expect=(
             TrajectoryExpectations(num_agent_steps=4, num_tool_call_requests=3)
             .require_tool_call(step=1, name="read_file", args_contains={"file_path": "/docs/notes_for_release.md"})

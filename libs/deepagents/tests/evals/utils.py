@@ -799,13 +799,19 @@ def _trajectory_from_result(result: Mapping[str, object]) -> AgentTrajectory:
     )
 
 
-efficiency_results: list[bool] = []
-"""Per-test efficiency results collected during the session.
+@dataclass
+class EfficiencyResult:
+    """Per-test efficiency data collected during the session."""
 
-Each entry is ``True`` when all ``.expect()`` assertions passed for that test,
-``False`` when at least one did not. Tests without ``.expect()`` assertions are
-not recorded. The reporter reads this to compute ``efficiency_accuracy``.
-"""
+    expected_steps: int | None
+    actual_steps: int
+    expected_tool_calls: int | None
+    actual_tool_calls: int
+    all_expectations_passed: bool
+
+
+efficiency_results: list[EfficiencyResult] = []
+"""Collected by the assertion runner, read by the reporter."""
 
 
 def _assert_expectations(
@@ -826,10 +832,15 @@ def _assert_expectations(
     t.log_feedback(key="agent_steps", value=actual_steps)
     t.log_feedback(key="tool_call_requests", value=actual_tool_calls)
 
+    expected_steps: int | None = None
+    expected_tool_calls: int | None = None
     for assertion in scorer._expectations:
         if isinstance(assertion, AgentSteps):
+            expected_steps = assertion.n
             t.log_feedback(key="expected_agent_steps", value=assertion.n)
-            break
+        elif isinstance(assertion, ToolCallRequests):
+            expected_tool_calls = assertion.n
+            t.log_feedback(key="expected_tool_call_requests", value=assertion.n)
 
     # Hard correctness checks
     success = True
@@ -847,7 +858,15 @@ def _assert_expectations(
     # Soft efficiency checks
     if scorer._expectations:
         all_passed = all(a.check(trajectory) for a in scorer._expectations)
-        efficiency_results.append(all_passed)
+        efficiency_results.append(
+            EfficiencyResult(
+                expected_steps=expected_steps,
+                actual_steps=actual_steps,
+                expected_tool_calls=expected_tool_calls,
+                actual_tool_calls=actual_tool_calls,
+                all_expectations_passed=all_passed,
+            )
+        )
 
 
 # ---------------------------------------------------------------------------

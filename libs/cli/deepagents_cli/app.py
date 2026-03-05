@@ -2484,6 +2484,10 @@ class DeepAgentsApp(App):
         web search, URL fetch) run without prompting. Updates the status
         bar indicator and session state.
         """
+        # shift+tab is reused for navigation inside modal screens (e.g.
+        # ModelSelectorScreen); skip the toggle so it doesn't fire through.
+        if isinstance(self.screen, ModalScreen):
+            return
         self._auto_approve = not self._auto_approve
         if self._status_bar:
             self._status_bar.set_auto_approve(enabled=self._auto_approve)

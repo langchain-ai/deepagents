@@ -114,8 +114,8 @@ SLASH_COMMANDS: list[tuple[str, str]] = [
 MAX_SUGGESTIONS = 10
 """UI cap so the completion popup doesn't get unwieldy."""
 
-_MIN_FUZZY_SCORE = 25
-"""Minimum score to include in results (shared by slash + file completion)."""
+_MIN_SLASH_FUZZY_SCORE = 25
+"""Minimum score for slash-command fuzzy matches."""
 
 _MIN_DESC_SEARCH_LEN = 2
 """Minimum query length to search command descriptions (avoids single-char noise)."""
@@ -168,6 +168,8 @@ class SlashCommandController:
         Returns:
             Score value where higher indicates better match quality.
         """
+        if not search:
+            return 0.0
         name = cmd.lstrip("/").lower()
         lower_desc = desc.lower()
         # Prefix match on command name — highest priority
@@ -187,7 +189,7 @@ class SlashCommandController:
         name_ratio = SequenceMatcher(None, search, name).ratio()
         desc_ratio = SequenceMatcher(None, search, lower_desc).ratio()
         best = max(name_ratio * 60, desc_ratio * 30)
-        return best if best >= _MIN_FUZZY_SCORE else 0.0
+        return best if best >= _MIN_SLASH_FUZZY_SCORE else 0.0
 
     def on_text_changed(self, text: str, cursor_index: int) -> None:
         """Update suggestions when text changes."""
@@ -204,7 +206,7 @@ class SlashCommandController:
 
         if not search:
             # No search text — show all commands
-            suggestions = list(self._commands)
+            suggestions = list(self._commands)[:MAX_SUGGESTIONS]
         else:
             # Score and filter commands using fuzzy matching
             scored = [
@@ -289,6 +291,9 @@ class SlashCommandController:
 # Constants for fuzzy file completion
 _MAX_FALLBACK_FILES = 1000
 """Hard cap on files returned by the non-git glob fallback."""
+
+_MIN_FUZZY_SCORE = 15
+"""Minimum score to include in file-completion results."""
 
 _MIN_FUZZY_RATIO = 0.4
 """SequenceMatcher threshold for filename-only fuzzy matches."""

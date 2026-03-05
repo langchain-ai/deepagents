@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from deepagents_cli.widgets.autocomplete import (
+    MAX_SUGGESTIONS,
     SLASH_COMMANDS,
     CompletionController,
     FuzzyFileController,
@@ -46,7 +47,7 @@ class TestFuzzyScore:
     def test_no_match_returns_low_score(self):
         """Completely unrelated strings get very low scores."""
         score = _fuzzy_score("xyz", "abc.py")
-        assert score < 25  # Below MIN_FUZZY_SCORE threshold
+        assert score < 15  # Below MIN_FUZZY_SCORE threshold
 
     def test_case_insensitive(self):
         """Matching is case insensitive."""
@@ -203,7 +204,7 @@ class TestSlashCommandController:
 
         mock_view.render_completion_suggestions.assert_called()
         suggestions = mock_view.render_completion_suggestions.call_args[0][0]
-        assert len(suggestions) == len(SLASH_COMMANDS)
+        assert len(suggestions) == min(len(SLASH_COMMANDS), MAX_SUGGESTIONS)
 
     def test_clears_on_no_match(self, controller, mock_view):
         """Clears suggestions when no commands match after having suggestions."""
@@ -234,7 +235,7 @@ class TestSlashCommandController:
         controller.on_text_changed("/", 1)
         mock_view.render_completion_suggestions.assert_called()
         suggestions = mock_view.render_completion_suggestions.call_args[0][0]
-        assert len(suggestions) == len(SLASH_COMMANDS)
+        assert len(suggestions) == min(len(SLASH_COMMANDS), MAX_SUGGESTIONS)
 
     def test_substring_description_match_exit(self, controller, mock_view):
         """Typing 'exit' surfaces /quit via substring match on 'Exit app'."""

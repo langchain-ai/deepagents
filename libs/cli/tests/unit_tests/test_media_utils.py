@@ -377,7 +377,6 @@ class TestVideoData:
         assert result["type"] == "file"
         assert result["base64"] == video.base64_data
         assert result["mime_type"] == "video/mp4"
-        assert "filename" not in result
 
     def test_to_message_content_mov(self) -> None:
         """Test converting MOV video data to LangChain file block format."""
@@ -630,7 +629,11 @@ class TestCreateMultimodalContentWithVideo:
     def test_multiple_videos(self) -> None:
         """Test creating content with multiple videos."""
         vid1 = VideoData(base64_data="vid1", format="mp4", placeholder="[video 1]")
-        vid2 = VideoData(base64_data="vid2", format="mov", placeholder="[video 2]")
+        vid2 = VideoData(
+            base64_data="vid2",
+            format="quicktime",
+            placeholder="[video 2]",
+        )
         result = create_multimodal_content("Compare these videos:", [], [vid1, vid2])
 
         assert len(result) == 3

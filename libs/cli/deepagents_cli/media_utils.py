@@ -31,16 +31,6 @@ VIDEO_EXTENSIONS: frozenset[str] = frozenset(
 )
 """Video file extensions with validated magic-byte support."""
 
-_VIDEO_FORMAT_MAP: dict[str, str] = {
-    ".mp4": "mp4",
-    ".m4v": "mp4",
-    ".mov": "quicktime",
-    ".avi": "avi",
-    ".webm": "webm",
-    ".wmv": "x-ms-wmv",
-}
-"""Mapping from video file extension to MIME subtype."""
-
 
 def _get_executable(name: str) -> str | None:
     """Get full path to an executable using shutil.which().
@@ -79,7 +69,7 @@ class VideoData:
     """Represents a pasted video with its base64 encoding."""
 
     base64_data: str
-    format: str  # "mp4", "mov", etc.
+    format: str  # "mp4", "quicktime", etc.
     placeholder: str  # Display text like "[video 1]"
 
     def to_message_content(self) -> "FileContentBlock":
@@ -157,6 +147,31 @@ def get_image_from_path(path: pathlib.Path) -> ImageData | None:
         return None
 
 
+def _detect_video_format(data: bytes) -> str | None:
+    """Detect video MIME subtype from magic bytes.
+
+    Args:
+        data: Raw file bytes (at least 12 bytes for reliable detection).
+
+    Returns:
+        MIME subtype (e.g. "mp4", "webm") or `None` if unrecognized.
+    """
+    min_avi_len = 12
+    if data[4:8] == b"ftyp":
+        # ftyp box: major brand at bytes 8-12 distinguishes MOV vs MP4
+        brand = data[8:12]
+        if brand == b"qt  ":
+            return "quicktime"
+        return "mp4"
+    if data[:4] == b"RIFF" and len(data) >= min_avi_len and data[8:12] == b"AVI ":
+        return "avi"
+    if data[:4] == b"\x30\x26\xb2\x75":  # ASF/WMV
+        return "x-ms-wmv"
+    if data[:4] == b"\x1a\x45\xdf\xa3":  # WebM/Matroska (EBML header)
+        return "webm"
+    return None
+
+
 def get_video_from_path(path: pathlib.Path) -> VideoData | None:
     """Read and encode a video file from disk.
 
@@ -196,24 +211,10 @@ def get_video_from_path(path: pathlib.Path) -> VideoData | None:
             logger.debug("Video file too small (%d bytes): %s", len(video_bytes), path)
             return None
 
-        # Basic validation - check for common video file signatures
-        is_valid = False
-        min_avi_len = 8
-        if video_bytes[4:8] == b"ftyp":  # MP4/MOV
-            is_valid = True
-        elif (
-            video_bytes[:4] == b"RIFF"
-            and len(video_bytes) > min_avi_len
-            and video_bytes[8:12] == b"AVI "
-        ):  # AVI
-            is_valid = True
-        elif video_bytes[:4] in {
-            b"\x30\x26\xb2\x75",  # ASF/WMV
-            b"\x1a\x45\xdf\xa3",  # WebM/Matroska (EBML header)
-        }:
-            is_valid = True
-
-        if not is_valid:
+        # Detect format from magic bytes (not extension) so renamed files
+        # get the correct MIME type.
+        detected_format = _detect_video_format(video_bytes)
+        if detected_format is None:
             logger.warning(
                 "Video file %s has unrecognized signature for extension '%s'; "
                 "skipping. If this is a valid video, the format may not be "
@@ -223,12 +224,9 @@ def get_video_from_path(path: pathlib.Path) -> VideoData | None:
             )
             return None
 
-        # Determine mime type from extension
-        video_format = _VIDEO_FORMAT_MAP.get(suffix, "mp4")
-
         return VideoData(
             base64_data=encode_to_base64(video_bytes),
-            format=video_format,
+            format=detected_format,
             placeholder="[video]",
         )
     except OSError as e:

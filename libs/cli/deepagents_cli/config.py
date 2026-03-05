@@ -1093,8 +1093,9 @@ def detect_provider(model_name: str) -> str | None:
         model_name: Model name to detect provider from.
 
     Returns:
-        Provider name (openai, anthropic, google_genai, google_vertexai) or
-            `None` if the provider cannot be determined from the name alone.
+        Provider name (openai, anthropic, google_genai, google_vertexai,
+            nvidia) or `None` if the provider cannot be determined from the
+            name alone.
     """
     model_lower = model_name.lower()
 
@@ -1110,6 +1111,9 @@ def detect_provider(model_name: str) -> str | None:
         if settings.has_vertex_ai and not settings.has_google:
             return "google_vertexai"
         return "google_genai"
+
+    if model_lower.startswith(("nemotron", "nvidia/")):
+        return "nvidia"
 
     return None
 

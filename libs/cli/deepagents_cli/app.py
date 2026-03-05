@@ -2892,7 +2892,10 @@ class DeepAgentsApp(App):
         # Post-swap: update UI and save config
         display = f"{settings.model_provider}:{settings.model_name}"
         if self._status_bar:
-            self._status_bar.set_model(display)
+            self._status_bar.set_model(
+                provider=settings.model_provider or "",
+                model=settings.model_name or "",
+            )
 
         config_saved = save_recent_model(display)
         if config_saved:

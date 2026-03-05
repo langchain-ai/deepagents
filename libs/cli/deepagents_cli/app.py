@@ -2484,6 +2484,8 @@ class DeepAgentsApp(App):
         web search, URL fetch) run without prompting. Updates the status
         bar indicator and session state.
         """
+        if isinstance(self.screen, ModalScreen):
+            return
         self._auto_approve = not self._auto_approve
         if self._status_bar:
             self._status_bar.set_auto_approve(enabled=self._auto_approve)

@@ -529,6 +529,94 @@ class TestModelSelectorFuzzyMatching:
                 f"'claude sonnet' should match claude-sonnet models. Got: {specs}"
             )
 
+    async def test_tab_noop_when_no_matches(self) -> None:
+        """Tab should do nothing when filter matches no models."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.show_selector()
+            await pilot.pause()
+
+            screen = app.screen
+            assert isinstance(screen, ModelSelectorScreen)
+
+            # Type gibberish that matches nothing
+            for char in "xyz999qqq":
+                await pilot.press(char)
+            await pilot.pause()
+
+            assert len(screen._filtered_models) == 0
+
+            # Press tab - should not crash or change input
+            await pilot.press("tab")
+            await pilot.pause()
+
+            from textual.widgets import Input
+
+            filter_input = screen.query_one("#model-filter", Input)
+            assert filter_input.value == "xyz999qqq"
+
+    async def test_tab_autocompletes_after_navigation(self) -> None:
+        """Tab should autocomplete the model navigated to, not just index 0."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.show_selector()
+            await pilot.pause()
+
+            screen = app.screen
+            assert isinstance(screen, ModelSelectorScreen)
+
+            # Type a partial filter
+            for char in "claude":
+                await pilot.press(char)
+            await pilot.pause()
+
+            assert len(screen._filtered_models) > 1, (
+                "Need multiple claude matches to test navigation"
+            )
+
+            # Navigate down to select a different model
+            await pilot.press("down")
+            await pilot.pause()
+
+            assert screen._selected_index == 1
+            expected_spec, _ = screen._filtered_models[1]
+
+            # Press tab - should autocomplete the navigated-to model
+            await pilot.press("tab")
+            await pilot.pause()
+
+            from textual.widgets import Input
+
+            filter_input = screen.query_one("#model-filter", Input)
+            assert filter_input.value == expected_spec
+
+    async def test_tab_autocompletes_selected_model(self) -> None:
+        """Tab should replace search text with the selected model spec."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.show_selector()
+            await pilot.pause()
+
+            screen = app.screen
+            assert isinstance(screen, ModelSelectorScreen)
+
+            # Type a partial filter
+            for char in "claude":
+                await pilot.press(char)
+            await pilot.pause()
+
+            assert len(screen._filtered_models) > 0
+            expected_spec, _ = screen._filtered_models[screen._selected_index]
+
+            # Press tab - should replace filter text with selected model spec
+            await pilot.press("tab")
+            await pilot.pause()
+
+            from textual.widgets import Input
+
+            filter_input = screen.query_one("#model-filter", Input)
+            assert filter_input.value == expected_spec
+
     async def test_navigation_after_fuzzy_filter(self) -> None:
         """Arrow keys should work correctly on fuzzy-filtered results."""
         app = ModelSelectorTestApp()

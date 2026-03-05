@@ -44,7 +44,6 @@ from deepagents_cli.textual_adapter import (
 )
 from deepagents_cli.widgets.approval import ApprovalMenu
 from deepagents_cli.widgets.chat_input import ChatInput
-from deepagents_cli.widgets.header import DeepAgentsHeader
 from deepagents_cli.widgets.loading import LoadingWidget
 from deepagents_cli.widgets.message_store import (
     MessageData,
@@ -542,12 +541,6 @@ class DeepAgentsApp(App):
             auto_approve=self._auto_approve,
             thread_id=self._lc_thread_id,
         )
-
-        # Create and mount the custom header
-        self._header = DeepAgentsHeader(
-            thread_id=self._session_state.thread_id,
-        )
-        self.mount(self._header)
 
         # Create token tracker that updates status bar
         self._token_tracker = TextualTokenTracker(
@@ -1363,7 +1356,6 @@ class DeepAgentsApp(App):
                 try:
                     banner = self.query_one("#welcome-banner", WelcomeBanner)
                     banner.update_thread_id(new_thread_id)
-                    self._update_header_thread_id(new_thread_id)
                 except NoMatches:
                     pass
                 await self._mount_message(
@@ -2675,27 +2667,6 @@ class DeepAgentsApp(App):
             else:
                 logger.debug(missing_message, thread_id)
 
-    def _update_header_thread_id(self, thread_id: str) -> None:
-        """Update the header thread ID display.
-
-        Args:
-            thread_id: Thread ID to display in the header.
-        """
-        if not hasattr(self, "_header") or not self._header:
-            logger.debug(
-                "Header not available when updating thread ID to %s", thread_id
-            )
-            return
-        try:
-            self._header.update_thread_id(thread_id)
-        except Exception as exc:
-            logger.warning(
-                "Failed to update header thread ID to %s: %s",
-                thread_id,
-                exc,
-                exc_info=True,
-            )
-
     async def _resume_thread(self, thread_id: str) -> None:
         """Resume a previously saved thread.
 
@@ -2756,7 +2727,6 @@ class DeepAgentsApp(App):
                 missing_message="Welcome banner not found during thread switch to %s",
                 warn_if_missing=False,
             )
-            self._update_header_thread_id(thread_id)
 
             # Load thread history
             await self._load_thread_history(
@@ -2785,7 +2755,6 @@ class DeepAgentsApp(App):
                 ),
                 warn_if_missing=True,
             )
-            self._update_header_thread_id(prev_session_thread)
             rollback_restore_failed = False
             # Attempt to restore the previous thread's visible history
             try:

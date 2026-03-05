@@ -497,9 +497,9 @@ class DeepAgentsApp(App):
         self._message_store = MessageStore()
         # Lazily imported here to avoid pulling image dependencies into
         # argument parsing paths.
-        from deepagents_cli.input import ImageTracker
+        from deepagents_cli.input import MediaTracker
 
-        self._image_tracker = ImageTracker()
+        self._image_tracker = MediaTracker()
 
     def compose(self) -> ComposeResult:
         """Compose the application layout.

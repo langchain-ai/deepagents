@@ -52,7 +52,7 @@ if TYPE_CHECKING:
     from textual.events import Click
     from textual.timer import Timer
 
-    from deepagents_cli.input import ImageTracker, ParsedPastedPathPayload
+    from deepagents_cli.input import MediaTracker, ParsedPastedPathPayload
 
 
 class CompletionOption(Static):
@@ -725,7 +725,7 @@ class ChatInput(Vertical):
         self,
         cwd: str | Path | None = None,
         history_file: Path | None = None,
-        image_tracker: ImageTracker | None = None,
+        image_tracker: MediaTracker | None = None,
         **kwargs: Any,
     ) -> None:
         """Initialize the chat input widget.
@@ -1236,22 +1236,17 @@ class ChatInput(Vertical):
             IMAGE_EXTENSIONS,
             MAX_MEDIA_BYTES,
             VIDEO_EXTENSIONS,
-            get_image_from_path,
-            get_video_from_path,
+            ImageData,
+            get_media_from_path,
         )
 
         parts: list[str] = []
         attached = False
         for path in paths:
-            image_data = get_image_from_path(path)
-            if image_data is not None:
-                parts.append(self._image_tracker.add_image(image_data))
-                attached = True
-                continue
-
-            video_data = get_video_from_path(path)
-            if video_data is not None:
-                parts.append(self._image_tracker.add_video(video_data))
+            media = get_media_from_path(path)
+            if media is not None:
+                kind = "image" if isinstance(media, ImageData) else "video"
+                parts.append(self._image_tracker.add_media(media, kind))
                 attached = True
                 continue
 
@@ -1269,7 +1264,8 @@ class ChatInput(Vertical):
                         )
                     else:
                         msg = f"Could not attach {label.lower()}: {path.name}"
-                except OSError:
+                except OSError as exc:
+                    logger.debug("Failed to stat media file %s: %s", path, exc)
                     msg = f"Could not attach {label.lower()}: {path.name}"
                 self.app.notify(msg, severity="warning", timeout=5)
 

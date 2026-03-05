@@ -5,6 +5,7 @@ import re
 import shlex
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 from urllib.parse import unquote, urlparse
 
 from deepagents_cli.config import console
@@ -51,6 +52,9 @@ Note: The `^` anchor matches start of string, not start of line. The consumer
 in `UserMessage.compose()` additionally checks `start == 0` before styling
 slash commands, so a `/` mid-string is not highlighted.
 """
+
+MediaKind = Literal["image", "video"]
+"""Accepted values for the `kind` parameter in `MediaTracker` methods."""
 
 IMAGE_PLACEHOLDER_PATTERN = re.compile(r"\[image (?P<id>\d+)\]")
 """Pattern for image placeholders with a named `id` capture group.
@@ -109,38 +113,65 @@ class MediaTracker:
         """
         self.images: list[ImageData] = []
         self.videos: list[VideoData] = []
-        self.next_image_id = 1
-        self.next_video_id = 1
+        self.next_image_id: int = 1
+        self.next_video_id: int = 1
+
+    def add_media(self, data: ImageData | VideoData, kind: MediaKind) -> str:
+        """Add a media item and return its placeholder text.
+
+        Args:
+            data: The image or video data to track.
+            kind: Media type key.
+
+        Returns:
+            Placeholder string like "[image 1]" or "[video 1]".
+        """
+        if kind == "image":
+            placeholder = f"[image {self.next_image_id}]"
+            data.placeholder = placeholder
+            self.images.append(data)  # type: ignore[arg-type]
+            self.next_image_id += 1
+        else:
+            placeholder = f"[video {self.next_video_id}]"
+            data.placeholder = placeholder
+            self.videos.append(data)  # type: ignore[arg-type]
+            self.next_video_id += 1
+        return placeholder
 
     def add_image(self, image_data: ImageData) -> str:
         """Add an image and return its placeholder text.
 
         Args:
-            image_data: The image data to track
+            image_data: The image data to track.
 
         Returns:
-            Placeholder string like "[image 1]"
+            Placeholder string like "[image 1]".
         """
-        placeholder = f"[image {self.next_image_id}]"
-        image_data.placeholder = placeholder
-        self.images.append(image_data)
-        self.next_image_id += 1
-        return placeholder
+        return self.add_media(image_data, "image")
 
     def add_video(self, video_data: VideoData) -> str:
         """Add a video and return its placeholder text.
 
         Args:
-            video_data: The video data to track
+            video_data: The video data to track.
 
         Returns:
-            Placeholder string like "[video 1]"
+            Placeholder string like "[video 1]".
         """
-        placeholder = f"[video {self.next_video_id}]"
-        video_data.placeholder = placeholder
-        self.videos.append(video_data)
-        self.next_video_id += 1
-        return placeholder
+        return self.add_media(video_data, "video")
+
+    def get_media(self, kind: MediaKind) -> list[ImageData] | list[VideoData]:
+        """Get all tracked media of a given type.
+
+        Args:
+            kind: Media type key.
+
+        Returns:
+            Copy of the list of tracked media items.
+        """
+        if kind == "image":
+            return list(self.images)
+        return list(self.videos)
 
     def get_images(self) -> list[ImageData]:
         """Get all tracked images.
@@ -148,7 +179,7 @@ class MediaTracker:
         Returns:
             Copy of the list of tracked images.
         """
-        return self.images.copy()
+        return list(self.images)
 
     def get_videos(self) -> list[VideoData]:
         """Get all tracked videos.
@@ -156,7 +187,7 @@ class MediaTracker:
         Returns:
             Copy of the list of tracked videos.
         """
-        return self.videos.copy()
+        return list(self.videos)
 
     def clear(self) -> None:
         """Clear all tracked media and reset counters."""
@@ -171,61 +202,71 @@ class MediaTracker:
         Args:
             text: Current input text shown to the user.
         """
-        # Extract all image and video placeholders from text
-        image_placeholders = {
-            match.group(0) for match in IMAGE_PLACEHOLDER_PATTERN.finditer(text)
-        }
-        video_placeholders = {
-            match.group(0) for match in VIDEO_PLACEHOLDER_PATTERN.finditer(text)
-        }
-
-        if not image_placeholders and not video_placeholders:
+        img_found = self._sync_kind_images(text)
+        vid_found = self._sync_kind_videos(text)
+        if not img_found and not vid_found:
             self.clear()
-            return
 
-        # Prune images
-        self.images = [
-            img for img in self.images if img.placeholder in image_placeholders
-        ]
+    def _sync_kind_images(self, text: str) -> bool:
+        """Sync image list to surviving placeholders in text.
 
-        # Prune videos
-        self.videos = [
-            vid for vid in self.videos if vid.placeholder in video_placeholders
-        ]
+        Args:
+            text: Current input text.
 
-        # Reset counters if no media remains
+        Returns:
+            Whether any image placeholders were found.
+        """
+        placeholders = {m.group(0) for m in IMAGE_PLACEHOLDER_PATTERN.finditer(text)}
+        self.images = [img for img in self.images if img.placeholder in placeholders]
         if not self.images:
             self.next_image_id = 1
+        else:
+            self.next_image_id = self._max_placeholder_id(
+                self.images, IMAGE_PLACEHOLDER_PATTERN, len(self.images)
+            )
+        return bool(placeholders)
+
+    def _sync_kind_videos(self, text: str) -> bool:
+        """Sync video list to surviving placeholders in text.
+
+        Args:
+            text: Current input text.
+
+        Returns:
+            Whether any video placeholders were found.
+        """
+        placeholders = {m.group(0) for m in VIDEO_PLACEHOLDER_PATTERN.finditer(text)}
+        self.videos = [vid for vid in self.videos if vid.placeholder in placeholders]
         if not self.videos:
             self.next_video_id = 1
+        else:
+            self.next_video_id = self._max_placeholder_id(
+                self.videos, VIDEO_PLACEHOLDER_PATTERN, len(self.videos)
+            )
+        return bool(placeholders)
 
-        # Update counters based on surviving media
-        max_image_id = 0
-        for image in self.images:
-            match = IMAGE_PLACEHOLDER_PATTERN.fullmatch(image.placeholder)
-            if match is None:
-                continue
-            max_image_id = max(max_image_id, int(match.group("id")))
+    @staticmethod
+    def _max_placeholder_id(
+        items: list[ImageData] | list[VideoData],
+        pattern: re.Pattern[str],
+        fallback_count: int,
+    ) -> int:
+        """Compute next ID from the highest surviving placeholder.
 
-        max_video_id = 0
-        for video in self.videos:
-            match = VIDEO_PLACEHOLDER_PATTERN.fullmatch(video.placeholder)
-            if match is None:
-                continue
-            max_video_id = max(max_video_id, int(match.group("id")))
+        Args:
+            items: Surviving media items.
+            pattern: Placeholder regex with an `id` group.
+            fallback_count: Fallback when no IDs can be parsed.
 
-        if max_image_id:
-            self.next_image_id = max_image_id + 1
-        elif self.images:
-            self.next_image_id = len(self.images) + 1
-        if max_video_id:
-            self.next_video_id = max_video_id + 1
-        elif self.videos:
-            self.next_video_id = len(self.videos) + 1
-
-
-# Keep ImageTracker as an alias for backward compatibility
-ImageTracker = MediaTracker
+        Returns:
+            Next ID value (max_id + 1).
+        """
+        max_id = 0
+        for item in items:
+            match = pattern.fullmatch(item.placeholder)
+            if match is not None:
+                max_id = max(max_id, int(match.group("id")))
+        return max_id + 1 if max_id else fallback_count + 1
 
 
 def parse_file_mentions(text: str) -> tuple[str, list[Path]]:

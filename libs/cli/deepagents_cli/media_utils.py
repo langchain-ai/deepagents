@@ -257,6 +257,21 @@ def get_video_from_path(path: pathlib.Path) -> VideoData | None:
         return None
 
 
+def get_media_from_path(path: pathlib.Path) -> ImageData | VideoData | None:
+    """Try to load a file as an image first, then as a video.
+
+    Args:
+        path: Path to the media file.
+
+    Returns:
+        `ImageData` or `VideoData` if the file is valid media, otherwise `None`.
+    """
+    result: ImageData | VideoData | None = get_image_from_path(path)
+    if result is not None:
+        return result
+    return get_video_from_path(path)
+
+
 def _get_macos_clipboard_image() -> ImageData | None:
     """Get clipboard image on macOS using pngpaste or osascript.
 

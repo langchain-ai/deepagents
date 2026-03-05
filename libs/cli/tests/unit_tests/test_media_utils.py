@@ -10,10 +10,11 @@ from unittest.mock import MagicMock, patch
 
 from PIL import Image
 
-from deepagents_cli.input import ImageTracker, MediaTracker
+from deepagents_cli.input import MediaTracker
 from deepagents_cli.media_utils import (
     ImageData,
     VideoData,
+    _detect_video_format,
     create_multimodal_content,
     encode_to_base64,
     get_clipboard_image,
@@ -51,12 +52,12 @@ class TestImageData:
         assert result["image_url"]["url"].startswith("data:image/jpeg;base64,")
 
 
-class TestImageTracker:
-    """Tests for ImageTracker class."""
+class TestMediaTracker:
+    """Tests for MediaTracker class."""
 
     def test_add_image_increments_counter(self) -> None:
         """Test that adding images increments the counter correctly."""
-        tracker = ImageTracker()
+        tracker = MediaTracker()
 
         img1 = ImageData(base64_data="abc", format="png", placeholder="")
         img2 = ImageData(base64_data="def", format="png", placeholder="")
@@ -71,7 +72,7 @@ class TestImageTracker:
 
     def test_get_images_returns_copy(self) -> None:
         """Test that get_images returns a copy, not the original list."""
-        tracker = ImageTracker()
+        tracker = MediaTracker()
         img = ImageData(base64_data="abc", format="png", placeholder="")
         tracker.add_image(img)
 
@@ -83,7 +84,7 @@ class TestImageTracker:
 
     def test_clear_resets_counter(self) -> None:
         """Test that clear resets both images and counter."""
-        tracker = ImageTracker()
+        tracker = MediaTracker()
         img = ImageData(base64_data="abc", format="png", placeholder="")
         tracker.add_image(img)
         tracker.add_image(img)
@@ -98,7 +99,7 @@ class TestImageTracker:
 
     def test_add_after_clear_starts_at_one(self) -> None:
         """Test that adding after clear starts from [image 1] again."""
-        tracker = ImageTracker()
+        tracker = MediaTracker()
         img = ImageData(base64_data="abc", format="png", placeholder="")
 
         tracker.add_image(img)
@@ -112,7 +113,7 @@ class TestImageTracker:
 
     def test_sync_to_text_resets_when_placeholders_removed(self) -> None:
         """Removing placeholders from input should clear tracked images and IDs."""
-        tracker = ImageTracker()
+        tracker = MediaTracker()
         img = ImageData(base64_data="abc", format="png", placeholder="")
 
         tracker.add_image(img)
@@ -124,7 +125,7 @@ class TestImageTracker:
 
     def test_sync_to_text_keeps_referenced_images(self) -> None:
         """Sync should prune unreferenced images while preserving next ID order."""
-        tracker = ImageTracker()
+        tracker = MediaTracker()
         img1 = ImageData(base64_data="abc", format="png", placeholder="")
         img2 = ImageData(base64_data="def", format="png", placeholder="")
 
@@ -359,11 +360,11 @@ class TestGetImageFromPath:
 
 
 class TestSyncToTextWithIDGaps:
-    """Tests for ImageTracker.sync_to_text with non-contiguous IDs."""
+    """Tests for MediaTracker.sync_to_text with non-contiguous IDs."""
 
     def test_sync_to_text_with_id_gap_preserves_max_id(self) -> None:
         """Deleting the middle image should set next_id based on max surviving ID."""
-        tracker = ImageTracker()
+        tracker = MediaTracker()
         img1 = ImageData(base64_data="a", format="png", placeholder="")
         img2 = ImageData(base64_data="b", format="png", placeholder="")
         img3 = ImageData(base64_data="c", format="png", placeholder="")
@@ -659,3 +660,74 @@ class TestCreateMultimodalContentWithVideo:
         assert result[0]["type"] == "text"
         assert result[1]["type"] == "video"
         assert result[2]["type"] == "video"
+
+
+class TestDetectVideoFormat:
+    """Tests for _detect_video_format magic-byte detection."""
+
+    def test_mp4_ftyp_mp42(self) -> None:
+        """MP4 ftyp box with mp42 brand returns 'mp4'."""
+        data = b"\x00\x00\x00\x14ftypmp42\x00\x00\x00\x00"
+        assert _detect_video_format(data) == "mp4"
+
+    def test_mp4_ftyp_isom(self) -> None:
+        """MP4 ftyp box with isom brand returns 'mp4'."""
+        data = b"\x00\x00\x00\x14ftypisom\x00\x00\x00\x00"
+        assert _detect_video_format(data) == "mp4"
+
+    def test_mov_ftyp_qt(self) -> None:
+        """MOV ftyp box with 'qt  ' brand returns 'quicktime'."""
+        data = b"\x00\x00\x00\x14ftypqt  \x00\x00\x00\x00"
+        assert _detect_video_format(data) == "quicktime"
+
+    def test_avi_riff(self) -> None:
+        """AVI RIFF header returns 'avi'."""
+        data = b"RIFF\x00\x00\x00\x00AVI \x00\x00\x00\x00"
+        assert _detect_video_format(data) == "avi"
+
+    def test_wmv_asf(self) -> None:
+        """WMV/ASF magic bytes return 'x-ms-wmv'."""
+        data = b"\x30\x26\xb2\x75" + b"\x00" * 12
+        assert _detect_video_format(data) == "x-ms-wmv"
+
+    def test_webm_ebml(self) -> None:
+        """WebM/EBML magic bytes return 'webm'."""
+        data = b"\x1a\x45\xdf\xa3" + b"\x00" * 12
+        assert _detect_video_format(data) == "webm"
+
+    def test_garbage_returns_none(self) -> None:
+        """Unrecognized bytes return None."""
+        data = b"this is not a video file at all!!"
+        assert _detect_video_format(data) is None
+
+    def test_empty_returns_none(self) -> None:
+        """Empty bytes return None."""
+        assert _detect_video_format(b"") is None
+
+    def test_short_riff_not_avi(self) -> None:
+        """RIFF prefix with < 12 bytes should not match AVI."""
+        data = b"RIFF\x00\x00\x00\x00"
+        assert _detect_video_format(data) is None
+
+    def test_riff_non_avi_subtype(self) -> None:
+        """RIFF header with non-AVI subtype (e.g. WAVE) returns None."""
+        data = b"RIFF\x00\x00\x00\x00WAVE\x00\x00\x00\x00"
+        assert _detect_video_format(data) is None
+
+
+class TestGetVideoFromPathEdgeCases:
+    """Edge-case tests for get_video_from_path."""
+
+    def test_empty_file_returns_none(self, tmp_path: Path) -> None:
+        """Zero-byte video file should return None."""
+        video_path = tmp_path / "empty.mp4"
+        video_path.write_bytes(b"")
+
+        assert get_video_from_path(video_path) is None
+
+    def test_too_small_file_returns_none(self, tmp_path: Path) -> None:
+        """Video file smaller than minimum magic-byte length should return None."""
+        video_path = tmp_path / "tiny.mp4"
+        video_path.write_bytes(b"\x00\x00\x00\x01")
+
+        assert get_video_from_path(video_path) is None

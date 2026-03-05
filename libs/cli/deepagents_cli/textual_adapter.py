@@ -30,7 +30,7 @@ from pydantic import TypeAdapter, ValidationError
 
 from deepagents_cli.config import settings
 from deepagents_cli.file_ops import FileOpTracker
-from deepagents_cli.input import ImageTracker, parse_file_mentions
+from deepagents_cli.input import MediaTracker, parse_file_mentions
 from deepagents_cli.media_utils import create_multimodal_content
 from deepagents_cli.tool_display import format_tool_message_content
 from deepagents_cli.widgets.messages import (
@@ -416,7 +416,7 @@ async def execute_task_textual(
     session_state: Any,  # noqa: ANN401  # Dynamic session state type
     adapter: TextualUIAdapter,
     backend: Any = None,  # noqa: ANN401  # Dynamic backend type
-    image_tracker: ImageTracker | None = None,
+    image_tracker: MediaTracker | None = None,
 ) -> SessionStats:
     """Execute a task with output directed to Textual UI.
 

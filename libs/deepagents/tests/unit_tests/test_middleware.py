@@ -1782,11 +1782,13 @@ class TestBuiltinTruncationTools:
         # Verify the message has the tool name preserved
         assert result.update["messages"][0].name == "execute"
 
-    def test_execute_tool_rejects_zero_timeout(self):
-        """Middleware should return a friendly error for timeout=0, not crash."""
+    def test_execute_tool_forwards_zero_timeout_to_backend(self):
+        """Middleware should forward timeout=0 for backends that support no-timeout."""
+        captured_timeout = {}
 
         class TimeoutCaptureSandbox(SandboxBackendProtocol, StateBackend):
             def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+                captured_timeout["value"] = timeout
                 return ExecuteResponse(output="ok", exit_code=0, truncated=False)
 
             @property
@@ -1807,11 +1809,11 @@ class TestBuiltinTruncationTools:
         middleware = FilesystemMiddleware(backend=backend)
 
         execute_tool = next(tool for tool in middleware.tools if tool.name == "execute")
-        # Should return a friendly error string, NOT raise an exception
         result = execute_tool.invoke({"command": "echo hello", "timeout": 0, "runtime": rt})
 
         assert isinstance(result, str)
-        assert "error" in result.lower()
+        assert "ok" in result
+        assert captured_timeout["value"] == 0
 
     def test_execute_tool_rejects_negative_timeout(self):
         """Middleware should return a friendly error for negative timeout."""
@@ -1842,6 +1844,7 @@ class TestBuiltinTruncationTools:
 
         assert isinstance(result, str)
         assert "error" in result.lower()
+        assert "non-negative" in result.lower()
 
     def test_execute_tool_forwards_valid_timeout_to_backend(self):
         """Middleware should forward a valid timeout to the backend."""

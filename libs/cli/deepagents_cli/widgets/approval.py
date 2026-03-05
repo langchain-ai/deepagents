@@ -239,6 +239,15 @@ class ApprovalMenu(Container):
                 header = Static(f"[bold]{i + 1}. {tool_name}[/bold]")
                 await self._tool_info_container.mount(header)
 
+            # Show description if present
+            description = action_request.get("description")
+            if description:
+                desc_widget = Static(
+                    f"[dim]{description}[/dim]",
+                    classes="approval-description",
+                )
+                await self._tool_info_container.mount(desc_widget)
+
             # Get the appropriate renderer for this tool
             renderer = get_renderer(tool_name)
             widget_class, data = renderer.get_approval_widget(tool_args)

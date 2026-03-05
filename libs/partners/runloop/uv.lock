@@ -385,7 +385,7 @@ wheels = [
 
 [[package]]
 name = "deepagents"
-version = "0.4.4"
+version = "0.4.5"
 source = { editable = "../../deepagents" }
 dependencies = [
     { name = "langchain" },
@@ -405,6 +405,13 @@ requires-dist = [
 ]
 
 [package.metadata.requires-dev]
+evals = [
+    { name = "langchain-deepseek" },
+    { name = "langchain-groq" },
+    { name = "langchain-mistralai" },
+    { name = "langchain-ollama" },
+    { name = "langchain-xai" },
+]
 test = [
     { name = "build" },
     { name = "langchain-openai" },
@@ -749,7 +756,7 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 test = [
-    { name = "langchain-tests" },
+    { name = "langchain-tests", specifier = ">=1.1.4" },
     { name = "pytest", specifier = ">=7.3.0,<9.0.0" },
     { name = "pytest-asyncio", specifier = ">=1.3.0" },
     { name = "pytest-cov" },

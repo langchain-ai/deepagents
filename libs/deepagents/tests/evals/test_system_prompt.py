@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import pytest
 
 from deepagents import create_deep_agent
+
+if TYPE_CHECKING:
+    from langchain_core.language_models import BaseChatModel
 from tests.evals.utils import TrajectoryExpectations, run_agent
 
 
 @pytest.mark.langsmith
-def test_custom_system_prompt(model: str) -> None:
+def test_custom_system_prompt(model: BaseChatModel) -> None:
     """Custom system prompt is reflected in the answer."""
     agent = create_deep_agent(model=model, system_prompt="Your name is Foo Bar.")
     run_agent(

@@ -1,4 +1,4 @@
-PACKAGE_DIRS = libs/deepagents libs/cli libs/acp libs/harbor libs/partners/daytona libs/partners/modal libs/partners/runloop
+PACKAGE_DIRS := $(sort $(patsubst %/,%,$(dir $(wildcard libs/*/Makefile libs/partners/*/Makefile))))
 
 # Map package dirs to their required Python version
 # acp requires 3.14, everything else uses 3.12

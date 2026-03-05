@@ -1252,7 +1252,7 @@ class ErrorMessage(Static):
         margin: 1 0;
         background: #7f1d1d;
         color: white;
-        border-left: thick $error;
+        border-left: wide $error;
     }
     """
 
@@ -1313,3 +1313,38 @@ class AppMessage(Static):
     def on_click(self, event: Click) -> None:  # noqa: PLR6301  # Textual event handler
         """Open Rich-style hyperlinks on single click."""
         open_style_link(event)
+
+
+class SummarizationMessage(AppMessage):
+    """Widget displaying a summarization completion notification."""
+
+    DEFAULT_CSS = """
+    SummarizationMessage {
+        height: auto;
+        padding: 0 1;
+        margin: 1 0;
+        color: $primary;
+        background: $surface;
+        border-left: wide $primary;
+        text-style: bold;
+    }
+    """
+
+    def __init__(self, message: str | Text | None = None, **kwargs: Any) -> None:
+        """Initialize a summarization notification message.
+
+        Args:
+            message: Optional message override used when rehydrating from the
+                message store.
+
+                Defaults to the standard summary notification.
+            **kwargs: Additional arguments passed to parent.
+        """
+        content: Text
+        if message is None:
+            content = Text("✓ Summarized conversation", style="bold cyan")
+        elif isinstance(message, Text):
+            content = message
+        else:
+            content = Text(message, style="bold cyan")
+        super().__init__(content, **kwargs)

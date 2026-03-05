@@ -1056,7 +1056,7 @@ def assert_longterm_mem_tools(agent, store):
 
     # Edit the longterm memory file
     config4 = {"configurable": {"thread_id": uuid.uuid4()}}
-    response = agent.invoke(
+    agent.invoke(
         {"messages": [HumanMessage(content="Edit the haiku about Charmander at /memories/charmander.txt to use the word 'ember'")]},
         config=config4,
     )

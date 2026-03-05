@@ -35,6 +35,31 @@ def _format_timeout(seconds: int) -> str:
     return f"{seconds}s"
 
 
+def _coerce_timeout_seconds(timeout: int | str | None) -> int | None:
+    """Normalize timeout values to seconds for display.
+
+    Accepts integer values and numeric strings. Returns `None` for invalid
+    values so display formatting never raises.
+
+    Args:
+        timeout: Raw timeout value from tool arguments.
+
+    Returns:
+        Integer timeout in seconds, or `None` if unavailable/invalid.
+    """
+    if type(timeout) is int:
+        return timeout
+    if isinstance(timeout, str):
+        stripped = timeout.strip()
+        if not stripped:
+            return None
+        try:
+            return int(stripped)
+        except ValueError:
+            return None
+    return None
+
+
 def truncate_value(value: str, max_length: int = MAX_ARG_LENGTH) -> str:
     """Truncate a string value if it exceeds max_length.
 
@@ -127,7 +152,7 @@ def format_tool_display(tool_name: str, tool_args: dict) -> str:
         if "command" in tool_args:
             command = str(tool_args["command"])
             command = truncate_value(command, 120)
-            timeout = tool_args.get("timeout")
+            timeout = _coerce_timeout_seconds(tool_args.get("timeout"))
             if timeout is not None and timeout != DEFAULT_EXECUTE_TIMEOUT:
                 timeout_str = _format_timeout(timeout)
                 return f'{prefix} {tool_name}("{command}", timeout={timeout_str})'
@@ -172,6 +197,9 @@ def format_tool_display(tool_name: str, tool_args: dict) -> str:
             desc = str(tool_args["description"])
             desc = truncate_value(desc, 100)
             return f'{prefix} {tool_name}("{desc}")'
+
+    elif tool_name == "compact_conversation":
+        return f"{prefix} {tool_name}()"
 
     elif tool_name == "write_todos":
         # Todos: show count of items

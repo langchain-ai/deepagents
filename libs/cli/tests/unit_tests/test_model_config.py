@@ -1013,6 +1013,114 @@ temperature = 0.5
         assert kwargs == {"temperature": 0.5}
 
 
+class TestModelConfigGetProfileOverrides:
+    """Tests for ModelConfig.get_profile_overrides() method."""
+
+    def test_returns_empty_for_unknown_provider(self):
+        """Returns empty dict for unknown provider."""
+        config = ModelConfig()
+        assert config.get_profile_overrides("unknown") == {}
+
+    def test_returns_empty_when_no_profile(self, tmp_path):
+        """Returns empty dict when profile not in config."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.custom]
+models = ["my-model"]
+""")
+        config = ModelConfig.load(config_path)
+        assert config.get_profile_overrides("custom") == {}
+
+    def test_returns_provider_wide_overrides(self, tmp_path):
+        """Returns flat profile overrides."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.anthropic]
+models = ["claude-sonnet-4-5"]
+
+[models.providers.anthropic.profile]
+max_input_tokens = 4096
+""")
+        config = ModelConfig.load(config_path)
+        overrides = config.get_profile_overrides("anthropic")
+        assert overrides == {"max_input_tokens": 4096}
+
+    def test_per_model_override_takes_precedence(self, tmp_path):
+        """Per-model sub-table overrides provider-wide value."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.anthropic]
+models = ["claude-sonnet-4-5", "claude-opus-4-6"]
+
+[models.providers.anthropic.profile]
+max_input_tokens = 4096
+
+[models.providers.anthropic.profile."claude-sonnet-4-5"]
+max_input_tokens = 8192
+""")
+        config = ModelConfig.load(config_path)
+        overrides = config.get_profile_overrides(
+            "anthropic", model_name="claude-sonnet-4-5"
+        )
+        assert overrides == {"max_input_tokens": 8192}
+
+    def test_model_without_subtable_gets_provider_defaults(self, tmp_path):
+        """Model not in sub-table gets provider-level profile only."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.anthropic]
+models = ["claude-sonnet-4-5", "claude-opus-4-6"]
+
+[models.providers.anthropic.profile]
+max_input_tokens = 4096
+
+[models.providers.anthropic.profile."claude-sonnet-4-5"]
+max_input_tokens = 8192
+""")
+        config = ModelConfig.load(config_path)
+        overrides = config.get_profile_overrides(
+            "anthropic", model_name="claude-opus-4-6"
+        )
+        assert overrides == {"max_input_tokens": 4096}
+
+    def test_none_model_name_returns_provider_defaults(self, tmp_path):
+        """model_name=None returns provider-wide profile only."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.anthropic]
+models = ["claude-sonnet-4-5"]
+
+[models.providers.anthropic.profile]
+max_input_tokens = 4096
+
+[models.providers.anthropic.profile."claude-sonnet-4-5"]
+max_input_tokens = 8192
+""")
+        config = ModelConfig.load(config_path)
+        overrides = config.get_profile_overrides("anthropic", model_name=None)
+        assert overrides == {"max_input_tokens": 4096}
+
+    def test_multiple_flat_keys_with_model_subtable(self, tmp_path):
+        """Multiple flat keys returned; model sub-table merges on top."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.anthropic]
+models = ["claude-sonnet-4-5"]
+
+[models.providers.anthropic.profile]
+max_input_tokens = 4096
+supports_thinking = true
+
+[models.providers.anthropic.profile."claude-sonnet-4-5"]
+max_input_tokens = 8192
+""")
+        config = ModelConfig.load(config_path)
+        overrides = config.get_profile_overrides(
+            "anthropic", model_name="claude-sonnet-4-5"
+        )
+        assert overrides == {"max_input_tokens": 8192, "supports_thinking": True}
+
+
 class TestModelConfigValidateParams:
     """Tests for _validate() params warnings."""
 
@@ -1561,7 +1669,7 @@ recent = "openai:gpt-5.2"
         ):
             result = _get_default_model_spec()
 
-        assert result == "anthropic:claude-sonnet-4-5-20250929"
+        assert result == "anthropic:claude-sonnet-4-6"
 
 
 class TestIsWarningSuppressed:

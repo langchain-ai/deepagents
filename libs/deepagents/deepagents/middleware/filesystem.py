@@ -218,6 +218,7 @@ Usage notes:
   - Returns combined stdout/stderr output with exit code
   - If the output is very large, it may be truncated
   - For long-running commands, use the optional timeout parameter to override the default timeout (e.g., execute(command="make build", timeout=300))
+  - A timeout of 0 may disable timeouts on backends that support no-timeout execution
   - VERY IMPORTANT: You MUST avoid using search commands like find and grep. Instead use the grep, glob tools to search. You MUST avoid read tools like cat, head, tail, and use read_file to read files.
   - When issuing multiple commands, use the ';' or '&&' operator to separate them. DO NOT use newlines (newlines are ok in quoted strings)
     - Use '&&' when commands depend on each other (e.g., "mkdir dir && cd dir")
@@ -472,7 +473,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             Resolved backend instance.
         """
         if callable(self.backend):
-            return self.backend(runtime)
+            return self.backend(runtime)  # ty: ignore[call-top-callable]
         return self.backend
 
     def _create_ls_tool(self) -> BaseTool:
@@ -877,13 +878,14 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             command: Annotated[str, "Shell command to execute in the sandbox environment."],
             runtime: ToolRuntime[None, FilesystemState],
             timeout: Annotated[
-                int | None, "Optional timeout in seconds for this command. Overrides the default timeout. Use for long-running commands."
+                int | None,
+                "Optional timeout in seconds for this command. Overrides the default timeout. Use 0 for no-timeout execution on backends that support it.",
             ] = None,
         ) -> str:
             """Synchronous wrapper for execute tool."""
             if timeout is not None:
-                if timeout <= 0:
-                    return f"Error: timeout must be positive, got {timeout}."
+                if timeout < 0:
+                    return f"Error: timeout must be non-negative, got {timeout}."
                 if timeout > self._max_execute_timeout:
                     return f"Error: timeout {timeout}s exceeds maximum allowed ({self._max_execute_timeout}s)."
 
@@ -932,13 +934,14 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             # ASYNC109 - timeout is a semantic parameter forwarded to the
             # backend's implementation, not an asyncio.timeout() contract.
             timeout: Annotated[  # noqa: ASYNC109
-                int | None, "Optional timeout in seconds for this command. Overrides the default timeout. Use for long-running commands."
+                int | None,
+                "Optional timeout in seconds for this command. Overrides the default timeout. Use 0 for no-timeout execution on backends that support it.",
             ] = None,
         ) -> str:
             """Asynchronous wrapper for execute tool."""
             if timeout is not None:
-                if timeout <= 0:
-                    return f"Error: timeout must be positive, got {timeout}."
+                if timeout < 0:
+                    return f"Error: timeout must be non-negative, got {timeout}."
                 if timeout > self._max_execute_timeout:
                     return f"Error: timeout {timeout}s exceeds maximum allowed ({self._max_execute_timeout}s)."
 

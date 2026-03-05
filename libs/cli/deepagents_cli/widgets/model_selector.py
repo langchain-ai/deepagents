@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, ClassVar
 
 from textual.binding import Binding, BindingType
@@ -9,6 +10,7 @@ from textual.containers import Container, Vertical, VerticalScroll
 from textual.events import (
     Click,  # noqa: TC002 - needed at runtime for Textual event dispatch
 )
+from textual.fuzzy import Matcher
 from textual.message import Message
 from textual.screen import ModalScreen
 from textual.widgets import Input, Static
@@ -24,6 +26,8 @@ from deepagents_cli.model_config import (
     has_provider_credentials,
     save_default_model,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class ModelOption(Static):
@@ -96,8 +100,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         Binding("k", "move_up", "Up", show=False, priority=True),
         Binding("down", "move_down", "Down", show=False, priority=True),
         Binding("j", "move_down", "Down", show=False, priority=True),
-        Binding("tab", "move_down", "Down", show=False, priority=True),
-        Binding("shift+tab", "move_up", "Up", show=False, priority=True),
+        Binding("tab", "tab_complete", "Tab complete", show=False, priority=True),
         Binding("pageup", "page_up", "Page up", show=False, priority=True),
         Binding("pagedown", "page_down", "Page down", show=False, priority=True),
         Binding("enter", "select", "Select", show=False, priority=True),
@@ -268,9 +271,10 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
 
             # Help text
             help_text = (
-                f"{glyphs.arrow_up}/{glyphs.arrow_down}/tab navigate {glyphs.bullet} "
-                f"Enter select {glyphs.bullet} Ctrl+S set default "
-                f"{glyphs.bullet} Esc cancel"
+                f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate"
+                f" {glyphs.bullet} Enter select"
+                f" {glyphs.bullet} Ctrl+S set default"
+                f" {glyphs.bullet} Esc cancel"
             )
             yield Static(help_text, classes="model-selector-help")
 
@@ -292,7 +296,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         Args:
             event: The input changed event.
         """
-        self._filter_text = event.value.lower()
+        self._filter_text = event.value
         self._update_filtered_list()
         self._rebuild_needed = True
         self.call_after_refresh(self._update_display)
@@ -316,20 +320,40 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         self.dismiss((event.model_spec, event.provider))
 
     def _update_filtered_list(self) -> None:
-        """Update the filtered models based on search text."""
-        if not self._filter_text:
+        """Update the filtered models based on search text using fuzzy matching.
+
+        Results are sorted by match score (best first).
+        """
+        query = self._filter_text.strip()
+        if not query:
             self._filtered_models = list(self._all_models)
-            # Re-select current model when filter is cleared
             self._selected_index = self._find_current_model_index()
-        else:
-            self._filtered_models = [
-                (model_spec, provider)
-                for model_spec, provider in self._all_models
-                if self._filter_text in model_spec.lower()
-            ]
-            # Reset selection if out of bounds
-            if self._selected_index >= len(self._filtered_models):
-                self._selected_index = max(0, len(self._filtered_models) - 1)
+            return
+
+        tokens = query.split()
+
+        try:
+            matchers = [Matcher(token, case_sensitive=False) for token in tokens]
+            scored: list[tuple[float, str, str]] = []
+            for spec, provider in self._all_models:
+                scores = [m.match(spec) for m in matchers]
+                if all(s > 0 for s in scores):
+                    scored.append((min(scores), spec, provider))
+        except Exception:
+            # graceful fallback if Matcher fails on edge-case input
+            logger.warning(
+                "Fuzzy matcher failed for query %r, falling back to full list",
+                query,
+                exc_info=True,
+            )
+            self._filtered_models = list(self._all_models)
+            self._selected_index = self._find_current_model_index()
+            return
+
+        self._filtered_models = [
+            (spec, provider) for score, spec, provider in sorted(scored, reverse=True)
+        ]
+        self._selected_index = 0
 
     async def _update_display(self) -> None:
         """Render the model list grouped by provider.
@@ -517,6 +541,15 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         """Move selection down."""
         self._move_selection(1)
 
+    def action_tab_complete(self) -> None:
+        """Replace search text with the currently selected model spec."""
+        if not self._filtered_models:
+            return
+        model_spec, _ = self._filtered_models[self._selected_index]
+        filter_input = self.query_one("#model-filter", Input)
+        filter_input.value = model_spec
+        filter_input.cursor_position = len(model_spec)
+
     def _visible_page_size(self) -> int:
         """Return the number of model options that fit in one visual page.
 
@@ -618,9 +651,10 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         """Restore the default help text after a temporary message."""
         glyphs = get_glyphs()
         help_text = (
-            f"{glyphs.arrow_up}/{glyphs.arrow_down}/tab navigate {glyphs.bullet} "
-            f"Enter select {glyphs.bullet} Ctrl+S set default "
-            f"{glyphs.bullet} Esc cancel"
+            f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate"
+            f" {glyphs.bullet} Enter select"
+            f" {glyphs.bullet} Ctrl+S set default"
+            f" {glyphs.bullet} Esc cancel"
         )
         help_widget = self.query_one(".model-selector-help", Static)
         help_widget.update(help_text)

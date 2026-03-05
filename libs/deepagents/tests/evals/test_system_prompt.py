@@ -25,7 +25,5 @@ def test_custom_system_prompt(model: BaseChatModel) -> None:
         model=model,
         # 1 step: answer directly.
         # 0 tool calls: no files/tools needed.
-        scorer=TrajectoryScorer()
-        .expect(agent_steps=1, tool_call_requests=0)
-        .success(final_text_contains("Foo Bar")),
+        scorer=TrajectoryScorer().expect(agent_steps=1, tool_call_requests=0).success(final_text_contains("Foo Bar")),
     )

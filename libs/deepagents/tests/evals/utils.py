@@ -276,10 +276,7 @@ class FinalTextContains(SuccessAssertion):
             A human-readable failure description.
         """
         final_text = _strip_common_zero_width(trajectory.steps[-1].action.text)
-        return (
-            f"Expected final text to contain {self.text!r} "
-            f"(case_insensitive={self.case_insensitive}), got: {final_text!r}"
-        )
+        return f"Expected final text to contain {self.text!r} (case_insensitive={self.case_insensitive}), got: {final_text!r}"
 
     @property
     def feedback_key(self) -> str:
@@ -329,10 +326,7 @@ class FinalTextExcludes(SuccessAssertion):
             A human-readable failure description.
         """
         final_text = _strip_common_zero_width(trajectory.steps[-1].action.text)
-        return (
-            f"Expected final text NOT to contain {self.text!r} "
-            f"(case_insensitive={self.case_insensitive}), got: {final_text!r}"
-        )
+        return f"Expected final text NOT to contain {self.text!r} (case_insensitive={self.case_insensitive}), got: {final_text!r}"
 
     @property
     def feedback_key(self) -> str:
@@ -379,11 +373,7 @@ class FileEquals(SuccessAssertion):
         actual = trajectory.files.get(self.path)
         if actual is None:
             return f"File {self.path!r} not found in trajectory files"
-        return (
-            f"File {self.path!r} content mismatch.\n"
-            f"Expected:\n{self.content!r}\n"
-            f"Actual:\n{actual!r}"
-        )
+        return f"File {self.path!r} content mismatch.\nExpected:\n{self.content!r}\nActual:\n{actual!r}"
 
     @property
     def feedback_key(self) -> str:
@@ -433,10 +423,7 @@ class FileContains(SuccessAssertion):
         actual = trajectory.files.get(self.path)
         if actual is None:
             return f"File {self.path!r} not found in trajectory files"
-        return (
-            f"File {self.path!r} does not contain {self.substring!r}.\n"
-            f"Actual content:\n{actual!r}"
-        )
+        return f"File {self.path!r} does not contain {self.substring!r}.\nActual content:\n{actual!r}"
 
     @property
     def feedback_key(self) -> str:
@@ -481,10 +468,7 @@ class FileExcludes(SuccessAssertion):
             A human-readable failure description.
         """
         actual = trajectory.files.get(self.path, "")
-        return (
-            f"File {self.path!r} unexpectedly contains {self.substring!r}.\n"
-            f"Actual content:\n{actual!r}"
-        )
+        return f"File {self.path!r} unexpectedly contains {self.substring!r}.\nActual content:\n{actual!r}"
 
     @property
     def feedback_key(self) -> str:
@@ -531,9 +515,7 @@ class AgentSteps(EfficiencyAssertion):
         Returns:
             A human-readable failure description.
         """
-        return (
-            f"Expected {self.n} agent steps, got {len(trajectory.steps)}"
-        )
+        return f"Expected {self.n} agent steps, got {len(trajectory.steps)}"
 
     @property
     def feedback_key(self) -> str:
@@ -577,9 +559,7 @@ class ToolCallRequests(EfficiencyAssertion):
             A human-readable failure description.
         """
         actual = sum(len(s.action.tool_calls) for s in trajectory.steps)
-        return (
-            f"Expected {self.n} tool call requests, got {actual}"
-        )
+        return f"Expected {self.n} tool call requests, got {actual}"
 
     @property
     def feedback_key(self) -> str:
@@ -631,12 +611,7 @@ class ToolCall(EfficiencyAssertion):
             A human-readable failure description.
         """
         step_desc = f" in step {self.step}" if self.step is not None else ""
-        return (
-            f"Missing expected tool call{step_desc}: "
-            f"name={self.name!r}, "
-            f"args_contains={self.args_contains!r}, "
-            f"args_equals={self.args_equals!r}"
-        )
+        return f"Missing expected tool call{step_desc}: name={self.name!r}, args_contains={self.args_contains!r}, args_equals={self.args_equals!r}"
 
     @property
     def feedback_key(self) -> str:
@@ -682,12 +657,7 @@ class ToolCall(EfficiencyAssertion):
         else:
             steps_to_search = trajectory.steps
 
-        return [
-            tc
-            for s in steps_to_search
-            for tc in s.action.tool_calls
-            if self._matches_tool_call(tc)
-        ]
+        return [tc for s in steps_to_search for tc in s.action.tool_calls if self._matches_tool_call(tc)]
 
 
 # ---------------------------------------------------------------------------
@@ -952,8 +922,7 @@ def _assert_expectations(
         t.log_feedback(key=assertion.feedback_key, value=int(result))
         if not result:
             pytest.fail(
-                f"success check failed: {assertion.describe_failure(trajectory)}\n\n"
-                f"trajectory:\n{trajectory.pretty()}",
+                f"success check failed: {assertion.describe_failure(trajectory)}\n\ntrajectory:\n{trajectory.pretty()}",
                 pytrace=False,
             )
 

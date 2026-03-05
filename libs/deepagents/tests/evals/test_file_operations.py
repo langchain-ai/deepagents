@@ -31,9 +31,7 @@ def test_read_file_seeded_state_backend_file(model: BaseChatModel) -> None:
         # 1st step: request a tool call to read /foo.md.
         # 2nd step: answer the question using the file contents.
         # 1 tool call request: read_file.
-        scorer=TrajectoryScorer()
-        .expect(agent_steps=2, tool_call_requests=1)
-        .success(final_text_contains("three", case_insensitive=True)),
+        scorer=TrajectoryScorer().expect(agent_steps=2, tool_call_requests=1).success(final_text_contains("three", case_insensitive=True)),
     )
 
 
@@ -165,9 +163,7 @@ def test_ls_directory_contains_file_yes_no(model: BaseChatModel) -> None:
         # 1st step: request a tool call to list /foo.
         # 2nd step: answer YES/NO.
         # 1 tool call request: ls.
-        scorer=TrajectoryScorer()
-        .expect(agent_steps=2, tool_call_requests=1)
-        .success(final_text_contains("[YES]")),
+        scorer=TrajectoryScorer().expect(agent_steps=2, tool_call_requests=1).success(final_text_contains("[YES]")),
     )
 
 
@@ -186,9 +182,7 @@ def test_ls_directory_missing_file_yes_no(model: BaseChatModel) -> None:
         # 1st step: request a tool call to list /foo.
         # 2nd step: answer YES/NO.
         # 1 tool call request: ls.
-        scorer=TrajectoryScorer()
-        .expect(agent_steps=2, tool_call_requests=1)
-        .success(final_text_contains("[no]", case_insensitive=True)),
+        scorer=TrajectoryScorer().expect(agent_steps=2, tool_call_requests=1).success(final_text_contains("[no]", case_insensitive=True)),
     )
 
 
@@ -207,9 +201,7 @@ def test_edit_file_replace_text(model: BaseChatModel) -> None:
         # 1st step: request a tool call to edit /note.md.
         # 2nd step: report completion.
         # 1 tool call request: edit_file.
-        scorer=TrajectoryScorer()
-        .expect(agent_steps=2, tool_call_requests=1)
-        .success(file_equals("/note.md", "dog dog dog\n")),
+        scorer=TrajectoryScorer().expect(agent_steps=2, tool_call_requests=1).success(file_equals("/note.md", "dog dog dog\n")),
     )
 
 
@@ -246,9 +238,7 @@ def test_avoid_unnecessary_tool_calls(model: BaseChatModel) -> None:
         model=model,
         # 1 step: answer directly.
         # 0 tool calls: no files/tools needed.
-        scorer=TrajectoryScorer()
-        .expect(agent_steps=1, tool_call_requests=0)
-        .success(final_text_contains("4")),
+        scorer=TrajectoryScorer().expect(agent_steps=1, tool_call_requests=0).success(final_text_contains("4")),
     )
 
 

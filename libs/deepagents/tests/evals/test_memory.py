@@ -45,11 +45,7 @@ This is the TurboWidget project. The main goal is to process widgets efficiently
         query="What is the name of this project? Answer with just the project name.",
         # 1st step: answer directly using memory context, no tools needed.
         # 0 tool calls: memory is already loaded in context.
-        scorer=(
-            TrajectoryScorer()
-            .expect(agent_steps=1, tool_call_requests=0)
-            .success(final_text_contains("TurboWidget"))
-        ),
+        scorer=(TrajectoryScorer().expect(agent_steps=1, tool_call_requests=0).success(final_text_contains("TurboWidget"))),
     )
 
 
@@ -238,9 +234,5 @@ def test_memory_middleware_composite_backend(model: BaseChatModel) -> None:
         agent,
         model=model,
         query="What is your name?",
-        scorer=(
-            TrajectoryScorer()
-            .expect(agent_steps=1, tool_call_requests=0)
-            .success(final_text_contains("Jackson"))
-        ),
+        scorer=(TrajectoryScorer().expect(agent_steps=1, tool_call_requests=0).success(final_text_contains("Jackson"))),
     )

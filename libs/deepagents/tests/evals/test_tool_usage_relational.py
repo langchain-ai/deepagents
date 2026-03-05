@@ -409,7 +409,7 @@ def test_single_tool_list_user_ids(model: BaseChatModel) -> None:
             agent_steps=2,
             tool_call_requests=1,
             tool_calls=[tool_call(name="list_user_ids", step=1)],
-        )
+        ),
     )
 
 
@@ -435,7 +435,7 @@ def test_single_tool_get_user_email(model: BaseChatModel) -> None:
             agent_steps=2,
             tool_call_requests=1,
             tool_calls=[tool_call(name="get_user_email", step=1, args_contains={"user_id": 21})],
-        )
+        ),
     )
 
 
@@ -461,7 +461,7 @@ def test_single_tool_get_food_calories(model: BaseChatModel) -> None:
             agent_steps=2,
             tool_call_requests=1,
             tool_calls=[tool_call(name="get_food_calories", step=1, args_contains={"food_id": 5})],
-        )
+        ),
     )
 
 
@@ -491,7 +491,7 @@ def test_two_tools_user_name_from_current_id(model: BaseChatModel) -> None:
                 tool_call(name="get_current_user_id", step=1),
                 tool_call(name="get_user_name", step=2, args_contains={"user_id": 35}),
             ],
-        )
+        ),
     )
 
 
@@ -521,7 +521,7 @@ def test_two_tools_city_for_user(model: BaseChatModel) -> None:
                 tool_call(name="get_user_location", step=1, args_contains={"user_id": 1}),
                 tool_call(name="get_city_for_location", step=2, args_contains={"location_id": 1}),
             ],
-        )
+        ),
     )
 
 
@@ -551,7 +551,7 @@ def test_two_tools_find_user_then_email(model: BaseChatModel) -> None:
                 tool_call(name="find_users_by_name", step=1, args_contains={"name": "Eve"}),
                 tool_call(name="get_user_email", step=2, args_contains={"user_id": 42}),
             ],
-        )
+        ),
     )
 
 
@@ -583,7 +583,7 @@ def test_three_tools_current_user_city(model: BaseChatModel) -> None:
                 tool_call(name="get_user_location", step=2, args_contains={"user_id": 35}),
                 tool_call(name="get_city_for_location", step=3, args_contains={"location_id": 3}),
             ],
-        )
+        ),
     )
 
 
@@ -615,7 +615,7 @@ def test_three_tools_find_user_then_city(model: BaseChatModel) -> None:
                 tool_call(name="get_user_location", step=2, args_contains={"user_id": 1}),
                 tool_call(name="get_city_for_location", step=3, args_contains={"location_id": 1}),
             ],
-        )
+        ),
     )
 
 
@@ -647,7 +647,7 @@ def test_three_tools_current_user_weather(model: BaseChatModel) -> None:
                 tool_call(name="get_user_location", step=2, args_contains={"user_id": 35}),
                 tool_call(name="get_weather_at_location", step=3, args_contains={"location_id": 3}),
             ],
-        )
+        ),
     )
 
 
@@ -684,7 +684,7 @@ def test_four_tools_current_user_favorite_food_names(model: BaseChatModel) -> No
                 tool_call(name="get_food_name", step=3, args_contains={"food_id": 7}),
                 tool_call(name="get_food_name", step=3, args_contains={"food_id": 2}),
             ],
-        )
+        ),
     )
 
 
@@ -719,7 +719,7 @@ def test_four_tools_find_user_food_name_and_calories(model: BaseChatModel) -> No
                 tool_call(name="get_food_name", step=3, args_contains={"food_id": 3}),
                 tool_call(name="get_food_calories", step=3, args_contains={"food_id": 3}),
             ],
-        )
+        ),
     )
 
 
@@ -755,7 +755,7 @@ def test_four_tools_current_user_location_time_and_weather(model: BaseChatModel)
                 tool_call(name="get_current_time_for_location", step=3, args_contains={"location_id": 3}),
                 tool_call(name="get_weather_at_location", step=3, args_contains={"location_id": 3}),
             ],
-        )
+        ),
     )
 
 
@@ -797,7 +797,7 @@ def test_five_steps_current_user_food_names_and_calories(model: BaseChatModel) -
                 tool_call(name="get_food_calories", step=3, args_contains={"food_id": 7}),
                 tool_call(name="get_food_calories", step=3, args_contains={"food_id": 2}),
             ],
-        )
+        ),
     )
 
 
@@ -835,7 +835,7 @@ def test_four_steps_find_user_city_and_weather(model: BaseChatModel) -> None:
                 tool_call(name="get_current_time_for_location", step=3, args_contains={"location_id": 2}),
                 tool_call(name="get_weather_at_location", step=3, args_contains={"location_id": 2}),
             ],
-        )
+        ),
     )
 
 
@@ -878,5 +878,5 @@ def test_four_steps_find_user_food_allergies(model: BaseChatModel) -> None:
                 tool_call(name="get_food_allergic_ingredients", step=3, args_contains={"food_id": 2}),
                 tool_call(name="get_food_allergic_ingredients", step=3, args_contains={"food_id": 3}),
             ],
-        )
+        ),
     )

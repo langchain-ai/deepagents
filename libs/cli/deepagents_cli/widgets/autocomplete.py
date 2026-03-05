@@ -112,6 +112,10 @@ SLASH_COMMANDS: list[tuple[str, str]] = [
 """Built-in slash commands with descriptions."""
 
 MAX_SUGGESTIONS = 10
+"""UI cap so the completion popup doesn't get unwieldy."""
+
+_MIN_FUZZY_SCORE = 15
+"""Minimum score to include in results (shared by slash + file completion)."""
 
 
 class SlashCommandController:
@@ -162,6 +166,7 @@ class SlashCommandController:
             Score value where higher indicates better match quality.
         """
         name = cmd.lstrip("/").lower()
+        lower_desc = desc.lower()
         # Prefix match on command name — highest priority
         if name.startswith(search):
             return 200.0
@@ -169,11 +174,11 @@ class SlashCommandController:
         if search in name:
             return 150.0
         # Substring match on description
-        if search in desc.lower():
+        if search in lower_desc:
             return 100.0
         # Fuzzy match via SequenceMatcher on name + desc
         name_ratio = SequenceMatcher(None, search, name).ratio()
-        desc_ratio = SequenceMatcher(None, search, desc.lower()).ratio()
+        desc_ratio = SequenceMatcher(None, search, lower_desc).ratio()
         best = max(name_ratio * 60, desc_ratio * 30)
         return best if best >= _MIN_FUZZY_SCORE else 0.0
 
@@ -196,10 +201,10 @@ class SlashCommandController:
         else:
             # Score and filter commands using fuzzy matching
             scored = [
-                (self._score_command(search, cmd, desc), cmd, desc)
+                (score, cmd, desc)
                 for cmd, desc in self._commands
+                if (score := self._score_command(search, cmd, desc)) > 0
             ]
-            scored = [(s, cmd, desc) for s, cmd, desc in scored if s > 0]
             scored.sort(key=lambda x: -x[0])
             suggestions = [(cmd, desc) for _, cmd, desc in scored[:MAX_SUGGESTIONS]]
 
@@ -276,8 +281,10 @@ class SlashCommandController:
 
 # Constants for fuzzy file completion
 _MAX_FALLBACK_FILES = 1000
+"""Hard cap on files returned by the non-git glob fallback."""
+
 _MIN_FUZZY_RATIO = 0.4
-_MIN_FUZZY_SCORE = 15  # Minimum score to include in results
+"""SequenceMatcher threshold for filename-only fuzzy matches."""
 
 
 def _get_project_files(root: Path) -> list[str]:

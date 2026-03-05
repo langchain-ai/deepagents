@@ -236,21 +236,37 @@ class TestSlashCommandController:
         suggestions = mock_view.render_completion_suggestions.call_args[0][0]
         assert len(suggestions) == len(SLASH_COMMANDS)
 
-    def test_fuzzy_matches_description_exit(self, controller, mock_view):
-        """Typing 'exit' surfaces /quit via its description 'Exit app'."""
+    def test_substring_description_match_exit(self, controller, mock_view):
+        """Typing 'exit' surfaces /quit via substring match on 'Exit app'."""
         controller.on_text_changed("/exit", 5)
 
         mock_view.render_completion_suggestions.assert_called()
         suggestions = mock_view.render_completion_suggestions.call_args[0][0]
         assert any("/quit" in s[0] for s in suggestions)
 
-    def test_fuzzy_matches_description_new(self, controller, mock_view):
-        """Typing 'new' surfaces /clear via description containing 'new'."""
+    def test_substring_description_match_new(self, controller, mock_view):
+        """Typing 'new' surfaces /clear via substring on 'start new thread'."""
         controller.on_text_changed("/new", 4)
 
         mock_view.render_completion_suggestions.assert_called()
         suggestions = mock_view.render_completion_suggestions.call_args[0][0]
         assert any("/clear" in s[0] for s in suggestions)
+
+    def test_substring_name_match(self, controller, mock_view):
+        """Substring of command name (not prefix) surfaces the command."""
+        controller.on_text_changed("/omp", 4)
+
+        mock_view.render_completion_suggestions.assert_called()
+        suggestions = mock_view.render_completion_suggestions.call_args[0][0]
+        assert any("/compact" in s[0] for s in suggestions)
+
+    def test_true_fuzzy_match_via_misspelling(self, controller, mock_view):
+        """Misspelled command surfaces via SequenceMatcher ratio."""
+        controller.on_text_changed("/hlep", 5)
+
+        mock_view.render_completion_suggestions.assert_called()
+        suggestions = mock_view.render_completion_suggestions.call_args[0][0]
+        assert any("/help" in s[0] for s in suggestions)
 
     def test_prefix_match_ranks_first(self, controller, mock_view):
         """Prefix matches on command name rank above description matches."""
@@ -261,7 +277,7 @@ class TestSlashCommandController:
         # /help is a prefix match — should be first
         assert suggestions[0][0] == "/help"
 
-    def test_fuzzy_no_match_clears(self, controller, mock_view):
+    def test_no_match_clears(self, controller, mock_view):
         """Completely unrelated input clears suggestions."""
         controller.on_text_changed("/h", 2)
         mock_view.render_completion_suggestions.assert_called()
@@ -276,6 +292,36 @@ class TestSlashCommandController:
         controller.reset()
         # Second reset should be a no-op (suggestions already empty)
         controller.reset()
+
+
+class TestScoreCommand:
+    """Direct unit tests for SlashCommandController._score_command."""
+
+    score = staticmethod(SlashCommandController._score_command)
+
+    def test_prefix_returns_200(self):
+        assert self.score("hel", "/help", "Show help") == 200
+
+    def test_substring_name_returns_150(self):
+        assert self.score("omp", "/compact", "Summarize conversation") == 150
+
+    def test_substring_desc_returns_100(self):
+        assert self.score("exit", "/quit", "Exit app") == 100
+
+    def test_no_match_returns_zero(self):
+        assert self.score("zzzzz", "/help", "Show help") == 0
+
+    def test_fuzzy_above_threshold(self):
+        score = self.score("hlep", "/help", "Show help")
+        assert 0 < score < 100  # fuzzy tier, not substring/prefix
+
+    def test_tiers_ordering(self):
+        """Prefix > substring-name > substring-desc > fuzzy."""
+        prefix = self.score("hel", "/help", "Show help")
+        substr_name = self.score("omp", "/compact", "Summarize conversation")
+        substr_desc = self.score("exit", "/quit", "Exit app")
+        fuzzy = self.score("hlep", "/help", "Show help")
+        assert prefix > substr_name > substr_desc > fuzzy > 0
 
 
 class TestFuzzyFileControllerCanHandle:

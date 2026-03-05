@@ -2,20 +2,18 @@
 
 ## [0.0.28](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.27...deepagents-cli==0.0.28) (2026-03-05)
 
-
 ### Features
 
-* **cli:** add nvidia api key support and default model ([#1577](https://github.com/langchain-ai/deepagents/issues/1577)) ([9ce2660](https://github.com/langchain-ai/deepagents/commit/9ce2660a67c3497cff18d27131fb7ef49e85b310))
-* **cli:** add video support to multimodal inputs ([#1521](https://github.com/langchain-ai/deepagents/issues/1521)) ([f9b49b7](https://github.com/langchain-ai/deepagents/commit/f9b49b7341bd42b5278a03496743e4709689598e))
-* **cli:** fuzzy search for slash command autocomplete ([#1660](https://github.com/langchain-ai/deepagents/issues/1660)) ([5f6e9c0](https://github.com/langchain-ai/deepagents/commit/5f6e9c014e6a99783b3113184cc12f0179a902f0))
-* **cli:** tab autocomplete in model selector ([#1669](https://github.com/langchain-ai/deepagents/issues/1669)) ([28bd0aa](https://github.com/langchain-ai/deepagents/commit/28bd0aaca737b8bb194ecb9f6612989b9aacec02))
-
+* Add video support to multimodal inputs ([#1521](https://github.com/langchain-ai/deepagents/issues/1521)) ([f9b49b7](https://github.com/langchain-ai/deepagents/commit/f9b49b7341bd42b5278a03496743e4709689598e))
+* Add NVIDIA api key support and default model ([#1577](https://github.com/langchain-ai/deepagents/issues/1577)) ([9ce2660](https://github.com/langchain-ai/deepagents/commit/9ce2660a67c3497cff18d27131fb7ef49e85b310))
+* Fuzzy search for slash command autocomplete ([#1660](https://github.com/langchain-ai/deepagents/issues/1660)) ([5f6e9c0](https://github.com/langchain-ai/deepagents/commit/5f6e9c014e6a99783b3113184cc12f0179a902f0))
+* Tab autocomplete in model selector ([#1669](https://github.com/langchain-ai/deepagents/issues/1669)) ([28bd0aa](https://github.com/langchain-ai/deepagents/commit/28bd0aaca737b8bb194ecb9f6612989b9aacec02))
 
 ### Bug Fixes
 
-* **cli:** backspace at cursor position 0 exits mode even with text ([#1666](https://github.com/langchain-ai/deepagents/issues/1666)) ([dfa4c1f](https://github.com/langchain-ai/deepagents/commit/dfa4c1fedcecf2bb17d8ffef01cf50efe6c80fb0))
-* **cli:** skip auto-approve toggle when modal screen is open ([#1668](https://github.com/langchain-ai/deepagents/issues/1668)) ([6597f0b](https://github.com/langchain-ai/deepagents/commit/6597f0b8da3c3bd701a42e228660d459cefe3f64))
-* **cli:** truncate model name in status bar on narrow terminals ([#1665](https://github.com/langchain-ai/deepagents/issues/1665)) ([0e24a04](https://github.com/langchain-ai/deepagents/commit/0e24a04aa9e5894735522ce23295bb27fd2b8190))
+* Backspace at cursor position 0 exits mode even with text ([#1666](https://github.com/langchain-ai/deepagents/issues/1666)) ([dfa4c1f](https://github.com/langchain-ai/deepagents/commit/dfa4c1fedcecf2bb17d8ffef01cf50efe6c80fb0))
+* Skip auto-approve toggle when modal screen is open ([#1668](https://github.com/langchain-ai/deepagents/issues/1668)) ([6597f0b](https://github.com/langchain-ai/deepagents/commit/6597f0b8da3c3bd701a42e228660d459cefe3f64))
+* Truncate model name in status bar on narrow terminals ([#1665](https://github.com/langchain-ai/deepagents/issues/1665)) ([0e24a04](https://github.com/langchain-ai/deepagents/commit/0e24a04aa9e5894735522ce23295bb27fd2b8190))
 
 ## [0.0.27](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.26...deepagents-cli==0.0.27) (2026-03-04)
 

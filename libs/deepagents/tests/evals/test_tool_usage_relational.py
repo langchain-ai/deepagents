@@ -1,0 +1,763 @@
+"""Eval tests for relational data tool usage.
+
+Recreates the relational data environment from langchain-benchmarks: fake
+users, locations, and foods connected by IDs.  The agent receives *only* the
+lookup / search tools (no filesystem) and must chain them to answer questions.
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+import pytest
+from langchain_core.tools import ToolException, tool
+
+from deepagents import create_deep_agent
+
+if TYPE_CHECKING:
+    from langchain_core.language_models import BaseChatModel
+
+from tests.evals.utils import TrajectoryExpectations, run_agent
+
+# ---------------------------------------------------------------------------
+# Static relational data
+# ---------------------------------------------------------------------------
+
+USER_DATA = [
+    {
+        "id": 1,
+        "name": "Alice",
+        "email": "alice@gmail.com",
+        "location": 1,
+        "favorite_color": "red",
+        "favorite_foods": [1, 2, 3],
+    },
+    {
+        "id": 21,
+        "name": "Bob",
+        "email": "bob@hotmail.com",
+        "location": 2,
+        "favorite_color": "orange",
+        "favorite_foods": [4, 5, 6],
+    },
+    {
+        "id": 35,
+        "name": "Charlie",
+        "email": "charlie@yahoo.com",
+        "location": 3,
+        "favorite_color": "yellow",
+        "favorite_foods": [3, 7, 2],
+    },
+    {
+        "id": 41,
+        "name": "Donna",
+        "email": "donna@example.com",
+        "location": 4,
+        "favorite_color": "green",
+        "favorite_foods": [6, 1, 4],
+    },
+    {
+        "id": 42,
+        "name": "Eve",
+        "email": "eve@example.org",
+        "location": 5,
+        "favorite_color": "blue",
+        "favorite_foods": [5, 7, 4],
+    },
+    {
+        "id": 43,
+        "name": "Frank The Cat",
+        "email": "frank.the.cat@langchain.dev",
+        "location": 5,
+        "favorite_color": "yellow",
+        "favorite_foods": [3],
+    },
+]
+
+LOCATION_DATA = [
+    {
+        "id": 1,
+        "city": "New York",
+        "current_time": "2023-11-14 10:30 AM",
+        "current_weather": "Partly Cloudy, Temperature: 68\u00b0F",
+    },
+    {
+        "id": 2,
+        "city": "Los Angeles",
+        "current_time": "2023-11-14 7:45 AM",
+        "current_weather": "Sunny, Temperature: 75\u00b0F",
+    },
+    {
+        "id": 3,
+        "city": "Chicago",
+        "current_time": "2023-11-14 11:15 AM",
+        "current_weather": "Mostly Cloudy, Temperature: 60\u00b0F",
+    },
+    {
+        "id": 4,
+        "city": "Houston",
+        "current_time": "2023-11-14 12:00 PM",
+        "current_weather": "Rainy, Temperature: 55\u00b0F",
+    },
+    {
+        "id": 5,
+        "city": "Miami",
+        "current_time": "2023-11-14 1:20 PM",
+        "current_weather": "Partly Cloudy, Temperature: 80\u00b0F",
+    },
+]
+
+FOOD_DATA = [
+    {
+        "id": 1,
+        "name": "Pizza",
+        "calories": 285,
+        "allergic_ingredients": ["Gluten", "Dairy"],
+    },
+    {
+        "id": 2,
+        "name": "Chocolate",
+        "calories": 50,
+        "allergic_ingredients": ["Milk", "Soy"],
+    },
+    {
+        "id": 3,
+        "name": "Sushi",
+        "calories": 300,
+        "allergic_ingredients": ["Fish", "Soy"],
+    },
+    {
+        "id": 4,
+        "name": "Burger",
+        "calories": 350,
+        "allergic_ingredients": ["Gluten", "Dairy"],
+    },
+    {
+        "id": 5,
+        "name": "Ice Cream",
+        "calories": 200,
+        "allergic_ingredients": ["Dairy"],
+    },
+    {
+        "id": 6,
+        "name": "Pasta",
+        "calories": 180,
+        "allergic_ingredients": ["Gluten"],
+    },
+    {
+        "id": 7,
+        "name": "Salad",
+        "calories": 50,
+        "allergic_ingredients": [],
+    },
+]
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers (not exposed as tools)
+# ---------------------------------------------------------------------------
+
+
+def _similarity_search(data: list[dict], query: str, key: str) -> list[dict]:
+    """Jaccard-similarity search over a string field."""
+
+    def _score(x: str) -> float:
+        return len(set(x) & set(query)) / len(set(x) | set(query))
+
+    ranked = sorted(data, key=lambda x: _score(x[key]), reverse=True)
+    return [{"id": d["id"], key: d[key]} for d in ranked]
+
+
+def _get_user(user_id: int) -> dict:
+    for user in USER_DATA:
+        if user["id"] == user_id:
+            return user
+    msg = f"User ID {user_id} cannot be resolved"
+    raise ToolException(msg)
+
+
+def _get_location(location_id: int) -> dict:
+    for loc in LOCATION_DATA:
+        if loc["id"] == location_id:
+            return loc
+    msg = f"Location ID {location_id} cannot be resolved"
+    raise ToolException(msg)
+
+
+def _get_food(food_id: int) -> dict:
+    for food in FOOD_DATA:
+        if food["id"] == food_id:
+            return food
+    msg = f"Food ID {food_id} cannot be resolved"
+    raise ToolException(msg)
+
+
+# ---------------------------------------------------------------------------
+# Tools  (plain functions decorated with @tool)
+# ---------------------------------------------------------------------------
+
+
+@tool
+def get_user_name(user_id: int) -> str:
+    """Get the name of the user with the given user ID.
+
+    Args:
+        user_id: The user's ID.
+    """
+    return _get_user(user_id)["name"]
+
+
+@tool
+def list_user_ids() -> list[int]:
+    """List all the user IDs."""
+    return [u["id"] for u in USER_DATA]
+
+
+@tool
+def find_users_by_name(name: str) -> list[dict]:
+    """Find users with the given name.
+
+    Args:
+        name: The name to search for.
+    """
+    return _similarity_search(USER_DATA, name, "name")
+
+
+@tool
+def find_locations_by_name(city: str) -> list[dict]:
+    """Find locations with the given city name.
+
+    Args:
+        city: The city name to search for.
+    """
+    return _similarity_search(LOCATION_DATA, city, "city")
+
+
+@tool
+def find_foods_by_name(food: str) -> list[dict]:
+    """Find foods with the given name.
+
+    Args:
+        food: The food name to search for.
+    """
+    return _similarity_search(FOOD_DATA, food, "name")
+
+
+@tool
+def get_user_email(user_id: int) -> str:
+    """Get the email of the user with the given user ID.
+
+    Args:
+        user_id: The user's ID.
+    """
+    return _get_user(user_id)["email"]
+
+
+@tool
+def get_user_location(user_id: int) -> int:
+    """Get the location ID of the user with the given user ID.
+
+    Args:
+        user_id: The user's ID.
+    """
+    return _get_user(user_id)["location"]
+
+
+@tool
+def get_user_favorite_color(user_id: int) -> str:
+    """Get the favorite color of the user with the given user ID.
+
+    Args:
+        user_id: The user's ID.
+    """
+    return _get_user(user_id)["favorite_color"]
+
+
+@tool
+def get_user_favorite_foods(user_id: int) -> list[int]:
+    """Get the list of favorite food IDs of the user with the given user ID.
+
+    Args:
+        user_id: The user's ID.
+    """
+    return _get_user(user_id)["favorite_foods"]
+
+
+@tool
+def get_weather_at_location(location_id: int) -> str:
+    """Get the current weather at the location with the given location ID.
+
+    Args:
+        location_id: The location's ID.
+    """
+    return _get_location(location_id)["current_weather"]
+
+
+@tool
+def get_city_for_location(location_id: int) -> str:
+    """Get the city for the location with the given location ID.
+
+    Args:
+        location_id: The location's ID.
+    """
+    return _get_location(location_id)["city"]
+
+
+@tool
+def get_current_time_for_location(location_id: int) -> str:
+    """Get the current time for the location with the given location ID.
+
+    Args:
+        location_id: The location's ID.
+    """
+    return _get_location(location_id)["current_time"]
+
+
+@tool
+def get_food_name(food_id: int) -> str:
+    """Get the name of the food with the given food ID.
+
+    Args:
+        food_id: The food's ID.
+    """
+    return _get_food(food_id)["name"]
+
+
+@tool
+def get_food_calories(food_id: int) -> int:
+    """Get the calories per serving for the food with the given food ID.
+
+    Args:
+        food_id: The food's ID.
+    """
+    return _get_food(food_id)["calories"]
+
+
+@tool
+def get_food_allergic_ingredients(food_id: int) -> list[str]:
+    """Get the list of allergic ingredients for the food with the given food ID.
+
+    Args:
+        food_id: The food's ID.
+    """
+    return _get_food(food_id)["allergic_ingredients"]
+
+
+@tool
+def get_current_user_id() -> int:
+    """Get the current user's ID."""
+    return 35
+
+
+# ---------------------------------------------------------------------------
+# All relational-data tools collected for easy import
+# ---------------------------------------------------------------------------
+
+RELATIONAL_TOOLS = [
+    get_user_name,
+    list_user_ids,
+    find_users_by_name,
+    find_locations_by_name,
+    find_foods_by_name,
+    get_user_email,
+    get_user_location,
+    get_user_favorite_color,
+    get_user_favorite_foods,
+    get_weather_at_location,
+    get_city_for_location,
+    get_current_time_for_location,
+    get_food_name,
+    get_food_calories,
+    get_food_allergic_ingredients,
+    get_current_user_id,
+]
+
+# ---------------------------------------------------------------------------
+# Test cases
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.langsmith
+def test_single_tool_list_user_ids(model: BaseChatModel) -> None:
+    """Agent lists all user IDs with a single tool call."""
+    agent = create_deep_agent(
+        model=model,
+        tools=RELATIONAL_TOOLS,
+    )
+    run_agent(
+        agent,
+        model=model,
+        query="What are all the user IDs in the system?",
+        # 1st step: call list_user_ids.
+        # 2nd step: answer with the IDs.
+        # 1 tool call: list_user_ids.
+        expect=TrajectoryExpectations(num_agent_steps=2, num_tool_call_requests=1)
+        .require_tool_call(step=1, name="list_user_ids")
+        .require_final_text_contains("1")
+        .require_final_text_contains("21")
+        .require_final_text_contains("35")
+        .require_final_text_contains("41")
+        .require_final_text_contains("42")
+        .require_final_text_contains("43"),
+    )
+
+
+@pytest.mark.langsmith
+def test_single_tool_get_user_email(model: BaseChatModel) -> None:
+    """Agent retrieves a user's email by ID."""
+    agent = create_deep_agent(
+        model=model,
+        tools=RELATIONAL_TOOLS,
+    )
+    run_agent(
+        agent,
+        model=model,
+        query="What is the email address of user 21?",
+        # 1st step: call get_user_email with user_id=21.
+        # 2nd step: answer with the email.
+        # 1 tool call: get_user_email.
+        expect=TrajectoryExpectations(num_agent_steps=2, num_tool_call_requests=1)
+        .require_tool_call(step=1, name="get_user_email", args_contains={"user_id": 21})
+        .require_final_text_contains("bob@hotmail.com"),
+    )
+
+
+@pytest.mark.langsmith
+def test_single_tool_get_food_calories(model: BaseChatModel) -> None:
+    """Agent retrieves calorie info for a food by ID."""
+    agent = create_deep_agent(
+        model=model,
+        tools=RELATIONAL_TOOLS,
+    )
+    run_agent(
+        agent,
+        model=model,
+        query="How many calories does food 5 have per serving?",
+        # 1st step: call get_food_calories with food_id=5.
+        # 2nd step: answer with the calorie count.
+        # 1 tool call: get_food_calories.
+        expect=TrajectoryExpectations(num_agent_steps=2, num_tool_call_requests=1)
+        .require_tool_call(step=1, name="get_food_calories", args_contains={"food_id": 5})
+        .require_final_text_contains("200"),
+    )
+
+
+@pytest.mark.langsmith
+def test_two_tools_user_name_from_current_id(model: BaseChatModel) -> None:
+    """Agent gets the current user ID, then looks up the name."""
+    agent = create_deep_agent(
+        model=model,
+        tools=RELATIONAL_TOOLS,
+    )
+    run_agent(
+        agent,
+        model=model,
+        query="What is the name of the current user?",
+        # 1st step: call get_current_user_id -> 35.
+        # 2nd step: call get_user_name(user_id=35) -> "Charlie".
+        # 3rd step: answer with the name.
+        # 2 tool calls: get_current_user_id, get_user_name.
+        expect=TrajectoryExpectations(num_agent_steps=3, num_tool_call_requests=2)
+        .require_tool_call(step=1, name="get_current_user_id")
+        .require_tool_call(step=2, name="get_user_name", args_contains={"user_id": 35})
+        .require_final_text_contains("Charlie"),
+    )
+
+
+@pytest.mark.langsmith
+def test_two_tools_city_for_user(model: BaseChatModel) -> None:
+    """Agent resolves user 1's location ID, then gets the city name."""
+    agent = create_deep_agent(
+        model=model,
+        tools=RELATIONAL_TOOLS,
+    )
+    run_agent(
+        agent,
+        model=model,
+        query="What city does user 1 live in?",
+        # 1st step: call get_user_location(user_id=1) -> 1.
+        # 2nd step: call get_city_for_location(location_id=1) -> "New York".
+        # 3rd step: answer with the city.
+        # 2 tool calls: get_user_location, get_city_for_location.
+        expect=TrajectoryExpectations(num_agent_steps=3, num_tool_call_requests=2)
+        .require_tool_call(step=1, name="get_user_location", args_contains={"user_id": 1})
+        .require_tool_call(step=2, name="get_city_for_location", args_contains={"location_id": 1})
+        .require_final_text_contains("New York"),
+    )
+
+
+@pytest.mark.langsmith
+def test_two_tools_find_user_then_email(model: BaseChatModel) -> None:
+    """Agent searches for a user by name, then gets their email."""
+    agent = create_deep_agent(
+        model=model,
+        tools=RELATIONAL_TOOLS,
+    )
+    run_agent(
+        agent,
+        model=model,
+        query="What is Eve's email address?",
+        # 1st step: call find_users_by_name(name="Eve") -> [{id: 42, ...}, ...].
+        # 2nd step: call get_user_email(user_id=42) -> "eve@example.org".
+        # 3rd step: answer with the email.
+        # 2 tool calls: find_users_by_name, get_user_email.
+        expect=TrajectoryExpectations(num_agent_steps=3, num_tool_call_requests=2)
+        .require_tool_call(step=1, name="find_users_by_name", args_contains={"name": "Eve"})
+        .require_tool_call(step=2, name="get_user_email", args_contains={"user_id": 42})
+        .require_final_text_contains("eve@example.org"),
+    )
+
+
+@pytest.mark.langsmith
+def test_three_tools_current_user_city(model: BaseChatModel) -> None:
+    """Agent resolves current user -> location ID -> city name."""
+    agent = create_deep_agent(
+        model=model,
+        tools=RELATIONAL_TOOLS,
+    )
+    run_agent(
+        agent,
+        model=model,
+        query="What city does the current user live in?",
+        # 1st step: get_current_user_id -> 35.
+        # 2nd step: get_user_location(35) -> 3.
+        # 3rd step: get_city_for_location(3) -> "Chicago".
+        # 4th step: answer.
+        # 3 tool calls.
+        expect=TrajectoryExpectations(num_agent_steps=4, num_tool_call_requests=3)
+        .require_tool_call(step=1, name="get_current_user_id")
+        .require_tool_call(step=2, name="get_user_location", args_contains={"user_id": 35})
+        .require_tool_call(step=3, name="get_city_for_location", args_contains={"location_id": 3})
+        .require_final_text_contains("Chicago"),
+    )
+
+
+@pytest.mark.langsmith
+def test_three_tools_find_user_then_city(model: BaseChatModel) -> None:
+    """Agent searches for Alice by name, gets her location ID, then resolves the city."""
+    agent = create_deep_agent(
+        model=model,
+        tools=RELATIONAL_TOOLS,
+    )
+    run_agent(
+        agent,
+        model=model,
+        query="What city does Alice live in?",
+        # 1st step: find_users_by_name("Alice") -> [{id: 1, ...}, ...].
+        # 2nd step: get_user_location(1) -> 1.
+        # 3rd step: get_city_for_location(1) -> "New York".
+        # 4th step: answer.
+        # 3 tool calls.
+        expect=TrajectoryExpectations(num_agent_steps=4, num_tool_call_requests=3)
+        .require_tool_call(step=1, name="find_users_by_name", args_contains={"name": "Alice"})
+        .require_tool_call(step=2, name="get_user_location", args_contains={"user_id": 1})
+        .require_tool_call(step=3, name="get_city_for_location", args_contains={"location_id": 1})
+        .require_final_text_contains("New York"),
+    )
+
+
+@pytest.mark.langsmith
+def test_three_tools_current_user_weather(model: BaseChatModel) -> None:
+    """Agent resolves current user -> location ID -> weather."""
+    agent = create_deep_agent(
+        model=model,
+        tools=RELATIONAL_TOOLS,
+    )
+    run_agent(
+        agent,
+        model=model,
+        query="What is the current weather where the current user lives?",
+        # 1st step: get_current_user_id -> 35.
+        # 2nd step: get_user_location(35) -> 3.
+        # 3rd step: get_weather_at_location(3) -> "Mostly Cloudy, Temperature: 60F".
+        # 4th step: answer.
+        # 3 tool calls.
+        expect=TrajectoryExpectations(num_agent_steps=4, num_tool_call_requests=3)
+        .require_tool_call(step=1, name="get_current_user_id")
+        .require_tool_call(step=2, name="get_user_location", args_contains={"user_id": 35})
+        .require_tool_call(step=3, name="get_weather_at_location", args_contains={"location_id": 3})
+        .require_final_text_contains("60", case_insensitive=True),
+    )
+
+
+@pytest.mark.langsmith
+def test_four_tools_current_user_favorite_food_names(model: BaseChatModel) -> None:
+    """Agent resolves current user -> favorite food IDs -> food names (parallel)."""
+    agent = create_deep_agent(
+        model=model,
+        tools=RELATIONAL_TOOLS,
+    )
+    run_agent(
+        agent,
+        model=model,
+        query="What are the names of the current user's favorite foods?",
+        # 1st step: get_current_user_id -> 35.
+        # 2nd step: get_user_favorite_foods(35) -> [3, 7, 2].
+        # 3rd step: get_food_name(3), get_food_name(7), get_food_name(2) in parallel.
+        # 4th step: answer.
+        # 5 tool call requests: 1 + 1 + 3 parallel.
+        # 4 agent steps: the 3 parallel calls count as one step.
+        expect=TrajectoryExpectations(num_agent_steps=4, num_tool_call_requests=5)
+        .require_tool_call(step=1, name="get_current_user_id")
+        .require_tool_call(step=2, name="get_user_favorite_foods", args_contains={"user_id": 35})
+        .require_tool_call(step=3, name="get_food_name", args_contains={"food_id": 3})
+        .require_tool_call(step=3, name="get_food_name", args_contains={"food_id": 7})
+        .require_tool_call(step=3, name="get_food_name", args_contains={"food_id": 2})
+        .require_final_text_contains("Sushi")
+        .require_final_text_contains("Salad")
+        .require_final_text_contains("Chocolate"),
+    )
+
+
+@pytest.mark.langsmith
+def test_four_tools_find_user_food_name_and_calories(model: BaseChatModel) -> None:
+    """Agent finds Frank The Cat -> fav foods -> food name + calories (parallel)."""
+    agent = create_deep_agent(
+        model=model,
+        tools=RELATIONAL_TOOLS,
+    )
+    run_agent(
+        agent,
+        model=model,
+        query=("How many calories per serving does Frank The Cat's favorite food have? Also tell me the name of the food."),
+        # 1st step: find_users_by_name("Frank The Cat") -> [{id: 43, ...}, ...].
+        # 2nd step: get_user_favorite_foods(43) -> [3].
+        # 3rd step: get_food_name(3) and get_food_calories(3) in parallel.
+        # 4th step: answer.
+        # 4 tool call requests: 1 + 1 + 2 parallel.
+        # 4 agent steps.
+        expect=TrajectoryExpectations(num_agent_steps=4, num_tool_call_requests=4)
+        .require_tool_call(step=1, name="find_users_by_name")
+        .require_tool_call(step=2, name="get_user_favorite_foods", args_contains={"user_id": 43})
+        .require_tool_call(step=3, name="get_food_name", args_contains={"food_id": 3})
+        .require_tool_call(step=3, name="get_food_calories", args_contains={"food_id": 3})
+        .require_final_text_contains("Sushi")
+        .require_final_text_contains("300"),
+    )
+
+
+@pytest.mark.langsmith
+def test_four_tools_current_user_location_time_and_weather(model: BaseChatModel) -> None:
+    """Agent resolves current user -> location -> time + weather (parallel)."""
+    agent = create_deep_agent(
+        model=model,
+        tools=RELATIONAL_TOOLS,
+    )
+    run_agent(
+        agent,
+        model=model,
+        query=("What is the current time and weather where the current user lives?"),
+        # 1st step: get_current_user_id -> 35.
+        # 2nd step: get_user_location(35) -> 3.
+        # 3rd step: get_current_time_for_location(3) and
+        #           get_weather_at_location(3) in parallel.
+        # 4th step: answer.
+        # 4 tool call requests: 1 + 1 + 2 parallel.
+        # 4 agent steps.
+        expect=TrajectoryExpectations(num_agent_steps=4, num_tool_call_requests=4)
+        .require_tool_call(step=1, name="get_current_user_id")
+        .require_tool_call(step=2, name="get_user_location", args_contains={"user_id": 35})
+        .require_tool_call(step=3, name="get_current_time_for_location", args_contains={"location_id": 3})
+        .require_tool_call(step=3, name="get_weather_at_location", args_contains={"location_id": 3})
+        .require_final_text_contains("11:15")
+        .require_final_text_contains("60", case_insensitive=True),
+    )
+
+
+@pytest.mark.langsmith
+def test_five_steps_current_user_food_names_and_calories(model: BaseChatModel) -> None:
+    """Agent resolves current user -> fav foods -> names + calories (all parallel)."""
+    agent = create_deep_agent(
+        model=model,
+        tools=RELATIONAL_TOOLS,
+    )
+    run_agent(
+        agent,
+        model=model,
+        query=("For each of the current user's favorite foods, tell me the food name and how many calories per serving it has."),
+        # 1st step: get_current_user_id -> 35.
+        # 2nd step: get_user_favorite_foods(35) -> [3, 7, 2].
+        # 3rd step: get_food_name and get_food_calories for each food ID, all 6 in parallel.
+        # 4th step: answer.
+        # 8 tool call requests: 1 + 1 + 6 parallel.
+        # 4 agent steps.
+        expect=TrajectoryExpectations(num_agent_steps=4, num_tool_call_requests=8)
+        .require_tool_call(step=1, name="get_current_user_id")
+        .require_tool_call(step=2, name="get_user_favorite_foods", args_contains={"user_id": 35})
+        .require_tool_call(step=3, name="get_food_name", args_contains={"food_id": 3})
+        .require_tool_call(step=3, name="get_food_name", args_contains={"food_id": 7})
+        .require_tool_call(step=3, name="get_food_name", args_contains={"food_id": 2})
+        .require_tool_call(step=3, name="get_food_calories", args_contains={"food_id": 3})
+        .require_tool_call(step=3, name="get_food_calories", args_contains={"food_id": 7})
+        .require_tool_call(step=3, name="get_food_calories", args_contains={"food_id": 2})
+        .require_final_text_contains("Sushi")
+        .require_final_text_contains("300")
+        .require_final_text_contains("Salad")
+        .require_final_text_contains("50")
+        .require_final_text_contains("Chocolate"),
+    )
+
+
+@pytest.mark.langsmith
+def test_four_steps_find_user_city_and_weather(model: BaseChatModel) -> None:
+    """Agent finds Bob -> location -> city + time + weather (parallel)."""
+    agent = create_deep_agent(
+        model=model,
+        tools=RELATIONAL_TOOLS,
+    )
+    run_agent(
+        agent,
+        model=model,
+        query=("Find Bob and tell me what city he lives in, the current time there, and the current weather."),
+        # 1st step: find_users_by_name("Bob") -> [{id: 21, ...}, ...].
+        # 2nd step: get_user_location(21) -> 2.
+        # 3rd step: get_city_for_location(2), get_current_time_for_location(2),
+        #           get_weather_at_location(2) in parallel.
+        # 4th step: answer.
+        # 5 tool call requests: 1 + 1 + 3 parallel.
+        # 4 agent steps.
+        expect=TrajectoryExpectations(num_agent_steps=4, num_tool_call_requests=5)
+        .require_tool_call(step=1, name="find_users_by_name", args_contains={"name": "Bob"})
+        .require_tool_call(step=2, name="get_user_location", args_contains={"user_id": 21})
+        .require_tool_call(step=3, name="get_city_for_location", args_contains={"location_id": 2})
+        .require_tool_call(step=3, name="get_current_time_for_location", args_contains={"location_id": 2})
+        .require_tool_call(step=3, name="get_weather_at_location", args_contains={"location_id": 2})
+        .require_final_text_contains("Los Angeles")
+        .require_final_text_contains("7:45")
+        .require_final_text_contains("75", case_insensitive=True),
+    )
+
+
+@pytest.mark.langsmith
+def test_four_steps_find_user_food_allergies(model: BaseChatModel) -> None:
+    """Agent finds Alice -> fav foods -> food names + allergies (all parallel)."""
+    agent = create_deep_agent(
+        model=model,
+        tools=RELATIONAL_TOOLS,
+    )
+    run_agent(
+        agent,
+        model=model,
+        query=("What are the names and allergic ingredients of all of Alice's favorite foods?"),
+        # 1st step: find_users_by_name("Alice") -> [{id: 1, ...}, ...].
+        # 2nd step: get_user_favorite_foods(1) -> [1, 2, 3].
+        # 3rd step: get_food_name and get_food_allergic_ingredients for each, all 6 in parallel.
+        # 4th step: answer.
+        # 8 tool call requests: 1 + 1 + 6 parallel.
+        # 4 agent steps.
+        expect=TrajectoryExpectations(num_agent_steps=4, num_tool_call_requests=8)
+        .require_tool_call(step=1, name="find_users_by_name", args_contains={"name": "Alice"})
+        .require_tool_call(step=2, name="get_user_favorite_foods", args_contains={"user_id": 1})
+        .require_tool_call(step=3, name="get_food_name", args_contains={"food_id": 1})
+        .require_tool_call(step=3, name="get_food_name", args_contains={"food_id": 2})
+        .require_tool_call(step=3, name="get_food_name", args_contains={"food_id": 3})
+        .require_tool_call(step=3, name="get_food_allergic_ingredients", args_contains={"food_id": 1})
+        .require_tool_call(step=3, name="get_food_allergic_ingredients", args_contains={"food_id": 2})
+        .require_tool_call(step=3, name="get_food_allergic_ingredients", args_contains={"food_id": 3})
+        .require_final_text_contains("Pizza")
+        .require_final_text_contains("Gluten")
+        .require_final_text_contains("Chocolate")
+        .require_final_text_contains("Milk")
+        .require_final_text_contains("Sushi")
+        .require_final_text_contains("Fish"),
+    )

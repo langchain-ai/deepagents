@@ -46,7 +46,7 @@ class TestFuzzyScore:
     def test_no_match_returns_low_score(self):
         """Completely unrelated strings get very low scores."""
         score = _fuzzy_score("xyz", "abc.py")
-        assert score < 15  # Below MIN_FUZZY_SCORE threshold
+        assert score < 25  # Below MIN_FUZZY_SCORE threshold
 
     def test_case_insensitive(self):
         """Matching is case insensitive."""
@@ -305,8 +305,12 @@ class TestScoreCommand:
     def test_substring_name_returns_150(self):
         assert self.score("omp", "/compact", "Summarize conversation") == 150
 
-    def test_substring_desc_returns_100(self):
-        assert self.score("exit", "/quit", "Exit app") == 100
+    def test_substring_desc_word_boundary_returns_110(self):
+        assert self.score("exit", "/quit", "Exit app") == 110
+
+    def test_substring_desc_mid_word_returns_90(self):
+        desc = "Summarize conversation to reduce context usage"
+        assert self.score("ex", "/compact", desc) == 90
 
     def test_no_match_returns_zero(self):
         assert self.score("zzzzz", "/help", "Show help") == 0
@@ -319,9 +323,11 @@ class TestScoreCommand:
         """Prefix > substring-name > substring-desc > fuzzy."""
         prefix = self.score("hel", "/help", "Show help")
         substr_name = self.score("omp", "/compact", "Summarize conversation")
-        substr_desc = self.score("exit", "/quit", "Exit app")
+        desc_boundary = self.score("exit", "/quit", "Exit app")
+        compact_desc = "Summarize conversation to reduce context usage"
+        desc_mid = self.score("ex", "/compact", compact_desc)
         fuzzy = self.score("hlep", "/help", "Show help")
-        assert prefix > substr_name > substr_desc > fuzzy > 0
+        assert prefix > substr_name > desc_boundary > desc_mid > fuzzy > 0
 
 
 class TestFuzzyFileControllerCanHandle:

@@ -114,8 +114,11 @@ SLASH_COMMANDS: list[tuple[str, str]] = [
 MAX_SUGGESTIONS = 10
 """UI cap so the completion popup doesn't get unwieldy."""
 
-_MIN_FUZZY_SCORE = 15
+_MIN_FUZZY_SCORE = 25
 """Minimum score to include in results (shared by slash + file completion)."""
+
+_MIN_DESC_SEARCH_LEN = 2
+"""Minimum query length to search command descriptions (avoids single-char noise)."""
 
 
 class SlashCommandController:
@@ -173,9 +176,13 @@ class SlashCommandController:
         # Substring match on command name
         if search in name:
             return 150.0
-        # Substring match on description
-        if search in lower_desc:
-            return 100.0
+        # Substring match on description (require ≥2 chars to avoid single-letter noise)
+        if len(search) >= _MIN_DESC_SEARCH_LEN and search in lower_desc:
+            idx = lower_desc.find(search)
+            # Word-boundary bonus: match at start of description or after a space
+            if idx == 0 or lower_desc[idx - 1] == " ":
+                return 110.0
+            return 90.0
         # Fuzzy match via SequenceMatcher on name + desc
         name_ratio = SequenceMatcher(None, search, name).ratio()
         desc_ratio = SequenceMatcher(None, search, lower_desc).ratio()

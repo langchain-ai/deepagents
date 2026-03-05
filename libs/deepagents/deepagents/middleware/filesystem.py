@@ -19,7 +19,7 @@ from langchain.agents.middleware.types import (
 from langchain.tools import ToolRuntime
 from langchain.tools.tool_node import ToolCallRequest
 from langchain_core.messages import ToolMessage
-from langchain_core.messages.content import create_image_block
+from langchain_core.messages.content import ContentBlock, create_image_block
 from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.types import Command
 from typing_extensions import TypedDict
@@ -375,9 +375,29 @@ def _extract_text_from_message(message: ToolMessage) -> str:
         Joined text from all text content blocks, or stringified content as fallback.
     """
     texts = [block["text"] for block in message.content_blocks if block["type"] == "text"]
-    if texts:
-        return "\n".join(texts)
-    return str(message.content)
+    return "\n".join(texts)
+
+
+def _build_evicted_content(message: ToolMessage, replacement_text: str) -> str | list[ContentBlock]:
+    """Build replacement content for an evicted message, preserving non-text blocks.
+
+    For plain string content, returns the replacement text directly. For list content
+    with mixed block types (e.g., text + image), replaces all text blocks with a single
+    text block containing the replacement text while keeping non-text blocks intact.
+
+    Args:
+        message: The original ToolMessage being evicted.
+        replacement_text: The truncation notice and preview text.
+
+    Returns:
+        Replacement content: a string or list of content blocks.
+    """
+    if isinstance(message.content, str):
+        return replacement_text
+    non_text = [block for block in message.content_blocks if block["type"] != "text"]
+    if not non_text:
+        return replacement_text
+    return [cast("ContentBlock", {"type": "text", "text": replacement_text}), *non_text]
 
 
 class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]):
@@ -1122,10 +1142,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
         Note:
             Text is extracted from all text content blocks, joined, and used for both the
-            size check and eviction. Non-text blocks (images, audio, etc.) are ignored so
-            that large binary payloads do not inflate the size measurement. The replacement
-            is always returned as a plain string for consistency, regardless of original
-            content type. The model can recover by reading the offloaded file from the backend.
+            size check and eviction. Non-text blocks (images, audio, etc.) are preserved in
+            the replacement message so multimodal context is not lost. The model can recover
+            the full text by reading the offloaded file from the backend.
         """
         # Early exit if eviction not configured
         if not self._tool_token_limit_before_evict:
@@ -1152,9 +1171,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             content_sample=content_sample,
         )
 
-        # Always return as plain string after eviction
+        evicted = _build_evicted_content(message, replacement_text)
         processed_message = ToolMessage(
-            content=replacement_text,
+            content=cast("str | list[str | dict]", evicted),
             tool_call_id=message.tool_call_id,
             name=message.name,
             id=message.id,
@@ -1199,9 +1218,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             content_sample=content_sample,
         )
 
-        # Always return as plain string after eviction
+        evicted = _build_evicted_content(message, replacement_text)
         processed_message = ToolMessage(
-            content=replacement_text,
+            content=cast("str | list[str | dict]", evicted),
             tool_call_id=message.tool_call_id,
             name=message.name,
             id=message.id,

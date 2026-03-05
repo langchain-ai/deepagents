@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 
 from deepagents._version import __version__
 from deepagents.graph import get_default_model
-from tests.evals.utils import efficiency_results
+from tests.evals.utils import EfficiencyResult  # noqa: TC001 -- needed at runtime by collect_efficiency_result
 
 _RESULTS: dict[str, int] = {
     "passed": 0,
@@ -22,6 +22,19 @@ _RESULTS: dict[str, int] = {
 }
 
 _DURATIONS_S: list[float] = []
+
+_EFFICIENCY_RESULTS: list[EfficiencyResult] = []
+
+
+def collect_efficiency_result(result: EfficiencyResult) -> None:
+    """Append an efficiency result for the current test.
+
+    Called by the assertion runner in ``utils.py``.
+
+    Args:
+        result: The efficiency data for a single test.
+    """
+    _EFFICIENCY_RESULTS.append(result)
 
 
 def _micro_ratio(expected_attr: str, actual_attr: str) -> float | None:
@@ -34,7 +47,7 @@ def _micro_ratio(expected_attr: str, actual_attr: str) -> float | None:
     """
     total_expected = 0
     total_actual = 0
-    for r in efficiency_results:
+    for r in _EFFICIENCY_RESULTS:
         expected = getattr(r, expected_attr)
         if expected is not None:
             total_expected += expected

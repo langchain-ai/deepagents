@@ -809,19 +809,19 @@ class EfficiencyResult:
     actual_tool_calls: int
 
 
-efficiency_results: list[EfficiencyResult] = []
-"""Collected by the assertion runner, read by the reporter."""
-
-
 def _log_efficiency(
     trajectory: AgentTrajectory,
     scorer: TrajectoryScorer,
-) -> None:
-    """Log efficiency feedback and collect data for the session reporter.
+) -> EfficiencyResult | None:
+    """Log efficiency feedback to LangSmith and return collected data.
 
     Args:
         trajectory: The agent trajectory.
         scorer: The scorer containing efficiency expectations.
+
+    Returns:
+        An ``EfficiencyResult`` when the scorer has step or tool-call
+        expectations, ``None`` otherwise.
     """
     actual_steps = len(trajectory.steps)
     actual_tool_calls = sum(len(s.action.tool_calls) for s in trajectory.steps)
@@ -841,15 +841,15 @@ def _log_efficiency(
     if expected_tool_calls is not None:
         t.log_feedback(key="expected_tool_call_requests", value=expected_tool_calls)
 
-    if expected_steps is not None or expected_tool_calls is not None:
-        efficiency_results.append(
-            EfficiencyResult(
-                expected_steps=expected_steps,
-                actual_steps=actual_steps,
-                expected_tool_calls=expected_tool_calls,
-                actual_tool_calls=actual_tool_calls,
-            )
-        )
+    if expected_steps is None and expected_tool_calls is None:
+        return None
+
+    return EfficiencyResult(
+        expected_steps=expected_steps,
+        actual_steps=actual_steps,
+        expected_tool_calls=expected_tool_calls,
+        actual_tool_calls=actual_tool_calls,
+    )
 
 
 def _assert_expectations(
@@ -865,7 +865,11 @@ def _assert_expectations(
         trajectory: The agent trajectory to validate.
         scorer: The two-tier expectation container.
     """
-    _log_efficiency(trajectory, scorer)
+    eff_result = _log_efficiency(trajectory, scorer)
+    if eff_result is not None:
+        from tests.evals.pytest_reporter import collect_efficiency_result  # noqa: PLC0415 -- deferred to avoid circular import
+
+        collect_efficiency_result(eff_result)
 
     # Hard correctness checks
     success = True

@@ -6,9 +6,11 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from rich.text import Text
 from textual.containers import Horizontal
 from textual.css.query import NoMatches
 from textual.reactive import reactive
+from textual.widget import Widget
 from textual.widgets import Static
 
 from deepagents_cli.config import COLORS, settings
@@ -16,7 +18,41 @@ from deepagents_cli.config import COLORS, settings
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from textual.app import ComposeResult
+    from textual.app import ComposeResult, RenderResult
+
+
+class ModelLabel(Widget):
+    """A label that displays a model name, right-aligned with smart truncation.
+
+    When the full `provider:model` text doesn't fit, the provider is dropped
+    first. If the bare model name still doesn't fit, it is left-truncated
+    with a leading ellipsis so the most distinctive tail stays visible.
+    """
+
+    provider: reactive[str] = reactive("", layout=True)
+    model: reactive[str] = reactive("", layout=True)
+
+    def render(self) -> RenderResult:
+        """Render the model label with width-aware truncation.
+
+        Returns:
+            Right-aligned text, truncated from the left when necessary.
+        """
+        width = self.content_size.width
+        if not self.model or width <= 0:
+            return ""
+        full = f"{self.provider}:{self.model}" if self.provider else self.model
+        if len(full) <= width:
+            return Text(full, no_wrap=True, justify="right")
+        if len(self.model) <= width:
+            return Text(self.model, no_wrap=True, justify="right")
+        if width > 1:
+            return Text(
+                "\u2026" + self.model[-(width - 1) :],
+                no_wrap=True,
+                justify="right",
+            )
+        return Text("\u2026", no_wrap=True, justify="right")
 
 
 class StatusBar(Horizontal):
@@ -66,7 +102,7 @@ class StatusBar(Horizontal):
     }
 
     StatusBar .status-message {
-        width: 1fr;
+        width: auto;
         padding: 0 1;
         color: $text-muted;
     }
@@ -87,10 +123,11 @@ class StatusBar(Horizontal):
         color: $text-muted;
     }
 
-    StatusBar .status-model {
-        width: auto;
-        padding: 0 1;
+    StatusBar ModelLabel {
+        width: 1fr;
+        padding: 0 2;
         color: $text-muted;
+        text-align: right;
     }
     """.replace("__MODE_BASH__", COLORS["mode_bash"]).replace(
         "__MODE_CMD__", COLORS["mode_command"]
@@ -113,7 +150,7 @@ class StatusBar(Horizontal):
         # Store initial cwd - will be used in compose()
         self._initial_cwd = str(cwd) if cwd else str(Path.cwd())
 
-    def compose(self) -> ComposeResult:
+    def compose(self) -> ComposeResult:  # noqa: PLR6301 — Textual widget method
         """Compose the status bar layout.
 
         Yields:
@@ -128,23 +165,15 @@ class StatusBar(Horizontal):
         yield Static("", classes="status-message", id="status-message")
         yield Static("", classes="status-cwd", id="cwd-display")
         yield Static("", classes="status-tokens", id="tokens-display")
-        model_display = self._format_model_display()
-        yield Static(model_display, classes="status-model", id="model-display")
-
-    def _format_model_display(self) -> str:  # noqa: PLR6301  # Textual widget method convention
-        """Format the model display string.
-
-        Returns:
-            Model display string in `provider:model` format if provider is known,
-                otherwise just the model name.
-        """
-        if settings.model_provider and settings.model_name:
-            return f"{settings.model_provider}:{settings.model_name}"
-        return settings.model_name or ""
+        yield ModelLabel(id="model-display")
 
     def on_mount(self) -> None:
         """Set reactive values after mount to trigger watchers safely."""
         self.cwd = self._initial_cwd
+        # Set initial model display
+        label = self.query_one("#model-display", ModelLabel)
+        label.provider = settings.model_provider or ""
+        label.model = settings.model_name or ""
 
     def watch_mode(self, mode: str) -> None:
         """Update mode indicator when mode changes."""
@@ -270,11 +299,13 @@ class StatusBar(Horizontal):
         """Hide the token display (e.g., during streaming)."""
         self.query_one("#tokens-display", Static).update("")
 
-    def set_model(self, model_spec: str) -> None:
+    def set_model(self, *, provider: str, model: str) -> None:
         """Update the model display text.
 
         Args:
-            model_spec: Model specification to display (e.g.,
-                `'anthropic:claude-sonnet-4-5'`).
+            provider: Model provider name (e.g., `'anthropic'`).
+            model: Model name (e.g., `'claude-sonnet-4-5'`).
         """
-        self.query_one("#model-display", Static).update(model_spec)
+        label = self.query_one("#model-display", ModelLabel)
+        label.provider = provider
+        label.model = model

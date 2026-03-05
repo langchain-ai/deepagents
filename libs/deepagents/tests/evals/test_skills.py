@@ -8,7 +8,15 @@ from deepagents import create_deep_agent
 
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
-from tests.evals.utils import TrajectoryExpectations, run_agent
+from tests.evals.utils import (
+    TrajectoryScorer,
+    file_contains,
+    file_excludes,
+    final_text_contains,
+    final_text_excludes,
+    run_agent,
+    tool_call,
+)
 
 
 def _skill_content(name: str, description: str, body: str) -> str:
@@ -34,10 +42,16 @@ def test_read_skill_full_content(model: BaseChatModel) -> None:
         # Step 1: read_file to get the skill content.
         # Step 2: answer with the magic number.
         # 1 tool call request: read_file.
-        expect=(
-            TrajectoryExpectations(num_agent_steps=2, num_tool_call_requests=1)
-            .require_tool_call(step=1, name="read_file", args_contains={"file_path": "/skills/user/data-analysis/SKILL.md"})
-            .require_final_text_contains("ALPHA-7-ZULU")
+        scorer=(
+            TrajectoryScorer()
+            .expect(
+                agent_steps=2,
+                tool_call_requests=1,
+                tool_calls=[tool_call(name="read_file", step=1, args_contains={"file_path": "/skills/user/data-analysis/SKILL.md"})],
+            )
+            .success(
+                final_text_contains("ALPHA-7-ZULU"),
+            )
         ),
     )
 
@@ -46,7 +60,7 @@ def test_read_skill_full_content(model: BaseChatModel) -> None:
 def test_read_skill_by_name(model: BaseChatModel) -> None:
     """Agent finds and reads the correct skill by name when multiple skills are available."""
     agent = create_deep_agent(model=model, skills=["/skills/user/"])
-    trajectory = run_agent(
+    run_agent(
         agent,
         model=model,
         initial_files={
@@ -65,13 +79,19 @@ def test_read_skill_by_name(model: BaseChatModel) -> None:
         # Step 1: read_file for code-review only.
         # Step 2: answer with the code.
         # 1 tool call request: read_file (code-review only).
-        expect=(
-            TrajectoryExpectations(num_agent_steps=2, num_tool_call_requests=1)
-            .require_tool_call(step=1, name="read_file", args_contains={"file_path": "/skills/user/code-review/SKILL.md"})
-            .require_final_text_contains("BRAVO-LIMA")
+        scorer=(
+            TrajectoryScorer()
+            .expect(
+                agent_steps=2,
+                tool_call_requests=1,
+                tool_calls=[tool_call(name="read_file", step=1, args_contains={"file_path": "/skills/user/code-review/SKILL.md"})],
+            )
+            .success(
+                final_text_contains("BRAVO-LIMA"),
+                final_text_excludes("CHARLIE-ECHO"),
+            )
         ),
     )
-    assert "CHARLIE-ECHO" not in trajectory.answer
 
 
 @pytest.mark.langsmith
@@ -97,12 +117,20 @@ def test_combine_two_skills(model: BaseChatModel) -> None:
         # Step 1: read_file for both skills in parallel.
         # Step 2: answer combining both ports.
         # 2 tool call requests: read_file (frontend-deploy) + read_file (backend-deploy).
-        expect=(
-            TrajectoryExpectations(num_agent_steps=2, num_tool_call_requests=2)
-            .require_tool_call(step=1, name="read_file", args_contains={"file_path": "/skills/user/frontend-deploy/SKILL.md"})
-            .require_tool_call(step=1, name="read_file", args_contains={"file_path": "/skills/user/backend-deploy/SKILL.md"})
-            .require_final_text_contains("3000")
-            .require_final_text_contains("8080")
+        scorer=(
+            TrajectoryScorer()
+            .expect(
+                agent_steps=2,
+                tool_call_requests=2,
+                tool_calls=[
+                    tool_call(name="read_file", step=1, args_contains={"file_path": "/skills/user/frontend-deploy/SKILL.md"}),
+                    tool_call(name="read_file", step=1, args_contains={"file_path": "/skills/user/backend-deploy/SKILL.md"}),
+                ],
+            )
+            .success(
+                final_text_contains("3000"),
+                final_text_contains("8080"),
+            )
         ),
     )
 
@@ -111,7 +139,7 @@ def test_combine_two_skills(model: BaseChatModel) -> None:
 def test_update_skill_typo_fix_no_read(model: BaseChatModel) -> None:
     """Agent fixes a known typo with a single direct edit, without reading first."""
     agent = create_deep_agent(model=model, skills=["/skills/user/"])
-    trajectory = run_agent(
+    run_agent(
         agent,
         model=model,
         initial_files={
@@ -126,21 +154,27 @@ def test_update_skill_typo_fix_no_read(model: BaseChatModel) -> None:
             "Do not read the file before editing it. Edit the file directly. "
             "After editing, do NOT add any explanation; reply DONE only."
         ),
-        expect=(
-            TrajectoryExpectations(num_agent_steps=2, num_tool_call_requests=1)
-            .require_tool_call(step=1, name="edit_file", args_contains={"file_path": "/skills/user/testing/SKILL.md"})
-            .require_final_text_contains("DONE")
+        scorer=(
+            TrajectoryScorer()
+            .expect(
+                agent_steps=2,
+                tool_call_requests=1,
+                tool_calls=[tool_call(name="edit_file", step=1, args_contains={"file_path": "/skills/user/testing/SKILL.md"})],
+            )
+            .success(
+                final_text_contains("DONE"),
+                file_excludes("/skills/user/testing/SKILL.md", "test suiet"),
+                file_contains("/skills/user/testing/SKILL.md", "test suite"),
+            )
         ),
     )
-    assert "test suiet" not in trajectory.files["/skills/user/testing/SKILL.md"]
-    assert "test suite" in trajectory.files["/skills/user/testing/SKILL.md"]
 
 
 @pytest.mark.langsmith
 def test_update_skill_typo_fix_requires_read(model: BaseChatModel) -> None:
     """Agent must read a skill file to discover and fix an unknown typo."""
     agent = create_deep_agent(model=model, skills=["/skills/user/"])
-    trajectory = run_agent(
+    run_agent(
         agent,
         model=model,
         initial_files={
@@ -155,14 +189,22 @@ def test_update_skill_typo_fix_requires_read(model: BaseChatModel) -> None:
         # Step 2: edit_file to fix it.
         # Step 3: confirm.
         # 2 tool call requests: read_file + edit_file.
-        expect=(
-            TrajectoryExpectations(num_agent_steps=3, num_tool_call_requests=2)
-            .require_tool_call(step=1, name="read_file", args_contains={"file_path": "/skills/user/testing/SKILL.md"})
-            .require_tool_call(step=2, name="edit_file", args_contains={"file_path": "/skills/user/testing/SKILL.md"})
+        scorer=(
+            TrajectoryScorer()
+            .expect(
+                agent_steps=3,
+                tool_call_requests=2,
+                tool_calls=[
+                    tool_call(name="read_file", step=1, args_contains={"file_path": "/skills/user/testing/SKILL.md"}),
+                    tool_call(name="edit_file", step=2, args_contains={"file_path": "/skills/user/testing/SKILL.md"}),
+                ],
+            )
+            .success(
+                file_excludes("/skills/user/testing/SKILL.md", "covreage"),
+                file_contains("/skills/user/testing/SKILL.md", "coverage"),
+            )
         ),
     )
-    assert "covreage" not in trajectory.files["/skills/user/testing/SKILL.md"]
-    assert "coverage" in trajectory.files["/skills/user/testing/SKILL.md"]
 
 
 @pytest.mark.langsmith
@@ -174,7 +216,7 @@ def test_find_skill_in_correct_path(model: BaseChatModel) -> None:
     The agent must edit the deployment skill without touching the logging skill.
     """
     agent = create_deep_agent(model=model, skills=["/skills/base/", "/skills/project/"])
-    trajectory = run_agent(
+    run_agent(
         agent,
         model=model,
         initial_files={
@@ -193,11 +235,19 @@ def test_find_skill_in_correct_path(model: BaseChatModel) -> None:
             "Update the deployment skill to add a new final step: 'Send Slack notification after deploy'. "
             "The skill path is shown in your system prompt. Edit the file directly."
         ),
-        expect=(
-            TrajectoryExpectations(num_agent_steps=3, num_tool_call_requests=2)
-            .require_tool_call(step=1, name="read_file", args_contains={"file_path": "/skills/project/deployment/SKILL.md"})
-            .require_tool_call(step=2, name="edit_file", args_contains={"file_path": "/skills/project/deployment/SKILL.md"})
+        scorer=(
+            TrajectoryScorer()
+            .expect(
+                agent_steps=3,
+                tool_call_requests=2,
+                tool_calls=[
+                    tool_call(name="read_file", step=1, args_contains={"file_path": "/skills/project/deployment/SKILL.md"}),
+                    tool_call(name="edit_file", step=2, args_contains={"file_path": "/skills/project/deployment/SKILL.md"}),
+                ],
+            )
+            .success(
+                file_contains("/skills/project/deployment/SKILL.md", "Slack notification"),
+                file_excludes("/skills/base/logging/SKILL.md", "Slack notification"),
+            )
         ),
     )
-    assert "Slack notification" in trajectory.files["/skills/project/deployment/SKILL.md"]
-    assert "Slack notification" not in trajectory.files.get("/skills/base/logging/SKILL.md", "")

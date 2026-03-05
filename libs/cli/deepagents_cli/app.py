@@ -2492,6 +2492,10 @@ class DeepAgentsApp(App):
         web search, URL fetch) run without prompting. Updates the status
         bar indicator and session state.
         """
+        # shift+tab is reused for navigation inside modal screens (e.g.
+        # ModelSelectorScreen); skip the toggle so it doesn't fire through.
+        if isinstance(self.screen, ModalScreen):
+            return
         self._auto_approve = not self._auto_approve
         if self._status_bar:
             self._status_bar.set_auto_approve(enabled=self._auto_approve)
@@ -2923,7 +2927,10 @@ class DeepAgentsApp(App):
         # Post-swap: update UI and save config
         display = f"{settings.model_provider}:{settings.model_name}"
         if self._status_bar:
-            self._status_bar.set_model(display)
+            self._status_bar.set_model(
+                provider=settings.model_provider or "",
+                model=settings.model_name or "",
+            )
 
         config_saved = save_recent_model(display)
         if config_saved:

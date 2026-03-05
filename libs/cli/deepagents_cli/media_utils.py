@@ -19,6 +19,21 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+IMAGE_EXTENSIONS: frozenset[str] = frozenset(
+    {
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".bmp",
+        ".tiff",
+        ".tif",
+        ".webp",
+        ".ico",
+    }
+)
+"""Common image file extensions supported by PIL."""
+
 VIDEO_EXTENSIONS: frozenset[str] = frozenset(
     {
         ".mp4",
@@ -30,6 +45,9 @@ VIDEO_EXTENSIONS: frozenset[str] = frozenset(
     }
 )
 """Video file extensions with validated magic-byte support."""
+
+MAX_MEDIA_BYTES: int = 20 * 1024 * 1024
+"""Maximum media file size (20 MB). Keeps base64 payload under ~27 MB."""
 
 
 def _get_executable(name: str) -> str | None:
@@ -117,6 +135,19 @@ def get_image_from_path(path: pathlib.Path) -> ImageData | None:
     from PIL import Image, UnidentifiedImageError
 
     try:
+        file_size = path.stat().st_size
+        if file_size == 0:
+            logger.debug("Image file is empty: %s", path)
+            return None
+        if file_size > MAX_MEDIA_BYTES:
+            logger.warning(
+                "Image file %s is too large (%d MB, max %d MB)",
+                path,
+                file_size // (1024 * 1024),
+                MAX_MEDIA_BYTES // (1024 * 1024),
+            )
+            return None
+
         image_bytes = path.read_bytes()
         if not image_bytes:
             return None
@@ -176,9 +207,6 @@ def get_video_from_path(path: pathlib.Path) -> VideoData | None:
     Returns:
         `VideoData` when the file is a valid video, otherwise `None`.
     """
-    # 20 MB — keeps base64 payload under ~27 MB, well within API limits
-    max_video_bytes = 20 * 1024 * 1024
-
     suffix = path.suffix.lower()
     if suffix not in VIDEO_EXTENSIONS:
         return None
@@ -188,12 +216,12 @@ def get_video_from_path(path: pathlib.Path) -> VideoData | None:
         if file_size == 0:
             logger.debug("Video file is empty: %s", path)
             return None
-        if file_size > max_video_bytes:
+        if file_size > MAX_MEDIA_BYTES:
             logger.warning(
                 "Video file %s is too large (%d MB, max %d MB)",
                 path,
                 file_size // (1024 * 1024),
-                max_video_bytes // (1024 * 1024),
+                MAX_MEDIA_BYTES // (1024 * 1024),
             )
             return None
 

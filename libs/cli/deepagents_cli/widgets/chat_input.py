@@ -1233,12 +1233,12 @@ class ChatInput(Vertical):
             return raw_text, False
 
         from deepagents_cli.media_utils import (
+            IMAGE_EXTENSIONS,
+            MAX_MEDIA_BYTES,
             VIDEO_EXTENSIONS,
             get_image_from_path,
             get_video_from_path,
         )
-
-        max_video_bytes = 20 * 1024 * 1024
 
         parts: list[str] = []
         attached = False
@@ -1255,20 +1255,22 @@ class ChatInput(Vertical):
                 attached = True
                 continue
 
-            # Check if it looked like a video but failed validation
-            if path.suffix.lower() in VIDEO_EXTENSIONS:
+            # Check if it looked like media but failed validation
+            suffix = path.suffix.lower()
+            if suffix in IMAGE_EXTENSIONS or suffix in VIDEO_EXTENSIONS:
+                label = "Video" if suffix in VIDEO_EXTENSIONS else "Image"
                 try:
                     size = path.stat().st_size
-                    if size > max_video_bytes:
+                    if size > MAX_MEDIA_BYTES:
                         msg = (
-                            f"Video too large: {path.name} "
+                            f"{label} too large: {path.name} "
                             f"({size // (1024 * 1024)} MB, max "
-                            f"{max_video_bytes // (1024 * 1024)} MB)"
+                            f"{MAX_MEDIA_BYTES // (1024 * 1024)} MB)"
                         )
                     else:
-                        msg = f"Could not attach video: {path.name}"
+                        msg = f"Could not attach {label.lower()}: {path.name}"
                 except OSError:
-                    msg = f"Could not attach video: {path.name}"
+                    msg = f"Could not attach {label.lower()}: {path.name}"
                 self.app.notify(msg, severity="warning", timeout=5)
 
             # Not a supported media file, keep as path

@@ -338,6 +338,25 @@ class TestGetImageFromPath:
         assert result is not None
         assert result.format == "jpeg"
 
+    def test_get_image_from_path_empty_returns_none(self, tmp_path: Path) -> None:
+        """Empty image files should return None."""
+        img_path = tmp_path / "empty.png"
+        img_path.write_bytes(b"")
+
+        assert get_image_from_path(img_path) is None
+
+    def test_get_image_from_path_oversized_returns_none(self, tmp_path: Path) -> None:
+        """Images exceeding the size limit should be rejected."""
+        img_path = tmp_path / "huge.png"
+        with img_path.open("wb") as f:
+            # Write a valid PNG header then pad to exceed 20 MB
+            img = Image.new("RGB", (4, 4), color="red")
+            img.save(f, format="PNG")
+            f.seek(21 * 1024 * 1024)
+            f.write(b"\x00")
+
+        assert get_image_from_path(img_path) is None
+
 
 class TestSyncToTextWithIDGaps:
     """Tests for ImageTracker.sync_to_text with non-contiguous IDs."""

@@ -1249,14 +1249,12 @@ class ChatInput(Vertical):
         parts: list[str] = []
         attached = False
         for path in paths:
-            # Try to load as image first
             image_data = get_image_from_path(path)
             if image_data is not None:
                 parts.append(self._image_tracker.add_image(image_data))
                 attached = True
                 continue
 
-            # Try to load as video
             video_data = get_video_from_path(path)
             if video_data is not None:
                 parts.append(self._image_tracker.add_video(video_data))

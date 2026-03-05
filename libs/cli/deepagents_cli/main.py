@@ -700,6 +700,20 @@ def apply_stdin_pipe(args: argparse.Namespace) -> None:
             )
 
 
+def _print_session_stats(stats: Any, console: Any) -> None:  # noqa: ANN401
+    """Print a session-level usage stats table to the console on TUI exit.
+
+    Args:
+        stats: The cumulative session stats from the Textual app.
+        console: Rich console for output.
+    """
+    from deepagents_cli.textual_adapter import SessionStats, print_usage_table
+
+    if not isinstance(stats, SessionStats):
+        return
+    print_usage_table(stats, stats.wall_time_seconds, console)
+
+
 def cli_main() -> None:
     """Entry point for console script."""
     # Fix for gRPC fork issue on macOS
@@ -1021,6 +1035,7 @@ def cli_main() -> None:
                 # The user may have switched threads via /threads during the
                 # session; use the final thread ID for teardown messages.
                 thread_id = result.thread_id or thread_id
+                _print_session_stats(result.session_stats, console)
             except Exception as e:  # noqa: BLE001  # Top-level error handler for the application
                 error_msg = Text("\nApplication error: ", style="red")
                 error_msg.append(str(e))

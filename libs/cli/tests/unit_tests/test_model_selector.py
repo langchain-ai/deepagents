@@ -509,6 +509,26 @@ class TestModelSelectorFuzzyMatching:
             model_spec, _ = app.result
             assert "claude" in model_spec.lower()
 
+    async def test_fuzzy_space_separated_tokens(self) -> None:
+        """Space-separated tokens should each fuzzy-match independently."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.show_selector()
+            await pilot.pause()
+
+            screen = app.screen
+            assert isinstance(screen, ModelSelectorScreen)
+
+            # "claude sonnet" should match models containing both subsequences
+            for char in "claude sonnet":
+                await pilot.press(char)
+            await pilot.pause()
+
+            specs = [spec for spec, _ in screen._filtered_models]
+            assert any("claude" in s and "sonnet" in s for s in specs), (
+                f"'claude sonnet' should match claude-sonnet models. Got: {specs}"
+            )
+
     async def test_navigation_after_fuzzy_filter(self) -> None:
         """Arrow keys should work correctly on fuzzy-filtered results."""
         app = ModelSelectorTestApp()

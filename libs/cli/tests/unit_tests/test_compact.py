@@ -8,8 +8,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from deepagents_cli.app import DeepAgentsApp, _format_compact_limit, _format_token_count
+from deepagents_cli.app import DeepAgentsApp, _format_compact_limit
 from deepagents_cli.config import settings
+from deepagents_cli.textual_adapter import format_token_count
 from deepagents_cli.widgets.autocomplete import SLASH_COMMANDS
 from deepagents_cli.widgets.messages import AppMessage, ErrorMessage
 
@@ -899,28 +900,28 @@ class TestCompactRouting:
 
 
 class TestFormatTokenCount:
-    """Test the _format_token_count helper function."""
+    """Test the format_token_count helper function."""
 
     def test_zero(self) -> None:
-        assert _format_token_count(0) == "0"
+        assert format_token_count(0) == "0"
 
     def test_below_threshold(self) -> None:
-        assert _format_token_count(999) == "999"
+        assert format_token_count(999) == "999"
 
     def test_at_threshold(self) -> None:
-        assert _format_token_count(1000) == "1.0K"
+        assert format_token_count(1000) == "1.0K"
 
     def test_above_threshold(self) -> None:
-        assert _format_token_count(1500) == "1.5K"
+        assert format_token_count(1500) == "1.5K"
 
     def test_large_value(self) -> None:
-        assert _format_token_count(200000) == "200.0K"
+        assert format_token_count(200000) == "200.0K"
 
     def test_millions(self) -> None:
-        assert _format_token_count(1_000_000) == "1.0M"
+        assert format_token_count(1_000_000) == "1.0M"
 
     def test_above_million(self) -> None:
-        assert _format_token_count(2_500_000) == "2.5M"
+        assert format_token_count(2_500_000) == "2.5M"
 
 
 class TestFormatCompactLimit:

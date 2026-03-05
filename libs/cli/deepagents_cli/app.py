@@ -5,14 +5,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-
-# S404: subprocess is required for user-initiated shell commands via ! prefix
-import subprocess  # noqa: S404
+import signal
+import sys
 import uuid
 import webbrowser
 from collections import deque
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
@@ -37,7 +36,12 @@ from deepagents_cli.config import (
     settings,
 )
 from deepagents_cli.model_config import ModelSpec, save_recent_model
-from deepagents_cli.textual_adapter import TextualUIAdapter, execute_task_textual
+from deepagents_cli.textual_adapter import (
+    SessionStats,
+    TextualUIAdapter,
+    execute_task_textual,
+    format_token_count,
+)
 from deepagents_cli.widgets.approval import ApprovalMenu
 from deepagents_cli.widgets.chat_input import ChatInput
 from deepagents_cli.widgets.loading import LoadingWidget
@@ -103,22 +107,6 @@ _ITERM_CURSOR_GUIDE_OFF = "\x1b]1337;HighlightCursorLine=no\x1b\\"
 _ITERM_CURSOR_GUIDE_ON = "\x1b]1337;HighlightCursorLine=yes\x1b\\"
 
 
-def _format_token_count(count: int) -> str:
-    """Format a token count into a human-readable short string.
-
-    Args:
-        count: Number of tokens.
-
-    Returns:
-        Formatted string like `"12.5K"`, `"1.2M"`, or `"500"`.
-    """
-    if count >= 1_000_000:  # noqa: PLR2004
-        return f"{count / 1_000_000:.1f}M"
-    if count >= 1000:  # noqa: PLR2004
-        return f"{count / 1000:.1f}K"
-    return str(count)
-
-
 def _format_compact_limit(
     keep: tuple[str, int | float], context_limit: int | None
 ) -> str:
@@ -139,15 +127,15 @@ def _format_compact_limit(
         return f"last {count} {noun}"
 
     if keep_type == "tokens":
-        return f"{_format_token_count(int(keep_value))} tokens"
+        return f"{format_token_count(int(keep_value))} tokens"
 
     if keep_type == "fraction":
         percent = float(keep_value) * 100
         if context_limit is not None:
             token_limit = max(1, int(context_limit * float(keep_value)))
             return (
-                f"{_format_token_count(token_limit)} tokens "
-                f"({percent:.0f}% of {_format_token_count(context_limit)})"
+                f"{format_token_count(token_limit)} tokens "
+                f"({percent:.0f}% of {format_token_count(context_limit)})"
             )
         return f"{percent:.0f}% of context window"
 
@@ -303,7 +291,7 @@ Scan the conversation for:
 
 For each best practice or learning, choose the right destination:
 
-### → Memory (AGENTS.md) for preferences and guidelines
+### -> Memory (AGENTS.md) for preferences and guidelines
 Use memory when the knowledge is:
 - A preference or guideline (not a multi-step process)
 - Something to always keep in mind
@@ -312,7 +300,7 @@ Use memory when the knowledge is:
 **Global** (`~/.deepagents/agent/AGENTS.md`): Universal preferences across all projects
 **Project** (`.deepagents/AGENTS.md`): Project-specific conventions and decisions
 
-### → Skill for reusable workflows and methodologies
+### -> Skill for reusable workflows and methodologies
 **Create a skill when** we developed:
 - A multi-step process worth reusing
 - A methodology for a specific type of task
@@ -488,12 +476,18 @@ class DeepAgentsApp(App):
         self._quit_pending = False
         self._session_state: TextualSessionState | None = None
         self._ui_adapter: TextualUIAdapter | None = None
-        self._pending_approval_widget: Any = None
+        self._pending_approval_widget: ApprovalMenu | None = None
         # Agent task tracking for interruption
         self._agent_worker: Worker[None] | None = None
         self._agent_running = False
+        # Bash process tracking for interruption (! commands)
+        self._bash_process: asyncio.subprocess.Process | None = None
+        self._bash_worker: Worker[None] | None = None
+        self._bash_running = False
         self._loading_widget: LoadingWidget | None = None
         self._token_tracker: TextualTokenTracker | None = None
+        # Cumulative usage stats across all turns in this session
+        self._session_stats: SessionStats = SessionStats()
         # User message queue for sequential processing
         self._pending_messages: deque[QueuedMessage] = deque()
         self._queued_widgets: deque[QueuedUserMessage] = deque()
@@ -574,6 +568,14 @@ class DeepAgentsApp(App):
                 group="startup-thread-prewarm",
             )
 
+        # Background update check (opt-out via DEEPAGENTS_NO_UPDATE_CHECK)
+        if not os.environ.get("DEEPAGENTS_NO_UPDATE_CHECK"):
+            self.run_worker(
+                self._check_for_updates,
+                exclusive=True,
+                group="startup-update-check",
+            )
+
         # Focus the input (autocomplete is now built into ChatInput)
         self._chat_input.focus_input()
 
@@ -636,6 +638,24 @@ class DeepAgentsApp(App):
         )
 
         await prewarm_thread_message_counts(limit=get_thread_limit())
+
+    async def _check_for_updates(self) -> None:
+        """Check PyPI for a newer deepagents-cli version and notify the user."""
+        try:
+            from deepagents_cli.update_check import is_update_available
+
+            available, latest = await asyncio.to_thread(is_update_available)
+            if available:
+                from deepagents_cli._version import __version__ as cli_version
+
+                self.notify(
+                    f"Update available: v{latest} (current: v{cli_version}). "
+                    "Run: uv tool upgrade deepagents-cli",
+                    severity="information",
+                    timeout=15,
+                )
+        except Exception:
+            logger.debug("Background update check failed", exc_info=True)
 
     def on_scroll_up(self, _event: ScrollUp) -> None:
         """Handle scroll up to check if we need to hydrate older messages."""
@@ -1013,8 +1033,8 @@ class DeepAgentsApp(App):
             )
             return
 
-        # If agent is running, enqueue message instead of processing immediately
-        if self._agent_running:
+        # If agent or bash command is running, enqueue instead of processing
+        if self._agent_running or self._bash_running:
             self._pending_messages.append(QueuedMessage(text=value, mode=mode))
             queued_widget = QueuedUserMessage(value)
             self._queued_widgets.append(queued_widget)
@@ -1045,56 +1065,139 @@ class DeepAgentsApp(App):
     async def _handle_bash_command(self, command: str) -> None:
         """Handle a bash command (! prefix).
 
-        Args:
-            command: The bash command to execute
-        """
-        # Mount user message showing the bash command
-        await self._mount_message(UserMessage(f"!{command}"))
+        Thin dispatcher that mounts the user message and spawns a worker
+        so the event loop stays free for key events (Esc/Ctrl+C).
 
-        # Execute bash command (user explicitly requested via ! prefix)
-        # S604: shell=True is intentional - user requested shell execution via ! prefix
+        Args:
+            command: The bash command to execute.
+        """
+        await self._mount_message(UserMessage(f"!{command}"))
+        self._bash_running = True
+
+        if self._chat_input:
+            self._chat_input.set_cursor_active(active=False)
+
+        self._bash_worker = self.run_worker(
+            self._run_bash_task(command),
+            exclusive=False,
+        )
+
+    async def _run_bash_task(self, command: str) -> None:
+        """Run a bash command in a background worker.
+
+        This mirrors `_run_agent_task`: running in a worker keeps the event
+        loop free so Esc/Ctrl+C can cancel the worker -> raise
+        `CancelledError` -> kill the process.
+
+        Args:
+            command: The shell command to execute.
+
+        Raises:
+            CancelledError: If the command is interrupted by the user.
+        """
         try:
-            result = await asyncio.to_thread(  # noqa: S604
-                subprocess.run,
+            proc = await asyncio.create_subprocess_shell(
                 command,
-                shell=True,
-                capture_output=True,
-                text=True,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
                 cwd=self._cwd,
-                timeout=60,
+                start_new_session=(sys.platform != "win32"),
             )
-            # text=True ensures stdout/stderr are str, not bytes
-            stdout = result.stdout
-            stderr = result.stderr
-            if not isinstance(stdout, str):
-                stdout = stdout.decode() if stdout else ""
-            output = stdout.strip()
-            if stderr:
-                if not isinstance(stderr, str):
-                    stderr = stderr.decode() if stderr else ""
-                output += f"\n[stderr]\n{stderr.strip()}"
+            self._bash_process = proc
+
+            try:
+                stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                    proc.communicate(), timeout=60
+                )
+            except TimeoutError:
+                await self._kill_bash_process()
+                await self._mount_message(ErrorMessage("Command timed out (60s limit)"))
+                return
+            except asyncio.CancelledError:
+                await self._kill_bash_process()
+                raise
+
+            output = (stdout_bytes or b"").decode(errors="replace").strip()
+            stderr_text = (stderr_bytes or b"").decode(errors="replace").strip()
+            if stderr_text:
+                output += f"\n[stderr]\n{stderr_text}"
 
             if output:
-                # Display output as assistant message (uses markdown for code blocks)
                 msg = AssistantMessage(f"```\n{output}\n```")
                 await self._mount_message(msg)
                 await msg.write_initial_content()
             else:
                 await self._mount_message(AppMessage("Command completed (no output)"))
 
-            if result.returncode != 0:
-                await self._mount_message(
-                    ErrorMessage(f"Exit code: {result.returncode}")
-                )
+            if proc.returncode and proc.returncode != 0:
+                await self._mount_message(ErrorMessage(f"Exit code: {proc.returncode}"))
 
             # Scroll to show the output (user-initiated command, so scroll is expected)
             chat = self.query_one("#chat", VerticalScroll)
             chat.scroll_end(animate=False)
 
-        except subprocess.TimeoutExpired:
-            await self._mount_message(ErrorMessage("Command timed out (60s limit)"))
         except OSError as e:
-            await self._mount_message(ErrorMessage(str(e)))
+            logger.exception("Failed to execute bash command: %s", command)
+            err_msg = f"Failed to run command: {e}"
+            await self._mount_message(ErrorMessage(err_msg))
+        finally:
+            await self._cleanup_bash_task()
+
+    async def _cleanup_bash_task(self) -> None:
+        """Clean up after bash task completes or is cancelled."""
+        was_interrupted = self._bash_process is not None and (
+            self._bash_worker is not None and self._bash_worker.is_cancelled
+        )
+        self._bash_process = None
+        self._bash_running = False
+        self._bash_worker = None
+        if was_interrupted:
+            await self._mount_message(AppMessage("Command interrupted"))
+        if self._chat_input:
+            self._chat_input.set_cursor_active(active=True)
+        await self._process_next_from_queue()
+
+    async def _kill_bash_process(self) -> None:
+        """Terminate the running bash process.
+
+        On POSIX, sends SIGTERM to the entire process group (killing children).
+        On Windows, terminates only the root process. No-op if the process has
+        already exited. Waits up to 5s for clean shutdown, then escalates
+        to SIGKILL.
+        """
+        proc = self._bash_process
+        if proc is None or proc.returncode is not None:
+            return
+
+        try:
+            if sys.platform != "win32":
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            else:
+                proc.terminate()
+        except ProcessLookupError:
+            return
+        except OSError:
+            logger.warning(
+                "Failed to terminate bash process (pid=%s)", proc.pid, exc_info=True
+            )
+            return
+
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=5)
+        except TimeoutError:
+            logger.warning(
+                "Bash process (pid=%s) did not exit after SIGTERM; sending SIGKILL",
+                proc.pid,
+            )
+            with suppress(ProcessLookupError, OSError):
+                if sys.platform != "win32":
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                else:
+                    proc.kill()
+            with suppress(ProcessLookupError, OSError):
+                await proc.wait()
+        except (ProcessLookupError, OSError):
+            pass
 
     async def _open_url_command(self, command: str, cmd: str) -> None:
         """Open a URL in the browser and display a clickable link.
@@ -1269,13 +1372,13 @@ class DeepAgentsApp(App):
             await self._mount_message(UserMessage(command))
             if self._token_tracker and self._token_tracker.current_context > 0:
                 count = self._token_tracker.current_context
-                formatted = _format_token_count(count)
+                formatted = format_token_count(count)
 
                 model_name = settings.model_name
                 context_limit = settings.model_context_limit
 
                 if context_limit is not None:
-                    limit_str = _format_token_count(context_limit)
+                    limit_str = format_token_count(context_limit)
                     pct = count / context_limit * 100
                     usage = (
                         f"{formatted} / {limit_str} tokens "
@@ -1298,7 +1401,7 @@ class DeepAgentsApp(App):
 
                 parts: list[str] = ["No token usage yet"]
                 if context_limit is not None:
-                    limit_str = _format_token_count(context_limit)
+                    limit_str = format_token_count(context_limit)
                     parts.append(f"{limit_str} context window")
                 if model_name:
                     parts.append(model_name)
@@ -1393,7 +1496,7 @@ class DeepAgentsApp(App):
             if not messages:
                 return None
             conv_tokens = count_tokens_approximately(messages)
-            return f"Conversation only: ~{_format_token_count(conv_tokens)} tokens"
+            return f"Conversation only: ~{format_token_count(conv_tokens)} tokens"
         except Exception:  # noqa: BLE001
             return None
 
@@ -1507,7 +1610,7 @@ class DeepAgentsApp(App):
 
             if cutoff == 0:
                 conv_tokens = count_tokens_approximately(effective)
-                conv_str = _format_token_count(conv_tokens)
+                conv_str = format_token_count(conv_tokens)
                 total_context = (
                     self._token_tracker.current_context if self._token_tracker else 0
                 )
@@ -1520,7 +1623,7 @@ class DeepAgentsApp(App):
                 ):
                     # Case A: overhead-dominated — total context exceeds
                     # limit but conversation itself is small
-                    total_str = _format_token_count(total_context)
+                    total_str = format_token_count(total_context)
                     await self._mount_message(
                         AppMessage(
                             f"Nothing to compact \u2014 conversation is only "
@@ -1574,15 +1677,15 @@ class DeepAgentsApp(App):
             # model is aware of how much context was reclaimed.
             tokens_summary = count_tokens_approximately([summary_msg])
             tokens_after = tokens_summary + tokens_kept
-            before = _format_token_count(tokens_before)
-            after = _format_token_count(tokens_after)
+            before = format_token_count(tokens_before)
+            after = format_token_count(tokens_after)
             pct = (
                 round((tokens_before - tokens_after) / tokens_before * 100)
                 if tokens_before > 0
                 else 0
             )
-            summarized_before = _format_token_count(tokens_summarized)
-            summarized_after = _format_token_count(tokens_summary)
+            summarized_before = format_token_count(tokens_summarized)
+            summarized_after = format_token_count(tokens_summary)
             savings_note = (
                 f"\n\n{len(to_summarize)} messages were compacted "
                 f"({summarized_before} \u2192 {summarized_after} tokens). "
@@ -1762,8 +1865,9 @@ class DeepAgentsApp(App):
         # Caller ensures _ui_adapter is set (checked in _handle_user_message)
         if self._ui_adapter is None:
             return
+        turn_stats: SessionStats | None = None
         try:
-            await execute_task_textual(
+            turn_stats = await execute_task_textual(
                 user_input=message,
                 agent=self._agent,
                 assistant_id=self._assistant_id,
@@ -1781,6 +1885,10 @@ class DeepAgentsApp(App):
         finally:
             # Clean up loading widget and agent state
             await self._cleanup_agent_task()
+
+        # Accumulate stats across all turns; printed once at session end
+        if isinstance(turn_stats, SessionStats):
+            self._session_stats.merge(turn_stats)
 
     async def _process_next_from_queue(self) -> None:
         """Process the next message from the queue if any exist.
@@ -1809,10 +1917,11 @@ class DeepAgentsApp(App):
         finally:
             self._processing_pending = False
 
-        # Bash/command mode messages complete synchronously without spawning
-        # a worker, so _cleanup_agent_task won't fire again. Continue
-        # draining the queue if no worker was started.
-        if not self._agent_running and self._pending_messages:
+        # Command mode messages complete synchronously without spawning
+        # a worker, so cleanup won't fire again. Continue draining the
+        # queue if no worker was started.
+        busy = self._agent_running or self._bash_running
+        if not busy and self._pending_messages:
             await self._process_next_from_queue()
 
     async def _cleanup_agent_task(self) -> None:
@@ -2239,11 +2348,31 @@ class DeepAgentsApp(App):
         """Handle Ctrl+C - interrupt agent, reject approval, or quit on double press.
 
         Priority order:
-        1. If agent is running, interrupt it (preserve input)
+        1. If bash process is running, kill it
         2. If approval menu is active, reject it
-        3. If double press (quit_pending), quit
-        4. Otherwise show quit hint
+        3. If agent is running, interrupt it (preserve input)
+        4. If double press (quit_pending), quit
+        5. Otherwise show quit hint
         """
+        # If bash command is running, cancel the worker
+        if self._bash_running and self._bash_worker:
+            self._pending_messages.clear()
+            for w in self._queued_widgets:
+                w.remove()
+            self._queued_widgets.clear()
+            self._bash_worker.cancel()
+            self._quit_pending = False
+            return
+
+        # If approval menu is active, reject it before cancelling the agent worker.
+        # During HITL the agent worker remains active while awaiting approval,
+        # so this must be checked before the worker cancellation branch to
+        # avoid leaving a stale approval widget interactive after interruption.
+        if self._pending_approval_widget:
+            self._pending_approval_widget.action_select_reject()
+            self._quit_pending = False
+            return
+
         # If agent is running, interrupt it and discard queued messages
         if self._agent_running and self._agent_worker:
             self._pending_messages.clear()
@@ -2251,12 +2380,6 @@ class DeepAgentsApp(App):
                 w.remove()
             self._queued_widgets.clear()
             self._agent_worker.cancel()
-            self._quit_pending = False
-            return
-
-        # If approval menu is active, reject it
-        if self._pending_approval_widget:
-            self._pending_approval_widget.action_select_reject()
             self._quit_pending = False
             return
 
@@ -2270,17 +2393,41 @@ class DeepAgentsApp(App):
     def action_interrupt(self) -> None:
         """Handle escape key.
 
-        Dismiss completion popup, dismiss modal, interrupt agent,
-        or reject approval. This is the primary way to stop a
-        running agent.
+        Priority order:
+        1. If modal screen is active, dismiss it
+        2. If completion popup is open, dismiss it
+        3. If input is in command/bash mode, exit to normal mode
+        4. If bash process is running, kill it
+        5. If approval menu is active, reject it
+        6. If agent is running, interrupt it
         """
         # If a modal screen is active, dismiss it
         if isinstance(self.screen, ModalScreen):
             self.screen.dismiss(None)
             return
 
-        # Close completion popup before interrupting the agent
-        if self._chat_input and self._chat_input.dismiss_completion():
+        # Close completion popup or exit slash/bash mode
+        if self._chat_input:
+            if self._chat_input.dismiss_completion():
+                return
+            if self._chat_input.exit_mode():
+                return
+
+        # If bash command is running, cancel the worker
+        if self._bash_running and self._bash_worker:
+            self._pending_messages.clear()
+            for w in self._queued_widgets:
+                w.remove()
+            self._queued_widgets.clear()
+            self._bash_worker.cancel()
+            return
+
+        # If approval menu is active, reject it before cancelling the agent worker.
+        # During HITL the agent worker remains active while awaiting approval,
+        # so this must be checked before the worker cancellation branch to
+        # avoid leaving a stale approval widget interactive after interruption.
+        if self._pending_approval_widget:
+            self._pending_approval_widget.action_select_reject()
             return
 
         # If agent is running, interrupt it and discard queued messages
@@ -2291,10 +2438,6 @@ class DeepAgentsApp(App):
             self._queued_widgets.clear()
             self._agent_worker.cancel()
             return
-
-        # If approval menu is active, reject it
-        if self._pending_approval_widget:
-            self._pending_approval_widget.action_select_reject()
 
     def action_quit_app(self) -> None:
         """Handle quit action (Ctrl+D)."""
@@ -2323,6 +2466,13 @@ class DeepAgentsApp(App):
         for w in self._queued_widgets:
             w.remove()
         self._queued_widgets.clear()
+
+        # Cancel active workers so their subprocesses are terminated
+        # (SIGTERM → SIGKILL) instead of being orphaned.
+        if self._bash_running and self._bash_worker:
+            self._bash_worker.cancel()
+        if self._agent_running and self._agent_worker:
+            self._agent_worker.cancel()
 
         _write_iterm_escape(_ITERM_CURSOR_GUIDE_ON)
         super().exit(result=result, return_code=return_code, message=message)
@@ -2828,10 +2978,12 @@ class AppResult:
         return_code: Exit code (0 for success, non-zero for error).
         thread_id: The final thread ID at shutdown. May differ from the
             initial thread ID if the user switched threads via `/threads`.
+        session_stats: Cumulative usage stats across all turns in the session.
     """
 
     return_code: int
     thread_id: str | None
+    session_stats: SessionStats = field(default_factory=SessionStats)
 
 
 async def run_textual_app(
@@ -2883,6 +3035,7 @@ async def run_textual_app(
     return AppResult(
         return_code=app.return_code or 0,
         thread_id=app._lc_thread_id,
+        session_stats=app._session_stats,
     )
 
 

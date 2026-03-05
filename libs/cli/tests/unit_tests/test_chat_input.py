@@ -11,7 +11,7 @@ from textual.widgets import Static
 
 from deepagents_cli.input import ImageTracker
 from deepagents_cli.widgets import chat_input as chat_input_module
-from deepagents_cli.widgets.autocomplete import SLASH_COMMANDS
+from deepagents_cli.widgets.autocomplete import MAX_SUGGESTIONS, SLASH_COMMANDS
 from deepagents_cli.widgets.chat_input import (
     ChatInput,
     CompletionOption,
@@ -677,7 +677,9 @@ class TestDismissCompletion:
             await _pause_for_strip(pilot)
 
             # Menu should reappear with all commands
-            assert len(chat._current_suggestions) == len(SLASH_COMMANDS)
+            assert len(chat._current_suggestions) == min(
+                len(SLASH_COMMANDS), MAX_SUGGESTIONS
+            )
             assert popup.styles.display == "block"
 
     async def test_popup_hide_cancels_pending_rebuild(self) -> None:
@@ -790,6 +792,31 @@ class TestModePrefixStripping:
             assert chat.mode == "command"
 
             # Second backspace on empty — exits mode
+            await pilot.press("backspace")
+            await pilot.pause()
+            assert chat.mode == "normal"
+
+    async def test_backspace_at_cursor_zero_with_text_exits_mode(self) -> None:
+        """Backspace at cursor position 0 with text after cursor exits mode."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            # Enter command mode and type some text
+            chat._text_area.insert("/")
+            await _pause_for_strip(pilot)
+            assert chat.mode == "command"
+
+            chat._text_area.insert("help")
+            await pilot.pause()
+            assert chat._text_area.text == "help"
+
+            # Move cursor to position 0 (beginning of field)
+            chat._text_area.move_cursor((0, 0))
+            await pilot.pause()
+
+            # Backspace at position 0 with text after cursor — should exit mode
             await pilot.press("backspace")
             await pilot.pause()
             assert chat.mode == "normal"

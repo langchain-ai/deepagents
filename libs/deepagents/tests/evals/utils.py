@@ -255,7 +255,6 @@ class FinalTextContains(SuccessAssertion):
         return f"Expected final text to contain {self.text!r} (case_insensitive={self.case_insensitive}), got: {final_text!r}"
 
 
-
 @dataclass(frozen=True)
 class FinalTextExcludes(SuccessAssertion):
     """Assert that the final agent text does NOT contain a given substring.
@@ -297,7 +296,6 @@ class FinalTextExcludes(SuccessAssertion):
         return f"Expected final text NOT to contain {self.text!r} (case_insensitive={self.case_insensitive}), got: {final_text!r}"
 
 
-
 @dataclass(frozen=True)
 class FileEquals(SuccessAssertion):
     """Assert that a file in the trajectory has exactly the expected content.
@@ -334,7 +332,6 @@ class FileEquals(SuccessAssertion):
         if actual is None:
             return f"File {self.path!r} not found in trajectory files"
         return f"File {self.path!r} content mismatch.\nExpected:\n{self.content!r}\nActual:\n{actual!r}"
-
 
 
 @dataclass(frozen=True)
@@ -378,7 +375,6 @@ class FileContains(SuccessAssertion):
         return f"File {self.path!r} does not contain {self.substring!r}.\nActual content:\n{actual!r}"
 
 
-
 @dataclass(frozen=True)
 class FileExcludes(SuccessAssertion):
     """Assert that a file in the trajectory does NOT contain a given substring.
@@ -413,7 +409,6 @@ class FileExcludes(SuccessAssertion):
         """
         actual = trajectory.files.get(self.path, "")
         return f"File {self.path!r} unexpectedly contains {self.substring!r}.\nActual content:\n{actual!r}"
-
 
 
 # ---------------------------------------------------------------------------
@@ -454,7 +449,6 @@ class AgentSteps(EfficiencyAssertion):
         return f"Expected {self.n} agent steps, got {len(trajectory.steps)}"
 
 
-
 @dataclass(frozen=True)
 class ToolCallRequests(EfficiencyAssertion):
     """Assert that the trajectory has exactly ``n`` total tool call requests.
@@ -488,7 +482,6 @@ class ToolCallRequests(EfficiencyAssertion):
         """
         actual = sum(len(s.action.tool_calls) for s in trajectory.steps)
         return f"Expected {self.n} tool call requests, got {actual}"
-
 
 
 @dataclass(frozen=True)
@@ -532,7 +525,6 @@ class ToolCall(EfficiencyAssertion):
         """
         step_desc = f" in step {self.step}" if self.step is not None else ""
         return f"Missing expected tool call{step_desc}: name={self.name!r}, args_contains={self.args_contains!r}, args_equals={self.args_equals!r}"
-
 
     def _matches_tool_call(self, tc: dict[str, object]) -> bool:
         """Check whether a single tool call dict matches this expectation.

@@ -100,8 +100,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         Binding("k", "move_up", "Up", show=False, priority=True),
         Binding("down", "move_down", "Down", show=False, priority=True),
         Binding("j", "move_down", "Down", show=False, priority=True),
-        Binding("tab", "move_down", "Down", show=False, priority=True),
-        Binding("shift+tab", "move_up", "Up", show=False, priority=True),
+        Binding("tab", "tab_complete", "Tab complete", show=False, priority=True),
         Binding("pageup", "page_up", "Page up", show=False, priority=True),
         Binding("pagedown", "page_down", "Page down", show=False, priority=True),
         Binding("enter", "select", "Select", show=False, priority=True),
@@ -272,9 +271,10 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
 
             # Help text
             help_text = (
-                f"{glyphs.arrow_up}/{glyphs.arrow_down}/tab navigate {glyphs.bullet} "
-                f"Enter select {glyphs.bullet} Ctrl+S set default "
-                f"{glyphs.bullet} Esc cancel"
+                f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate"
+                f" {glyphs.bullet} Enter select"
+                f" {glyphs.bullet} Ctrl+S set default"
+                f" {glyphs.bullet} Esc cancel"
             )
             yield Static(help_text, classes="model-selector-help")
 
@@ -541,6 +541,15 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         """Move selection down."""
         self._move_selection(1)
 
+    def action_tab_complete(self) -> None:
+        """Replace search text with the currently selected model spec."""
+        if not self._filtered_models:
+            return
+        model_spec, _ = self._filtered_models[self._selected_index]
+        filter_input = self.query_one("#model-filter", Input)
+        filter_input.value = model_spec
+        filter_input.cursor_position = len(model_spec)
+
     def _visible_page_size(self) -> int:
         """Return the number of model options that fit in one visual page.
 
@@ -642,9 +651,10 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         """Restore the default help text after a temporary message."""
         glyphs = get_glyphs()
         help_text = (
-            f"{glyphs.arrow_up}/{glyphs.arrow_down}/tab navigate {glyphs.bullet} "
-            f"Enter select {glyphs.bullet} Ctrl+S set default "
-            f"{glyphs.bullet} Esc cancel"
+            f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate"
+            f" {glyphs.bullet} Enter select"
+            f" {glyphs.bullet} Ctrl+S set default"
+            f" {glyphs.bullet} Esc cancel"
         )
         help_widget = self.query_one(".model-selector-help", Static)
         help_widget.update(help_text)

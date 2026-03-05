@@ -9,7 +9,14 @@ if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
 
 from deepagents import create_deep_agent
-from tests.evals.utils import TrajectoryExpectations, run_agent
+from tests.evals.utils import (
+    TrajectoryExpectations,
+    agent_steps,
+    final_text_contains,
+    run_agent,
+    tool_call,
+    tool_call_requests,
+)
 
 
 @tool
@@ -41,9 +48,13 @@ def test_task_calls_weather_subagent(model: BaseChatModel) -> None:
         # 2nd step: answer using the subagent's tool result.
         # 1 tool call request: task.
         expect=(
-            TrajectoryExpectations(num_agent_steps=2, num_tool_call_requests=1)
-            .require_tool_call(step=1, name="task", args_contains={"subagent_type": "weather_agent"})
-            .require_final_text_contains("89")
+            TrajectoryExpectations()
+            .expect(
+                agent_steps(2),
+                tool_call_requests(1),
+                tool_call(name="task", step=1, args_contains={"subagent_type": "weather_agent"}),
+            )
+            .success(final_text_contains("89"))
         ),
     )
 
@@ -60,8 +71,12 @@ def test_task_calls_general_purpose_subagent(model: BaseChatModel) -> None:
         # 2nd step: answer using the subagent's tool result.
         # 1 tool call request: task.
         expect=(
-            TrajectoryExpectations(num_agent_steps=2, num_tool_call_requests=1)
-            .require_tool_call(step=1, name="task", args_contains={"subagent_type": "general-purpose"})
-            .require_final_text_contains("89")
+            TrajectoryExpectations()
+            .expect(
+                agent_steps(2),
+                tool_call_requests(1),
+                tool_call(name="task", step=1, args_contains={"subagent_type": "general-purpose"}),
+            )
+            .success(final_text_contains("89"))
         ),
     )

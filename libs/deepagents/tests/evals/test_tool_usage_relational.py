@@ -17,7 +17,14 @@ from deepagents import create_deep_agent
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
 
-from tests.evals.utils import TrajectoryExpectations, run_agent
+from tests.evals.utils import (
+    TrajectoryExpectations,
+    agent_steps,
+    final_text_contains,
+    run_agent,
+    tool_call,
+    tool_call_requests,
+)
 
 # ---------------------------------------------------------------------------
 # Static relational data
@@ -391,14 +398,20 @@ def test_single_tool_list_user_ids(model: BaseChatModel) -> None:
         # 1st step: call list_user_ids.
         # 2nd step: answer with the IDs.
         # 1 tool call: list_user_ids.
-        expect=TrajectoryExpectations(num_agent_steps=2, num_tool_call_requests=1)
-        .require_tool_call(step=1, name="list_user_ids")
-        .require_final_text_contains("1")
-        .require_final_text_contains("21")
-        .require_final_text_contains("35")
-        .require_final_text_contains("41")
-        .require_final_text_contains("42")
-        .require_final_text_contains("43"),
+        expect=TrajectoryExpectations()
+        .success(
+            final_text_contains("1"),
+            final_text_contains("21"),
+            final_text_contains("35"),
+            final_text_contains("41"),
+            final_text_contains("42"),
+            final_text_contains("43"),
+        )
+        .expect(
+            agent_steps(2),
+            tool_call_requests(1),
+            tool_call(name="list_user_ids", step=1),
+        ),
     )
 
 
@@ -416,9 +429,15 @@ def test_single_tool_get_user_email(model: BaseChatModel) -> None:
         # 1st step: call get_user_email with user_id=21.
         # 2nd step: answer with the email.
         # 1 tool call: get_user_email.
-        expect=TrajectoryExpectations(num_agent_steps=2, num_tool_call_requests=1)
-        .require_tool_call(step=1, name="get_user_email", args_contains={"user_id": 21})
-        .require_final_text_contains("bob@hotmail.com"),
+        expect=TrajectoryExpectations()
+        .success(
+            final_text_contains("bob@hotmail.com"),
+        )
+        .expect(
+            agent_steps(2),
+            tool_call_requests(1),
+            tool_call(name="get_user_email", step=1, args_contains={"user_id": 21}),
+        ),
     )
 
 
@@ -436,9 +455,15 @@ def test_single_tool_get_food_calories(model: BaseChatModel) -> None:
         # 1st step: call get_food_calories with food_id=5.
         # 2nd step: answer with the calorie count.
         # 1 tool call: get_food_calories.
-        expect=TrajectoryExpectations(num_agent_steps=2, num_tool_call_requests=1)
-        .require_tool_call(step=1, name="get_food_calories", args_contains={"food_id": 5})
-        .require_final_text_contains("200"),
+        expect=TrajectoryExpectations()
+        .success(
+            final_text_contains("200"),
+        )
+        .expect(
+            agent_steps(2),
+            tool_call_requests(1),
+            tool_call(name="get_food_calories", step=1, args_contains={"food_id": 5}),
+        ),
     )
 
 
@@ -457,10 +482,16 @@ def test_two_tools_user_name_from_current_id(model: BaseChatModel) -> None:
         # 2nd step: call get_user_name(user_id=35) -> "Charlie".
         # 3rd step: answer with the name.
         # 2 tool calls: get_current_user_id, get_user_name.
-        expect=TrajectoryExpectations(num_agent_steps=3, num_tool_call_requests=2)
-        .require_tool_call(step=1, name="get_current_user_id")
-        .require_tool_call(step=2, name="get_user_name", args_contains={"user_id": 35})
-        .require_final_text_contains("Charlie"),
+        expect=TrajectoryExpectations()
+        .success(
+            final_text_contains("Charlie"),
+        )
+        .expect(
+            agent_steps(3),
+            tool_call_requests(2),
+            tool_call(name="get_current_user_id", step=1),
+            tool_call(name="get_user_name", step=2, args_contains={"user_id": 35}),
+        ),
     )
 
 
@@ -479,10 +510,16 @@ def test_two_tools_city_for_user(model: BaseChatModel) -> None:
         # 2nd step: call get_city_for_location(location_id=1) -> "New York".
         # 3rd step: answer with the city.
         # 2 tool calls: get_user_location, get_city_for_location.
-        expect=TrajectoryExpectations(num_agent_steps=3, num_tool_call_requests=2)
-        .require_tool_call(step=1, name="get_user_location", args_contains={"user_id": 1})
-        .require_tool_call(step=2, name="get_city_for_location", args_contains={"location_id": 1})
-        .require_final_text_contains("New York"),
+        expect=TrajectoryExpectations()
+        .success(
+            final_text_contains("New York"),
+        )
+        .expect(
+            agent_steps(3),
+            tool_call_requests(2),
+            tool_call(name="get_user_location", step=1, args_contains={"user_id": 1}),
+            tool_call(name="get_city_for_location", step=2, args_contains={"location_id": 1}),
+        ),
     )
 
 
@@ -501,10 +538,16 @@ def test_two_tools_find_user_then_email(model: BaseChatModel) -> None:
         # 2nd step: call get_user_email(user_id=42) -> "eve@example.org".
         # 3rd step: answer with the email.
         # 2 tool calls: find_users_by_name, get_user_email.
-        expect=TrajectoryExpectations(num_agent_steps=3, num_tool_call_requests=2)
-        .require_tool_call(step=1, name="find_users_by_name", args_contains={"name": "Eve"})
-        .require_tool_call(step=2, name="get_user_email", args_contains={"user_id": 42})
-        .require_final_text_contains("eve@example.org"),
+        expect=TrajectoryExpectations()
+        .success(
+            final_text_contains("eve@example.org"),
+        )
+        .expect(
+            agent_steps(3),
+            tool_call_requests(2),
+            tool_call(name="find_users_by_name", step=1, args_contains={"name": "Eve"}),
+            tool_call(name="get_user_email", step=2, args_contains={"user_id": 42}),
+        ),
     )
 
 
@@ -524,11 +567,17 @@ def test_three_tools_current_user_city(model: BaseChatModel) -> None:
         # 3rd step: get_city_for_location(3) -> "Chicago".
         # 4th step: answer.
         # 3 tool calls.
-        expect=TrajectoryExpectations(num_agent_steps=4, num_tool_call_requests=3)
-        .require_tool_call(step=1, name="get_current_user_id")
-        .require_tool_call(step=2, name="get_user_location", args_contains={"user_id": 35})
-        .require_tool_call(step=3, name="get_city_for_location", args_contains={"location_id": 3})
-        .require_final_text_contains("Chicago"),
+        expect=TrajectoryExpectations()
+        .success(
+            final_text_contains("Chicago"),
+        )
+        .expect(
+            agent_steps(4),
+            tool_call_requests(3),
+            tool_call(name="get_current_user_id", step=1),
+            tool_call(name="get_user_location", step=2, args_contains={"user_id": 35}),
+            tool_call(name="get_city_for_location", step=3, args_contains={"location_id": 3}),
+        ),
     )
 
 
@@ -548,11 +597,17 @@ def test_three_tools_find_user_then_city(model: BaseChatModel) -> None:
         # 3rd step: get_city_for_location(1) -> "New York".
         # 4th step: answer.
         # 3 tool calls.
-        expect=TrajectoryExpectations(num_agent_steps=4, num_tool_call_requests=3)
-        .require_tool_call(step=1, name="find_users_by_name", args_contains={"name": "Alice"})
-        .require_tool_call(step=2, name="get_user_location", args_contains={"user_id": 1})
-        .require_tool_call(step=3, name="get_city_for_location", args_contains={"location_id": 1})
-        .require_final_text_contains("New York"),
+        expect=TrajectoryExpectations()
+        .success(
+            final_text_contains("New York"),
+        )
+        .expect(
+            agent_steps(4),
+            tool_call_requests(3),
+            tool_call(name="find_users_by_name", step=1, args_contains={"name": "Alice"}),
+            tool_call(name="get_user_location", step=2, args_contains={"user_id": 1}),
+            tool_call(name="get_city_for_location", step=3, args_contains={"location_id": 1}),
+        ),
     )
 
 
@@ -572,11 +627,17 @@ def test_three_tools_current_user_weather(model: BaseChatModel) -> None:
         # 3rd step: get_weather_at_location(3) -> "Mostly Cloudy, Temperature: 60F".
         # 4th step: answer.
         # 3 tool calls.
-        expect=TrajectoryExpectations(num_agent_steps=4, num_tool_call_requests=3)
-        .require_tool_call(step=1, name="get_current_user_id")
-        .require_tool_call(step=2, name="get_user_location", args_contains={"user_id": 35})
-        .require_tool_call(step=3, name="get_weather_at_location", args_contains={"location_id": 3})
-        .require_final_text_contains("60", case_insensitive=True),
+        expect=TrajectoryExpectations()
+        .success(
+            final_text_contains("60", case_insensitive=True),
+        )
+        .expect(
+            agent_steps(4),
+            tool_call_requests(3),
+            tool_call(name="get_current_user_id", step=1),
+            tool_call(name="get_user_location", step=2, args_contains={"user_id": 35}),
+            tool_call(name="get_weather_at_location", step=3, args_contains={"location_id": 3}),
+        ),
     )
 
 
@@ -597,15 +658,21 @@ def test_four_tools_current_user_favorite_food_names(model: BaseChatModel) -> No
         # 4th step: answer.
         # 5 tool call requests: 1 + 1 + 3 parallel.
         # 4 agent steps: the 3 parallel calls count as one step.
-        expect=TrajectoryExpectations(num_agent_steps=4, num_tool_call_requests=5)
-        .require_tool_call(step=1, name="get_current_user_id")
-        .require_tool_call(step=2, name="get_user_favorite_foods", args_contains={"user_id": 35})
-        .require_tool_call(step=3, name="get_food_name", args_contains={"food_id": 3})
-        .require_tool_call(step=3, name="get_food_name", args_contains={"food_id": 7})
-        .require_tool_call(step=3, name="get_food_name", args_contains={"food_id": 2})
-        .require_final_text_contains("Sushi")
-        .require_final_text_contains("Salad")
-        .require_final_text_contains("Chocolate"),
+        expect=TrajectoryExpectations()
+        .success(
+            final_text_contains("Sushi"),
+            final_text_contains("Salad"),
+            final_text_contains("Chocolate"),
+        )
+        .expect(
+            agent_steps(4),
+            tool_call_requests(5),
+            tool_call(name="get_current_user_id", step=1),
+            tool_call(name="get_user_favorite_foods", step=2, args_contains={"user_id": 35}),
+            tool_call(name="get_food_name", step=3, args_contains={"food_id": 3}),
+            tool_call(name="get_food_name", step=3, args_contains={"food_id": 7}),
+            tool_call(name="get_food_name", step=3, args_contains={"food_id": 2}),
+        ),
     )
 
 
@@ -626,13 +693,19 @@ def test_four_tools_find_user_food_name_and_calories(model: BaseChatModel) -> No
         # 4th step: answer.
         # 4 tool call requests: 1 + 1 + 2 parallel.
         # 4 agent steps.
-        expect=TrajectoryExpectations(num_agent_steps=4, num_tool_call_requests=4)
-        .require_tool_call(step=1, name="find_users_by_name")
-        .require_tool_call(step=2, name="get_user_favorite_foods", args_contains={"user_id": 43})
-        .require_tool_call(step=3, name="get_food_name", args_contains={"food_id": 3})
-        .require_tool_call(step=3, name="get_food_calories", args_contains={"food_id": 3})
-        .require_final_text_contains("Sushi")
-        .require_final_text_contains("300"),
+        expect=TrajectoryExpectations()
+        .success(
+            final_text_contains("Sushi"),
+            final_text_contains("300"),
+        )
+        .expect(
+            agent_steps(4),
+            tool_call_requests(4),
+            tool_call(name="find_users_by_name", step=1),
+            tool_call(name="get_user_favorite_foods", step=2, args_contains={"user_id": 43}),
+            tool_call(name="get_food_name", step=3, args_contains={"food_id": 3}),
+            tool_call(name="get_food_calories", step=3, args_contains={"food_id": 3}),
+        ),
     )
 
 
@@ -654,13 +727,19 @@ def test_four_tools_current_user_location_time_and_weather(model: BaseChatModel)
         # 4th step: answer.
         # 4 tool call requests: 1 + 1 + 2 parallel.
         # 4 agent steps.
-        expect=TrajectoryExpectations(num_agent_steps=4, num_tool_call_requests=4)
-        .require_tool_call(step=1, name="get_current_user_id")
-        .require_tool_call(step=2, name="get_user_location", args_contains={"user_id": 35})
-        .require_tool_call(step=3, name="get_current_time_for_location", args_contains={"location_id": 3})
-        .require_tool_call(step=3, name="get_weather_at_location", args_contains={"location_id": 3})
-        .require_final_text_contains("11:15")
-        .require_final_text_contains("60", case_insensitive=True),
+        expect=TrajectoryExpectations()
+        .success(
+            final_text_contains("11:15"),
+            final_text_contains("60", case_insensitive=True),
+        )
+        .expect(
+            agent_steps(4),
+            tool_call_requests(4),
+            tool_call(name="get_current_user_id", step=1),
+            tool_call(name="get_user_location", step=2, args_contains={"user_id": 35}),
+            tool_call(name="get_current_time_for_location", step=3, args_contains={"location_id": 3}),
+            tool_call(name="get_weather_at_location", step=3, args_contains={"location_id": 3}),
+        ),
     )
 
 
@@ -681,20 +760,26 @@ def test_five_steps_current_user_food_names_and_calories(model: BaseChatModel) -
         # 4th step: answer.
         # 8 tool call requests: 1 + 1 + 6 parallel.
         # 4 agent steps.
-        expect=TrajectoryExpectations(num_agent_steps=4, num_tool_call_requests=8)
-        .require_tool_call(step=1, name="get_current_user_id")
-        .require_tool_call(step=2, name="get_user_favorite_foods", args_contains={"user_id": 35})
-        .require_tool_call(step=3, name="get_food_name", args_contains={"food_id": 3})
-        .require_tool_call(step=3, name="get_food_name", args_contains={"food_id": 7})
-        .require_tool_call(step=3, name="get_food_name", args_contains={"food_id": 2})
-        .require_tool_call(step=3, name="get_food_calories", args_contains={"food_id": 3})
-        .require_tool_call(step=3, name="get_food_calories", args_contains={"food_id": 7})
-        .require_tool_call(step=3, name="get_food_calories", args_contains={"food_id": 2})
-        .require_final_text_contains("Sushi")
-        .require_final_text_contains("300")
-        .require_final_text_contains("Salad")
-        .require_final_text_contains("50")
-        .require_final_text_contains("Chocolate"),
+        expect=TrajectoryExpectations()
+        .success(
+            final_text_contains("Sushi"),
+            final_text_contains("300"),
+            final_text_contains("Salad"),
+            final_text_contains("50"),
+            final_text_contains("Chocolate"),
+        )
+        .expect(
+            agent_steps(4),
+            tool_call_requests(8),
+            tool_call(name="get_current_user_id", step=1),
+            tool_call(name="get_user_favorite_foods", step=2, args_contains={"user_id": 35}),
+            tool_call(name="get_food_name", step=3, args_contains={"food_id": 3}),
+            tool_call(name="get_food_name", step=3, args_contains={"food_id": 7}),
+            tool_call(name="get_food_name", step=3, args_contains={"food_id": 2}),
+            tool_call(name="get_food_calories", step=3, args_contains={"food_id": 3}),
+            tool_call(name="get_food_calories", step=3, args_contains={"food_id": 7}),
+            tool_call(name="get_food_calories", step=3, args_contains={"food_id": 2}),
+        ),
     )
 
 
@@ -716,15 +801,21 @@ def test_four_steps_find_user_city_and_weather(model: BaseChatModel) -> None:
         # 4th step: answer.
         # 5 tool call requests: 1 + 1 + 3 parallel.
         # 4 agent steps.
-        expect=TrajectoryExpectations(num_agent_steps=4, num_tool_call_requests=5)
-        .require_tool_call(step=1, name="find_users_by_name", args_contains={"name": "Bob"})
-        .require_tool_call(step=2, name="get_user_location", args_contains={"user_id": 21})
-        .require_tool_call(step=3, name="get_city_for_location", args_contains={"location_id": 2})
-        .require_tool_call(step=3, name="get_current_time_for_location", args_contains={"location_id": 2})
-        .require_tool_call(step=3, name="get_weather_at_location", args_contains={"location_id": 2})
-        .require_final_text_contains("Los Angeles")
-        .require_final_text_contains("7:45")
-        .require_final_text_contains("75", case_insensitive=True),
+        expect=TrajectoryExpectations()
+        .success(
+            final_text_contains("Los Angeles"),
+            final_text_contains("7:45"),
+            final_text_contains("75", case_insensitive=True),
+        )
+        .expect(
+            agent_steps(4),
+            tool_call_requests(5),
+            tool_call(name="find_users_by_name", step=1, args_contains={"name": "Bob"}),
+            tool_call(name="get_user_location", step=2, args_contains={"user_id": 21}),
+            tool_call(name="get_city_for_location", step=3, args_contains={"location_id": 2}),
+            tool_call(name="get_current_time_for_location", step=3, args_contains={"location_id": 2}),
+            tool_call(name="get_weather_at_location", step=3, args_contains={"location_id": 2}),
+        ),
     )
 
 
@@ -745,19 +836,25 @@ def test_four_steps_find_user_food_allergies(model: BaseChatModel) -> None:
         # 4th step: answer.
         # 8 tool call requests: 1 + 1 + 6 parallel.
         # 4 agent steps.
-        expect=TrajectoryExpectations(num_agent_steps=4, num_tool_call_requests=8)
-        .require_tool_call(step=1, name="find_users_by_name", args_contains={"name": "Alice"})
-        .require_tool_call(step=2, name="get_user_favorite_foods", args_contains={"user_id": 1})
-        .require_tool_call(step=3, name="get_food_name", args_contains={"food_id": 1})
-        .require_tool_call(step=3, name="get_food_name", args_contains={"food_id": 2})
-        .require_tool_call(step=3, name="get_food_name", args_contains={"food_id": 3})
-        .require_tool_call(step=3, name="get_food_allergic_ingredients", args_contains={"food_id": 1})
-        .require_tool_call(step=3, name="get_food_allergic_ingredients", args_contains={"food_id": 2})
-        .require_tool_call(step=3, name="get_food_allergic_ingredients", args_contains={"food_id": 3})
-        .require_final_text_contains("Pizza")
-        .require_final_text_contains("Gluten")
-        .require_final_text_contains("Chocolate")
-        .require_final_text_contains("Milk")
-        .require_final_text_contains("Sushi")
-        .require_final_text_contains("Fish"),
+        expect=TrajectoryExpectations()
+        .success(
+            final_text_contains("Pizza"),
+            final_text_contains("Gluten"),
+            final_text_contains("Chocolate"),
+            final_text_contains("Milk"),
+            final_text_contains("Sushi"),
+            final_text_contains("Fish"),
+        )
+        .expect(
+            agent_steps(4),
+            tool_call_requests(8),
+            tool_call(name="find_users_by_name", step=1, args_contains={"name": "Alice"}),
+            tool_call(name="get_user_favorite_foods", step=2, args_contains={"user_id": 1}),
+            tool_call(name="get_food_name", step=3, args_contains={"food_id": 1}),
+            tool_call(name="get_food_name", step=3, args_contains={"food_id": 2}),
+            tool_call(name="get_food_name", step=3, args_contains={"food_id": 3}),
+            tool_call(name="get_food_allergic_ingredients", step=3, args_contains={"food_id": 1}),
+            tool_call(name="get_food_allergic_ingredients", step=3, args_contains={"food_id": 2}),
+            tool_call(name="get_food_allergic_ingredients", step=3, args_contains={"food_id": 3}),
+        ),
     )

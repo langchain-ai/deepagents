@@ -50,7 +50,7 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     if session.exitstatus == 1:
         session.exitstatus = 0
 
-    accuracy = round((_RESULTS["passed"] / _RESULTS["total"]) if _RESULTS["total"] else 0.0, 2)
+    correctness_accuracy = round((_RESULTS["passed"] / _RESULTS["total"]) if _RESULTS["total"] else 0.0, 2)
     median_duration_s = round(statistics.median(_DURATIONS_S), 4) if _DURATIONS_S else 0.0
 
     payload: dict[str, object] = {
@@ -58,7 +58,7 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         "sdk_version": __version__,
         "model": session.config.getoption("--model") or str(session.config._inicache.get("model", "")) or str(get_default_model().model),
         **_RESULTS,
-        "accuracy": accuracy,
+        "correctness_accuracy": correctness_accuracy,
         "median_duration_s": median_duration_s,
     }
 
@@ -71,7 +71,7 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         terminal_reporter.write_line(
             f"results: {payload['passed']} passed, {payload['failed']} failed, {payload['skipped']} skipped (total={payload['total']})"
         )
-        terminal_reporter.write_line(f"accuracy: {payload['accuracy']:.2f}")
+        terminal_reporter.write_line(f"correctness_accuracy: {payload['correctness_accuracy']:.2f}")
         terminal_reporter.write_line(f"median_duration_s: {payload['median_duration_s']:.4f}")
 
     report_path_opt = session.config.getoption("--evals-report-file")

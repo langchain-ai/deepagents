@@ -799,28 +799,33 @@ def _trajectory_from_result(result: Mapping[str, object]) -> AgentTrajectory:
     )
 
 
+efficiency_results: list[bool] = []
+"""Per-test efficiency results collected during the session.
+
+Each entry is ``True`` when all ``.expect()`` assertions passed for that test,
+``False`` when at least one did not. Tests without ``.expect()`` assertions are
+not recorded. The reporter reads this to compute ``efficiency_accuracy``.
+"""
+
+
 def _assert_expectations(
     trajectory: AgentTrajectory,
     scorer: TrajectoryScorer,
 ) -> None:
-    """Run all assertions in *expect* against *trajectory*.
+    """Run all assertions in *scorer* against *trajectory*.
 
     Success assertions hard-fail the test via ``pytest.fail``. Efficiency
     assertions are logged as feedback but never cause a test failure.
-
-    All assertions are logged to LangSmith regardless of outcome.
 
     Args:
         trajectory: The agent trajectory to validate.
         scorer: The two-tier expectation container.
     """
-    # Log actual trajectory shape
     actual_steps = len(trajectory.steps)
     actual_tool_calls = sum(len(s.action.tool_calls) for s in trajectory.steps)
     t.log_feedback(key="agent_steps", value=actual_steps)
     t.log_feedback(key="tool_call_requests", value=actual_tool_calls)
 
-    # Log expected step count if specified
     for assertion in scorer._expectations:
         if isinstance(assertion, AgentSteps):
             t.log_feedback(key="expected_agent_steps", value=assertion.n)
@@ -839,9 +844,10 @@ def _assert_expectations(
     if success:
         t.log_feedback(key="success", value=1)
 
-    # Soft efficiency checks (never fail)
-    for assertion in scorer._expectations:
-        assertion.check(trajectory)
+    # Soft efficiency checks
+    if scorer._expectations:
+        all_passed = all(a.check(trajectory) for a in scorer._expectations)
+        efficiency_results.append(all_passed)
 
 
 # ---------------------------------------------------------------------------

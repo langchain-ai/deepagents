@@ -12,6 +12,7 @@ if TYPE_CHECKING:
 
 from deepagents._version import __version__
 from deepagents.graph import get_default_model
+from tests.evals.utils import efficiency_results
 
 _RESULTS: dict[str, int] = {
     "passed": 0,
@@ -51,6 +52,7 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         session.exitstatus = 0
 
     correctness_accuracy = round((_RESULTS["passed"] / _RESULTS["total"]) if _RESULTS["total"] else 0.0, 2)
+    eff_accuracy = round((sum(efficiency_results) / len(efficiency_results)) if efficiency_results else 0.0, 2)
     median_duration_s = round(statistics.median(_DURATIONS_S), 4) if _DURATIONS_S else 0.0
 
     payload: dict[str, object] = {
@@ -59,6 +61,7 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         "model": session.config.getoption("--model") or str(session.config._inicache.get("model", "")) or str(get_default_model().model),
         **_RESULTS,
         "correctness_accuracy": correctness_accuracy,
+        "efficiency_accuracy": eff_accuracy,
         "median_duration_s": median_duration_s,
     }
 
@@ -72,6 +75,7 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
             f"results: {payload['passed']} passed, {payload['failed']} failed, {payload['skipped']} skipped (total={payload['total']})"
         )
         terminal_reporter.write_line(f"correctness_accuracy: {payload['correctness_accuracy']:.2f}")
+        terminal_reporter.write_line(f"efficiency_accuracy: {payload['efficiency_accuracy']:.2f}")
         terminal_reporter.write_line(f"median_duration_s: {payload['median_duration_s']:.4f}")
 
     report_path_opt = session.config.getoption("--evals-report-file")

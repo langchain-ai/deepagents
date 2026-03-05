@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import re
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -23,6 +22,7 @@ from deepagents_cli.config import (
     _detect_charset_mode,
     get_glyphs,
 )
+from deepagents_cli.input import IMAGE_PLACEHOLDER_PATTERN, VIDEO_PLACEHOLDER_PATTERN
 from deepagents_cli.widgets.autocomplete import (
     SLASH_COMMANDS,
     CompletionResult,
@@ -36,12 +36,6 @@ logger = logging.getLogger(__name__)
 
 _PREFIX_TO_MODE: dict[str, str] = {v: k for k, v in MODE_PREFIXES.items()}
 """Reverse lookup: trigger character -> mode name."""
-
-_IMAGE_PLACEHOLDER_PATTERN = re.compile(r"\[image \d+\]")
-"""Pattern for detecting image placeholder tokens in the text area.
-
-Used to locate tokens for atomic backspace/delete handling.
-"""
 
 _PASTE_BURST_CHAR_GAP_SECONDS = 0.03
 """Maximum time between chars to treat input as a paste-like burst."""
@@ -58,7 +52,7 @@ if TYPE_CHECKING:
     from textual.events import Click
     from textual.timer import Timer
 
-    from deepagents_cli.input import ImageTracker, ParsedPastedPathPayload
+    from deepagents_cli.input import MediaTracker, ParsedPastedPathPayload
 
 
 class CompletionOption(Static):
@@ -553,23 +547,25 @@ class ChatTextArea(TextArea):
                 forwards (delete).
         """
         text = self.text
-        for match in _IMAGE_PLACEHOLDER_PATTERN.finditer(text):
-            start, end = match.span()
-            if backwards:
-                # Cursor is inside token or right after a trailing space inserted
-                # with the token.
-                if start < cursor_offset <= end:
+        # Check both image and video placeholders
+        for pattern in (IMAGE_PLACEHOLDER_PATTERN, VIDEO_PLACEHOLDER_PATTERN):
+            for match in pattern.finditer(text):
+                start, end = match.span()
+                if backwards:
+                    # Cursor is inside token or right after a trailing space inserted
+                    # with the token.
+                    if start < cursor_offset <= end:
+                        return start, end
+                    if cursor_offset > 0:
+                        previous_index = cursor_offset - 1
+                        if (
+                            previous_index < len(text)
+                            and previous_index == end
+                            and text[previous_index].isspace()
+                        ):
+                            return start, cursor_offset
+                elif start <= cursor_offset < end:
                     return start, end
-                if cursor_offset > 0:
-                    previous_index = cursor_offset - 1
-                    if (
-                        previous_index < len(text)
-                        and previous_index == end
-                        and text[previous_index].isspace()
-                    ):
-                        return start, cursor_offset
-            elif start <= cursor_offset < end:
-                return start, end
         return None
 
     async def _on_paste(self, event: events.Paste) -> None:
@@ -729,7 +725,7 @@ class ChatInput(Vertical):
         self,
         cwd: str | Path | None = None,
         history_file: Path | None = None,
-        image_tracker: ImageTracker | None = None,
+        image_tracker: MediaTracker | None = None,
         **kwargs: Any,
     ) -> None:
         """Initialize the chat input widget.
@@ -755,11 +751,11 @@ class ChatInput(Vertical):
 
         # When the user submits, we clear the text area which fires a
         # text-change event. Without this guard the tracker would see the
-        # now-empty text, assume all images were deleted, and discard them
+        # now-empty text, assume all media were deleted, and discard them
         # before the app has a chance to send them. Each submit bumps the
         # counter by one; the next text-change event decrements it and
         # skips the sync.
-        self._skip_image_sync_events = 0
+        self._skip_media_sync_events = 0
 
         # Number of virtual prefix characters currently injected for
         # completion controller calls (0 for normal, 1 for bash/command).
@@ -814,7 +810,7 @@ class ChatInput(Vertical):
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
         """Detect input mode and update completions."""
         text = event.text_area.text
-        self._sync_image_tracker_to_text(text)
+        self._sync_media_tracker_to_text(text)
 
         # History handlers explicitly decide mode and stripped display text.
         # Skip mode detection here so recalled entries don't inherit stale mode.
@@ -1067,27 +1063,27 @@ class ChatInput(Vertical):
 
         if self._text_area:
             # Preserve submission-time attachments until adapter consumes them.
-            self._skip_image_sync_events += 1
+            self._skip_media_sync_events += 1
             self._text_area.clear_text()
         self.mode = "normal"
 
-    def _sync_image_tracker_to_text(self, text: str) -> None:
-        """Keep tracked images aligned with placeholder tokens in input text.
+    def _sync_media_tracker_to_text(self, text: str) -> None:
+        """Keep tracked media aligned with placeholder tokens in input text.
 
         Args:
             text: Current text in the input area.
         """
         if not self._image_tracker:
             return
-        if self._skip_image_sync_events:
-            if self._skip_image_sync_events < 0:
+        if self._skip_media_sync_events:
+            if self._skip_media_sync_events < 0:
                 logger.warning(
-                    "_skip_image_sync_events is negative (%d); resetting to 0",
-                    self._skip_image_sync_events,
+                    "_skip_media_sync_events is negative (%d); resetting to 0",
+                    self._skip_media_sync_events,
                 )
-                self._skip_image_sync_events = 0
+                self._skip_media_sync_events = 0
             else:
-                self._skip_image_sync_events -= 1
+                self._skip_media_sync_events -= 1
             return
         self._image_tracker.sync_to_text(text)
 
@@ -1231,23 +1227,51 @@ class ChatInput(Vertical):
 
         Returns:
             Tuple of `(replacement, attached)` where `attached` indicates whether
-            at least one image attachment was created.
+            at least one media attachment (image or video) was created.
         """
         if not self._image_tracker:
             return raw_text, False
 
-        from deepagents_cli.image_utils import get_image_from_path
+        from deepagents_cli.media_utils import (
+            IMAGE_EXTENSIONS,
+            MAX_MEDIA_BYTES,
+            VIDEO_EXTENSIONS,
+            ImageData,
+            get_media_from_path,
+        )
 
         parts: list[str] = []
         attached = False
         for path in paths:
-            image_data = get_image_from_path(path)
-            if image_data is None:
-                logger.debug("Could not load image from dropped path: %s", path)
-                parts.append(str(path))
+            media = get_media_from_path(path)
+            if media is not None:
+                kind = "image" if isinstance(media, ImageData) else "video"
+                parts.append(self._image_tracker.add_media(media, kind))
+                attached = True
                 continue
-            parts.append(self._image_tracker.add_image(image_data))
-            attached = True
+
+            # Check if it looked like media but failed validation
+            suffix = path.suffix.lower()
+            if suffix in IMAGE_EXTENSIONS or suffix in VIDEO_EXTENSIONS:
+                label = "Video" if suffix in VIDEO_EXTENSIONS else "Image"
+                try:
+                    size = path.stat().st_size
+                    if size > MAX_MEDIA_BYTES:
+                        msg = (
+                            f"{label} too large: {path.name} "
+                            f"({size // (1024 * 1024)} MB, max "
+                            f"{MAX_MEDIA_BYTES // (1024 * 1024)} MB)"
+                        )
+                    else:
+                        msg = f"Could not attach {label.lower()}: {path.name}"
+                except OSError as exc:
+                    logger.debug("Failed to stat media file %s: %s", path, exc)
+                    msg = f"Could not attach {label.lower()}: {path.name}"
+                self.app.notify(msg, severity="warning", timeout=5)
+
+            # Not a supported media file, keep as path
+            logger.debug("Could not load media from dropped path: %s", path)
+            parts.append(str(path))
 
         if not attached:
             return raw_text, False

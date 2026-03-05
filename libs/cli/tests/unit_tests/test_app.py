@@ -715,7 +715,7 @@ class TestTraceCommand:
             assert any("No active session" in str(w._content) for w in app_msgs)
 
 
-class TestRunAgentTaskImageTracker:
+class TestRunAgentTaskMediaTracker:
     """Tests image tracker wiring from app into textual execution."""
 
     async def test_run_agent_task_passes_image_tracker(self) -> None:

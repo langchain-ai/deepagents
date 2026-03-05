@@ -285,6 +285,34 @@ class TestFormatContentBlock:
         result = _format_content_block(block)
         assert result == "[Image: image/png, ~0KB]"
 
+    def test_video_block_placeholder(self) -> None:
+        """Test VideoContentBlock returns a human-readable placeholder."""
+        b64 = "A" * 40000
+        block = {"type": "video", "base64": b64, "mime_type": "video/mp4"}
+        result = _format_content_block(block)
+        assert result == "[Video: video/mp4, ~29KB]"
+
+    def test_video_block_without_base64_returns_json(self) -> None:
+        """Test that video blocks missing base64 key fall through to JSON."""
+        block = {"type": "video", "url": "https://example.com/video.mp4"}
+        result = _format_content_block(block)
+        assert '"type"' in result
+        assert "Video" not in result
+
+    def test_video_block_none_base64_returns_json(self) -> None:
+        """Test that video block with None base64 falls through to JSON."""
+        block = {"type": "video", "base64": None, "mime_type": "video/mp4"}
+        result = _format_content_block(block)
+        assert '"type"' in result
+        assert "Video" not in result
+
+    def test_file_block_placeholder(self) -> None:
+        """Test FileContentBlock returns a human-readable placeholder."""
+        b64 = "A" * 4000
+        block = {"type": "file", "base64": b64, "mime_type": "application/pdf"}
+        result = _format_content_block(block)
+        assert result == "[File: application/pdf, ~2KB]"
+
     def test_non_serializable_dict_falls_back_to_str(self) -> None:
         """Test that dicts with non-serializable values fall back to str()."""
         block = {"type": "data", "value": object()}

@@ -9,7 +9,7 @@ from textual.app import App, ComposeResult
 from textual.containers import Container
 from textual.widgets import Static
 
-from deepagents_cli.input import ImageTracker
+from deepagents_cli.input import MediaTracker
 from deepagents_cli.widgets import chat_input as chat_input_module
 from deepagents_cli.widgets.autocomplete import MAX_SUGGESTIONS, SLASH_COMMANDS
 from deepagents_cli.widgets.chat_input import (
@@ -19,6 +19,8 @@ from deepagents_cli.widgets.chat_input import (
 )
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     import pytest
     from textual.pilot import Pilot
 
@@ -224,7 +226,7 @@ class _ImagePasteApp(App[None]):
 
     def __init__(self) -> None:
         super().__init__()
-        self.tracker = ImageTracker()
+        self.tracker = MediaTracker()
 
     def compose(self) -> ComposeResult:
         yield ChatInput(id="chat-input", image_tracker=self.tracker)
@@ -235,7 +237,7 @@ class _ImagePasteRecordingApp(App[None]):
 
     def __init__(self) -> None:
         super().__init__()
-        self.tracker = ImageTracker()
+        self.tracker = MediaTracker()
         self.submitted: list[ChatInput.Submitted] = []
 
     def compose(self) -> ComposeResult:
@@ -1281,7 +1283,7 @@ class TestDroppedImagePaste:
             # trailing space (unlike backspace which catches it).
             assert "[image" not in chat._text_area.text
             assert app.tracker.get_images() == []
-            assert app.tracker.next_id == 1
+            assert app.tracker.next_image_id == 1
 
     async def test_backspace_removes_full_image_placeholder(self, tmp_path) -> None:
         """Backspace should remove `[image N]` as a single token."""
@@ -1305,7 +1307,7 @@ class TestDroppedImagePaste:
 
             assert chat._text_area.text == ""
             assert app.tracker.get_images() == []
-            assert app.tracker.next_id == 1
+            assert app.tracker.next_image_id == 1
 
     async def test_readding_after_delete_restarts_image_counter(self, tmp_path) -> None:
         """Re-adding after deleting all placeholders should restart at `[image 1]`."""
@@ -1326,13 +1328,13 @@ class TestDroppedImagePaste:
 
             await pilot.press("backspace")
             await pilot.pause()
-            assert app.tracker.next_id == 1
+            assert app.tracker.next_image_id == 1
 
             chat.handle_external_paste(str(img_path))
             await pilot.pause()
             assert chat._text_area.text == "[image 1] "
             assert len(app.tracker.get_images()) == 1
-            assert app.tracker.next_id == 2
+            assert app.tracker.next_image_id == 2
 
     async def test_handle_external_paste_attaches_dropped_image(self, tmp_path) -> None:
         """External paste routing should attach dropped images."""
@@ -1674,7 +1676,7 @@ class TestDroppedImagePaste:
             # The tracker should have synced and cleared images since
             # the new text has no placeholders.
             assert app.tracker.get_images() == []
-            assert app.tracker.next_id == 1
+            assert app.tracker.next_image_id == 1
 
     async def test_submit_recovers_if_command_mode_already_stripped_path(
         self, tmp_path
@@ -1703,3 +1705,107 @@ class TestDroppedImagePaste:
             assert app.submitted[0].value == "[image 1]"
             assert app.submitted[0].mode == "normal"
             assert len(app.tracker.get_images()) == 1
+
+
+def _make_mp4_bytes() -> bytes:
+    """Return minimal valid MP4 ftyp box bytes."""
+    return (
+        b"\x00\x00\x00\x14"  # box size (20 bytes)
+        b"ftyp"  # box type
+        b"mp42"  # major brand
+        b"\x00\x00\x00\x00"  # minor version
+        b"mp42"  # compatible brand
+    )
+
+
+class TestDroppedVideoPaste:
+    """Tests for drag/drop video-path handling via paste events."""
+
+    async def test_paste_video_attaches_and_inserts_placeholder(
+        self, tmp_path: Path
+    ) -> None:
+        """Dropping a valid .mp4 should insert `[video 1]` placeholder."""
+        video_path = tmp_path / "clip.mp4"
+        video_path.write_bytes(_make_mp4_bytes())
+
+        app = _ImagePasteApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            assert chat.handle_external_paste(str(video_path))
+            await pilot.pause()
+
+            assert "[video 1]" in chat._text_area.text
+            assert len(app.tracker.get_videos()) == 1
+
+    async def test_backspace_removes_video_placeholder(self, tmp_path: Path) -> None:
+        """Backspace should remove `[video N]` as a single token."""
+        video_path = tmp_path / "clip.mp4"
+        video_path.write_bytes(_make_mp4_bytes())
+
+        app = _ImagePasteApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste(str(video_path))
+            await pilot.pause()
+            assert "[video 1]" in chat._text_area.text
+
+            await pilot.press("backspace")
+            await pilot.pause()
+
+            assert "[video" not in chat._text_area.text
+            assert app.tracker.get_videos() == []
+            assert app.tracker.next_video_id == 1
+
+    async def test_forward_delete_removes_video_placeholder(
+        self, tmp_path: Path
+    ) -> None:
+        """Forward-delete should remove `[video N]` as a single token."""
+        video_path = tmp_path / "clip.mp4"
+        video_path.write_bytes(_make_mp4_bytes())
+
+        app = _ImagePasteApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste(str(video_path))
+            await pilot.pause()
+            assert "[video 1]" in chat._text_area.text
+
+            chat._text_area.move_cursor((0, 0))
+            await pilot.pause()
+            await pilot.press("delete")
+            await pilot.pause()
+
+            assert "[video" not in chat._text_area.text
+            assert app.tracker.get_videos() == []
+
+    async def test_mixed_image_and_video_drop(self, tmp_path: Path) -> None:
+        """Dropping an image and video should produce both placeholder types."""
+        from PIL import Image
+
+        img_path = tmp_path / "photo.png"
+        image = Image.new("RGB", (4, 4), color="red")
+        image.save(img_path, format="PNG")
+
+        video_path = tmp_path / "clip.mp4"
+        video_path.write_bytes(_make_mp4_bytes())
+
+        app = _ImagePasteApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            payload = f"{img_path}\n{video_path}"
+            chat.handle_external_paste(payload)
+            await pilot.pause()
+
+            text = chat._text_area.text
+            assert "[image 1]" in text
+            assert "[video 1]" in text
+            assert len(app.tracker.get_images()) == 1
+            assert len(app.tracker.get_videos()) == 1

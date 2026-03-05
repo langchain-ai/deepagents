@@ -366,7 +366,7 @@ class TestVideoData:
     """Tests for VideoData dataclass."""
 
     def test_to_message_content_mp4(self) -> None:
-        """Test converting MP4 video data to LangChain file block format."""
+        """Test converting MP4 video data to LangChain video block format."""
         video = VideoData(
             base64_data="AAAAIGZ0eXBtcDQyAAAAAGlzb21tcDQyAAACAGlzb2...",
             format="mp4",
@@ -374,12 +374,12 @@ class TestVideoData:
         )
         result = video.to_message_content()
 
-        assert result["type"] == "file"
+        assert result["type"] == "video"
         assert result["base64"] == video.base64_data
         assert result["mime_type"] == "video/mp4"
 
     def test_to_message_content_mov(self) -> None:
-        """Test converting MOV video data to LangChain file block format."""
+        """Test converting MOV video data to LangChain video block format."""
         video = VideoData(
             base64_data="abc123",
             format="quicktime",
@@ -387,7 +387,7 @@ class TestVideoData:
         )
         result = video.to_message_content()
 
-        assert result["type"] == "file"
+        assert result["type"] == "video"
         assert result["mime_type"] == "video/quicktime"
 
 
@@ -605,7 +605,7 @@ class TestCreateMultimodalContentWithVideo:
 
         assert len(result) == 2
         assert result[0]["type"] == "text"
-        assert result[1]["type"] == "file"
+        assert result[1]["type"] == "video"
 
     def test_text_image_and_video(self) -> None:
         """Test creating content with text, image, and video."""
@@ -616,7 +616,7 @@ class TestCreateMultimodalContentWithVideo:
         assert len(result) == 3
         assert result[0]["type"] == "text"
         assert result[1]["type"] == "image_url"
-        assert result[2]["type"] == "file"
+        assert result[2]["type"] == "video"
 
     def test_video_only(self) -> None:
         """Test that empty text is not included when only video is present."""
@@ -624,7 +624,7 @@ class TestCreateMultimodalContentWithVideo:
         result = create_multimodal_content("", [], [vid])
 
         assert len(result) == 1
-        assert result[0]["type"] == "file"
+        assert result[0]["type"] == "video"
 
     def test_multiple_videos(self) -> None:
         """Test creating content with multiple videos."""
@@ -638,5 +638,5 @@ class TestCreateMultimodalContentWithVideo:
 
         assert len(result) == 3
         assert result[0]["type"] == "text"
-        assert result[1]["type"] == "file"
-        assert result[2]["type"] == "file"
+        assert result[1]["type"] == "video"
+        assert result[2]["type"] == "video"

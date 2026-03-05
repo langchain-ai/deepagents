@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from langchain_core.messages.content import FileContentBlock
+    from langchain_core.messages.content import VideoContentBlock
 
 logger = logging.getLogger(__name__)
 
@@ -72,20 +72,15 @@ class VideoData:
     format: str  # "mp4", "quicktime", etc.
     placeholder: str  # Display text like "[video 1]"
 
-    def to_message_content(self) -> "FileContentBlock":
-        """Convert to LangChain `FileContentBlock` format.
-
-        Uses the `file` block type so that LangChain's Responses API
-        conversion preserves the content (converted to `input_file`).
-        The `video_url` type is silently dropped by the conversion.
+    def to_message_content(self) -> "VideoContentBlock":
+        """Convert to LangChain `VideoContentBlock` format.
 
         Returns:
-            `FileContentBlock` with base64 data and mime_type.
+            `VideoContentBlock` with base64 data and mime_type.
         """
-        from langchain_core.messages.content import FileContentBlock
+        from langchain_core.messages.content import create_video_block
 
-        return FileContentBlock(
-            type="file",
+        return create_video_block(
             base64=self.base64_data,
             mime_type=f"video/{self.format}",
         )

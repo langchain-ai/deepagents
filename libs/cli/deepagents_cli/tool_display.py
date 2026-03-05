@@ -222,7 +222,8 @@ def _format_content_block(block: dict) -> str:
     human-readable placeholder so they don't flood the terminal.
 
     Args:
-        block: An `ImageContentBlock` or `FileContentBlock` dictionary.
+        block: An `ImageContentBlock`, `VideoContentBlock`, or `FileContentBlock`
+            dictionary.
 
     Returns:
         A display-friendly string for the block.
@@ -232,12 +233,16 @@ def _format_content_block(block: dict) -> str:
         size_kb = len(b64) * 3 // 4 // 1024  # approximate decoded size
         mime = block.get("mime_type", "image")
         return f"[Image: {mime}, ~{size_kb}KB]"
+    if block.get("type") == "video" and isinstance(block.get("base64"), str):
+        b64 = block["base64"]
+        size_kb = len(b64) * 3 // 4 // 1024  # approximate decoded size
+        mime = block.get("mime_type", "video")
+        return f"[Video: {mime}, ~{size_kb}KB]"
     if block.get("type") == "file" and isinstance(block.get("base64"), str):
         b64 = block["base64"]
         size_kb = len(b64) * 3 // 4 // 1024  # approximate decoded size
         mime = block.get("mime_type", "file")
-        label = "Video" if mime.startswith("video/") else "File"
-        return f"[{label}: {mime}, ~{size_kb}KB]"
+        return f"[File: {mime}, ~{size_kb}KB]"
     try:
         return json.dumps(block)
     except (TypeError, ValueError):

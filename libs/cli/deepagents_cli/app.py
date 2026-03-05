@@ -509,7 +509,6 @@ class DeepAgentsApp(App):
         """
         # Main chat area with scrollable messages
         # VerticalScroll tracks user scroll intent for better auto-scroll behavior
-        # Header is created in on_mount after session_state is initialized
         with VerticalScroll(id="chat"):
             yield WelcomeBanner(thread_id=self._lc_thread_id, id="welcome-banner")
             yield Container(id="messages")

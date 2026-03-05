@@ -29,9 +29,9 @@ MODELS: list[str] = [
     "openai:gpt-4.1",
     "openai:o3",
     "openai:o4-mini",
-    "openai:gpt-5",
     "openai:gpt-5.1-codex",
     "openai:gpt-5.2-codex",
+    "openai:gpt-5.4",
     # Google
     "google_genai:gemini-2.5-flash",
     "google_genai:gemini-2.5-pro",
@@ -62,7 +62,7 @@ SET1: list[str] = [
     "anthropic:claude-opus-4-6",
     "openai:gpt-4.1",
     "openai:o3",
-    "openai:gpt-5",
+    "openai:gpt-5.4",
     "google_genai:gemini-2.5-pro",
     "xai:grok-4",
 ]

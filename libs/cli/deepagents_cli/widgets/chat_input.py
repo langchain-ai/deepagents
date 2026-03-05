@@ -1103,7 +1103,7 @@ class ChatInput(Vertical):
         self, event: ChatTextArea.HistoryPrevious
     ) -> None:
         """Handle history previous request."""
-        entry = self._history.get_previous(event.current_text)
+        entry = self._history.get_previous(event.current_text, query=event.current_text)
         if entry is not None and self._text_area:
             mode, display_text = self._history_entry_mode_and_text(entry)
             self.mode = mode
@@ -1328,11 +1328,14 @@ class ChatInput(Vertical):
         if not self._completion_manager or not self._text_area:
             return
 
-        # Backspace on empty input exits the current mode (e.g. command/bash)
+        # Backspace at cursor position 0 (or on empty input) exits the
+        # current mode (e.g. command/bash).  When the cursor is at the very
+        # start of the text area, backspace is a no-op for the underlying
+        # widget, so without this guard the user would be stuck in the mode.
         if (
             event.key == "backspace"
-            and not self._text_area.text
             and self.mode != "normal"
+            and self._get_cursor_offset() == 0
         ):
             self._completion_manager.reset()
             self.mode = "normal"
@@ -1444,6 +1447,22 @@ class ChatInput(Vertical):
         """
         if self._text_area:
             self._text_area.set_app_focus(has_focus=active)
+
+    def exit_mode(self) -> bool:
+        """Exit the current input mode (command/bash) back to normal.
+
+        Returns:
+            True if mode was non-normal and has been reset.
+        """
+        if self.mode == "normal":
+            return False
+        self.mode = "normal"
+        if self._completion_manager:
+            self._completion_manager.reset()
+        self.clear_completion_suggestions()
+        if self._text_area:
+            self._text_area.clear()
+        return True
 
     def dismiss_completion(self) -> bool:
         """Dismiss completion: clear view and reset controller state.

@@ -109,12 +109,12 @@ class TestCompactInAutocomplete:
 
     def test_compact_in_slash_commands(self) -> None:
         """The /compact command should be in the SLASH_COMMANDS list."""
-        labels = [label for label, _ in SLASH_COMMANDS]
+        labels = [label for label, *_ in SLASH_COMMANDS]
         assert "/compact" in labels
 
     def test_compact_sorted_alphabetically(self) -> None:
         """The /compact entry should appear between /clear and /docs."""
-        labels = [label for label, _ in SLASH_COMMANDS]
+        labels = [label for label, *_ in SLASH_COMMANDS]
         clear_idx = labels.index("/clear")
         compact_idx = labels.index("/compact")
         docs_idx = labels.index("/docs")

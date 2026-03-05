@@ -11,7 +11,7 @@ from textual.widgets import Static
 
 from deepagents_cli.input import ImageTracker
 from deepagents_cli.widgets import chat_input as chat_input_module
-from deepagents_cli.widgets.autocomplete import SLASH_COMMANDS
+from deepagents_cli.widgets.autocomplete import MAX_SUGGESTIONS, SLASH_COMMANDS
 from deepagents_cli.widgets.chat_input import (
     ChatInput,
     CompletionOption,
@@ -394,7 +394,7 @@ class TestHistoryBoundaryNavigation:
             chat = app.query_one(ChatInput)
             assert chat._text_area is not None
 
-            chat._history._entries.append("previous entry")
+            chat._history._entries.append("say hello world")
 
             # Type text then move cursor to start
             chat._text_area.insert("hello")
@@ -405,7 +405,7 @@ class TestHistoryBoundaryNavigation:
             # Up arrow should trigger history (cursor at start)
             await pilot.press("up")
             await pilot.pause()
-            assert chat._text_area.text == "previous entry"
+            assert chat._text_area.text == "say hello world"
 
     async def test_down_arrow_navigates_from_start_when_in_history(self) -> None:
         """Down arrow at start navigates history when `_in_history` is True."""
@@ -677,7 +677,9 @@ class TestDismissCompletion:
             await _pause_for_strip(pilot)
 
             # Menu should reappear with all commands
-            assert len(chat._current_suggestions) == len(SLASH_COMMANDS)
+            assert len(chat._current_suggestions) == min(
+                len(SLASH_COMMANDS), MAX_SUGGESTIONS
+            )
             assert popup.styles.display == "block"
 
     async def test_popup_hide_cancels_pending_rebuild(self) -> None:
@@ -790,6 +792,31 @@ class TestModePrefixStripping:
             assert chat.mode == "command"
 
             # Second backspace on empty — exits mode
+            await pilot.press("backspace")
+            await pilot.pause()
+            assert chat.mode == "normal"
+
+    async def test_backspace_at_cursor_zero_with_text_exits_mode(self) -> None:
+        """Backspace at cursor position 0 with text after cursor exits mode."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            # Enter command mode and type some text
+            chat._text_area.insert("/")
+            await _pause_for_strip(pilot)
+            assert chat.mode == "command"
+
+            chat._text_area.insert("help")
+            await pilot.pause()
+            assert chat._text_area.text == "help"
+
+            # Move cursor to position 0 (beginning of field)
+            chat._text_area.move_cursor((0, 0))
+            await pilot.pause()
+
+            # Backspace at position 0 with text after cursor — should exit mode
             await pilot.press("backspace")
             await pilot.pause()
             assert chat.mode == "normal"
@@ -967,10 +994,14 @@ class TestHistoryRecallModeReset:
             # Seed history with a normal-mode entry
             chat._history._entries.append("echo hello")
 
-            # Enter bash mode
+            # Enter bash mode, then clear text so the history query is
+            # empty (matches all entries) — we're testing mode reset, not
+            # substring filtering.
             chat._text_area.text = "!ls"
             await _pause_for_strip(pilot)
             assert chat.mode == "bash"
+            chat._text_area.text = ""
+            await pilot.pause()
 
             # Press up to recall the non-prefixed history entry through
             # the ChatInput handler (which normalizes mode).

@@ -1155,14 +1155,43 @@ def _get_default_model_spec() -> str:
     raise ModelConfigError(msg)
 
 
-_OPENROUTER_DEFAULT_HEADERS: dict[str, str] = {
-    "HTTP-Referer": "https://github.com/langchain-ai/deepagents",
-    "X-Title": "Deep Agents CLI",
-}
-"""Default attribution headers sent with every OpenRouter request.
+_OPENROUTER_APP_URL = "https://github.com/langchain-ai/deepagents"
+"""Default `app_url` (maps to `HTTP-Referer`) for OpenRouter attribution.
 
 See https://openrouter.ai/docs/app-attribution for details.
 """
+
+_OPENROUTER_APP_TITLE = "Deep Agents CLI"
+"""Default `app_title` (maps to `X-Title`) for OpenRouter attribution."""
+
+
+def _apply_openrouter_defaults(kwargs: dict[str, Any]) -> None:
+    """Inject default OpenRouter attribution kwargs.
+
+    Sets `app_url` and `app_title` via `setdefault` so that user-supplied
+    values in config take precedence. These map to the `HTTP-Referer` and
+    `X-Title` headers that `ChatOpenRouter` sends for app attribution
+    (see https://openrouter.ai/docs/app-attribution).
+
+    Users can override either value provider-wide or per-model in
+    `~/.deepagents/config.toml`:
+
+    ```toml
+    # Provider-wide
+    [models.providers.openrouter.params]
+    app_url = "https://myapp.com"
+    app_title = "My App"
+
+    # Per-model (shallow-merges on top of provider-wide)
+    [models.providers.openrouter.params."openai/gpt-oss-120b"]
+    app_title = "My App (GPT)"
+    ```
+
+    Args:
+        kwargs: Mutable kwargs dict to update in place.
+    """
+    kwargs.setdefault("app_url", _OPENROUTER_APP_URL)
+    kwargs.setdefault("app_title", _OPENROUTER_APP_TITLE)
 
 
 def _get_provider_kwargs(
@@ -1175,10 +1204,6 @@ def _get_provider_kwargs(
 
     When `model_name` is provided, per-model overrides from the `params`
     sub-table are shallow-merged on top.
-
-    For the `openrouter` provider, default attribution headers (`HTTP-Referer`
-    and `X-Title`) are injected automatically. User-supplied `default_headers`
-    in config take precedence.
 
     Args:
         provider: Provider name (e.g., openai, anthropic, fireworks, ollama).
@@ -1199,8 +1224,7 @@ def _get_provider_kwargs(
             result["api_key"] = api_key
 
     if provider == "openrouter":
-        user_headers = result.get("default_headers") or {}
-        result["default_headers"] = {**_OPENROUTER_DEFAULT_HEADERS, **user_headers}
+        _apply_openrouter_defaults(result)
 
     return result
 

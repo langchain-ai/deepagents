@@ -115,7 +115,7 @@ def test_write_files_in_parallel_confirm_with_verification(model: str) -> None:
 
 
 @pytest.mark.langsmith
-def test_write_files_in_parallel_ambiguous_confirmation(model: str) -> None:
+def test_write_files_in_parallel_ambiguous_confirmation(model: BaseChatModel) -> None:
     """Intentionally ambiguous: the user asks for a reply but doesn't constrain verification.
 
     We keep this prompt ambiguous on purpose to measure default efficiency in the harness.

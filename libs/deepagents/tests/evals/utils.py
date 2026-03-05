@@ -105,18 +105,6 @@ class SuccessAssertion:
         """
         raise NotImplementedError
 
-    @property
-    def feedback_key(self) -> str:
-        """Return a short key used when logging feedback to LangSmith.
-
-        Returns:
-            The feedback key string.
-
-        Raises:
-            NotImplementedError: Subclasses must override this property.
-        """
-        raise NotImplementedError
-
 
 @dataclass(frozen=True)
 class EfficiencyAssertion:
@@ -147,18 +135,6 @@ class EfficiencyAssertion:
 
         Raises:
             NotImplementedError: Subclasses must override this method.
-        """
-        raise NotImplementedError
-
-    @property
-    def feedback_key(self) -> str:
-        """Return a short key used when logging feedback to LangSmith.
-
-        Returns:
-            The feedback key string.
-
-        Raises:
-            NotImplementedError: Subclasses must override this property.
         """
         raise NotImplementedError
 
@@ -278,14 +254,6 @@ class FinalTextContains(SuccessAssertion):
         final_text = _strip_common_zero_width(trajectory.steps[-1].action.text)
         return f"Expected final text to contain {self.text!r} (case_insensitive={self.case_insensitive}), got: {final_text!r}"
 
-    @property
-    def feedback_key(self) -> str:
-        """Return the feedback key for this assertion.
-
-        Returns:
-            A feedback key string.
-        """
-        return f"success:final_text_contains:{self.text}"
 
 
 @dataclass(frozen=True)
@@ -328,14 +296,6 @@ class FinalTextExcludes(SuccessAssertion):
         final_text = _strip_common_zero_width(trajectory.steps[-1].action.text)
         return f"Expected final text NOT to contain {self.text!r} (case_insensitive={self.case_insensitive}), got: {final_text!r}"
 
-    @property
-    def feedback_key(self) -> str:
-        """Return the feedback key for this assertion.
-
-        Returns:
-            A feedback key string.
-        """
-        return f"success:final_text_excludes:{self.text}"
 
 
 @dataclass(frozen=True)
@@ -375,14 +335,6 @@ class FileEquals(SuccessAssertion):
             return f"File {self.path!r} not found in trajectory files"
         return f"File {self.path!r} content mismatch.\nExpected:\n{self.content!r}\nActual:\n{actual!r}"
 
-    @property
-    def feedback_key(self) -> str:
-        """Return the feedback key for this assertion.
-
-        Returns:
-            A feedback key string.
-        """
-        return f"success:file_equals:{self.path}"
 
 
 @dataclass(frozen=True)
@@ -425,14 +377,6 @@ class FileContains(SuccessAssertion):
             return f"File {self.path!r} not found in trajectory files"
         return f"File {self.path!r} does not contain {self.substring!r}.\nActual content:\n{actual!r}"
 
-    @property
-    def feedback_key(self) -> str:
-        """Return the feedback key for this assertion.
-
-        Returns:
-            A feedback key string.
-        """
-        return f"success:file_contains:{self.path}"
 
 
 @dataclass(frozen=True)
@@ -470,14 +414,6 @@ class FileExcludes(SuccessAssertion):
         actual = trajectory.files.get(self.path, "")
         return f"File {self.path!r} unexpectedly contains {self.substring!r}.\nActual content:\n{actual!r}"
 
-    @property
-    def feedback_key(self) -> str:
-        """Return the feedback key for this assertion.
-
-        Returns:
-            A feedback key string.
-        """
-        return f"success:file_excludes:{self.path}"
 
 
 # ---------------------------------------------------------------------------
@@ -517,14 +453,6 @@ class AgentSteps(EfficiencyAssertion):
         """
         return f"Expected {self.n} agent steps, got {len(trajectory.steps)}"
 
-    @property
-    def feedback_key(self) -> str:
-        """Return the feedback key for this assertion.
-
-        Returns:
-            A feedback key string.
-        """
-        return "expect:agent_steps"
 
 
 @dataclass(frozen=True)
@@ -561,14 +489,6 @@ class ToolCallRequests(EfficiencyAssertion):
         actual = sum(len(s.action.tool_calls) for s in trajectory.steps)
         return f"Expected {self.n} tool call requests, got {actual}"
 
-    @property
-    def feedback_key(self) -> str:
-        """Return the feedback key for this assertion.
-
-        Returns:
-            A feedback key string.
-        """
-        return "expect:tool_call_requests"
 
 
 @dataclass(frozen=True)
@@ -613,14 +533,6 @@ class ToolCall(EfficiencyAssertion):
         step_desc = f" in step {self.step}" if self.step is not None else ""
         return f"Missing expected tool call{step_desc}: name={self.name!r}, args_contains={self.args_contains!r}, args_equals={self.args_equals!r}"
 
-    @property
-    def feedback_key(self) -> str:
-        """Return the feedback key for this assertion.
-
-        Returns:
-            A feedback key string.
-        """
-        return f"expect:tool_call:{self.name}"
 
     def _matches_tool_call(self, tc: dict[str, object]) -> bool:
         """Check whether a single tool call dict matches this expectation.
@@ -910,26 +822,34 @@ def _assert_expectations(
         trajectory: The agent trajectory to validate.
         scorer: The two-tier expectation container.
     """
-    # Always log actual counts as feedback
+    # Log actual trajectory shape
     actual_steps = len(trajectory.steps)
     actual_tool_calls = sum(len(s.action.tool_calls) for s in trajectory.steps)
     t.log_feedback(key="agent_steps", value=actual_steps)
     t.log_feedback(key="tool_call_requests", value=actual_tool_calls)
 
+    # Log expected step count if specified
+    for assertion in scorer._expectations:
+        if isinstance(assertion, AgentSteps):
+            t.log_feedback(key="expected_agent_steps", value=assertion.n)
+            break
+
     # Hard correctness checks
+    success = True
     for assertion in scorer._success:
-        result = assertion.check(trajectory)
-        t.log_feedback(key=assertion.feedback_key, value=int(result))
-        if not result:
+        if not assertion.check(trajectory):
+            success = False
+            t.log_feedback(key="success", value=0)
             pytest.fail(
                 f"success check failed: {assertion.describe_failure(trajectory)}\n\ntrajectory:\n{trajectory.pretty()}",
                 pytrace=False,
             )
+    if success:
+        t.log_feedback(key="success", value=1)
 
-    # Soft efficiency checks (log only, never fail)
+    # Soft efficiency checks (never fail)
     for assertion in scorer._expectations:
-        result = assertion.check(trajectory)
-        t.log_feedback(key=assertion.feedback_key, value=int(result))
+        assertion.check(trajectory)
 
 
 # ---------------------------------------------------------------------------
@@ -963,7 +883,7 @@ def run_agent(
         TypeError: If the invoke result is not a ``Mapping``.
     """
     if isinstance(query, str):
-        invoke_inputs: dict[str, object] = {"messages": [{"role": "user", "content": query}]}
+        invoke_inputs: dict[str, Any] = {"messages": [{"role": "user", "content": query}]}
     else:
         invoke_inputs = {"messages": query}
     if initial_files is not None:

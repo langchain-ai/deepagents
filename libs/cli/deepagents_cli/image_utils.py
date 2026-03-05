@@ -12,6 +12,10 @@ import subprocess  # noqa: S404
 import sys
 import tempfile
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from langchain_core.messages.content import FileContentBlock
 
 logger = logging.getLogger(__name__)
 
@@ -56,16 +60,23 @@ class VideoData:
     format: str  # "mp4", "mov", etc.
     placeholder: str  # Display text like "[video 1]"
 
-    def to_message_content(self) -> dict:
-        """Convert to OpenAI-compatible video URL format.
+    def to_message_content(self) -> "FileContentBlock":
+        """Convert to LangChain `FileContentBlock` format.
+
+        Uses the `file` block type so that LangChain's Responses API
+        conversion preserves the content (converted to `input_file`).
+        The `video_url` type is silently dropped by the conversion.
 
         Returns:
-            Dict with type and video_url for multimodal messages.
+            `FileContentBlock` with base64 data and mime_type.
         """
-        return {
-            "type": "video_url",
-            "video_url": {"url": f"data:video/{self.format};base64,{self.base64_data}"},
-        }
+        from langchain_core.messages.content import FileContentBlock
+
+        return FileContentBlock(
+            type="file",
+            base64=self.base64_data,
+            mime_type=f"video/{self.format}",
+        )
 
 
 def get_clipboard_image() -> ImageData | None:
@@ -133,6 +144,9 @@ def get_video_from_path(path: pathlib.Path) -> VideoData | None:
     Returns:
         `VideoData` when the file is a valid video, otherwise `None`.
     """
+    # 20 MB — keeps base64 payload under ~27 MB, well within API limits
+    max_video_bytes = 20 * 1024 * 1024
+
     # Common video file extensions
     video_extensions = {
         ".mp4",
@@ -152,14 +166,26 @@ def get_video_from_path(path: pathlib.Path) -> VideoData | None:
         return None
 
     try:
-        video_bytes = path.read_bytes()
-        if not video_bytes:
+        file_size = path.stat().st_size
+        if file_size == 0:
+            logger.debug("Video file is empty: %s", path)
             return None
+        if file_size > max_video_bytes:
+            logger.warning(
+                "Video file %s is too large (%d MB, max %d MB)",
+                path,
+                file_size // (1024 * 1024),
+                max_video_bytes // (1024 * 1024),
+            )
+            return None
+
+        video_bytes = path.read_bytes()
 
         # Validate it's a real video file by checking magic bytes
         # MP4 starts with ftyp, MOV also uses ftyp, AVI starts with RIFF
         min_video_len = 4
         if len(video_bytes) < min_video_len:
+            logger.debug("Video file too small (%d bytes): %s", len(video_bytes), path)
             return None
 
         # Basic validation - check for common video file signatures
@@ -173,14 +199,19 @@ def get_video_from_path(path: pathlib.Path) -> VideoData | None:
             and video_bytes[8:12] == b"AVI "
         ):  # AVI
             is_valid = True
-        elif video_bytes[:4] == b"0&\x02b" or suffix == ".webm":
+        elif video_bytes[:4] == b"\x30\x26\xb2\x75" or suffix == ".webm":
             # ASF/WMV and WebM (simplified check)
             is_valid = True
 
         if not is_valid:
-            # For other formats, try to validate with a video library if available
-            # Fall back to accepting the file based on extension
-            logger.debug("Video signature validation skipped for %s", path)
+            logger.warning(
+                "Video file %s has unrecognized signature for extension '%s'; "
+                "skipping. If this is a valid video, the format may not be "
+                "supported yet.",
+                path,
+                suffix,
+            )
+            return None
 
         # Determine mime type from extension
         format_map = {
@@ -202,7 +233,7 @@ def get_video_from_path(path: pathlib.Path) -> VideoData | None:
             format=video_format,
             placeholder="[video]",
         )
-    except (OSError, ValueError) as e:
+    except OSError as e:
         logger.debug("Failed to load video from %s: %s", path, e, exc_info=True)
         return None
 

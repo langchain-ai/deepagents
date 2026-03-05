@@ -1281,7 +1281,7 @@ class TestDroppedImagePaste:
             # trailing space (unlike backspace which catches it).
             assert "[image" not in chat._text_area.text
             assert app.tracker.get_images() == []
-            assert app.tracker.next_id == 1
+            assert app.tracker.next_image_id == 1
 
     async def test_backspace_removes_full_image_placeholder(self, tmp_path) -> None:
         """Backspace should remove `[image N]` as a single token."""
@@ -1305,7 +1305,7 @@ class TestDroppedImagePaste:
 
             assert chat._text_area.text == ""
             assert app.tracker.get_images() == []
-            assert app.tracker.next_id == 1
+            assert app.tracker.next_image_id == 1
 
     async def test_readding_after_delete_restarts_image_counter(self, tmp_path) -> None:
         """Re-adding after deleting all placeholders should restart at `[image 1]`."""
@@ -1326,13 +1326,13 @@ class TestDroppedImagePaste:
 
             await pilot.press("backspace")
             await pilot.pause()
-            assert app.tracker.next_id == 1
+            assert app.tracker.next_image_id == 1
 
             chat.handle_external_paste(str(img_path))
             await pilot.pause()
             assert chat._text_area.text == "[image 1] "
             assert len(app.tracker.get_images()) == 1
-            assert app.tracker.next_id == 2
+            assert app.tracker.next_image_id == 2
 
     async def test_handle_external_paste_attaches_dropped_image(self, tmp_path) -> None:
         """External paste routing should attach dropped images."""
@@ -1674,7 +1674,7 @@ class TestDroppedImagePaste:
             # The tracker should have synced and cleared images since
             # the new text has no placeholders.
             assert app.tracker.get_images() == []
-            assert app.tracker.next_id == 1
+            assert app.tracker.next_image_id == 1
 
     async def test_submit_recovers_if_command_mode_already_stripped_path(
         self, tmp_path

@@ -285,6 +285,32 @@ class TestFormatContentBlock:
         result = _format_content_block(block)
         assert result == "[Image: image/png, ~0KB]"
 
+    def test_video_url_block_placeholder(self) -> None:
+        """Test video_url block returns a human-readable placeholder."""
+        b64 = "A" * 40000
+        block = {
+            "type": "video_url",
+            "video_url": {"url": f"data:video/mp4;base64,{b64}"},
+        }
+        result = _format_content_block(block)
+        assert result == "[Video: video/mp4, ~29KB]"
+
+    def test_video_url_block_without_data_uri_returns_json(self) -> None:
+        """Test that video_url blocks with non-data URIs fall through to JSON."""
+        block = {
+            "type": "video_url",
+            "video_url": {"url": "https://example.com/video.mp4"},
+        }
+        result = _format_content_block(block)
+        assert '"video_url"' in result
+        assert "Video" not in result
+
+    def test_video_url_block_missing_video_url_returns_json(self) -> None:
+        """Test that video_url blocks without video_url dict fall through."""
+        block = {"type": "video_url", "url": "https://example.com/video.mp4"}
+        result = _format_content_block(block)
+        assert '"type"' in result
+
     def test_non_serializable_dict_falls_back_to_str(self) -> None:
         """Test that dicts with non-serializable values fall back to str()."""
         block = {"type": "data", "value": object()}

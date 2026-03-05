@@ -112,16 +112,6 @@ class MediaTracker:
         self.next_image_id = 1
         self.next_video_id = 1
 
-    @property
-    def next_id(self) -> int:
-        """Backward compatibility property for next_image_id."""
-        return self.next_image_id
-
-    @next_id.setter
-    def next_id(self, value: int) -> None:
-        """Backward compatibility setter for next_image_id."""
-        self.next_image_id = value
-
     def add_image(self, image_data: ImageData) -> str:
         """Add an image and return its placeholder text.
 
@@ -226,8 +216,12 @@ class MediaTracker:
 
         if max_image_id:
             self.next_image_id = max_image_id + 1
+        elif self.images:
+            self.next_image_id = len(self.images) + 1
         if max_video_id:
             self.next_video_id = max_video_id + 1
+        elif self.videos:
+            self.next_video_id = len(self.videos) + 1
 
 
 # Keep ImageTracker as an alias for backward compatibility

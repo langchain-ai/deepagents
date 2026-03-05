@@ -88,12 +88,12 @@ class TestImageTracker:
         tracker.add_image(img)
         tracker.add_image(img)
 
-        assert tracker.next_id == 3
+        assert tracker.next_image_id == 3
         assert len(tracker.images) == 2
 
         tracker.clear()
 
-        assert tracker.next_id == 1
+        assert tracker.next_image_id == 1
         assert len(tracker.images) == 0
 
     def test_add_after_clear_starts_at_one(self) -> None:
@@ -120,7 +120,7 @@ class TestImageTracker:
         tracker.sync_to_text("")
 
         assert tracker.images == []
-        assert tracker.next_id == 1
+        assert tracker.next_image_id == 1
 
     def test_sync_to_text_keeps_referenced_images(self) -> None:
         """Sync should prune unreferenced images while preserving next ID order."""
@@ -132,7 +132,7 @@ class TestImageTracker:
         tracker.add_image(img2)
         tracker.sync_to_text("keep [image 2] only")
 
-        assert tracker.next_id == 3
+        assert tracker.next_image_id == 3
         assert len(tracker.images) == 1
         assert tracker.images[0].placeholder == "[image 2]"
 
@@ -359,14 +359,14 @@ class TestSyncToTextWithIDGaps:
         assert len(tracker.images) == 2
         assert tracker.images[0].placeholder == "[image 1]"
         assert tracker.images[1].placeholder == "[image 3]"
-        assert tracker.next_id == 4
+        assert tracker.next_image_id == 4
 
 
 class TestVideoData:
     """Tests for VideoData dataclass."""
 
     def test_to_message_content_mp4(self) -> None:
-        """Test converting MP4 video data to OpenAI-compatible format."""
+        """Test converting MP4 video data to LangChain file block format."""
         video = VideoData(
             base64_data="AAAAIGZ0eXBtcDQyAAAAAGlzb21tcDQyAAACAGlzb2...",
             format="mp4",
@@ -374,12 +374,13 @@ class TestVideoData:
         )
         result = video.to_message_content()
 
-        assert result["type"] == "video_url"
-        assert "video_url" in result
-        assert result["video_url"]["url"].startswith("data:video/mp4;base64,")
+        assert result["type"] == "file"
+        assert result["base64"] == video.base64_data
+        assert result["mime_type"] == "video/mp4"
+        assert "filename" not in result
 
     def test_to_message_content_mov(self) -> None:
-        """Test converting MOV video data to OpenAI-compatible format."""
+        """Test converting MOV video data to LangChain file block format."""
         video = VideoData(
             base64_data="abc123",
             format="quicktime",
@@ -387,8 +388,8 @@ class TestVideoData:
         )
         result = video.to_message_content()
 
-        assert result["type"] == "video_url"
-        assert result["video_url"]["url"].startswith("data:video/quicktime;base64,")
+        assert result["type"] == "file"
+        assert result["mime_type"] == "video/quicktime"
 
 
 class TestGetVideoFromPath:
@@ -432,6 +433,29 @@ class TestGetVideoFromPath:
         """Missing files should return None."""
         file_path = tmp_path / "missing.mp4"
         assert get_video_from_path(file_path) is None
+
+    def test_get_video_from_path_oversized_returns_none(self, tmp_path: Path) -> None:
+        """Videos exceeding the size limit should be rejected."""
+        video_path = tmp_path / "huge.mp4"
+        # Create a file that reports > 20 MB via stat
+        # Use a sparse approach: write header then seek to create large file
+        with video_path.open("wb") as f:
+            # Valid ftyp header
+            f.write(b"\x00\x00\x00\x14ftypmp42\x00\x00\x00\x00mp42")
+            # Pad to exceed 20 MB
+            f.seek(21 * 1024 * 1024)
+            f.write(b"\x00")
+
+        assert get_video_from_path(video_path) is None
+
+    def test_get_video_from_path_invalid_signature_returns_none(
+        self, tmp_path: Path
+    ) -> None:
+        """Files with valid video extension but invalid signature should be rejected."""
+        video_path = tmp_path / "fake.mp4"
+        video_path.write_bytes(b"this is not a real video file at all")
+
+        assert get_video_from_path(video_path) is None
 
     def test_get_video_from_path_mov(self, tmp_path: Path) -> None:
         """MOV files should be detected correctly."""
@@ -582,7 +606,7 @@ class TestCreateMultimodalContentWithVideo:
 
         assert len(result) == 2
         assert result[0]["type"] == "text"
-        assert result[1]["type"] == "video_url"
+        assert result[1]["type"] == "file"
 
     def test_text_image_and_video(self) -> None:
         """Test creating content with text, image, and video."""
@@ -593,7 +617,7 @@ class TestCreateMultimodalContentWithVideo:
         assert len(result) == 3
         assert result[0]["type"] == "text"
         assert result[1]["type"] == "image_url"
-        assert result[2]["type"] == "video_url"
+        assert result[2]["type"] == "file"
 
     def test_video_only(self) -> None:
         """Test that empty text is not included when only video is present."""
@@ -601,7 +625,7 @@ class TestCreateMultimodalContentWithVideo:
         result = create_multimodal_content("", [], [vid])
 
         assert len(result) == 1
-        assert result[0]["type"] == "video_url"
+        assert result[0]["type"] == "file"
 
     def test_multiple_videos(self) -> None:
         """Test creating content with multiple videos."""
@@ -611,5 +635,5 @@ class TestCreateMultimodalContentWithVideo:
 
         assert len(result) == 3
         assert result[0]["type"] == "text"
-        assert result[1]["type"] == "video_url"
-        assert result[2]["type"] == "video_url"
+        assert result[1]["type"] == "file"
+        assert result[2]["type"] == "file"

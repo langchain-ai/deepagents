@@ -149,6 +149,34 @@ class SlashCommandController:
             self._selected_index = 0
             self._view.clear_completion_suggestions()
 
+    @staticmethod
+    def _score_command(search: str, cmd: str, desc: str) -> float:
+        """Score a command against a search string. Higher = better match.
+
+        Args:
+            search: Lowercase search string (without leading `/`).
+            cmd: Command name (e.g. `'/help'`).
+            desc: Command description text.
+
+        Returns:
+            Score value where higher indicates better match quality.
+        """
+        name = cmd.lstrip("/").lower()
+        # Prefix match on command name — highest priority
+        if name.startswith(search):
+            return 200.0
+        # Substring match on command name
+        if search in name:
+            return 150.0
+        # Substring match on description
+        if search in desc.lower():
+            return 100.0
+        # Fuzzy match via SequenceMatcher on name + desc
+        name_ratio = SequenceMatcher(None, search, name).ratio()
+        desc_ratio = SequenceMatcher(None, search, desc.lower()).ratio()
+        best = max(name_ratio * 60, desc_ratio * 30)
+        return best if best >= _MIN_FUZZY_SCORE else 0.0
+
     def on_text_changed(self, text: str, cursor_index: int) -> None:
         """Update suggestions when text changes."""
         if cursor_index < 0 or cursor_index > len(text):
@@ -162,12 +190,18 @@ class SlashCommandController:
         # Get the search string (text after /)
         search = text[1:cursor_index].lower()
 
-        # Filter commands that match
-        suggestions = [
-            (cmd, desc)
-            for cmd, desc in self._commands
-            if cmd.lower().startswith("/" + search)
-        ]
+        if not search:
+            # No search text — show all commands
+            suggestions = list(self._commands)
+        else:
+            # Score and filter commands using fuzzy matching
+            scored = [
+                (self._score_command(search, cmd, desc), cmd, desc)
+                for cmd, desc in self._commands
+            ]
+            scored = [(s, cmd, desc) for s, cmd, desc in scored if s > 0]
+            scored.sort(key=lambda x: -x[0])
+            suggestions = [(cmd, desc) for _, cmd, desc in scored[:MAX_SUGGESTIONS]]
 
         if suggestions:
             self._suggestions = suggestions

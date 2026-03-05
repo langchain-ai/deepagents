@@ -236,6 +236,39 @@ class TestSlashCommandController:
         suggestions = mock_view.render_completion_suggestions.call_args[0][0]
         assert len(suggestions) == len(SLASH_COMMANDS)
 
+    def test_fuzzy_matches_description_exit(self, controller, mock_view):
+        """Typing 'exit' surfaces /quit via its description 'Exit app'."""
+        controller.on_text_changed("/exit", 5)
+
+        mock_view.render_completion_suggestions.assert_called()
+        suggestions = mock_view.render_completion_suggestions.call_args[0][0]
+        assert any("/quit" in s[0] for s in suggestions)
+
+    def test_fuzzy_matches_description_new(self, controller, mock_view):
+        """Typing 'new' surfaces /clear via description containing 'new'."""
+        controller.on_text_changed("/new", 4)
+
+        mock_view.render_completion_suggestions.assert_called()
+        suggestions = mock_view.render_completion_suggestions.call_args[0][0]
+        assert any("/clear" in s[0] for s in suggestions)
+
+    def test_prefix_match_ranks_first(self, controller, mock_view):
+        """Prefix matches on command name rank above description matches."""
+        controller.on_text_changed("/he", 3)
+
+        mock_view.render_completion_suggestions.assert_called()
+        suggestions = mock_view.render_completion_suggestions.call_args[0][0]
+        # /help is a prefix match — should be first
+        assert suggestions[0][0] == "/help"
+
+    def test_fuzzy_no_match_clears(self, controller, mock_view):
+        """Completely unrelated input clears suggestions."""
+        controller.on_text_changed("/h", 2)
+        mock_view.render_completion_suggestions.assert_called()
+
+        controller.on_text_changed("/zzzzzzzzz", 10)
+        mock_view.clear_completion_suggestions.assert_called()
+
     @pytest.mark.usefixtures("mock_view")
     def test_double_reset_is_safe(self, controller):
         """Calling reset twice does not raise or double-clear."""

@@ -63,7 +63,7 @@ class DeepAgentsHeader(Horizontal):
             title: The title to display in the center.
         """
         super().__init__()
-        self._thread_id = thread_id
+        self._header_thread_id = thread_id
         self._title = title
 
     def compose(self) -> ComposeResult:
@@ -73,7 +73,7 @@ class DeepAgentsHeader(Horizontal):
             Static widgets for thread ID, title, and time.
         """
         yield Static(
-            f"Thread: {self._thread_id}",
+            f"Thread: {self._header_thread_id}",
             id="header-thread",
             classes="header-thread",
         )
@@ -103,10 +103,10 @@ class DeepAgentsHeader(Horizontal):
         Args:
             thread_id: The new thread identifier to display.
         """
-        self._thread_id = thread_id
+        self._header_thread_id = thread_id
         try:
             thread_widget = self.query_one("#header-thread", Static)
-            thread_widget.update(f"Thread: {self._thread_id}")
+            thread_widget.update(f"Thread: {self._header_thread_id}")
         except Exception as e:  # noqa: BLE001
             # Silently fail if widget is not available (e.g., during initialization)
             logger.debug("Failed to update header thread ID: %s", e)

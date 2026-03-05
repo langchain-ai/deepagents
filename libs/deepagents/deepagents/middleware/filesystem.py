@@ -362,28 +362,22 @@ def _create_content_preview(content_str: str, *, head_lines: int = 5, tail_lines
     return head_sample + truncation_notice + tail_sample
 
 
-def _extract_text_from_content(content: list[Any] | str) -> str:
-    """Extract text from message content, joining all text blocks and ignoring non-text blocks.
+def _extract_text_from_message(message: ToolMessage) -> str:
+    """Extract text from a ToolMessage using its `content_blocks` property.
+
+    Joins all text content blocks and ignores non-text blocks (images, audio, etc.)
+    so that binary payloads don't inflate the size measurement.
 
     Args:
-        content: Message content as a string or list of content blocks.
+        message: The ToolMessage to extract text from.
 
     Returns:
-        Extracted text string.
+        Joined text from all text content blocks, or stringified content as fallback.
     """
-    if isinstance(content, str):
-        return content
-    if not isinstance(content, list):
-        return str(content)
-    texts: list[str] = []
-    for block in content:
-        if isinstance(block, dict) and block.get("type") == "text" and "text" in block:
-            texts.append(str(block["text"]))
-        elif isinstance(block, str):
-            texts.append(block)
+    texts = [block["text"] for block in message.content_blocks if block["type"] == "text"]
     if texts:
         return "\n".join(texts)
-    return str(content)
+    return str(message.content)
 
 
 class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]):
@@ -1137,7 +1131,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         if not self._tool_token_limit_before_evict:
             return message, None
 
-        content_str = _extract_text_from_content(message.content)
+        content_str = _extract_text_from_message(message)
 
         # Check if content exceeds eviction threshold
         if len(content_str) <= NUM_CHARS_PER_TOKEN * self._tool_token_limit_before_evict:
@@ -1185,7 +1179,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         if not self._tool_token_limit_before_evict:
             return message, None
 
-        content_str = _extract_text_from_content(message.content)
+        content_str = _extract_text_from_message(message)
 
         if len(content_str) <= NUM_CHARS_PER_TOKEN * self._tool_token_limit_before_evict:
             return message, None

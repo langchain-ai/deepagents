@@ -36,7 +36,7 @@ from deepagents.middleware.filesystem import (
     FilesystemMiddleware,
     FilesystemState,
     _create_content_preview,
-    _extract_text_from_content,
+    _extract_text_from_message,
     _supports_execution,
 )
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
@@ -1093,8 +1093,7 @@ class TestFilesystemMiddleware:
         state = FilesystemState(messages=[], files={})
         runtime = ToolRuntime(state=state, context=None, tool_call_id="test_other", store=None, stream_writer=lambda _: None, config={})
 
-        # Create list with content block with different type that's large when stringified
-        content_blocks = [{"type": "image", "data": "x" * 5000}]
+        content_blocks = [{"type": "image", "base64": "x" * 5000, "mime_type": "image/png"}]
         tool_message = ToolMessage(content=content_blocks, tool_call_id="test_other")
         result = middleware._intercept_large_tool_result(tool_message, runtime)
 
@@ -1183,7 +1182,7 @@ class TestFilesystemMiddleware:
 
         content_blocks = [
             {"type": "text", "text": "small text"},
-            {"type": "image_url", "image_url": {"url": "data:image/png;base64," + "x" * 50000}},
+            {"type": "image", "base64": "x" * 50000, "mime_type": "image/png"},
         ]
         tool_message = ToolMessage(content=content_blocks, tool_call_id="test_no_evict")
         result = middleware._intercept_large_tool_result(tool_message, runtime)
@@ -1524,43 +1523,51 @@ class TestFilesystemMiddleware:
                 assert f"line {i}" in preview
 
 
-class TestExtractTextFromContent:
+class TestExtractTextFromMessage:
     def test_string_content(self):
-        assert _extract_text_from_content("hello") == "hello"
+        msg = ToolMessage(content="hello", tool_call_id="t1")
+        assert _extract_text_from_message(msg) == "hello"
 
     def test_single_text_block(self):
-        blocks = [{"type": "text", "text": "hello"}]
-        assert _extract_text_from_content(blocks) == "hello"
+        msg = ToolMessage(content=[{"type": "text", "text": "hello"}], tool_call_id="t1")
+        assert _extract_text_from_message(msg) == "hello"
 
     def test_multiple_text_blocks_joined(self):
-        blocks = [
-            {"type": "text", "text": "first"},
-            {"type": "text", "text": "second"},
-        ]
-        assert _extract_text_from_content(blocks) == "first\nsecond"
+        msg = ToolMessage(
+            content=[
+                {"type": "text", "text": "first"},
+                {"type": "text", "text": "second"},
+            ],
+            tool_call_id="t1",
+        )
+        assert _extract_text_from_message(msg) == "first\nsecond"
 
     def test_text_and_image_extracts_text_only(self):
-        blocks = [
-            {"type": "text", "text": "description"},
-            {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
-        ]
-        assert _extract_text_from_content(blocks) == "description"
+        msg = ToolMessage(
+            content=[
+                {"type": "text", "text": "description"},
+                {"type": "image", "url": "https://example.com/img.png"},
+            ],
+            tool_call_id="t1",
+        )
+        assert _extract_text_from_message(msg) == "description"
 
     def test_image_only_falls_back_to_str(self):
-        blocks = [{"type": "image", "data": "abc"}]
-        result = _extract_text_from_content(blocks)
-        assert result == str(blocks)
+        content = [{"type": "image", "url": "https://example.com/img.png"}]
+        msg = ToolMessage(content=content, tool_call_id="t1")
+        result = _extract_text_from_message(msg)
+        assert result == str(content)
 
     def test_plain_string_blocks(self):
-        blocks = ["hello", "world"]
-        assert _extract_text_from_content(blocks) == "hello\nworld"
+        msg = ToolMessage(content=["hello", "world"], tool_call_id="t1")
+        assert _extract_text_from_message(msg) == "hello\nworld"
 
     def test_mixed_string_and_text_blocks(self):
-        blocks = [
-            "plain string",
-            {"type": "text", "text": "text block"},
-        ]
-        assert _extract_text_from_content(blocks) == "plain string\ntext block"
+        msg = ToolMessage(
+            content=["plain string", {"type": "text", "text": "text block"}],
+            tool_call_id="t1",
+        )
+        assert _extract_text_from_message(msg) == "plain string\ntext block"
 
 
 class TestPatchToolCallsMiddleware:

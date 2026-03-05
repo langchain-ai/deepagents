@@ -1328,11 +1328,14 @@ class ChatInput(Vertical):
         if not self._completion_manager or not self._text_area:
             return
 
-        # Backspace on empty input exits the current mode (e.g. command/bash)
+        # Backspace at cursor position 0 (or on empty input) exits the
+        # current mode (e.g. command/bash).  When the cursor is at the very
+        # start of the text area, backspace is a no-op for the underlying
+        # widget, so without this guard the user would be stuck in the mode.
         if (
             event.key == "backspace"
-            and not self._text_area.text
             and self.mode != "normal"
+            and self._get_cursor_offset() == 0
         ):
             self._completion_manager.reset()
             self.mode = "normal"

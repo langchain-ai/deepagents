@@ -9,7 +9,7 @@ from deepagents import create_deep_agent
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
 from tests.evals.utils import (
-    TrajectoryExpectations,
+    TrajectoryScorer,
     agent_steps,
     file_contains,
     file_excludes,
@@ -44,8 +44,8 @@ def test_read_skill_full_content(model: BaseChatModel) -> None:
         # Step 1: read_file to get the skill content.
         # Step 2: answer with the magic number.
         # 1 tool call request: read_file.
-        expect=(
-            TrajectoryExpectations()
+        scorer=(
+            TrajectoryScorer()
             .expect(
                 agent_steps(2),
                 tool_call_requests(1),
@@ -81,8 +81,8 @@ def test_read_skill_by_name(model: BaseChatModel) -> None:
         # Step 1: read_file for code-review only.
         # Step 2: answer with the code.
         # 1 tool call request: read_file (code-review only).
-        expect=(
-            TrajectoryExpectations()
+        scorer=(
+            TrajectoryScorer()
             .expect(
                 agent_steps(2),
                 tool_call_requests(1),
@@ -119,8 +119,8 @@ def test_combine_two_skills(model: BaseChatModel) -> None:
         # Step 1: read_file for both skills in parallel.
         # Step 2: answer combining both ports.
         # 2 tool call requests: read_file (frontend-deploy) + read_file (backend-deploy).
-        expect=(
-            TrajectoryExpectations()
+        scorer=(
+            TrajectoryScorer()
             .expect(
                 agent_steps(2),
                 tool_call_requests(2),
@@ -154,8 +154,8 @@ def test_update_skill_typo_fix_no_read(model: BaseChatModel) -> None:
             "Do not read the file before editing it. Edit the file directly. "
             "After editing, do NOT add any explanation; reply DONE only."
         ),
-        expect=(
-            TrajectoryExpectations()
+        scorer=(
+            TrajectoryScorer()
             .expect(
                 agent_steps(2),
                 tool_call_requests(1),
@@ -189,8 +189,8 @@ def test_update_skill_typo_fix_requires_read(model: BaseChatModel) -> None:
         # Step 2: edit_file to fix it.
         # Step 3: confirm.
         # 2 tool call requests: read_file + edit_file.
-        expect=(
-            TrajectoryExpectations()
+        scorer=(
+            TrajectoryScorer()
             .expect(
                 agent_steps(3),
                 tool_call_requests(2),
@@ -233,8 +233,8 @@ def test_find_skill_in_correct_path(model: BaseChatModel) -> None:
             "Update the deployment skill to add a new final step: 'Send Slack notification after deploy'. "
             "The skill path is shown in your system prompt. Edit the file directly."
         ),
-        expect=(
-            TrajectoryExpectations()
+        scorer=(
+            TrajectoryScorer()
             .expect(
                 agent_steps(3),
                 tool_call_requests(2),

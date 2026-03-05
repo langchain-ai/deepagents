@@ -9,7 +9,7 @@ from deepagents import create_deep_agent
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
 from tests.evals.utils import (
-    TrajectoryExpectations,
+    TrajectoryScorer,
     agent_steps,
     file_contains,
     file_equals,
@@ -33,7 +33,7 @@ def test_read_file_seeded_state_backend_file(model: BaseChatModel) -> None:
         # 1st step: request a tool call to read /foo.md.
         # 2nd step: answer the question using the file contents.
         # 1 tool call request: read_file.
-        expect=TrajectoryExpectations()
+        scorer=TrajectoryScorer()
         .expect(agent_steps(2), tool_call_requests(1))
         .success(final_text_contains("three", case_insensitive=True)),
     )
@@ -50,7 +50,7 @@ def test_write_file_simple(model: BaseChatModel) -> None:
         # 1st step: request a tool call to write /foo.md.
         # 2nd step: tell the user the name.
         # 1 tool call request: write_file.
-        expect=TrajectoryExpectations()
+        scorer=TrajectoryScorer()
         .expect(agent_steps(2), tool_call_requests(1))
         .success(
             file_contains("/foo.md", "Foo Bar"),
@@ -70,7 +70,7 @@ def test_write_files_in_parallel(model: str) -> None:
         # 1st step: request 2 write_file tool calls in parallel.
         # 2nd step: respond with "done".
         # 2 tool call requests: write_file to /a.md and write_file to /b.md.
-        expect=TrajectoryExpectations()
+        scorer=TrajectoryScorer()
         .expect(
             agent_steps(2),
             tool_call_requests(2),
@@ -97,7 +97,7 @@ def test_write_files_in_parallel_confirm_with_verification(model: str) -> None:
         # 2nd step: request 2 read_file tool calls in parallel.
         # 3rd step: confirm.
         # 4 tool call requests: 2 write_file + 2 read_file.
-        expect=TrajectoryExpectations()
+        scorer=TrajectoryScorer()
         .expect(
             agent_steps(3),
             tool_call_requests(4),
@@ -133,7 +133,7 @@ def test_write_files_in_parallel_ambiguous_confirmation(model: str) -> None:
         query='Write "bar" to /a.md and "bar" to /b.md. Do the writes in parallel, then reply DONE.',
         # Intentionally ambiguous: some models will confirm directly; others may read back to verify.
         # Only enforce the parallel writes; do not enforce step/tool-call counts.
-        expect=TrajectoryExpectations()
+        scorer=TrajectoryScorer()
         .expect(
             tool_call(name="write_file", step=1, args_contains={"file_path": "/a.md"}),
             tool_call(name="write_file", step=1, args_contains={"file_path": "/b.md"}),
@@ -161,7 +161,7 @@ def test_ls_directory_contains_file_yes_no(model: BaseChatModel) -> None:
         # 1st step: request a tool call to list /foo.
         # 2nd step: answer YES/NO.
         # 1 tool call request: ls.
-        expect=TrajectoryExpectations()
+        scorer=TrajectoryScorer()
         .expect(agent_steps(2), tool_call_requests(1))
         .success(final_text_contains("[YES]")),
     )
@@ -182,7 +182,7 @@ def test_ls_directory_missing_file_yes_no(model: BaseChatModel) -> None:
         # 1st step: request a tool call to list /foo.
         # 2nd step: answer YES/NO.
         # 1 tool call request: ls.
-        expect=TrajectoryExpectations()
+        scorer=TrajectoryScorer()
         .expect(agent_steps(2), tool_call_requests(1))
         .success(final_text_contains("[no]", case_insensitive=True)),
     )
@@ -203,7 +203,7 @@ def test_edit_file_replace_text(model: BaseChatModel) -> None:
         # 1st step: request a tool call to edit /note.md.
         # 2nd step: report completion.
         # 1 tool call request: edit_file.
-        expect=TrajectoryExpectations()
+        scorer=TrajectoryScorer()
         .expect(agent_steps(2), tool_call_requests(1))
         .success(file_equals("/note.md", "dog dog dog\n")),
     )
@@ -221,7 +221,7 @@ def test_read_then_write_derived_output(model: BaseChatModel) -> None:
         # 1st step: request a tool call to read /data.txt.
         # 2nd step: request a tool call to write /out.txt.
         # 2 tool call requests: read_file, write_file.
-        expect=TrajectoryExpectations()
+        scorer=TrajectoryScorer()
         .expect(agent_steps(3), tool_call_requests(2))
         .success(
             file_contains("/out.txt", "gamma\nbeta\nalpha"),
@@ -242,7 +242,7 @@ def test_avoid_unnecessary_tool_calls(model: BaseChatModel) -> None:
         model=model,
         # 1 step: answer directly.
         # 0 tool calls: no files/tools needed.
-        expect=TrajectoryExpectations()
+        scorer=TrajectoryScorer()
         .expect(agent_steps(1), tool_call_requests(0))
         .success(final_text_contains("4")),
     )
@@ -263,7 +263,7 @@ def test_read_files_in_parallel(model: BaseChatModel) -> None:
         # 1st step: request 2 read_file tool calls in parallel.
         # 2nd step: answer YES/NO.
         # 2 tool call requests: read_file /a.md and read_file /b.md.
-        expect=TrajectoryExpectations()
+        scorer=TrajectoryScorer()
         .expect(
             agent_steps(2),
             tool_call_requests(2),
@@ -290,7 +290,7 @@ def test_grep_finds_matching_paths(model: BaseChatModel) -> None:
         # 1st step: request a tool call to grep for 'needle'.
         # 2nd step: answer with the matching paths.
         # 1 tool call request: grep.
-        expect=TrajectoryExpectations()
+        scorer=TrajectoryScorer()
         .expect(agent_steps(2), tool_call_requests(1))
         .success(
             final_text_contains("/a.txt"),
@@ -316,7 +316,7 @@ def test_glob_lists_markdown_files(model: BaseChatModel) -> None:
         # 1st step: request a tool call to glob for markdown files.
         # 2nd step: answer with the matching paths.
         # 1 tool call request: glob.
-        expect=TrajectoryExpectations()
+        scorer=TrajectoryScorer()
         .expect(agent_steps(2), tool_call_requests(1))
         .success(
             final_text_contains("/foo/a.md"),
@@ -345,7 +345,7 @@ def test_find_magic_phrase_deep_nesting(model: BaseChatModel) -> None:
         # 1st step: grep for MAGIC_PHRASE to locate the file.
         # 2nd step: read the file (if needed) and answer with the phrase.
         # 1 tool call requests: grep
-        expect=TrajectoryExpectations()
+        scorer=TrajectoryScorer()
         .expect(
             agent_steps(2),
             tool_call_requests(1),
@@ -392,7 +392,7 @@ Clues: about programming readability; software craftsmanship.
         # 2nd step: read all quote files in parallel.
         # 3rd step: answer with the selected path.
         # 6 tool call requests: 1 ls + 5 read_file.
-        expect=TrajectoryExpectations()
+        scorer=TrajectoryScorer()
         .expect(
             agent_steps(3),
             tool_call_requests(6),
@@ -439,7 +439,7 @@ Clues: about programming readability; software craftsmanship.
         # 2nd step: read all quote files (ideally in parallel).
         # 3rd step: answer with the selected path.
         # 6 tool call requests: 1 ls + 5 read_file.
-        expect=TrajectoryExpectations()
+        scorer=TrajectoryScorer()
         .expect(
             agent_steps(3),
             tool_call_requests(6),

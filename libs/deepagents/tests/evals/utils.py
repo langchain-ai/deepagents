@@ -819,12 +819,12 @@ def tool_call(
 
 
 # ---------------------------------------------------------------------------
-# TrajectoryExpectations (two-tier builder)
+# TrajectoryScorer (two-tier builder)
 # ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
-class TrajectoryExpectations:
+class TrajectoryScorer:
     """Two-tier assertion container for agent trajectories.
 
     Use ``.success()`` to add correctness assertions (hard-fail) and
@@ -838,30 +838,30 @@ class TrajectoryExpectations:
     _success: tuple[SuccessAssertion, ...] = ()
     _expectations: tuple[EfficiencyAssertion, ...] = ()
 
-    def success(self, *assertions: SuccessAssertion) -> TrajectoryExpectations:
+    def success(self, *assertions: SuccessAssertion) -> TrajectoryScorer:
         """Append correctness assertions that hard-fail the test when violated.
 
         Args:
             *assertions: One or more ``SuccessAssertion`` instances.
 
         Returns:
-            A new ``TrajectoryExpectations`` with the assertions appended.
+            A new ``TrajectoryScorer`` with the assertions appended.
         """
-        return TrajectoryExpectations(
+        return TrajectoryScorer(
             _success=(*self._success, *assertions),
             _expectations=self._expectations,
         )
 
-    def expect(self, *assertions: EfficiencyAssertion) -> TrajectoryExpectations:
+    def expect(self, *assertions: EfficiencyAssertion) -> TrajectoryScorer:
         """Append efficiency assertions that are logged but never fail.
 
         Args:
             *assertions: One or more ``EfficiencyAssertion`` instances.
 
         Returns:
-            A new ``TrajectoryExpectations`` with the assertions appended.
+            A new ``TrajectoryScorer`` with the assertions appended.
         """
-        return TrajectoryExpectations(
+        return TrajectoryScorer(
             _success=self._success,
             _expectations=(*self._expectations, *assertions),
         )
@@ -912,7 +912,7 @@ def _trajectory_from_result(result: Mapping[str, object]) -> AgentTrajectory:
 
 def _assert_expectations(
     trajectory: AgentTrajectory,
-    expect: TrajectoryExpectations,
+    scorer: TrajectoryScorer,
 ) -> None:
     """Run all assertions in *expect* against *trajectory*.
 
@@ -923,7 +923,7 @@ def _assert_expectations(
 
     Args:
         trajectory: The agent trajectory to validate.
-        expect: The two-tier expectation container.
+        scorer: The two-tier expectation container.
     """
     # Always log actual counts as feedback
     actual_steps = len(trajectory.steps)
@@ -932,7 +932,7 @@ def _assert_expectations(
     t.log_feedback(key="tool_call_requests", value=actual_tool_calls)
 
     # Hard correctness checks
-    for assertion in expect._success:
+    for assertion in scorer._success:
         result = assertion.check(trajectory)
         t.log_feedback(key=assertion.feedback_key, value=int(result))
         if not result:
@@ -943,7 +943,7 @@ def _assert_expectations(
             )
 
     # Soft efficiency checks (log only, never fail)
-    for assertion in expect._expectations:
+    for assertion in scorer._expectations:
         result = assertion.check(trajectory)
         t.log_feedback(key=assertion.feedback_key, value=int(result))
 
@@ -959,7 +959,7 @@ def run_agent(
     query: str | list[AnyMessage],
     model: BaseChatModel,
     initial_files: dict[str, str] | None = None,
-    expect: TrajectoryExpectations | None = None,
+    scorer: TrajectoryScorer | None = None,
     thread_id: str | None = None,
 ) -> AgentTrajectory:
     """Run agent eval against the given query.
@@ -969,7 +969,7 @@ def run_agent(
         query: A string prompt or list of messages.
         model: The chat model (used for logging only).
         initial_files: Optional initial files to seed the agent with.
-        expect: Optional trajectory expectations to validate.
+        scorer: Optional trajectory expectations to validate.
         thread_id: Optional thread ID for the invocation.
 
     Returns:
@@ -1001,6 +1001,6 @@ def run_agent(
         raise TypeError(msg)
 
     trajectory = _trajectory_from_result(result)
-    if expect is not None:
-        _assert_expectations(trajectory, expect)
+    if scorer is not None:
+        _assert_expectations(trajectory, scorer)
     return trajectory

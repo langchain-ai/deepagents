@@ -9,7 +9,7 @@ from deepagents import create_deep_agent
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
 from tests.evals.utils import (
-    TrajectoryExpectations,
+    TrajectoryScorer,
     agent_steps,
     final_text_contains,
     run_agent,
@@ -27,7 +27,7 @@ def test_custom_system_prompt(model: BaseChatModel) -> None:
         model=model,
         # 1 step: answer directly.
         # 0 tool calls: no files/tools needed.
-        expect=TrajectoryExpectations()
+        scorer=TrajectoryScorer()
         .expect(agent_steps(1), tool_call_requests(0))
         .success(final_text_contains("Foo Bar")),
     )

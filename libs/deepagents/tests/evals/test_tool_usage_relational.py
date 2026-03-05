@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
 
 from tests.evals.utils import (
-    TrajectoryExpectations,
+    TrajectoryScorer,
     agent_steps,
     final_text_contains,
     run_agent,
@@ -398,7 +398,7 @@ def test_single_tool_list_user_ids(model: BaseChatModel) -> None:
         # 1st step: call list_user_ids.
         # 2nd step: answer with the IDs.
         # 1 tool call: list_user_ids.
-        expect=TrajectoryExpectations()
+        scorer=TrajectoryScorer()
         .success(
             final_text_contains("1"),
             final_text_contains("21"),
@@ -429,7 +429,7 @@ def test_single_tool_get_user_email(model: BaseChatModel) -> None:
         # 1st step: call get_user_email with user_id=21.
         # 2nd step: answer with the email.
         # 1 tool call: get_user_email.
-        expect=TrajectoryExpectations()
+        scorer=TrajectoryScorer()
         .success(
             final_text_contains("bob@hotmail.com"),
         )
@@ -455,7 +455,7 @@ def test_single_tool_get_food_calories(model: BaseChatModel) -> None:
         # 1st step: call get_food_calories with food_id=5.
         # 2nd step: answer with the calorie count.
         # 1 tool call: get_food_calories.
-        expect=TrajectoryExpectations()
+        scorer=TrajectoryScorer()
         .success(
             final_text_contains("200"),
         )
@@ -482,7 +482,7 @@ def test_two_tools_user_name_from_current_id(model: BaseChatModel) -> None:
         # 2nd step: call get_user_name(user_id=35) -> "Charlie".
         # 3rd step: answer with the name.
         # 2 tool calls: get_current_user_id, get_user_name.
-        expect=TrajectoryExpectations()
+        scorer=TrajectoryScorer()
         .success(
             final_text_contains("Charlie"),
         )
@@ -510,7 +510,7 @@ def test_two_tools_city_for_user(model: BaseChatModel) -> None:
         # 2nd step: call get_city_for_location(location_id=1) -> "New York".
         # 3rd step: answer with the city.
         # 2 tool calls: get_user_location, get_city_for_location.
-        expect=TrajectoryExpectations()
+        scorer=TrajectoryScorer()
         .success(
             final_text_contains("New York"),
         )
@@ -538,7 +538,7 @@ def test_two_tools_find_user_then_email(model: BaseChatModel) -> None:
         # 2nd step: call get_user_email(user_id=42) -> "eve@example.org".
         # 3rd step: answer with the email.
         # 2 tool calls: find_users_by_name, get_user_email.
-        expect=TrajectoryExpectations()
+        scorer=TrajectoryScorer()
         .success(
             final_text_contains("eve@example.org"),
         )
@@ -567,7 +567,7 @@ def test_three_tools_current_user_city(model: BaseChatModel) -> None:
         # 3rd step: get_city_for_location(3) -> "Chicago".
         # 4th step: answer.
         # 3 tool calls.
-        expect=TrajectoryExpectations()
+        scorer=TrajectoryScorer()
         .success(
             final_text_contains("Chicago"),
         )
@@ -597,7 +597,7 @@ def test_three_tools_find_user_then_city(model: BaseChatModel) -> None:
         # 3rd step: get_city_for_location(1) -> "New York".
         # 4th step: answer.
         # 3 tool calls.
-        expect=TrajectoryExpectations()
+        scorer=TrajectoryScorer()
         .success(
             final_text_contains("New York"),
         )
@@ -627,7 +627,7 @@ def test_three_tools_current_user_weather(model: BaseChatModel) -> None:
         # 3rd step: get_weather_at_location(3) -> "Mostly Cloudy, Temperature: 60F".
         # 4th step: answer.
         # 3 tool calls.
-        expect=TrajectoryExpectations()
+        scorer=TrajectoryScorer()
         .success(
             final_text_contains("60", case_insensitive=True),
         )
@@ -658,7 +658,7 @@ def test_four_tools_current_user_favorite_food_names(model: BaseChatModel) -> No
         # 4th step: answer.
         # 5 tool call requests: 1 + 1 + 3 parallel.
         # 4 agent steps: the 3 parallel calls count as one step.
-        expect=TrajectoryExpectations()
+        scorer=TrajectoryScorer()
         .success(
             final_text_contains("Sushi"),
             final_text_contains("Salad"),
@@ -693,7 +693,7 @@ def test_four_tools_find_user_food_name_and_calories(model: BaseChatModel) -> No
         # 4th step: answer.
         # 4 tool call requests: 1 + 1 + 2 parallel.
         # 4 agent steps.
-        expect=TrajectoryExpectations()
+        scorer=TrajectoryScorer()
         .success(
             final_text_contains("Sushi"),
             final_text_contains("300"),
@@ -727,7 +727,7 @@ def test_four_tools_current_user_location_time_and_weather(model: BaseChatModel)
         # 4th step: answer.
         # 4 tool call requests: 1 + 1 + 2 parallel.
         # 4 agent steps.
-        expect=TrajectoryExpectations()
+        scorer=TrajectoryScorer()
         .success(
             final_text_contains("11:15"),
             final_text_contains("60", case_insensitive=True),
@@ -760,7 +760,7 @@ def test_five_steps_current_user_food_names_and_calories(model: BaseChatModel) -
         # 4th step: answer.
         # 8 tool call requests: 1 + 1 + 6 parallel.
         # 4 agent steps.
-        expect=TrajectoryExpectations()
+        scorer=TrajectoryScorer()
         .success(
             final_text_contains("Sushi"),
             final_text_contains("300"),
@@ -801,7 +801,7 @@ def test_four_steps_find_user_city_and_weather(model: BaseChatModel) -> None:
         # 4th step: answer.
         # 5 tool call requests: 1 + 1 + 3 parallel.
         # 4 agent steps.
-        expect=TrajectoryExpectations()
+        scorer=TrajectoryScorer()
         .success(
             final_text_contains("Los Angeles"),
             final_text_contains("7:45"),
@@ -836,7 +836,7 @@ def test_four_steps_find_user_food_allergies(model: BaseChatModel) -> None:
         # 4th step: answer.
         # 8 tool call requests: 1 + 1 + 6 parallel.
         # 4 agent steps.
-        expect=TrajectoryExpectations()
+        scorer=TrajectoryScorer()
         .success(
             final_text_contains("Pizza"),
             final_text_contains("Gluten"),

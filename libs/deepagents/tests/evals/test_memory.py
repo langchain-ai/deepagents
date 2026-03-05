@@ -9,7 +9,7 @@ from langgraph.store.memory import InMemoryStore
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
 from tests.evals.utils import (
-    TrajectoryExpectations,
+    TrajectoryScorer,
     agent_steps,
     file_contains,
     final_text_contains,
@@ -47,8 +47,8 @@ This is the TurboWidget project. The main goal is to process widgets efficiently
         query="What is the name of this project? Answer with just the project name.",
         # 1st step: answer directly using memory context, no tools needed.
         # 0 tool calls: memory is already loaded in context.
-        expect=(
-            TrajectoryExpectations()
+        scorer=(
+            TrajectoryScorer()
             .expect(agent_steps(1), tool_call_requests(0))
             .success(final_text_contains("TurboWidget"))
         ),
@@ -80,8 +80,8 @@ instead (e.g., "/config_api.txt") without asking for confirmation.
         query="Create a configuration file for API settings at /api.txt with content 'API_KEY=secret'.",
         # 1st step: write file following the naming convention from memory.
         # 1 tool call request: write_file.
-        expect=(
-            TrajectoryExpectations()
+        scorer=(
+            TrajectoryScorer()
             .expect(
                 agent_steps(2),
                 tool_call_requests(1),
@@ -112,8 +112,8 @@ Every function must start with a comment line that says "# Purpose: " followed b
         query="Write a simple Python function that adds two numbers to /add.py. Keep it minimal.",
         # 1st step: write file following the style guide from memory.
         # 1 tool call request: write_file.
-        expect=(
-            TrajectoryExpectations()
+        scorer=(
+            TrajectoryScorer()
             .expect(agent_steps(2), tool_call_requests(1))
             .success(file_contains("/add.py", "# Purpose:"), file_contains("/add.py", "def "))
         ),
@@ -143,8 +143,8 @@ The project uses the FastAPI framework.
         query="What programming language do I prefer and what framework does the project use? Be concise.",
         # 1st step: answer using both memory sources, no tools needed.
         # 0 tool calls: both memory files loaded in context.
-        expect=(
-            TrajectoryExpectations()
+        scorer=(
+            TrajectoryScorer()
             .expect(agent_steps(1), tool_call_requests(0))
             .success(
                 final_text_contains("Python", case_insensitive=True),
@@ -167,7 +167,7 @@ def test_memory_with_missing_file_graceful(model: BaseChatModel) -> None:
         query="What is 5 + 3? Answer with just the number.",
         # 1st step: answer directly even though memory file is missing.
         # 0 tool calls: simple math doesn't require tools.
-        expect=TrajectoryExpectations().expect(agent_steps(1), tool_call_requests(0)),
+        scorer=TrajectoryScorer().expect(agent_steps(1), tool_call_requests(0)),
     )
 
 
@@ -194,8 +194,8 @@ def test_memory_prevents_unnecessary_file_reads(model: BaseChatModel) -> None:
         query="What are the API endpoints? List them briefly.",
         # 1st step: answer using memory, no need to read /docs/api.md.
         # 0 tool calls: documentation already in memory.
-        expect=(
-            TrajectoryExpectations()
+        scorer=(
+            TrajectoryScorer()
             .expect(agent_steps(1), tool_call_requests(0))
             .success(
                 final_text_contains("/users", case_insensitive=True),
@@ -240,8 +240,8 @@ def test_memory_middleware_composite_backend(model: BaseChatModel) -> None:
         agent,
         model=model,
         query="What is your name?",
-        expect=(
-            TrajectoryExpectations()
+        scorer=(
+            TrajectoryScorer()
             .expect(agent_steps(1), tool_call_requests(0))
             .success(final_text_contains("Jackson"))
         ),

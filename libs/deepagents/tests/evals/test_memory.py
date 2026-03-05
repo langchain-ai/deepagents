@@ -10,12 +10,10 @@ from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
 from tests.evals.utils import (
     TrajectoryScorer,
-    agent_steps,
     file_contains,
     final_text_contains,
     run_agent,
     tool_call,
-    tool_call_requests,
 )
 
 if TYPE_CHECKING:
@@ -49,7 +47,7 @@ This is the TurboWidget project. The main goal is to process widgets efficiently
         # 0 tool calls: memory is already loaded in context.
         scorer=(
             TrajectoryScorer()
-            .expect(agent_steps(1), tool_call_requests(0))
+            .expect(agent_steps=1, tool_call_requests=0)
             .success(final_text_contains("TurboWidget"))
         ),
     )
@@ -83,9 +81,9 @@ instead (e.g., "/config_api.txt") without asking for confirmation.
         scorer=(
             TrajectoryScorer()
             .expect(
-                agent_steps(2),
-                tool_call_requests(1),
-                tool_call(name="write_file", step=1, args_contains={"file_path": "/config_api.txt"}),
+                agent_steps=2,
+                tool_call_requests=1,
+                tool_calls=[tool_call(name="write_file", step=1, args_contains={"file_path": "/config_api.txt"})],
             )
             .success(file_contains("/config_api.txt", "API_KEY=secret"))
         ),
@@ -114,7 +112,7 @@ Every function must start with a comment line that says "# Purpose: " followed b
         # 1 tool call request: write_file.
         scorer=(
             TrajectoryScorer()
-            .expect(agent_steps(2), tool_call_requests(1))
+            .expect(agent_steps=2, tool_call_requests=1)
             .success(file_contains("/add.py", "# Purpose:"), file_contains("/add.py", "def "))
         ),
     )
@@ -145,7 +143,7 @@ The project uses the FastAPI framework.
         # 0 tool calls: both memory files loaded in context.
         scorer=(
             TrajectoryScorer()
-            .expect(agent_steps(1), tool_call_requests(0))
+            .expect(agent_steps=1, tool_call_requests=0)
             .success(
                 final_text_contains("Python", case_insensitive=True),
                 final_text_contains("FastAPI", case_insensitive=True),
@@ -167,7 +165,7 @@ def test_memory_with_missing_file_graceful(model: BaseChatModel) -> None:
         query="What is 5 + 3? Answer with just the number.",
         # 1st step: answer directly even though memory file is missing.
         # 0 tool calls: simple math doesn't require tools.
-        scorer=TrajectoryScorer().expect(agent_steps(1), tool_call_requests(0)),
+        scorer=TrajectoryScorer().expect(agent_steps=1, tool_call_requests=0),
     )
 
 
@@ -196,7 +194,7 @@ def test_memory_prevents_unnecessary_file_reads(model: BaseChatModel) -> None:
         # 0 tool calls: documentation already in memory.
         scorer=(
             TrajectoryScorer()
-            .expect(agent_steps(1), tool_call_requests(0))
+            .expect(agent_steps=1, tool_call_requests=0)
             .success(
                 final_text_contains("/users", case_insensitive=True),
                 final_text_contains("GET", case_insensitive=True),
@@ -242,7 +240,7 @@ def test_memory_middleware_composite_backend(model: BaseChatModel) -> None:
         query="What is your name?",
         scorer=(
             TrajectoryScorer()
-            .expect(agent_steps(1), tool_call_requests(0))
+            .expect(agent_steps=1, tool_call_requests=0)
             .success(final_text_contains("Jackson"))
         ),
     )

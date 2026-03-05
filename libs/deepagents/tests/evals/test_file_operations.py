@@ -10,14 +10,12 @@ if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
 from tests.evals.utils import (
     TrajectoryScorer,
-    agent_steps,
     file_contains,
     file_equals,
     final_text_contains,
     final_text_excludes,
     run_agent,
     tool_call,
-    tool_call_requests,
 )
 
 
@@ -34,7 +32,7 @@ def test_read_file_seeded_state_backend_file(model: BaseChatModel) -> None:
         # 2nd step: answer the question using the file contents.
         # 1 tool call request: read_file.
         scorer=TrajectoryScorer()
-        .expect(agent_steps(2), tool_call_requests(1))
+        .expect(agent_steps=2, tool_call_requests=1)
         .success(final_text_contains("three", case_insensitive=True)),
     )
 
@@ -51,7 +49,7 @@ def test_write_file_simple(model: BaseChatModel) -> None:
         # 2nd step: tell the user the name.
         # 1 tool call request: write_file.
         scorer=TrajectoryScorer()
-        .expect(agent_steps(2), tool_call_requests(1))
+        .expect(agent_steps=2, tool_call_requests=1)
         .success(
             file_contains("/foo.md", "Foo Bar"),
             final_text_contains("Foo Bar"),
@@ -72,10 +70,12 @@ def test_write_files_in_parallel(model: str) -> None:
         # 2 tool call requests: write_file to /a.md and write_file to /b.md.
         scorer=TrajectoryScorer()
         .expect(
-            agent_steps(2),
-            tool_call_requests(2),
-            tool_call(name="write_file", step=1, args_contains={"file_path": "/a.md"}),
-            tool_call(name="write_file", step=1, args_contains={"file_path": "/b.md"}),
+            agent_steps=2,
+            tool_call_requests=2,
+            tool_calls=[
+                tool_call(name="write_file", step=1, args_contains={"file_path": "/a.md"}),
+                tool_call(name="write_file", step=1, args_contains={"file_path": "/b.md"}),
+            ],
         )
         .success(
             final_text_contains("DONE"),
@@ -99,12 +99,14 @@ def test_write_files_in_parallel_confirm_with_verification(model: str) -> None:
         # 4 tool call requests: 2 write_file + 2 read_file.
         scorer=TrajectoryScorer()
         .expect(
-            agent_steps(3),
-            tool_call_requests(4),
-            tool_call(name="write_file", step=1, args_contains={"file_path": "/a.md"}),
-            tool_call(name="write_file", step=1, args_contains={"file_path": "/b.md"}),
-            tool_call(name="read_file", step=2, args_contains={"file_path": "/a.md"}),
-            tool_call(name="read_file", step=2, args_contains={"file_path": "/b.md"}),
+            agent_steps=3,
+            tool_call_requests=4,
+            tool_calls=[
+                tool_call(name="write_file", step=1, args_contains={"file_path": "/a.md"}),
+                tool_call(name="write_file", step=1, args_contains={"file_path": "/b.md"}),
+                tool_call(name="read_file", step=2, args_contains={"file_path": "/a.md"}),
+                tool_call(name="read_file", step=2, args_contains={"file_path": "/b.md"}),
+            ],
         )
         .success(
             final_text_contains("DONE"),
@@ -135,8 +137,10 @@ def test_write_files_in_parallel_ambiguous_confirmation(model: str) -> None:
         # Only enforce the parallel writes; do not enforce step/tool-call counts.
         scorer=TrajectoryScorer()
         .expect(
-            tool_call(name="write_file", step=1, args_contains={"file_path": "/a.md"}),
-            tool_call(name="write_file", step=1, args_contains={"file_path": "/b.md"}),
+            tool_calls=[
+                tool_call(name="write_file", step=1, args_contains={"file_path": "/a.md"}),
+                tool_call(name="write_file", step=1, args_contains={"file_path": "/b.md"}),
+            ],
         )
         .success(
             file_equals("/a.md", "bar"),
@@ -162,7 +166,7 @@ def test_ls_directory_contains_file_yes_no(model: BaseChatModel) -> None:
         # 2nd step: answer YES/NO.
         # 1 tool call request: ls.
         scorer=TrajectoryScorer()
-        .expect(agent_steps(2), tool_call_requests(1))
+        .expect(agent_steps=2, tool_call_requests=1)
         .success(final_text_contains("[YES]")),
     )
 
@@ -183,7 +187,7 @@ def test_ls_directory_missing_file_yes_no(model: BaseChatModel) -> None:
         # 2nd step: answer YES/NO.
         # 1 tool call request: ls.
         scorer=TrajectoryScorer()
-        .expect(agent_steps(2), tool_call_requests(1))
+        .expect(agent_steps=2, tool_call_requests=1)
         .success(final_text_contains("[no]", case_insensitive=True)),
     )
 
@@ -204,7 +208,7 @@ def test_edit_file_replace_text(model: BaseChatModel) -> None:
         # 2nd step: report completion.
         # 1 tool call request: edit_file.
         scorer=TrajectoryScorer()
-        .expect(agent_steps(2), tool_call_requests(1))
+        .expect(agent_steps=2, tool_call_requests=1)
         .success(file_equals("/note.md", "dog dog dog\n")),
     )
 
@@ -222,7 +226,7 @@ def test_read_then_write_derived_output(model: BaseChatModel) -> None:
         # 2nd step: request a tool call to write /out.txt.
         # 2 tool call requests: read_file, write_file.
         scorer=TrajectoryScorer()
-        .expect(agent_steps(3), tool_call_requests(2))
+        .expect(agent_steps=3, tool_call_requests=2)
         .success(
             file_contains("/out.txt", "gamma\nbeta\nalpha"),
             file_contains("/out.txt", "gamma"),
@@ -243,7 +247,7 @@ def test_avoid_unnecessary_tool_calls(model: BaseChatModel) -> None:
         # 1 step: answer directly.
         # 0 tool calls: no files/tools needed.
         scorer=TrajectoryScorer()
-        .expect(agent_steps(1), tool_call_requests(0))
+        .expect(agent_steps=1, tool_call_requests=0)
         .success(final_text_contains("4")),
     )
 
@@ -265,10 +269,12 @@ def test_read_files_in_parallel(model: BaseChatModel) -> None:
         # 2 tool call requests: read_file /a.md and read_file /b.md.
         scorer=TrajectoryScorer()
         .expect(
-            agent_steps(2),
-            tool_call_requests(2),
-            tool_call(name="read_file", step=1, args_contains={"file_path": "/a.md"}),
-            tool_call(name="read_file", step=1, args_contains={"file_path": "/b.md"}),
+            agent_steps=2,
+            tool_call_requests=2,
+            tool_calls=[
+                tool_call(name="read_file", step=1, args_contains={"file_path": "/a.md"}),
+                tool_call(name="read_file", step=1, args_contains={"file_path": "/b.md"}),
+            ],
         )
         .success(final_text_contains("[YES]")),
     )
@@ -291,7 +297,7 @@ def test_grep_finds_matching_paths(model: BaseChatModel) -> None:
         # 2nd step: answer with the matching paths.
         # 1 tool call request: grep.
         scorer=TrajectoryScorer()
-        .expect(agent_steps(2), tool_call_requests(1))
+        .expect(agent_steps=2, tool_call_requests=1)
         .success(
             final_text_contains("/a.txt"),
             final_text_contains("/c.md"),
@@ -317,7 +323,7 @@ def test_glob_lists_markdown_files(model: BaseChatModel) -> None:
         # 2nd step: answer with the matching paths.
         # 1 tool call request: glob.
         scorer=TrajectoryScorer()
-        .expect(agent_steps(2), tool_call_requests(1))
+        .expect(agent_steps=2, tool_call_requests=1)
         .success(
             final_text_contains("/foo/a.md"),
             final_text_contains("/foo/c.md"),
@@ -347,9 +353,9 @@ def test_find_magic_phrase_deep_nesting(model: BaseChatModel) -> None:
         # 1 tool call requests: grep
         scorer=TrajectoryScorer()
         .expect(
-            agent_steps(2),
-            tool_call_requests(1),
-            tool_call(name="grep", step=1, args_contains={"pattern": "MAGIC_PHRASE:"}),
+            agent_steps=2,
+            tool_call_requests=1,
+            tool_calls=[tool_call(name="grep", step=1, args_contains={"pattern": "MAGIC_PHRASE:"})],
         )
         .success(
             final_text_contains(magic_phrase),
@@ -394,14 +400,16 @@ Clues: about programming readability; software craftsmanship.
         # 6 tool call requests: 1 ls + 5 read_file.
         scorer=TrajectoryScorer()
         .expect(
-            agent_steps(3),
-            tool_call_requests(6),
-            tool_call(name="ls", step=1, args_contains={"path": "/quotes"}),
-            tool_call(name="read_file", step=2, args_contains={"file_path": "/quotes/q1.txt"}),
-            tool_call(name="read_file", step=2, args_contains={"file_path": "/quotes/q2.txt"}),
-            tool_call(name="read_file", step=2, args_contains={"file_path": "/quotes/q3.txt"}),
-            tool_call(name="read_file", step=2, args_contains={"file_path": "/quotes/q4.txt"}),
-            tool_call(name="read_file", step=2, args_contains={"file_path": "/quotes/q5.txt"}),
+            agent_steps=3,
+            tool_call_requests=6,
+            tool_calls=[
+                tool_call(name="ls", step=1, args_contains={"path": "/quotes"}),
+                tool_call(name="read_file", step=2, args_contains={"file_path": "/quotes/q1.txt"}),
+                tool_call(name="read_file", step=2, args_contains={"file_path": "/quotes/q2.txt"}),
+                tool_call(name="read_file", step=2, args_contains={"file_path": "/quotes/q3.txt"}),
+                tool_call(name="read_file", step=2, args_contains={"file_path": "/quotes/q4.txt"}),
+                tool_call(name="read_file", step=2, args_contains={"file_path": "/quotes/q5.txt"}),
+            ],
         )
         .success(final_text_contains("/quotes/q3.txt")),
     )
@@ -441,14 +449,16 @@ Clues: about programming readability; software craftsmanship.
         # 6 tool call requests: 1 ls + 5 read_file.
         scorer=TrajectoryScorer()
         .expect(
-            agent_steps(3),
-            tool_call_requests(6),
-            tool_call(name="ls", step=1, args_contains={"path": "/quotes"}),
-            tool_call(name="read_file", step=2, args_contains={"file_path": "/quotes/q1.txt"}),
-            tool_call(name="read_file", step=2, args_contains={"file_path": "/quotes/q2.txt"}),
-            tool_call(name="read_file", step=2, args_contains={"file_path": "/quotes/q3.txt"}),
-            tool_call(name="read_file", step=2, args_contains={"file_path": "/quotes/q4.txt"}),
-            tool_call(name="read_file", step=2, args_contains={"file_path": "/quotes/q5.txt"}),
+            agent_steps=3,
+            tool_call_requests=6,
+            tool_calls=[
+                tool_call(name="ls", step=1, args_contains={"path": "/quotes"}),
+                tool_call(name="read_file", step=2, args_contains={"file_path": "/quotes/q1.txt"}),
+                tool_call(name="read_file", step=2, args_contains={"file_path": "/quotes/q2.txt"}),
+                tool_call(name="read_file", step=2, args_contains={"file_path": "/quotes/q3.txt"}),
+                tool_call(name="read_file", step=2, args_contains={"file_path": "/quotes/q4.txt"}),
+                tool_call(name="read_file", step=2, args_contains={"file_path": "/quotes/q5.txt"}),
+            ],
         )
         .success(final_text_contains("/quotes/q3.txt")),
     )

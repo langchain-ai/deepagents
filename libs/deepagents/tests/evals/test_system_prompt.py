@@ -10,10 +10,8 @@ if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
 from tests.evals.utils import (
     TrajectoryScorer,
-    agent_steps,
     final_text_contains,
     run_agent,
-    tool_call_requests,
 )
 
 
@@ -28,6 +26,6 @@ def test_custom_system_prompt(model: BaseChatModel) -> None:
         # 1 step: answer directly.
         # 0 tool calls: no files/tools needed.
         scorer=TrajectoryScorer()
-        .expect(agent_steps(1), tool_call_requests(0))
+        .expect(agent_steps=1, tool_call_requests=0)
         .success(final_text_contains("Foo Bar")),
     )

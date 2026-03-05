@@ -852,18 +852,33 @@ class TrajectoryScorer:
             _expectations=self._expectations,
         )
 
-    def expect(self, *assertions: EfficiencyAssertion) -> TrajectoryScorer:
+    def expect(
+        self,
+        *,
+        agent_steps: int | None = None,
+        tool_call_requests: int | None = None,
+        tool_calls: list[ToolCall] | None = None,
+    ) -> TrajectoryScorer:
         """Append efficiency assertions that are logged but never fail.
 
         Args:
-            *assertions: One or more ``EfficiencyAssertion`` instances.
+            agent_steps: Expected number of agent steps.
+            tool_call_requests: Expected total tool call requests.
+            tool_calls: Expected tool calls with optional step pinning.
 
         Returns:
             A new ``TrajectoryScorer`` with the assertions appended.
         """
+        new: list[EfficiencyAssertion] = []
+        if agent_steps is not None:
+            new.append(AgentSteps(n=agent_steps))
+        if tool_call_requests is not None:
+            new.append(ToolCallRequests(n=tool_call_requests))
+        if tool_calls is not None:
+            new.extend(tool_calls)
         return TrajectoryScorer(
             _success=self._success,
-            _expectations=(*self._expectations, *assertions),
+            _expectations=(*self._expectations, *new),
         )
 
 

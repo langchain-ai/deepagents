@@ -11,11 +11,9 @@ if TYPE_CHECKING:
 from deepagents import create_deep_agent
 from tests.evals.utils import (
     TrajectoryScorer,
-    agent_steps,
     final_text_contains,
     run_agent,
     tool_call,
-    tool_call_requests,
 )
 
 
@@ -50,9 +48,9 @@ def test_task_calls_weather_subagent(model: BaseChatModel) -> None:
         scorer=(
             TrajectoryScorer()
             .expect(
-                agent_steps(2),
-                tool_call_requests(1),
-                tool_call(name="task", step=1, args_contains={"subagent_type": "weather_agent"}),
+                agent_steps=2,
+                tool_call_requests=1,
+                tool_calls=[tool_call(name="task", step=1, args_contains={"subagent_type": "weather_agent"})],
             )
             .success(final_text_contains("89"))
         ),
@@ -73,9 +71,9 @@ def test_task_calls_general_purpose_subagent(model: BaseChatModel) -> None:
         scorer=(
             TrajectoryScorer()
             .expect(
-                agent_steps(2),
-                tool_call_requests(1),
-                tool_call(name="task", step=1, args_contains={"subagent_type": "general-purpose"}),
+                agent_steps=2,
+                tool_call_requests=1,
+                tool_calls=[tool_call(name="task", step=1, args_contains={"subagent_type": "general-purpose"})],
             )
             .success(final_text_contains("89"))
         ),

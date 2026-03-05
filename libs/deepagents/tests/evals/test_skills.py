@@ -10,14 +10,12 @@ if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
 from tests.evals.utils import (
     TrajectoryScorer,
-    agent_steps,
     file_contains,
     file_excludes,
     final_text_contains,
     final_text_excludes,
     run_agent,
     tool_call,
-    tool_call_requests,
 )
 
 
@@ -47,9 +45,9 @@ def test_read_skill_full_content(model: BaseChatModel) -> None:
         scorer=(
             TrajectoryScorer()
             .expect(
-                agent_steps(2),
-                tool_call_requests(1),
-                tool_call(name="read_file", step=1, args_contains={"file_path": "/skills/user/data-analysis/SKILL.md"}),
+                agent_steps=2,
+                tool_call_requests=1,
+                tool_calls=[tool_call(name="read_file", step=1, args_contains={"file_path": "/skills/user/data-analysis/SKILL.md"})],
             )
             .success(
                 final_text_contains("ALPHA-7-ZULU"),
@@ -84,9 +82,9 @@ def test_read_skill_by_name(model: BaseChatModel) -> None:
         scorer=(
             TrajectoryScorer()
             .expect(
-                agent_steps(2),
-                tool_call_requests(1),
-                tool_call(name="read_file", step=1, args_contains={"file_path": "/skills/user/code-review/SKILL.md"}),
+                agent_steps=2,
+                tool_call_requests=1,
+                tool_calls=[tool_call(name="read_file", step=1, args_contains={"file_path": "/skills/user/code-review/SKILL.md"})],
             )
             .success(
                 final_text_contains("BRAVO-LIMA"),
@@ -122,10 +120,12 @@ def test_combine_two_skills(model: BaseChatModel) -> None:
         scorer=(
             TrajectoryScorer()
             .expect(
-                agent_steps(2),
-                tool_call_requests(2),
-                tool_call(name="read_file", step=1, args_contains={"file_path": "/skills/user/frontend-deploy/SKILL.md"}),
-                tool_call(name="read_file", step=1, args_contains={"file_path": "/skills/user/backend-deploy/SKILL.md"}),
+                agent_steps=2,
+                tool_call_requests=2,
+                tool_calls=[
+                    tool_call(name="read_file", step=1, args_contains={"file_path": "/skills/user/frontend-deploy/SKILL.md"}),
+                    tool_call(name="read_file", step=1, args_contains={"file_path": "/skills/user/backend-deploy/SKILL.md"}),
+                ],
             )
             .success(
                 final_text_contains("3000"),
@@ -157,9 +157,9 @@ def test_update_skill_typo_fix_no_read(model: BaseChatModel) -> None:
         scorer=(
             TrajectoryScorer()
             .expect(
-                agent_steps(2),
-                tool_call_requests(1),
-                tool_call(name="edit_file", step=1, args_contains={"file_path": "/skills/user/testing/SKILL.md"}),
+                agent_steps=2,
+                tool_call_requests=1,
+                tool_calls=[tool_call(name="edit_file", step=1, args_contains={"file_path": "/skills/user/testing/SKILL.md"})],
             )
             .success(
                 final_text_contains("DONE"),
@@ -192,10 +192,12 @@ def test_update_skill_typo_fix_requires_read(model: BaseChatModel) -> None:
         scorer=(
             TrajectoryScorer()
             .expect(
-                agent_steps(3),
-                tool_call_requests(2),
-                tool_call(name="read_file", step=1, args_contains={"file_path": "/skills/user/testing/SKILL.md"}),
-                tool_call(name="edit_file", step=2, args_contains={"file_path": "/skills/user/testing/SKILL.md"}),
+                agent_steps=3,
+                tool_call_requests=2,
+                tool_calls=[
+                    tool_call(name="read_file", step=1, args_contains={"file_path": "/skills/user/testing/SKILL.md"}),
+                    tool_call(name="edit_file", step=2, args_contains={"file_path": "/skills/user/testing/SKILL.md"}),
+                ],
             )
             .success(
                 file_excludes("/skills/user/testing/SKILL.md", "covreage"),
@@ -236,10 +238,12 @@ def test_find_skill_in_correct_path(model: BaseChatModel) -> None:
         scorer=(
             TrajectoryScorer()
             .expect(
-                agent_steps(3),
-                tool_call_requests(2),
-                tool_call(name="read_file", step=1, args_contains={"file_path": "/skills/project/deployment/SKILL.md"}),
-                tool_call(name="edit_file", step=2, args_contains={"file_path": "/skills/project/deployment/SKILL.md"}),
+                agent_steps=3,
+                tool_call_requests=2,
+                tool_calls=[
+                    tool_call(name="read_file", step=1, args_contains={"file_path": "/skills/project/deployment/SKILL.md"}),
+                    tool_call(name="edit_file", step=2, args_contains={"file_path": "/skills/project/deployment/SKILL.md"}),
+                ],
             )
             .success(
                 file_contains("/skills/project/deployment/SKILL.md", "Slack notification"),

@@ -30,7 +30,6 @@ def test_read_file_seeded_state_backend_file(model: BaseChatModel) -> None:
     )
 
 
-
 @pytest.mark.langsmith
 def test_write_file_simple(model: BaseChatModel) -> None:
     """Writes a file then answers a follow-up."""

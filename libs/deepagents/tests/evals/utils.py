@@ -807,11 +807,49 @@ class EfficiencyResult:
     actual_steps: int
     expected_tool_calls: int | None
     actual_tool_calls: int
-    all_expectations_passed: bool
 
 
 efficiency_results: list[EfficiencyResult] = []
 """Collected by the assertion runner, read by the reporter."""
+
+
+def _log_efficiency(
+    trajectory: AgentTrajectory,
+    scorer: TrajectoryScorer,
+) -> None:
+    """Log efficiency feedback and collect data for the session reporter.
+
+    Args:
+        trajectory: The agent trajectory.
+        scorer: The scorer containing efficiency expectations.
+    """
+    actual_steps = len(trajectory.steps)
+    actual_tool_calls = sum(len(s.action.tool_calls) for s in trajectory.steps)
+    t.log_feedback(key="agent_steps", value=actual_steps)
+    t.log_feedback(key="tool_call_requests", value=actual_tool_calls)
+
+    expected_steps: int | None = None
+    expected_tool_calls: int | None = None
+    for assertion in scorer._expectations:
+        if isinstance(assertion, AgentSteps):
+            expected_steps = assertion.n
+        elif isinstance(assertion, ToolCallRequests):
+            expected_tool_calls = assertion.n
+
+    if expected_steps is not None:
+        t.log_feedback(key="expected_agent_steps", value=expected_steps)
+    if expected_tool_calls is not None:
+        t.log_feedback(key="expected_tool_call_requests", value=expected_tool_calls)
+
+    if expected_steps is not None or expected_tool_calls is not None:
+        efficiency_results.append(
+            EfficiencyResult(
+                expected_steps=expected_steps,
+                actual_steps=actual_steps,
+                expected_tool_calls=expected_tool_calls,
+                actual_tool_calls=actual_tool_calls,
+            )
+        )
 
 
 def _assert_expectations(
@@ -827,46 +865,20 @@ def _assert_expectations(
         trajectory: The agent trajectory to validate.
         scorer: The two-tier expectation container.
     """
-    actual_steps = len(trajectory.steps)
-    actual_tool_calls = sum(len(s.action.tool_calls) for s in trajectory.steps)
-    t.log_feedback(key="agent_steps", value=actual_steps)
-    t.log_feedback(key="tool_call_requests", value=actual_tool_calls)
-
-    expected_steps: int | None = None
-    expected_tool_calls: int | None = None
-    for assertion in scorer._expectations:
-        if isinstance(assertion, AgentSteps):
-            expected_steps = assertion.n
-            t.log_feedback(key="expected_agent_steps", value=assertion.n)
-        elif isinstance(assertion, ToolCallRequests):
-            expected_tool_calls = assertion.n
-            t.log_feedback(key="expected_tool_call_requests", value=assertion.n)
+    _log_efficiency(trajectory, scorer)
 
     # Hard correctness checks
     success = True
     for assertion in scorer._success:
         if not assertion.check(trajectory):
             success = False
-            t.log_feedback(key="success", value=0)
+            t.log_feedback(key="correctness", value=0)
             pytest.fail(
                 f"success check failed: {assertion.describe_failure(trajectory)}\n\ntrajectory:\n{trajectory.pretty()}",
                 pytrace=False,
             )
     if success:
-        t.log_feedback(key="success", value=1)
-
-    # Soft efficiency checks
-    if scorer._expectations:
-        all_passed = all(a.check(trajectory) for a in scorer._expectations)
-        efficiency_results.append(
-            EfficiencyResult(
-                expected_steps=expected_steps,
-                actual_steps=actual_steps,
-                expected_tool_calls=expected_tool_calls,
-                actual_tool_calls=actual_tool_calls,
-                all_expectations_passed=all_passed,
-            )
-        )
+        t.log_feedback(key="correctness", value=1)
 
 
 # ---------------------------------------------------------------------------

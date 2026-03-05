@@ -15,7 +15,7 @@ from deepagents_cli.media_utils import (
     ImageData,
     VideoData,
     create_multimodal_content,
-    encode_image_to_base64,
+    encode_to_base64,
     get_clipboard_image,
     get_image_from_path,
     get_video_from_path,
@@ -143,7 +143,7 @@ class TestEncodeImageToBase64:
     def test_encode_image_bytes(self) -> None:
         """Test encoding raw bytes to base64."""
         test_bytes = b"test image data"
-        result = encode_image_to_base64(test_bytes)
+        result = encode_to_base64(test_bytes)
 
         # Verify it's valid base64
         decoded = base64.b64decode(result)
@@ -157,7 +157,7 @@ class TestEncodeImageToBase64:
         img.save(buffer, format="PNG")
         png_bytes = buffer.getvalue()
 
-        result = encode_image_to_base64(png_bytes)
+        result = encode_to_base64(png_bytes)
 
         # Should be valid base64
         decoded = base64.b64decode(result)

@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_VIDEO_EXTENSIONS: frozenset[str] = frozenset(
+VIDEO_EXTENSIONS: frozenset[str] = frozenset(
     {
         ".mp4",
         ".mov",
@@ -148,7 +148,7 @@ def get_image_from_path(path: pathlib.Path) -> ImageData | None:
             image_format = "png"
 
         return ImageData(
-            base64_data=encode_image_to_base64(image_bytes),
+            base64_data=encode_to_base64(image_bytes),
             format=image_format,
             placeholder="[image]",
         )
@@ -170,7 +170,7 @@ def get_video_from_path(path: pathlib.Path) -> VideoData | None:
     max_video_bytes = 20 * 1024 * 1024
 
     suffix = path.suffix.lower()
-    if suffix not in _VIDEO_EXTENSIONS:
+    if suffix not in VIDEO_EXTENSIONS:
         return None
 
     try:
@@ -191,7 +191,7 @@ def get_video_from_path(path: pathlib.Path) -> VideoData | None:
 
         # Validate it's a real video file by checking magic bytes
         # MP4 starts with ftyp, MOV also uses ftyp, AVI starts with RIFF
-        min_video_len = 4
+        min_video_len = 8
         if len(video_bytes) < min_video_len:
             logger.debug("Video file too small (%d bytes): %s", len(video_bytes), path)
             return None
@@ -207,8 +207,10 @@ def get_video_from_path(path: pathlib.Path) -> VideoData | None:
             and video_bytes[8:12] == b"AVI "
         ):  # AVI
             is_valid = True
-        elif video_bytes[:4] == b"\x30\x26\xb2\x75" or suffix == ".webm":
-            # ASF/WMV and WebM (simplified check)
+        elif video_bytes[:4] in {
+            b"\x30\x26\xb2\x75",  # ASF/WMV
+            b"\x1a\x45\xdf\xa3",  # WebM/Matroska (EBML header)
+        }:
             is_valid = True
 
         if not is_valid:
@@ -225,12 +227,12 @@ def get_video_from_path(path: pathlib.Path) -> VideoData | None:
         video_format = _VIDEO_FORMAT_MAP.get(suffix, "mp4")
 
         return VideoData(
-            base64_data=encode_image_to_base64(video_bytes),
+            base64_data=encode_to_base64(video_bytes),
             format=video_format,
             placeholder="[video]",
         )
     except OSError as e:
-        logger.debug("Failed to load video from %s: %s", path, e, exc_info=True)
+        logger.warning("Failed to load video from %s: %s", path, e, exc_info=True)
         return None
 
 
@@ -399,16 +401,16 @@ def _get_clipboard_via_osascript() -> ImageData | None:
             logger.debug("Failed to clean up temp file %s: %s", temp_path, e)
 
 
-def encode_image_to_base64(image_bytes: bytes) -> str:
-    """Encode image bytes to base64 string.
+def encode_to_base64(data: bytes) -> str:
+    """Encode raw bytes to a base64 string.
 
     Args:
-        image_bytes: Raw image bytes
+        data: Raw bytes to encode.
 
     Returns:
         Base64-encoded string.
     """
-    return base64.b64encode(image_bytes).decode("utf-8")
+    return base64.b64encode(data).decode("utf-8")
 
 
 def create_multimodal_content(

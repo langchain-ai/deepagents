@@ -17,7 +17,7 @@ def main() -> None:
         payload = json.loads(Path(file).read_text(encoding="utf-8"))
         rows.append(payload)
 
-    rows.sort(key=lambda r: (str(r.get("model", "")).split(":")[0], -float(r.get("accuracy", 0.0))))
+    rows.sort(key=lambda r: (str(r.get("model", "")).split(":")[0], -float(r.get("correctness", 0.0))))
 
     headers = [
         "model",
@@ -25,7 +25,9 @@ def main() -> None:
         "failed",
         "skipped",
         "total",
-        "accuracy",
+        "correctness",
+        "step_ratio",
+        "tool_call_ratio",
         "median_duration_s",
     ]
 
@@ -36,7 +38,9 @@ def main() -> None:
             r.get("failed", 0),
             r.get("skipped", 0),
             r.get("total", 0),
-            r.get("accuracy", 0.0),
+            r.get("correctness", 0.0),
+            r.get("step_ratio") or "n/a",
+            r.get("tool_call_ratio") or "n/a",
             r.get("median_duration_s", 0.0),
         ]
         for r in rows
@@ -52,7 +56,7 @@ def main() -> None:
                 table_rows,
                 headers=headers,
                 tablefmt="github",
-                colalign=("left", "right", "right", "right", "right", "right", "right"),
+                colalign=("left", "right", "right", "right", "right", "right", "right", "right", "right"),
             )
         )
     else:

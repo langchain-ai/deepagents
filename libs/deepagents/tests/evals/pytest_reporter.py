@@ -10,9 +10,9 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     import pytest
 
+import tests.evals.utils as _evals_utils
 from deepagents._version import __version__
 from deepagents.graph import get_default_model
-from tests.evals.utils import EfficiencyResult  # noqa: TC001 -- needed at runtime by collect_efficiency_result
 
 _RESULTS: dict[str, int] = {
     "passed": 0,
@@ -23,38 +23,44 @@ _RESULTS: dict[str, int] = {
 
 _DURATIONS_S: list[float] = []
 
-_EFFICIENCY_RESULTS: list[EfficiencyResult] = []
+_EFFICIENCY_RESULTS: list[_evals_utils.EfficiencyResult] = []
 
 
-def collect_efficiency_result(result: EfficiencyResult) -> None:
-    """Append an efficiency result for the current test.
+def _micro_step_ratio() -> float | None:
+    """Compute sum(actual_steps) / sum(expected_steps).
 
-    Called by the assertion runner in ``utils.py``.
-
-    Args:
-        result: The efficiency data for a single test.
-    """
-    _EFFICIENCY_RESULTS.append(result)
-
-
-def _micro_ratio(expected_attr: str, actual_attr: str) -> float | None:
-    """Compute sum(actual) / sum(expected) across tests that have the expected value.
-
-    Returns ``None`` when no tests have the expected value set.
-    A value of 1.0 means the model matched expectations exactly.
-    Values <1.0 mean the model was more efficient than expected.
-    Values >1.0 mean the model used more steps/calls than expected.
+    Returns ``None`` when no tests specified expected step counts.
     """
     total_expected = 0
     total_actual = 0
     for r in _EFFICIENCY_RESULTS:
-        expected = getattr(r, expected_attr)
-        if expected is not None:
-            total_expected += expected
-            total_actual += getattr(r, actual_attr)
+        if r.expected_steps is not None:
+            total_expected += r.expected_steps
+            total_actual += r.actual_steps
     if total_expected == 0:
         return None
     return round(total_actual / total_expected, 2)
+
+
+def _micro_tool_call_ratio() -> float | None:
+    """Compute sum(actual_tool_calls) / sum(expected_tool_calls).
+
+    Returns ``None`` when no tests specified expected tool call counts.
+    """
+    total_expected = 0
+    total_actual = 0
+    for r in _EFFICIENCY_RESULTS:
+        if r.expected_tool_calls is not None:
+            total_expected += r.expected_tool_calls
+            total_actual += r.actual_tool_calls
+    if total_expected == 0:
+        return None
+    return round(total_actual / total_expected, 2)
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    _ = config
+    _evals_utils._on_efficiency_result = _EFFICIENCY_RESULTS.append
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -85,8 +91,8 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         session.exitstatus = 0
 
     correctness = round((_RESULTS["passed"] / _RESULTS["total"]) if _RESULTS["total"] else 0.0, 2)
-    step_ratio = _micro_ratio("expected_steps", "actual_steps")
-    tool_call_ratio = _micro_ratio("expected_tool_calls", "actual_tool_calls")
+    step_ratio = _micro_step_ratio()
+    tool_call_ratio = _micro_tool_call_ratio()
     median_duration_s = round(statistics.median(_DURATIONS_S), 4) if _DURATIONS_S else 0.0
 
     payload: dict[str, object] = {

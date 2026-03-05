@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -809,6 +809,10 @@ class EfficiencyResult:
     actual_tool_calls: int
 
 
+_on_efficiency_result: Callable[[EfficiencyResult], None] | None = None
+"""Callback set by the reporter plugin to collect per-test efficiency data."""
+
+
 def _log_efficiency(
     trajectory: AgentTrajectory,
     scorer: TrajectoryScorer,
@@ -866,10 +870,8 @@ def _assert_expectations(
         scorer: The two-tier expectation container.
     """
     eff_result = _log_efficiency(trajectory, scorer)
-    if eff_result is not None:
-        from tests.evals.pytest_reporter import collect_efficiency_result  # noqa: PLC0415 -- deferred to avoid circular import
-
-        collect_efficiency_result(eff_result)
+    if eff_result is not None and _on_efficiency_result is not None:
+        _on_efficiency_result(eff_result)
 
     # Hard correctness checks
     success = True

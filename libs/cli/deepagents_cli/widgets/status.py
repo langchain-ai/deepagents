@@ -6,9 +6,11 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from rich.text import Text
 from textual.containers import Horizontal
 from textual.css.query import NoMatches
 from textual.reactive import reactive
+from textual.widget import Widget
 from textual.widgets import Static
 
 from deepagents_cli.config import COLORS, settings
@@ -16,7 +18,40 @@ from deepagents_cli.config import COLORS, settings
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from textual.app import ComposeResult
+    from textual.app import ComposeResult, RenderResult
+
+
+class LeftTruncatedLabel(Widget):
+    """A label that truncates from the left when space is limited.
+
+    Shows the tail end of text (the most distinctive part) with a leading
+    ellipsis when the full text doesn't fit.
+    """
+
+    text: reactive[str] = reactive("", layout=True)
+
+    def render(self) -> RenderResult:
+        """Render the label, truncating from the left if needed.
+
+        When the full `provider:model` text doesn't fit, the provider prefix is
+        stripped first to preserve the model name. Only if the bare model name
+        still doesn't fit is it left-truncated with a leading ellipsis.
+
+        Returns:
+            Truncated text with leading ellipsis, or full text if it fits.
+        """
+        width = self.content_size.width
+        if not self.text or width <= 0:
+            return ""
+        if len(self.text) <= width:
+            return Text(self.text, no_wrap=True, justify="right")
+        # Strip provider prefix before truncating the model name
+        short = self.text.split(":", 1)[1] if ":" in self.text else self.text
+        if len(short) <= width:
+            return Text(short, no_wrap=True, justify="right")
+        if width > 1:
+            return Text("\u2026" + short[-(width - 1) :], no_wrap=True, justify="right")
+        return Text("\u2026", no_wrap=True, justify="right")
 
 
 class StatusBar(Horizontal):
@@ -66,7 +101,7 @@ class StatusBar(Horizontal):
     }
 
     StatusBar .status-message {
-        width: 1fr;
+        width: auto;
         padding: 0 1;
         color: $text-muted;
     }
@@ -87,10 +122,11 @@ class StatusBar(Horizontal):
         color: $text-muted;
     }
 
-    StatusBar .status-model {
-        width: auto;
-        padding: 0 1;
+    StatusBar LeftTruncatedLabel {
+        width: 1fr;
+        padding: 0 2;
         color: $text-muted;
+        text-align: right;
     }
     """.replace("__MODE_BASH__", COLORS["mode_bash"]).replace(
         "__MODE_CMD__", COLORS["mode_command"]
@@ -113,7 +149,7 @@ class StatusBar(Horizontal):
         # Store initial cwd - will be used in compose()
         self._initial_cwd = str(cwd) if cwd else str(Path.cwd())
 
-    def compose(self) -> ComposeResult:
+    def compose(self) -> ComposeResult:  # noqa: PLR6301 — Textual widget method
         """Compose the status bar layout.
 
         Yields:
@@ -128,23 +164,17 @@ class StatusBar(Horizontal):
         yield Static("", classes="status-message", id="status-message")
         yield Static("", classes="status-cwd", id="cwd-display")
         yield Static("", classes="status-tokens", id="tokens-display")
-        model_display = self._format_model_display()
-        yield Static(model_display, classes="status-model", id="model-display")
-
-    def _format_model_display(self) -> str:  # noqa: PLR6301  # Textual widget method convention
-        """Format the model display string.
-
-        Returns:
-            Model display string in `provider:model` format if provider is known,
-                otherwise just the model name.
-        """
-        if settings.model_provider and settings.model_name:
-            return f"{settings.model_provider}:{settings.model_name}"
-        return settings.model_name or ""
+        yield LeftTruncatedLabel(id="model-display")
 
     def on_mount(self) -> None:
         """Set reactive values after mount to trigger watchers safely."""
         self.cwd = self._initial_cwd
+        # Set initial model display
+        if settings.model_provider and settings.model_name:
+            spec = f"{settings.model_provider}:{settings.model_name}"
+        else:
+            spec = settings.model_name or ""
+        self.query_one("#model-display", LeftTruncatedLabel).text = spec
 
     def watch_mode(self, mode: str) -> None:
         """Update mode indicator when mode changes."""
@@ -277,4 +307,4 @@ class StatusBar(Horizontal):
             model_spec: Model specification to display (e.g.,
                 `'anthropic:claude-sonnet-4-5'`).
         """
-        self.query_one("#model-display", Static).update(model_spec)
+        self.query_one("#model-display", LeftTruncatedLabel).text = model_spec

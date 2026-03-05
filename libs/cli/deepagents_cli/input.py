@@ -8,7 +8,7 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 from deepagents_cli.config import console
-from deepagents_cli.image_utils import ImageData, VideoData
+from deepagents_cli.media_utils import ImageData, VideoData
 
 logger = logging.getLogger(__name__)
 

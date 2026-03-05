@@ -285,31 +285,33 @@ class TestFormatContentBlock:
         result = _format_content_block(block)
         assert result == "[Image: image/png, ~0KB]"
 
-    def test_video_url_block_placeholder(self) -> None:
-        """Test video_url block returns a human-readable placeholder."""
+    def test_file_block_video_placeholder(self) -> None:
+        """Test FileContentBlock video returns a human-readable placeholder."""
         b64 = "A" * 40000
-        block = {
-            "type": "video_url",
-            "video_url": {"url": f"data:video/mp4;base64,{b64}"},
-        }
+        block = {"type": "file", "base64": b64, "mime_type": "video/mp4"}
         result = _format_content_block(block)
         assert result == "[Video: video/mp4, ~29KB]"
 
-    def test_video_url_block_without_data_uri_returns_json(self) -> None:
-        """Test that video_url blocks with non-data URIs fall through to JSON."""
-        block = {
-            "type": "video_url",
-            "video_url": {"url": "https://example.com/video.mp4"},
-        }
+    def test_file_block_non_video_placeholder(self) -> None:
+        """Test FileContentBlock with non-video mime uses generic label."""
+        b64 = "A" * 4000
+        block = {"type": "file", "base64": b64, "mime_type": "application/pdf"}
         result = _format_content_block(block)
-        assert '"video_url"' in result
-        assert "Video" not in result
+        assert result == "[File: application/pdf, ~2KB]"
 
-    def test_video_url_block_missing_video_url_returns_json(self) -> None:
-        """Test that video_url blocks without video_url dict fall through."""
-        block = {"type": "video_url", "url": "https://example.com/video.mp4"}
+    def test_file_block_without_base64_returns_json(self) -> None:
+        """Test that file blocks missing base64 key fall through to JSON."""
+        block = {"type": "file", "url": "https://example.com/video.mp4"}
         result = _format_content_block(block)
         assert '"type"' in result
+        assert "Video" not in result
+
+    def test_file_block_none_base64_returns_json(self) -> None:
+        """Test that file block with None base64 falls through to JSON."""
+        block = {"type": "file", "base64": None, "mime_type": "video/mp4"}
+        result = _format_content_block(block)
+        assert '"type"' in result
+        assert "Video" not in result
 
     def test_non_serializable_dict_falls_back_to_str(self) -> None:
         """Test that dicts with non-serializable values fall back to str()."""

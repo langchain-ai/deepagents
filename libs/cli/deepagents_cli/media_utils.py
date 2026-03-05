@@ -1,4 +1,4 @@
-"""Utilities for handling image and video paste from clipboard."""
+"""Utilities for handling image and video media from clipboard and files."""
 
 import base64
 import io
@@ -18,6 +18,28 @@ if TYPE_CHECKING:
     from langchain_core.messages.content import FileContentBlock
 
 logger = logging.getLogger(__name__)
+
+_VIDEO_EXTENSIONS: frozenset[str] = frozenset(
+    {
+        ".mp4",
+        ".mov",
+        ".avi",
+        ".webm",
+        ".m4v",
+        ".wmv",
+    }
+)
+"""Video file extensions with validated magic-byte support."""
+
+_VIDEO_FORMAT_MAP: dict[str, str] = {
+    ".mp4": "mp4",
+    ".m4v": "mp4",
+    ".mov": "quicktime",
+    ".avi": "avi",
+    ".webm": "webm",
+    ".wmv": "x-ms-wmv",
+}
+"""Mapping from video file extension to MIME subtype."""
 
 
 def _get_executable(name: str) -> str | None:
@@ -147,22 +169,8 @@ def get_video_from_path(path: pathlib.Path) -> VideoData | None:
     # 20 MB — keeps base64 payload under ~27 MB, well within API limits
     max_video_bytes = 20 * 1024 * 1024
 
-    # Common video file extensions
-    video_extensions = {
-        ".mp4",
-        ".mov",
-        ".avi",
-        ".mkv",
-        ".webm",
-        ".m4v",
-        ".mpeg",
-        ".mpg",
-        ".wmv",
-        ".flv",
-    }
-
     suffix = path.suffix.lower()
-    if suffix not in video_extensions:
+    if suffix not in _VIDEO_EXTENSIONS:
         return None
 
     try:
@@ -214,19 +222,7 @@ def get_video_from_path(path: pathlib.Path) -> VideoData | None:
             return None
 
         # Determine mime type from extension
-        format_map = {
-            ".mp4": "mp4",
-            ".m4v": "mp4",
-            ".mov": "quicktime",
-            ".avi": "avi",
-            ".mkv": "x-matroska",
-            ".webm": "webm",
-            ".mpeg": "mpeg",
-            ".mpg": "mpeg",
-            ".wmv": "x-ms-wmv",
-            ".flv": "x-flv",
-        }
-        video_format = format_map.get(suffix, "mp4")
+        video_format = _VIDEO_FORMAT_MAP.get(suffix, "mp4")
 
         return VideoData(
             base64_data=encode_image_to_base64(video_bytes),
@@ -426,7 +422,7 @@ def create_multimodal_content(
         videos: Optional list of VideoData objects
 
     Returns:
-        List of content blocks in OpenAI-compatible format.
+        List of content blocks in LangChain message format.
     """
     content_blocks = []
 

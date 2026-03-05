@@ -1244,7 +1244,7 @@ class ChatInput(Vertical):
         if not self._image_tracker:
             return raw_text, False
 
-        from deepagents_cli.image_utils import get_image_from_path, get_video_from_path
+        from deepagents_cli.media_utils import get_image_from_path, get_video_from_path
 
         parts: list[str] = []
         attached = False
@@ -1261,8 +1261,15 @@ class ChatInput(Vertical):
                 attached = True
                 continue
 
+            # Check if it looked like a video but failed validation
+            from deepagents_cli.media_utils import _VIDEO_EXTENSIONS
+
+            if path.suffix.lower() in _VIDEO_EXTENSIONS:
+                msg = f"Could not attach video: {path.name}"
+                self.app.notify(msg, severity="warning", timeout=5)
+
             # Not a supported media file, keep as path
-            logger.debug("Could not load image/video from dropped path: %s", path)
+            logger.debug("Could not load media from dropped path: %s", path)
             parts.append(str(path))
 
         if not attached:

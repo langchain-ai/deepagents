@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: light)" srcset="../.github/images/logo-dark.svg">
-    <source media="(prefers-color-scheme: dark)" srcset="../.github/images/logo-light.svg">
+    <source media="(prefers-color-scheme: light)" srcset="../.github/images/logo-light.svg">
+    <source media="(prefers-color-scheme: dark)" srcset="../.github/images/logo-dark.svg">
     <img alt="Deep Agents" src="../.github/images/logo-dark.svg" height="40"/>
   </picture>
 </p>

@@ -21,7 +21,9 @@ from deepagents_cli.model_config import (
     clear_default_model,
     get_available_models,
     has_provider_credentials,
+    is_warning_suppressed,
     save_recent_model,
+    suppress_warning,
 )
 
 
@@ -1011,6 +1013,114 @@ temperature = 0.5
         assert kwargs == {"temperature": 0.5}
 
 
+class TestModelConfigGetProfileOverrides:
+    """Tests for ModelConfig.get_profile_overrides() method."""
+
+    def test_returns_empty_for_unknown_provider(self):
+        """Returns empty dict for unknown provider."""
+        config = ModelConfig()
+        assert config.get_profile_overrides("unknown") == {}
+
+    def test_returns_empty_when_no_profile(self, tmp_path):
+        """Returns empty dict when profile not in config."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.custom]
+models = ["my-model"]
+""")
+        config = ModelConfig.load(config_path)
+        assert config.get_profile_overrides("custom") == {}
+
+    def test_returns_provider_wide_overrides(self, tmp_path):
+        """Returns flat profile overrides."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.anthropic]
+models = ["claude-sonnet-4-5"]
+
+[models.providers.anthropic.profile]
+max_input_tokens = 4096
+""")
+        config = ModelConfig.load(config_path)
+        overrides = config.get_profile_overrides("anthropic")
+        assert overrides == {"max_input_tokens": 4096}
+
+    def test_per_model_override_takes_precedence(self, tmp_path):
+        """Per-model sub-table overrides provider-wide value."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.anthropic]
+models = ["claude-sonnet-4-5", "claude-opus-4-6"]
+
+[models.providers.anthropic.profile]
+max_input_tokens = 4096
+
+[models.providers.anthropic.profile."claude-sonnet-4-5"]
+max_input_tokens = 8192
+""")
+        config = ModelConfig.load(config_path)
+        overrides = config.get_profile_overrides(
+            "anthropic", model_name="claude-sonnet-4-5"
+        )
+        assert overrides == {"max_input_tokens": 8192}
+
+    def test_model_without_subtable_gets_provider_defaults(self, tmp_path):
+        """Model not in sub-table gets provider-level profile only."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.anthropic]
+models = ["claude-sonnet-4-5", "claude-opus-4-6"]
+
+[models.providers.anthropic.profile]
+max_input_tokens = 4096
+
+[models.providers.anthropic.profile."claude-sonnet-4-5"]
+max_input_tokens = 8192
+""")
+        config = ModelConfig.load(config_path)
+        overrides = config.get_profile_overrides(
+            "anthropic", model_name="claude-opus-4-6"
+        )
+        assert overrides == {"max_input_tokens": 4096}
+
+    def test_none_model_name_returns_provider_defaults(self, tmp_path):
+        """model_name=None returns provider-wide profile only."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.anthropic]
+models = ["claude-sonnet-4-5"]
+
+[models.providers.anthropic.profile]
+max_input_tokens = 4096
+
+[models.providers.anthropic.profile."claude-sonnet-4-5"]
+max_input_tokens = 8192
+""")
+        config = ModelConfig.load(config_path)
+        overrides = config.get_profile_overrides("anthropic", model_name=None)
+        assert overrides == {"max_input_tokens": 4096}
+
+    def test_multiple_flat_keys_with_model_subtable(self, tmp_path):
+        """Multiple flat keys returned; model sub-table merges on top."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.anthropic]
+models = ["claude-sonnet-4-5"]
+
+[models.providers.anthropic.profile]
+max_input_tokens = 4096
+supports_thinking = true
+
+[models.providers.anthropic.profile."claude-sonnet-4-5"]
+max_input_tokens = 8192
+""")
+        config = ModelConfig.load(config_path)
+        overrides = config.get_profile_overrides(
+            "anthropic", model_name="claude-sonnet-4-5"
+        )
+        assert overrides == {"max_input_tokens": 8192, "supports_thinking": True}
+
+
 class TestModelConfigValidateParams:
     """Tests for _validate() params warnings."""
 
@@ -1559,4 +1669,94 @@ recent = "openai:gpt-5.2"
         ):
             result = _get_default_model_spec()
 
-        assert result == "anthropic:claude-sonnet-4-5-20250929"
+        assert result == "anthropic:claude-sonnet-4-6"
+
+
+class TestIsWarningSuppressed:
+    """Tests for is_warning_suppressed() function."""
+
+    def test_returns_true_when_key_present(self, tmp_path) -> None:
+        """Returns True when key is in [warnings].suppress list."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[warnings]\nsuppress = ["ripgrep"]\n')
+
+        assert is_warning_suppressed("ripgrep", config_path) is True
+
+    def test_returns_false_when_key_absent(self, tmp_path) -> None:
+        """Returns False when key is not in [warnings].suppress list."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[warnings]\nsuppress = ["other"]\n')
+
+        assert is_warning_suppressed("ripgrep", config_path) is False
+
+    def test_returns_false_when_file_missing(self, tmp_path) -> None:
+        """Returns False when config file does not exist."""
+        config_path = tmp_path / "nonexistent.toml"
+
+        assert is_warning_suppressed("ripgrep", config_path) is False
+
+    def test_returns_false_on_corrupt_toml(self, tmp_path) -> None:
+        """Returns False when config file has invalid TOML."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[[invalid toml")
+
+        assert is_warning_suppressed("ripgrep", config_path) is False
+
+    def test_returns_false_when_no_warnings_section(self, tmp_path) -> None:
+        """Returns False when config has no [warnings] section."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[models]\ndefault = "some:model"\n')
+
+        assert is_warning_suppressed("ripgrep", config_path) is False
+
+
+class TestSuppressWarning:
+    """Tests for suppress_warning() function."""
+
+    def test_creates_file_with_key(self, tmp_path) -> None:
+        """Creates config file with [warnings].suppress list."""
+        config_path = tmp_path / "config.toml"
+
+        result = suppress_warning("ripgrep", config_path)
+
+        assert result is True
+        assert config_path.exists()
+        assert is_warning_suppressed("ripgrep", config_path) is True
+
+    def test_adds_to_existing_list(self, tmp_path) -> None:
+        """Adds key to existing [warnings].suppress list."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[warnings]\nsuppress = ["other"]\n')
+
+        result = suppress_warning("ripgrep", config_path)
+
+        assert result is True
+        assert is_warning_suppressed("other", config_path) is True
+        assert is_warning_suppressed("ripgrep", config_path) is True
+
+    def test_deduplicates(self, tmp_path) -> None:
+        """Does not add duplicate entries."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[warnings]\nsuppress = ["ripgrep"]\n')
+
+        suppress_warning("ripgrep", config_path)
+
+        import tomllib
+
+        with config_path.open("rb") as f:
+            data = tomllib.load(f)
+        assert data["warnings"]["suppress"].count("ripgrep") == 1
+
+    def test_preserves_other_config(self, tmp_path) -> None:
+        """Preserves existing config sections when adding suppression."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[models]\ndefault = "some:model"\n')
+
+        suppress_warning("ripgrep", config_path)
+
+        import tomllib
+
+        with config_path.open("rb") as f:
+            data = tomllib.load(f)
+        assert data["models"]["default"] == "some:model"
+        assert "ripgrep" in data["warnings"]["suppress"]

@@ -30,9 +30,13 @@ To release the CLI:
 1. Merge conventional commits to `main` (see [Commit Format](#commit-format))
 2. Wait for release-please to create/update the release PR
 3. Review the generated changelog in the PR
-4. Merge the release PR — this creates a **draft** GitHub release
-5. Review and edit the release notes in the GitHub UI
-6. Click "Publish release" — this triggers PyPI publication
+4. **Verify the SDK pin** — check that `deepagents==` in `libs/cli/pyproject.toml` is up to date. If the latest SDK version has been confirmed compatible, you should bump the pin on `main` and let release-please regenerate the PR before merging. See [Release Failed: CLI SDK Pin Mismatch](#release-failed-cli-sdk-pin-mismatch) for recovery if this is missed.
+5. Merge the release PR — this creates a **draft** GitHub release
+6. Review and edit the release notes in the GitHub UI
+7. Click "Publish release" — this triggers PyPI publication
+
+> [!IMPORTANT]
+> When developing CLI features that depend on new SDK functionality, bump the SDK pin as part of that work — don't defer it to release time. The pin should always reflect the minimum SDK version the CLI actually requires!
 
 ### Version Bumping
 
@@ -134,11 +138,11 @@ For hotfixes or exceptional cases, you can trigger a release manually. Use the `
 
 1. Go to **Actions** > **Package Release**
 2. Click **Run workflow**
-3. Select the CLI
+3. Select the package to release (`deepagents-cli` only for exception/recovery/hotfix scenarios; otherwise use release-please)
 4. (Optionally enable `dangerous-nonmain-release` for hotfix branches)
 
 > [!WARNING]
-> Manual releases should be rare. Prefer the standard release-please flow.
+> Manual releases should be rare. Prefer the standard release-please flow for the CLI. Manual dispatch bypasses the changelog detection in `release-please.yml` and skips the lockfile update job. Only use it for recovery scenarios (e.g., the release workflow failed after the release PR was already merged).
 
 ## Troubleshooting
 
@@ -223,6 +227,40 @@ Edit `.release-please-manifest.json` to the last good version:
 ```
 
 Also update `libs/cli/pyproject.toml` and `_version.py` to match.
+
+### Release Failed: CLI SDK Pin Mismatch
+
+If the release workflow fails at the "Verify CLI pins latest SDK version" step with:
+
+```txt
+CLI SDK pin does not match SDK version!
+SDK version (libs/deepagents/pyproject.toml): 0.4.2
+CLI SDK pin (libs/cli/pyproject.toml): 0.4.1
+```
+
+This means the CLI's pinned `deepagents` dependency in `libs/cli/pyproject.toml` doesn't match the current SDK version. This can happen when the SDK is released independently and the CLI's pin isn't updated before the CLI release PR is merged.
+
+**To fix:**
+
+1. **Hotfix the pin on `main`:**
+
+   ```bash
+   # Update the pin in libs/cli/pyproject.toml
+   # e.g., change deepagents==0.4.1 to deepagents==0.4.2
+   cd libs/cli && uv lock
+   git add libs/cli/pyproject.toml libs/cli/uv.lock
+   git commit -m "hotfix(cli): bump SDK pin to <VERSION>"
+   git push origin main
+   ```
+
+2. **Manually trigger the release** (the push to `main` won't re-trigger the release because the commit doesn't modify `libs/cli/CHANGELOG.md`):
+   - Go to **Actions** > **Package Release**
+   - Click **Run workflow**
+   - Select `main` branch and `deepagents-cli` package
+
+3. **Publish the draft release** once the workflow completes
+
+4. **Fix the `autorelease: pending` label** if the original automated release left it on the merged release PR. The failed workflow skipped the `mark-release` job, so the label was never swapped. See [Release PR Stuck with "autorelease: pending" Label](#release-pr-stuck-with-autorelease-pending-label) for the fix. **If you skip this step, release-please will not create new release PRs.**
 
 ### Re-releasing a Version
 

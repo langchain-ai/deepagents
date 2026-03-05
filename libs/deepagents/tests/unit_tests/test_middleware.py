@@ -36,6 +36,7 @@ from deepagents.middleware.filesystem import (
     FilesystemMiddleware,
     FilesystemState,
     _create_content_preview,
+    _extract_text_from_content,
     _supports_execution,
 )
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
@@ -1135,13 +1136,12 @@ class TestFilesystemMiddleware:
         assert file_text.startswith("Hello world!")
         assert not file_text.startswith("[{")
 
-    def test_multiple_text_blocks_stringifies_structure(self):
-        """Test that multiple text blocks stringify entire structure."""
+    def test_multiple_text_blocks_joins_text(self):
+        """Test that multiple text blocks are joined, not stringified."""
         middleware = FilesystemMiddleware(tool_token_limit_before_evict=100)
         state = FilesystemState(messages=[], files={})
         runtime = ToolRuntime(state=state, context=None, tool_call_id="test_multi", store=None, stream_writer=lambda _: None, config={})
 
-        # Create multiple text blocks
         content_blocks = [
             {"type": "text", "text": "First block " * 500},
             {"type": "text", "text": "Second block " * 500},
@@ -1150,19 +1150,18 @@ class TestFilesystemMiddleware:
         result = middleware._intercept_large_tool_result(tool_message, runtime)
 
         assert isinstance(result, Command)
-        # Check that the file contains stringified structure (starts with "[")
         file_content = result.update["files"]["/large_tool_results/test_multi"]["content"]
         file_text = "\n".join(file_content)
-        # Should be stringified list of dicts
-        assert file_text.startswith("[{")
+        assert file_text.startswith("First block")
+        assert "Second block" in file_text
+        assert not file_text.startswith("[{")
 
-    def test_mixed_content_blocks_stringifies_all(self):
-        """Test that mixed content block types (text + image) stringify entire structure."""
+    def test_mixed_content_blocks_extracts_text_only(self):
+        """Test that mixed content blocks (text + image) extract only text, ignoring images."""
         middleware = FilesystemMiddleware(tool_token_limit_before_evict=100)
         state = FilesystemState(messages=[], files={})
         runtime = ToolRuntime(state=state, context=None, tool_call_id="test_mixed", store=None, stream_writer=lambda _: None, config={})
 
-        # Create mixed content blocks
         content_blocks = [
             {"type": "text", "text": "Some text " * 200},
             {"type": "image", "url": "https://example.com/image.png"},
@@ -1171,13 +1170,25 @@ class TestFilesystemMiddleware:
         result = middleware._intercept_large_tool_result(tool_message, runtime)
 
         assert isinstance(result, Command)
-        # Check that the file contains stringified structure
         file_content = result.update["files"]["/large_tool_results/test_mixed"]["content"]
         file_text = "\n".join(file_content)
-        assert file_text.startswith("[{")
-        # Should contain both blocks in the stringified output
-        assert "'type': 'text'" in file_text
-        assert "'type': 'image'" in file_text
+        assert file_text.startswith("Some text")
+        assert "image" not in file_text
+
+    def test_mixed_content_small_text_large_image_not_evicted(self):
+        """Test that text+image content is not evicted when only the image is large."""
+        middleware = FilesystemMiddleware(tool_token_limit_before_evict=1000)
+        state = FilesystemState(messages=[], files={})
+        runtime = ToolRuntime(state=state, context=None, tool_call_id="test_no_evict", store=None, stream_writer=lambda _: None, config={})
+
+        content_blocks = [
+            {"type": "text", "text": "small text"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64," + "x" * 50000}},
+        ]
+        tool_message = ToolMessage(content=content_blocks, tool_call_id="test_no_evict")
+        result = middleware._intercept_large_tool_result(tool_message, runtime)
+
+        assert result == tool_message
 
     def test_read_file_image_returns_standard_image_content_block(self):
         """Test image reads return standard image blocks with base64 + mime_type."""
@@ -1511,6 +1522,45 @@ class TestFilesystemMiddleware:
             # Should have all lines
             for i in range(num_lines):
                 assert f"line {i}" in preview
+
+
+class TestExtractTextFromContent:
+    def test_string_content(self):
+        assert _extract_text_from_content("hello") == "hello"
+
+    def test_single_text_block(self):
+        blocks = [{"type": "text", "text": "hello"}]
+        assert _extract_text_from_content(blocks) == "hello"
+
+    def test_multiple_text_blocks_joined(self):
+        blocks = [
+            {"type": "text", "text": "first"},
+            {"type": "text", "text": "second"},
+        ]
+        assert _extract_text_from_content(blocks) == "first\nsecond"
+
+    def test_text_and_image_extracts_text_only(self):
+        blocks = [
+            {"type": "text", "text": "description"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+        ]
+        assert _extract_text_from_content(blocks) == "description"
+
+    def test_image_only_falls_back_to_str(self):
+        blocks = [{"type": "image", "data": "abc"}]
+        result = _extract_text_from_content(blocks)
+        assert result == str(blocks)
+
+    def test_plain_string_blocks(self):
+        blocks = ["hello", "world"]
+        assert _extract_text_from_content(blocks) == "hello\nworld"
+
+    def test_mixed_string_and_text_blocks(self):
+        blocks = [
+            "plain string",
+            {"type": "text", "text": "text block"},
+        ]
+        assert _extract_text_from_content(blocks) == "plain string\ntext block"
 
 
 class TestPatchToolCallsMiddleware:

@@ -362,6 +362,30 @@ def _create_content_preview(content_str: str, *, head_lines: int = 5, tail_lines
     return head_sample + truncation_notice + tail_sample
 
 
+def _extract_text_from_content(content: list[Any] | str) -> str:
+    """Extract text from message content, joining all text blocks and ignoring non-text blocks.
+
+    Args:
+        content: Message content as a string or list of content blocks.
+
+    Returns:
+        Extracted text string.
+    """
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return str(content)
+    texts: list[str] = []
+    for block in content:
+        if isinstance(block, dict) and block.get("type") == "text" and "text" in block:
+            texts.append(str(block["text"]))
+        elif isinstance(block, str):
+            texts.append(block)
+    if texts:
+        return "\n".join(texts)
+    return str(content)
+
+
 class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]):
     """Middleware for providing filesystem and optional execution tools to an agent.
 
@@ -1103,33 +1127,17 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             - files_update: Dict of file updates to apply to state, or None if eviction failed
 
         Note:
-            The entire content is converted to string, written to /large_tool_results/{tool_call_id},
-            and replaced with a truncated preview plus file reference. The replacement is always
-            returned as a plain string for consistency, regardless of original content type.
-
-            ToolMessage supports multimodal content blocks (images, audio, etc.), but these are
-            uncommon in tool results. For simplicity, all content is stringified and evicted.
-            The model can recover by reading the offloaded file from the backend.
+            Text is extracted from all text content blocks, joined, and used for both the
+            size check and eviction. Non-text blocks (images, audio, etc.) are ignored so
+            that large binary payloads do not inflate the size measurement. The replacement
+            is always returned as a plain string for consistency, regardless of original
+            content type. The model can recover by reading the offloaded file from the backend.
         """
         # Early exit if eviction not configured
         if not self._tool_token_limit_before_evict:
             return message, None
 
-        # Convert content to string once for both size check and eviction
-        # Special case: single text block - extract text directly for readability
-        if (
-            isinstance(message.content, list)
-            and len(message.content) == 1
-            and isinstance(message.content[0], dict)
-            and message.content[0].get("type") == "text"
-            and "text" in message.content[0]
-        ):
-            content_str = str(message.content[0]["text"])
-        elif isinstance(message.content, str):
-            content_str = message.content
-        else:
-            # Multiple blocks or non-text content - stringify entire structure
-            content_str = str(message.content)
+        content_str = _extract_text_from_content(message.content)
 
         # Check if content exceeds eviction threshold
         if len(content_str) <= NUM_CHARS_PER_TOKEN * self._tool_token_limit_before_evict:
@@ -1177,21 +1185,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         if not self._tool_token_limit_before_evict:
             return message, None
 
-        # Convert content to string once for both size check and eviction
-        # Special case: single text block - extract text directly for readability
-        if (
-            isinstance(message.content, list)
-            and len(message.content) == 1
-            and isinstance(message.content[0], dict)
-            and message.content[0].get("type") == "text"
-            and "text" in message.content[0]
-        ):
-            content_str = str(message.content[0]["text"])
-        elif isinstance(message.content, str):
-            content_str = message.content
-        else:
-            # Multiple blocks or non-text content - stringify entire structure
-            content_str = str(message.content)
+        content_str = _extract_text_from_content(message.content)
 
         if len(content_str) <= NUM_CHARS_PER_TOKEN * self._tool_token_limit_before_evict:
             return message, None

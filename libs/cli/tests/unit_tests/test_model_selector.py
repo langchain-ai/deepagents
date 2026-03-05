@@ -6,6 +6,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Container
 from textual.screen import ModalScreen
+from textual.widgets import Input
 
 from deepagents_cli.widgets.model_selector import ModelSelectorScreen
 
@@ -550,8 +551,6 @@ class TestModelSelectorFuzzyMatching:
             await pilot.press("tab")
             await pilot.pause()
 
-            from textual.widgets import Input
-
             filter_input = screen.query_one("#model-filter", Input)
             assert filter_input.value == "xyz999qqq"
 
@@ -585,8 +584,6 @@ class TestModelSelectorFuzzyMatching:
             await pilot.press("tab")
             await pilot.pause()
 
-            from textual.widgets import Input
-
             filter_input = screen.query_one("#model-filter", Input)
             assert filter_input.value == expected_spec
 
@@ -611,8 +608,6 @@ class TestModelSelectorFuzzyMatching:
             # Press tab - should replace filter text with selected model spec
             await pilot.press("tab")
             await pilot.pause()
-
-            from textual.widgets import Input
 
             filter_input = screen.query_one("#model-filter", Input)
             assert filter_input.value == expected_spec

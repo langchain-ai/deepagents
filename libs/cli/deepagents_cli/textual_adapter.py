@@ -30,8 +30,8 @@ from pydantic import TypeAdapter, ValidationError
 
 from deepagents_cli.config import settings
 from deepagents_cli.file_ops import FileOpTracker
-from deepagents_cli.image_utils import create_multimodal_content
-from deepagents_cli.input import ImageTracker, parse_file_mentions
+from deepagents_cli.input import MediaTracker, parse_file_mentions
+from deepagents_cli.media_utils import create_multimodal_content
 from deepagents_cli.tool_display import format_tool_message_content
 from deepagents_cli.widgets.messages import (
     AppMessage,
@@ -416,7 +416,7 @@ async def execute_task_textual(
     session_state: Any,  # noqa: ANN401  # Dynamic session state type
     adapter: TextualUIAdapter,
     backend: Any = None,  # noqa: ANN401  # Dynamic backend type
-    image_tracker: ImageTracker | None = None,
+    image_tracker: MediaTracker | None = None,
 ) -> SessionStats:
     """Execute a task with output directed to Textual UI.
 
@@ -474,12 +474,16 @@ async def execute_task_textual(
     else:
         final_input = prompt_text
 
-    # Include images in the message content
+    # Include images and videos in the message content
     images_to_send = []
+    videos_to_send = []
     if image_tracker:
         images_to_send = image_tracker.get_images()
-    if images_to_send:
-        message_content = create_multimodal_content(final_input, images_to_send)
+        videos_to_send = image_tracker.get_videos()
+    if images_to_send or videos_to_send:
+        message_content = create_multimodal_content(
+            final_input, images_to_send, videos_to_send
+        )
     else:
         message_content = final_input
 
@@ -508,7 +512,7 @@ async def execute_task_textual(
     pending_text_by_namespace: dict[tuple, str] = {}
     assistant_message_by_namespace: dict[tuple, Any] = {}
 
-    # Clear images from tracker after creating the message
+    # Clear media from tracker after creating the message
     if image_tracker:
         image_tracker.clear()
 

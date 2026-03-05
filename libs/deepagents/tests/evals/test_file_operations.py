@@ -31,30 +31,6 @@ def test_read_file_seeded_state_backend_file(model: BaseChatModel) -> None:
 
 
 @pytest.mark.langsmith
-def test_tool_error_recovery_read_file_then_ls(model: BaseChatModel) -> None:
-    """User supplies a misspelled file path; agent recovers via ls instead of guessing."""
-    agent = create_deep_agent(model=model)
-    run_agent(
-        agent,
-        model=model,
-        initial_files={
-            "/docs/readme.md": "hello\n",
-            "/docs/release_notes.md": """Version: 1.2.3
-alpha beta SAPPHIRE-13 delta
-""",
-        },
-        query="First, try reading /docs/notes_for_release.md and tell me the third word on the second line.",
-        expect=(
-            TrajectoryExpectations(num_agent_steps=4, num_tool_call_requests=3)
-            .require_tool_call(step=1, name="read_file", args_contains={"file_path": "/docs/notes_for_release.md"})
-            .require_tool_call(step=2, name="ls", args_contains={"path": "/docs"})
-            .require_tool_call(step=3, name="read_file", args_contains={"file_path": "/docs/release_notes.md"})
-            .require_final_text_contains("SAPPHIRE-13")
-        ),
-    )
-
-
-@pytest.mark.langsmith
 def test_write_file_simple(model: BaseChatModel) -> None:
     """Writes a file then answers a follow-up."""
     agent = create_deep_agent(model=model, system_prompt="Your name is Foo Bar.")

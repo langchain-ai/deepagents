@@ -79,9 +79,9 @@ def _resolve_models(selection: str) -> list[str]:
     if selection == "set1":
         return SET1
     specs = [s.strip() for s in selection.split(",") if s.strip()]
-    unknown = [s for s in specs if s not in MODELS]
-    if unknown:
-        msg = f"Unknown model(s): {', '.join(repr(s) for s in unknown)}"
+    invalid = [s for s in specs if ":" not in s]
+    if invalid:
+        msg = f"Invalid model spec(s) (expected 'provider:model'): {', '.join(repr(s) for s in invalid)}"
         raise ValueError(msg)
     return specs
 

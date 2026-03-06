@@ -1,7 +1,7 @@
 """MCP (Model Context Protocol) tools loader for deepagents CLI.
 
-This module provides async functions to load and manage MCP servers
-using langchain-mcp-adapters, supporting Claude Desktop style JSON configs.
+This module provides async functions to load and manage MCP servers using
+`langchain-mcp-adapters`, supporting Claude Desktop style JSON configs.
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from langchain_mcp_adapters.client import Connection, MultiServerMCPClient
 
 _SUPPORTED_REMOTE_TYPES = {"sse", "http"}
+"""Supported transport types for remote MCP servers (SSE and HTTP)."""
 
 
 def _resolve_server_type(server_config: dict[str, Any]) -> str:
@@ -89,6 +90,7 @@ def load_mcp_config(config_path: str) -> dict[str, Any]:
     """Load and validate MCP configuration from JSON file.
 
     Supports multiple server types:
+
     - stdio: Process-based servers with `command`, `args`, `env` fields (default)
     - sse: Server-Sent Events servers with `type: "sse"`, `url`, and optional `headers`
     - http: HTTP-based servers with `type: "http"`, `url`, and optional `headers`
@@ -144,9 +146,9 @@ def load_mcp_config(config_path: str) -> dict[str, Any]:
 class MCPSessionManager:
     """Manages persistent MCP sessions for stateful stdio servers.
 
-    This manager creates and maintains persistent sessions for stdio MCP servers,
-    preventing server restarts on every tool call. Sessions are kept alive until
-    explicitly cleaned up.
+    This manager creates and maintains persistent sessions for stdio MCP
+    servers, preventing server restarts on every tool call. Sessions are kept
+    alive until explicitly cleaned up.
     """
 
     def __init__(self) -> None:
@@ -168,17 +170,19 @@ async def get_mcp_tools(
     - stdio: Spawns MCP servers as subprocesses with persistent sessions
     - sse/http: Connects to remote MCP servers via URL
 
-    For stdio servers, this creates persistent sessions that remain active across
-    tool calls, avoiding server restarts. Sessions are managed by MCPSessionManager
-    and should be cleaned up with `session_manager.cleanup()` when done.
+    For stdio servers, this creates persistent sessions that remain active
+    across tool calls, avoiding server restarts. Sessions are managed by
+    `MCPSessionManager` and should be cleaned up with
+    `session_manager.cleanup()` when done.
 
     Args:
         config_path: Path to MCP JSON configuration file.
 
     Returns:
-        Tuple of (tools_list, session_manager) where:
-        - tools_list: List of LangChain BaseTool objects
-        - session_manager: MCPSessionManager instance (call `cleanup()` when done)
+        Tuple of `(tools_list, session_manager)` where:
+            - tools_list: List of LangChain `BaseTool` objects
+            - session_manager: `MCPSessionManager` instance
+                (call `cleanup()` when done)
 
     Raises:
         RuntimeError: If MCP server fails to spawn or connect.

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
+import shlex
 import signal
 import sys
 import uuid
@@ -176,6 +178,99 @@ if _IS_ITERM:
         _write_iterm_escape(_ITERM_CURSOR_GUIDE_ON)
 
     atexit.register(_restore_cursor_guide)
+
+
+def _extract_model_params_flag(raw_arg: str) -> tuple[str, dict[str, Any] | None]:
+    """Extract `--model-params` and its JSON value from a `/model` arg string.
+
+    Handles quoted (`'...'` / `"..."`) and bare `{...}` values with balanced
+    braces so that JSON containing spaces works without quoting.
+
+    Note:
+        The bare-brace mode counts `{` / `}` characters without awareness of
+        JSON string contents. Values that contain literal braces inside strings
+        (e.g., `{"stop": "end}here"}`) will mis-parse. Users should quote the
+        value in that case.
+
+    Args:
+        raw_arg: The argument string after `/model `.
+
+    Returns:
+        Tuple of `(remaining_args, parsed_dict | None)`. Returns `None` for the
+            dict when the flag is absent.
+
+    Raises:
+        ValueError: If the value is missing, has unclosed quotes,
+            unbalanced braces, or is not valid JSON.
+        TypeError: If the parsed JSON is not a dict.
+    """
+    flag = "--model-params"
+    idx = raw_arg.find(flag)
+    if idx == -1:
+        return raw_arg, None
+
+    before = raw_arg[:idx].rstrip()
+    after = raw_arg[idx + len(flag) :].lstrip()
+
+    if not after:
+        msg = "--model-params requires a JSON object value"
+        raise ValueError(msg)
+
+    # Determine the JSON string boundaries.
+    if after[0] in {"'", '"'}:
+        quote = after[0]
+        end = -1
+        backslash_count = 0
+        for i, ch in enumerate(after[1:], start=1):
+            if ch == "\\":
+                backslash_count += 1
+                continue
+            if ch == quote and backslash_count % 2 == 0:
+                end = i
+                break
+            backslash_count = 0
+        if end == -1:
+            msg = f"Unclosed {quote} in --model-params value"
+            raise ValueError(msg)
+        # Parse the quoted token with shlex so escaped quotes are unescaped.
+        json_str = shlex.split(after[: end + 1], posix=True)[0]
+        rest = after[end + 1 :].lstrip()
+    elif after[0] == "{":
+        # Walk forward to find the matching closing brace.
+        depth = 0
+        end = -1
+        for i, ch in enumerate(after):
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    end = i
+                    break
+        if end == -1:
+            msg = "Unbalanced braces in --model-params value"
+            raise ValueError(msg)
+        json_str = after[: end + 1]
+        rest = after[end + 1 :].lstrip()
+    else:
+        # Non-brace, non-quoted — take the next whitespace-delimited token.
+        parts = after.split(None, 1)
+        json_str = parts[0]
+        rest = parts[1] if len(parts) > 1 else ""
+
+    remaining = f"{before} {rest}".strip()
+    try:
+        params = json.loads(json_str)
+    except json.JSONDecodeError:
+        msg = (
+            f"Invalid JSON in --model-params: {json_str!r}. "
+            'Expected format: --model-params \'{"key": "value"}\''
+        )
+        raise ValueError(msg) from None
+    if not isinstance(params, dict):
+        msg = "--model-params must be a JSON object, got " + type(params).__name__
+        raise TypeError(msg)
+    return remaining, params
 
 
 InputMode = Literal["normal", "bash", "command"]
@@ -1295,7 +1390,8 @@ class DeepAgentsApp(App):
         elif cmd == "/help":
             await self._mount_message(UserMessage(command))
             help_text = Text(
-                "Commands: /quit, /clear, /compact, /model [--default], /remember, "
+                "Commands: /quit, /clear, /compact, "
+                "/model [--model-params JSON] [--default], /remember, "
                 "/tokens, /threads, /trace, /changelog, /docs, /feedback, /help\n\n"
                 "Interactive Features:\n"
                 "  Enter           Submit your message\n"
@@ -1428,17 +1524,32 @@ class DeepAgentsApp(App):
         elif cmd == "/model" or cmd.startswith("/model "):
             model_arg = None
             set_default = False
+            extra_kwargs: dict[str, Any] | None = None
             if cmd.startswith("/model "):
                 raw_arg = command.strip()[len("/model ") :].strip()
+                try:
+                    raw_arg, extra_kwargs = _extract_model_params_flag(raw_arg)
+                except (ValueError, TypeError) as exc:
+                    await self._mount_message(UserMessage(command))
+                    await self._mount_message(ErrorMessage(str(exc)))
+                    return
                 if raw_arg.startswith("--default"):
                     set_default = True
                     model_arg = raw_arg[len("--default") :].strip() or None
                 else:
-                    model_arg = raw_arg
+                    model_arg = raw_arg or None
 
             if set_default:
                 await self._mount_message(UserMessage(command))
-                if model_arg == "--clear":
+                if extra_kwargs:
+                    await self._mount_message(
+                        ErrorMessage(
+                            "--model-params cannot be used with --default. "
+                            "Model params are applied per-session, not "
+                            "persisted."
+                        )
+                    )
+                elif model_arg == "--clear":
                     await self._clear_default_model()
                 elif model_arg:
                     await self._set_default_model(model_arg)
@@ -1452,9 +1563,9 @@ class DeepAgentsApp(App):
             elif model_arg:
                 # Direct switch: /model claude-sonnet-4-5
                 await self._mount_message(UserMessage(command))
-                await self._switch_model(model_arg)
+                await self._switch_model(model_arg, extra_kwargs=extra_kwargs)
             else:
-                await self._show_model_selector()
+                await self._show_model_selector(extra_kwargs=extra_kwargs)
         else:
             await self._mount_message(UserMessage(command))
             await self._mount_message(AppMessage(f"Unknown command: {cmd}"))
@@ -2604,14 +2715,29 @@ class DeepAgentsApp(App):
     # Model Switching
     # =========================================================================
 
-    async def _show_model_selector(self) -> None:
-        """Show interactive model selector as a modal screen."""
+    async def _show_model_selector(
+        self,
+        *,
+        extra_kwargs: dict[str, Any] | None = None,
+    ) -> None:
+        """Show interactive model selector as a modal screen.
+
+        Args:
+            extra_kwargs: Extra constructor kwargs from `--model-params`.
+        """
+        from functools import partial
 
         def handle_result(result: tuple[str, str] | None) -> None:
             """Handle the model selector result."""
             if result is not None:
                 model_spec, _ = result
-                self.call_later(self._switch_model, model_spec)
+                self.call_later(
+                    partial(
+                        self._switch_model,
+                        model_spec,
+                        extra_kwargs=extra_kwargs,
+                    )
+                )
             # Refocus input after modal closes
             if self._chat_input:
                 self._chat_input.focus_input()
@@ -2778,7 +2904,12 @@ class DeepAgentsApp(App):
             if self._chat_input:
                 self._chat_input.set_cursor_active(active=not self._agent_running)
 
-    async def _switch_model(self, model_spec: str) -> None:
+    async def _switch_model(
+        self,
+        model_spec: str,
+        *,
+        extra_kwargs: dict[str, Any] | None = None,
+    ) -> None:
         """Switch to a new model, preserving conversation history.
 
         Args:
@@ -2787,6 +2918,7 @@ class DeepAgentsApp(App):
                 Can be in `provider:model` format
                 (e.g., `'anthropic:claude-sonnet-4-5'`) or just the model name
                 for auto-detection.
+            extra_kwargs: Extra constructor kwargs from `--model-params`.
         """
         logger.info("Switching model to %s", model_spec)
 
@@ -2850,7 +2982,7 @@ class DeepAgentsApp(App):
             return
 
         try:
-            result = create_model(model_spec)
+            result = create_model(model_spec, extra_kwargs=extra_kwargs)
         except ModelConfigError as e:
             await self._mount_message(ErrorMessage(str(e)))
             return

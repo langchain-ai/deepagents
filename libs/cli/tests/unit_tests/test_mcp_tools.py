@@ -468,7 +468,9 @@ class TestGetMCPTools:
 
         # Verify session was created and tools were loaded
         mock_client.session.assert_called_once_with("filesystem")
-        mock_load_tools.assert_called_once_with(mock_session)
+        mock_load_tools.assert_called_once_with(
+            mock_session, server_name="filesystem", tool_name_prefix=True
+        )
         assert len(tools) == 2
         assert tools[0].name == "read_file"
         assert tools[1].name == "write_file"
@@ -579,7 +581,9 @@ class TestGetMCPTools:
         mock_client_class.return_value = mock_client
 
         # Mock load_mcp_tools to return different tools for each session
-        def mock_load_side_effect(session: AsyncMock) -> list[MagicMock]:
+        def mock_load_side_effect(
+            session: AsyncMock, **_kwargs: object
+        ) -> list[MagicMock]:
             if session == mock_session_fs:
                 return mock_tools_fs
             return mock_tools_search

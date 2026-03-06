@@ -242,7 +242,9 @@ async def get_mcp_tools(
             session = await manager.exit_stack.enter_async_context(
                 client.session(server_name)
             )
-            tools = await load_mcp_tools(session)
+            tools = await load_mcp_tools(
+                session, server_name=server_name, tool_name_prefix=True
+            )
             all_tools.extend(tools)
 
     except Exception as e:

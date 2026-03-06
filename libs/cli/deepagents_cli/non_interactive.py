@@ -736,6 +736,7 @@ async def run_non_interactive(
             console.print(f"[red]Sandbox creation failed: {e}[/red]")
             return 1
 
+    mcp_session_manager = None
     try:
         async with get_checkpointer() as checkpointer:
             tools = [http_request, fetch_url]
@@ -743,7 +744,6 @@ async def run_non_interactive(
                 tools.append(web_search)
 
             # Load MCP tools if config provided
-            mcp_session_manager = None
             if mcp_config_path:
                 try:
                     from deepagents_cli.mcp_tools import get_mcp_tools

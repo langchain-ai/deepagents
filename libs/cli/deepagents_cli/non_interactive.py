@@ -51,6 +51,14 @@ from deepagents_cli.model_config import ModelConfigError
 from deepagents_cli.sessions import generate_thread_id, get_checkpointer
 from deepagents_cli.textual_adapter import SessionStats, print_usage_table
 from deepagents_cli.tools import fetch_url, http_request, web_search
+from deepagents_cli.unicode_security import (
+    check_url_safety,
+    detect_dangerous_unicode,
+    format_warning_detail,
+    iter_string_values,
+    looks_like_url_key,
+    summarize_issues,
+)
 
 if TYPE_CHECKING:
     from langchain_core.runnables import RunnableConfig
@@ -391,6 +399,9 @@ def _make_hitl_decision(
         Decision dict with a `type` key (`"approve"` or `"reject"`)
             and an optional `message` key with a human-readable explanation.
     """
+    for warning in _collect_action_request_warnings(action_request):
+        console.print(f"[yellow]Warning:[/yellow] {warning}")
+
     action_name = action_request.get("name", "")
 
     if action_name in SHELL_TOOL_NAMES:
@@ -429,6 +440,41 @@ def _make_hitl_decision(
 
     console.print(f"[dim]✓ Auto-approved action: {action_name}[/dim]")
     return {"type": "approve"}
+
+
+def _collect_action_request_warnings(action_request: ActionRequest) -> list[str]:
+    """Collect Unicode/URL safety warnings for one action request.
+
+    Recursively inspects all nested string values in action arguments.
+
+    Returns:
+        Warning messages for suspicious values in action arguments.
+    """
+    warnings: list[str] = []
+    args = action_request.get("args", {})
+    if not isinstance(args, dict):
+        return warnings
+
+    tool_name = str(action_request.get("name", "unknown"))
+
+    for arg_path, text in iter_string_values(args):
+        issues = detect_dangerous_unicode(text)
+        if issues:
+            warnings.append(
+                f"{tool_name}.{arg_path} contains hidden Unicode "
+                f"({summarize_issues(issues)})"
+            )
+
+        if looks_like_url_key(arg_path):
+            safety = check_url_safety(text)
+            if safety.safe:
+                continue
+            detail = format_warning_detail(safety.warnings)
+            if safety.decoded_domain:
+                detail = f"{detail}; decoded host: {safety.decoded_domain}"
+            warnings.append(f"{tool_name}.{arg_path} URL warning: {detail}")
+
+    return warnings
 
 
 def _process_hitl_interrupts(state: StreamState, console: Console) -> None:

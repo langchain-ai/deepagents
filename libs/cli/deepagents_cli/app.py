@@ -178,7 +178,7 @@ if _IS_ITERM:
     atexit.register(_restore_cursor_guide)
 
 
-InputMode = Literal["normal", "bash", "command"]
+InputMode = Literal["normal", "shell", "command"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -480,10 +480,10 @@ class DeepAgentsApp(App):
         # Agent task tracking for interruption
         self._agent_worker: Worker[None] | None = None
         self._agent_running = False
-        # Bash process tracking for interruption (! commands)
-        self._bash_process: asyncio.subprocess.Process | None = None
-        self._bash_worker: Worker[None] | None = None
-        self._bash_running = False
+        # Shell command process tracking for interruption (! commands)
+        self._shell_process: asyncio.subprocess.Process | None = None
+        self._shell_worker: Worker[None] | None = None
+        self._shell_running = False
         self._loading_widget: LoadingWidget | None = None
         self._token_tracker: TextualTokenTracker | None = None
         # Cumulative usage stats across all turns in this session
@@ -1006,8 +1006,8 @@ class DeepAgentsApp(App):
             value: The message text to process.
             mode: The input mode that determines message routing.
         """
-        if mode == "bash":
-            await self._handle_bash_command(value.removeprefix("!"))
+        if mode == "shell":
+            await self._handle_shell_command(value.removeprefix("!"))
         elif mode == "command":
             await self._handle_command(value)
         elif mode == "normal":
@@ -1033,8 +1033,8 @@ class DeepAgentsApp(App):
             )
             return
 
-        # If agent or bash command is running, enqueue instead of processing
-        if self._agent_running or self._bash_running:
+        # If agent or shell command is running, enqueue instead of processing
+        if self._agent_running or self._shell_running:
             self._pending_messages.append(QueuedMessage(text=value, mode=mode))
             queued_widget = QueuedUserMessage(value)
             self._queued_widgets.append(queued_widget)
@@ -1062,28 +1062,28 @@ class DeepAgentsApp(App):
         if self._chat_input:
             self.call_after_refresh(self._chat_input.focus_input)
 
-    async def _handle_bash_command(self, command: str) -> None:
-        """Handle a bash command (! prefix).
+    async def _handle_shell_command(self, command: str) -> None:
+        """Handle a shell command (! prefix).
 
         Thin dispatcher that mounts the user message and spawns a worker
         so the event loop stays free for key events (Esc/Ctrl+C).
 
         Args:
-            command: The bash command to execute.
+            command: The shell command to execute.
         """
         await self._mount_message(UserMessage(f"!{command}"))
-        self._bash_running = True
+        self._shell_running = True
 
         if self._chat_input:
             self._chat_input.set_cursor_active(active=False)
 
-        self._bash_worker = self.run_worker(
-            self._run_bash_task(command),
+        self._shell_worker = self.run_worker(
+            self._run_shell_task(command),
             exclusive=False,
         )
 
-    async def _run_bash_task(self, command: str) -> None:
-        """Run a bash command in a background worker.
+    async def _run_shell_task(self, command: str) -> None:
+        """Run a shell command in a background worker.
 
         This mirrors `_run_agent_task`: running in a worker keeps the event
         loop free so Esc/Ctrl+C can cancel the worker -> raise
@@ -1103,18 +1103,18 @@ class DeepAgentsApp(App):
                 cwd=self._cwd,
                 start_new_session=(sys.platform != "win32"),
             )
-            self._bash_process = proc
+            self._shell_process = proc
 
             try:
                 stdout_bytes, stderr_bytes = await asyncio.wait_for(
                     proc.communicate(), timeout=60
                 )
             except TimeoutError:
-                await self._kill_bash_process()
+                await self._kill_shell_process()
                 await self._mount_message(ErrorMessage("Command timed out (60s limit)"))
                 return
             except asyncio.CancelledError:
-                await self._kill_bash_process()
+                await self._kill_shell_process()
                 raise
 
             output = (stdout_bytes or b"").decode(errors="replace").strip()
@@ -1137,35 +1137,35 @@ class DeepAgentsApp(App):
             chat.scroll_end(animate=False)
 
         except OSError as e:
-            logger.exception("Failed to execute bash command: %s", command)
+            logger.exception("Failed to execute shell command: %s", command)
             err_msg = f"Failed to run command: {e}"
             await self._mount_message(ErrorMessage(err_msg))
         finally:
-            await self._cleanup_bash_task()
+            await self._cleanup_shell_task()
 
-    async def _cleanup_bash_task(self) -> None:
-        """Clean up after bash task completes or is cancelled."""
-        was_interrupted = self._bash_process is not None and (
-            self._bash_worker is not None and self._bash_worker.is_cancelled
+    async def _cleanup_shell_task(self) -> None:
+        """Clean up after shell command task completes or is cancelled."""
+        was_interrupted = self._shell_process is not None and (
+            self._shell_worker is not None and self._shell_worker.is_cancelled
         )
-        self._bash_process = None
-        self._bash_running = False
-        self._bash_worker = None
+        self._shell_process = None
+        self._shell_running = False
+        self._shell_worker = None
         if was_interrupted:
             await self._mount_message(AppMessage("Command interrupted"))
         if self._chat_input:
             self._chat_input.set_cursor_active(active=True)
         await self._process_next_from_queue()
 
-    async def _kill_bash_process(self) -> None:
-        """Terminate the running bash process.
+    async def _kill_shell_process(self) -> None:
+        """Terminate the running shell command process.
 
         On POSIX, sends SIGTERM to the entire process group (killing children).
         On Windows, terminates only the root process. No-op if the process has
         already exited. Waits up to 5s for clean shutdown, then escalates
         to SIGKILL.
         """
-        proc = self._bash_process
+        proc = self._shell_process
         if proc is None or proc.returncode is not None:
             return
 
@@ -1178,7 +1178,7 @@ class DeepAgentsApp(App):
             return
         except OSError:
             logger.warning(
-                "Failed to terminate bash process (pid=%s)", proc.pid, exc_info=True
+                "Failed to terminate shell process (pid=%s)", proc.pid, exc_info=True
             )
             return
 
@@ -1186,7 +1186,7 @@ class DeepAgentsApp(App):
             await asyncio.wait_for(proc.wait(), timeout=5)
         except TimeoutError:
             logger.warning(
-                "Bash process (pid=%s) did not exit after SIGTERM; sending SIGKILL",
+                "Shell process (pid=%s) did not exit after SIGTERM; sending SIGKILL",
                 proc.pid,
             )
             with suppress(ProcessLookupError, OSError):
@@ -1303,7 +1303,7 @@ class DeepAgentsApp(App):
                 "  Shift+Tab       Toggle auto-approve mode\n"
                 "  @filename       Auto-complete files and inject content\n"
                 "  /command        Slash commands (/help, /clear, /quit)\n"
-                "  !command        Run bash commands directly\n\n"
+                "  !command        Run shell commands directly\n\n"
                 f"Docs: {DOCS_URL}",
                 style="dim italic",
             )
@@ -1920,7 +1920,7 @@ class DeepAgentsApp(App):
         # Command mode messages complete synchronously without spawning
         # a worker, so cleanup won't fire again. Continue draining the
         # queue if no worker was started.
-        busy = self._agent_running or self._bash_running
+        busy = self._agent_running or self._shell_running
         if not busy and self._pending_messages:
             await self._process_next_from_queue()
 
@@ -2344,23 +2344,36 @@ class DeepAgentsApp(App):
                 "UI may be out of sync with message store"
             )
 
+    def _discard_queue(self) -> None:
+        """Clear pending messages and remove queued widgets from the DOM."""
+        self._pending_messages.clear()
+        for w in self._queued_widgets:
+            w.remove()
+        self._queued_widgets.clear()
+
+    def _cancel_worker(self, worker: Worker[None] | None) -> None:
+        """Discard the message queue and cancel an active worker.
+
+        Args:
+            worker: The worker to cancel.
+        """
+        self._discard_queue()
+        if worker is not None:
+            worker.cancel()
+
     def action_quit_or_interrupt(self) -> None:
         """Handle Ctrl+C - interrupt agent, reject approval, or quit on double press.
 
         Priority order:
-        1. If bash process is running, kill it
+        1. If shell command is running, kill it
         2. If approval menu is active, reject it
         3. If agent is running, interrupt it (preserve input)
         4. If double press (quit_pending), quit
         5. Otherwise show quit hint
         """
-        # If bash command is running, cancel the worker
-        if self._bash_running and self._bash_worker:
-            self._pending_messages.clear()
-            for w in self._queued_widgets:
-                w.remove()
-            self._queued_widgets.clear()
-            self._bash_worker.cancel()
+        # If shell command is running, cancel the worker
+        if self._shell_running and self._shell_worker:
+            self._cancel_worker(self._shell_worker)
             self._quit_pending = False
             return
 
@@ -2375,11 +2388,7 @@ class DeepAgentsApp(App):
 
         # If agent is running, interrupt it and discard queued messages
         if self._agent_running and self._agent_worker:
-            self._pending_messages.clear()
-            for w in self._queued_widgets:
-                w.remove()
-            self._queued_widgets.clear()
-            self._agent_worker.cancel()
+            self._cancel_worker(self._agent_worker)
             self._quit_pending = False
             return
 
@@ -2396,8 +2405,8 @@ class DeepAgentsApp(App):
         Priority order:
         1. If modal screen is active, dismiss it
         2. If completion popup is open, dismiss it
-        3. If input is in command/bash mode, exit to normal mode
-        4. If bash process is running, kill it
+        3. If input is in command/shell mode, exit to normal mode
+        4. If shell command is running, kill it
         5. If approval menu is active, reject it
         6. If agent is running, interrupt it
         """
@@ -2406,20 +2415,16 @@ class DeepAgentsApp(App):
             self.screen.dismiss(None)
             return
 
-        # Close completion popup or exit slash/bash mode
+        # Close completion popup or exit slash/shell command mode
         if self._chat_input:
             if self._chat_input.dismiss_completion():
                 return
             if self._chat_input.exit_mode():
                 return
 
-        # If bash command is running, cancel the worker
-        if self._bash_running and self._bash_worker:
-            self._pending_messages.clear()
-            for w in self._queued_widgets:
-                w.remove()
-            self._queued_widgets.clear()
-            self._bash_worker.cancel()
+        # If shell command is running, cancel the worker
+        if self._shell_running and self._shell_worker:
+            self._cancel_worker(self._shell_worker)
             return
 
         # If approval menu is active, reject it before cancelling the agent worker.
@@ -2432,11 +2437,7 @@ class DeepAgentsApp(App):
 
         # If agent is running, interrupt it and discard queued messages
         if self._agent_running and self._agent_worker:
-            self._pending_messages.clear()
-            for w in self._queued_widgets:
-                w.remove()
-            self._queued_widgets.clear()
-            self._agent_worker.cancel()
+            self._cancel_worker(self._agent_worker)
             return
 
     def action_quit_app(self) -> None:
@@ -2461,16 +2462,12 @@ class DeepAgentsApp(App):
             message: Optional message to display on exit.
         """
         # Discard queued messages so _cleanup_agent_task won't try to
-        # process them after the event loop is torn down.
-        self._pending_messages.clear()
-        for w in self._queued_widgets:
-            w.remove()
-        self._queued_widgets.clear()
-
-        # Cancel active workers so their subprocesses are terminated
+        # process them after the event loop is torn down, and cancel
+        # active workers so their subprocesses are terminated
         # (SIGTERM → SIGKILL) instead of being orphaned.
-        if self._bash_running and self._bash_worker:
-            self._bash_worker.cancel()
+        self._discard_queue()
+        if self._shell_running and self._shell_worker:
+            self._shell_worker.cancel()
         if self._agent_running and self._agent_worker:
             self._agent_worker.cancel()
 

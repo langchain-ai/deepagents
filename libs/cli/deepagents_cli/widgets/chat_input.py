@@ -18,6 +18,7 @@ from textual.widgets.text_area import Selection
 from deepagents_cli.config import (
     COLORS,
     MODE_PREFIXES,
+    PREFIX_TO_MODE,
     CharsetMode,
     _detect_charset_mode,
     get_glyphs,
@@ -34,8 +35,6 @@ from deepagents_cli.widgets.history import HistoryManager
 
 logger = logging.getLogger(__name__)
 
-_PREFIX_TO_MODE: dict[str, str] = {v: k for k, v in MODE_PREFIXES.items()}
-"""Reverse lookup: trigger character -> mode name."""
 
 _PASTE_BURST_CHAR_GAP_SECONDS = 0.03
 """Maximum time between chars to treat input as a paste-like burst."""
@@ -656,8 +655,8 @@ class ChatInput(Vertical):
         border: solid $primary;
     }
 
-    ChatInput.mode-bash {
-        border: solid __MODE_BASH__;
+    ChatInput.mode-shell {
+        border: solid __MODE_SHELL__;
     }
 
     ChatInput.mode-command {
@@ -677,8 +676,8 @@ class ChatInput(Vertical):
         text-style: bold;
     }
 
-    ChatInput.mode-bash .input-prompt {
-        color: __MODE_BASH__;
+    ChatInput.mode-shell .input-prompt {
+        color: __MODE_SHELL__;
     }
 
     ChatInput.mode-command .input-prompt {
@@ -698,7 +697,7 @@ class ChatInput(Vertical):
     ChatInput ChatTextArea:focus {
         border: none;
     }
-    """.replace("__MODE_BASH__", COLORS["mode_bash"]).replace(
+    """.replace("__MODE_SHELL__", COLORS["mode_shell"]).replace(
         "__MODE_CMD__", COLORS["mode_command"]
     )
 
@@ -758,7 +757,7 @@ class ChatInput(Vertical):
         self._skip_media_sync_events = 0
 
         # Number of virtual prefix characters currently injected for
-        # completion controller calls (0 for normal, 1 for bash/command).
+        # completion controller calls (0 for normal, 1 for shell/command).
         self._completion_prefix_len = 0
 
         # Guard flag: set while replacing a dropped path payload with an
@@ -834,7 +833,7 @@ class ChatInput(Vertical):
         # a prefix character.
         if self._stripping_prefix:
             self._stripping_prefix = False
-        elif text and text[0] in _PREFIX_TO_MODE:
+        elif text and text[0] in PREFIX_TO_MODE:
             if text[0] == "/" and is_path_payload:
                 # Absolute dropped paths stay normal input, not slash-command mode.
                 if self.mode != "normal":
@@ -846,7 +845,7 @@ class ChatInput(Vertical):
                 # text that re-includes the trigger character.  The
                 # _stripping_prefix guard prevents the resulting change event
                 # from looping back here.
-                detected = _PREFIX_TO_MODE[text[0]]
+                detected = PREFIX_TO_MODE[text[0]]
                 if self.mode != detected:
                     self.mode = detected
                 self._strip_mode_prefix()
@@ -1341,7 +1340,7 @@ class ChatInput(Vertical):
             Tuple of `(mode, display_text)` where mode-trigger prefixes are
                 removed from `display_text`.
         """
-        for prefix, mode in _PREFIX_TO_MODE.items():
+        for prefix, mode in PREFIX_TO_MODE.items():
             # Small dict; loop is fine. No need to over-engineer right now
             if entry.startswith(prefix):
                 return mode, entry[len(prefix) :]
@@ -1353,7 +1352,7 @@ class ChatInput(Vertical):
             return
 
         # Backspace at cursor position 0 (or on empty input) exits the
-        # current mode (e.g. command/bash).  When the cursor is at the very
+        # current mode (e.g. command/shell).  When the cursor is at the very
         # start of the text area, backspace is a no-op for the underlying
         # widget, so without this guard the user would be stuck in the mode.
         if (
@@ -1379,7 +1378,7 @@ class ChatInput(Vertical):
                 event.stop()
                 self._submit_value(self._text_area.text.strip())
             case CompletionResult.IGNORED if event.key == "enter":
-                # Handle Enter when completion is not active (bash/normal modes)
+                # Handle Enter when completion is not active (shell/normal modes)
                 value = self._text_area.text.strip()
                 if value:
                     event.prevent_default()
@@ -1414,7 +1413,7 @@ class ChatInput(Vertical):
             prompt = self.query_one("#prompt", Static)
         except NoMatches:
             return
-        self.remove_class("mode-bash", "mode-command")
+        self.remove_class("mode-shell", "mode-command")
         prefix = MODE_PREFIXES.get(mode)
         if prefix:
             prompt.update(prefix)
@@ -1473,7 +1472,7 @@ class ChatInput(Vertical):
             self._text_area.set_app_focus(has_focus=active)
 
     def exit_mode(self) -> bool:
-        """Exit the current input mode (command/bash) back to normal.
+        """Exit the current input mode (command/shell) back to normal.
 
         Returns:
             True if mode was non-normal and has been reset.

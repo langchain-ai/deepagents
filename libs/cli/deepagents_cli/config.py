@@ -360,7 +360,7 @@ def parse_shell_allow_list(allow_list_str: str | None) -> list[str] | None:
 
     Returns:
         List of allowed commands, `SHELL_ALLOW_ALL` if `'all'` was specified,
-        or `None` if no allow-list configured.
+            or `None` if no allow-list configured.
 
     Raises:
         ValueError: If `'all'` is combined with other commands.

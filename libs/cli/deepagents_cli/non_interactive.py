@@ -744,6 +744,7 @@ async def run_non_interactive(
             return 1
 
     mcp_session_manager = None
+    mcp_server_info: list[Any] | None = None
     try:
         async with get_checkpointer() as checkpointer:
             tools = [http_request, fetch_url]
@@ -754,7 +755,11 @@ async def run_non_interactive(
             try:
                 from deepagents_cli.mcp_tools import resolve_and_load_mcp_tools
 
-                mcp_tools, mcp_session_manager, _ = await resolve_and_load_mcp_tools(
+                (
+                    mcp_tools,
+                    mcp_session_manager,
+                    mcp_server_info,
+                ) = await resolve_and_load_mcp_tools(
                     explicit_config_path=mcp_config_path,
                     no_mcp=no_mcp,
                     trust_project_mcp=trust_project_mcp,
@@ -785,6 +790,7 @@ async def run_non_interactive(
                 auto_approve=use_auto_approve,
                 enable_shell=enable_shell,
                 checkpointer=checkpointer,
+                mcp_server_info=mcp_server_info,
             )
 
             file_op_tracker = FileOpTracker(

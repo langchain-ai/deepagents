@@ -600,6 +600,7 @@ async def run_textual_cli_async(
                 sandbox_type=sandbox_type if sandbox_type != "none" else None,
                 auto_approve=auto_approve,
                 checkpointer=checkpointer,
+                mcp_server_info=mcp_server_info,
             )
         except Exception as e:  # broad catch for friendly CLI errors
             logger.debug("Failed to create agent", exc_info=True)

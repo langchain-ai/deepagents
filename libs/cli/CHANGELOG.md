@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.0.29](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.28...deepagents-cli==0.0.29) (2026-03-06)
+
+
+### Features
+
+* **cli:** add `--model-params` flag to `/model` command ([#1679](https://github.com/langchain-ai/deepagents/issues/1679)) ([9b6433d](https://github.com/langchain-ai/deepagents/commit/9b6433d557e6e8b3d39c10577595b0ef6d741c94))
+* **cli:** add `--shell-allow-list all` ([#1695](https://github.com/langchain-ai/deepagents/issues/1695)) ([4aec7b3](https://github.com/langchain-ai/deepagents/commit/4aec7b35caa7723b8bbda189c9ca1d213e0a9a6d))
+* **cli:** add hook dispatch for external tool integration ([#1553](https://github.com/langchain-ai/deepagents/issues/1553)) ([cdb2230](https://github.com/langchain-ai/deepagents/commit/cdb2230f04ce7a2b7ef0837cbbc223dcbf04b78e))
+* **cli:** detect deceptive unicode in tool args and URLs ([#1694](https://github.com/langchain-ai/deepagents/issues/1694)) ([d4c8544](https://github.com/langchain-ai/deepagents/commit/d4c8544bd6bf3b6df50b99f8a0c7208c20f86bd9))
+* **cli:** mcp tool loading with auto-discovery ([#801](https://github.com/langchain-ai/deepagents/issues/801)) ([df0908e](https://github.com/langchain-ai/deepagents/commit/df0908ebed4e17f0fd904d83e9d4ea38dfc1207d))
+* **cli:** surface mcp server/tool info in system prompt ([#1693](https://github.com/langchain-ai/deepagents/issues/1693)) ([068e075](https://github.com/langchain-ai/deepagents/commit/068e075ecd4a7f3e35219ae6b87707bd9dc3f785))
+* **infra:** add fireworks as eval provider ([#1684](https://github.com/langchain-ai/deepagents/issues/1684)) ([eb26f61](https://github.com/langchain-ai/deepagents/commit/eb26f61cbceaeffef3414b402d28cac7af3e3a9a))
+
+
+### Bug Fixes
+
+* **cli:** anchor `ChatInput` below scrollable area ([#1671](https://github.com/langchain-ai/deepagents/issues/1671)) ([11105d9](https://github.com/langchain-ai/deepagents/commit/11105d93f593d802d5e120c095f16d771c674bef))
+* **cli:** remove dead chat-spacer widget and resize handler ([#1686](https://github.com/langchain-ai/deepagents/issues/1686)) ([b6ecec5](https://github.com/langchain-ai/deepagents/commit/b6ecec5bd14677a878c92a1b51e950f61fabf8d3))
+
 ## [0.0.28](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.27...deepagents-cli==0.0.28) (2026-03-05)
 
 ### Features

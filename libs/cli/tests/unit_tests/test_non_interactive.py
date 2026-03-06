@@ -275,6 +275,10 @@ class TestSandboxSetupForwarding:
             patch(
                 "deepagents_cli.non_interactive.create_cli_agent",
             ) as mock_create_agent,
+            patch(
+                "deepagents_cli.mcp_tools.resolve_and_load_mcp_tools",
+                return_value=([], None, []),
+            ),
         ):
             mock_settings.shell_allow_list = None
             mock_settings.has_tavily = False
@@ -346,6 +350,10 @@ class TestQuietMode:
             patch(
                 "deepagents_cli.non_interactive.create_cli_agent",
             ) as mock_create_agent,
+            patch(
+                "deepagents_cli.mcp_tools.resolve_and_load_mcp_tools",
+                return_value=([], None, []),
+            ),
         ):
             mock_settings.shell_allow_list = None
             mock_settings.has_tavily = False
@@ -411,6 +419,10 @@ class TestQuietMode:
             patch(
                 "deepagents_cli.non_interactive.create_cli_agent",
             ) as mock_create_agent,
+            patch(
+                "deepagents_cli.mcp_tools.resolve_and_load_mcp_tools",
+                return_value=([], None, []),
+            ),
             patch.object(sys, "stdout", stdout_buf),
             patch.object(sys, "stderr", stderr_buf),
         ):
@@ -499,6 +511,10 @@ class TestNoStreamMode:
             patch(
                 "deepagents_cli.non_interactive.create_cli_agent",
             ) as mock_create_agent,
+            patch(
+                "deepagents_cli.mcp_tools.resolve_and_load_mcp_tools",
+                return_value=([], None, []),
+            ),
             patch.object(sys, "stdout", stdout_buf),
         ):
             mock_settings.shell_allow_list = None
@@ -575,6 +591,10 @@ class TestNoStreamMode:
             patch(
                 "deepagents_cli.non_interactive.create_cli_agent",
             ) as mock_create_agent,
+            patch(
+                "deepagents_cli.mcp_tools.resolve_and_load_mcp_tools",
+                return_value=([], None, []),
+            ),
             patch.object(sys, "stdout", stdout_buf),
         ):
             mock_settings.shell_allow_list = None
@@ -639,6 +659,10 @@ class TestFastFollowLangsmithLink:
             patch(
                 "deepagents_cli.non_interactive.create_cli_agent",
             ) as mock_create_agent,
+            patch(
+                "deepagents_cli.mcp_tools.resolve_and_load_mcp_tools",
+                return_value=([], None, []),
+            ),
         ):
             mock_settings.shell_allow_list = None
             mock_settings.has_tavily = False
@@ -699,6 +723,10 @@ class TestFastFollowLangsmithLink:
             patch(
                 "deepagents_cli.non_interactive.create_cli_agent",
             ) as mock_create_agent,
+            patch(
+                "deepagents_cli.mcp_tools.resolve_and_load_mcp_tools",
+                return_value=([], None, []),
+            ),
         ):
             mock_settings.shell_allow_list = None
             mock_settings.has_tavily = False
@@ -757,6 +785,10 @@ class TestFastFollowLangsmithLink:
             patch(
                 "deepagents_cli.non_interactive.create_cli_agent",
             ) as mock_create_agent,
+            patch(
+                "deepagents_cli.mcp_tools.resolve_and_load_mcp_tools",
+                return_value=([], None, []),
+            ),
         ):
             mock_settings.shell_allow_list = None
             mock_settings.has_tavily = False
@@ -810,6 +842,10 @@ class TestFastFollowLangsmithLink:
             patch(
                 "deepagents_cli.non_interactive.create_cli_agent",
             ) as mock_create_agent,
+            patch(
+                "deepagents_cli.mcp_tools.resolve_and_load_mcp_tools",
+                return_value=([], None, []),
+            ),
         ):
             mock_settings.shell_allow_list = None
             mock_settings.has_tavily = False

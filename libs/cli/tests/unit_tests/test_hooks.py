@@ -353,3 +353,11 @@ class TestDispatchHookFireAndForget:
             await task
 
         assert len(hooks_mod._background_tasks) == 0
+
+    def test_no_running_loop_does_not_raise(self):
+        """Gracefully skips when no event loop is running."""
+        hooks_mod._hooks_config = [{"command": ["echo"]}]
+
+        # Call from sync context with no running loop — should not raise
+        hooks_mod.dispatch_hook_fire_and_forget("session.start", {})
+        assert len(hooks_mod._background_tasks) == 0

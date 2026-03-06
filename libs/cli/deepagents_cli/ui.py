@@ -96,6 +96,14 @@ def show_help() -> None:
     console.print(
         "  --sandbox-setup PATH       Setup script to run in sandbox after creation"
     )
+    console.print(
+        "  --mcp-config PATH          Load MCP tools from config file"
+        " (merged on top of auto-discovered configs)"
+    )
+    console.print("  --no-mcp                   Disable all MCP tool loading")
+    console.print(
+        "  --trust-project-mcp        Trust project MCP configs (skip approval prompt)"
+    )
     console.print("  -n, --non-interactive MSG  Run a single task and exit")
     console.print("  -q, --quiet                Clean output for piping (needs -n)")
     console.print(

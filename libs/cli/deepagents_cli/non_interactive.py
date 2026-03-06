@@ -674,6 +674,9 @@ async def run_non_interactive(
     profile_override: dict[str, Any] | None = None,
     quiet: bool = False,
     stream: bool = True,
+    mcp_config_path: str | None = None,
+    no_mcp: bool = False,
+    trust_project_mcp: bool = False,
 ) -> int:
     """Run a single task non-interactively and exit.
 
@@ -710,6 +713,12 @@ async def run_non_interactive(
 
             When `False`, the full response is buffered and written to stdout in
             one shot after the agent finishes.
+        mcp_config_path: Optional path to MCP servers JSON configuration file.
+            Merged on top of auto-discovered configs (highest precedence).
+        no_mcp: Disable all MCP tool loading.
+        trust_project_mcp: When `True`, allow project-level stdio MCP
+            servers. When `False` (default), project stdio servers are
+            silently skipped.
 
     Returns:
         Exit code: 0 for success, 1 for error, 130 for keyboard interrupt.
@@ -780,11 +789,37 @@ async def run_non_interactive(
             console.print(f"[red]Sandbox creation failed: {e}[/red]")
             return 1
 
+    mcp_session_manager = None
+    mcp_server_info: list[Any] | None = None
     try:
         async with get_checkpointer() as checkpointer:
             tools = [http_request, fetch_url]
             if settings.has_tavily:
                 tools.append(web_search)
+
+            # Load MCP tools (explicit config, auto-discovery, or disabled)
+            try:
+                from deepagents_cli.mcp_tools import resolve_and_load_mcp_tools
+
+                (
+                    mcp_tools,
+                    mcp_session_manager,
+                    mcp_server_info,
+                ) = await resolve_and_load_mcp_tools(
+                    explicit_config_path=mcp_config_path,
+                    no_mcp=no_mcp,
+                    trust_project_mcp=trust_project_mcp,
+                )
+                tools.extend(mcp_tools)
+                if mcp_tools:
+                    label = "MCP tool" if len(mcp_tools) == 1 else "MCP tools"
+                    console.print(f"[green]✓ Loaded {len(mcp_tools)} {label}[/green]")
+            except FileNotFoundError as e:
+                console.print(f"[red]✗ MCP config file not found: {e}[/red]")
+                return 1
+            except RuntimeError as e:
+                console.print(f"[red]✗ Failed to load MCP tools: {e}[/red]")
+                return 1
 
             # If an allow-list is provided, enable shell but disable
             # auto-approve so HITL can gate commands. If no allow-list, disable
@@ -801,6 +836,7 @@ async def run_non_interactive(
                 auto_approve=use_auto_approve,
                 enable_shell=enable_shell,
                 checkpointer=checkpointer,
+                mcp_server_info=mcp_server_info,
             )
 
             file_op_tracker = FileOpTracker(
@@ -839,6 +875,11 @@ async def run_non_interactive(
         console.print(f"\n[red]Unexpected error ({type(e).__name__}): {e}[/red]")
         return 1
     finally:
+        if mcp_session_manager is not None:
+            try:
+                await mcp_session_manager.cleanup()
+            except Exception:
+                logger.warning("MCP session cleanup failed", exc_info=True)
         try:
             exit_stack.close()
         except (OSError, RuntimeError) as cleanup_err:

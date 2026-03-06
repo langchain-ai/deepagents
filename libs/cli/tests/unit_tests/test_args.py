@@ -266,6 +266,39 @@ class TestQuietArg:
         assert args.non_interactive_message is None
 
 
+class TestNoMcpArg:
+    """Tests for --no-mcp argument parsing."""
+
+    def test_no_mcp_flag_parsed(self) -> None:
+        """Verify --no-mcp sets no_mcp=True."""
+        with patch.object(sys, "argv", ["deepagents", "--no-mcp"]):
+            args = parse_args()
+        assert args.no_mcp is True
+
+    def test_no_mcp_default_false(self) -> None:
+        """Verify no_mcp defaults to False."""
+        with patch.object(sys, "argv", ["deepagents"]):
+            args = parse_args()
+        assert args.no_mcp is False
+
+    def test_no_mcp_and_mcp_config_mutual_exclusion(self) -> None:
+        """--no-mcp + --mcp-config should exit with code 2."""
+        from deepagents_cli.main import cli_main
+
+        with (  # noqa: SIM117  # separate to satisfy PT012
+            patch.object(
+                sys,
+                "argv",
+                ["deepagents", "--no-mcp", "--mcp-config", "/some/path"],
+            ),
+            patch("deepagents_cli.main.check_cli_dependencies"),
+            patch("deepagents_cli.main.apply_stdin_pipe"),
+        ):
+            with pytest.raises(SystemExit) as exc_info:
+                cli_main()
+        assert exc_info.value.code == 2
+
+
 def test_default_agent_name_matches_canonical() -> None:
     """Ensure the duplicated constant in main.py stays in sync with agent.py."""
     assert _DEFAULT_AGENT_NAME == DEFAULT_AGENT_NAME

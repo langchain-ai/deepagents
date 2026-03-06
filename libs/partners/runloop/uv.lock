@@ -385,7 +385,7 @@ wheels = [
 
 [[package]]
 name = "deepagents"
-version = "0.4.6"
+version = "0.4.7"
 source = { editable = "../../deepagents" }
 dependencies = [
     { name = "langchain" },
@@ -729,7 +729,7 @@ wheels = [
 
 [[package]]
 name = "langchain-runloop"
-version = "0.0.2"
+version = "0.0.3"
 source = { editable = "." }
 dependencies = [
     { name = "deepagents" },

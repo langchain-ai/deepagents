@@ -14,6 +14,7 @@
 #   GROQ_API_KEY       — needed for Groq-hosted models
 #   OLLAMA_API_KEY     — needed for Ollama Cloud models
 #   OLLAMA_HOST        — set to https://ollama.com for cloud inference
+#   BASETEN_API_KEY    — needed for Baseten-hosted models
 #   FIREWORKS_API_KEY  — needed for Fireworks-hosted models
 
 name: "📊 Evals"
@@ -65,6 +66,8 @@ on:
           - "ollama:qwen3-coder:480b-cloud"
           - "ollama:qwen3.5:397b-cloud"
           - "ollama:deepseek-v3.2:cloud"
+          - "baseten:zai-org/GLM-5"
+          - "baseten:MiniMaxAI/MiniMax-M2.5"
           - "fireworks:accounts/fireworks/models/qwen3-235b-a22b-instruct-2507"
           - "fireworks:accounts/fireworks/models/deepseek-v3-0324"
       models_override:
@@ -121,6 +124,7 @@ jobs:
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
       OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
       OLLAMA_HOST: "https://ollama.com"
+      BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
       FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
     steps:
       - name: "📋 Checkout Code"

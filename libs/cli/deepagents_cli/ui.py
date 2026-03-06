@@ -221,14 +221,6 @@ def show_skills_help() -> None:
         "  5. <package>/built_in_skills/      built-in skills[/dim]",
         style=COLORS["dim"],
     )
-    console.print(
-        "\n[dim]Create your first skill:\n  deepagents skills create my-skill[/dim]",
-        style=COLORS["dim"],
-    )
-    console.print(
-        "  deepagents --mcp-config mcp.json        # Load MCP tools from config file",
-        style=COLORS["dim"],
-    )
     console.print()
 
 

@@ -101,7 +101,7 @@ SLASH_COMMANDS: list[tuple[str, str, str]] = [
     ("/compact", "Summarize conversation to reduce context usage", ""),
     ("/docs", "Open documentation in browser", ""),
     ("/feedback", "Submit a bug report or feature request", ""),
-    ("/model", "Switch model, show selector, or set default (--default)", ""),
+    ("/model", "Switch or configure model (--model-params, --default)", ""),
     ("/remember", "Update memory and skills from conversation", ""),
     ("/quit", "Exit app", "close leave"),
     ("/tokens", "Token usage", "cost"),

@@ -1088,6 +1088,7 @@ def cli_main() -> None:
                     mcp_config_path=getattr(args, "mcp_config", None),
                     no_mcp=getattr(args, "no_mcp", False),
                     trust_project_mcp=getattr(args, "trust_project_mcp", False),
+                    auto_approve=args.auto_approve,
                 )
             )
             sys.exit(exit_code)

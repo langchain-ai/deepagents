@@ -631,6 +631,7 @@ async def run_non_interactive(
     mcp_config_path: str | None = None,
     no_mcp: bool = False,
     trust_project_mcp: bool = False,
+    auto_approve: bool = False,
 ) -> int:
     """Run a single task non-interactively and exit.
 
@@ -775,11 +776,19 @@ async def run_non_interactive(
                 console.print(f"[red]✗ Failed to load MCP tools: {e}[/red]")
                 return 1
 
-            # If an allow-list is provided, enable shell but disable
-            # auto-approve so HITL can gate commands. If no allow-list, disable
-            # shell entirely and auto-approve all other tools.
-            enable_shell = bool(settings.shell_allow_list)
-            use_auto_approve = not enable_shell
+            # If --auto-approve is set, enable shell with no gating at all.
+            # If an allow-list is provided (without --auto-approve), enable
+            # shell but gate commands via HITL.
+            # Otherwise, disable shell and auto-approve all other tools.
+            if auto_approve:
+                enable_shell = True
+                use_auto_approve = True
+            elif settings.shell_allow_list:
+                enable_shell = True
+                use_auto_approve = False
+            else:
+                enable_shell = False
+                use_auto_approve = True
 
             agent, composite_backend = create_cli_agent(
                 model=model,

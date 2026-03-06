@@ -3,19 +3,15 @@
 Provides `run_non_interactive` which runs a single user task against the
 agent graph, streams results to stdout, and exits with an appropriate code.
 
-Shell commands are gated by an optional allow-list. When no allow-list is
-set, shell is disabled and all other tool calls are auto-approved via the
-`auto_approve` flag. When an allow-list is provided, shell is enabled and
-all tool calls (shell and non-shell) pass through HITL, where non-shell
-tools are approved unconditionally and shell commands are validated against
-the list.
+Shell commands are gated by an optional allow-list (`--shell-allow-list`):
+
+- Not set → shell disabled, all other tool calls auto-approved.
+- `recommended` or explicit list → shell enabled, commands validated
+    against the list; non-shell tools approved unconditionally.
+- `all` → shell enabled, any command allowed, all tools auto-approved.
 
 An optional quiet mode (`--quiet` / `-q`) redirects all console output to
 stderr, leaving stdout exclusively for the agent's response text.
-
-Note: in non-interactive mode (`-n`), auto-approval is determined solely by
-whether a `--shell-allow-list` is present, not by the `--auto-approve` CLI
-flag. See `run_non_interactive` for details.
 """
 
 from __future__ import annotations
@@ -39,6 +35,7 @@ from rich.text import Text
 
 from deepagents_cli.agent import DEFAULT_AGENT_NAME, create_cli_agent
 from deepagents_cli.config import (
+    SHELL_ALLOW_ALL,
     SHELL_TOOL_NAMES,
     build_langsmith_thread_url,
     create_model,
@@ -383,9 +380,13 @@ def _make_hitl_decision(
 ) -> dict[str, str]:
     """Decide whether to approve or reject a single action request.
 
+    This function is only invoked when a restrictive shell allow-list is
+    configured (not `all`). When shell is disabled or unrestricted,
+    `interrupt_on` is empty and this function is bypassed entirely.
+
     Shell tools are always gated: if an allow-list is configured, the command
     is validated against it; if no allow-list is configured, shell commands
-    are rejected outright (defense-in-depth -- the caller should disable
+    are rejected outright (defense-in-depth — the caller should disable
     shell tools when no allow-list is present, but this function fails
     closed regardless). Non-shell tools are approved unconditionally.
 
@@ -680,11 +681,12 @@ async def run_non_interactive(
 ) -> int:
     """Run a single task non-interactively and exit.
 
-    When no `shell_allow_list` is configured, shell execution is disabled
-    and all other tool calls are auto-approved (no HITL prompts). When an
-    allow-list **is** provided, shell execution is enabled but gated by the
-    list; commands not in the list are rejected with an error message sent
-    back to the agent.
+    Shell access and auto-approval are controlled by `--shell-allow-list`:
+
+    - Not set → shell disabled, all other tools auto-approved.
+    - `recommended` or explicit list → shell enabled, commands gated by
+        allow-list; non-shell tools approved unconditionally.
+    - `all` → shell enabled, any command allowed, all tools auto-approved.
 
     Note: startup header rendering avoids synchronous LangSmith URL lookups.
     A background thread resolves the thread URL concurrently and the result is
@@ -821,11 +823,15 @@ async def run_non_interactive(
                 console.print(f"[red]✗ Failed to load MCP tools: {e}[/red]")
                 return 1
 
-            # If an allow-list is provided, enable shell but disable
-            # auto-approve so HITL can gate commands. If no allow-list, disable
-            # shell entirely and auto-approve all other tools.
+            # Shell access is controlled by --shell-allow-list:
+            #   not set        → shell disabled, auto-approve all other tools
+            #   recommended/…  → shell enabled, gated by list
+            #   all            → shell enabled, any command, auto-approve
             enable_shell = bool(settings.shell_allow_list)
-            use_auto_approve = not enable_shell
+            shell_is_unrestricted = isinstance(
+                settings.shell_allow_list, type(SHELL_ALLOW_ALL)
+            )
+            use_auto_approve = not enable_shell or shell_is_unrestricted
 
             agent, composite_backend = create_cli_agent(
                 model=model,

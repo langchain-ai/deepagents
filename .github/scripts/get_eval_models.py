@@ -55,6 +55,9 @@ MODELS: list[str] = [
     "ollama:qwen3-coder:480b-cloud",
     "ollama:qwen3.5:397b-cloud",
     "ollama:deepseek-v3.2:cloud",
+    # Baseten
+    "baseten:zai-org/GLM-5",
+    "baseten:MiniMaxAI/MiniMax-M2.5",
 ]
 
 SET1: list[str] = [
@@ -69,6 +72,8 @@ SET1: list[str] = [
     "ollama:glm-5",
     "ollama:minimax-m2.5",
     "ollama:qwen3.5:397b-cloud",
+    "baseten:zai-org/GLM-5",
+    "baseten:MiniMaxAI/MiniMax-M2.5",
 ]
 
 

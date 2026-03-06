@@ -1,15 +1,16 @@
 """Lightweight hook dispatch for external tool integration.
 
-Loads hook configuration from ``~/.deepagents/hooks.json`` and fires
-matching commands with JSON payloads on stdin.  All dispatch is
-fire-and-forget: commands run in the background and failures are logged
-but never bubble up to the caller.
+Loads hook configuration from `~/.deepagents/hooks.json` and fires matching
+commands with JSON payloads on stdin. All dispatch is fire-and-forget: commands
+run in the background and failures are logged but never bubble up to the caller.
 
-Config format (``~/.deepagents/hooks.json``)::
+Config format (`~/.deepagents/hooks.json`):
 
-    {"hooks": [{"command": ["bash", "adapter.sh"], "events": ["session.start"]}]}
+```json
+{"hooks": [{"command": ["bash", "adapter.sh"], "events": ["session.start"]}]}
+```
 
-If ``events`` is omitted or empty the hook receives **all** events.
+If `events` is omitted or empty the hook receives **all** events.
 """
 
 from __future__ import annotations
@@ -34,8 +35,8 @@ def _load_hooks() -> list[dict[str, Any]]:
     """Load and cache hook definitions from the config file.
 
     Returns:
-        An empty list when the file is missing or malformed so that
-        normal execution is never interrupted.
+        An empty list when the file is missing or malformed so that normal
+            execution is never interrupted.
     """
     global _hooks_config  # noqa: PLW0603
     if _hooks_config is not None:
@@ -92,16 +93,17 @@ async def dispatch_hook(event: str, payload: dict[str, Any]) -> None:
     """Fire matching hook commands with *payload* serialised as JSON on stdin.
 
     The *event* name is automatically injected into the payload under the
-    ``"event"`` key so callers don't need to duplicate it.
+    `'event'` key so callers don't need to duplicate it.
 
-    The blocking subprocess work is offloaded to a thread so the caller's
-    event loop is never stalled.
+    The blocking subprocess work is offloaded to a thread so the caller's event
+    loop is never stalled.
 
     Each command is started as a detached subprocess (fire-and-forget).
+
     Errors are logged at debug level and never propagated.
 
     Args:
-        event: Dotted event name (e.g. ``"session.start"``).
+        event: Dotted event name (e.g. `'session.start'`).
         payload: Arbitrary JSON-serialisable dict sent on the command's stdin.
     """
     hooks = _load_hooks()

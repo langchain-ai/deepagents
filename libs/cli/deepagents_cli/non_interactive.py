@@ -628,6 +628,7 @@ async def run_non_interactive(
     profile_override: dict[str, Any] | None = None,
     quiet: bool = False,
     stream: bool = True,
+    mcp_config_path: str | None = None,
 ) -> int:
     """Run a single task non-interactively and exit.
 
@@ -664,6 +665,7 @@ async def run_non_interactive(
 
             When `False`, the full response is buffered and written to stdout in
             one shot after the agent finishes.
+        mcp_config_path: Optional path to MCP servers JSON configuration file.
 
     Returns:
         Exit code: 0 for success, 1 for error, 130 for keyboard interrupt.
@@ -740,6 +742,24 @@ async def run_non_interactive(
             if settings.has_tavily:
                 tools.append(web_search)
 
+            # Load MCP tools if config provided
+            mcp_session_manager = None
+            if mcp_config_path:
+                try:
+                    from deepagents_cli.mcp_tools import get_mcp_tools
+
+                    mcp_tools, mcp_session_manager = await get_mcp_tools(
+                        mcp_config_path
+                    )
+                    tools.extend(mcp_tools)
+                    console.print(f"[green]✓ Loaded {len(mcp_tools)} MCP tools[/green]")
+                except FileNotFoundError as e:
+                    console.print(f"[red]✗ MCP config file not found: {e}[/red]")
+                    return 1
+                except RuntimeError as e:
+                    console.print(f"[red]✗ Failed to load MCP tools: {e}[/red]")
+                    return 1
+
             # If an allow-list is provided, enable shell but disable
             # auto-approve so HITL can gate commands. If no allow-list, disable
             # shell entirely and auto-approve all other tools.
@@ -793,6 +813,11 @@ async def run_non_interactive(
         console.print(f"\n[red]Unexpected error ({type(e).__name__}): {e}[/red]")
         return 1
     finally:
+        if mcp_session_manager is not None:
+            try:
+                await mcp_session_manager.cleanup()
+            except Exception:
+                logger.warning("MCP session cleanup failed", exc_info=True)
         try:
             exit_stack.close()
         except (OSError, RuntimeError) as cleanup_err:

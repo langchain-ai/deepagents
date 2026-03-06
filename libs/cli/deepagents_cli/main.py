@@ -532,11 +532,6 @@ async def run_textual_cli_async(
                 mcp_tools, mcp_session_manager = await get_mcp_tools(mcp_config_path)
                 tools.extend(mcp_tools)
                 console.print(f"[green]✓ Loaded {len(mcp_tools)} MCP tools[/green]")
-            except ImportError:
-                console.print("[yellow]⚠ langchain-mcp-adapters not installed[/yellow]")
-                console.print(
-                    "[dim]Install: uv pip install langchain-mcp-adapters[/dim]"
-                )
             except FileNotFoundError as e:
                 console.print(f"[red]✗ MCP config file not found: {e}[/red]")
                 sys.exit(1)
@@ -609,8 +604,10 @@ async def run_textual_cli_async(
         finally:
             # Clean up MCP session manager if initialized
             if mcp_session_manager is not None:
-                with contextlib.suppress(Exception):
+                try:
                     await mcp_session_manager.cleanup()
+                except Exception:
+                    logger.warning("MCP session cleanup failed", exc_info=True)
 
             # Clean up sandbox after app exits (success or error)
             if sandbox_cm is not None:
@@ -968,6 +965,7 @@ def cli_main() -> None:
                     sandbox_setup=getattr(args, "sandbox_setup", None),
                     quiet=args.quiet,
                     stream=not args.no_stream,
+                    mcp_config_path=getattr(args, "mcp_config", None),
                 )
             )
             sys.exit(exit_code)

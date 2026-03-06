@@ -4,34 +4,52 @@ This module provides async functions to load and manage MCP servers
 using langchain-mcp-adapters, supporting Claude Desktop style JSON configs.
 """
 
+from __future__ import annotations
+
 import json
 from contextlib import AsyncExitStack
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
-from langchain_core.tools import BaseTool
-from langchain_mcp_adapters.client import MultiServerMCPClient
-from langchain_mcp_adapters.tools import load_mcp_tools
+if TYPE_CHECKING:
+    from langchain_core.tools import BaseTool
+    from langchain_mcp_adapters.client import Connection, MultiServerMCPClient
+
+_SUPPORTED_REMOTE_TYPES = {"sse", "http"}
 
 
-def _validate_server_config(server_name: str, server_config: dict) -> None:
+def _resolve_server_type(server_config: dict[str, Any]) -> str:
+    """Determine the transport type for a server config.
+
+    Supports both `type` and `transport` field names, defaulting to `stdio`.
+
+    Args:
+        server_config: Server configuration dictionary.
+
+    Returns:
+        Transport type string (`stdio`, `sse`, or `http`).
+    """
+    return server_config.get("type") or server_config.get("transport", "stdio")
+
+
+def _validate_server_config(server_name: str, server_config: dict[str, Any]) -> None:
     """Validate a single server configuration.
 
     Args:
-        server_name: Name of the server
-        server_config: Server configuration dictionary
+        server_name: Name of the server.
+        server_config: Server configuration dictionary.
 
     Raises:
-        TypeError: If config fields have wrong types
-        ValueError: If required fields are missing
+        TypeError: If config fields have wrong types.
+        ValueError: If required fields are missing or server type is unsupported.
     """
     if not isinstance(server_config, dict):
         error_msg = f"Server '{server_name}' config must be a dictionary"
         raise TypeError(error_msg)
 
-    # Determine server type - support both "type" and "transport" field names
-    server_type = server_config.get("type") or server_config.get("transport", "stdio")
+    server_type = _resolve_server_type(server_config)
 
-    if server_type in {"sse", "http"}:
+    if server_type in _SUPPORTED_REMOTE_TYPES:
         # SSE/HTTP server validation - requires url field
         if "url" not in server_config:
             error_msg = (
@@ -45,8 +63,8 @@ def _validate_server_config(server_name: str, server_config: dict) -> None:
         if headers is not None and not isinstance(headers, dict):
             error_msg = f"Server '{server_name}' 'headers' must be a dictionary"
             raise TypeError(error_msg)
-    else:
-        # stdio server validation (default)
+    elif server_type == "stdio":
+        # stdio server validation
         if "command" not in server_config:
             error_msg = f"Server '{server_name}' missing required 'command' field"
             raise ValueError(error_msg)
@@ -59,27 +77,33 @@ def _validate_server_config(server_name: str, server_config: dict) -> None:
         if "env" in server_config and not isinstance(server_config["env"], dict):
             error_msg = f"Server '{server_name}' 'env' must be a dictionary"
             raise TypeError(error_msg)
+    else:
+        error_msg = (
+            f"Server '{server_name}' has unsupported transport type '{server_type}'. "
+            "Supported types: stdio, sse, http"
+        )
+        raise ValueError(error_msg)
 
 
-def load_mcp_config(config_path: str) -> dict:
+def load_mcp_config(config_path: str) -> dict[str, Any]:
     """Load and validate MCP configuration from JSON file.
 
     Supports multiple server types:
-    - stdio: Process-based servers with "command", "args", "env" fields (default)
-    - sse: Server-Sent Events servers with "type": "sse", "url", and optional "headers"
-    - http: HTTP-based servers with "type": "http", "url", and optional "headers"
+    - stdio: Process-based servers with `command`, `args`, `env` fields (default)
+    - sse: Server-Sent Events servers with `type: "sse"`, `url`, and optional `headers`
+    - http: HTTP-based servers with `type: "http"`, `url`, and optional `headers`
 
     Args:
-        config_path: Path to MCP JSON configuration file (Claude Desktop format)
+        config_path: Path to MCP JSON configuration file (Claude Desktop format).
 
     Returns:
-        Parsed configuration dictionary
+        Parsed configuration dictionary.
 
     Raises:
-        FileNotFoundError: If config file doesn't exist
-        json.JSONDecodeError: If config file contains invalid JSON
-        TypeError: If config fields have wrong types
-        ValueError: If config is missing required fields
+        FileNotFoundError: If config file doesn't exist.
+        json.JSONDecodeError: If config file contains invalid JSON.
+        TypeError: If config fields have wrong types.
+        ValueError: If config is missing required fields.
     """
     path = Path(config_path)
 
@@ -135,7 +159,9 @@ class MCPSessionManager:
         await self.exit_stack.aclose()
 
 
-async def get_mcp_tools(config_path: str) -> tuple[list[BaseTool], MCPSessionManager]:
+async def get_mcp_tools(
+    config_path: str,
+) -> tuple[list[BaseTool], MCPSessionManager]:
     """Load MCP tools from configuration file with stateful sessions.
 
     Supports multiple server types:
@@ -144,49 +170,62 @@ async def get_mcp_tools(config_path: str) -> tuple[list[BaseTool], MCPSessionMan
 
     For stdio servers, this creates persistent sessions that remain active across
     tool calls, avoiding server restarts. Sessions are managed by MCPSessionManager
-    and should be cleaned up with session_manager.cleanup() when done.
+    and should be cleaned up with `session_manager.cleanup()` when done.
 
     Args:
-        config_path: Path to MCP JSON configuration file
+        config_path: Path to MCP JSON configuration file.
 
     Returns:
         Tuple of (tools_list, session_manager) where:
         - tools_list: List of LangChain BaseTool objects
-        - session_manager: MCPSessionManager instance (call cleanup() when done)
+        - session_manager: MCPSessionManager instance (call `cleanup()` when done)
 
     Raises:
-        RuntimeError: If MCP server fails to spawn or connect
+        RuntimeError: If MCP server fails to spawn or connect.
     """
+    from langchain_mcp_adapters.client import MultiServerMCPClient
+    from langchain_mcp_adapters.sessions import (
+        SSEConnection,
+        StdioConnection,
+        StreamableHttpConnection,
+    )
+    from langchain_mcp_adapters.tools import load_mcp_tools
+
     # Load and validate config
     config = load_mcp_config(config_path)
 
     # Create connections dict for MultiServerMCPClient
     # Convert Claude Desktop format to langchain-mcp-adapters format
-    connections = {}
+    connections: dict[str, Connection] = {}
     for server_name, server_config in config["mcpServers"].items():
-        server_type = server_config.get("type") or server_config.get(
-            "transport", "stdio"
-        )
+        server_type = _resolve_server_type(server_config)
 
-        if server_type in {"sse", "http"}:
+        if server_type in _SUPPORTED_REMOTE_TYPES:
             # SSE/HTTP server connection
             # Note: langchain-mcp-adapters uses "streamable_http" for HTTP transport
-            transport = "streamable_http" if server_type == "http" else "sse"
-            connections[server_name] = {
-                "url": server_config["url"],
-                "transport": transport,
-            }
-            # Add optional headers for authentication
-            if "headers" in server_config:
-                connections[server_name]["headers"] = server_config["headers"]
+            if server_type == "http":
+                conn = StreamableHttpConnection(
+                    transport="streamable_http",
+                    url=server_config["url"],
+                )
+                if "headers" in server_config:
+                    conn["headers"] = server_config["headers"]
+            else:
+                conn = SSEConnection(
+                    transport="sse",
+                    url=server_config["url"],
+                )
+                if "headers" in server_config:
+                    conn["headers"] = server_config["headers"]
+            connections[server_name] = conn
         else:
             # stdio server connection (default)
-            connections[server_name] = {
-                "command": server_config["command"],
-                "args": server_config.get("args", []),
-                "env": server_config.get("env", {}),
-                "transport": "stdio",
-            }
+            connections[server_name] = StdioConnection(
+                command=server_config["command"],
+                args=server_config.get("args", []),
+                env=server_config.get("env") or None,
+                transport="stdio",
+            )
 
     # Create session manager to track persistent sessions
     manager = MCPSessionManager()

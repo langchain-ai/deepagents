@@ -1,6 +1,7 @@
 """Tests for MCP tools configuration loading and validation."""
 
 import json
+from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -23,6 +24,18 @@ def valid_config_data() -> dict:
             }
         }
     }
+
+
+@pytest.fixture
+def write_config(tmp_path: Path) -> Callable[..., str]:
+    """Fixture that writes a JSON config dict to a temp file and returns the path."""
+
+    def _write(config_data: dict, filename: str = "mcp-config.json") -> str:
+        config_file = tmp_path / filename
+        config_file.write_text(json.dumps(config_data))
+        return str(config_file)
+
+    return _write
 
 
 @pytest.fixture
@@ -63,28 +76,22 @@ def mock_tools():
 class TestLoadMCPConfig:
     """Test MCP configuration file loading and validation."""
 
-    @pytest.mark.asyncio
-    async def test_load_valid_config(
-        self, tmp_path: Path, valid_config_data: dict
+    def test_load_valid_config(
+        self, write_config: Callable[..., str], valid_config_data: dict
     ) -> None:
         """Test loading a valid MCP configuration file."""
-        config_file = tmp_path / "mcp-config.json"
-        config_file.write_text(json.dumps(valid_config_data))
-
-        config = load_mcp_config(str(config_file))
-
+        path = write_config(valid_config_data)
+        config = load_mcp_config(path)
         assert config == valid_config_data
 
-    @pytest.mark.asyncio
-    async def test_load_config_file_not_found(self, tmp_path: Path) -> None:
+    def test_load_config_file_not_found(self, tmp_path: Path) -> None:
         """Test that FileNotFoundError is raised for missing config file."""
         nonexistent_file = tmp_path / "nonexistent.json"
 
         with pytest.raises(FileNotFoundError, match="MCP config file not found"):
             load_mcp_config(str(nonexistent_file))
 
-    @pytest.mark.asyncio
-    async def test_load_config_invalid_json(self, tmp_path: Path) -> None:
+    def test_load_config_invalid_json(self, tmp_path: Path) -> None:
         """Test that JSONDecodeError is raised for invalid JSON."""
         config_file = tmp_path / "invalid.json"
         config_file.write_text("{invalid json")
@@ -94,17 +101,15 @@ class TestLoadMCPConfig:
         ):
             load_mcp_config(str(config_file))
 
-    @pytest.mark.asyncio
-    async def test_load_config_missing_mcpservers_field(self, tmp_path: Path) -> None:
+    def test_load_config_missing_mcpservers_field(
+        self, write_config: Callable[..., str]
+    ) -> None:
         """Test that ValueError is raised when mcpServers field is missing."""
-        config_file = tmp_path / "missing-field.json"
-        config_data = {"someOtherField": "value"}
-        config_file.write_text(json.dumps(config_data))
+        path = write_config({"someOtherField": "value"})
 
         with pytest.raises(ValueError, match="must contain 'mcpServers' field"):
-            load_mcp_config(str(config_file))
+            load_mcp_config(path)
 
-    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         ("config_data", "expected_error", "exception_type"),
         [
@@ -116,40 +121,39 @@ class TestLoadMCPConfig:
             ({"mcpServers": {}}, "'mcpServers' field is empty", ValueError),
         ],
     )
-    async def test_load_config_invalid_mcpservers(
+    def test_load_config_invalid_mcpservers(
         self,
-        tmp_path: Path,
+        write_config: Callable[..., str],
         config_data: dict,
         expected_error: str,
         exception_type: type[Exception],
     ) -> None:
         """Test that appropriate exception is raised for invalid mcpServers field."""
-        config_file = tmp_path / "invalid.json"
-        config_file.write_text(json.dumps(config_data))
+        path = write_config(config_data)
 
         with pytest.raises(exception_type, match=expected_error):
-            load_mcp_config(str(config_file))
+            load_mcp_config(path)
 
-    @pytest.mark.asyncio
-    async def test_load_config_server_missing_command(self, tmp_path: Path) -> None:
+    def test_load_config_server_missing_command(
+        self, write_config: Callable[..., str]
+    ) -> None:
         """Test that ValueError is raised when server config is missing command."""
-        config_file = tmp_path / "no-command.json"
-        config_data = {
-            "mcpServers": {
-                "filesystem": {
-                    "args": ["/tmp"],
-                    # Missing "command" field
+        path = write_config(
+            {
+                "mcpServers": {
+                    "filesystem": {
+                        "args": ["/tmp"],
+                        # Missing "command" field
+                    }
                 }
             }
-        }
-        config_file.write_text(json.dumps(config_data))
+        )
 
         with pytest.raises(
             ValueError, match=r"filesystem.*missing required 'command' field"
         ):
-            load_mcp_config(str(config_file))
+            load_mcp_config(path)
 
-    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         ("server_config", "expected_error"),
         [
@@ -164,21 +168,22 @@ class TestLoadMCPConfig:
             ),
         ],
     )
-    async def test_load_config_invalid_field_types(
-        self, tmp_path: Path, server_config: dict | str, expected_error: str
+    def test_load_config_invalid_field_types(
+        self,
+        write_config: Callable[..., str],
+        server_config: dict | str,
+        expected_error: str,
     ) -> None:
         """Test that TypeError is raised for invalid server config field types."""
-        config_file = tmp_path / "invalid-field.json"
-        config_data = {"mcpServers": {"filesystem": server_config}}
-        config_file.write_text(json.dumps(config_data))
+        path = write_config({"mcpServers": {"filesystem": server_config}})
 
         with pytest.raises(TypeError, match=expected_error):
-            load_mcp_config(str(config_file))
+            load_mcp_config(path)
 
-    @pytest.mark.asyncio
-    async def test_load_config_optional_fields(self, tmp_path: Path) -> None:
+    def test_load_config_optional_fields(
+        self, write_config: Callable[..., str]
+    ) -> None:
         """Test that args and env are optional fields."""
-        config_file = tmp_path / "minimal.json"
         config_data = {
             "mcpServers": {
                 "simple": {
@@ -187,17 +192,17 @@ class TestLoadMCPConfig:
                 }
             }
         }
-        config_file.write_text(json.dumps(config_data))
+        path = write_config(config_data)
 
-        config = load_mcp_config(str(config_file))
+        config = load_mcp_config(path)
 
         assert config == config_data
         assert "simple" in config["mcpServers"]
 
-    @pytest.mark.asyncio
-    async def test_load_config_multiple_servers(self, tmp_path: Path) -> None:
+    def test_load_config_multiple_servers(
+        self, write_config: Callable[..., str]
+    ) -> None:
         """Test loading config with multiple MCP servers."""
-        config_file = tmp_path / "multi-server.json"
         config_data = {
             "mcpServers": {
                 "filesystem": {
@@ -217,19 +222,17 @@ class TestLoadMCPConfig:
                 },
             }
         }
-        config_file.write_text(json.dumps(config_data))
+        path = write_config(config_data)
 
-        config = load_mcp_config(str(config_file))
+        config = load_mcp_config(path)
 
         assert len(config["mcpServers"]) == 3
         assert "filesystem" in config["mcpServers"]
         assert "brave-search" in config["mcpServers"]
         assert "github" in config["mcpServers"]
 
-    @pytest.mark.asyncio
-    async def test_load_config_sse_server(self, tmp_path: Path) -> None:
+    def test_load_config_sse_server(self, write_config: Callable[..., str]) -> None:
         """Test loading config with SSE server type."""
-        config_file = tmp_path / "sse-server.json"
         config_data = {
             "mcpServers": {
                 "remote-api": {
@@ -238,9 +241,9 @@ class TestLoadMCPConfig:
                 }
             }
         }
-        config_file.write_text(json.dumps(config_data))
+        path = write_config(config_data)
 
-        config = load_mcp_config(str(config_file))
+        config = load_mcp_config(path)
 
         assert config == config_data
         assert config["mcpServers"]["remote-api"]["type"] == "sse"
@@ -248,10 +251,8 @@ class TestLoadMCPConfig:
             config["mcpServers"]["remote-api"]["url"] == "https://api.example.com/mcp"
         )
 
-    @pytest.mark.asyncio
-    async def test_load_config_http_server(self, tmp_path: Path) -> None:
+    def test_load_config_http_server(self, write_config: Callable[..., str]) -> None:
         """Test loading config with HTTP server type."""
-        config_file = tmp_path / "http-server.json"
         config_data = {
             "mcpServers": {
                 "web-api": {
@@ -260,14 +261,13 @@ class TestLoadMCPConfig:
                 }
             }
         }
-        config_file.write_text(json.dumps(config_data))
+        path = write_config(config_data)
 
-        config = load_mcp_config(str(config_file))
+        config = load_mcp_config(path)
 
         assert config == config_data
         assert config["mcpServers"]["web-api"]["type"] == "http"
 
-    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         ("server_name", "server_type"),
         [
@@ -275,23 +275,24 @@ class TestLoadMCPConfig:
             ("web-api", "http"),
         ],
     )
-    async def test_load_config_remote_server_missing_url(
-        self, tmp_path: Path, server_name: str, server_type: str
+    def test_load_config_remote_server_missing_url(
+        self,
+        write_config: Callable[..., str],
+        server_name: str,
+        server_type: str,
     ) -> None:
         """Test that ValueError is raised when SSE/HTTP server is missing url field."""
-        config_file = tmp_path / "remote-no-url.json"
-        config_data = {"mcpServers": {server_name: {"type": server_type}}}
-        config_file.write_text(json.dumps(config_data))
+        path = write_config({"mcpServers": {server_name: {"type": server_type}}})
 
         with pytest.raises(
             ValueError, match=f"{server_name}.*missing required 'url' field"
         ):
-            load_mcp_config(str(config_file))
+            load_mcp_config(path)
 
-    @pytest.mark.asyncio
-    async def test_load_config_mixed_server_types(self, tmp_path: Path) -> None:
+    def test_load_config_mixed_server_types(
+        self, write_config: Callable[..., str]
+    ) -> None:
         """Test loading config with mixed stdio, SSE, and HTTP servers."""
-        config_file = tmp_path / "mixed-servers.json"
         config_data = {
             "mcpServers": {
                 "filesystem": {
@@ -308,19 +309,19 @@ class TestLoadMCPConfig:
                 },
             }
         }
-        config_file.write_text(json.dumps(config_data))
+        path = write_config(config_data)
 
-        config = load_mcp_config(str(config_file))
+        config = load_mcp_config(path)
 
         assert len(config["mcpServers"]) == 3
         assert "command" in config["mcpServers"]["filesystem"]
         assert config["mcpServers"]["remote-sse"]["type"] == "sse"
         assert config["mcpServers"]["remote-http"]["type"] == "http"
 
-    @pytest.mark.asyncio
-    async def test_load_config_sse_with_headers(self, tmp_path: Path) -> None:
+    def test_load_config_sse_with_headers(
+        self, write_config: Callable[..., str]
+    ) -> None:
         """Test loading SSE server config with custom headers."""
-        config_file = tmp_path / "sse-headers.json"
         config_data = {
             "mcpServers": {
                 "authenticated-api": {
@@ -333,17 +334,17 @@ class TestLoadMCPConfig:
                 }
             }
         }
-        config_file.write_text(json.dumps(config_data))
+        path = write_config(config_data)
 
-        config = load_mcp_config(str(config_file))
+        config = load_mcp_config(path)
 
         headers = config["mcpServers"]["authenticated-api"]["headers"]
         assert headers["Authorization"] == "Bearer token123"
 
-    @pytest.mark.asyncio
-    async def test_load_config_http_with_headers(self, tmp_path: Path) -> None:
+    def test_load_config_http_with_headers(
+        self, write_config: Callable[..., str]
+    ) -> None:
         """Test loading HTTP server config with custom headers."""
-        config_file = tmp_path / "http-headers.json"
         config_data = {
             "mcpServers": {
                 "authenticated-api": {
@@ -353,14 +354,13 @@ class TestLoadMCPConfig:
                 }
             }
         }
-        config_file.write_text(json.dumps(config_data))
+        path = write_config(config_data)
 
-        config = load_mcp_config(str(config_file))
+        config = load_mcp_config(path)
 
         headers = config["mcpServers"]["authenticated-api"]["headers"]
         assert headers["Authorization"] == "Bearer secret"
 
-    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         ("transport_field", "transport_value"),
         [
@@ -370,11 +370,13 @@ class TestLoadMCPConfig:
             ("type", "sse"),
         ],
     )
-    async def test_load_config_transport_field_alias(
-        self, tmp_path: Path, transport_field: str, transport_value: str
+    def test_load_config_transport_field_alias(
+        self,
+        write_config: Callable[..., str],
+        transport_field: str,
+        transport_value: str,
     ) -> None:
         """Test that both 'type' and 'transport' fields are accepted for server type."""
-        config_file = tmp_path / "transport-alias.json"
         config_data = {
             "mcpServers": {
                 "remote": {
@@ -383,57 +385,75 @@ class TestLoadMCPConfig:
                 }
             }
         }
-        config_file.write_text(json.dumps(config_data))
+        path = write_config(config_data)
 
-        config = load_mcp_config(str(config_file))
+        config = load_mcp_config(path)
 
         assert config == config_data
 
-    @pytest.mark.asyncio
-    async def test_load_config_invalid_headers_type(self, tmp_path: Path) -> None:
+    def test_load_config_invalid_headers_type(
+        self, write_config: Callable[..., str]
+    ) -> None:
         """Test that TypeError is raised when headers is not a dictionary."""
-        config_file = tmp_path / "invalid-headers.json"
-        config_data = {
-            "mcpServers": {
-                "api": {
-                    "type": "sse",
-                    "url": "https://api.example.com/mcp",
-                    "headers": ["not", "a", "dict"],
+        path = write_config(
+            {
+                "mcpServers": {
+                    "api": {
+                        "type": "sse",
+                        "url": "https://api.example.com/mcp",
+                        "headers": ["not", "a", "dict"],
+                    }
                 }
             }
-        }
-        config_file.write_text(json.dumps(config_data))
+        )
 
         with pytest.raises(TypeError, match=r"api.*'headers' must be a dictionary"):
-            load_mcp_config(str(config_file))
+            load_mcp_config(path)
+
+    def test_load_config_unknown_server_type(
+        self, write_config: Callable[..., str]
+    ) -> None:
+        """Test that ValueError is raised for unsupported transport types."""
+        path = write_config(
+            {
+                "mcpServers": {
+                    "ws-server": {
+                        "type": "websocket",
+                        "url": "ws://example.com/mcp",
+                    }
+                }
+            }
+        )
+
+        with pytest.raises(
+            ValueError, match=r"ws-server.*unsupported transport type 'websocket'"
+        ):
+            load_mcp_config(path)
 
 
 class TestGetMCPTools:
     """Test MCP tools loading from configuration."""
 
-    @patch("deepagents_cli.mcp_tools.load_mcp_tools")
-    @patch("deepagents_cli.mcp_tools.MultiServerMCPClient")
-    @pytest.mark.asyncio
+    @patch("langchain_mcp_adapters.tools.load_mcp_tools")
+    @patch("langchain_mcp_adapters.client.MultiServerMCPClient")
     async def test_get_mcp_tools_success(
         self,
         mock_client_class: MagicMock,
         mock_load_tools: AsyncMock,
-        tmp_path: Path,
+        write_config: Callable[..., str],
         valid_config_data: dict,
         mock_mcp_client: tuple,
         mock_tools: list,
     ) -> None:
         """Test successful loading of MCP tools."""
-        # Create a valid config file
-        config_file = tmp_path / "mcp-config.json"
-        config_file.write_text(json.dumps(valid_config_data))
+        path = write_config(valid_config_data)
 
         # Setup mocks
         mock_client, mock_session = mock_mcp_client
         mock_client_class.return_value = mock_client
         mock_load_tools.return_value = mock_tools
 
-        tools, manager = await get_mcp_tools(str(config_file))
+        tools, manager = await get_mcp_tools(path)
 
         # Verify client was initialized with correct connection config
         mock_client_class.assert_called_once()
@@ -457,24 +477,22 @@ class TestGetMCPTools:
         # Clean up
         await manager.cleanup()
 
-    @patch("deepagents_cli.mcp_tools.MultiServerMCPClient")
-    @pytest.mark.asyncio
+    @patch("langchain_mcp_adapters.client.MultiServerMCPClient")
     async def test_get_mcp_tools_server_spawn_failure(
-        self, mock_client_class: MagicMock, tmp_path: Path
+        self, mock_client_class: MagicMock, write_config: Callable[..., str]
     ) -> None:
         """Test handling of MCP server spawn failure."""
-        # Create a valid config file
-        config_file = tmp_path / "mcp-config.json"
-        config_data = {
-            "mcpServers": {
-                "filesystem": {
-                    "command": "nonexistent-command",
-                    "args": [],
-                    "env": {},
+        path = write_config(
+            {
+                "mcpServers": {
+                    "filesystem": {
+                        "command": "nonexistent-command",
+                        "args": [],
+                        "env": {},
+                    }
                 }
             }
-        }
-        config_file.write_text(json.dumps(config_data))
+        )
 
         # Setup mock client to raise an exception
         mock_client_class.side_effect = Exception("Command not found")
@@ -482,23 +500,20 @@ class TestGetMCPTools:
         with pytest.raises(
             RuntimeError, match=r"Failed to connect to MCP servers.*Command not found"
         ):
-            await get_mcp_tools(str(config_file))
+            await get_mcp_tools(path)
 
-    @patch("deepagents_cli.mcp_tools.load_mcp_tools")
-    @patch("deepagents_cli.mcp_tools.MultiServerMCPClient")
-    @pytest.mark.asyncio
+    @patch("langchain_mcp_adapters.tools.load_mcp_tools")
+    @patch("langchain_mcp_adapters.client.MultiServerMCPClient")
     async def test_get_mcp_tools_get_tools_failure(
         self,
         mock_client_class: MagicMock,
         mock_load_tools: AsyncMock,
-        tmp_path: Path,
+        write_config: Callable[..., str],
         valid_config_data: dict,
         mock_mcp_client: tuple,
     ) -> None:
         """Test handling of failure during load_mcp_tools call."""
-        # Create a valid config file
-        config_file = tmp_path / "mcp-config.json"
-        config_file.write_text(json.dumps(valid_config_data))
+        path = write_config(valid_config_data)
 
         # Setup mocks
         mock_client, _ = mock_mcp_client
@@ -509,32 +524,37 @@ class TestGetMCPTools:
             RuntimeError,
             match=r"Failed to connect to MCP servers.*Server protocol error",
         ):
-            await get_mcp_tools(str(config_file))
+            await get_mcp_tools(path)
 
-    @patch("deepagents_cli.mcp_tools.load_mcp_tools")
-    @patch("deepagents_cli.mcp_tools.MultiServerMCPClient")
-    @pytest.mark.asyncio
+    @patch("langchain_mcp_adapters.tools.load_mcp_tools")
+    @patch("langchain_mcp_adapters.client.MultiServerMCPClient")
     async def test_get_mcp_tools_multiple_servers(
-        self, mock_client_class: MagicMock, mock_load_tools: AsyncMock, tmp_path: Path
+        self,
+        mock_client_class: MagicMock,
+        mock_load_tools: AsyncMock,
+        write_config: Callable[..., str],
     ) -> None:
         """Test loading tools from multiple MCP servers."""
-        # Create config with multiple servers
-        config_file = tmp_path / "multi-server.json"
-        config_data = {
-            "mcpServers": {
-                "filesystem": {
-                    "command": "npx",
-                    "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
-                    "env": {},
-                },
-                "brave-search": {
-                    "command": "npx",
-                    "args": ["-y", "@modelcontextprotocol/server-brave-search"],
-                    "env": {"BRAVE_API_KEY": "test-key"},
-                },
+        path = write_config(
+            {
+                "mcpServers": {
+                    "filesystem": {
+                        "command": "npx",
+                        "args": [
+                            "-y",
+                            "@modelcontextprotocol/server-filesystem",
+                            "/tmp",
+                        ],
+                        "env": {},
+                    },
+                    "brave-search": {
+                        "command": "npx",
+                        "args": ["-y", "@modelcontextprotocol/server-brave-search"],
+                        "env": {"BRAVE_API_KEY": "test-key"},
+                    },
+                }
             }
-        }
-        config_file.write_text(json.dumps(config_data))
+        )
 
         # Create mock tools from different servers
         mock_tools_fs = [MagicMock(name="read_file"), MagicMock(name="write_file")]
@@ -566,7 +586,7 @@ class TestGetMCPTools:
 
         mock_load_tools.side_effect = mock_load_side_effect
 
-        tools, manager = await get_mcp_tools(str(config_file))
+        tools, manager = await get_mcp_tools(path)
 
         # Verify both servers were registered
         call_kwargs = mock_client_class.call_args.kwargs
@@ -585,56 +605,55 @@ class TestGetMCPTools:
         # Clean up
         await manager.cleanup()
 
-    @pytest.mark.asyncio
-    async def test_get_mcp_tools_invalid_config(self, tmp_path: Path) -> None:
+    async def test_get_mcp_tools_invalid_config(
+        self, write_config: Callable[..., str]
+    ) -> None:
         """Test that config validation errors are propagated."""
-        # Create invalid config (missing command)
-        config_file = tmp_path / "invalid.json"
-        config_data = {
-            "mcpServers": {
-                "filesystem": {
-                    "args": ["/tmp"],
-                    # Missing command field
+        path = write_config(
+            {
+                "mcpServers": {
+                    "filesystem": {
+                        "args": ["/tmp"],
+                        # Missing command field
+                    }
                 }
             }
-        }
-        config_file.write_text(json.dumps(config_data))
+        )
 
         with pytest.raises(ValueError, match="missing required 'command' field"):
-            await get_mcp_tools(str(config_file))
+            await get_mcp_tools(path)
 
-    @patch("deepagents_cli.mcp_tools.load_mcp_tools")
-    @patch("deepagents_cli.mcp_tools.MultiServerMCPClient")
-    @pytest.mark.asyncio
+    @patch("langchain_mcp_adapters.tools.load_mcp_tools")
+    @patch("langchain_mcp_adapters.client.MultiServerMCPClient")
     async def test_get_mcp_tools_env_variables_passed(
         self,
         mock_client_class: MagicMock,
         mock_load_tools: AsyncMock,
-        tmp_path: Path,
+        write_config: Callable[..., str],
         mock_mcp_client: tuple,
     ) -> None:
         """Test that environment variables are correctly passed to MCP client."""
-        config_file = tmp_path / "with-env.json"
-        config_data = {
-            "mcpServers": {
-                "github": {
-                    "command": "npx",
-                    "args": ["-y", "@modelcontextprotocol/server-github"],
-                    "env": {
-                        "GITHUB_TOKEN": "ghp_test123",
-                        "GITHUB_API_URL": "https://api.github.com",
-                    },
+        path = write_config(
+            {
+                "mcpServers": {
+                    "github": {
+                        "command": "npx",
+                        "args": ["-y", "@modelcontextprotocol/server-github"],
+                        "env": {
+                            "GITHUB_TOKEN": "ghp_test123",
+                            "GITHUB_API_URL": "https://api.github.com",
+                        },
+                    }
                 }
             }
-        }
-        config_file.write_text(json.dumps(config_data))
+        )
 
         # Setup mocks
         mock_client, _ = mock_mcp_client
         mock_client_class.return_value = mock_client
         mock_load_tools.return_value = []
 
-        _, manager = await get_mcp_tools(str(config_file))
+        _, manager = await get_mcp_tools(path)
 
         # Verify env variables were passed correctly
         connections = mock_client_class.call_args.kwargs["connections"]
@@ -646,38 +665,69 @@ class TestGetMCPTools:
         # Clean up
         await manager.cleanup()
 
-    @patch("deepagents_cli.mcp_tools.load_mcp_tools")
-    @patch("deepagents_cli.mcp_tools.MultiServerMCPClient")
-    @pytest.mark.asyncio
-    async def test_get_mcp_tools_headers_passed_for_sse(
+    @patch("langchain_mcp_adapters.tools.load_mcp_tools")
+    @patch("langchain_mcp_adapters.client.MultiServerMCPClient")
+    async def test_get_mcp_tools_env_none_when_not_provided(
         self,
         mock_client_class: MagicMock,
         mock_load_tools: AsyncMock,
-        tmp_path: Path,
+        write_config: Callable[..., str],
         mock_mcp_client: tuple,
     ) -> None:
-        """Test that headers are correctly passed to SSE MCP client."""
-        config_file = tmp_path / "sse-with-headers.json"
-        config_data = {
-            "mcpServers": {
-                "api": {
-                    "type": "sse",
-                    "url": "https://api.example.com/mcp",
-                    "headers": {
-                        "Authorization": "Bearer token123",
-                        "X-API-Key": "key456",
-                    },
+        """Test that env is None (inherit parent env) when not provided in config."""
+        path = write_config(
+            {
+                "mcpServers": {
+                    "simple": {
+                        "command": "simple-server",
+                    }
                 }
             }
-        }
-        config_file.write_text(json.dumps(config_data))
+        )
 
         # Setup mocks
         mock_client, _ = mock_mcp_client
         mock_client_class.return_value = mock_client
         mock_load_tools.return_value = []
 
-        _, manager = await get_mcp_tools(str(config_file))
+        _, manager = await get_mcp_tools(path)
+
+        connections = mock_client_class.call_args.kwargs["connections"]
+        assert connections["simple"]["env"] is None
+
+        await manager.cleanup()
+
+    @patch("langchain_mcp_adapters.tools.load_mcp_tools")
+    @patch("langchain_mcp_adapters.client.MultiServerMCPClient")
+    async def test_get_mcp_tools_headers_passed_for_sse(
+        self,
+        mock_client_class: MagicMock,
+        mock_load_tools: AsyncMock,
+        write_config: Callable[..., str],
+        mock_mcp_client: tuple,
+    ) -> None:
+        """Test that headers are correctly passed to SSE MCP client."""
+        path = write_config(
+            {
+                "mcpServers": {
+                    "api": {
+                        "type": "sse",
+                        "url": "https://api.example.com/mcp",
+                        "headers": {
+                            "Authorization": "Bearer token123",
+                            "X-API-Key": "key456",
+                        },
+                    }
+                }
+            }
+        )
+
+        # Setup mocks
+        mock_client, _ = mock_mcp_client
+        mock_client_class.return_value = mock_client
+        mock_load_tools.return_value = []
+
+        _, manager = await get_mcp_tools(path)
 
         # Verify headers were passed correctly
         connections = mock_client_class.call_args.kwargs["connections"]
@@ -688,35 +738,34 @@ class TestGetMCPTools:
         # Clean up
         await manager.cleanup()
 
-    @patch("deepagents_cli.mcp_tools.load_mcp_tools")
-    @patch("deepagents_cli.mcp_tools.MultiServerMCPClient")
-    @pytest.mark.asyncio
+    @patch("langchain_mcp_adapters.tools.load_mcp_tools")
+    @patch("langchain_mcp_adapters.client.MultiServerMCPClient")
     async def test_get_mcp_tools_headers_passed_for_http(
         self,
         mock_client_class: MagicMock,
         mock_load_tools: AsyncMock,
-        tmp_path: Path,
+        write_config: Callable[..., str],
         mock_mcp_client: tuple,
     ) -> None:
         """Test that headers are correctly passed to HTTP MCP client."""
-        config_file = tmp_path / "http-with-headers.json"
-        config_data = {
-            "mcpServers": {
-                "api": {
-                    "type": "http",
-                    "url": "https://api.example.com/mcp",
-                    "headers": {"Authorization": "Bearer secret"},
+        path = write_config(
+            {
+                "mcpServers": {
+                    "api": {
+                        "type": "http",
+                        "url": "https://api.example.com/mcp",
+                        "headers": {"Authorization": "Bearer secret"},
+                    }
                 }
             }
-        }
-        config_file.write_text(json.dumps(config_data))
+        )
 
         # Setup mocks
         mock_client, _ = mock_mcp_client
         mock_client_class.return_value = mock_client
         mock_load_tools.return_value = []
 
-        _, manager = await get_mcp_tools(str(config_file))
+        _, manager = await get_mcp_tools(path)
 
         # Verify headers were passed and transport is correct
         connections = mock_client_class.call_args.kwargs["connections"]
@@ -726,34 +775,33 @@ class TestGetMCPTools:
         # Clean up
         await manager.cleanup()
 
-    @patch("deepagents_cli.mcp_tools.load_mcp_tools")
-    @patch("deepagents_cli.mcp_tools.MultiServerMCPClient")
-    @pytest.mark.asyncio
+    @patch("langchain_mcp_adapters.tools.load_mcp_tools")
+    @patch("langchain_mcp_adapters.client.MultiServerMCPClient")
     async def test_get_mcp_tools_no_headers_when_not_provided(
         self,
         mock_client_class: MagicMock,
         mock_load_tools: AsyncMock,
-        tmp_path: Path,
+        write_config: Callable[..., str],
         mock_mcp_client: tuple,
     ) -> None:
         """Test that headers key is not added when not provided in config."""
-        config_file = tmp_path / "sse-no-headers.json"
-        config_data = {
-            "mcpServers": {
-                "api": {
-                    "type": "sse",
-                    "url": "https://api.example.com/mcp",
+        path = write_config(
+            {
+                "mcpServers": {
+                    "api": {
+                        "type": "sse",
+                        "url": "https://api.example.com/mcp",
+                    }
                 }
             }
-        }
-        config_file.write_text(json.dumps(config_data))
+        )
 
         # Setup mocks
         mock_client, _ = mock_mcp_client
         mock_client_class.return_value = mock_client
         mock_load_tools.return_value = []
 
-        _, manager = await get_mcp_tools(str(config_file))
+        _, manager = await get_mcp_tools(path)
 
         # Verify headers key is not present
         connections = mock_client_class.call_args.kwargs["connections"]

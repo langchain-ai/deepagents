@@ -629,6 +629,7 @@ async def run_non_interactive(
     quiet: bool = False,
     stream: bool = True,
     mcp_config_path: str | None = None,
+    no_mcp: bool = False,
 ) -> int:
     """Run a single task non-interactively and exit.
 
@@ -666,6 +667,8 @@ async def run_non_interactive(
             When `False`, the full response is buffered and written to stdout in
             one shot after the agent finishes.
         mcp_config_path: Optional path to MCP servers JSON configuration file.
+            Merged on top of auto-discovered configs (highest precedence).
+        no_mcp: Disable all MCP tool loading.
 
     Returns:
         Exit code: 0 for success, 1 for error, 130 for keyboard interrupt.
@@ -743,23 +746,24 @@ async def run_non_interactive(
             if settings.has_tavily:
                 tools.append(web_search)
 
-            # Load MCP tools if config provided
-            if mcp_config_path:
-                try:
-                    from deepagents_cli.mcp_tools import get_mcp_tools
+            # Load MCP tools (explicit config, auto-discovery, or disabled)
+            try:
+                from deepagents_cli.mcp_tools import resolve_and_load_mcp_tools
 
-                    mcp_tools, mcp_session_manager, _ = await get_mcp_tools(
-                        mcp_config_path
-                    )
-                    tools.extend(mcp_tools)
+                mcp_tools, mcp_session_manager, _ = await resolve_and_load_mcp_tools(
+                    explicit_config_path=mcp_config_path,
+                    no_mcp=no_mcp,
+                )
+                tools.extend(mcp_tools)
+                if mcp_tools:
                     label = "MCP tool" if len(mcp_tools) == 1 else "MCP tools"
                     console.print(f"[green]✓ Loaded {len(mcp_tools)} {label}[/green]")
-                except FileNotFoundError as e:
-                    console.print(f"[red]✗ MCP config file not found: {e}[/red]")
-                    return 1
-                except RuntimeError as e:
-                    console.print(f"[red]✗ Failed to load MCP tools: {e}[/red]")
-                    return 1
+            except FileNotFoundError as e:
+                console.print(f"[red]✗ MCP config file not found: {e}[/red]")
+                return 1
+            except RuntimeError as e:
+                console.print(f"[red]✗ Failed to load MCP tools: {e}[/red]")
+                return 1
 
             # If an allow-list is provided, enable shell but disable
             # auto-approve so HITL can gate commands. If no allow-list, disable

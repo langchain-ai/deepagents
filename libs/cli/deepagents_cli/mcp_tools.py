@@ -2,11 +2,14 @@
 
 This module provides async functions to load and manage MCP servers using
 `langchain-mcp-adapters`, supporting Claude Desktop style JSON configs.
+It also supports automatic discovery of `.mcp.json` files from user-level
+and project-level locations.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -15,6 +18,8 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from langchain_core.tools import BaseTool
     from langchain_mcp_adapters.client import Connection, MultiServerMCPClient
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -165,6 +170,86 @@ def load_mcp_config(config_path: str) -> dict[str, Any]:
     return config
 
 
+def discover_mcp_configs() -> list[Path]:
+    """Find MCP config files from standard locations.
+
+    Checks three paths in precedence order (lowest to highest):
+
+    1. `~/.deepagents/.mcp.json` (user-level global)
+    2. `<project-root>/.deepagents/.mcp.json` (project subdir)
+    3. `<project-root>/.mcp.json` (project root, Claude Code compat)
+
+    Project root is determined by `find_project_root()`, falling back to CWD.
+
+    Returns:
+        List of existing config file paths, ordered lowest-to-highest precedence.
+    """
+    from deepagents_cli.project_utils import find_project_root
+
+    user_dir = Path.home() / ".deepagents"
+    project_root = find_project_root() or Path.cwd()
+
+    candidates = [
+        user_dir / ".mcp.json",
+        project_root / ".deepagents" / ".mcp.json",
+        project_root / ".mcp.json",
+    ]
+
+    found: list[Path] = []
+    for path in candidates:
+        try:
+            if path.is_file():
+                found.append(path)
+        except OSError:
+            logger.warning("Could not check MCP config %s", path, exc_info=True)
+    return found
+
+
+def merge_mcp_configs(configs: list[dict[str, Any]]) -> dict[str, Any]:
+    """Merge multiple MCP config dicts by server name.
+
+    Later entries override earlier ones for the same server name
+    (simple `dict.update` on `mcpServers`).
+
+    Args:
+        configs: Ordered list of parsed config dicts (each with `mcpServers` key).
+
+    Returns:
+        Merged config with combined `mcpServers`.
+    """
+    merged: dict[str, Any] = {}
+    for cfg in configs:
+        servers = cfg.get("mcpServers")
+        if isinstance(servers, dict):
+            merged.update(servers)
+    return {"mcpServers": merged}
+
+
+def load_mcp_config_lenient(config_path: Path) -> dict[str, Any] | None:
+    """Load an MCP config file, returning None on any error.
+
+    Wraps `load_mcp_config` with lenient error handling suitable for
+    auto-discovery. Missing files are skipped silently; parse and validation
+    errors are logged as warnings.
+
+    Args:
+        config_path: Path to the MCP config file.
+
+    Returns:
+        Parsed config dict, or None if the file is missing or invalid.
+    """
+    try:
+        return load_mcp_config(str(config_path))
+    except FileNotFoundError:
+        return None
+    except OSError as e:
+        logger.warning("Skipping unreadable MCP config %s: %s", config_path, e)
+        return None
+    except (json.JSONDecodeError, ValueError, TypeError) as e:
+        logger.warning("Skipping invalid MCP config %s: %s", config_path, e)
+        return None
+
+
 class MCPSessionManager:
     """Manages persistent MCP sessions for stateful stdio servers.
 
@@ -183,29 +268,19 @@ class MCPSessionManager:
         await self.exit_stack.aclose()
 
 
-async def get_mcp_tools(
-    config_path: str,
+async def _load_tools_from_config(
+    config: dict[str, Any],
 ) -> tuple[list[BaseTool], MCPSessionManager, list[MCPServerInfo]]:
-    """Load MCP tools from configuration file with stateful sessions.
+    """Build MCP connections from a validated config and load tools.
 
-    Supports multiple server types:
-    - stdio: Spawns MCP servers as subprocesses with persistent sessions
-    - sse/http: Connects to remote MCP servers via URL
-
-    For stdio servers, this creates persistent sessions that remain active
-    across tool calls, avoiding server restarts. Sessions are managed by
-    `MCPSessionManager` and should be cleaned up with
-    `session_manager.cleanup()` when done.
+    This is the shared implementation used by both `get_mcp_tools` (explicit
+    path) and `resolve_and_load_mcp_tools` (auto-discovery).
 
     Args:
-        config_path: Path to MCP JSON configuration file.
+        config: Validated MCP configuration dict with `mcpServers` key.
 
     Returns:
-        Tuple of `(tools_list, session_manager, server_infos)` where:
-            - tools_list: List of LangChain `BaseTool` objects
-            - session_manager: `MCPSessionManager` instance
-                (call `cleanup()` when done)
-            - server_infos: List of `MCPServerInfo` with per-server metadata
+        Tuple of `(tools_list, session_manager, server_infos)`.
 
     Raises:
         RuntimeError: If MCP server fails to spawn or connect.
@@ -217,9 +292,6 @@ async def get_mcp_tools(
         StreamableHttpConnection,
     )
     from langchain_mcp_adapters.tools import load_mcp_tools
-
-    # Load and validate config
-    config = load_mcp_config(config_path)
 
     # Create connections dict for MultiServerMCPClient
     # Convert Claude Desktop format to langchain-mcp-adapters format
@@ -296,3 +368,95 @@ async def get_mcp_tools(
         raise RuntimeError(error_msg) from e
 
     return all_tools, manager, server_infos
+
+
+async def get_mcp_tools(
+    config_path: str,
+) -> tuple[list[BaseTool], MCPSessionManager, list[MCPServerInfo]]:
+    """Load MCP tools from configuration file with stateful sessions.
+
+    Supports multiple server types:
+    - stdio: Spawns MCP servers as subprocesses with persistent sessions
+    - sse/http: Connects to remote MCP servers via URL
+
+    For stdio servers, this creates persistent sessions that remain active
+    across tool calls, avoiding server restarts. Sessions are managed by
+    `MCPSessionManager` and should be cleaned up with
+    `session_manager.cleanup()` when done.
+
+    Args:
+        config_path: Path to MCP JSON configuration file.
+
+    Returns:
+        Tuple of `(tools_list, session_manager, server_infos)` where:
+            - tools_list: List of LangChain `BaseTool` objects
+            - session_manager: `MCPSessionManager` instance
+                (call `cleanup()` when done)
+            - server_infos: List of `MCPServerInfo` with per-server metadata
+    """
+    config = load_mcp_config(config_path)
+    return await _load_tools_from_config(config)
+
+
+async def resolve_and_load_mcp_tools(
+    *,
+    explicit_config_path: str | None = None,
+    no_mcp: bool = False,
+) -> tuple[list[BaseTool], MCPSessionManager | None, list[MCPServerInfo]]:
+    """Resolve MCP config and load tools.
+
+    Auto-discovers configs from standard locations and merges them.
+    When `explicit_config_path` is provided it is added as the
+    highest-precedence source (errors in that file are fatal).
+
+    Args:
+        explicit_config_path: Extra config file to layer on top of
+            auto-discovered configs (highest precedence). Errors are
+            fatal.
+        no_mcp: If True, disable all MCP loading.
+
+    Returns:
+        Tuple of `(tools_list, session_manager, server_infos)`.
+
+            When no tools are loaded, returns `([], None, [])`.
+
+    Raises:
+        RuntimeError: If an MCP server config is invalid or fails to
+            spawn/connect.
+    """
+    if no_mcp:
+        return [], None, []
+
+    # Auto-discovery
+    try:
+        config_paths = discover_mcp_configs()
+    except (OSError, RuntimeError):
+        logger.warning("MCP config auto-discovery failed", exc_info=True)
+        config_paths = []
+
+    configs: list[dict[str, Any]] = []
+    for path in config_paths:
+        cfg = load_mcp_config_lenient(path)
+        if cfg is not None:
+            configs.append(cfg)
+
+    # Explicit path is highest precedence — errors are fatal
+    if explicit_config_path:
+        configs.append(load_mcp_config(explicit_config_path))
+
+    if not configs:
+        return [], None, []
+
+    merged = merge_mcp_configs(configs)
+    if not merged.get("mcpServers"):
+        return [], None, []
+
+    # Validate each server in the merged config
+    try:
+        for server_name, server_config in merged["mcpServers"].items():
+            _validate_server_config(server_name, server_config)
+    except (TypeError, ValueError) as e:
+        msg = f"Invalid MCP server configuration: {e}"
+        raise RuntimeError(msg) from e
+
+    return await _load_tools_from_config(merged)

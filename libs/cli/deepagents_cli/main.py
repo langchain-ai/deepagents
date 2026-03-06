@@ -408,7 +408,13 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--mcp-config",
-        help="Path to MCP servers JSON configuration file (Claude Desktop format)",
+        help="Path to MCP servers JSON configuration file (Claude Desktop format). "
+        "Merged on top of auto-discovered configs (highest precedence).",
+    )
+    parser.add_argument(
+        "--no-mcp",
+        action="store_true",
+        help="Disable all MCP tool loading (skip auto-discovery and explicit config)",
     )
 
     try:
@@ -453,6 +459,7 @@ async def run_textual_cli_async(
     is_resumed: bool = False,
     initial_prompt: str | None = None,
     mcp_config_path: str | None = None,
+    no_mcp: bool = False,
 ) -> "AppResult":
     """Run the Textual CLI interface (async version).
 
@@ -474,7 +481,10 @@ async def run_textual_cli_async(
         thread_id: Thread ID to use (new or resumed)
         is_resumed: Whether this is a resumed session
         initial_prompt: Optional prompt to auto-submit when session starts
-        mcp_config_path: Optional path to MCP servers JSON configuration file
+        mcp_config_path: Optional path to MCP servers JSON configuration file.
+
+            Merged on top of auto-discovered configs (highest precedence).
+        no_mcp: Disable all MCP tool loading.
 
     Returns:
         An `AppResult` with the return code and final thread ID.
@@ -523,23 +533,27 @@ async def run_textual_cli_async(
         if settings.has_tavily:
             tools.append(web_search)
 
-        # Load MCP tools if config provided
+        # Load MCP tools (explicit config, auto-discovery, or disabled)
         mcp_session_manager = None
         mcp_server_info = None
-        if mcp_config_path:
-            try:
-                from deepagents_cli.mcp_tools import get_mcp_tools
+        try:
+            from deepagents_cli.mcp_tools import resolve_and_load_mcp_tools
 
-                mcp_tools, mcp_session_manager, mcp_server_info = await get_mcp_tools(
-                    mcp_config_path
-                )
-                tools.extend(mcp_tools)
-            except FileNotFoundError as e:
-                console.print(f"[red]✗ MCP config file not found: {e}[/red]")
-                sys.exit(1)
-            except RuntimeError as e:
-                console.print(f"[red]✗ Failed to load MCP tools: {e}[/red]")
-                sys.exit(1)
+            (
+                mcp_tools,
+                mcp_session_manager,
+                mcp_server_info,
+            ) = await resolve_and_load_mcp_tools(
+                explicit_config_path=mcp_config_path,
+                no_mcp=no_mcp,
+            )
+            tools.extend(mcp_tools)
+        except FileNotFoundError as e:
+            console.print(f"[red]✗ MCP config file not found: {e}[/red]")
+            sys.exit(1)
+        except RuntimeError as e:
+            console.print(f"[red]✗ Failed to load MCP tools: {e}[/red]")
+            sys.exit(1)
 
         # Handle sandbox mode
         sandbox_backend = None
@@ -830,6 +844,15 @@ def cli_main() -> None:
 
         apply_stdin_pipe(args)
 
+        if getattr(args, "no_mcp", False) and getattr(args, "mcp_config", None):
+            from rich.console import Console as _Console
+
+            _Console(stderr=True).print(
+                "[bold red]Error:[/bold red] --no-mcp and --mcp-config "
+                "are mutually exclusive"
+            )
+            sys.exit(2)
+
         if (args.quiet or args.no_stream) and not args.non_interactive_message:
             # Print to stderr (not the module-level stdout console) and exit
             # with code 2 to match the POSIX convention for usage errors, as
@@ -969,6 +992,7 @@ def cli_main() -> None:
                     quiet=args.quiet,
                     stream=not args.no_stream,
                     mcp_config_path=getattr(args, "mcp_config", None),
+                    no_mcp=getattr(args, "no_mcp", False),
                 )
             )
             sys.exit(exit_code)
@@ -1068,6 +1092,7 @@ def cli_main() -> None:
                         is_resumed=is_resumed,
                         initial_prompt=getattr(args, "initial_prompt", None),
                         mcp_config_path=getattr(args, "mcp_config", None),
+                        no_mcp=getattr(args, "no_mcp", False),
                     )
                 )
                 return_code = result.return_code

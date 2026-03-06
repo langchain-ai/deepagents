@@ -11,8 +11,12 @@ from deepagents_cli.mcp_tools import (
     MCPServerInfo,
     MCPSessionManager,
     MCPToolInfo,
+    discover_mcp_configs,
     get_mcp_tools,
     load_mcp_config,
+    load_mcp_config_lenient,
+    merge_mcp_configs,
+    resolve_and_load_mcp_tools,
 )
 
 # Test Fixtures
@@ -904,3 +908,287 @@ class TestGetMCPTools:
 
         # Clean up
         await manager.cleanup()
+
+
+class TestDiscoverMcpConfigs:
+    """Test auto-discovery of MCP config files."""
+
+    def test_no_configs_found(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Empty list when no config files exist."""
+        project = tmp_path / "project"
+        monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+        monkeypatch.setattr(
+            "deepagents_cli.project_utils.find_project_root",
+            lambda _start_path=None: project,
+        )
+        (tmp_path / "home").mkdir()
+        project.mkdir()
+        assert discover_mcp_configs() == []
+
+    def test_user_level_only(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Only ~/.deepagents/.mcp.json exists."""
+        home = tmp_path / "home"
+        user_dir = home / ".deepagents"
+        user_dir.mkdir(parents=True)
+        cfg = user_dir / ".mcp.json"
+        cfg.write_text('{"mcpServers": {}}')
+
+        project = tmp_path / "project"
+        project.mkdir()
+
+        monkeypatch.setattr(Path, "home", lambda: home)
+        monkeypatch.setattr(
+            "deepagents_cli.project_utils.find_project_root",
+            lambda _start_path=None: project,
+        )
+        result = discover_mcp_configs()
+        assert result == [cfg]
+
+    def test_project_root_only(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Only <project>/.mcp.json exists."""
+        home = tmp_path / "home"
+        home.mkdir()
+        project = tmp_path / "project"
+        project.mkdir()
+        cfg = project / ".mcp.json"
+        cfg.write_text('{"mcpServers": {}}')
+
+        monkeypatch.setattr(Path, "home", lambda: home)
+        monkeypatch.setattr(
+            "deepagents_cli.project_utils.find_project_root",
+            lambda _start_path=None: project,
+        )
+        result = discover_mcp_configs()
+        assert result == [cfg]
+
+    def test_project_deepagents_subdir_only(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Only <project>/.deepagents/.mcp.json exists."""
+        home = tmp_path / "home"
+        home.mkdir()
+        project = tmp_path / "project"
+        subdir = project / ".deepagents"
+        subdir.mkdir(parents=True)
+        cfg = subdir / ".mcp.json"
+        cfg.write_text('{"mcpServers": {}}')
+
+        monkeypatch.setattr(Path, "home", lambda: home)
+        monkeypatch.setattr(
+            "deepagents_cli.project_utils.find_project_root",
+            lambda _start_path=None: project,
+        )
+        result = discover_mcp_configs()
+        assert result == [cfg]
+
+    def test_all_three_locations(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """All three config locations exist, returned in precedence order."""
+        home = tmp_path / "home"
+        user_dir = home / ".deepagents"
+        user_dir.mkdir(parents=True)
+        user_cfg = user_dir / ".mcp.json"
+        user_cfg.write_text('{"mcpServers": {}}')
+
+        project = tmp_path / "project"
+        proj_subdir = project / ".deepagents"
+        proj_subdir.mkdir(parents=True)
+        proj_sub_cfg = proj_subdir / ".mcp.json"
+        proj_sub_cfg.write_text('{"mcpServers": {}}')
+
+        proj_root_cfg = project / ".mcp.json"
+        proj_root_cfg.write_text('{"mcpServers": {}}')
+
+        monkeypatch.setattr(Path, "home", lambda: home)
+        monkeypatch.setattr(
+            "deepagents_cli.project_utils.find_project_root",
+            lambda _start_path=None: project,
+        )
+        result = discover_mcp_configs()
+        assert result == [user_cfg, proj_sub_cfg, proj_root_cfg]
+
+    def test_falls_back_to_cwd_when_no_git(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Falls back to CWD when find_project_root returns None."""
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: home)
+        monkeypatch.setattr(
+            "deepagents_cli.project_utils.find_project_root",
+            lambda _start_path=None: None,
+        )
+        monkeypatch.chdir(tmp_path)
+        cfg = tmp_path / ".mcp.json"
+        cfg.write_text('{"mcpServers": {}}')
+
+        result = discover_mcp_configs()
+        assert cfg in result
+
+
+class TestMergeMcpConfigs:
+    """Test merging multiple MCP config dicts."""
+
+    def test_single_config(self) -> None:
+        """Single config passes through."""
+        cfg = {"mcpServers": {"fs": {"command": "npx"}}}
+        result = merge_mcp_configs([cfg])
+        assert result == cfg
+
+    def test_disjoint_servers(self) -> None:
+        """Disjoint server names are all present."""
+        c1 = {"mcpServers": {"fs": {"command": "npx"}}}
+        c2 = {"mcpServers": {"search": {"command": "brave"}}}
+        result = merge_mcp_configs([c1, c2])
+        assert "fs" in result["mcpServers"]
+        assert "search" in result["mcpServers"]
+
+    def test_duplicate_server_name_last_wins(self) -> None:
+        """Later config overrides earlier for same server name."""
+        c1 = {"mcpServers": {"fs": {"command": "old"}}}
+        c2 = {"mcpServers": {"fs": {"command": "new"}}}
+        result = merge_mcp_configs([c1, c2])
+        assert result["mcpServers"]["fs"]["command"] == "new"
+
+    def test_empty_list(self) -> None:
+        """Empty input returns empty mcpServers."""
+        result = merge_mcp_configs([])
+        assert result == {"mcpServers": {}}
+
+
+class TestLoadMcpConfigLenient:
+    """Test lenient config loading for auto-discovery."""
+
+    def test_missing_file_returns_none(self, tmp_path: Path) -> None:
+        """Missing file returns None without raising."""
+        result = load_mcp_config_lenient(tmp_path / "nonexistent.json")
+        assert result is None
+
+    def test_invalid_json_returns_none(self, tmp_path: Path) -> None:
+        """Invalid JSON returns None and logs warning."""
+        bad = tmp_path / "bad.json"
+        bad.write_text("{not json")
+        result = load_mcp_config_lenient(bad)
+        assert result is None
+
+    def test_validation_error_returns_none(self, tmp_path: Path) -> None:
+        """Config missing mcpServers returns None."""
+        bad = tmp_path / "bad.json"
+        bad.write_text('{"other": true}')
+        result = load_mcp_config_lenient(bad)
+        assert result is None
+
+    def test_valid_file_returns_config(self, tmp_path: Path) -> None:
+        """Valid config file returns parsed dict."""
+        good = tmp_path / "good.json"
+        good.write_text(
+            json.dumps({"mcpServers": {"fs": {"command": "npx", "args": []}}})
+        )
+        result = load_mcp_config_lenient(good)
+        assert result is not None
+        assert "fs" in result["mcpServers"]
+
+
+class TestResolveAndLoadMcpTools:
+    """Test the unified resolve_and_load_mcp_tools entry point."""
+
+    async def test_no_mcp_returns_empty(self) -> None:
+        """no_mcp=True returns empty tuple immediately."""
+        tools, manager, infos = await resolve_and_load_mcp_tools(no_mcp=True)
+        assert tools == []
+        assert manager is None
+        assert infos == []
+
+    @patch("deepagents_cli.mcp_tools._load_tools_from_config")
+    @patch("deepagents_cli.mcp_tools.discover_mcp_configs")
+    async def test_explicit_path_merges_with_discovery(
+        self,
+        mock_discover: MagicMock,
+        mock_load: AsyncMock,
+        tmp_path: Path,
+    ) -> None:
+        """Explicit path is merged on top of auto-discovered configs."""
+        # Auto-discovered config
+        discovered = tmp_path / "discovered.json"
+        discovered.write_text(
+            json.dumps({"mcpServers": {"fs": {"command": "npx", "args": []}}})
+        )
+        mock_discover.return_value = [discovered]
+
+        # Explicit config
+        explicit = tmp_path / "explicit.json"
+        explicit.write_text(
+            json.dumps({"mcpServers": {"search": {"command": "brave", "args": []}}})
+        )
+        mock_load.return_value = ([], MCPSessionManager(), [])
+
+        await resolve_and_load_mcp_tools(explicit_config_path=str(explicit))
+
+        mock_discover.assert_called_once()
+        mock_load.assert_awaited_once()
+        merged = mock_load.call_args.args[0]
+        assert "fs" in merged["mcpServers"]
+        assert "search" in merged["mcpServers"]
+
+    @patch("deepagents_cli.mcp_tools._load_tools_from_config")
+    @patch("deepagents_cli.mcp_tools.discover_mcp_configs")
+    async def test_auto_discovery_merges_and_loads(
+        self, mock_discover: MagicMock, mock_load: AsyncMock, tmp_path: Path
+    ) -> None:
+        """Auto-discovery finds configs, merges, and loads tools."""
+        # Write two config files
+        c1 = tmp_path / "user.json"
+        c1.write_text(
+            json.dumps({"mcpServers": {"fs": {"command": "npx", "args": []}}})
+        )
+        c2 = tmp_path / "project.json"
+        c2.write_text(
+            json.dumps({"mcpServers": {"search": {"command": "brave", "args": []}}})
+        )
+        mock_discover.return_value = [c1, c2]
+        mock_load.return_value = ([], MCPSessionManager(), [])
+
+        await resolve_and_load_mcp_tools()
+
+        mock_load.assert_awaited_once()
+        merged = mock_load.call_args.args[0]
+        assert "fs" in merged["mcpServers"]
+        assert "search" in merged["mcpServers"]
+
+    @patch("deepagents_cli.mcp_tools.discover_mcp_configs")
+    async def test_auto_discovery_no_configs_returns_empty(
+        self, mock_discover: MagicMock
+    ) -> None:
+        """No discovered configs returns empty tuple."""
+        mock_discover.return_value = []
+        tools, manager, infos = await resolve_and_load_mcp_tools()
+        assert tools == []
+        assert manager is None
+        assert infos == []
+
+    async def test_explicit_path_missing_raises(self, tmp_path: Path) -> None:
+        """FileNotFoundError propagates for missing explicit config."""
+        with pytest.raises(FileNotFoundError):
+            await resolve_and_load_mcp_tools(
+                explicit_config_path=str(tmp_path / "nope.json")
+            )
+
+    async def test_explicit_path_invalid_json_raises(self, tmp_path: Path) -> None:
+        """JSONDecodeError propagates for invalid explicit config."""
+        bad = tmp_path / "bad.json"
+        bad.write_text("{not json")
+        with pytest.raises(json.JSONDecodeError):
+            await resolve_and_load_mcp_tools(explicit_config_path=str(bad))
+
+    @patch("deepagents_cli.mcp_tools.discover_mcp_configs")
+    async def test_no_mcp_skips_discovery(self, mock_discover: MagicMock) -> None:
+        """no_mcp=True should not call discover_mcp_configs."""
+        await resolve_and_load_mcp_tools(no_mcp=True)
+        mock_discover.assert_not_called()

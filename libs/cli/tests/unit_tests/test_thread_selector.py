@@ -113,7 +113,6 @@ class AppWithEscapeBinding(App):
 class TestThreadSelectorEscapeKey:
     """Tests for ESC key dismissing the modal."""
 
-    @pytest.mark.asyncio
     async def test_escape_dismisses_modal(self) -> None:
         """Pressing ESC should dismiss the modal with None result."""
         with _patch_list_threads():
@@ -128,7 +127,6 @@ class TestThreadSelectorEscapeKey:
                 assert app.dismissed is True
                 assert app.result is None
 
-    @pytest.mark.asyncio
     async def test_escape_with_conflicting_app_binding(self) -> None:
         """ESC should dismiss modal even when app has its own escape binding."""
         with _patch_list_threads():
@@ -148,7 +146,6 @@ class TestThreadSelectorEscapeKey:
 class TestThreadSelectorKeyboardNavigation:
     """Tests for keyboard navigation in the modal."""
 
-    @pytest.mark.asyncio
     async def test_down_arrow_moves_selection(self) -> None:
         """Down arrow should move selection down."""
         with _patch_list_threads():
@@ -166,7 +163,6 @@ class TestThreadSelectorKeyboardNavigation:
 
                 assert screen._selected_index == initial_index + 1
 
-    @pytest.mark.asyncio
     async def test_up_arrow_wraps_from_top(self) -> None:
         """Up arrow at index 0 should wrap to last thread."""
         with _patch_list_threads():
@@ -185,7 +181,6 @@ class TestThreadSelectorKeyboardNavigation:
                 expected = (0 - 1) % count
                 assert screen._selected_index == expected
 
-    @pytest.mark.asyncio
     async def test_j_k_navigation(self) -> None:
         """j/k keys should navigate like down/up arrows."""
         with _patch_list_threads():
@@ -205,7 +200,6 @@ class TestThreadSelectorKeyboardNavigation:
                 await pilot.pause()
                 assert screen._selected_index == 0
 
-    @pytest.mark.asyncio
     async def test_enter_selects_thread(self) -> None:
         """Enter should select the current thread and dismiss."""
         with _patch_list_threads():
@@ -224,7 +218,6 @@ class TestThreadSelectorKeyboardNavigation:
 class TestThreadSelectorCurrentThread:
     """Tests for current thread highlighting and preselection."""
 
-    @pytest.mark.asyncio
     async def test_current_thread_is_preselected(self) -> None:
         """Opening the selector should pre-select the current thread."""
         with _patch_list_threads():
@@ -239,7 +232,6 @@ class TestThreadSelectorCurrentThread:
                 # def67890 is at index 1 in MOCK_THREADS
                 assert screen._selected_index == 1
 
-    @pytest.mark.asyncio
     async def test_unknown_current_thread_defaults_to_zero(self) -> None:
         """Unknown current thread should default to index 0."""
         with _patch_list_threads():
@@ -252,7 +244,6 @@ class TestThreadSelectorCurrentThread:
                 assert isinstance(screen, ThreadSelectorScreen)
                 assert screen._selected_index == 0
 
-    @pytest.mark.asyncio
     async def test_no_current_thread_defaults_to_zero(self) -> None:
         """No current thread should default to index 0."""
         with _patch_list_threads():
@@ -269,7 +260,6 @@ class TestThreadSelectorCurrentThread:
 class TestThreadSelectorEmptyState:
     """Tests for empty thread list."""
 
-    @pytest.mark.asyncio
     async def test_no_threads_shows_empty_message(self) -> None:
         """Empty thread list should show a message and escape still works."""
         with _patch_list_threads(threads=[]):
@@ -294,7 +284,6 @@ class TestThreadSelectorEmptyState:
                 assert app.dismissed is True
                 assert app.result is None
 
-    @pytest.mark.asyncio
     async def test_arrow_keys_on_empty_list_do_not_crash(self) -> None:
         """Arrow keys, j/k, and page keys on empty list should be no-ops."""
         with _patch_list_threads(threads=[]):
@@ -322,7 +311,6 @@ class TestThreadSelectorEmptyState:
 class TestThreadSelectorNavigateAndSelect:
     """Tests for navigating then selecting a specific thread."""
 
-    @pytest.mark.asyncio
     async def test_navigate_down_and_select(self) -> None:
         """Navigate to second thread and select it."""
         with _patch_list_threads():
@@ -344,7 +332,6 @@ class TestThreadSelectorNavigateAndSelect:
 class TestThreadSelectorTabNavigation:
     """Tests for tab/shift+tab navigation."""
 
-    @pytest.mark.asyncio
     async def test_tab_moves_down(self) -> None:
         """Tab should move selection down."""
         with _patch_list_threads():
@@ -360,7 +347,6 @@ class TestThreadSelectorTabNavigation:
                 await pilot.pause()
                 assert screen._selected_index == 1
 
-    @pytest.mark.asyncio
     async def test_shift_tab_moves_up(self) -> None:
         """Shift+tab should move selection up."""
         with _patch_list_threads():
@@ -385,7 +371,6 @@ class TestThreadSelectorTabNavigation:
 class TestThreadSelectorDownWrap:
     """Tests for wrapping from bottom to top."""
 
-    @pytest.mark.asyncio
     async def test_down_arrow_wraps_from_bottom(self) -> None:
         """Down arrow at last index should wrap to first thread."""
         with _patch_list_threads():
@@ -413,7 +398,6 @@ class TestThreadSelectorDownWrap:
 class TestThreadSelectorPageNavigation:
     """Tests for pageup/pagedown navigation."""
 
-    @pytest.mark.asyncio
     async def test_pagedown_moves_selection(self) -> None:
         """Pagedown should move selection forward."""
         with _patch_list_threads():
@@ -431,7 +415,6 @@ class TestThreadSelectorPageNavigation:
                 # Should move forward (clamped to last item with 3 threads)
                 assert screen._selected_index == len(MOCK_THREADS) - 1
 
-    @pytest.mark.asyncio
     async def test_pageup_at_top_is_noop(self) -> None:
         """Pageup at index 0 should be a no-op."""
         with _patch_list_threads():
@@ -452,7 +435,6 @@ class TestThreadSelectorPageNavigation:
 class TestThreadSelectorClickHandling:
     """Tests for mouse click handling."""
 
-    @pytest.mark.asyncio
     async def test_click_selects_thread(self) -> None:
         """Clicking a thread option should select and dismiss."""
         with _patch_list_threads():
@@ -641,7 +623,6 @@ class TestThreadSelectorBuildTitle:
         assert len(spans) > 0
         assert "cyan" in str(spans[0].style)
 
-    @pytest.mark.asyncio
     async def test_title_widget_has_id(self) -> None:
         """Title widget should be queryable by ID for URL updates."""
         with _patch_list_threads():
@@ -659,7 +640,6 @@ class TestThreadSelectorBuildTitle:
 class TestFetchThreadUrl:
     """Tests for _fetch_thread_url background worker."""
 
-    @pytest.mark.asyncio
     async def test_successful_url_updates_title(self) -> None:
         """Background worker should update the title with a clickable link."""
         from rich.text import Text
@@ -685,7 +665,6 @@ class TestFetchThreadUrl:
                 assert isinstance(content, Text)
                 assert "abc12345" in content.plain
 
-    @pytest.mark.asyncio
     async def test_timeout_leaves_title_unchanged(self) -> None:
         """Timeout during URL resolution should not crash or change the title."""
         import time
@@ -713,7 +692,6 @@ class TestFetchThreadUrl:
                 title_widget = screen.query_one("#thread-title", Static)
                 assert isinstance(title_widget._Static__content, str)
 
-    @pytest.mark.asyncio
     async def test_oserror_leaves_title_unchanged(self) -> None:
         """OSError during URL resolution should not crash or change the title."""
         with (
@@ -735,7 +713,6 @@ class TestFetchThreadUrl:
                 title_widget = screen.query_one("#thread-title", Static)
                 assert isinstance(title_widget._Static__content, str)
 
-    @pytest.mark.asyncio
     async def test_unexpected_exception_leaves_title_unchanged(self) -> None:
         """Unexpected exception should not crash the thread selector."""
         with (
@@ -757,7 +734,6 @@ class TestFetchThreadUrl:
                 title_widget = screen.query_one("#thread-title", Static)
                 assert isinstance(title_widget._Static__content, str)
 
-    @pytest.mark.asyncio
     async def test_none_url_leaves_title_unchanged(self) -> None:
         """When build returns None the title should remain a plain string."""
         with (
@@ -793,7 +769,6 @@ class TestThreadSelectorColumnHeader:
         assert "Msgs" in header
         assert "Updated" in header
 
-    @pytest.mark.asyncio
     async def test_header_widget_is_mounted(self) -> None:
         """Column header widget should be present in the mounted screen."""
         with _patch_list_threads():
@@ -806,7 +781,6 @@ class TestThreadSelectorColumnHeader:
                 assert isinstance(screen, ThreadSelectorScreen)
                 screen.query_one(".thread-list-header", Static)
 
-    @pytest.mark.asyncio
     async def test_header_stays_outside_scroll(self) -> None:
         """Header should be outside VerticalScroll (anchored, not scrollable)."""
         with _patch_list_threads():
@@ -826,7 +800,6 @@ class TestThreadSelectorColumnHeader:
 class TestThreadSelectorErrorHandling:
     """Tests for error handling when loading threads fails."""
 
-    @pytest.mark.asyncio
     async def test_list_threads_error_still_dismissable(self) -> None:
         """Database error should not crash; Escape still works."""
         with patch(
@@ -857,7 +830,6 @@ class TestThreadSelectorErrorHandling:
 class TestThreadSelectorLimit:
     """Tests for thread limit via get_thread_limit()."""
 
-    @pytest.mark.asyncio
     async def test_custom_limit_is_forwarded(self) -> None:
         """get_thread_limit() return value should be forwarded to list_threads."""
         with (
@@ -874,7 +846,6 @@ class TestThreadSelectorLimit:
 
                 mock_lt.assert_awaited_once_with(limit=5, include_message_count=False)
 
-    @pytest.mark.asyncio
     async def test_message_counts_are_loaded_in_background(self) -> None:
         """Missing counts should be populated asynchronously after list render."""
         threads_without_counts: list[ThreadInfo] = [
@@ -920,7 +891,6 @@ class TestThreadSelectorLimit:
                 assert isinstance(screen, ThreadSelectorScreen)
                 assert screen._threads[0]["message_count"] == 9
 
-    @pytest.mark.asyncio
     async def test_cached_counts_skip_background_population(self) -> None:
         """If cache fills counts before paint, background populate is skipped."""
         threads_without_counts: list[ThreadInfo] = [
@@ -968,7 +938,6 @@ class TestThreadSelectorLimit:
 class TestThreadSelectorMessageCountErrors:
     """Tests for thread selector message-count load error handling."""
 
-    @pytest.mark.asyncio
     async def test_unexpected_message_count_error_logs_warning(self) -> None:
         """Unexpected count-load errors should be visible at warning level."""
         screen = ThreadSelectorScreen(
@@ -999,7 +968,6 @@ class TestThreadSelectorMessageCountErrors:
 class TestThreadSelectorPrefetchedRows:
     """Tests for rendering with prefetched rows from startup cache."""
 
-    @pytest.mark.asyncio
     async def test_prefetched_rows_render_without_loading_state(self) -> None:
         """Prefetched rows should render immediately, then refresh from SQLite."""
         prefetched: list[ThreadInfo] = [
@@ -1070,7 +1038,6 @@ class TestThreadSelectorPrefetchedRows:
                 assert len(screen._threads) == 2
                 assert screen._threads[0]["thread_id"] == "new12345"
 
-    @pytest.mark.asyncio
     async def test_empty_prefetched_snapshot_still_refreshes(self) -> None:
         """An empty cached snapshot should still hydrate from SQLite in background."""
         refreshed: list[ThreadInfo] = [
@@ -1130,7 +1097,6 @@ def _get_widget_text(widget: Static) -> str:
 class TestResumeThread:
     """Tests for DeepAgentsApp._resume_thread."""
 
-    @pytest.mark.asyncio
     async def test_no_agent_shows_error(self) -> None:
         """_resume_thread with no agent should show an error message."""
         app = DeepAgentsApp()
@@ -1143,7 +1109,6 @@ class TestResumeThread:
         assert len(mounted) == 1
         assert "no active agent" in _get_widget_text(mounted[0])
 
-    @pytest.mark.asyncio
     async def test_no_session_state_shows_error(self) -> None:
         """_resume_thread with no session state should show an error message."""
         app = DeepAgentsApp()
@@ -1157,7 +1122,6 @@ class TestResumeThread:
         assert len(mounted) == 1
         assert "no active session" in _get_widget_text(mounted[0])
 
-    @pytest.mark.asyncio
     async def test_already_switching_shows_message(self) -> None:
         """_resume_thread should reject concurrent thread switches."""
         app = DeepAgentsApp()
@@ -1173,7 +1137,6 @@ class TestResumeThread:
         assert len(mounted) == 1
         assert "already in progress" in _get_widget_text(mounted[0])
 
-    @pytest.mark.asyncio
     async def test_already_on_thread_shows_message(self) -> None:
         """_resume_thread when already on the thread should show info message."""
         app = DeepAgentsApp()
@@ -1188,7 +1151,6 @@ class TestResumeThread:
         assert len(mounted) == 1
         assert "Already on thread" in _get_widget_text(mounted[0])
 
-    @pytest.mark.asyncio
     async def test_successful_switch_updates_ids(self) -> None:
         """Successful _resume_thread should update thread IDs and load history."""
         from textual.css.query import NoMatches as _NoMatches
@@ -1221,7 +1183,6 @@ class TestResumeThread:
             preloaded_data=[],
         )
 
-    @pytest.mark.asyncio
     async def test_failure_restores_previous_thread_ids(self) -> None:
         """If _clear_messages raises, thread IDs should be restored."""
         from textual.css.query import NoMatches as _NoMatches
@@ -1250,7 +1211,6 @@ class TestResumeThread:
         )
         app._update_status.assert_any_call("")  # type: ignore[union-attr]
 
-    @pytest.mark.asyncio
     async def test_failure_during_load_history_restores_ids(self) -> None:
         """If _load_thread_history raises, thread IDs should be rolled back."""
         from textual.css.query import NoMatches as _NoMatches
@@ -1281,7 +1241,6 @@ class TestResumeThread:
             for call in app._mount_message.call_args_list  # type: ignore[union-attr]
         )
 
-    @pytest.mark.asyncio
     async def test_prefetch_failure_keeps_current_thread_visible(self) -> None:
         """Failed prefetch should not clear current conversation state."""
         app = DeepAgentsApp(thread_id="old-thread")
@@ -1307,7 +1266,6 @@ class TestResumeThread:
             for call in mount_message_mock.call_args_list
         )
 
-    @pytest.mark.asyncio
     async def test_prefetch_failure_clears_switch_lock_and_restores_input(self) -> None:
         """Prefetch failures should release switch lock and restore input state."""
         app = DeepAgentsApp(thread_id="old-thread")
@@ -1329,7 +1287,6 @@ class TestResumeThread:
         app._chat_input.set_cursor_active.assert_any_call(active=False)
         app._chat_input.set_cursor_active.assert_any_call(active=True)
 
-    @pytest.mark.asyncio
     async def test_double_failure_surfaces_restore_failure_hint(self) -> None:
         """If rollback restore fails, user-facing error should mention it."""
         from textual.css.query import NoMatches as _NoMatches
@@ -1363,7 +1320,6 @@ class TestResumeThread:
 class TestFetchThreadHistoryData:
     """Tests for DeepAgentsApp._fetch_thread_history_data."""
 
-    @pytest.mark.asyncio
     async def test_returns_empty_when_agent_missing(self) -> None:
         """No active agent should return an empty history payload."""
         app = DeepAgentsApp()
@@ -1373,7 +1329,6 @@ class TestFetchThreadHistoryData:
 
         assert result == []
 
-    @pytest.mark.asyncio
     async def test_returns_empty_when_state_missing(self) -> None:
         """Missing checkpoint state should return an empty history payload."""
         app = DeepAgentsApp()
@@ -1387,7 +1342,6 @@ class TestFetchThreadHistoryData:
             {"configurable": {"thread_id": "tid-1"}}
         )
 
-    @pytest.mark.asyncio
     async def test_returns_empty_when_messages_missing(self) -> None:
         """State with no messages should return an empty history payload."""
         app = DeepAgentsApp()
@@ -1400,7 +1354,6 @@ class TestFetchThreadHistoryData:
 
         assert result == []
 
-    @pytest.mark.asyncio
     async def test_offloads_conversion_to_thread(self) -> None:
         """Message conversion should be offloaded via `asyncio.to_thread`."""
         from deepagents_cli.widgets.message_store import MessageData, MessageType
@@ -1430,7 +1383,6 @@ class TestFetchThreadHistoryData:
 class TestLoadThreadHistory:
     """Tests for DeepAgentsApp._load_thread_history."""
 
-    @pytest.mark.asyncio
     async def test_preloaded_history_skips_fetch_and_schedules_link(self) -> None:
         """Preloaded history should render without state fetch round-trip."""
         from deepagents_cli.widgets.message_store import MessageData, MessageType
@@ -1458,7 +1410,6 @@ class TestLoadThreadHistory:
         mount_message_mock.assert_awaited_once()
         schedule_link_mock.assert_called_once()
 
-    @pytest.mark.asyncio
     async def test_fallback_fetch_path_used_without_preloaded_data(self) -> None:
         """History should be fetched when preloaded data is not provided."""
         from deepagents_cli.widgets.message_store import MessageData, MessageType
@@ -1486,7 +1437,6 @@ class TestLoadThreadHistory:
         mount_message_mock.assert_awaited_once()
         schedule_link_mock.assert_called_once()
 
-    @pytest.mark.asyncio
     async def test_assistant_render_failure_does_not_abort_history_load(self) -> None:
         """A single assistant render failure should not abort history loading."""
         from deepagents_cli.widgets.message_store import MessageData, MessageType
@@ -1527,7 +1477,6 @@ class TestLoadThreadHistory:
         mount_message_mock.assert_awaited_once()
         schedule_link_mock.assert_called_once()
 
-    @pytest.mark.asyncio
     async def test_early_return_without_thread_id_logs_debug(self) -> None:
         """Missing thread ID should early-return with a debug log entry."""
         app = DeepAgentsApp()
@@ -1541,7 +1490,6 @@ class TestLoadThreadHistory:
             "Skipping history load: no thread ID available"
         )
 
-    @pytest.mark.asyncio
     async def test_early_return_without_agent_logs_debug(self) -> None:
         """No agent and no preloaded payload should early-return with debug log."""
         app = DeepAgentsApp(thread_id="tid-1")
@@ -1559,7 +1507,6 @@ class TestLoadThreadHistory:
 class TestUpgradeThreadMessageLink:
     """Tests for DeepAgentsApp._upgrade_thread_message_link."""
 
-    @pytest.mark.asyncio
     async def test_noop_when_link_does_not_resolve(self) -> None:
         """Plain-string result should leave widget content unchanged."""
         app = DeepAgentsApp()
@@ -1577,7 +1524,6 @@ class TestUpgradeThreadMessageLink:
         widget.update.assert_not_called()
         assert widget._content == "Resumed thread: tid-1"
 
-    @pytest.mark.asyncio
     async def test_noop_when_widget_unmounted(self) -> None:
         """Unmounted widget should not be updated even when link resolves."""
         from rich.text import Text
@@ -1598,7 +1544,6 @@ class TestUpgradeThreadMessageLink:
 
         widget.update.assert_not_called()
 
-    @pytest.mark.asyncio
     async def test_updates_widget_when_link_resolves(self) -> None:
         """Resolved Rich text should replace widget content."""
         from rich.text import Text
@@ -1623,7 +1568,6 @@ class TestUpgradeThreadMessageLink:
 class TestBuildThreadMessage:
     """Tests for DeepAgentsApp._build_thread_message."""
 
-    @pytest.mark.asyncio
     async def test_plain_text_when_tracing_not_configured(self) -> None:
         """Returns plain string when LangSmith URL is not available."""
         app = DeepAgentsApp()
@@ -1633,7 +1577,6 @@ class TestBuildThreadMessage:
         assert result == "Resumed thread: tid-123"
         assert isinstance(result, str)
 
-    @pytest.mark.asyncio
     async def test_hyperlinked_when_tracing_configured(self) -> None:
         """Returns Rich Text with hyperlink when LangSmith URL is available."""
         from rich.text import Text
@@ -1651,7 +1594,6 @@ class TestBuildThreadMessage:
         assert len(spans) == 1
         assert url in str(spans[0].style)
 
-    @pytest.mark.asyncio
     async def test_fallback_on_timeout(self) -> None:
         """Returns plain string when URL resolution times out."""
         app = DeepAgentsApp()
@@ -1664,7 +1606,6 @@ class TestBuildThreadMessage:
         assert isinstance(result, str)
         assert result == "Resumed thread: t-1"
 
-    @pytest.mark.asyncio
     async def test_fallback_on_exception(self) -> None:
         """Returns plain string when URL resolution raises an exception."""
         app = DeepAgentsApp()

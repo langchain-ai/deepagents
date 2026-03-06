@@ -8,7 +8,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from deepagents_cli.app import DeepAgentsApp, _format_token_count
+from deepagents_cli.app import DeepAgentsApp, _format_compact_limit
+from deepagents_cli.config import settings
+from deepagents_cli.textual_adapter import format_token_count
 from deepagents_cli.widgets.autocomplete import SLASH_COMMANDS
 from deepagents_cli.widgets.messages import AppMessage, ErrorMessage
 
@@ -107,12 +109,12 @@ class TestCompactInAutocomplete:
 
     def test_compact_in_slash_commands(self) -> None:
         """The /compact command should be in the SLASH_COMMANDS list."""
-        labels = [label for label, _ in SLASH_COMMANDS]
+        labels = [label for label, *_ in SLASH_COMMANDS]
         assert "/compact" in labels
 
     def test_compact_sorted_alphabetically(self) -> None:
         """The /compact entry should appear between /clear and /docs."""
-        labels = [label for label, _ in SLASH_COMMANDS]
+        labels = [label for label, *_ in SLASH_COMMANDS]
         clear_idx = labels.index("/clear")
         compact_idx = labels.index("/compact")
         docs_idx = labels.index("/docs")
@@ -122,7 +124,6 @@ class TestCompactInAutocomplete:
 class TestCompactGuards:
     """Test guard conditions that prevent compaction."""
 
-    @pytest.mark.asyncio
     async def test_no_agent_shows_error(self) -> None:
         """Should show error when there is no active agent."""
         app = DeepAgentsApp()
@@ -137,7 +138,6 @@ class TestCompactGuards:
             msgs = app.query(AppMessage)
             assert any("Nothing to compact" in str(w._content) for w in msgs)
 
-    @pytest.mark.asyncio
     async def test_agent_running_shows_error(self) -> None:
         """Should show error when agent is currently running."""
         app = DeepAgentsApp()
@@ -156,22 +156,24 @@ class TestCompactGuards:
                 "Cannot compact while agent is running" in str(w._content) for w in msgs
             )
 
-    @pytest.mark.asyncio
     async def test_cutoff_zero_shows_not_enough(self) -> None:
-        """Should show error when middleware cutoff is zero."""
+        """Should show info when middleware cutoff is zero (within budget)."""
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
             _setup_compact_app(app, n_messages=3)
 
-            with _mock_middleware(cutoff=0):
+            with (
+                _mock_middleware(cutoff=0),
+                patch.object(settings, "model_context_limit", 200_000),
+                patch(_TOKEN_COUNT_PATH, return_value=45),
+            ):
                 await app._handle_compact()
                 await pilot.pause()
 
             msgs = app.query(AppMessage)
-            assert any("Nothing to compact yet" in str(w._content) for w in msgs)
+            assert any("within the retention budget" in str(w._content) for w in msgs)
 
-    @pytest.mark.asyncio
     async def test_empty_state_shows_error(self) -> None:
         """Should show error when state has no values."""
         app = DeepAgentsApp()
@@ -192,7 +194,6 @@ class TestCompactGuards:
             msgs = app.query(AppMessage)
             assert any("Nothing to compact" in str(w._content) for w in msgs)
 
-    @pytest.mark.asyncio
     async def test_state_read_failure_shows_error(self) -> None:
         """Should show error when reading state raises an exception."""
         app = DeepAgentsApp()
@@ -261,7 +262,6 @@ def _setup_compact_app(
 class TestCompactSuccess:
     """Test successful compaction flow."""
 
-    @pytest.mark.asyncio
     async def test_successful_compaction_sets_event(self) -> None:
         """Should set _summarization_event with cutoff and summary message."""
         app = DeepAgentsApp()
@@ -299,7 +299,6 @@ class TestCompactSuccess:
             assert "<summary>" in summary_msg.content
             assert "Summary of the conversation." in summary_msg.content
 
-    @pytest.mark.asyncio
     async def test_compaction_shows_feedback_message(self) -> None:
         """Should display feedback with message count and token change."""
         app = DeepAgentsApp()
@@ -321,9 +320,11 @@ class TestCompactSuccess:
                 await pilot.pause()
 
             msgs = app.query(AppMessage)
-            assert any("Compacted 4 messages" in str(w._content) for w in msgs)
+            assert any(
+                "Summarized 4 messages into a concise summary." in str(w._content)
+                for w in msgs
+            )
 
-    @pytest.mark.asyncio
     async def test_compaction_updates_token_tracker(self) -> None:
         """Should update token tracker after compaction."""
         app = DeepAgentsApp()
@@ -347,7 +348,6 @@ class TestCompactSuccess:
 
             app._token_tracker.add.assert_called_once()
 
-    @pytest.mark.asyncio
     async def test_no_ui_clear_reload(self) -> None:
         """Should NOT clear/reload UI since messages stay in state."""
         app = DeepAgentsApp()
@@ -381,7 +381,6 @@ class TestCompactSuccess:
 class TestCompactEdgeCases:
     """Test edge cases in the compaction logic."""
 
-    @pytest.mark.asyncio
     async def test_cutoff_zero_does_not_update_state(self) -> None:
         """When middleware returns cutoff=0, state should not be modified."""
         app = DeepAgentsApp()
@@ -389,15 +388,42 @@ class TestCompactEdgeCases:
             await pilot.pause()
             _setup_compact_app(app, n_messages=6)
 
-            with _mock_middleware(cutoff=0):
+            with (
+                _mock_middleware(cutoff=0),
+                patch.object(settings, "model_context_limit", 200_000),
+                patch(_TOKEN_COUNT_PATH, return_value=45),
+            ):
                 await app._handle_compact()
                 await pilot.pause()
 
             msgs = app.query(AppMessage)
-            assert any("Nothing to compact yet" in str(w._content) for w in msgs)
+            assert any("within the retention budget" in str(w._content) for w in msgs)
             app._agent.aupdate_state.assert_not_called()  # type: ignore[union-attr]
 
-    @pytest.mark.asyncio
+    async def test_cutoff_zero_overhead_dominated(self) -> None:
+        """Show overhead message when context exceeds limit."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _setup_compact_app(app, n_messages=3)
+
+            # Simulate total context (system prompt + tools) far exceeding
+            # the model limit while conversation tokens are tiny
+            tracker = MagicMock()
+            tracker.current_context = 14_000
+            app._token_tracker = tracker
+
+            with (
+                _mock_middleware(cutoff=0),
+                patch.object(settings, "model_context_limit", 4_096),
+                patch(_TOKEN_COUNT_PATH, return_value=45),
+            ):
+                await app._handle_compact()
+                await pilot.pause()
+
+            msgs = app.query(AppMessage)
+            assert any("compaction cannot reduce" in str(w._content) for w in msgs)
+
     async def test_cutoff_one_compacts_single_message(self) -> None:
         """With cutoff=1, event should have cutoff_index=1."""
         app = DeepAgentsApp()
@@ -423,7 +449,6 @@ class TestCompactEdgeCases:
             event = update_values["_summarization_event"]
             assert event["cutoff_index"] == 1
 
-    @pytest.mark.asyncio
     async def test_middleware_cutoff_called_with_effective_messages(self) -> None:
         """Should pass effective messages to middleware cutoff logic."""
         app = DeepAgentsApp()
@@ -454,7 +479,6 @@ class TestCompactEdgeCases:
 class TestReCompaction:
     """Test compaction when a prior _summarization_event already exists."""
 
-    @pytest.mark.asyncio
     async def test_recompact_calculates_absolute_cutoff(self) -> None:
         """Re-compaction should compute state_cutoff = old_cutoff + new_cutoff - 1."""
         app = DeepAgentsApp()
@@ -496,7 +520,6 @@ class TestReCompaction:
 class TestAgentRunningGuard:
     """Test that _handle_compact sets _agent_running to prevent races."""
 
-    @pytest.mark.asyncio
     async def test_agent_running_set_during_compaction(self) -> None:
         """Should set _agent_running=True during compaction and reset after."""
         app = DeepAgentsApp()
@@ -531,7 +554,6 @@ class TestAgentRunningGuard:
             # And reset after completion
             assert app._agent_running is False
 
-    @pytest.mark.asyncio
     async def test_agent_running_reset_after_failure(self) -> None:
         """Should reset _agent_running=False even when compaction fails."""
         app = DeepAgentsApp()
@@ -552,7 +574,6 @@ class TestAgentRunningGuard:
 class TestCompactErrorHandling:
     """Test error handling during compaction."""
 
-    @pytest.mark.asyncio
     async def test_offload_failure_proceeds_without_path(self) -> None:
         """Should proceed with compaction even if offload fails."""
         app = DeepAgentsApp()
@@ -584,7 +605,6 @@ class TestCompactErrorHandling:
             summary_content = event["summary_message"].content
             assert "conversation history has been saved" not in summary_content
 
-    @pytest.mark.asyncio
     async def test_summary_generation_failure_shows_error(self) -> None:
         """Should show error and leave state untouched when summary fails."""
         app = DeepAgentsApp()
@@ -605,7 +625,6 @@ class TestCompactErrorHandling:
             error_msgs = app.query(ErrorMessage)
             assert any("Compaction failed" in str(w._content) for w in error_msgs)
 
-    @pytest.mark.asyncio
     async def test_state_update_failure_shows_error(self) -> None:
         """Should show error when aupdate_state raises."""
         app = DeepAgentsApp()
@@ -632,7 +651,6 @@ class TestCompactErrorHandling:
             error_msgs = app.query(ErrorMessage)
             assert any("Compaction failed" in str(w._content) for w in error_msgs)
 
-    @pytest.mark.asyncio
     async def test_spinner_hidden_after_failure(self) -> None:
         """Should hide spinner even when compaction fails."""
         app = DeepAgentsApp()
@@ -664,7 +682,6 @@ class TestCompactErrorHandling:
 class TestCreateModelFailure:
     """Test that _handle_compact handles create_model() failures."""
 
-    @pytest.mark.asyncio
     async def test_create_model_failure_shows_error(self) -> None:
         """Should show error when create_model() raises."""
         app = DeepAgentsApp()
@@ -689,7 +706,6 @@ class TestCreateModelFailure:
 class TestOffloadMessagesForCompact:
     """Test _offload_messages_for_compact code paths."""
 
-    @pytest.mark.asyncio
     async def test_filters_summary_messages(self) -> None:
         """Should use middleware._filter_summary_messages to exclude summaries."""
         app = DeepAgentsApp()
@@ -719,7 +735,6 @@ class TestOffloadMessagesForCompact:
             assert result is not None
             assert result != ""
 
-    @pytest.mark.asyncio
     async def test_all_summary_messages_returns_empty(self) -> None:
         """Should return empty string when all messages are summaries."""
         app = DeepAgentsApp()
@@ -734,7 +749,6 @@ class TestOffloadMessagesForCompact:
 
             assert result == ""
 
-    @pytest.mark.asyncio
     async def test_appends_to_existing_content(self) -> None:
         """Should append new section to existing history file."""
         app = DeepAgentsApp()
@@ -764,7 +778,6 @@ class TestOffloadMessagesForCompact:
             # Should have called aedit (not awrite) since existing content exists
             mock_backend.aedit.assert_called_once()
 
-    @pytest.mark.asyncio
     async def test_creates_new_file_when_none_exists(self) -> None:
         """Should call awrite when no existing file is found."""
         app = DeepAgentsApp()
@@ -792,7 +805,6 @@ class TestOffloadMessagesForCompact:
             assert result is not None
             mock_backend.awrite.assert_called_once()
 
-    @pytest.mark.asyncio
     async def test_read_failure_returns_none(self) -> None:
         """Should return None when reading existing file fails."""
         app = DeepAgentsApp()
@@ -816,7 +828,6 @@ class TestOffloadMessagesForCompact:
 
             assert result is None
 
-    @pytest.mark.asyncio
     async def test_write_failure_returns_none(self) -> None:
         """Should return None when writing to backend fails."""
         app = DeepAgentsApp()
@@ -842,7 +853,6 @@ class TestOffloadMessagesForCompact:
 
             assert result is None
 
-    @pytest.mark.asyncio
     async def test_write_error_result_returns_none(self) -> None:
         """Should return None when write result contains an error."""
         app = DeepAgentsApp()
@@ -874,7 +884,6 @@ class TestOffloadMessagesForCompact:
 class TestCompactRouting:
     """Test that /compact is routed through _handle_command."""
 
-    @pytest.mark.asyncio
     async def test_compact_routed_from_handle_command(self) -> None:
         """'/compact' should be correctly routed through _handle_command."""
         app = DeepAgentsApp()
@@ -891,25 +900,235 @@ class TestCompactRouting:
 
 
 class TestFormatTokenCount:
-    """Test the _format_token_count helper function."""
+    """Test the format_token_count helper function."""
 
     def test_zero(self) -> None:
-        assert _format_token_count(0) == "0"
+        assert format_token_count(0) == "0"
 
     def test_below_threshold(self) -> None:
-        assert _format_token_count(999) == "999"
+        assert format_token_count(999) == "999"
 
     def test_at_threshold(self) -> None:
-        assert _format_token_count(1000) == "1.0K"
+        assert format_token_count(1000) == "1.0K"
 
     def test_above_threshold(self) -> None:
-        assert _format_token_count(1500) == "1.5K"
+        assert format_token_count(1500) == "1.5K"
 
     def test_large_value(self) -> None:
-        assert _format_token_count(200000) == "200.0K"
+        assert format_token_count(200000) == "200.0K"
 
     def test_millions(self) -> None:
-        assert _format_token_count(1_000_000) == "1.0M"
+        assert format_token_count(1_000_000) == "1.0M"
 
     def test_above_million(self) -> None:
-        assert _format_token_count(2_500_000) == "2.5M"
+        assert format_token_count(2_500_000) == "2.5M"
+
+
+class TestFormatCompactLimit:
+    """Test the _format_compact_limit helper function."""
+
+    def test_format_messages_limit(self) -> None:
+        assert _format_compact_limit(("messages", 6), None) == "last 6 messages"
+
+    def test_format_tokens_limit(self) -> None:
+        assert _format_compact_limit(("tokens", 12_345), None) == "12.3K tokens"
+
+    def test_format_fraction_limit_with_context(self) -> None:
+        assert (
+            _format_compact_limit(("fraction", 0.1), 200_000)
+            == "20.0K tokens (10% of 200.0K)"
+        )
+
+    def test_format_fraction_limit_without_context(self) -> None:
+        assert _format_compact_limit(("fraction", 0.1), None) == "10% of context window"
+
+
+class TestCompactProfileOverride:
+    """Verify /compact respects profile overrides (--profile-override / config.toml).
+
+    When the user overrides `max_input_tokens` via a profile override, the
+    `/compact` command must use the overridden value — not the model's native
+    profile — when computing the retention budget and cutoff index.
+    """
+
+    async def test_compact_applies_context_limit_to_model_profile(self) -> None:
+        """Model profile should be patched to settings.model_context_limit."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _setup_compact_app(app, n_messages=5)
+
+            mock_model = MagicMock()
+            mock_model.profile = {"max_input_tokens": 200_000}
+            mock_result = MagicMock()
+            mock_result.model = mock_model
+
+            captured_models: list[Any] = []
+
+            def capture_defaults(model: MagicMock) -> dict[str, Any]:
+                captured_models.append(model)
+                return {"keep": ("fraction", 0.10)}
+
+            mock_mw = MagicMock()
+            mock_mw._determine_cutoff_index.return_value = 0
+            mock_mw._apply_event_to_messages.side_effect = lambda msgs, _ev: list(msgs)
+
+            with (
+                patch(_CREATE_MODEL_PATH, return_value=mock_result),
+                patch(_COMPUTE_DEFAULTS_PATH, side_effect=capture_defaults),
+                patch(_LC_MIDDLEWARE_PATH, return_value=mock_mw),
+                # Override context limit to 4096 (simulates --profile-override)
+                patch.object(settings, "model_context_limit", 4096),
+            ):
+                await app._handle_compact()
+                await pilot.pause()
+
+            assert len(captured_models) == 1
+            assert captured_models[0].profile["max_input_tokens"] == 4096
+
+    async def test_compact_matching_override_preserves_original_profile(self) -> None:
+        """When override matches native profile value, no mutation occurs."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _setup_compact_app(app, n_messages=5)
+
+            mock_model = MagicMock()
+            mock_model.profile = {"max_input_tokens": 200_000}
+            mock_result = MagicMock()
+            mock_result.model = mock_model
+
+            captured_models: list[Any] = []
+
+            def capture_defaults(model: MagicMock) -> dict[str, Any]:
+                captured_models.append(model)
+                return {"keep": ("fraction", 0.10)}
+
+            mock_mw = MagicMock()
+            mock_mw._determine_cutoff_index.return_value = 0
+            mock_mw._apply_event_to_messages.side_effect = lambda msgs, _ev: list(msgs)
+
+            with (
+                patch(_CREATE_MODEL_PATH, return_value=mock_result),
+                patch(_COMPUTE_DEFAULTS_PATH, side_effect=capture_defaults),
+                patch(_LC_MIDDLEWARE_PATH, return_value=mock_mw),
+                # Override matches native value — no mutation expected
+                patch.object(settings, "model_context_limit", 200_000),
+            ):
+                await app._handle_compact()
+                await pilot.pause()
+
+            assert captured_models[0].profile["max_input_tokens"] == 200_000
+
+    async def test_compact_override_triggers_compaction(self) -> None:
+        """With a small override, conversation 'within budget' should compact."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _setup_compact_app(app, n_messages=8)
+
+            mock_model = MagicMock()
+            mock_model.profile = {"max_input_tokens": 200_000}
+            mock_result = MagicMock()
+            mock_result.model = mock_model
+
+            mock_mw = MagicMock()
+            # cutoff > 0 means compaction will proceed
+            mock_mw._determine_cutoff_index.return_value = 4
+            mock_mw._apply_event_to_messages.side_effect = lambda msgs, _ev: list(msgs)
+            mock_mw._partition_messages.side_effect = lambda msgs, idx: (
+                msgs[:idx],
+                msgs[idx:],
+            )
+            mock_mw._acreate_summary = AsyncMock(return_value="Summary.")
+            mock_mw._build_new_messages_with_path.side_effect = _real_build_summary_msg
+            mock_mw._compute_state_cutoff.side_effect = lambda _event, cutoff: cutoff
+
+            with (
+                patch(_CREATE_MODEL_PATH, return_value=mock_result),
+                patch(
+                    _COMPUTE_DEFAULTS_PATH,
+                    return_value={"keep": ("fraction", 0.10)},
+                ),
+                patch(_LC_MIDDLEWARE_PATH, return_value=mock_mw),
+                patch(_TOKEN_COUNT_PATH, return_value=100),
+                patch.object(settings, "model_context_limit", 4096),
+                patch.object(
+                    app,
+                    "_offload_messages_for_compact",
+                    new_callable=AsyncMock,
+                    return_value=None,
+                ),
+            ):
+                await app._handle_compact()
+                await pilot.pause()
+
+            # State should have been updated (compaction happened)
+            app._agent.aupdate_state.assert_called_once()  # type: ignore[union-attr]
+
+    async def test_compact_override_none_uses_model_profile(self) -> None:
+        """When model_context_limit is None, model profile is untouched."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _setup_compact_app(app, n_messages=5)
+
+            mock_model = MagicMock()
+            mock_model.profile = {"max_input_tokens": 200_000}
+            mock_result = MagicMock()
+            mock_result.model = mock_model
+
+            captured_models: list[Any] = []
+
+            def capture_defaults(model: MagicMock) -> dict[str, Any]:
+                captured_models.append(model)
+                return {"keep": ("fraction", 0.10)}
+
+            mock_mw = MagicMock()
+            mock_mw._determine_cutoff_index.return_value = 0
+            mock_mw._apply_event_to_messages.side_effect = lambda msgs, _ev: list(msgs)
+
+            with (
+                patch(_CREATE_MODEL_PATH, return_value=mock_result),
+                patch(_COMPUTE_DEFAULTS_PATH, side_effect=capture_defaults),
+                patch(_LC_MIDDLEWARE_PATH, return_value=mock_mw),
+                patch.object(settings, "model_context_limit", None),
+            ):
+                await app._handle_compact()
+                await pilot.pause()
+
+            assert captured_models[0].profile["max_input_tokens"] == 200_000
+
+    async def test_compact_override_with_no_model_profile(self) -> None:
+        """When model.profile is None, override creates a new profile dict."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _setup_compact_app(app, n_messages=5)
+
+            mock_model = MagicMock()
+            mock_model.profile = None
+            mock_result = MagicMock()
+            mock_result.model = mock_model
+
+            captured_models: list[Any] = []
+
+            def capture_defaults(model: MagicMock) -> dict[str, Any]:
+                captured_models.append(model)
+                return {"keep": ("fraction", 0.10)}
+
+            mock_mw = MagicMock()
+            mock_mw._determine_cutoff_index.return_value = 0
+            mock_mw._apply_event_to_messages.side_effect = lambda msgs, _ev: list(msgs)
+
+            with (
+                patch(_CREATE_MODEL_PATH, return_value=mock_result),
+                patch(_COMPUTE_DEFAULTS_PATH, side_effect=capture_defaults),
+                patch(_LC_MIDDLEWARE_PATH, return_value=mock_mw),
+                patch.object(settings, "model_context_limit", 4096),
+            ):
+                await app._handle_compact()
+                await pilot.pause()
+
+            assert len(captured_models) == 1
+            assert captured_models[0].profile == {"max_input_tokens": 4096}

@@ -10,6 +10,7 @@ import requests
 from langchain.agents.middleware import ModelCallLimitMiddleware
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain.chat_models import init_chat_model
+from langchain_core.language_models import BaseChatModel
 from langchain_core.load import load
 from langchain_core.messages import AnyMessage, HumanMessage
 from langgraph.checkpoint.memory import InMemorySaver
@@ -113,9 +114,9 @@ def _setup_summarization_test(
 
 
 @pytest.mark.langsmith
-def test_summarize_continues_task(tmp_path: Path, model: str) -> None:
+def test_summarize_continues_task(tmp_path: Path, model: BaseChatModel, model_name: str) -> None:
     """Test that summarization triggers and the agent can continue reading a large file."""
-    agent, _, _ = _setup_summarization_test(tmp_path, model, 15_000)
+    agent, _, _ = _setup_summarization_test(tmp_path, model_name, 15_000)
     thread_id = uuid.uuid4().hex[:8]
 
     trajectory = run_agent(
@@ -152,13 +153,13 @@ def test_summarize_continues_task(tmp_path: Path, model: str) -> None:
 
 
 @pytest.mark.langsmith
-def test_summarization_offloads_to_filesystem(tmp_path: Path, model: str) -> None:
+def test_summarization_offloads_to_filesystem(tmp_path: Path, model: BaseChatModel, model_name: str) -> None:
     """Test that conversation history is offloaded to filesystem during summarization.
 
     This verifies the summarization middleware correctly writes conversation history
     as markdown to the backend at /conversation_history/{thread_id}.md.
     """
-    agent, _, root = _setup_summarization_test(tmp_path, model, 15_000)
+    agent, _, root = _setup_summarization_test(tmp_path, model_name, 15_000)
     thread_id = uuid.uuid4().hex[:8]
 
     _ = run_agent(
@@ -227,10 +228,11 @@ def _load_seed_messages() -> list[AnyMessage]:
     return load(run.outputs["messages"])
 
 
+@pytest.mark.skip(reason="Requires permissions to read ls_client.read_run")
 @pytest.mark.langsmith
-def test_compact_tool_new_task(tmp_path: Path, model: str) -> None:
+def test_compact_tool_new_task(tmp_path: Path, model: BaseChatModel, model_name: str) -> None:
 
-    agent, _, _ = _setup_summarization_test(tmp_path, model, 35_000, include_compact_tool=True)
+    agent, _, _ = _setup_summarization_test(tmp_path, model_name, 35_000, include_compact_tool=True)
 
     seed = _load_seed_messages()
     query = "Thanks. Let's move on to a completely new task. To prepare, first spec out how to upgrade a web app to Typescript 5.5"
@@ -242,10 +244,11 @@ def test_compact_tool_new_task(tmp_path: Path, model: str) -> None:
     assert _called_compact(trajectory)
 
 
+@pytest.mark.skip(reason="Requires permissions to read ls_client.read_run")
 @pytest.mark.langsmith
-def test_compact_tool_not_overly_sensitive(tmp_path: Path, model: str) -> None:
+def test_compact_tool_not_overly_sensitive(tmp_path: Path, model: BaseChatModel, model_name: str) -> None:
 
-    agent, _, _ = _setup_summarization_test(tmp_path, model, 35_000, include_compact_tool=True)
+    agent, _, _ = _setup_summarization_test(tmp_path, model_name, 35_000, include_compact_tool=True)
 
     seed = _load_seed_messages()
     query = "Moving on, what are the two primary OpenAI APIs supported?"
@@ -257,8 +260,9 @@ def test_compact_tool_not_overly_sensitive(tmp_path: Path, model: str) -> None:
     assert not _called_compact(trajectory)
 
 
+@pytest.mark.skip(reason="Requires permissions to read ls_client.read_run")
 @pytest.mark.langsmith
-def test_compact_tool_large_reads(tmp_path: Path, model: str) -> None:
+def test_compact_tool_large_reads(tmp_path: Path, model: BaseChatModel, model_name: str) -> None:
     another_large_file = "https://raw.githubusercontent.com/langchain-ai/deepagents/5c90376c02754c67d448908e55d1e953f54b8acd/libs/deepagents/deepagents/middleware/filesystem.py"
 
     response = requests.get(another_large_file, timeout=30)
@@ -266,7 +270,7 @@ def test_compact_tool_large_reads(tmp_path: Path, model: str) -> None:
 
     agent, backend, _ = _setup_summarization_test(
         tmp_path,
-        model,
+        model_name,
         35_000,
         middleware=[ModelCallLimitMiddleware(run_limit=3)],
         include_compact_tool=True,

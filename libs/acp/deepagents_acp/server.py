@@ -451,6 +451,11 @@ class AgentServerACP(ACPAgent):
             if getattr(self._agent, "checkpointer", None) is None:
                 self._agent.checkpointer = MemorySaver()  # ty: ignore[unresolved-attribute]  # Guarded by getattr check above
 
+        if self._agent is None:
+            msg = "Agent initialization failed"
+            raise RuntimeError(msg)
+        agent = self._agent
+
         # Reset cancellation flag for new prompt
         self._cancelled = False
 
@@ -486,7 +491,7 @@ class AgentServerACP(ACPAgent):
                 self._cancelled = False  # Reset for next prompt
                 return PromptResponse(stop_reason="cancelled")
 
-            async for stream_chunk in self._agent.astream(  # ty: ignore[possibly-missing-attribute]  # _agent is set in new_session before prompt is called
+            async for stream_chunk in agent.astream(
                 Command(resume={"decisions": user_decisions})
                 if user_decisions
                 else {"messages": [{"role": "user", "content": content_blocks}]},
@@ -530,7 +535,7 @@ class AgentServerACP(ACPAgent):
                                         {"interrupt_value": interrupt_value},
                                     )
 
-                            current_state = await self._agent.aget_state(config)  # ty: ignore[possibly-missing-attribute]  # _agent is set in new_session before prompt is called
+                            current_state = await agent.aget_state(config)
                             user_decisions = await self._handle_interrupts(
                                 current_state=current_state,
                                 session_id=session_id,
@@ -611,7 +616,7 @@ class AgentServerACP(ACPAgent):
             # After streaming completes, check if we need to exit the loop
             # The loop continues while there are interrupts (line 467)
             # We get the current state to check the loop condition
-            current_state = await self._agent.aget_state(config)  # ty: ignore[possibly-missing-attribute]  # _agent is set in new_session before prompt is called
+            current_state = await agent.aget_state(config)
             # Note: Interrupts are handled during streaming via __interrupt__ updates
             # This state check is only for the while loop condition
 

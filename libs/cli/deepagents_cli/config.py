@@ -9,6 +9,7 @@ import os
 import re
 import shlex
 import sys
+import threading
 import uuid
 from dataclasses import dataclass
 from enum import StrEnum
@@ -59,19 +60,21 @@ COLORS = {
     "agent": "#10b981",
     "thinking": "#34d399",
     "tool": "#fbbf24",
-    "mode_bash": "#ff1493",
+    "mode_shell": "#ff1493",
     "mode_command": "#8b5cf6",
 }
 """App color scheme."""
 
 MODE_PREFIXES: dict[str, str] = {
-    "bash": "!",
+    "shell": "!",
     "command": "/",
 }
 """Maps each non-normal mode to its trigger character."""
 
+PREFIX_TO_MODE: dict[str, str] = {v: k for k, v in MODE_PREFIXES.items()}
+"""Reverse lookup: trigger character -> mode name."""
 
-# Charset mode configuration
+
 class CharsetMode(StrEnum):
     """Character set mode for TUI display."""
 
@@ -169,14 +172,20 @@ ASCII_GLYPHS = Glyphs(
     tree_vertical="|   ",
 )
 
-# Module-level cache for detected glyphs
 _glyphs_cache: Glyphs | None = None
+"""Module-level cache for detected glyphs."""
 
-# Module-level cache for editable install detection
 _editable_cache: bool | None = None
+"""Module-level cache for editable install detection."""
 
-# Module-level cache for successful LangSmith project URL lookups
 _langsmith_url_cache: tuple[str, str] | None = None
+"""Module-level cache for successful LangSmith project URL lookups."""
+
+_LANGSMITH_URL_LOOKUP_TIMEOUT_SECONDS = 2.0
+"""Max seconds to wait for LangSmith project URL lookup.
+
+Kept short so tracing metadata can never stall CLI flows.
+"""
 
 
 def _is_editable_install() -> bool:
@@ -377,6 +386,7 @@ class Settings:
         openai_api_key: OpenAI API key if available.
         anthropic_api_key: Anthropic API key if available.
         google_api_key: Google API key if available.
+        nvidia_api_key: NVIDIA API key if available.
         tavily_api_key: Tavily API key if available.
         google_cloud_project: Google Cloud project ID for VertexAI
             authentication.
@@ -395,6 +405,7 @@ class Settings:
     openai_api_key: str | None
     anthropic_api_key: str | None
     google_api_key: str | None
+    nvidia_api_key: str | None
     tavily_api_key: str | None
 
     # Google Cloud configuration (for VertexAI)
@@ -429,6 +440,7 @@ class Settings:
         openai_key = os.environ.get("OPENAI_API_KEY")
         anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
         google_key = os.environ.get("GOOGLE_API_KEY")
+        nvidia_key = os.environ.get("NVIDIA_API_KEY")
         tavily_key = os.environ.get("TAVILY_API_KEY")
         google_cloud_project = os.environ.get("GOOGLE_CLOUD_PROJECT")
 
@@ -453,6 +465,7 @@ class Settings:
             openai_api_key=openai_key,
             anthropic_api_key=anthropic_key,
             google_api_key=google_key,
+            nvidia_api_key=nvidia_key,
             tavily_api_key=tavily_key,
             google_cloud_project=google_cloud_project,
             deepagents_langchain_project=deepagents_langchain_project,
@@ -475,6 +488,11 @@ class Settings:
     def has_google(self) -> bool:
         """Check if Google API key is configured."""
         return self.google_api_key is not None
+
+    @property
+    def has_nvidia(self) -> bool:
+        """Check if NVIDIA API key is configured."""
+        return self.nvidia_api_key is not None
 
     @property
     def has_vertex_ai(self) -> bool:
@@ -946,12 +964,13 @@ def fetch_langsmith_project_url(project_name: str) -> str | None:
     Successful results are cached at module level so repeated calls do not
     make additional network requests.
 
-    This is a blocking network call on the first invocation. In async
-    contexts, run it in a thread (e.g. via `asyncio.to_thread`).
+    The network call runs in a daemon thread with a hard timeout of
+    `_LANGSMITH_URL_LOOKUP_TIMEOUT_SECONDS`, so this function blocks the
+    calling thread for at most that duration even if LangSmith is unreachable.
 
-    Returns None (with a debug log) on any expected failure: missing
-    `langsmith` package, network errors, invalid project names, or client
-    initialization issues.
+    Returns None (with a debug log) on any failure: missing `langsmith` package,
+    network errors, invalid project names, client initialization issues,
+    or timeouts.
 
     Args:
         project_name: LangSmith project name to look up.
@@ -969,21 +988,54 @@ def fetch_langsmith_project_url(project_name: str) -> str | None:
 
     try:
         from langsmith import Client
-        from langsmith.utils import LangSmithError
-
-        project = Client().read_project(project_name=project_name)
-    except (ImportError, LangSmithError, OSError, ValueError, RuntimeError):
+    except ImportError:
         logger.debug(
             "Could not fetch LangSmith project URL for '%s'",
             project_name,
             exc_info=True,
         )
         return None
-    else:
-        url = project.url or None
-        if url is not None:
-            _langsmith_url_cache = (project_name, url)
-        return url
+
+    result: str | None = None
+    lookup_error: Exception | None = None
+    done = threading.Event()
+
+    def _lookup_url() -> None:
+        nonlocal result, lookup_error
+        try:
+            project = Client().read_project(project_name=project_name)
+            result = project.url or None
+        except Exception as exc:  # noqa: BLE001  # LangSmith SDK error types are not stable
+            lookup_error = exc
+        finally:
+            done.set()
+
+    thread = threading.Thread(target=_lookup_url, daemon=True)
+    thread.start()
+
+    if not done.wait(_LANGSMITH_URL_LOOKUP_TIMEOUT_SECONDS):
+        logger.debug(
+            "Timed out fetching LangSmith project URL for '%s' after %.1fs",
+            project_name,
+            _LANGSMITH_URL_LOOKUP_TIMEOUT_SECONDS,
+        )
+        return None
+
+    if lookup_error is not None:
+        logger.debug(
+            "Could not fetch LangSmith project URL for '%s'",
+            project_name,
+            exc_info=(
+                type(lookup_error),
+                lookup_error,
+                lookup_error.__traceback__,
+            ),
+        )
+        return None
+
+    if result is not None:
+        _langsmith_url_cache = (project_name, result)
+    return result
 
 
 def build_langsmith_thread_url(thread_id: str) -> str | None:
@@ -1044,8 +1096,9 @@ def detect_provider(model_name: str) -> str | None:
         model_name: Model name to detect provider from.
 
     Returns:
-        Provider name (openai, anthropic, google_genai, google_vertexai) or
-            `None` if the provider cannot be determined from the name alone.
+        Provider name (openai, anthropic, google_genai, google_vertexai,
+            nvidia) or `None` if the provider cannot be determined from the
+            name alone.
     """
     model_lower = model_name.lower()
 
@@ -1061,6 +1114,9 @@ def detect_provider(model_name: str) -> str | None:
         if settings.has_vertex_ai and not settings.has_google:
             return "google_vertexai"
         return "google_genai"
+
+    if model_lower.startswith(("nemotron", "nvidia/")):
+        return "nvidia"
 
     return None
 
@@ -1090,28 +1146,59 @@ def _get_default_model_spec() -> str:
     if settings.has_openai:
         return "openai:gpt-5.2"
     if settings.has_anthropic:
-        return "anthropic:claude-sonnet-4-5-20250929"
+        return "anthropic:claude-sonnet-4-6"
     if settings.has_google:
         return "google_genai:gemini-3.1-pro-preview"
     if settings.has_vertex_ai:
         return "google_vertexai:gemini-3.1-pro-preview"
+    if settings.has_nvidia:
+        return "nvidia:nvidia/nemotron-3-nano-30b-a3b"
 
     msg = (
         "No credentials configured. Please set one of: "
         "ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY, "
-        "or GOOGLE_CLOUD_PROJECT"
+        "GOOGLE_CLOUD_PROJECT, or NVIDIA_API_KEY"
     )
     raise ModelConfigError(msg)
 
 
-_OPENROUTER_DEFAULT_HEADERS: dict[str, str] = {
-    "HTTP-Referer": "https://github.com/langchain-ai/deepagents",
-    "X-Title": "Deep Agents CLI",
-}
-"""Default attribution headers sent with every OpenRouter request.
+_OPENROUTER_APP_URL = "https://github.com/langchain-ai/deepagents"
+"""Default `app_url` (maps to `HTTP-Referer`) for OpenRouter attribution.
 
 See https://openrouter.ai/docs/app-attribution for details.
 """
+
+_OPENROUTER_APP_TITLE = "Deep Agents CLI"
+"""Default `app_title` (maps to `X-Title`) for OpenRouter attribution."""
+
+
+def _apply_openrouter_defaults(kwargs: dict[str, Any]) -> None:
+    """Inject default OpenRouter attribution kwargs.
+
+    Sets `app_url` and `app_title` via `setdefault` so that user-supplied
+    values in config take precedence. These map to the `HTTP-Referer` and
+    `X-Title` headers that `ChatOpenRouter` sends for app attribution
+    (see https://openrouter.ai/docs/app-attribution).
+
+    Users can override either value provider-wide or per-model in
+    `~/.deepagents/config.toml`:
+
+    ```toml
+    # Provider-wide
+    [models.providers.openrouter.params]
+    app_url = "https://myapp.com"
+    app_title = "My App"
+
+    # Per-model (shallow-merges on top of provider-wide)
+    [models.providers.openrouter.params."openai/gpt-oss-120b"]
+    app_title = "My App (GPT)"
+    ```
+
+    Args:
+        kwargs: Mutable kwargs dict to update in place.
+    """
+    kwargs.setdefault("app_url", _OPENROUTER_APP_URL)
+    kwargs.setdefault("app_title", _OPENROUTER_APP_TITLE)
 
 
 def _get_provider_kwargs(
@@ -1124,10 +1211,6 @@ def _get_provider_kwargs(
 
     When `model_name` is provided, per-model overrides from the `params`
     sub-table are shallow-merged on top.
-
-    For the `openrouter` provider, default attribution headers (`HTTP-Referer`
-    and `X-Title`) are injected automatically. User-supplied `default_headers`
-    in config take precedence.
 
     Args:
         provider: Provider name (e.g., openai, anthropic, fireworks, ollama).
@@ -1148,8 +1231,7 @@ def _get_provider_kwargs(
             result["api_key"] = api_key
 
     if provider == "openrouter":
-        user_headers = result.get("default_headers") or {}
-        result["default_headers"] = {**_OPENROUTER_DEFAULT_HEADERS, **user_headers}
+        _apply_openrouter_defaults(result)
 
     return result
 
@@ -1245,6 +1327,7 @@ def _create_model_via_init(
             "openai": "langchain-openai",
             "google_genai": "langchain-google-genai",
             "google_vertexai": "langchain-google-vertexai",
+            "nvidia": "langchain-nvidia-ai-endpoints",
         }
         package = package_map.get(provider, f"langchain-{provider}")
         msg = (
@@ -1287,10 +1370,58 @@ class ModelResult:
         settings.model_context_limit = self.context_limit
 
 
+def _apply_profile_overrides(
+    model: BaseChatModel,
+    overrides: dict[str, Any],
+    model_name: str,
+    *,
+    label: str,
+    raise_on_failure: bool = False,
+) -> None:
+    """Merge `overrides` into `model.profile`.
+
+    If the model already has a dict profile, overrides are layered on top
+    so existing keys (e.g., `tool_calling`) are preserved unchanged.
+
+    Args:
+        model: The chat model whose profile will be updated.
+        overrides: Key/value pairs to merge into the profile.
+        model_name: Model name used in log/error messages.
+        label: Human-readable source label for messages
+            (e.g., `"config.toml"`, `"CLI --profile-override"`).
+        raise_on_failure: When `True`, raise `ModelConfigError` instead
+            of logging a warning if assignment fails.
+
+    Raises:
+        ModelConfigError: If `raise_on_failure` is `True` and the model
+            rejects profile assignment.
+    """
+    logger.debug("Applying %s profile overrides: %s", label, overrides)
+    profile = getattr(model, "profile", None)
+    merged = {**profile, **overrides} if isinstance(profile, dict) else overrides
+    try:
+        model.profile = merged  # type: ignore[union-attr]
+    except (AttributeError, TypeError, ValueError) as exc:
+        if raise_on_failure:
+            msg = (
+                f"Could not apply {label} to model '{model_name}': {exc}. "
+                f"The model may not support profile assignment."
+            )
+            raise ModelConfigError(msg) from exc
+        logger.warning(
+            "Could not apply %s profile overrides to model '%s': %s. "
+            "Overrides will be ignored.",
+            label,
+            model_name,
+            exc,
+        )
+
+
 def create_model(
     model_spec: str | None = None,
     *,
     extra_kwargs: dict[str, Any] | None = None,
+    profile_overrides: dict[str, Any] | None = None,
 ) -> ModelResult:
     """Create a chat model.
 
@@ -1309,6 +1440,9 @@ def create_model(
         extra_kwargs: Additional kwargs to pass to the model constructor.
 
             These take highest priority, overriding values from the config file.
+        profile_overrides: Extra profile fields from `--profile-override`.
+
+            Merged on top of config file profile overrides (CLI wins).
 
     Returns:
         A `ModelResult` containing the model and its metadata.
@@ -1369,6 +1503,29 @@ def create_model(
         model = _create_model_via_init(model_name, provider, kwargs)
 
     resolved_provider = provider or getattr(model, "_model_provider", provider)
+
+    # Apply profile overrides from config.toml (e.g., max_input_tokens)
+    if provider:
+        config_profile_overrides = config.get_profile_overrides(
+            provider, model_name=model_name
+        )
+        if config_profile_overrides:
+            _apply_profile_overrides(
+                model,
+                config_profile_overrides,
+                model_name,
+                label=f"config.toml (provider '{provider}')",
+            )
+
+    # CLI --profile-override takes highest priority (on top of config.toml)
+    if profile_overrides:
+        _apply_profile_overrides(
+            model,
+            profile_overrides,
+            model_name,
+            label="CLI --profile-override",
+            raise_on_failure=True,
+        )
 
     # Extract context limit from model profile (if available)
     context_limit: int | None = None

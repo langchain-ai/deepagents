@@ -166,8 +166,8 @@ def compute_summarization_defaults(model: BaseChatModel) -> SummarizationDefault
 
     Returns:
         Default settings for trigger, keep, and truncate_args_settings.
-        If the model has a profile with max_input_tokens, uses fraction-based
-        settings. Otherwise, uses fixed token/message counts.
+            If the model has a profile with `max_input_tokens`, uses
+            fraction-based settings. Otherwise, uses fixed token/message counts.
     """
     has_profile = (
         model.profile is not None
@@ -185,6 +185,9 @@ def compute_summarization_defaults(model: BaseChatModel) -> SummarizationDefault
                 "keep": ("fraction", 0.15),
             },
         }
+
+    # Defaults for models without profile info are more conservative to avoid
+    # overshooting context limits.
     return {
         "trigger": ("tokens", 170000),
         "keep": ("messages", 6),
@@ -867,6 +870,14 @@ A condensed summary follows:
         Then truncates large tool arguments in old messages if configured.
         Finally offloads messages to backend before summarization if thresholds are met.
 
+        Control flow details:
+
+        - If thresholds say "do not summarize", we still attempt one normal
+            model call with the current effective/truncated messages.
+        - If that call raises `ContextOverflowError`, we immediately fall back to
+            the summarization path and retry the model call with
+            `summary_message + preserved_recent_messages`.
+
         Unlike the legacy `before_model` approach, this does NOT modify the LangGraph state.
         Instead, it tracks summarization events in middleware state and modifies the model
         request directly.
@@ -876,7 +887,12 @@ A condensed summary follows:
             handler: The handler to call with the (possibly modified) request.
 
         Returns:
-            The model response from the handler.
+            A plain `ModelResponse` when no summarization event is created, or
+                an `ExtendedModelResponse` that updates `_summarization_event`
+                with `cutoff_index`, `summary_message`, and `file_path`.
+
+                If `cutoff_index <= 0`, no compaction occurs and no
+                `_summarization_event` update is emitted.
         """
         # Get effective messages based on previous summarization events
         effective_messages = self._get_effective_messages(request)
@@ -958,6 +974,14 @@ A condensed summary follows:
         Then truncates large tool arguments in old messages if configured.
         Finally offloads messages to backend before summarization if thresholds are met.
 
+        Control flow details:
+
+        - If thresholds say "do not summarize", we still attempt one normal
+            model call with the current effective/truncated messages.
+        - If that call raises `ContextOverflowError`, we immediately fall back
+            to the summarization path and retry the model call with
+            `summary_message + preserved_recent_messages`.
+
         Unlike the legacy `abefore_model` approach, this does NOT modify the LangGraph state.
         Instead, it tracks summarization events in middleware state and modifies the model
         request directly.
@@ -967,7 +991,12 @@ A condensed summary follows:
             handler: The handler to call with the (possibly modified) request.
 
         Returns:
-            The model response from the handler.
+            A plain `ModelResponse` when no summarization event is created, or
+                an `ExtendedModelResponse` that updates `_summarization_event`
+                with `cutoff_index`, `summary_message`, and `file_path`.
+
+                If `cutoff_index <= 0`, no compaction occurs and no
+                `_summarization_event` update is emitted.
         """
         # Get effective messages based on previous summarization events
         effective_messages = self._get_effective_messages(request)
@@ -1043,12 +1072,53 @@ A condensed summary follows:
 SummarizationMiddleware = _DeepAgentsSummarizationMiddleware
 
 
+def create_summarization_middleware(
+    model: BaseChatModel,
+    backend: BACKEND_TYPES,
+) -> _DeepAgentsSummarizationMiddleware:
+    """Create a `SummarizationMiddleware` with model-aware defaults.
+
+    Computes trigger, keep, and truncation settings from the model's profile
+    (or uses fixed-token fallbacks) and returns a configured middleware.
+
+    Args:
+        model: Resolved chat model instance.
+        backend: Backend instance or factory for persisting conversation history.
+
+    Returns:
+        Configured `SummarizationMiddleware` instance.
+    """
+    from langchain.chat_models import BaseChatModel as RuntimeBaseChatModel  # noqa: PLC0415
+
+    if not isinstance(model, RuntimeBaseChatModel):
+        msg = "`create_summarization_middleware` expects `model` to be a `BaseChatModel` instance."
+        raise TypeError(msg)
+
+    defaults = compute_summarization_defaults(model)
+    return SummarizationMiddleware(
+        model=model,
+        backend=backend,
+        trigger=defaults["trigger"],
+        keep=defaults["keep"],
+        trim_tokens_to_summarize=None,
+        truncate_args_settings=defaults["truncate_args_settings"],
+    )
+
+
 class SummarizationToolMiddleware(AgentMiddleware):
     """Middleware that provides a `compact_conversation` tool for manual compaction.
 
     This middleware composes with a `SummarizationMiddleware` instance, reusing
     its summarization engine (model, backend, trigger thresholds) to let the
-    agent proactively compact its own context window.
+    agent compact its own context window.
+
+    This middleware never compacts automatically. Compaction only occurs when
+    `compact_conversation` is called as a normal tool call (by the model or by
+    an explicit user action, e.g. as implemented in the deepagents-cli).
+
+    To avoid compacting too early, compact tool execution is gated by
+    `_is_eligible_for_compaction`, which requires reported usage to reach about
+    50% of the configured auto-summarization trigger.
 
     The tool and auto-summarization share the same `_summarization_event` state
     key, so they interoperate correctly.
@@ -1218,7 +1288,18 @@ class SummarizationToolMiddleware(AgentMiddleware):
         )
 
     def _is_eligible_for_compaction(self, messages: list[AnyMessage]) -> bool:
-        """Check if conversation is over 50% of the token budget."""
+        """Check if manual compaction is currently allowed.
+
+        This is an eligibility gate for `compact_conversation` tool calls, not a
+        background trigger. The conversation must be at or above about 50% of
+        the configured auto-summarization trigger:
+
+        - For `("tokens", N)`, eligibility starts at `0.5 * N`.
+        - For `("fraction", F)`, eligibility starts at `0.5 * F` of model max
+            input tokens.
+
+        Uses reported usage metadata when available.
+        """
         lc = self._summarization._lc_helper
         trigger_conditions = lc._trigger_conditions
         if not trigger_conditions:
@@ -1315,7 +1396,11 @@ class SummarizationToolMiddleware(AgentMiddleware):
         request: ModelRequest,
         handler: Callable[[ModelRequest], ModelResponse],
     ) -> ModelResponse:
-        """Inject compact tool system prompt into the model request.
+        """Inject a compact-tool usage nudge into the system prompt.
+
+        This only updates prompt text so the model can decide whether to call
+        `compact_conversation` earlier in long sessions. It does not execute the
+        tool automatically.
 
         Args:
             request: The model request to process.
@@ -1332,7 +1417,11 @@ class SummarizationToolMiddleware(AgentMiddleware):
         request: ModelRequest,
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelResponse:
-        """Inject compact tool system prompt into the model request (async).
+        """Inject a compact-tool usage nudge into the system prompt (async).
+
+        This only updates prompt text so the model can decide whether to call
+        `compact_conversation` earlier in long sessions. It does not execute the
+        tool automatically.
 
         Args:
             request: The model request to process.

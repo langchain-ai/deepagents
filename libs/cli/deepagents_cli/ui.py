@@ -81,6 +81,10 @@ def show_help() -> None:
     )
     console.print("  -a, --agent NAME           Agent to use (e.g., coder, researcher)")
     console.print("  -M, --model MODEL          Model to use (e.g., gpt-4o)")
+    console.print(
+        "  --model-params JSON        Extra model kwargs (e.g., '{\"temperature\": 0.7}')"  # noqa: E501
+    )
+    console.print("  --profile-override JSON    Override model profile fields as JSON")
     console.print("  -m, --message TEXT         Initial prompt to auto-submit on start")
     console.print(
         "  --auto-approve             Auto-approve all tool calls (toggle: Shift+Tab)"
@@ -97,6 +101,10 @@ def show_help() -> None:
         " (Claude Desktop format)"
     )
     console.print("  -n, --non-interactive MSG  Run a single task and exit")
+    console.print("  -q, --quiet                Clean output for piping (needs -n)")
+    console.print(
+        "  --no-stream                Buffer full response instead of streaming"
+    )
     console.print(
         "  --shell-allow-list CMDS    Comma-separated local shell commands to allow"
     )

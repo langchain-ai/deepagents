@@ -4,6 +4,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import Mock, patch
 
+from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+from langchain_core.messages import AIMessage
+
 if TYPE_CHECKING:
     from langchain.agents.middleware.types import AgentState
     from langchain.messages import ToolCall
@@ -22,6 +25,13 @@ from deepagents_cli.agent import (
     list_agents,
 )
 from deepagents_cli.config import Settings, get_glyphs
+
+
+def _make_fake_chat_model() -> GenericFakeChatModel:
+    """Create a fake chat model compatible with summarization middleware."""
+    model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+    model.profile = {"max_input_tokens": 200000}
+    return model
 
 
 def test_format_write_file_description_create_new_file(tmp_path: Path) -> None:
@@ -291,7 +301,7 @@ class TestGetSystemPromptModelIdentity:
     def test_includes_model_identity_when_all_settings_present(self) -> None:
         """Test that model identity section is included when all settings are set."""
         mock_settings = Mock()
-        mock_settings.model_name = "claude-sonnet-4-5-20250929"
+        mock_settings.model_name = "claude-sonnet-4-6"
         mock_settings.model_provider = "anthropic"
         mock_settings.model_context_limit = 200000
 
@@ -299,7 +309,7 @@ class TestGetSystemPromptModelIdentity:
             prompt = get_system_prompt("test-agent")
 
         assert "### Model Identity" in prompt
-        assert "claude-sonnet-4-5-20250929" in prompt
+        assert "claude-sonnet-4-6" in prompt
         assert "(provider: anthropic)" in prompt
         assert "Your context window is 200,000 tokens." in prompt
 
@@ -497,11 +507,16 @@ class TestCreateCliAgentSkillsSources:
         mock_agent = Mock()
         mock_agent.with_config.return_value = mock_agent
 
+        fake_model = _make_fake_chat_model()
         with (
             patch("deepagents_cli.agent.settings", mock_settings),
             patch("deepagents_cli.agent.SkillsMiddleware", FakeSkillsMiddleware),
             patch("deepagents_cli.agent.MemoryMiddleware"),
             patch("deepagents_cli.agent.create_deep_agent", return_value=mock_agent),
+            patch(
+                "deepagents.graph.init_chat_model",
+                return_value=fake_model,
+            ),
         ):
             create_cli_agent(
                 model="fake-model",
@@ -565,6 +580,7 @@ class TestCreateCliAgentMemorySources:
         mock_agent = Mock()
         mock_agent.with_config.return_value = mock_agent
 
+        fake_model = _make_fake_chat_model()
         with (
             patch("deepagents_cli.agent.settings", mock_settings),
             patch("deepagents_cli.agent.SkillsMiddleware"),
@@ -573,6 +589,10 @@ class TestCreateCliAgentMemorySources:
             patch(
                 "deepagents_cli.agent.create_deep_agent",
                 return_value=mock_agent,
+            ),
+            patch(
+                "deepagents.graph.init_chat_model",
+                return_value=fake_model,
             ),
         ):
             create_cli_agent(
@@ -626,6 +646,7 @@ class TestCreateCliAgentMemorySources:
         mock_agent = Mock()
         mock_agent.with_config.return_value = mock_agent
 
+        fake_model = _make_fake_chat_model()
         with (
             patch("deepagents_cli.agent.settings", mock_settings),
             patch("deepagents_cli.agent.SkillsMiddleware"),
@@ -634,6 +655,10 @@ class TestCreateCliAgentMemorySources:
             patch(
                 "deepagents_cli.agent.create_deep_agent",
                 return_value=mock_agent,
+            ),
+            patch(
+                "deepagents.graph.init_chat_model",
+                return_value=fake_model,
             ),
         ):
             create_cli_agent(
@@ -690,11 +715,16 @@ class TestMiddlewareStackConformance:
             agent.with_config.return_value = agent
             return agent
 
+        fake_model = _make_fake_chat_model()
         with (
             patch("deepagents_cli.agent.settings", mock_settings),
             patch(
                 "deepagents_cli.agent.create_deep_agent",
                 side_effect=capture_create_agent,
+            ),
+            patch(
+                "deepagents.graph.init_chat_model",
+                return_value=fake_model,
             ),
         ):
             create_cli_agent(

@@ -144,6 +144,14 @@ class ProviderConfig(TypedDict, total=False):
     the merge is shallow (model wins on conflict).
     """
 
+    profile: dict[str, Any]
+    """Overrides merged into the model's runtime profile dict.
+
+    Flat keys (e.g., `max_input_tokens = 4096`) are provider-wide defaults.
+    Model-keyed sub-tables (e.g., `[profile."claude-sonnet-4-5"]`) override
+    individual values for that model only; the merge is shallow.
+    """
+
 
 DEFAULT_CONFIG_DIR = Path.home() / ".deepagents"
 """Directory for user-level Deep Agents configuration (`~/.deepagents`)."""
@@ -569,8 +577,9 @@ class ModelConfig:
                     class_path,
                 )
 
-            params = provider.get("params", {})
             models = set(provider.get("models", []))
+
+            params = provider.get("params", {})
             for key, value in params.items():
                 if isinstance(value, dict) and key not in models:
                     logger.warning(
@@ -686,10 +695,36 @@ class ModelConfig:
         if not provider:
             return {}
         params = provider.get("params", {})
-        # Flat keys are provider-wide defaults; dict values are per-model overrides
         result = {k: v for k, v in params.items() if not isinstance(v, dict)}
         if model_name:
             overrides = params.get(model_name)
+            if isinstance(overrides, dict):
+                result.update(overrides)
+        return result
+
+    def get_profile_overrides(
+        self, provider_name: str, *, model_name: str | None = None
+    ) -> dict[str, Any]:
+        """Get profile overrides for a provider.
+
+        Reads the `profile` table from the provider config. Flat keys are
+        provider-wide defaults; model-keyed sub-tables are per-model overrides
+        that shallow-merge on top (model wins on conflict).
+
+        Args:
+            provider_name: The provider to look up.
+            model_name: Optional model name for per-model overrides.
+
+        Returns:
+            Dictionary of profile overrides (empty if none configured).
+        """
+        provider = self.providers.get(provider_name)
+        if not provider:
+            return {}
+        profile = provider.get("profile", {})
+        result = {k: v for k, v in profile.items() if not isinstance(v, dict)}
+        if model_name:
+            overrides = profile.get(model_name)
             if isinstance(overrides, dict):
                 result.update(overrides)
         return result

@@ -295,7 +295,7 @@ def parse_args() -> argparse.Namespace:
         "-M",
         "--model",
         metavar="MODEL",
-        help="Model to use (e.g., claude-sonnet-4-5-20250929, gpt-5.2). "
+        help="Model to use (e.g., claude-sonnet-4-6, gpt-5.2). "
         "Provider is auto-detected from model name.",
     )
 
@@ -305,6 +305,14 @@ def parse_args() -> argparse.Namespace:
         help="Extra kwargs to pass to the model as a JSON string "
         '(e.g., \'{"temperature": 0.7, "max_tokens": 4096}\'). '
         "These take priority, overriding config file values.",
+    )
+
+    parser.add_argument(
+        "--profile-override",
+        metavar="JSON",
+        help="Override model profile fields as a JSON string "
+        "(e.g., '{\"max_input_tokens\": 4096}'). "
+        "Merged on top of config file profile overrides.",
     )
 
     parser.add_argument(
@@ -438,6 +446,7 @@ async def run_textual_cli_async(
     sandbox_setup: str | None = None,
     model_name: str | None = None,
     model_params: dict[str, Any] | None = None,
+    profile_override: dict[str, Any] | None = None,
     thread_id: str | None = None,
     is_resumed: bool = False,
     initial_prompt: str | None = None,
@@ -457,6 +466,9 @@ async def run_textual_cli_async(
         model_params: Extra kwargs from `--model-params` to pass to the model.
 
             These override config file values.
+        profile_override: Extra profile fields from `--profile-override`.
+
+            Merged on top of config file profile overrides.
         thread_id: Thread ID to use (new or resumed)
         is_resumed: Whether this is a resumed session
         initial_prompt: Optional prompt to auto-submit when session starts
@@ -475,7 +487,11 @@ async def run_textual_cli_async(
     from deepagents_cli.tools import fetch_url, http_request, web_search
 
     try:
-        result = create_model(model_name, extra_kwargs=model_params)
+        result = create_model(
+            model_name,
+            extra_kwargs=model_params,
+            profile_overrides=profile_override,
+        )
     except ModelConfigError as e:
         from deepagents_cli.app import AppResult
 
@@ -716,6 +732,20 @@ def apply_stdin_pipe(args: argparse.Namespace) -> None:
             )
 
 
+def _print_session_stats(stats: Any, console: Any) -> None:  # noqa: ANN401
+    """Print a session-level usage stats table to the console on TUI exit.
+
+    Args:
+        stats: The cumulative session stats from the Textual app.
+        console: Rich console for output.
+    """
+    from deepagents_cli.textual_adapter import SessionStats, print_usage_table
+
+    if not isinstance(stats, SessionStats):
+        return
+    print_usage_table(stats, stats.wall_time_seconds, console)
+
+
 def cli_main() -> None:
     """Entry point for console script."""
     # Fix for gRPC fork issue on macOS
@@ -772,6 +802,24 @@ def cli_main() -> None:
             if not isinstance(model_params, dict):
                 console.print(
                     "[bold red]Error:[/bold red] --model-params must be a JSON object"
+                )
+                sys.exit(1)
+
+        profile_override: dict[str, Any] | None = None
+        raw_profile = getattr(args, "profile_override", None)
+        if raw_profile:
+            try:
+                profile_override = json.loads(raw_profile)
+            except json.JSONDecodeError as e:
+                console.print(
+                    "[bold red]Error:[/bold red] "
+                    f"--profile-override is not valid JSON: {e}"
+                )
+                sys.exit(1)
+            if not isinstance(profile_override, dict):
+                console.print(
+                    "[bold red]Error:[/bold red] "
+                    "--profile-override must be a JSON object"
                 )
                 sys.exit(1)
 
@@ -909,6 +957,7 @@ def cli_main() -> None:
                     assistant_id=args.agent,
                     model_name=getattr(args, "model", None),
                     model_params=model_params,
+                    profile_override=profile_override,
                     sandbox_type=args.sandbox,
                     sandbox_id=args.sandbox_id,
                     sandbox_setup=getattr(args, "sandbox_setup", None),
@@ -1008,6 +1057,7 @@ def cli_main() -> None:
                         sandbox_setup=getattr(args, "sandbox_setup", None),
                         model_name=getattr(args, "model", None),
                         model_params=model_params,
+                        profile_override=profile_override,
                         thread_id=thread_id,
                         is_resumed=is_resumed,
                         initial_prompt=getattr(args, "initial_prompt", None),
@@ -1018,6 +1068,7 @@ def cli_main() -> None:
                 # The user may have switched threads via /threads during the
                 # session; use the final thread ID for teardown messages.
                 thread_id = result.thread_id or thread_id
+                _print_session_stats(result.session_stats, console)
             except Exception as e:  # noqa: BLE001  # Top-level error handler for the application
                 error_msg = Text("\nApplication error: ", style="red")
                 error_msg.append(str(e))

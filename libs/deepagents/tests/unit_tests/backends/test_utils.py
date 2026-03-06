@@ -4,11 +4,11 @@ from typing import Any
 
 import pytest
 
-from deepagents.backends.utils import _glob_search_files, _validate_path
+from deepagents.backends.utils import _glob_search_files, validate_path
 
 
 class TestValidatePath:
-    """Tests for _validate_path - the canonical path validation function."""
+    """Tests for validate_path - the canonical path validation function."""
 
     @pytest.mark.parametrize(
         ("input_path", "expected"),
@@ -22,7 +22,7 @@ class TestValidatePath:
     )
     def test_path_normalization(self, input_path: str, expected: str) -> None:
         """Test various path normalization scenarios."""
-        assert _validate_path(input_path) == expected
+        assert validate_path(input_path) == expected
 
     @pytest.mark.parametrize(
         ("invalid_path", "error_match"),
@@ -37,34 +37,34 @@ class TestValidatePath:
     def test_invalid_paths_rejected(self, invalid_path: str, error_match: str) -> None:
         """Test that dangerous paths are rejected."""
         with pytest.raises(ValueError, match=error_match):
-            _validate_path(invalid_path)
+            validate_path(invalid_path)
 
     def test_allowed_prefixes_enforced(self) -> None:
         """Test allowed_prefixes parameter."""
-        assert _validate_path("/workspace/file.txt", allowed_prefixes=["/workspace/"]) == "/workspace/file.txt"
+        assert validate_path("/workspace/file.txt", allowed_prefixes=["/workspace/"]) == "/workspace/file.txt"
 
         with pytest.raises(ValueError, match="Path must start with one of"):
-            _validate_path("/etc/passwd", allowed_prefixes=["/workspace/"])
+            validate_path("/etc/passwd", allowed_prefixes=["/workspace/"])
 
     def test_no_backslashes_in_output(self) -> None:
         """Test that output never contains backslashes."""
         paths = ["foo\\bar", "a\\b\\c\\d", "mixed/path\\here"]
         for path in paths:
-            result = _validate_path(path)
+            result = validate_path(path)
             assert "\\" not in result, f"Backslash in output for input '{path}': {result}"
 
     def test_root_path(self) -> None:
         """Test that root path normalizes correctly."""
-        assert _validate_path("/") == "/"
+        assert validate_path("/") == "/"
 
     def test_double_dots_in_filename_allowed(self) -> None:
         """Test that filenames containing `'..'` as a substring are not rejected.
 
         Only `'..'` as a path component (directory traversal) should be rejected.
         """
-        assert _validate_path("foo..bar.txt") == "/foo..bar.txt"
-        assert _validate_path("backup..2024/data.csv") == "/backup..2024/data.csv"
-        assert _validate_path("v2..0/release") == "/v2..0/release"
+        assert validate_path("foo..bar.txt") == "/foo..bar.txt"
+        assert validate_path("backup..2024/data.csv") == "/backup..2024/data.csv"
+        assert validate_path("v2..0/release") == "/v2..0/release"
 
     def test_allowed_prefixes_boundary(self) -> None:
         """Test that prefix matching requires exact directory boundary.
@@ -72,20 +72,20 @@ class TestValidatePath:
         `'/workspace-evil/file'` should NOT match prefix `'/workspace/'`.
         """
         with pytest.raises(ValueError, match="Path must start with one of"):
-            _validate_path("/workspace-evil/file", allowed_prefixes=["/workspace/"])
+            validate_path("/workspace-evil/file", allowed_prefixes=["/workspace/"])
 
     def test_traversal_as_path_component_rejected(self) -> None:
         """Test that `'..'` as a path component is still rejected."""
         with pytest.raises(ValueError, match="Path traversal not allowed"):
-            _validate_path("foo/../etc/passwd")
+            validate_path("foo/../etc/passwd")
 
         with pytest.raises(ValueError, match="Path traversal not allowed"):
-            _validate_path("/workspace/../../../etc/shadow")
+            validate_path("/workspace/../../../etc/shadow")
 
     def test_dot_and_empty_string_normalize_to_slash_dot(self) -> None:
         """Document that `'.'` and `''` normalize to `'/.'` via `os.path.normpath`."""
-        assert _validate_path(".") == "/."
-        assert _validate_path("") == "/."
+        assert validate_path(".") == "/."
+        assert validate_path("") == "/."
 
 
 class TestGlobSearchFiles:

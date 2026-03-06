@@ -45,6 +45,7 @@ class MessageType(StrEnum):
     TOOL = "tool"
     ERROR = "error"
     APP = "app"
+    SUMMARIZATION = "summarization"
     DIFF = "diff"
 
 
@@ -147,6 +148,7 @@ class MessageData:
             AssistantMessage,
             DiffMessage,
             ErrorMessage,
+            SummarizationMessage,
             ToolCallMessage,
             UserMessage,
         )
@@ -176,6 +178,9 @@ class MessageData:
 
             case MessageType.APP:
                 return AppMessage(self.content, id=self.id)
+
+            case MessageType.SUMMARIZATION:
+                return SummarizationMessage(self.content, id=self.id)
 
             case MessageType.DIFF:
                 return DiffMessage(
@@ -209,6 +214,7 @@ class MessageData:
             AssistantMessage,
             DiffMessage,
             ErrorMessage,
+            SummarizationMessage,
             ToolCallMessage,
             UserMessage,
         )
@@ -260,15 +266,21 @@ class MessageData:
                 id=widget_id,
             )
 
-        # Check DiffMessage before AppMessage: both extend Static, so check
-        # the more specific type first to avoid misclassification if the
-        # inheritance hierarchy ever changes.
+        # Check specialized subclasses before AppMessage so we keep their type
+        # when serializing and can restore their specific styling later.
         if isinstance(widget, DiffMessage):
             return cls(
                 type=MessageType.DIFF,
                 content=widget._diff_content,
                 id=widget_id,
                 diff_file_path=widget._file_path,
+            )
+
+        if isinstance(widget, SummarizationMessage):
+            return cls(
+                type=MessageType.SUMMARIZATION,
+                content=str(widget._content),
+                id=widget_id,
             )
 
         if isinstance(widget, AppMessage):
@@ -345,6 +357,35 @@ class MessageStore:
         """
         self._messages.append(message)
         self._visible_end = len(self._messages)
+
+    def bulk_load(
+        self, messages: list[MessageData]
+    ) -> tuple[list[MessageData], list[MessageData]]:
+        """Load many messages at once, keeping only the tail visible.
+
+        This is optimized for thread resumption: all messages are stored as
+        lightweight data, but only the last `WINDOW_SIZE` entries are marked
+        visible (i.e. will need DOM widgets).
+
+        Args:
+            messages: Ordered list of message data to load.
+
+        Returns:
+            Tuple of (archived, visible) message lists.
+        """
+        self._messages.extend(messages)
+        total = len(self._messages)
+
+        if total <= self.WINDOW_SIZE:
+            self._visible_start = 0
+        else:
+            self._visible_start = total - self.WINDOW_SIZE
+
+        self._visible_end = total
+
+        archived = self._messages[: self._visible_start]
+        visible = self._messages[self._visible_start : self._visible_end]
+        return archived, visible
 
     def get_message(self, message_id: str) -> MessageData | None:
         """Get a message by its ID.

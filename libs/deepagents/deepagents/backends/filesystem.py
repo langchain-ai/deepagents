@@ -1,9 +1,11 @@
 """`FilesystemBackend`: Read and write files directly from the filesystem."""
 
 import json
+import logging
 import os
 import re
 import subprocess
+import warnings
 from datetime import datetime
 from pathlib import Path
 
@@ -23,6 +25,8 @@ from deepagents.backends.utils import (
     format_content_with_line_numbers,
     perform_string_replacement,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class FilesystemBackend(BackendProtocol):
@@ -58,18 +62,25 @@ class FilesystemBackend(BackendProtocol):
 
         1. Enable Human-in-the-Loop (HITL) middleware to review sensitive operations
         2. Exclude secrets from accessible filesystem paths (especially in CI/CD)
-        3. Use `SandboxBackend` for production environments requiring filesystem
-            interaction
-        4. **Always** use `virtual_mode=True` with `root_dir` to enable path-based
-            access restrictions (blocks `..`, `~`, and absolute paths outside root).
-            Note that the default (`virtual_mode=False`) provides no security even with
-            `root_dir` set.
+        3. For production environments, prefer `StateBackend`, `StoreBackend` or `SandboxBackend`
+
+        In general, we expect this backend to be used with Human-in-the-Loop (HITL)
+        middleware, or within a properly sandboxed environment if you need to run
+        untrusted workloads.
+
+        !!! note
+
+            `virtual_mode=True` is primarily for virtual path semantics (for example with
+            `CompositeBackend`). It can also provide path-based guardrails by blocking
+            traversal (`..`, `~`) and absolute paths outside `root_dir`, but it does not
+            provide sandboxing or process isolation. The default (`virtual_mode=False`)
+            provides no security even with `root_dir` set.
     """
 
     def __init__(
         self,
         root_dir: str | Path | None = None,
-        virtual_mode: bool = False,  # noqa: FBT001, FBT002  # Boolean arg is part of BackendProtocol API
+        virtual_mode: bool | None = None,  # noqa: FBT001
         max_file_size_mb: int = 10,
     ) -> None:
         """Initialize filesystem backend.
@@ -77,28 +88,28 @@ class FilesystemBackend(BackendProtocol):
         Args:
             root_dir: Optional root directory for file operations.
 
-                - If not provided, defaults to the current working directory.
-                - When `virtual_mode=False` (default): Only affects relative path
-                    resolution. Provides **no security** - agents can access any file
-                    using absolute paths or `..` sequences.
-                - When `virtual_mode=True`: All paths are restricted to this
-                    directory with traversal protection enabled.
+                Defaults to the current working directory.
 
-            virtual_mode: Enable path-based access restrictions.
+                - When `virtual_mode=False` (default): Only affects relative path resolution.
+                - When `virtual_mode=True`: Acts as a virtual root for filesystem operations.
+
+            virtual_mode: Enable virtual path mode.
+
+                **Primary use case:** stable, backend-independent path semantics when
+                used with `CompositeBackend`, which strips route prefixes and forwards
+                normalized paths to the routed backend.
 
                 When `True`, all paths are treated as virtual paths anchored to
                 `root_dir`. Path traversal (`..`, `~`) is blocked and all resolved paths
                 are verified to remain within `root_dir`.
 
-                When `False` (default), **no security is provided**:
+                When `False` (default), absolute paths are used as-is and relative paths
+                are resolved under `root_dir`. This provides no security against an agent
+                choosing paths outside `root_dir`.
 
                 - Absolute paths (e.g., `/etc/passwd`) bypass `root_dir` entirely
                 - Relative paths with `..` can escape `root_dir`
                 - Agents have unrestricted filesystem access
-
-                **Security note:** `virtual_mode=True` provides path-based access
-                control, not process isolation. It restricts which files can be
-                accessed via paths, but does not sandbox the Python process itself.
 
             max_file_size_mb: Maximum file size in megabytes for operations like
                 grep's Python fallback search.
@@ -106,6 +117,18 @@ class FilesystemBackend(BackendProtocol):
                 Files exceeding this limit are skipped during search. Defaults to 10 MB.
         """
         self.cwd = Path(root_dir).resolve() if root_dir else Path.cwd()
+        if virtual_mode is None:
+            warnings.warn(
+                "FilesystemBackend virtual_mode default will change in deepagents 0.5.0; "
+                "please specify virtual_mode explicitly. "
+                "Note: virtual_mode is for virtual path semantics (e.g., CompositeBackend routing) and optional path-based guardrails; "
+                "it does not provide sandboxing or process isolation. "
+                "Security note: leaving virtual_mode=False allows absolute paths and '..' to bypass root_dir. "
+                "Consult the API reference for details.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            virtual_mode = False
         self.virtual_mode = virtual_mode
         self.max_file_size_bytes = max_file_size_mb * 1024 * 1024
 
@@ -162,7 +185,7 @@ class FilesystemBackend(BackendProtocol):
         """
         return "/" + path.resolve().relative_to(self.cwd).as_posix()
 
-    def ls_info(self, path: str) -> list[FileInfo]:  # noqa: C901, PLR0912  # Complex virtual_mode logic
+    def ls_info(self, path: str) -> list[FileInfo]:  # noqa: C901, PLR0912, PLR0915  # Complex virtual_mode logic
         """List files and directories in the specified directory (non-recursive).
 
         Args:
@@ -227,8 +250,11 @@ class FilesystemBackend(BackendProtocol):
                     # Virtual mode: strip cwd prefix using Path for cross-platform support
                     try:
                         virt_path = self._to_virtual_path(child_path)
-                    except (ValueError, OSError):
-                        # Path escaped root or could not be resolved -- skip it
+                    except ValueError:
+                        logger.debug("Skipping path outside root: %s", child_path)
+                        continue
+                    except OSError:
+                        logger.warning("Could not resolve path: %s", child_path, exc_info=True)
                         continue
 
                     if is_file:
@@ -433,7 +459,7 @@ class FilesystemBackend(BackendProtocol):
                 matches.append({"path": fpath, "line": int(line_num), "text": line_text})
         return matches
 
-    def _ripgrep_search(self, pattern: str, base_full: Path, include_glob: str | None) -> dict[str, list[tuple[int, str]]] | None:
+    def _ripgrep_search(self, pattern: str, base_full: Path, include_glob: str | None) -> dict[str, list[tuple[int, str]]] | None:  # noqa: C901  # Split except clauses for logging
         """Search using ripgrep with fixed-string (literal) mode.
 
         Args:
@@ -477,7 +503,11 @@ class FilesystemBackend(BackendProtocol):
             if self.virtual_mode:
                 try:
                     virt = self._to_virtual_path(p)
-                except (ValueError, OSError):
+                except ValueError:
+                    logger.debug("Skipping grep result outside root: %s", p)
+                    continue
+                except OSError:
+                    logger.warning("Could not resolve grep result path: %s", p, exc_info=True)
                     continue
             else:
                 virt = str(p)
@@ -489,7 +519,7 @@ class FilesystemBackend(BackendProtocol):
 
         return results
 
-    def _python_search(self, pattern: str, base_full: Path, include_glob: str | None) -> dict[str, list[tuple[int, str]]]:  # noqa: C901
+    def _python_search(self, pattern: str, base_full: Path, include_glob: str | None) -> dict[str, list[tuple[int, str]]]:  # noqa: C901, PLR0912
         """Fallback search using Python when ripgrep is unavailable.
 
         Recursively searches files, respecting `max_file_size_bytes` limit.
@@ -514,8 +544,10 @@ class FilesystemBackend(BackendProtocol):
                     continue
             except (PermissionError, OSError):
                 continue
-            if include_glob and not wcglob.globmatch(fp.name, include_glob, flags=wcglob.BRACE):
-                continue
+            if include_glob:
+                rel_path = str(fp.relative_to(root))
+                if not wcglob.globmatch(rel_path, include_glob, flags=wcglob.BRACE | wcglob.GLOBSTAR):
+                    continue
             try:
                 if fp.stat().st_size > self.max_file_size_bytes:
                     continue
@@ -530,7 +562,11 @@ class FilesystemBackend(BackendProtocol):
                     if self.virtual_mode:
                         try:
                             virt_path = self._to_virtual_path(fp)
-                        except (ValueError, OSError):
+                        except ValueError:
+                            logger.debug("Skipping grep result outside root: %s", fp)
+                            continue
+                        except OSError:
+                            logger.warning("Could not resolve grep result path: %s", fp, exc_info=True)
                             continue
                     else:
                         virt_path = str(fp)
@@ -593,8 +629,11 @@ class FilesystemBackend(BackendProtocol):
                     # Virtual mode: use Path for cross-platform support
                     try:
                         virt = self._to_virtual_path(matched_path)
-                    except (ValueError, OSError):
-                        # Path escaped root or could not be resolved -- skip it
+                    except ValueError:
+                        logger.debug("Skipping glob result outside root: %s", matched_path)
+                        continue
+                    except OSError:
+                        logger.warning("Could not resolve glob result path: %s", matched_path, exc_info=True)
                         continue
                     try:
                         st = matched_path.stat()

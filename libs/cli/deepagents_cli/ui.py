@@ -81,6 +81,10 @@ def show_help() -> None:
     )
     console.print("  -a, --agent NAME           Agent to use (e.g., coder, researcher)")
     console.print("  -M, --model MODEL          Model to use (e.g., gpt-4o)")
+    console.print(
+        "  --model-params JSON        Extra model kwargs (e.g., '{\"temperature\": 0.7}')"  # noqa: E501
+    )
+    console.print("  --profile-override JSON    Override model profile fields as JSON")
     console.print("  -m, --message TEXT         Initial prompt to auto-submit on start")
     console.print(
         "  --auto-approve             Auto-approve all tool calls (toggle: Shift+Tab)"
@@ -92,13 +96,25 @@ def show_help() -> None:
     console.print(
         "  --sandbox-setup PATH       Setup script to run in sandbox after creation"
     )
+    console.print(
+        "  --mcp-config PATH          Load MCP tools from config file"
+        " (merged on top of auto-discovered configs)"
+    )
+    console.print("  --no-mcp                   Disable all MCP tool loading")
+    console.print(
+        "  --trust-project-mcp        Trust project MCP configs (skip approval prompt)"
+    )
     console.print("  -n, --non-interactive MSG  Run a single task and exit")
+    console.print("  -q, --quiet                Clean output for piping (needs -n)")
+    console.print(
+        "  --no-stream                Buffer full response instead of streaming"
+    )
     console.print(
         "  --shell-allow-list CMDS    Comma-separated local shell commands to allow"
     )
     console.print("  --default-model [MODEL]    Set, show, or manage the default model")
     console.print("  --clear-default-model      Clear the default model")
-    console.print("  -v, --version              Show deepagents CLI version")
+    console.print("  -v, --version              Show deepagents CLI and SDK versions")
     console.print("  -h, --help                 Show this help message and exit")
     console.print()
 

@@ -21,7 +21,12 @@ import sys
 import traceback
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from langchain_core.tools import BaseTool
+
+    from deepagents_cli.app import AppResult
 
 # Suppress Pydantic v1 compatibility warnings from langchain on Python 3.14+
 warnings.filterwarnings("ignore", message=".*Pydantic V1.*", category=UserWarning)
@@ -52,7 +57,7 @@ def check_cli_dependencies() -> None:
         missing.append("textual")
 
     if missing:
-        print("\n❌ Missing required CLI dependencies!")  # noqa: T201  # CLI output for missing dependencies
+        print("\nMissing required CLI dependencies!")  # noqa: T201  # CLI output for missing dependencies
         print("\nThe following packages are required to use the deepagents CLI:")  # noqa: T201  # CLI output for missing dependencies
         for pkg in missing:
             print(f"  - {pkg}")  # noqa: T201  # CLI output for missing dependencies
@@ -256,7 +261,7 @@ def parse_args() -> argparse.Namespace:
     threads_list.add_argument(
         "--limit",
         type=int,
-        default=20,
+        default=None,
         help="Max number of threads to display (default: 20)",
     )
     threads_delete = threads_sub.add_parser(
@@ -292,7 +297,7 @@ def parse_args() -> argparse.Namespace:
         "-M",
         "--model",
         metavar="MODEL",
-        help="Model to use (e.g., claude-sonnet-4-5-20250929, gpt-5.2). "
+        help="Model to use (e.g., claude-sonnet-4-6, gpt-5.2). "
         "Provider is auto-detected from model name.",
     )
 
@@ -302,6 +307,14 @@ def parse_args() -> argparse.Namespace:
         help="Extra kwargs to pass to the model as a JSON string "
         '(e.g., \'{"temperature": 0.7, "max_tokens": 4096}\'). '
         "These take priority, overriding config file values.",
+    )
+
+    parser.add_argument(
+        "--profile-override",
+        metavar="JSON",
+        help="Override model profile fields as a JSON string "
+        "(e.g., '{\"max_input_tokens\": 4096}'). "
+        "Merged on top of config file profile overrides.",
     )
 
     parser.add_argument(
@@ -393,12 +406,41 @@ def parse_args() -> argparse.Namespace:
         "or 'recommended' for safe defaults. "
         "Applies to both -n and interactive modes.",
     )
+    parser.add_argument(
+        "--mcp-config",
+        help="Path to MCP servers JSON configuration file (Claude Desktop format). "
+        "Merged on top of auto-discovered configs (highest precedence).",
+    )
+    parser.add_argument(
+        "--no-mcp",
+        action="store_true",
+        help="Disable all MCP tool loading (skip auto-discovery and explicit config)",
+    )
+    parser.add_argument(
+        "--trust-project-mcp",
+        action="store_true",
+        help="Trust project-level MCP configs with stdio servers "
+        "(skip interactive approval prompt)",
+    )
 
+    try:
+        from importlib.metadata import (
+            PackageNotFoundError,
+            version as _pkg_version,
+        )
+
+        sdk_version = _pkg_version("deepagents")
+    except PackageNotFoundError:
+        logger.debug("deepagents SDK package not found in environment")
+        sdk_version = "unknown"
+    except Exception:
+        logger.warning("Unexpected error looking up SDK version", exc_info=True)
+        sdk_version = "unknown"
     parser.add_argument(
         "-v",
         "--version",
         action="version",
-        version=f"deepagents-cli {__version__}",
+        version=f"deepagents-cli {__version__}\ndeepagents (SDK) {sdk_version}",
     )
     parser.add_argument(
         "-h",
@@ -418,10 +460,14 @@ async def run_textual_cli_async(
     sandbox_setup: str | None = None,
     model_name: str | None = None,
     model_params: dict[str, Any] | None = None,
+    profile_override: dict[str, Any] | None = None,
     thread_id: str | None = None,
     is_resumed: bool = False,
     initial_prompt: str | None = None,
-) -> int:
+    mcp_config_path: str | None = None,
+    no_mcp: bool = False,
+    trust_project_mcp: bool | None = None,
+) -> "AppResult":
     """Run the Textual CLI interface (async version).
 
     Args:
@@ -436,12 +482,22 @@ async def run_textual_cli_async(
         model_params: Extra kwargs from `--model-params` to pass to the model.
 
             These override config file values.
+        profile_override: Extra profile fields from `--profile-override`.
+
+            Merged on top of config file profile overrides.
         thread_id: Thread ID to use (new or resumed)
         is_resumed: Whether this is a resumed session
         initial_prompt: Optional prompt to auto-submit when session starts
+        mcp_config_path: Optional path to MCP servers JSON configuration file.
+
+            Merged on top of auto-discovered configs (highest precedence).
+        no_mcp: Disable all MCP tool loading.
+        trust_project_mcp: Controls project-level stdio server trust.
+
+            `True` to allow, `False` to deny, `None` to check trust store.
 
     Returns:
-        The app's return code (0 for success, non-zero for error).
+        An `AppResult` with the return code and final thread ID.
     """
     from rich.text import Text
 
@@ -453,18 +509,24 @@ async def run_textual_cli_async(
     from deepagents_cli.tools import fetch_url, http_request, web_search
 
     try:
-        result = create_model(model_name, extra_kwargs=model_params)
+        result = create_model(
+            model_name,
+            extra_kwargs=model_params,
+            profile_overrides=profile_override,
+        )
     except ModelConfigError as e:
+        from deepagents_cli.app import AppResult
+
         console.print(f"[bold red]Error:[/bold red] {e}")
-        return 1
+        return AppResult(return_code=1, thread_id=None)
 
     model = result.model
     result.apply_to_settings()
 
     # Show thread info
     if is_resumed:
-        msg = Text("Resuming thread: ", style="green")
-        msg.append(str(thread_id))
+        msg = Text("Resuming thread: ", style="dim")
+        msg.append(str(thread_id), style="dim")
         console.print(msg)
     else:
         msg = Text("Starting with thread: ", style="dim")
@@ -474,9 +536,35 @@ async def run_textual_cli_async(
     # Use async context manager for checkpointer
     async with get_checkpointer() as checkpointer:
         # Create agent with conditional tools
-        tools: list[Callable[..., Any] | dict[str, Any]] = [http_request, fetch_url]
+        tools: list[BaseTool | Callable[..., Any] | dict[str, Any]] = [
+            http_request,
+            fetch_url,
+        ]
         if settings.has_tavily:
             tools.append(web_search)
+
+        # Load MCP tools (explicit config, auto-discovery, or disabled)
+        mcp_session_manager = None
+        mcp_server_info = None
+        try:
+            from deepagents_cli.mcp_tools import resolve_and_load_mcp_tools
+
+            (
+                mcp_tools,
+                mcp_session_manager,
+                mcp_server_info,
+            ) = await resolve_and_load_mcp_tools(
+                explicit_config_path=mcp_config_path,
+                no_mcp=no_mcp,
+                trust_project_mcp=trust_project_mcp,
+            )
+            tools.extend(mcp_tools)
+        except FileNotFoundError as e:
+            console.print(f"[red]✗ MCP config file not found: {e}[/red]")
+            sys.exit(1)
+        except RuntimeError as e:
+            console.print(f"[red]✗ Failed to load MCP tools: {e}[/red]")
+            sys.exit(1)
 
         # Handle sandbox mode
         sandbox_backend = None
@@ -499,7 +587,7 @@ async def run_textual_cli_async(
                 sandbox_backend = sandbox_cm.__enter__()  # noqa: PLC2801  # Context manager used without `with` for long-lived sandbox lifecycle
             except (ImportError, ValueError, RuntimeError, NotImplementedError) as e:
                 console.print()
-                console.print("[red]❌ Sandbox creation failed[/red]")
+                console.print("[red]Sandbox creation failed[/red]")
                 console.print(Text(str(e), style="dim"))
                 sys.exit(1)
 
@@ -512,17 +600,23 @@ async def run_textual_cli_async(
                 sandbox_type=sandbox_type if sandbox_type != "none" else None,
                 auto_approve=auto_approve,
                 checkpointer=checkpointer,
+                mcp_server_info=mcp_server_info,
             )
-        except Exception as e:  # noqa: BLE001  # CLI needs robust error handling to show friendly error messages
-            error_text = Text("❌ Failed to create agent: ", style="red")
+        except Exception as e:  # broad catch for friendly CLI errors
+            logger.debug("Failed to create agent", exc_info=True)
+            error_text = Text("Failed to create agent: ", style="red")
             error_text.append(str(e))
             console.print(error_text)
+            if logger.isEnabledFor(logging.DEBUG):
+                console.print(Text(traceback.format_exc(), style="dim"))
             sys.exit(1)
 
         # Run Textual app - errors propagate to caller
-        return_code = 0
+        from deepagents_cli.app import AppResult
+
+        result = AppResult(return_code=1, thread_id=None)
         try:
-            return_code = await run_textual_app(
+            result = await run_textual_app(
                 agent=agent,
                 assistant_id=assistant_id,
                 backend=composite_backend,
@@ -534,13 +628,23 @@ async def run_textual_cli_async(
                 tools=tools,
                 sandbox=sandbox_backend,
                 sandbox_type=sandbox_type if sandbox_type != "none" else None,
+                mcp_server_info=mcp_server_info,
             )
         finally:
+            # Clean up MCP session manager if initialized
+            if mcp_session_manager is not None:
+                try:
+                    await mcp_session_manager.cleanup()
+                except Exception:
+                    logger.warning("MCP session cleanup failed", exc_info=True)
+
             # Clean up sandbox after app exits (success or error)
             if sandbox_cm is not None:
-                with contextlib.suppress(Exception):
+                try:
                     sandbox_cm.__exit__(None, None, None)
-        return return_code
+                except Exception:
+                    logger.warning("Sandbox cleanup failed", exc_info=True)
+        return result
 
 
 def apply_stdin_pipe(args: argparse.Namespace) -> None:
@@ -659,6 +763,102 @@ def apply_stdin_pipe(args: argparse.Namespace) -> None:
             )
 
 
+def _print_session_stats(stats: Any, console: Any) -> None:  # noqa: ANN401
+    """Print a session-level usage stats table to the console on TUI exit.
+
+    Args:
+        stats: The cumulative session stats from the Textual app.
+        console: Rich console for output.
+    """
+    from deepagents_cli.textual_adapter import SessionStats, print_usage_table
+
+    if not isinstance(stats, SessionStats):
+        return
+    print_usage_table(stats, stats.wall_time_seconds, console)
+
+
+def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
+    """Check whether project-level MCP stdio servers should be trusted.
+
+    When the project has no stdio servers in project-level configs, returns
+    `None` (no gate needed). When `--trust-project-mcp` was passed, returns
+    `True`. Otherwise checks the persistent trust store; if untrusted, shows
+    an interactive approval prompt.
+
+    Args:
+        trust_flag: Whether `--trust-project-mcp` was passed.
+
+    Returns:
+        `True` to allow project stdio servers, `False` to deny, or `None`
+            when no project stdio servers exist.
+    """
+    from deepagents_cli.mcp_tools import (
+        classify_discovered_configs,
+        discover_mcp_configs,
+        extract_stdio_server_commands,
+        load_mcp_config_lenient,
+    )
+
+    try:
+        config_paths = discover_mcp_configs()
+    except (OSError, RuntimeError):
+        return None
+
+    _, project_configs = classify_discovered_configs(config_paths)
+    if not project_configs:
+        return None
+
+    # Collect all stdio servers across project configs
+    all_stdio: list[tuple[str, str, list[str]]] = []
+    for path in project_configs:
+        cfg = load_mcp_config_lenient(path)
+        if cfg is not None:
+            all_stdio.extend(extract_stdio_server_commands(cfg))
+
+    if not all_stdio:
+        return None
+
+    if trust_flag:
+        return True
+
+    # Check trust store
+    from deepagents_cli.mcp_trust import (
+        compute_config_fingerprint,
+        is_project_mcp_trusted,
+        trust_project_mcp,
+    )
+    from deepagents_cli.project_utils import find_project_root
+
+    project_root = str((find_project_root() or Path.cwd()).resolve())
+    fingerprint = compute_config_fingerprint(project_configs)
+
+    if is_project_mcp_trusted(project_root, fingerprint):
+        return True
+
+    # Interactive prompt
+    from rich.console import Console as _Console
+
+    prompt_console = _Console(stderr=True)
+    prompt_console.print()
+    prompt_console.print(
+        "[bold yellow]Project MCP servers require approval:[/bold yellow]"
+    )
+    for name, cmd, args in all_stdio:
+        args_str = " ".join(args) if args else ""
+        prompt_console.print(f'  [bold]"{name}"[/bold]:  {cmd} {args_str}')
+    prompt_console.print()
+
+    try:
+        answer = input("Allow? [y/N]: ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        answer = ""
+
+    if answer == "y":
+        trust_project_mcp(project_root, fingerprint)
+        return True
+    return False
+
+
 def cli_main() -> None:
     """Entry point for console script."""
     # Fix for gRPC fork issue on macOS
@@ -670,6 +870,23 @@ def cli_main() -> None:
     # (before LangChain imports). This ensures agent traces use
     # DEEPAGENTS_LANGSMITH_PROJECT while shell commands use the
     # user's original LANGSMITH_PROJECT (via LocalShellBackend env).
+
+    # Fast path: print version without loading heavy dependencies
+    if len(sys.argv) == 2 and sys.argv[1] in {"-v", "--version"}:  # noqa: PLR2004  # argv length check for fast-path
+        try:
+            from importlib.metadata import (
+                PackageNotFoundError,
+                version as _pkg_version,
+            )
+
+            sdk_version = _pkg_version("deepagents")
+        except PackageNotFoundError:
+            sdk_version = "unknown"
+        except Exception:  # Best-effort SDK version lookup
+            logger.debug("Unexpected error looking up SDK version", exc_info=True)
+            sdk_version = "unknown"
+        print(f"deepagents-cli {__version__}\ndeepagents (SDK) {sdk_version}")  # noqa: T201  # CLI version output
+        sys.exit(0)
 
     # Check dependencies first
     check_cli_dependencies()
@@ -701,7 +918,34 @@ def cli_main() -> None:
                 )
                 sys.exit(1)
 
+        profile_override: dict[str, Any] | None = None
+        raw_profile = getattr(args, "profile_override", None)
+        if raw_profile:
+            try:
+                profile_override = json.loads(raw_profile)
+            except json.JSONDecodeError as e:
+                console.print(
+                    "[bold red]Error:[/bold red] "
+                    f"--profile-override is not valid JSON: {e}"
+                )
+                sys.exit(1)
+            if not isinstance(profile_override, dict):
+                console.print(
+                    "[bold red]Error:[/bold red] "
+                    "--profile-override must be a JSON object"
+                )
+                sys.exit(1)
+
         apply_stdin_pipe(args)
+
+        if getattr(args, "no_mcp", False) and getattr(args, "mcp_config", None):
+            from rich.console import Console as _Console
+
+            _Console(stderr=True).print(
+                "[bold red]Error:[/bold red] --no-mcp and --mcp-config "
+                "are mutually exclusive"
+            )
+            sys.exit(2)
 
         if (args.quiet or args.no_stream) and not args.non_interactive_message:
             # Print to stderr (not the module-level stdout console) and exit
@@ -799,7 +1043,7 @@ def cli_main() -> None:
                 asyncio.run(
                     list_threads_command(
                         agent_name=getattr(args, "agent", None),
-                        limit=getattr(args, "limit", 20),
+                        limit=getattr(args, "limit", None),
                     )
                 )
             elif args.threads_command == "delete":
@@ -835,11 +1079,15 @@ def cli_main() -> None:
                     assistant_id=args.agent,
                     model_name=getattr(args, "model", None),
                     model_params=model_params,
+                    profile_override=profile_override,
                     sandbox_type=args.sandbox,
                     sandbox_id=args.sandbox_id,
                     sandbox_setup=getattr(args, "sandbox_setup", None),
                     quiet=args.quiet,
                     stream=not args.no_stream,
+                    mcp_config_path=getattr(args, "mcp_config", None),
+                    no_mcp=getattr(args, "no_mcp", False),
+                    trust_project_mcp=getattr(args, "trust_project_mcp", False),
                 )
             )
             sys.exit(exit_code)
@@ -922,10 +1170,15 @@ def cli_main() -> None:
             if thread_id is None:
                 thread_id = generate_thread_id()
 
+            # Check project MCP trust before launching TUI
+            mcp_trust_decision = _check_mcp_project_trust(
+                trust_flag=getattr(args, "trust_project_mcp", False),
+            )
+
             # Run Textual CLI
             return_code = 0
             try:
-                return_code = asyncio.run(
+                result = asyncio.run(
                     run_textual_cli_async(
                         assistant_id=args.agent,
                         auto_approve=args.auto_approve,
@@ -934,11 +1187,20 @@ def cli_main() -> None:
                         sandbox_setup=getattr(args, "sandbox_setup", None),
                         model_name=getattr(args, "model", None),
                         model_params=model_params,
+                        profile_override=profile_override,
                         thread_id=thread_id,
                         is_resumed=is_resumed,
                         initial_prompt=getattr(args, "initial_prompt", None),
+                        mcp_config_path=getattr(args, "mcp_config", None),
+                        no_mcp=getattr(args, "no_mcp", False),
+                        trust_project_mcp=mcp_trust_decision,
                     )
                 )
+                return_code = result.return_code
+                # The user may have switched threads via /threads during the
+                # session; use the final thread ID for teardown messages.
+                thread_id = result.thread_id or thread_id
+                _print_session_stats(result.session_stats, console)
             except Exception as e:  # noqa: BLE001  # Top-level error handler for the application
                 error_msg = Text("\nApplication error: ", style="red")
                 error_msg.append(str(e))
@@ -964,8 +1226,8 @@ def cli_main() -> None:
                     exc_info=True,
                 )
 
-            # Show resume hint on exit (only for new threads with successful exit)
-            if thread_id and not is_resumed and return_code == 0:
+            # Show resume hint on exit for threads with checkpointed content.
+            if thread_id and return_code == 0 and asyncio.run(thread_exists(thread_id)):
                 console.print()
                 console.print("[dim]Resume this thread with:[/dim]")
                 hint = Text("deepagents -r ", style="cyan")

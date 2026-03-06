@@ -61,7 +61,7 @@ dependencies = [
     "tomli-w>=1.0.0,<2.0.0",
 
     # MCP
-    "langchain-mcp-adapters>=0.1.0",
+    "langchain-mcp-adapters>=0.2.0",
 ]
 
 [project.optional-dependencies]

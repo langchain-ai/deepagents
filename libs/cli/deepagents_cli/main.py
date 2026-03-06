@@ -24,6 +24,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from langchain_core.tools import BaseTool
+
     from deepagents_cli.app import AppResult
 
 # Suppress Pydantic v1 compatibility warnings from langchain on Python 3.14+
@@ -514,7 +516,10 @@ async def run_textual_cli_async(
     # Use async context manager for checkpointer
     async with get_checkpointer() as checkpointer:
         # Create agent with conditional tools
-        tools: list[Callable[..., Any] | dict[str, Any]] = [http_request, fetch_url]
+        tools: list[BaseTool | Callable[..., Any] | dict[str, Any]] = [
+            http_request,
+            fetch_url,
+        ]
         if settings.has_tavily:
             tools.append(web_search)
 

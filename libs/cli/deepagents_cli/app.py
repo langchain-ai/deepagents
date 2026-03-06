@@ -76,6 +76,7 @@ if TYPE_CHECKING:
     from deepagents.backends.sandbox import SandboxBackendProtocol
     from deepagents.middleware.summarization import SummarizationMiddleware
     from langchain_core.runnables import RunnableConfig
+    from langchain_core.tools import BaseTool
     from langgraph.checkpoint.base import BaseCheckpointSaver
     from langgraph.pregel import Pregel
     from textual.app import ComposeResult
@@ -532,7 +533,7 @@ class DeepAgentsApp(App):
         thread_id: str | None = None,
         initial_prompt: str | None = None,
         checkpointer: BaseCheckpointSaver | None = None,
-        tools: list[Callable[..., Any] | dict[str, Any]] | None = None,
+        tools: list[BaseTool | Callable[..., Any] | dict[str, Any]] | None = None,
         sandbox: SandboxBackendProtocol | None = None,
         sandbox_type: str | None = None,
         **kwargs: Any,
@@ -3149,7 +3150,7 @@ async def run_textual_app(
     thread_id: str | None = None,
     initial_prompt: str | None = None,
     checkpointer: BaseCheckpointSaver | None = None,
-    tools: list[Callable[..., Any] | dict[str, Any]] | None = None,
+    tools: list[BaseTool | Callable[..., Any] | dict[str, Any]] | None = None,
     sandbox: SandboxBackendProtocol | None = None,
     sandbox_type: str | None = None,
 ) -> AppResult:

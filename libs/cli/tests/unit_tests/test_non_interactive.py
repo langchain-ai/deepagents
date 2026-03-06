@@ -12,7 +12,7 @@ from rich.console import Console
 from rich.style import Style
 from rich.text import Text
 
-from deepagents_cli.config import ModelResult
+from deepagents_cli.config import SHELL_ALLOW_ALL, ModelResult
 from deepagents_cli.non_interactive import (
     ThreadUrlLookupState,
     _build_non_interactive_header,
@@ -913,7 +913,7 @@ class TestStartLangsmithThreadUrlLookup:
 
 
 class TestAutoApproveShellLogic:
-    """Tests for the 3-branch auto_approve + shell_allow_list decision."""
+    """Tests for the two-axis auto_approve x shell_allow_list decision."""
 
     @pytest.mark.parametrize(
         ("auto_approve", "shell_allow_list", "expected_enable_shell", "expected_auto"),
@@ -921,30 +921,44 @@ class TestAutoApproveShellLogic:
             pytest.param(
                 True,
                 None,
+                False,
                 True,
-                True,
-                id="auto-approve-enables-shell-and-auto-approve",
+                id="auto-approve-alone-no-shell",
             ),
             pytest.param(
                 True,
                 ["ls", "cat"],
                 True,
                 True,
-                id="auto-approve-overrides-allow-list",
+                id="auto-approve-with-allow-list",
             ),
             pytest.param(
                 False,
                 ["ls", "cat"],
                 True,
                 False,
-                id="allow-list-enables-shell-without-auto-approve",
+                id="allow-list-enables-shell-with-hitl",
             ),
             pytest.param(
                 False,
                 None,
                 False,
                 True,
-                id="no-flags-disables-shell-with-auto-approve",
+                id="no-flags-disables-shell-auto-approves",
+            ),
+            pytest.param(
+                False,
+                SHELL_ALLOW_ALL,
+                True,
+                True,
+                id="shell-allow-all-enables-shell-auto-approves",
+            ),
+            pytest.param(
+                True,
+                SHELL_ALLOW_ALL,
+                True,
+                True,
+                id="shell-allow-all-with-auto-approve",
             ),
         ],
     )

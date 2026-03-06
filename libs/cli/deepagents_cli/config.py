@@ -332,22 +332,32 @@ config: RunnableConfig = {"recursion_limit": 1000}
 console = Console(highlight=False)
 
 
+SHELL_ALLOW_ALL: list[str] = ["__ALL__"]
+"""Sentinel value returned by `parse_shell_allow_list` for `--shell-allow-list=all`."""
+
+
 def parse_shell_allow_list(allow_list_str: str | None) -> list[str] | None:
     """Parse shell allow-list from string.
 
     Args:
-        allow_list_str: Comma-separated list of commands, or "recommended" for
-            safe defaults.
+        allow_list_str: Comma-separated list of commands, `'recommended'` for
+            safe defaults, or `'all'` to allow any command.
 
-            Can also include "recommended" in the list to merge with custom commands.
+            Can also include `'recommended'` in the list to merge with custom
+            commands.
 
     Returns:
-        List of allowed commands, or None if no allow-list configured.
+        List of allowed commands, `SHELL_ALLOW_ALL` if `'all'` was specified,
+        or `None` if no allow-list configured.
     """
     if not allow_list_str:
         return None
 
-    # Special value "recommended" uses our curated safe list
+    # Special value 'all' allows any shell command
+    if allow_list_str.strip().lower() == "all":
+        return SHELL_ALLOW_ALL
+
+    # Special value 'recommended' uses our curated safe list
     if allow_list_str.strip().lower() == "recommended":
         return list(RECOMMENDED_SAFE_SHELL_COMMANDS)
 
@@ -890,6 +900,10 @@ def is_shell_command_allowed(command: str, allow_list: list[str] | None) -> bool
     """
     if not allow_list or not command or not command.strip():
         return False
+
+    # SHELL_ALLOW_ALL sentinel — skip pattern and token checks
+    if allow_list is SHELL_ALLOW_ALL:
+        return True
 
     # SECURITY: Check for dangerous patterns BEFORE any parsing
     # This prevents injection attacks like: ls "$(rm -rf /)"

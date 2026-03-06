@@ -350,7 +350,8 @@ def parse_args() -> argparse.Namespace:
         dest="non_interactive_message",
         metavar="TEXT",
         help="Run a single task non-interactively and exit "
-        "(shell disabled unless --shell-allow-list is set)",
+        "(shell disabled unless --shell-allow-list is set). "
+        "Use --auto-approve to also skip HITL prompts",
     )
 
     parser.add_argument(
@@ -403,7 +404,7 @@ def parse_args() -> argparse.Namespace:
         "--shell-allow-list",
         metavar="LIST",
         help="Comma-separated list of shell commands to auto-approve, "
-        "or 'recommended' for safe defaults. "
+        "'recommended' for safe defaults, or 'all' to allow any command. "
         "Applies to both -n and interactive modes.",
     )
     parser.add_argument(

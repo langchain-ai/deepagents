@@ -8,12 +8,31 @@ from __future__ import annotations
 
 import json
 from contextlib import AsyncExitStack
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from langchain_core.tools import BaseTool
     from langchain_mcp_adapters.client import Connection, MultiServerMCPClient
+
+
+@dataclass
+class MCPToolInfo:
+    """Metadata for a single MCP tool."""
+
+    name: str
+    description: str
+
+
+@dataclass
+class MCPServerInfo:
+    """Metadata for a connected MCP server and its tools."""
+
+    name: str
+    transport: str
+    tools: list[MCPToolInfo] = field(default_factory=list)
+
 
 _SUPPORTED_REMOTE_TYPES = {"sse", "http"}
 """Supported transport types for remote MCP servers (SSE and HTTP)."""
@@ -166,7 +185,7 @@ class MCPSessionManager:
 
 async def get_mcp_tools(
     config_path: str,
-) -> tuple[list[BaseTool], MCPSessionManager]:
+) -> tuple[list[BaseTool], MCPSessionManager, list[MCPServerInfo]]:
     """Load MCP tools from configuration file with stateful sessions.
 
     Supports multiple server types:
@@ -182,10 +201,11 @@ async def get_mcp_tools(
         config_path: Path to MCP JSON configuration file.
 
     Returns:
-        Tuple of `(tools_list, session_manager)` where:
+        Tuple of `(tools_list, session_manager, server_infos)` where:
             - tools_list: List of LangChain `BaseTool` objects
             - session_manager: `MCPSessionManager` instance
                 (call `cleanup()` when done)
+            - server_infos: List of `MCPServerInfo` with per-server metadata
 
     Raises:
         RuntimeError: If MCP server fails to spawn or connect.
@@ -244,7 +264,8 @@ async def get_mcp_tools(
 
     try:
         all_tools: list[BaseTool] = []
-        for server_name in config["mcpServers"]:
+        server_infos: list[MCPServerInfo] = []
+        for server_name, server_config in config["mcpServers"].items():
             session = await manager.exit_stack.enter_async_context(
                 client.session(server_name)
             )
@@ -252,6 +273,16 @@ async def get_mcp_tools(
                 session, server_name=server_name, tool_name_prefix=True
             )
             all_tools.extend(tools)
+            server_infos.append(
+                MCPServerInfo(
+                    name=server_name,
+                    transport=_resolve_server_type(server_config),
+                    tools=[
+                        MCPToolInfo(name=t.name, description=t.description or "")
+                        for t in tools
+                    ],
+                )
+            )
     except Exception as e:
         await manager.cleanup()
         error_msg = (
@@ -264,4 +295,4 @@ async def get_mcp_tools(
         )
         raise RuntimeError(error_msg) from e
 
-    return all_tools, manager
+    return all_tools, manager, server_infos

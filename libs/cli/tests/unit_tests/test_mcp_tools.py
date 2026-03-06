@@ -7,7 +7,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from deepagents_cli.mcp_tools import MCPSessionManager, get_mcp_tools, load_mcp_config
+from deepagents_cli.mcp_tools import (
+    MCPServerInfo,
+    MCPSessionManager,
+    MCPToolInfo,
+    get_mcp_tools,
+    load_mcp_config,
+)
 
 # Test Fixtures
 
@@ -453,7 +459,7 @@ class TestGetMCPTools:
         mock_client_class.return_value = mock_client
         mock_load_tools.return_value = mock_tools
 
-        tools, manager = await get_mcp_tools(path)
+        tools, manager, server_infos = await get_mcp_tools(path)
 
         # Verify client was initialized with correct connection config
         mock_client_class.assert_called_once()
@@ -475,6 +481,18 @@ class TestGetMCPTools:
         assert tools[0].name == "read_file"
         assert tools[1].name == "write_file"
         assert isinstance(manager, MCPSessionManager)
+
+        # Verify server_infos
+        assert len(server_infos) == 1
+        assert server_infos[0].name == "filesystem"
+        assert server_infos[0].transport == "stdio"
+        assert len(server_infos[0].tools) == 2
+        assert server_infos[0].tools[0] == MCPToolInfo(
+            name="read_file", description="Read a file"
+        )
+        assert server_infos[0].tools[1] == MCPToolInfo(
+            name="write_file", description="Write a file"
+        )
 
         # Clean up
         await manager.cleanup()
@@ -585,7 +603,7 @@ class TestGetMCPTools:
         mock_client_class.return_value = mock_client
         mock_load_tools.return_value = []
 
-        _, manager = await get_mcp_tools(path)
+        _, manager, _ = await get_mcp_tools(path)
 
         connections = mock_client_class.call_args.kwargs["connections"]
         assert connections["fs"]["env"] is None
@@ -654,7 +672,7 @@ class TestGetMCPTools:
 
         mock_load_tools.side_effect = mock_load_side_effect
 
-        tools, manager = await get_mcp_tools(path)
+        tools, manager, server_infos = await get_mcp_tools(path)
 
         # Verify both servers were registered
         call_kwargs = mock_client_class.call_args.kwargs
@@ -669,6 +687,15 @@ class TestGetMCPTools:
 
         # Verify tools from all servers were returned
         assert len(tools) == 3
+
+        # Verify server_infos for multiple servers
+        assert len(server_infos) == 2
+        assert server_infos[0].name == "filesystem"
+        assert server_infos[0].transport == "stdio"
+        assert len(server_infos[0].tools) == 2
+        assert server_infos[1].name == "brave-search"
+        assert server_infos[1].transport == "stdio"
+        assert len(server_infos[1].tools) == 1
 
         # Clean up
         await manager.cleanup()
@@ -721,7 +748,7 @@ class TestGetMCPTools:
         mock_client_class.return_value = mock_client
         mock_load_tools.return_value = []
 
-        _, manager = await get_mcp_tools(path)
+        _, manager, _ = await get_mcp_tools(path)
 
         # Verify env variables were passed correctly
         connections = mock_client_class.call_args.kwargs["connections"]
@@ -758,7 +785,7 @@ class TestGetMCPTools:
         mock_client_class.return_value = mock_client
         mock_load_tools.return_value = []
 
-        _, manager = await get_mcp_tools(path)
+        _, manager, _ = await get_mcp_tools(path)
 
         connections = mock_client_class.call_args.kwargs["connections"]
         assert connections["simple"]["env"] is None
@@ -795,7 +822,7 @@ class TestGetMCPTools:
         mock_client_class.return_value = mock_client
         mock_load_tools.return_value = []
 
-        _, manager = await get_mcp_tools(path)
+        _, manager, _ = await get_mcp_tools(path)
 
         # Verify headers were passed correctly
         connections = mock_client_class.call_args.kwargs["connections"]
@@ -833,7 +860,7 @@ class TestGetMCPTools:
         mock_client_class.return_value = mock_client
         mock_load_tools.return_value = []
 
-        _, manager = await get_mcp_tools(path)
+        _, manager, _ = await get_mcp_tools(path)
 
         # Verify headers were passed and transport is correct
         connections = mock_client_class.call_args.kwargs["connections"]
@@ -869,7 +896,7 @@ class TestGetMCPTools:
         mock_client_class.return_value = mock_client
         mock_load_tools.return_value = []
 
-        _, manager = await get_mcp_tools(path)
+        _, manager, _ = await get_mcp_tools(path)
 
         # Verify headers key is not present
         connections = mock_client_class.call_args.kwargs["connections"]

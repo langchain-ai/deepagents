@@ -748,7 +748,7 @@ async def run_non_interactive(
                 try:
                     from deepagents_cli.mcp_tools import get_mcp_tools
 
-                    mcp_tools, mcp_session_manager = await get_mcp_tools(
+                    mcp_tools, mcp_session_manager, _ = await get_mcp_tools(
                         mcp_config_path
                     )
                     tools.extend(mcp_tools)

@@ -85,6 +85,8 @@ if TYPE_CHECKING:
     from textual.widget import Widget
     from textual.worker import Worker
 
+    from deepagents_cli.mcp_tools import MCPServerInfo
+
 # iTerm2 Cursor Guide Workaround
 # ===============================
 # iTerm2's cursor guide (highlight cursor line) causes visual artifacts when
@@ -536,7 +538,7 @@ class DeepAgentsApp(App):
         tools: list[BaseTool | Callable[..., Any] | dict[str, Any]] | None = None,
         sandbox: SandboxBackendProtocol | None = None,
         sandbox_type: str | None = None,
-        mcp_tool_count: int = 0,
+        mcp_server_info: list[MCPServerInfo] | None = None,
         **kwargs: Any,
     ) -> None:
         """Initialize the Deep Agents application.
@@ -553,7 +555,7 @@ class DeepAgentsApp(App):
             tools: Tools used to create the agent (for model hot-swap)
             sandbox: Sandbox backend (for model hot-swap)
             sandbox_type: Type of sandbox provider (for model hot-swap)
-            mcp_tool_count: Number of MCP tools loaded (notification on mount).
+            mcp_server_info: MCP server metadata for the `/mcp` viewer.
             **kwargs: Additional arguments passed to parent
         """
         super().__init__(**kwargs)
@@ -570,7 +572,8 @@ class DeepAgentsApp(App):
         self._tools = tools or []
         self._sandbox = sandbox
         self._sandbox_type = sandbox_type
-        self._mcp_tool_count = mcp_tool_count
+        self._mcp_server_info = mcp_server_info
+        self._mcp_tool_count = sum(len(s.tools) for s in (mcp_server_info or []))
         self._status_bar: StatusBar | None = None
         self._chat_input: ChatInput | None = None
         self._quit_pending = False
@@ -1400,7 +1403,7 @@ class DeepAgentsApp(App):
         elif cmd == "/help":
             await self._mount_message(UserMessage(command))
             help_text = Text(
-                "Commands: /quit, /clear, /compact, "
+                "Commands: /quit, /clear, /compact, /mcp, "
                 "/model [--model-params JSON] [--default], /remember, "
                 "/tokens, /threads, /trace, /changelog, /docs, /feedback, /help\n\n"
                 "Interactive Features:\n"
@@ -1531,6 +1534,8 @@ class DeepAgentsApp(App):
             # Send as a user message to the agent
             await self._handle_user_message(final_prompt)
             return  # _handle_user_message already mounts the message
+        elif cmd == "/mcp":
+            await self._show_mcp_viewer()
         elif cmd == "/model" or cmd.startswith("/model "):
             model_arg = None
             set_default = False
@@ -2770,6 +2775,18 @@ class DeepAgentsApp(App):
         )
         self.push_screen(screen, handle_result)
 
+    async def _show_mcp_viewer(self) -> None:
+        """Show read-only MCP server/tool viewer as a modal screen."""
+        from deepagents_cli.widgets.mcp_viewer import MCPViewerScreen
+
+        screen = MCPViewerScreen(server_info=self._mcp_server_info or [])
+
+        def handle_result(result: None) -> None:  # noqa: ARG001
+            if self._chat_input:
+                self._chat_input.focus_input()
+
+        self.push_screen(screen, handle_result)
+
     async def _show_thread_selector(self) -> None:
         """Show interactive thread selector as a modal screen."""
         from deepagents_cli.sessions import get_cached_threads, get_thread_limit
@@ -3160,7 +3177,7 @@ async def run_textual_app(
     tools: list[BaseTool | Callable[..., Any] | dict[str, Any]] | None = None,
     sandbox: SandboxBackendProtocol | None = None,
     sandbox_type: str | None = None,
-    mcp_tool_count: int = 0,
+    mcp_server_info: list[MCPServerInfo] | None = None,
 ) -> AppResult:
     """Run the Textual application.
 
@@ -3176,7 +3193,7 @@ async def run_textual_app(
         tools: Tools used to create the agent (for model hot-swap)
         sandbox: Sandbox backend (for model hot-swap)
         sandbox_type: Type of sandbox provider (for model hot-swap)
-        mcp_tool_count: Number of MCP tools loaded (notification on mount).
+        mcp_server_info: MCP server metadata for the `/mcp` viewer.
 
     Returns:
         An `AppResult` with the return code and final thread ID.
@@ -3193,7 +3210,7 @@ async def run_textual_app(
         tools=tools,
         sandbox=sandbox,
         sandbox_type=sandbox_type,
-        mcp_tool_count=mcp_tool_count,
+        mcp_server_info=mcp_server_info,
     )
     await app.run_async()
     return AppResult(

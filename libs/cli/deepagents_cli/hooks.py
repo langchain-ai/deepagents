@@ -196,6 +196,11 @@ def dispatch_hook_fire_and_forget(event: str, payload: dict[str, Any]) -> None:
         event: Dotted event name (e.g. `'session.start'`).
         payload: Arbitrary JSON-serializable dict sent on the command's stdin.
     """
-    task = asyncio.get_running_loop().create_task(dispatch_hook(event, payload))
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        logger.debug("No running event loop; skipping hook for %s", event)
+        return
+    task = loop.create_task(dispatch_hook(event, payload))
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)

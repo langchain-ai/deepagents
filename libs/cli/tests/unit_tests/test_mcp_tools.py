@@ -500,7 +500,7 @@ class TestGetMCPTools:
         mock_client_class.side_effect = Exception("Command not found")
 
         with pytest.raises(
-            RuntimeError, match=r"Failed to connect to MCP servers.*Command not found"
+            RuntimeError, match=r"Failed to initialize MCP client.*Command not found"
         ):
             await get_mcp_tools(path)
 
@@ -524,9 +524,73 @@ class TestGetMCPTools:
 
         with pytest.raises(
             RuntimeError,
-            match=r"Failed to connect to MCP servers.*Server protocol error",
+            match=r"Failed to load tools from MCP server.*Server protocol error",
         ):
             await get_mcp_tools(path)
+
+    @patch("langchain_mcp_adapters.client.MultiServerMCPClient")
+    async def test_get_mcp_tools_cleanup_called_on_client_init_failure(
+        self, mock_client_class: MagicMock, write_config: Callable[..., str]
+    ) -> None:
+        """Test that manager.cleanup() is called when client init fails."""
+        path = write_config(
+            {"mcpServers": {"fs": {"command": "npx", "args": [], "env": {}}}}
+        )
+        mock_client_class.side_effect = Exception("init boom")
+
+        with patch.object(
+            MCPSessionManager, "cleanup", new_callable=AsyncMock
+        ) as mock_cleanup:
+            with pytest.raises(RuntimeError, match="Failed to initialize MCP client"):
+                await get_mcp_tools(path)
+            mock_cleanup.assert_awaited_once()
+
+    @patch("langchain_mcp_adapters.tools.load_mcp_tools")
+    @patch("langchain_mcp_adapters.client.MultiServerMCPClient")
+    async def test_get_mcp_tools_cleanup_called_on_tool_load_failure(
+        self,
+        mock_client_class: MagicMock,
+        mock_load_tools: AsyncMock,
+        write_config: Callable[..., str],
+        valid_config_data: dict,
+        mock_mcp_client: tuple,
+    ) -> None:
+        """Test that manager.cleanup() is called when tool loading fails."""
+        path = write_config(valid_config_data)
+        mock_client, _ = mock_mcp_client
+        mock_client_class.return_value = mock_client
+        mock_load_tools.side_effect = Exception("tool boom")
+
+        with patch.object(
+            MCPSessionManager, "cleanup", new_callable=AsyncMock
+        ) as mock_cleanup:
+            with pytest.raises(RuntimeError, match="Failed to load tools"):
+                await get_mcp_tools(path)
+            mock_cleanup.assert_awaited_once()
+
+    @patch("langchain_mcp_adapters.tools.load_mcp_tools")
+    @patch("langchain_mcp_adapters.client.MultiServerMCPClient")
+    async def test_get_mcp_tools_empty_env_dict_coerced_to_none(
+        self,
+        mock_client_class: MagicMock,
+        mock_load_tools: AsyncMock,
+        write_config: Callable[..., str],
+        mock_mcp_client: tuple,
+    ) -> None:
+        """Test that `"env": {}` is coerced to None (inherit parent env)."""
+        path = write_config(
+            {"mcpServers": {"fs": {"command": "npx", "args": [], "env": {}}}}
+        )
+        mock_client, _ = mock_mcp_client
+        mock_client_class.return_value = mock_client
+        mock_load_tools.return_value = []
+
+        _, manager = await get_mcp_tools(path)
+
+        connections = mock_client_class.call_args.kwargs["connections"]
+        assert connections["fs"]["env"] is None
+
+        await manager.cleanup()
 
     @patch("langchain_mcp_adapters.tools.load_mcp_tools")
     @patch("langchain_mcp_adapters.client.MultiServerMCPClient")

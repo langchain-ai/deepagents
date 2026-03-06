@@ -30,7 +30,10 @@ def _resolve_server_type(server_config: dict[str, Any]) -> str:
     Returns:
         Transport type string (`stdio`, `sse`, or `http`).
     """
-    return server_config.get("type") or server_config.get("transport", "stdio")
+    t = server_config.get("type")
+    if t is not None:
+        return t
+    return server_config.get("transport", "stdio")
 
 
 def _validate_server_config(server_name: str, server_config: dict[str, Any]) -> None:
@@ -205,22 +208,19 @@ async def get_mcp_tools(
         server_type = _resolve_server_type(server_config)
 
         if server_type in _SUPPORTED_REMOTE_TYPES:
-            # SSE/HTTP server connection
-            # Note: langchain-mcp-adapters uses "streamable_http" for HTTP transport
+            # langchain-mcp-adapters uses "streamable_http" for HTTP transport
             if server_type == "http":
-                conn = StreamableHttpConnection(
+                conn: Connection = StreamableHttpConnection(
                     transport="streamable_http",
                     url=server_config["url"],
                 )
-                if "headers" in server_config:
-                    conn["headers"] = server_config["headers"]
             else:
                 conn = SSEConnection(
                     transport="sse",
                     url=server_config["url"],
                 )
-                if "headers" in server_config:
-                    conn["headers"] = server_config["headers"]
+            if "headers" in server_config:
+                conn["headers"] = server_config["headers"]
             connections[server_name] = conn
         else:
             # stdio server connection (default)
@@ -235,14 +235,16 @@ async def get_mcp_tools(
     manager = MCPSessionManager()
 
     try:
-        # Initialize MultiServerMCPClient with all servers
         client = MultiServerMCPClient(connections=connections)
         manager.client = client
+    except Exception as e:
+        await manager.cleanup()
+        error_msg = f"Failed to initialize MCP client: {e}"
+        raise RuntimeError(error_msg) from e
 
-        # Load tools from all servers using persistent sessions
+    try:
         all_tools: list[BaseTool] = []
         for server_name in config["mcpServers"]:
-            # Create persistent session using AsyncExitStack to manage lifecycle
             session = await manager.exit_stack.enter_async_context(
                 client.session(server_name)
             )
@@ -250,12 +252,10 @@ async def get_mcp_tools(
                 session, server_name=server_name, tool_name_prefix=True
             )
             all_tools.extend(tools)
-
     except Exception as e:
-        # Clean up on failure
         await manager.cleanup()
         error_msg = (
-            f"Failed to connect to MCP servers: {e}\n"
+            f"Failed to load tools from MCP server '{server_name}': {e}\n"
             "For stdio servers: Check that the command and args are correct,"
             " and that the MCP server is installed"
             " (e.g., run 'npx -y <package>' manually to test).\n"

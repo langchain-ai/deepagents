@@ -1549,6 +1549,8 @@ class TestDetectProvider:
             ("claude-sonnet-4-5", "anthropic"),
             ("claude-opus-4-5", "anthropic"),
             ("gemini-3.1-pro-preview", "google_genai"),
+            ("nemotron-3-nano-30b-a3b", "nvidia"),
+            ("nvidia/nemotron-3-nano-30b-a3b", "nvidia"),
             ("llama3", None),
             ("mistral-large", None),
             ("some-unknown-model", None),

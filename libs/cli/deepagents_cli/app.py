@@ -3011,6 +3011,7 @@ class DeepAgentsApp(App):
                 sandbox_type=self._sandbox_type,
                 auto_approve=self._auto_approve,
                 checkpointer=self._checkpointer,
+                mcp_server_info=self._mcp_server_info,
             )
         except Exception as e:
             # Roll back settings so the running agent isn't misrepresented.

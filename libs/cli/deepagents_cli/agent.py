@@ -28,6 +28,8 @@ if TYPE_CHECKING:
     from langgraph.pregel import Pregel
     from langgraph.runtime import Runtime
 
+    from deepagents_cli.mcp_tools import MCPServerInfo
+
 from deepagents_cli.config import (
     COLORS,
     config,
@@ -398,6 +400,7 @@ def create_cli_agent(
     enable_skills: bool = True,
     enable_shell: bool = True,
     checkpointer: BaseCheckpointSaver | None = None,
+    mcp_server_info: list[MCPServerInfo] | None = None,
 ) -> tuple[Pregel, CompositeBackend]:
     """Create a CLI-configured agent with flexible options.
 
@@ -432,6 +435,7 @@ def create_cli_agent(
 
             If `None`, uses `InMemorySaver` (no persistence across
             CLI invocations).
+        mcp_server_info: MCP server metadata to surface in the system prompt.
 
     Returns:
         2-tuple of `(agent_graph, backend)`
@@ -545,7 +549,9 @@ def create_cli_agent(
     # Uses backend.execute() so it works in both local shell and remote sandbox modes.
     # Only enabled when the backend supports shell execution.
     if isinstance(backend, _ExecutableBackend):
-        agent_middleware.append(LocalContextMiddleware(backend=backend))
+        agent_middleware.append(
+            LocalContextMiddleware(backend=backend, mcp_server_info=mcp_server_info)
+        )
 
     # Get or use custom system prompt
     if system_prompt is None:

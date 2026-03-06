@@ -205,6 +205,79 @@ def discover_mcp_configs() -> list[Path]:
     return found
 
 
+def classify_discovered_configs(
+    config_paths: list[Path],
+) -> tuple[list[Path], list[Path]]:
+    """Split discovered config paths into user-level and project-level.
+
+    User-level configs live under `~/.deepagents/`. Everything else is
+    considered project-level.
+
+    Args:
+        config_paths: Paths returned by `discover_mcp_configs`.
+
+    Returns:
+        Tuple of `(user_configs, project_configs)`.
+    """
+    user_dir = Path.home() / ".deepagents"
+    user: list[Path] = []
+    project: list[Path] = []
+    for path in config_paths:
+        try:
+            if path.resolve().is_relative_to(user_dir.resolve()):
+                user.append(path)
+            else:
+                project.append(path)
+        except (OSError, ValueError):
+            project.append(path)
+    return user, project
+
+
+def extract_stdio_server_commands(
+    config: dict[str, Any],
+) -> list[tuple[str, str, list[str]]]:
+    """Extract stdio server entries from a parsed MCP config.
+
+    Args:
+        config: Parsed MCP config dict with `mcpServers` key.
+
+    Returns:
+        List of `(server_name, command, args)` for each stdio server.
+    """
+    results: list[tuple[str, str, list[str]]] = []
+    servers = config.get("mcpServers", {})
+    if not isinstance(servers, dict):
+        return results
+    for name, srv in servers.items():
+        if not isinstance(srv, dict):
+            continue
+        if _resolve_server_type(srv) == "stdio":
+            results.append((name, srv.get("command", ""), srv.get("args", [])))
+    return results
+
+
+def _filter_project_stdio_servers(config: dict[str, Any]) -> dict[str, Any]:
+    """Return a copy of *config* with stdio servers removed.
+
+    Remote (SSE/HTTP) servers are kept because they don't execute local code.
+
+    Args:
+        config: Parsed MCP config dict.
+
+    Returns:
+        Filtered config dict.
+    """
+    servers = config.get("mcpServers", {})
+    if not isinstance(servers, dict):
+        return config
+    filtered = {
+        name: srv
+        for name, srv in servers.items()
+        if isinstance(srv, dict) and _resolve_server_type(srv) != "stdio"
+    }
+    return {"mcpServers": filtered}
+
+
 def merge_mcp_configs(configs: list[dict[str, Any]]) -> dict[str, Any]:
     """Merge multiple MCP config dicts by server name.
 
@@ -402,6 +475,7 @@ async def resolve_and_load_mcp_tools(
     *,
     explicit_config_path: str | None = None,
     no_mcp: bool = False,
+    trust_project_mcp: bool | None = None,
 ) -> tuple[list[BaseTool], MCPSessionManager | None, list[MCPServerInfo]]:
     """Resolve MCP config and load tools.
 
@@ -414,6 +488,12 @@ async def resolve_and_load_mcp_tools(
             auto-discovered configs (highest precedence). Errors are
             fatal.
         no_mcp: If True, disable all MCP loading.
+        trust_project_mcp: Controls project-level stdio server trust:
+
+            - `True`: allow all project stdio servers (flag/prompt approved).
+            - `False`: filter out project stdio servers, log warning.
+            - `None` (default): check the persistent trust store; if the
+                fingerprint matches, allow; otherwise filter + warn.
 
     Returns:
         Tuple of `(tools_list, session_manager, server_infos)`.
@@ -434,11 +514,67 @@ async def resolve_and_load_mcp_tools(
         logger.warning("MCP config auto-discovery failed", exc_info=True)
         config_paths = []
 
+    # Classify discovered configs and apply trust filtering
+    user_configs, project_configs = classify_discovered_configs(config_paths)
+
     configs: list[dict[str, Any]] = []
-    for path in config_paths:
+
+    # User-level configs are always trusted
+    for path in user_configs:
         cfg = load_mcp_config_lenient(path)
         if cfg is not None:
             configs.append(cfg)
+
+    # Project-level configs need trust gating for stdio servers
+    for path in project_configs:
+        cfg = load_mcp_config_lenient(path)
+        if cfg is None:
+            continue
+
+        stdio_servers = extract_stdio_server_commands(cfg)
+        if not stdio_servers:
+            # No stdio servers — safe to load (remote only)
+            configs.append(cfg)
+            continue
+
+        if trust_project_mcp is True:
+            configs.append(cfg)
+        elif trust_project_mcp is False:
+            filtered = _filter_project_stdio_servers(cfg)
+            if filtered.get("mcpServers"):
+                configs.append(filtered)
+            skipped = [
+                f"{name}: {cmd} {' '.join(args)}" for name, cmd, args in stdio_servers
+            ]
+            logger.warning(
+                "Skipped untrusted project stdio MCP servers: %s",
+                "; ".join(skipped),
+            )
+        else:
+            # None — check trust store
+            from deepagents_cli.mcp_trust import (
+                compute_config_fingerprint,
+                is_project_mcp_trusted,
+            )
+            from deepagents_cli.project_utils import find_project_root
+
+            project_root = str((find_project_root() or Path.cwd()).resolve())
+            fingerprint = compute_config_fingerprint(project_configs)
+            if is_project_mcp_trusted(project_root, fingerprint):
+                configs.append(cfg)
+            else:
+                filtered = _filter_project_stdio_servers(cfg)
+                if filtered.get("mcpServers"):
+                    configs.append(filtered)
+                skipped = [
+                    f"{name}: {cmd} {' '.join(args)}"
+                    for name, cmd, args in stdio_servers
+                ]
+                logger.warning(
+                    "Skipped untrusted project stdio MCP servers "
+                    "(config changed or not yet approved): %s",
+                    "; ".join(skipped),
+                )
 
     # Explicit path is highest precedence — errors are fatal
     if explicit_config_path:

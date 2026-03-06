@@ -630,6 +630,7 @@ async def run_non_interactive(
     stream: bool = True,
     mcp_config_path: str | None = None,
     no_mcp: bool = False,
+    trust_project_mcp: bool = False,
 ) -> int:
     """Run a single task non-interactively and exit.
 
@@ -669,6 +670,9 @@ async def run_non_interactive(
         mcp_config_path: Optional path to MCP servers JSON configuration file.
             Merged on top of auto-discovered configs (highest precedence).
         no_mcp: Disable all MCP tool loading.
+        trust_project_mcp: When `True`, allow project-level stdio MCP
+            servers. When `False` (default), project stdio servers are
+            silently skipped.
 
     Returns:
         Exit code: 0 for success, 1 for error, 130 for keyboard interrupt.
@@ -753,6 +757,7 @@ async def run_non_interactive(
                 mcp_tools, mcp_session_manager, _ = await resolve_and_load_mcp_tools(
                     explicit_config_path=mcp_config_path,
                     no_mcp=no_mcp,
+                    trust_project_mcp=trust_project_mcp,
                 )
                 tools.extend(mcp_tools)
                 if mcp_tools:

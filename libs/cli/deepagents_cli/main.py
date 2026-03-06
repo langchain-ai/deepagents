@@ -416,6 +416,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Disable all MCP tool loading (skip auto-discovery and explicit config)",
     )
+    parser.add_argument(
+        "--trust-project-mcp",
+        action="store_true",
+        help="Trust project-level MCP configs with stdio servers "
+        "(skip interactive approval prompt)",
+    )
 
     try:
         from importlib.metadata import (
@@ -460,6 +466,7 @@ async def run_textual_cli_async(
     initial_prompt: str | None = None,
     mcp_config_path: str | None = None,
     no_mcp: bool = False,
+    trust_project_mcp: bool | None = None,
 ) -> "AppResult":
     """Run the Textual CLI interface (async version).
 
@@ -485,6 +492,9 @@ async def run_textual_cli_async(
 
             Merged on top of auto-discovered configs (highest precedence).
         no_mcp: Disable all MCP tool loading.
+        trust_project_mcp: Controls project-level stdio server trust.
+
+            `True` to allow, `False` to deny, `None` to check trust store.
 
     Returns:
         An `AppResult` with the return code and final thread ID.
@@ -546,6 +556,7 @@ async def run_textual_cli_async(
             ) = await resolve_and_load_mcp_tools(
                 explicit_config_path=mcp_config_path,
                 no_mcp=no_mcp,
+                trust_project_mcp=trust_project_mcp,
             )
             tools.extend(mcp_tools)
         except FileNotFoundError as e:
@@ -763,6 +774,88 @@ def _print_session_stats(stats: Any, console: Any) -> None:  # noqa: ANN401
     if not isinstance(stats, SessionStats):
         return
     print_usage_table(stats, stats.wall_time_seconds, console)
+
+
+def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
+    """Check whether project-level MCP stdio servers should be trusted.
+
+    When the project has no stdio servers in project-level configs, returns
+    `None` (no gate needed). When `--trust-project-mcp` was passed, returns
+    `True`. Otherwise checks the persistent trust store; if untrusted, shows
+    an interactive approval prompt.
+
+    Args:
+        trust_flag: Whether `--trust-project-mcp` was passed.
+
+    Returns:
+        `True` to allow project stdio servers, `False` to deny, or `None`
+            when no project stdio servers exist.
+    """
+    from deepagents_cli.mcp_tools import (
+        classify_discovered_configs,
+        discover_mcp_configs,
+        extract_stdio_server_commands,
+        load_mcp_config_lenient,
+    )
+
+    try:
+        config_paths = discover_mcp_configs()
+    except (OSError, RuntimeError):
+        return None
+
+    _, project_configs = classify_discovered_configs(config_paths)
+    if not project_configs:
+        return None
+
+    # Collect all stdio servers across project configs
+    all_stdio: list[tuple[str, str, list[str]]] = []
+    for path in project_configs:
+        cfg = load_mcp_config_lenient(path)
+        if cfg is not None:
+            all_stdio.extend(extract_stdio_server_commands(cfg))
+
+    if not all_stdio:
+        return None
+
+    if trust_flag:
+        return True
+
+    # Check trust store
+    from deepagents_cli.mcp_trust import (
+        compute_config_fingerprint,
+        is_project_mcp_trusted,
+        trust_project_mcp,
+    )
+    from deepagents_cli.project_utils import find_project_root
+
+    project_root = str((find_project_root() or Path.cwd()).resolve())
+    fingerprint = compute_config_fingerprint(project_configs)
+
+    if is_project_mcp_trusted(project_root, fingerprint):
+        return True
+
+    # Interactive prompt
+    from rich.console import Console as _Console
+
+    prompt_console = _Console(stderr=True)
+    prompt_console.print()
+    prompt_console.print(
+        "[bold yellow]Project MCP servers require approval:[/bold yellow]"
+    )
+    for name, cmd, args in all_stdio:
+        args_str = " ".join(args) if args else ""
+        prompt_console.print(f'  [bold]"{name}"[/bold]:  {cmd} {args_str}')
+    prompt_console.print()
+
+    try:
+        answer = input("Allow? [y/N]: ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        answer = ""
+
+    if answer == "y":
+        trust_project_mcp(project_root, fingerprint)
+        return True
+    return False
 
 
 def cli_main() -> None:
@@ -993,6 +1086,7 @@ def cli_main() -> None:
                     stream=not args.no_stream,
                     mcp_config_path=getattr(args, "mcp_config", None),
                     no_mcp=getattr(args, "no_mcp", False),
+                    trust_project_mcp=getattr(args, "trust_project_mcp", False),
                 )
             )
             sys.exit(exit_code)
@@ -1075,6 +1169,11 @@ def cli_main() -> None:
             if thread_id is None:
                 thread_id = generate_thread_id()
 
+            # Check project MCP trust before launching TUI
+            mcp_trust_decision = _check_mcp_project_trust(
+                trust_flag=getattr(args, "trust_project_mcp", False),
+            )
+
             # Run Textual CLI
             return_code = 0
             try:
@@ -1093,6 +1192,7 @@ def cli_main() -> None:
                         initial_prompt=getattr(args, "initial_prompt", None),
                         mcp_config_path=getattr(args, "mcp_config", None),
                         no_mcp=getattr(args, "no_mcp", False),
+                        trust_project_mcp=mcp_trust_decision,
                     )
                 )
                 return_code = result.return_code

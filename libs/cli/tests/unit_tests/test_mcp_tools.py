@@ -11,7 +11,10 @@ from deepagents_cli.mcp_tools import (
     MCPServerInfo,
     MCPSessionManager,
     MCPToolInfo,
+    _filter_project_stdio_servers,
+    classify_discovered_configs,
     discover_mcp_configs,
+    extract_stdio_server_commands,
     get_mcp_tools,
     load_mcp_config,
     load_mcp_config_lenient,
@@ -1129,7 +1132,9 @@ class TestResolveAndLoadMcpTools:
         )
         mock_load.return_value = ([], MCPSessionManager(), [])
 
-        await resolve_and_load_mcp_tools(explicit_config_path=str(explicit))
+        await resolve_and_load_mcp_tools(
+            explicit_config_path=str(explicit), trust_project_mcp=True
+        )
 
         mock_discover.assert_called_once()
         mock_load.assert_awaited_once()
@@ -1155,7 +1160,7 @@ class TestResolveAndLoadMcpTools:
         mock_discover.return_value = [c1, c2]
         mock_load.return_value = ([], MCPSessionManager(), [])
 
-        await resolve_and_load_mcp_tools()
+        await resolve_and_load_mcp_tools(trust_project_mcp=True)
 
         mock_load.assert_awaited_once()
         merged = mock_load.call_args.args[0]
@@ -1192,3 +1197,148 @@ class TestResolveAndLoadMcpTools:
         """no_mcp=True should not call discover_mcp_configs."""
         await resolve_and_load_mcp_tools(no_mcp=True)
         mock_discover.assert_not_called()
+
+    @patch("deepagents_cli.mcp_tools._load_tools_from_config")
+    @patch("deepagents_cli.mcp_tools.discover_mcp_configs")
+    async def test_trust_false_filters_project_stdio(
+        self,
+        mock_discover: MagicMock,
+        mock_load: AsyncMock,
+        tmp_path: Path,
+    ) -> None:
+        """trust_project_mcp=False filters out project-level stdio servers."""
+        project_cfg = tmp_path / ".mcp.json"
+        project_cfg.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "pwn": {"command": "bash", "args": ["-c", "evil"]},
+                        "remote": {"type": "sse", "url": "http://ok"},
+                    }
+                }
+            )
+        )
+        mock_discover.return_value = [project_cfg]
+        mock_load.return_value = ([], MCPSessionManager(), [])
+
+        await resolve_and_load_mcp_tools(trust_project_mcp=False)
+
+        mock_load.assert_awaited_once()
+        merged = mock_load.call_args.args[0]
+        assert "pwn" not in merged["mcpServers"]
+        assert "remote" in merged["mcpServers"]
+
+    @patch("deepagents_cli.mcp_tools._load_tools_from_config")
+    @patch("deepagents_cli.mcp_tools.discover_mcp_configs")
+    async def test_trust_true_allows_project_stdio(
+        self,
+        mock_discover: MagicMock,
+        mock_load: AsyncMock,
+        tmp_path: Path,
+    ) -> None:
+        """trust_project_mcp=True allows project-level stdio servers."""
+        project_cfg = tmp_path / ".mcp.json"
+        project_cfg.write_text(
+            json.dumps({"mcpServers": {"local": {"command": "npx", "args": []}}})
+        )
+        mock_discover.return_value = [project_cfg]
+        mock_load.return_value = ([], MCPSessionManager(), [])
+
+        await resolve_and_load_mcp_tools(trust_project_mcp=True)
+
+        mock_load.assert_awaited_once()
+        merged = mock_load.call_args.args[0]
+        assert "local" in merged["mcpServers"]
+
+
+class TestClassifyDiscoveredConfigs:
+    """Tests for classify_discovered_configs."""
+
+    def test_user_config_classified(self) -> None:
+        """Paths under ~/.deepagents/ are classified as user."""
+        user_path = Path.home() / ".deepagents" / ".mcp.json"
+        user, project = classify_discovered_configs([user_path])
+        assert user == [user_path]
+        assert project == []
+
+    def test_project_config_classified(self, tmp_path: Path) -> None:
+        """Paths outside ~/.deepagents/ are classified as project."""
+        project_path = tmp_path / ".mcp.json"
+        project_path.touch()
+        user, project = classify_discovered_configs([project_path])
+        assert user == []
+        assert project == [project_path]
+
+    def test_mixed_classification(self, tmp_path: Path) -> None:
+        """Mixed paths are split correctly."""
+        user_path = Path.home() / ".deepagents" / ".mcp.json"
+        project_path = tmp_path / ".mcp.json"
+        project_path.touch()
+        user, project = classify_discovered_configs([user_path, project_path])
+        assert user == [user_path]
+        assert project == [project_path]
+
+
+class TestExtractStdioServerCommands:
+    """Tests for extract_stdio_server_commands."""
+
+    def test_extracts_stdio(self) -> None:
+        """Extracts name, command, args from stdio servers."""
+        config = {
+            "mcpServers": {
+                "fs": {"command": "npx", "args": ["-y", "fs-server"]},
+            }
+        }
+        result = extract_stdio_server_commands(config)
+        assert result == [("fs", "npx", ["-y", "fs-server"])]
+
+    def test_skips_remote(self) -> None:
+        """SSE/HTTP servers are not extracted."""
+        config = {
+            "mcpServers": {
+                "remote": {"type": "sse", "url": "http://example.com"},
+            }
+        }
+        assert extract_stdio_server_commands(config) == []
+
+    def test_mixed(self) -> None:
+        """Only stdio servers are returned from mixed configs."""
+        config = {
+            "mcpServers": {
+                "local": {"command": "bash", "args": []},
+                "remote": {"type": "http", "url": "http://x"},
+            }
+        }
+        result = extract_stdio_server_commands(config)
+        assert len(result) == 1
+        assert result[0][0] == "local"
+
+    def test_empty_servers(self) -> None:
+        """Empty mcpServers returns empty list."""
+        assert extract_stdio_server_commands({"mcpServers": {}}) == []
+
+    def test_no_servers_key(self) -> None:
+        """Missing mcpServers returns empty list."""
+        assert extract_stdio_server_commands({}) == []
+
+
+class TestFilterProjectStdioServers:
+    """Tests for _filter_project_stdio_servers."""
+
+    def test_removes_stdio_keeps_remote(self) -> None:
+        """Stdio servers are removed, remote servers are kept."""
+        config = {
+            "mcpServers": {
+                "local": {"command": "bash", "args": []},
+                "remote": {"type": "sse", "url": "http://x"},
+            }
+        }
+        result = _filter_project_stdio_servers(config)
+        assert "local" not in result["mcpServers"]
+        assert "remote" in result["mcpServers"]
+
+    def test_all_stdio_returns_empty(self) -> None:
+        """Config with only stdio servers returns empty mcpServers."""
+        config = {"mcpServers": {"a": {"command": "x", "args": []}}}
+        result = _filter_project_stdio_servers(config)
+        assert result["mcpServers"] == {}

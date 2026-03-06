@@ -23,7 +23,6 @@ from textual.binding import Binding, BindingType
 from textual.containers import Container, VerticalScroll
 from textual.css.query import NoMatches
 from textual.screen import ModalScreen
-from textual.widgets import Static
 
 from deepagents_cli.clipboard import copy_selection_to_clipboard
 from deepagents_cli.config import (
@@ -79,9 +78,10 @@ if TYPE_CHECKING:
     from langgraph.checkpoint.base import BaseCheckpointSaver
     from langgraph.pregel import Pregel
     from textual.app import ComposeResult
-    from textual.events import Click, MouseUp, Paste, Resize
+    from textual.events import Click, MouseUp, Paste
     from textual.scrollbar import ScrollUp
     from textual.widget import Widget
+    from textual.widgets import Static
     from textual.worker import Worker
 
 # iTerm2 Cursor Guide Workaround
@@ -696,9 +696,6 @@ class DeepAgentsApp(App):
             except Exception:
                 logger.debug("Failed to check for optional tools", exc_info=True)
 
-        # Size the spacer to fill remaining viewport below input
-        self.call_after_refresh(self._size_initial_spacer)
-
         # Auto-submit initial prompt if provided via -m flag.
         # This check must come first because _lc_thread_id and _agent are
         # always set (even for brand-new sessions), so an elif after the
@@ -715,15 +712,6 @@ class DeepAgentsApp(App):
             self.call_after_refresh(
                 lambda: asyncio.create_task(self._load_thread_history())
             )
-
-    def on_resize(self, _event: Resize) -> None:
-        """Handle terminal resize to recalculate layout."""
-        try:
-            self.query_one("#chat-spacer", Static)
-            # Spacer exists, recalculate its height
-            self.call_after_refresh(self._size_initial_spacer)
-        except NoMatches:
-            pass  # Spacer already removed, no action needed
 
     async def _prewarm_threads_cache(self) -> None:  # noqa: PLR6301  # Worker hook kept as instance method
         """Prewarm thread selector cache without blocking app startup."""
@@ -965,28 +953,6 @@ class DeepAgentsApp(App):
                 await self._mount_before_queued(messages, self._loading_widget)
         # NOTE: Don't call _scroll_chat_to_bottom() here - it would re-anchor
         # and drag user back to bottom if they've scrolled away during streaming
-
-    def _size_initial_spacer(self) -> None:
-        """Size the spacer to fill remaining viewport below input."""
-        try:
-            chat = self.query_one("#chat", VerticalScroll)
-            welcome = self.query_one("#welcome-banner", WelcomeBanner)
-            input_container = self.query_one("#bottom-app-container", Container)
-            spacer = self.query_one("#chat-spacer", Static)
-            content_height = welcome.size.height + input_container.size.height + 4
-            spacer_height = chat.size.height - content_height
-            spacer.styles.height = max(0, spacer_height)
-        except NoMatches:
-            # Spacer may have been removed already (e.g., when resuming a session)
-            pass
-
-    async def _remove_spacer(self) -> None:
-        """Remove the initial spacer when first message is sent."""
-        try:
-            spacer = self.query_one("#chat-spacer", Static)
-            await spacer.remove()
-        except NoMatches:
-            pass
 
     async def _request_approval(
         self,
@@ -2285,9 +2251,6 @@ class DeepAgentsApp(App):
             # 3. Bulk load into store (sets visible window)
             _archived, visible = self._message_store.bulk_load(all_data)
 
-            # 4. Remove spacer once
-            await self._remove_spacer()
-
             # 5. Cache container ref (single query)
             try:
                 messages_container = self.query_one("#messages", Container)
@@ -2357,8 +2320,6 @@ class DeepAgentsApp(App):
         Args:
             widget: The message widget to mount
         """
-        await self._remove_spacer()
-
         try:
             messages = self.query_one("#messages", Container)
         except NoMatches:

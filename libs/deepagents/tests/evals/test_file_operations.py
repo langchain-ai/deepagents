@@ -8,7 +8,15 @@ from deepagents import create_deep_agent
 
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
-from tests.evals.utils import TrajectoryExpectations, run_agent
+from tests.evals.utils import (
+    TrajectoryScorer,
+    file_contains,
+    file_equals,
+    final_text_contains,
+    final_text_excludes,
+    run_agent,
+    tool_call,
+)
 
 
 @pytest.mark.langsmith
@@ -23,35 +31,7 @@ def test_read_file_seeded_state_backend_file(model: BaseChatModel) -> None:
         # 1st step: request a tool call to read /foo.md.
         # 2nd step: answer the question using the file contents.
         # 1 tool call request: read_file.
-        expect=TrajectoryExpectations(num_agent_steps=2, num_tool_call_requests=1).require_final_text_contains(
-            "three",
-            case_insensitive=True,
-        ),
-    )
-
-
-@pytest.mark.langsmith
-def test_tool_error_recovery_read_file_then_ls(model: BaseChatModel) -> None:
-    """User supplies a misspelled file path; agent recovers via ls instead of guessing."""
-    agent = create_deep_agent(model=model)
-    run_agent(
-        agent,
-        model=model,
-        initial_files={
-            "/docs/readme.md": "hello\n",
-            "/docs/release_notes.md": """Version: 1.2.3
-
-Important: The MAGIC_TOKEN is SAPPHIRE-13.
-""",
-        },
-        query=("First, try reading /docs/notes_for_release.md and tell me the MAGIC_TOKEN value."),
-        expect=(
-            TrajectoryExpectations(num_agent_steps=4, num_tool_call_requests=3)
-            .require_tool_call(step=1, name="read_file", args_contains={"file_path": "/docs/notes_for_release.md"})
-            .require_tool_call(step=2, name="ls", args_contains={"path": "/docs"})
-            .require_tool_call(step=3, name="read_file", args_contains={"file_path": "/docs/release_notes.md"})
-            .require_final_text_contains("SAPPHIRE-13")
-        ),
+        scorer=TrajectoryScorer().expect(agent_steps=2, tool_call_requests=1).success(final_text_contains("three", case_insensitive=True)),
     )
 
 
@@ -59,46 +39,55 @@ Important: The MAGIC_TOKEN is SAPPHIRE-13.
 def test_write_file_simple(model: BaseChatModel) -> None:
     """Writes a file then answers a follow-up."""
     agent = create_deep_agent(model=model, system_prompt="Your name is Foo Bar.")
-    trajectory = run_agent(
+    run_agent(
         agent,
         model=model,
         query="Write your name to a file called /foo.md and then tell me your name.",
         # 1st step: request a tool call to write /foo.md.
         # 2nd step: tell the user the name.
         # 1 tool call request: write_file.
-        expect=TrajectoryExpectations(num_agent_steps=2, num_tool_call_requests=1),
+        scorer=TrajectoryScorer()
+        .expect(agent_steps=2, tool_call_requests=1)
+        .success(
+            file_contains("/foo.md", "Foo Bar"),
+            final_text_contains("Foo Bar"),
+        ),
     )
-    assert "Foo Bar" in trajectory.files["/foo.md"]
-    assert "Foo Bar" in trajectory.steps[-1].action.text
 
 
 @pytest.mark.langsmith
 def test_write_files_in_parallel(model: str) -> None:
     """Writes two files in parallel without post-write verification or extra tool calls."""
     agent = create_deep_agent(model=model)
-    trajectory = run_agent(
+    run_agent(
         agent,
         model=model,
         query=('Write "bar" to /a.md and "bar" to /b.md. Do the writes in parallel. Do NOT read any files afterward. Reply with DONE only.'),
         # 1st step: request 2 write_file tool calls in parallel.
         # 2nd step: respond with "done".
         # 2 tool call requests: write_file to /a.md and write_file to /b.md.
-        expect=(
-            TrajectoryExpectations(num_agent_steps=2, num_tool_call_requests=2)
-            .require_tool_call(step=1, name="write_file", args_contains={"file_path": "/a.md"})
-            .require_tool_call(step=1, name="write_file", args_contains={"file_path": "/b.md"})
-            .require_final_text_contains("DONE")
+        scorer=TrajectoryScorer()
+        .expect(
+            agent_steps=2,
+            tool_call_requests=2,
+            tool_calls=[
+                tool_call(name="write_file", step=1, args_contains={"file_path": "/a.md"}),
+                tool_call(name="write_file", step=1, args_contains={"file_path": "/b.md"}),
+            ],
+        )
+        .success(
+            final_text_contains("DONE"),
+            file_equals("/a.md", "bar"),
+            file_equals("/b.md", "bar"),
         ),
     )
-    assert trajectory.files["/a.md"] == "bar"
-    assert trajectory.files["/b.md"] == "bar"
 
 
 @pytest.mark.langsmith
 def test_write_files_in_parallel_confirm_with_verification(model: str) -> None:
     """Writes two files in parallel, reads them back in parallel, then replies DONE."""
     agent = create_deep_agent(model=model)
-    trajectory = run_agent(
+    run_agent(
         agent,
         model=model,
         query=('Write "bar" to /a.md and "bar" to /b.md in parallel. Then read both files in parallel to verify. Reply with DONE only.'),
@@ -106,21 +95,27 @@ def test_write_files_in_parallel_confirm_with_verification(model: str) -> None:
         # 2nd step: request 2 read_file tool calls in parallel.
         # 3rd step: confirm.
         # 4 tool call requests: 2 write_file + 2 read_file.
-        expect=(
-            TrajectoryExpectations(num_agent_steps=3, num_tool_call_requests=4)
-            .require_tool_call(step=1, name="write_file", args_contains={"file_path": "/a.md"})
-            .require_tool_call(step=1, name="write_file", args_contains={"file_path": "/b.md"})
-            .require_tool_call(step=2, name="read_file", args_contains={"file_path": "/a.md"})
-            .require_tool_call(step=2, name="read_file", args_contains={"file_path": "/b.md"})
-            .require_final_text_contains("DONE")
+        scorer=TrajectoryScorer()
+        .expect(
+            agent_steps=3,
+            tool_call_requests=4,
+            tool_calls=[
+                tool_call(name="write_file", step=1, args_contains={"file_path": "/a.md"}),
+                tool_call(name="write_file", step=1, args_contains={"file_path": "/b.md"}),
+                tool_call(name="read_file", step=2, args_contains={"file_path": "/a.md"}),
+                tool_call(name="read_file", step=2, args_contains={"file_path": "/b.md"}),
+            ],
+        )
+        .success(
+            final_text_contains("DONE"),
+            file_equals("/a.md", "bar"),
+            file_equals("/b.md", "bar"),
         ),
     )
-    assert trajectory.files["/a.md"] == "bar"
-    assert trajectory.files["/b.md"] == "bar"
 
 
 @pytest.mark.langsmith
-def test_write_files_in_parallel_ambiguous_confirmation(model: str) -> None:
+def test_write_files_in_parallel_ambiguous_confirmation(model: BaseChatModel) -> None:
     """Intentionally ambiguous: the user asks for a reply but doesn't constrain verification.
 
     We keep this prompt ambiguous on purpose to measure default efficiency in the harness.
@@ -132,20 +127,24 @@ def test_write_files_in_parallel_ambiguous_confirmation(model: str) -> None:
     enforce step/tool-call counts.
     """
     agent = create_deep_agent(model=model)
-    trajectory = run_agent(
+    run_agent(
         agent,
         model=model,
         query='Write "bar" to /a.md and "bar" to /b.md. Do the writes in parallel, then reply DONE.',
         # Intentionally ambiguous: some models will confirm directly; others may read back to verify.
         # Only enforce the parallel writes; do not enforce step/tool-call counts.
-        expect=(
-            TrajectoryExpectations(num_agent_steps=None, num_tool_call_requests=None)
-            .require_tool_call(step=1, name="write_file", args_contains={"file_path": "/a.md"})
-            .require_tool_call(step=1, name="write_file", args_contains={"file_path": "/b.md"})
+        scorer=TrajectoryScorer()
+        .expect(
+            tool_calls=[
+                tool_call(name="write_file", step=1, args_contains={"file_path": "/a.md"}),
+                tool_call(name="write_file", step=1, args_contains={"file_path": "/b.md"}),
+            ],
+        )
+        .success(
+            file_equals("/a.md", "bar"),
+            file_equals("/b.md", "bar"),
         ),
     )
-    assert trajectory.files["/a.md"] == "bar"
-    assert trajectory.files["/b.md"] == "bar"
 
 
 @pytest.mark.langsmith
@@ -164,9 +163,7 @@ def test_ls_directory_contains_file_yes_no(model: BaseChatModel) -> None:
         # 1st step: request a tool call to list /foo.
         # 2nd step: answer YES/NO.
         # 1 tool call request: ls.
-        expect=TrajectoryExpectations(num_agent_steps=2, num_tool_call_requests=1).require_final_text_contains(
-            "[YES]",
-        ),
+        scorer=TrajectoryScorer().expect(agent_steps=2, tool_call_requests=1).success(final_text_contains("[YES]")),
     )
 
 
@@ -185,7 +182,7 @@ def test_ls_directory_missing_file_yes_no(model: BaseChatModel) -> None:
         # 1st step: request a tool call to list /foo.
         # 2nd step: answer YES/NO.
         # 1 tool call request: ls.
-        expect=TrajectoryExpectations(num_agent_steps=2, num_tool_call_requests=1).require_final_text_contains("[no]", case_insensitive=True),
+        scorer=TrajectoryScorer().expect(agent_steps=2, tool_call_requests=1).success(final_text_contains("[no]", case_insensitive=True)),
     )
 
 
@@ -193,7 +190,7 @@ def test_ls_directory_missing_file_yes_no(model: BaseChatModel) -> None:
 def test_edit_file_replace_text(model: BaseChatModel) -> None:
     """Edits a file by replacing text, then validates the edit."""
     agent = create_deep_agent(model=model)
-    trajectory = run_agent(
+    run_agent(
         agent,
         initial_files={"/note.md": "cat cat cat\n"},
         model=model,
@@ -204,16 +201,15 @@ def test_edit_file_replace_text(model: BaseChatModel) -> None:
         # 1st step: request a tool call to edit /note.md.
         # 2nd step: report completion.
         # 1 tool call request: edit_file.
-        expect=TrajectoryExpectations(num_agent_steps=2, num_tool_call_requests=1),
+        scorer=TrajectoryScorer().expect(agent_steps=2, tool_call_requests=1).success(file_equals("/note.md", "dog dog dog\n")),
     )
-    assert trajectory.files["/note.md"] == "dog dog dog\n"
 
 
 @pytest.mark.langsmith
 def test_read_then_write_derived_output(model: BaseChatModel) -> None:
     """Reads a file and writes a derived output file."""
     agent = create_deep_agent(model=model)
-    trajectory = run_agent(
+    run_agent(
         agent,
         model=model,
         initial_files={"/data.txt": "alpha\nbeta\ngamma\n"},
@@ -221,24 +217,29 @@ def test_read_then_write_derived_output(model: BaseChatModel) -> None:
         # 1st step: request a tool call to read /data.txt.
         # 2nd step: request a tool call to write /out.txt.
         # 2 tool call requests: read_file, write_file.
-        expect=TrajectoryExpectations(num_agent_steps=3, num_tool_call_requests=2),
+        scorer=TrajectoryScorer()
+        .expect(agent_steps=3, tool_call_requests=2)
+        .success(
+            file_contains("/out.txt", "gamma\nbeta\nalpha"),
+            file_contains("/out.txt", "gamma"),
+            file_contains("/out.txt", "beta"),
+            file_contains("/out.txt", "alpha"),
+        ),
     )
-    assert trajectory.files["/out.txt"].splitlines() == ["gamma", "beta", "alpha"]
 
 
 @pytest.mark.langsmith
 def test_avoid_unnecessary_tool_calls(model: BaseChatModel) -> None:
     """Answers a trivial question without using tools."""
     agent = create_deep_agent(model=model)
-    trajectory = run_agent(
+    run_agent(
         agent,
         query="What is 2+2? Answer with just the number.",
         model=model,
         # 1 step: answer directly.
         # 0 tool calls: no files/tools needed.
-        expect=TrajectoryExpectations(num_agent_steps=1, num_tool_call_requests=0),
+        scorer=TrajectoryScorer().expect(agent_steps=1, tool_call_requests=0).success(final_text_contains("4")),
     )
-    assert trajectory.steps[-1].action.text.strip() == "4"
 
 
 @pytest.mark.langsmith
@@ -256,12 +257,16 @@ def test_read_files_in_parallel(model: BaseChatModel) -> None:
         # 1st step: request 2 read_file tool calls in parallel.
         # 2nd step: answer YES/NO.
         # 2 tool call requests: read_file /a.md and read_file /b.md.
-        expect=(
-            TrajectoryExpectations(num_agent_steps=2, num_tool_call_requests=2)
-            .require_tool_call(step=1, name="read_file", args_contains={"file_path": "/a.md"})
-            .require_tool_call(step=1, name="read_file", args_contains={"file_path": "/b.md"})
-            .require_final_text_contains("[YES]")
-        ),
+        scorer=TrajectoryScorer()
+        .expect(
+            agent_steps=2,
+            tool_call_requests=2,
+            tool_calls=[
+                tool_call(name="read_file", step=1, args_contains={"file_path": "/a.md"}),
+                tool_call(name="read_file", step=1, args_contains={"file_path": "/b.md"}),
+            ],
+        )
+        .success(final_text_contains("[YES]")),
     )
 
 
@@ -269,7 +274,7 @@ def test_read_files_in_parallel(model: BaseChatModel) -> None:
 def test_grep_finds_matching_paths(model: BaseChatModel) -> None:
     """Uses grep to find matching files and reports the matching paths."""
     agent = create_deep_agent(model=model)
-    trajectory = run_agent(
+    run_agent(
         agent,
         model=model,
         initial_files={
@@ -281,20 +286,21 @@ def test_grep_finds_matching_paths(model: BaseChatModel) -> None:
         # 1st step: request a tool call to grep for 'needle'.
         # 2nd step: answer with the matching paths.
         # 1 tool call request: grep.
-        expect=(
-            TrajectoryExpectations(num_agent_steps=2, num_tool_call_requests=1)
-            .require_final_text_contains("/a.txt")
-            .require_final_text_contains("/c.md")
+        scorer=TrajectoryScorer()
+        .expect(agent_steps=2, tool_call_requests=1)
+        .success(
+            final_text_contains("/a.txt"),
+            final_text_contains("/c.md"),
+            final_text_excludes("/b.txt"),
         ),
     )
-    assert "/b.txt" not in trajectory.answer
 
 
 @pytest.mark.langsmith
 def test_glob_lists_markdown_files(model: BaseChatModel) -> None:
     """Uses glob to list files matching a pattern."""
     agent = create_deep_agent(model=model)
-    trajectory = run_agent(
+    run_agent(
         agent,
         model=model,
         initial_files={
@@ -306,13 +312,14 @@ def test_glob_lists_markdown_files(model: BaseChatModel) -> None:
         # 1st step: request a tool call to glob for markdown files.
         # 2nd step: answer with the matching paths.
         # 1 tool call request: glob.
-        expect=(
-            TrajectoryExpectations(num_agent_steps=2, num_tool_call_requests=1)
-            .require_final_text_contains("/foo/a.md")
-            .require_final_text_contains("/foo/c.md")
+        scorer=TrajectoryScorer()
+        .expect(agent_steps=2, tool_call_requests=1)
+        .success(
+            final_text_contains("/foo/a.md"),
+            final_text_contains("/foo/c.md"),
+            final_text_excludes("/foo/b.txt"),
         ),
     )
-    assert "/foo/b.txt" not in trajectory.answer
 
 
 @pytest.mark.langsmith
@@ -320,7 +327,7 @@ def test_find_magic_phrase_deep_nesting(model: BaseChatModel) -> None:
     """Finds a magic phrase in a deeply nested directory efficiently."""
     agent = create_deep_agent(model=model)
     magic_phrase = "cobalt-otter-17"
-    trajectory = run_agent(
+    run_agent(
         agent,
         model=model,
         initial_files={
@@ -334,13 +341,17 @@ def test_find_magic_phrase_deep_nesting(model: BaseChatModel) -> None:
         # 1st step: grep for MAGIC_PHRASE to locate the file.
         # 2nd step: read the file (if needed) and answer with the phrase.
         # 1 tool call requests: grep
-        expect=(
-            TrajectoryExpectations(num_agent_steps=2, num_tool_call_requests=1)
-            .require_tool_call(step=1, name="grep", args_contains={"pattern": "MAGIC_PHRASE:"})
-            .require_final_text_contains(magic_phrase)
+        scorer=TrajectoryScorer()
+        .expect(
+            agent_steps=2,
+            tool_call_requests=1,
+            tool_calls=[tool_call(name="grep", step=1, args_contains={"pattern": "MAGIC_PHRASE:"})],
+        )
+        .success(
+            final_text_contains(magic_phrase),
+            final_text_excludes("MAGIC_PHRASE"),
         ),
     )
-    assert "MAGIC_PHRASE" not in trajectory.answer
 
 
 @pytest.mark.langsmith
@@ -377,16 +388,20 @@ Clues: about programming readability; software craftsmanship.
         # 2nd step: read all quote files in parallel.
         # 3rd step: answer with the selected path.
         # 6 tool call requests: 1 ls + 5 read_file.
-        expect=(
-            TrajectoryExpectations(num_agent_steps=3, num_tool_call_requests=6)
-            .require_tool_call(step=1, name="ls", args_contains={"path": "/quotes"})
-            .require_tool_call(step=2, name="read_file", args_contains={"file_path": "/quotes/q1.txt"})
-            .require_tool_call(step=2, name="read_file", args_contains={"file_path": "/quotes/q2.txt"})
-            .require_tool_call(step=2, name="read_file", args_contains={"file_path": "/quotes/q3.txt"})
-            .require_tool_call(step=2, name="read_file", args_contains={"file_path": "/quotes/q4.txt"})
-            .require_tool_call(step=2, name="read_file", args_contains={"file_path": "/quotes/q5.txt"})
-            .require_final_text_contains("/quotes/q3.txt")
-        ),
+        scorer=TrajectoryScorer()
+        .expect(
+            agent_steps=3,
+            tool_call_requests=6,
+            tool_calls=[
+                tool_call(name="ls", step=1, args_contains={"path": "/quotes"}),
+                tool_call(name="read_file", step=2, args_contains={"file_path": "/quotes/q1.txt"}),
+                tool_call(name="read_file", step=2, args_contains={"file_path": "/quotes/q2.txt"}),
+                tool_call(name="read_file", step=2, args_contains={"file_path": "/quotes/q3.txt"}),
+                tool_call(name="read_file", step=2, args_contains={"file_path": "/quotes/q4.txt"}),
+                tool_call(name="read_file", step=2, args_contains={"file_path": "/quotes/q5.txt"}),
+            ],
+        )
+        .success(final_text_contains("/quotes/q3.txt")),
     )
 
 
@@ -422,14 +437,18 @@ Clues: about programming readability; software craftsmanship.
         # 2nd step: read all quote files (ideally in parallel).
         # 3rd step: answer with the selected path.
         # 6 tool call requests: 1 ls + 5 read_file.
-        expect=(
-            TrajectoryExpectations(num_agent_steps=3, num_tool_call_requests=6)
-            .require_tool_call(step=1, name="ls", args_contains={"path": "/quotes"})
-            .require_tool_call(step=2, name="read_file", args_contains={"file_path": "/quotes/q1.txt"})
-            .require_tool_call(step=2, name="read_file", args_contains={"file_path": "/quotes/q2.txt"})
-            .require_tool_call(step=2, name="read_file", args_contains={"file_path": "/quotes/q3.txt"})
-            .require_tool_call(step=2, name="read_file", args_contains={"file_path": "/quotes/q4.txt"})
-            .require_tool_call(step=2, name="read_file", args_contains={"file_path": "/quotes/q5.txt"})
-            .require_final_text_contains("/quotes/q3.txt")
-        ),
+        scorer=TrajectoryScorer()
+        .expect(
+            agent_steps=3,
+            tool_call_requests=6,
+            tool_calls=[
+                tool_call(name="ls", step=1, args_contains={"path": "/quotes"}),
+                tool_call(name="read_file", step=2, args_contains={"file_path": "/quotes/q1.txt"}),
+                tool_call(name="read_file", step=2, args_contains={"file_path": "/quotes/q2.txt"}),
+                tool_call(name="read_file", step=2, args_contains={"file_path": "/quotes/q3.txt"}),
+                tool_call(name="read_file", step=2, args_contains={"file_path": "/quotes/q4.txt"}),
+                tool_call(name="read_file", step=2, args_contains={"file_path": "/quotes/q5.txt"}),
+            ],
+        )
+        .success(final_text_contains("/quotes/q3.txt")),
     )

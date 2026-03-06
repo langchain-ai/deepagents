@@ -30,8 +30,9 @@ from pydantic import TypeAdapter, ValidationError
 
 from deepagents_cli.config import settings
 from deepagents_cli.file_ops import FileOpTracker
-from deepagents_cli.image_utils import create_multimodal_content
-from deepagents_cli.input import ImageTracker, parse_file_mentions
+from deepagents_cli.hooks import dispatch_hook
+from deepagents_cli.input import MediaTracker, parse_file_mentions
+from deepagents_cli.media_utils import create_multimodal_content
 from deepagents_cli.tool_display import format_tool_message_content
 from deepagents_cli.widgets.messages import (
     AppMessage,
@@ -416,7 +417,7 @@ async def execute_task_textual(
     session_state: Any,  # noqa: ANN401  # Dynamic session state type
     adapter: TextualUIAdapter,
     backend: Any = None,  # noqa: ANN401  # Dynamic backend type
-    image_tracker: ImageTracker | None = None,
+    image_tracker: MediaTracker | None = None,
 ) -> SessionStats:
     """Execute a task with output directed to Textual UI.
 
@@ -474,17 +475,23 @@ async def execute_task_textual(
     else:
         final_input = prompt_text
 
-    # Include images in the message content
+    # Include images and videos in the message content
     images_to_send = []
+    videos_to_send = []
     if image_tracker:
         images_to_send = image_tracker.get_images()
-    if images_to_send:
-        message_content = create_multimodal_content(final_input, images_to_send)
+        videos_to_send = image_tracker.get_videos()
+    if images_to_send or videos_to_send:
+        message_content = create_multimodal_content(
+            final_input, images_to_send, videos_to_send
+        )
     else:
         message_content = final_input
 
     thread_id = session_state.thread_id
     config = _build_stream_config(thread_id, assistant_id)
+
+    await dispatch_hook("session.start", {"thread_id": thread_id})
 
     captured_input_tokens = 0
     captured_output_tokens = 0
@@ -508,7 +515,7 @@ async def execute_task_textual(
     pending_text_by_namespace: dict[tuple, str] = {}
     assistant_message_by_namespace: dict[tuple, Any] = {}
 
-    # Clear images from tracker after creating the message
+    # Clear media from tracker after creating the message
     if image_tracker:
         image_tracker.clear()
 
@@ -566,6 +573,7 @@ async def execute_task_textual(
                                         validated_request
                                     )
                                     interrupt_occurred = True
+                                    await dispatch_hook("input.required", {})
                                 except ValidationError:  # noqa: TRY203  # Re-raise preserves exception context in handler
                                     raise
 
@@ -648,6 +656,10 @@ async def execute_task_textual(
                                 tool_msg.set_success(output_str)
                             else:
                                 tool_msg.set_error(output_str or "Error")
+                                await dispatch_hook(
+                                    "tool.error",
+                                    {"tool_names": [tool_msg._tool_name]},
+                                )
                             # Clean up - remove from tracking dict after status update
                             adapter._current_tool_messages.pop(tool_id, None)
 
@@ -888,6 +900,14 @@ async def execute_task_textual(
                             tool_msg.set_running()
                     else:
                         # Batch approval - one dialog for all parallel tool calls
+                        await dispatch_hook(
+                            "permission.request",
+                            {
+                                "tool_names": [
+                                    r.get("name", "") for r in action_requests
+                                ]
+                            },
+                        )
                         future = await adapter._request_approval(
                             action_requests, assistant_id
                         )
@@ -1005,6 +1025,7 @@ async def execute_task_textual(
 
                 stream_input = Command(resume=hitl_response)
             else:
+                await dispatch_hook("task.complete", {"thread_id": thread_id})
                 break
 
     except asyncio.CancelledError:

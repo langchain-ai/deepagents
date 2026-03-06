@@ -218,11 +218,12 @@ def format_tool_display(tool_name: str, tool_args: dict) -> str:
 def _format_content_block(block: dict) -> str:
     """Format a single content block dict for display.
 
-    Replaces large binary payloads (e.g. base64 image data) with a
+    Replaces large binary payloads (e.g. base64 image/video data) with a
     human-readable placeholder so they don't flood the terminal.
 
     Args:
-        block: An `ImageContentBlock` dictionary.
+        block: An `ImageContentBlock`, `VideoContentBlock`, or `FileContentBlock`
+            dictionary.
 
     Returns:
         A display-friendly string for the block.
@@ -232,6 +233,16 @@ def _format_content_block(block: dict) -> str:
         size_kb = len(b64) * 3 // 4 // 1024  # approximate decoded size
         mime = block.get("mime_type", "image")
         return f"[Image: {mime}, ~{size_kb}KB]"
+    if block.get("type") == "video" and isinstance(block.get("base64"), str):
+        b64 = block["base64"]
+        size_kb = len(b64) * 3 // 4 // 1024  # approximate decoded size
+        mime = block.get("mime_type", "video")
+        return f"[Video: {mime}, ~{size_kb}KB]"
+    if block.get("type") == "file" and isinstance(block.get("base64"), str):
+        b64 = block["base64"]
+        size_kb = len(b64) * 3 // 4 // 1024  # approximate decoded size
+        mime = block.get("mime_type", "file")
+        return f"[File: {mime}, ~{size_kb}KB]"
     try:
         return json.dumps(block)
     except (TypeError, ValueError):

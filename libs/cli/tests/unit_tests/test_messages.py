@@ -303,12 +303,12 @@ def _compose_text(widget: UserMessage | QueuedUserMessage) -> Text:
 class TestUserMessageModeRendering:
     """Test `UserMessage` renders mode-specific prefix indicators and colors."""
 
-    def test_bash_prefix_renders_bang_indicator(self) -> None:
-        """`UserMessage('!ls')` should render with `'! '` prefix and bash body."""
+    def test_shell_prefix_renders_bang_indicator(self) -> None:
+        """`UserMessage('!ls')` should render with `'! '` prefix and shell body."""
         text = _compose_text(UserMessage("!ls"))
         assert text.plain == "! ls"
         first_span = text._spans[0]
-        assert COLORS["mode_bash"] in str(first_span.style)
+        assert COLORS["mode_shell"] in str(first_span.style)
 
     def test_command_prefix_renders_slash_indicator(self) -> None:
         """`UserMessage('/help')` should render with `'/ '` prefix and body."""
@@ -333,7 +333,7 @@ class TestUserMessageModeRendering:
 class TestQueuedUserMessageModeRendering:
     """Test `QueuedUserMessage` renders mode-specific prefix indicators (dimmed)."""
 
-    def test_bash_prefix_renders_dimmed_bang(self) -> None:
+    def test_shell_prefix_renders_dimmed_bang(self) -> None:
         """`QueuedUserMessage('!ls')` should render dimmed `'! '` prefix."""
         text = _compose_text(QueuedUserMessage("!ls"))
         assert text.plain == "! ls"

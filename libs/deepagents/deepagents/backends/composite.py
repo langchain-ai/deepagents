@@ -19,6 +19,7 @@ Examples:
 """
 
 from collections import defaultdict
+from dataclasses import replace
 from typing import cast
 
 from deepagents.backends.protocol import (
@@ -80,8 +81,11 @@ def _route_for_path(
         prefix_no_slash = route_prefix.rstrip("/")
         if path == prefix_no_slash:
             return backend, "/", route_prefix
-        if path.startswith(route_prefix):
-            suffix = path[len(route_prefix) :]
+
+        # Ensure route_prefix ends with / for startswith check to enforce boundary
+        normalized_prefix = route_prefix if route_prefix.endswith("/") else f"{route_prefix}/"
+        if path.startswith(normalized_prefix):
+            suffix = path[len(normalized_prefix) :]
             backend_path = f"/{suffix}" if suffix else "/"
             return backend, backend_path, route_prefix
     return default, path, None
@@ -414,6 +418,8 @@ class CompositeBackend(BackendProtocol):
         """
         backend, stripped_key = self._get_backend_and_key(file_path)
         res = backend.write(stripped_key, content)
+        if res.path is not None:
+            res = replace(res, path=file_path)
         # If this is a state-backed update and default has state, merge so listings reflect changes
         if res.files_update:
             try:
@@ -435,6 +441,8 @@ class CompositeBackend(BackendProtocol):
         """Async version of write."""
         backend, stripped_key = self._get_backend_and_key(file_path)
         res = await backend.awrite(stripped_key, content)
+        if res.path is not None:
+            res = replace(res, path=file_path)
         # If this is a state-backed update and default has state, merge so listings reflect changes
         if res.files_update:
             try:
@@ -468,6 +476,8 @@ class CompositeBackend(BackendProtocol):
         """
         backend, stripped_key = self._get_backend_and_key(file_path)
         res = backend.edit(stripped_key, old_string, new_string, replace_all=replace_all)
+        if res.path is not None:
+            res = replace(res, path=file_path)
         if res.files_update:
             try:
                 runtime = getattr(self.default, "runtime", None)
@@ -490,6 +500,8 @@ class CompositeBackend(BackendProtocol):
         """Async version of edit."""
         backend, stripped_key = self._get_backend_and_key(file_path)
         res = await backend.aedit(stripped_key, old_string, new_string, replace_all=replace_all)
+        if res.path is not None:
+            res = replace(res, path=file_path)
         if res.files_update:
             try:
                 runtime = getattr(self.default, "runtime", None)

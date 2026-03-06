@@ -60,4 +60,10 @@ def model(model_name: str) -> BaseChatModel:
             base_url="https://integrate.api.nvidia.com/v1",
             api_key=os.environ["NVIDIA_API_KEY"],
         )
+    if model_name.startswith("baseten:"):
+        return ChatOpenAI(
+            model=model_name.removeprefix("baseten:"),
+            base_url="https://inference.baseten.co/v1",
+            api_key=os.environ["BASETEN_API_KEY"],
+        )
     return init_chat_model(model_name)

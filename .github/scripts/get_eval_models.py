@@ -29,9 +29,9 @@ MODELS: list[str] = [
     "openai:gpt-4.1",
     "openai:o3",
     "openai:o4-mini",
-    "openai:gpt-5",
     "openai:gpt-5.1-codex",
     "openai:gpt-5.2-codex",
+    "openai:gpt-5.4",
     # Google
     "google_genai:gemini-2.5-flash",
     "google_genai:gemini-2.5-pro",
@@ -55,16 +55,29 @@ MODELS: list[str] = [
     "ollama:qwen3-coder:480b-cloud",
     "ollama:qwen3.5:397b-cloud",
     "ollama:deepseek-v3.2:cloud",
+    # Baseten
+    "baseten:zai-org/GLM-5",
+    "baseten:MiniMaxAI/MiniMax-M2.5",
+    # Fireworks
+    "fireworks:accounts/fireworks/models/qwen3-235b-a22b-instruct-2507",
+    "fireworks:accounts/fireworks/models/deepseek-v3-0324",
 ]
 
 SET1: list[str] = [
+    "anthropic:claude-haiku-4-5-20251001",
     "anthropic:claude-sonnet-4-6",
     "anthropic:claude-opus-4-6",
     "openai:gpt-4.1",
-    "openai:o3",
-    "openai:gpt-5",
+    "openai:gpt-5.2-codex",
+    "openai:gpt-5.4",
+    "google_genai:gemini-3.1-pro-preview",
     "google_genai:gemini-2.5-pro",
-    "xai:grok-4",
+    "ollama:glm-5",
+    "ollama:minimax-m2.5",
+    "ollama:qwen3.5:397b-cloud",
+    "baseten:zai-org/GLM-5",
+    "baseten:MiniMaxAI/MiniMax-M2.5",
+    "fireworks:accounts/fireworks/models/qwen3-235b-a22b-instruct-2507",
 ]
 
 
@@ -79,9 +92,9 @@ def _resolve_models(selection: str) -> list[str]:
     if selection == "set1":
         return SET1
     specs = [s.strip() for s in selection.split(",") if s.strip()]
-    unknown = [s for s in specs if s not in MODELS]
-    if unknown:
-        msg = f"Unknown model(s): {', '.join(repr(s) for s in unknown)}"
+    invalid = [s for s in specs if ":" not in s]
+    if invalid:
+        msg = f"Invalid model spec(s) (expected 'provider:model'): {', '.join(repr(s) for s in invalid)}"
         raise ValueError(msg)
     return specs
 

@@ -912,6 +912,105 @@ class TestStartLangsmithThreadUrlLookup:
         assert state.url is None
 
 
+class TestAutoApproveShellLogic:
+    """Tests for the 3-branch auto_approve + shell_allow_list decision."""
+
+    @pytest.mark.parametrize(
+        ("auto_approve", "shell_allow_list", "expected_enable_shell", "expected_auto"),
+        [
+            pytest.param(
+                True,
+                None,
+                True,
+                True,
+                id="auto-approve-enables-shell-and-auto-approve",
+            ),
+            pytest.param(
+                True,
+                ["ls", "cat"],
+                True,
+                True,
+                id="auto-approve-overrides-allow-list",
+            ),
+            pytest.param(
+                False,
+                ["ls", "cat"],
+                True,
+                False,
+                id="allow-list-enables-shell-without-auto-approve",
+            ),
+            pytest.param(
+                False,
+                None,
+                False,
+                True,
+                id="no-flags-disables-shell-with-auto-approve",
+            ),
+        ],
+    )
+    async def test_shell_auto_approve_branches(
+        self,
+        auto_approve: bool,
+        shell_allow_list: list[str] | None,
+        expected_enable_shell: bool,
+        expected_auto: bool,
+    ) -> None:
+        """Verify create_cli_agent receives correct enable_shell and auto_approve."""
+        mock_cp = MagicMock()
+        mock_checkpointer_cm = AsyncMock()
+        mock_checkpointer_cm.__aenter__.return_value = mock_cp
+        mock_checkpointer_cm.__aexit__.return_value = None
+
+        with (
+            patch(
+                "deepagents_cli.non_interactive.create_model",
+                return_value=ModelResult(
+                    model=MagicMock(),
+                    model_name="test-model",
+                    provider="test",
+                ),
+            ),
+            patch(
+                "deepagents_cli.non_interactive.generate_thread_id",
+                return_value="test-thread",
+            ),
+            patch(
+                "deepagents_cli.non_interactive.settings",
+            ) as mock_settings,
+            patch(
+                "deepagents_cli.non_interactive.build_langsmith_thread_url",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_cli.non_interactive.get_checkpointer",
+                return_value=mock_checkpointer_cm,
+            ),
+            patch(
+                "deepagents_cli.non_interactive.create_cli_agent",
+            ) as mock_create_agent,
+            patch(
+                "deepagents_cli.mcp_tools.resolve_and_load_mcp_tools",
+                return_value=([], None, []),
+            ),
+        ):
+            mock_settings.shell_allow_list = shell_allow_list
+            mock_settings.has_tavily = False
+            mock_settings.model_name = None
+
+            mock_agent = MagicMock()
+            mock_agent.astream = MagicMock(return_value=_async_iter([]))
+            mock_create_agent.return_value = (mock_agent, MagicMock())
+
+            await run_non_interactive(
+                message="test task",
+                auto_approve=auto_approve,
+            )
+
+        _, kwargs = mock_create_agent.call_args
+        assert kwargs["enable_shell"] is expected_enable_shell
+        assert kwargs["auto_approve"] is expected_auto
+
+
 async def _async_iter(items: list[object]) -> AsyncIterator[object]:  # noqa: RUF029
     """Create an async iterator from a list for testing."""
     for item in items:

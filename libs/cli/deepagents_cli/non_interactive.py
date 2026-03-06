@@ -3,19 +3,18 @@
 Provides `run_non_interactive` which runs a single user task against the
 agent graph, streams results to stdout, and exits with an appropriate code.
 
-Shell commands are gated by an optional allow-list. When no allow-list is
-set, shell is disabled and all other tool calls are auto-approved via the
-`auto_approve` flag. When an allow-list is provided, shell is enabled and
-all tool calls (shell and non-shell) pass through HITL, where non-shell
-tools are approved unconditionally and shell commands are validated against
-the list.
+Shell/auto-approve behaviour is determined by a three-way decision:
+
+1. `--auto-approve` — shell is enabled **and** all tool calls (including
+   shell) are auto-approved with no human-in-the-loop gating.
+2. `--shell-allow-list` (without `--auto-approve`) — shell is enabled but
+   every command is validated against the allow-list via HITL; non-shell
+   tools are approved unconditionally.
+3. Neither flag — shell is disabled entirely and all other tool calls are
+   auto-approved.
 
 An optional quiet mode (`--quiet` / `-q`) redirects all console output to
 stderr, leaving stdout exclusively for the agent's response text.
-
-Note: in non-interactive mode (`-n`), auto-approval is determined solely by
-whether a `--shell-allow-list` is present, not by the `--auto-approve` CLI
-flag. See `run_non_interactive` for details.
 """
 
 from __future__ import annotations
@@ -383,6 +382,10 @@ def _make_hitl_decision(
 ) -> dict[str, str]:
     """Decide whether to approve or reject a single action request.
 
+    This function is only invoked when HITL is active (`auto_approve=False`).
+    When `--auto-approve` is set, `interrupt_on` is empty and this function
+    is bypassed entirely.
+
     Shell tools are always gated: if an allow-list is configured, the command
     is validated against it; if no allow-list is configured, shell commands
     are rejected outright (defense-in-depth -- the caller should disable
@@ -681,11 +684,12 @@ async def run_non_interactive(
 ) -> int:
     """Run a single task non-interactively and exit.
 
-    When no `shell_allow_list` is configured, shell execution is disabled
-    and all other tool calls are auto-approved (no HITL prompts). When an
-    allow-list **is** provided, shell execution is enabled but gated by the
-    list; commands not in the list are rejected with an error message sent
-    back to the agent.
+    When `auto_approve` is `True`, shell execution is enabled and all tool
+    calls are auto-approved with no HITL gating. When `auto_approve` is `False`
+    and a `shell_allow_list` is configured, shell execution is enabled but gated
+    by the list; commands not in the list are rejected with an error message
+    sent back to the agent. When neither flag is set, shell execution is
+    disabled and all other tool calls are auto-approved.
 
     Note: startup header rendering avoids synchronous LangSmith URL lookups.
     A background thread resolves the thread URL concurrently and the result is
@@ -720,8 +724,9 @@ async def run_non_interactive(
         trust_project_mcp: When `True`, allow project-level stdio MCP
             servers. When `False` (default), project stdio servers are
             silently skipped.
-        auto_approve: When `True`, auto-approve all tool calls without
-            human-in-the-loop prompts.
+        auto_approve: When `True`, shell is enabled and all tool calls
+            (including shell commands) are auto-approved without HITL prompts.
+            Overrides `shell_allow_list` behaviour when both are set.
 
     Returns:
         Exit code: 0 for success, 1 for error, 130 for keyboard interrupt.
@@ -831,6 +836,16 @@ async def run_non_interactive(
             if auto_approve:
                 enable_shell = True
                 use_auto_approve = True
+                logger.info(
+                    "Auto-approve enabled: shell commands will execute "
+                    "without HITL gating"
+                )
+                if settings.shell_allow_list:
+                    console.print(
+                        "[yellow]Warning: --auto-approve overrides "
+                        "--shell-allow-list. All shell commands will be "
+                        "auto-approved regardless of the allow-list.[/yellow]"
+                    )
             elif settings.shell_allow_list:
                 enable_shell = True
                 use_auto_approve = False

@@ -4,7 +4,7 @@
 
 ### Features
 
-* `--model-params` flag to `/model` command ([#1679](https://github.com/langchain-ai/deepagents/issues/1679)) ([9b6433d](https://github.com/langchain-ai/deepagents/commit/9b6433d557e6e8b3d39c10577595b0ef6d741c94))
+* `--model-params` flag on `/model` command ([#1679](https://github.com/langchain-ai/deepagents/issues/1679)) ([9b6433d](https://github.com/langchain-ai/deepagents/commit/9b6433d557e6e8b3d39c10577595b0ef6d741c94))
 * `--shell-allow-list all` ([#1695](https://github.com/langchain-ai/deepagents/issues/1695)) ([4aec7b3](https://github.com/langchain-ai/deepagents/commit/4aec7b35caa7723b8bbda189c9ca1d213e0a9a6d))
 * Hook dispatch for external tool integration ([#1553](https://github.com/langchain-ai/deepagents/issues/1553)) ([cdb2230](https://github.com/langchain-ai/deepagents/commit/cdb2230f04ce7a2b7ef0837cbbc223dcbf04b78e))
 * Detect deceptive unicode in tool args and URLs ([#1694](https://github.com/langchain-ai/deepagents/issues/1694)) ([d4c8544](https://github.com/langchain-ai/deepagents/commit/d4c8544bd6bf3b6df50b99f8a0c7208c20f86bd9))

@@ -18,7 +18,7 @@ from textual.widgets import Markdown, Static
 
 from deepagents_cli.config import (
     COLORS,
-    MODE_PREFIXES,
+    PREFIX_TO_MODE,
     CharsetMode,
     _detect_charset_mode,
     get_glyphs,
@@ -36,15 +36,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_PREFIX_TO_MODE: dict[str, str] = {v: k for k, v in MODE_PREFIXES.items()}
-"""Reverse lookup: trigger character -> mode name."""
-
 
 def _mode_color(mode: str | None) -> str:
     """Return the color string for a mode, falling back to primary.
 
     Args:
-        mode: Mode name (e.g. `'bash'`, `'command'`) or `None`.
+        mode: Mode name (e.g. `'shell'`, `'command'`) or `None`.
 
     Returns:
         Hex color string from `COLORS`.
@@ -129,7 +126,7 @@ class UserMessage(Static):
 
     def on_mount(self) -> None:
         """Set border style based on charset mode and content prefix."""
-        mode = _PREFIX_TO_MODE.get(self._content[:1]) if self._content else None
+        mode = PREFIX_TO_MODE.get(self._content[:1]) if self._content else None
         color = _mode_color(mode)
         border_type = "ascii" if _detect_charset_mode() == CharsetMode.ASCII else "wide"
         self.styles.border_left = (border_type, color)
@@ -144,8 +141,8 @@ class UserMessage(Static):
         content = self._content
 
         # Use mode-specific prefix indicator when content starts with a
-        # mode trigger character (e.g. "!" for bash, "/" for commands).
-        mode = _PREFIX_TO_MODE.get(content[:1]) if content else None
+        # mode trigger character (e.g. "!" for shell commands, "/" for commands).
+        mode = PREFIX_TO_MODE.get(content[:1]) if content else None
         if mode:
             text.append(f"{content[0]} ", style=f"bold {_mode_color(mode)}")
             content = content[1:]
@@ -224,7 +221,7 @@ class QueuedUserMessage(Static):
         """
         text = Text()
         content = self._content
-        mode = _PREFIX_TO_MODE.get(content[:1]) if content else None
+        mode = PREFIX_TO_MODE.get(content[:1]) if content else None
         if mode:
             text.append(f"{content[0]} ", style=f"bold {COLORS['dim']}")
             content = content[1:]
@@ -1252,7 +1249,7 @@ class ErrorMessage(Static):
         margin: 1 0;
         background: #7f1d1d;
         color: white;
-        border-left: thick $error;
+        border-left: wide $error;
     }
     """
 
@@ -1313,3 +1310,38 @@ class AppMessage(Static):
     def on_click(self, event: Click) -> None:  # noqa: PLR6301  # Textual event handler
         """Open Rich-style hyperlinks on single click."""
         open_style_link(event)
+
+
+class SummarizationMessage(AppMessage):
+    """Widget displaying a summarization completion notification."""
+
+    DEFAULT_CSS = """
+    SummarizationMessage {
+        height: auto;
+        padding: 0 1;
+        margin: 1 0;
+        color: $primary;
+        background: $surface;
+        border-left: wide $primary;
+        text-style: bold;
+    }
+    """
+
+    def __init__(self, message: str | Text | None = None, **kwargs: Any) -> None:
+        """Initialize a summarization notification message.
+
+        Args:
+            message: Optional message override used when rehydrating from the
+                message store.
+
+                Defaults to the standard summary notification.
+            **kwargs: Additional arguments passed to parent.
+        """
+        content: Text
+        if message is None:
+            content = Text("✓ Summarized conversation", style="bold cyan")
+        elif isinstance(message, Text):
+            content = message
+        else:
+            content = Text(message, style="bold cyan")
+        super().__init__(content, **kwargs)

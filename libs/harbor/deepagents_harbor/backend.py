@@ -23,12 +23,17 @@ _EXIT_MULTIPLE_MATCHES = 2
 _EXIT_FILE_MISSING = 3
 _EXIT_DECODE_FAILED = 4
 
-# Default per-command timeout (5 minutes) - prevents hanging on stuck commands
 DEFAULT_COMMAND_TIMEOUT_SEC = 300
+"""Default per-command timeout (5 minutes) to prevent stuck command hangs."""
 
-# Parsing constants
-_PIPE_FIELD_COUNT = 2  # expected number of pipe-separated fields in ls/glob output
-_GREP_FIELD_COUNT = 3  # minimum number of colon-separated fields in grep output
+_PIPE_FIELD_COUNT = 2
+"""Expected number of pipe-separated fields in `ls`/`glob` output."""
+
+_GREP_FIELD_COUNT = 3
+"""Minimum number of colon-separated fields in `grep` output."""
+
+_COMMAND_PREVIEW_CHAR_LIMIT = 200
+"""Maximum chars included in timeout error command previews."""
 
 
 class HarborSandbox(SandboxBackendProtocol):
@@ -65,10 +70,11 @@ class HarborSandbox(SandboxBackendProtocol):
                 )
             else:
                 result = await self.environment.exec(command)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return ExecuteResponse(
                 output=f"ERROR: Command timed out after {timeout_sec} seconds.\n"
-                f"Command: {command[:200]}{'...' if len(command) > 200 else ''}\n\n"
+                f"Command: {command[:_COMMAND_PREVIEW_CHAR_LIMIT]}"
+                f"{'...' if len(command) > _COMMAND_PREVIEW_CHAR_LIMIT else ''}\n\n"
                 f"SUGGESTION: This command is taking too long. Consider:\n"
                 f"- Breaking it into smaller steps\n"
                 f"- Using a shorter timeout with the timeout_sec parameter\n"

@@ -82,6 +82,14 @@ class TestFormatToolDisplayExecute:
         result = format_tool_display("execute", {"command": "make test", "timeout": 30})
         assert result == f'{prefix} execute("make test", timeout=30s)'
 
+    def test_execute_with_timeout_string_coerced(self) -> None:
+        """Test execute display coerces numeric timeout strings."""
+        prefix = get_glyphs().tool_prefix
+        result = format_tool_display(
+            "execute", {"command": "make test", "timeout": "300"}
+        )
+        assert result == f'{prefix} execute("make test", timeout=5m)'
+
     def test_execute_with_timeout_hours(self) -> None:
         """Test execute display formats timeout in hours when appropriate."""
         prefix = get_glyphs().tool_prefix
@@ -103,6 +111,22 @@ class TestFormatToolDisplayExecute:
         prefix = get_glyphs().tool_prefix
         result = format_tool_display(
             "execute", {"command": "echo hello", "timeout": 120}
+        )
+        assert result == f'{prefix} execute("echo hello")'
+
+    def test_execute_with_default_timeout_string_hidden(self) -> None:
+        """Test execute display excludes timeout when default arrives as a string."""
+        prefix = get_glyphs().tool_prefix
+        result = format_tool_display(
+            "execute", {"command": "echo hello", "timeout": "120"}
+        )
+        assert result == f'{prefix} execute("echo hello")'
+
+    def test_execute_with_invalid_timeout_string_hidden(self) -> None:
+        """Test execute display ignores invalid timeout strings instead of crashing."""
+        prefix = get_glyphs().tool_prefix
+        result = format_tool_display(
+            "execute", {"command": "echo hello", "timeout": "10s"}
         )
         assert result == f'{prefix} execute("echo hello")'
 
@@ -260,6 +284,34 @@ class TestFormatContentBlock:
         block = {"type": "image", "base64": "", "mime_type": "image/png"}
         result = _format_content_block(block)
         assert result == "[Image: image/png, ~0KB]"
+
+    def test_video_block_placeholder(self) -> None:
+        """Test VideoContentBlock returns a human-readable placeholder."""
+        b64 = "A" * 40000
+        block = {"type": "video", "base64": b64, "mime_type": "video/mp4"}
+        result = _format_content_block(block)
+        assert result == "[Video: video/mp4, ~29KB]"
+
+    def test_video_block_without_base64_returns_json(self) -> None:
+        """Test that video blocks missing base64 key fall through to JSON."""
+        block = {"type": "video", "url": "https://example.com/video.mp4"}
+        result = _format_content_block(block)
+        assert '"type"' in result
+        assert "Video" not in result
+
+    def test_video_block_none_base64_returns_json(self) -> None:
+        """Test that video block with None base64 falls through to JSON."""
+        block = {"type": "video", "base64": None, "mime_type": "video/mp4"}
+        result = _format_content_block(block)
+        assert '"type"' in result
+        assert "Video" not in result
+
+    def test_file_block_placeholder(self) -> None:
+        """Test FileContentBlock returns a human-readable placeholder."""
+        b64 = "A" * 4000
+        block = {"type": "file", "base64": b64, "mime_type": "application/pdf"}
+        result = _format_content_block(block)
+        assert result == "[File: application/pdf, ~2KB]"
 
     def test_non_serializable_dict_falls_back_to_str(self) -> None:
         """Test that dicts with non-serializable values fall back to str()."""

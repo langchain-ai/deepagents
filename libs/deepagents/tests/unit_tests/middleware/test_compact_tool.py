@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import MagicMock, NonCallableMagicMock, patch
 
-import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.types import Command
 
@@ -167,7 +166,6 @@ class TestNotEnoughMessages:
         assert len(update_messages) == 1
         assert "Nothing to compact yet" in update_messages[0].content
 
-    @pytest.mark.asyncio
     async def test_not_enough_messages_async(self) -> None:
         """Async: return Command with a 'nothing to compact' ToolMessage when cutoff is 0."""
         mw = _make_middleware()
@@ -250,7 +248,6 @@ class TestCompactSuccess:
         # old_cutoff(5) + new_cutoff(3) - 1 = 7
         assert event["cutoff_index"] == 7
 
-    @pytest.mark.asyncio
     async def test_compact_success_async(self) -> None:
         """Async path should produce the same Command structure."""
         mw = _make_middleware()
@@ -376,7 +373,6 @@ class TestCompactErrorHandling:
         # Should NOT have a _summarization_event (state not modified)
         assert "_summarization_event" not in result.update
 
-    @pytest.mark.asyncio
     async def test_async_summary_failure_returns_error_tool_message(self) -> None:
         """Async: LLM failure should return an error ToolMessage, not raise."""
         mw = _make_middleware()
@@ -617,7 +613,6 @@ class TestIsEligibleForCompaction:
             result = mw._run_compact(runtime)
         assert "Nothing to compact" in result.update["messages"][0].content
 
-    @pytest.mark.asyncio
     async def test_under_50pct_async(self) -> None:
         """Async path: under 50% → nothing to compact."""
         mw = _make_middleware_with_trigger(("tokens", 100_000))

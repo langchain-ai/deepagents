@@ -1,4 +1,4 @@
-.PHONY: format lint type test tests integration_test integration_tests test_watch benchmark help run lint_package lint_tests check_imports coverage
+.PHONY: format lint type typecheck test tests integration_test integration_tests test_watch benchmark help run lint_package lint_tests check_imports coverage
 
 .DEFAULT_GOAL := help
 
@@ -15,7 +15,9 @@ integration_test integration_tests: TEST_FILE=tests/integration_tests/
 
 test: ## Run unit tests
 test tests:
-	uv run --group test pytest -n auto --disable-socket --allow-unix-socket $(TEST_FILE)
+	uv run --group test pytest -n auto --disable-socket --allow-unix-socket $(TEST_FILE) \
+		--cov=deepagents_cli \
+		--cov-report=term-missing
 
 coverage: ## Run unit tests with coverage
 	uv run --group test pytest --cov \
@@ -55,9 +57,10 @@ lint: ## Run linters and type checker
 lint lint_diff lint_package lint_tests:
 	[ "$(PYTHON_FILES)" = "" ] || uv run --all-groups ruff check $(PYTHON_FILES)
 	[ "$(PYTHON_FILES)" = "" ] || uv run --all-groups ruff format $(PYTHON_FILES) --diff
-	[ "$(PYTHON_FILES)" = "" ] || uv run --all-groups ty check $(PYTHON_FILES)
+	$(MAKE) type PYTHON_FILES="$(PYTHON_FILES)"
 
 type: ## Run type checker
+type typecheck:
 	uv run --all-groups ty check $(PYTHON_FILES)
 
 format: ## Run code formatters

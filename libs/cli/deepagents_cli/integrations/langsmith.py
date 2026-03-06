@@ -55,6 +55,8 @@ class LangSmithBackend(BaseSandbox):
             timeout: Maximum time in seconds to wait for the command to complete.
 
                 If None, uses the backend's default timeout.
+                A value of 0 disables the command timeout when the
+                `langsmith[sandbox]` extra is installed.
 
         Returns:
             ExecuteResponse with combined output, exit code, and truncation flag.

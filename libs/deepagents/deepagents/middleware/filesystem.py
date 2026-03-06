@@ -19,7 +19,7 @@ from langchain.agents.middleware.types import (
 from langchain.tools import ToolRuntime
 from langchain.tools.tool_node import ToolCallRequest
 from langchain_core.messages import ToolMessage
-from langchain_core.messages.content import create_image_block
+from langchain_core.messages.content import ContentBlock, create_image_block
 from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.types import Command
 from typing_extensions import TypedDict
@@ -218,6 +218,7 @@ Usage notes:
   - Returns combined stdout/stderr output with exit code
   - If the output is very large, it may be truncated
   - For long-running commands, use the optional timeout parameter to override the default timeout (e.g., execute(command="make build", timeout=300))
+  - A timeout of 0 may disable timeouts on backends that support no-timeout execution
   - VERY IMPORTANT: You MUST avoid using search commands like find and grep. Instead use the grep, glob tools to search. You MUST avoid read tools like cat, head, tail, and use read_file to read files.
   - When issuing multiple commands, use the ';' or '&&' operator to separate them. DO NOT use newlines (newlines are ok in quoted strings)
     - Use '&&' when commands depend on each other (e.g., "mkdir dir && cd dir")
@@ -359,6 +360,45 @@ def _create_content_preview(content_str: str, *, head_lines: int = 5, tail_lines
     tail_sample = format_content_with_line_numbers(tail, start_line=len(lines) - tail_lines + 1)
 
     return head_sample + truncation_notice + tail_sample
+
+
+def _extract_text_from_message(message: ToolMessage) -> str:
+    """Extract text from a ToolMessage using its `content_blocks` property.
+
+    Joins all text content blocks and ignores non-text blocks (images, audio, etc.)
+    so that binary payloads don't inflate the size measurement.
+
+    Args:
+        message: The ToolMessage to extract text from.
+
+    Returns:
+        Joined text from all text content blocks, or stringified content as fallback.
+    """
+    texts = [block["text"] for block in message.content_blocks if block["type"] == "text"]
+    return "\n".join(texts)
+
+
+def _build_evicted_content(message: ToolMessage, replacement_text: str) -> str | list[ContentBlock]:
+    """Build replacement content for an evicted message, preserving non-text blocks.
+
+    For plain string content, returns the replacement text directly. For list content
+    with mixed block types (e.g., text + image), replaces all text blocks with a single
+    text block containing the replacement text while keeping non-text blocks intact.
+
+    Args:
+        message: The original ToolMessage being evicted.
+        replacement_text: The truncation notice and preview text.
+
+    Returns:
+        Replacement content: a string or list of content blocks.
+    """
+    if isinstance(message.content, str):
+        return replacement_text
+    media_blocks = [block for block in message.content_blocks if block["type"] != "text"]
+    if not media_blocks:
+        # All content is text, so a plain string replacement is sufficient.
+        return replacement_text
+    return [cast("ContentBlock", {"type": "text", "text": replacement_text}), *media_blocks]
 
 
 class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]):
@@ -877,13 +917,14 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             command: Annotated[str, "Shell command to execute in the sandbox environment."],
             runtime: ToolRuntime[None, FilesystemState],
             timeout: Annotated[
-                int | None, "Optional timeout in seconds for this command. Overrides the default timeout. Use for long-running commands."
+                int | None,
+                "Optional timeout in seconds for this command. Overrides the default timeout. Use 0 for no-timeout execution on backends that support it.",
             ] = None,
         ) -> str:
             """Synchronous wrapper for execute tool."""
             if timeout is not None:
-                if timeout <= 0:
-                    return f"Error: timeout must be positive, got {timeout}."
+                if timeout < 0:
+                    return f"Error: timeout must be non-negative, got {timeout}."
                 if timeout > self._max_execute_timeout:
                     return f"Error: timeout {timeout}s exceeds maximum allowed ({self._max_execute_timeout}s)."
 
@@ -932,13 +973,14 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             # ASYNC109 - timeout is a semantic parameter forwarded to the
             # backend's implementation, not an asyncio.timeout() contract.
             timeout: Annotated[  # noqa: ASYNC109
-                int | None, "Optional timeout in seconds for this command. Overrides the default timeout. Use for long-running commands."
+                int | None,
+                "Optional timeout in seconds for this command. Overrides the default timeout. Use 0 for no-timeout execution on backends that support it.",
             ] = None,
         ) -> str:
             """Asynchronous wrapper for execute tool."""
             if timeout is not None:
-                if timeout <= 0:
-                    return f"Error: timeout must be positive, got {timeout}."
+                if timeout < 0:
+                    return f"Error: timeout must be non-negative, got {timeout}."
                 if timeout > self._max_execute_timeout:
                     return f"Error: timeout {timeout}s exceeds maximum allowed ({self._max_execute_timeout}s)."
 
@@ -1100,33 +1142,16 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             - files_update: Dict of file updates to apply to state, or None if eviction failed
 
         Note:
-            The entire content is converted to string, written to /large_tool_results/{tool_call_id},
-            and replaced with a truncated preview plus file reference. The replacement is always
-            returned as a plain string for consistency, regardless of original content type.
-
-            ToolMessage supports multimodal content blocks (images, audio, etc.), but these are
-            uncommon in tool results. For simplicity, all content is stringified and evicted.
-            The model can recover by reading the offloaded file from the backend.
+            Text is extracted from all text content blocks, joined, and used for both the
+            size check and eviction. Non-text blocks (images, audio, etc.) are preserved in
+            the replacement message so multimodal context is not lost. The model can recover
+            the full text by reading the offloaded file from the backend.
         """
         # Early exit if eviction not configured
         if not self._tool_token_limit_before_evict:
             return message, None
 
-        # Convert content to string once for both size check and eviction
-        # Special case: single text block - extract text directly for readability
-        if (
-            isinstance(message.content, list)
-            and len(message.content) == 1
-            and isinstance(message.content[0], dict)
-            and message.content[0].get("type") == "text"
-            and "text" in message.content[0]
-        ):
-            content_str = str(message.content[0]["text"])
-        elif isinstance(message.content, str):
-            content_str = message.content
-        else:
-            # Multiple blocks or non-text content - stringify entire structure
-            content_str = str(message.content)
+        content_str = _extract_text_from_message(message)
 
         # Check if content exceeds eviction threshold
         if len(content_str) <= NUM_CHARS_PER_TOKEN * self._tool_token_limit_before_evict:
@@ -1147,9 +1172,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             content_sample=content_sample,
         )
 
-        # Always return as plain string after eviction
+        evicted = _build_evicted_content(message, replacement_text)
         processed_message = ToolMessage(
-            content=replacement_text,
+            content=cast("str | list[str | dict]", evicted),
             tool_call_id=message.tool_call_id,
             name=message.name,
             id=message.id,
@@ -1174,21 +1199,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         if not self._tool_token_limit_before_evict:
             return message, None
 
-        # Convert content to string once for both size check and eviction
-        # Special case: single text block - extract text directly for readability
-        if (
-            isinstance(message.content, list)
-            and len(message.content) == 1
-            and isinstance(message.content[0], dict)
-            and message.content[0].get("type") == "text"
-            and "text" in message.content[0]
-        ):
-            content_str = str(message.content[0]["text"])
-        elif isinstance(message.content, str):
-            content_str = message.content
-        else:
-            # Multiple blocks or non-text content - stringify entire structure
-            content_str = str(message.content)
+        content_str = _extract_text_from_message(message)
 
         if len(content_str) <= NUM_CHARS_PER_TOKEN * self._tool_token_limit_before_evict:
             return message, None
@@ -1208,9 +1219,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             content_sample=content_sample,
         )
 
-        # Always return as plain string after eviction
+        evicted = _build_evicted_content(message, replacement_text)
         processed_message = ToolMessage(
-            content=replacement_text,
+            content=cast("str | list[str | dict]", evicted),
             tool_call_id=message.tool_call_id,
             name=message.name,
             id=message.id,

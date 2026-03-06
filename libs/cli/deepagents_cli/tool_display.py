@@ -35,6 +35,31 @@ def _format_timeout(seconds: int) -> str:
     return f"{seconds}s"
 
 
+def _coerce_timeout_seconds(timeout: int | str | None) -> int | None:
+    """Normalize timeout values to seconds for display.
+
+    Accepts integer values and numeric strings. Returns `None` for invalid
+    values so display formatting never raises.
+
+    Args:
+        timeout: Raw timeout value from tool arguments.
+
+    Returns:
+        Integer timeout in seconds, or `None` if unavailable/invalid.
+    """
+    if type(timeout) is int:
+        return timeout
+    if isinstance(timeout, str):
+        stripped = timeout.strip()
+        if not stripped:
+            return None
+        try:
+            return int(stripped)
+        except ValueError:
+            return None
+    return None
+
+
 def truncate_value(value: str, max_length: int = MAX_ARG_LENGTH) -> str:
     """Truncate a string value if it exceeds max_length.
 
@@ -127,7 +152,7 @@ def format_tool_display(tool_name: str, tool_args: dict) -> str:
         if "command" in tool_args:
             command = str(tool_args["command"])
             command = truncate_value(command, 120)
-            timeout = tool_args.get("timeout")
+            timeout = _coerce_timeout_seconds(tool_args.get("timeout"))
             if timeout is not None and timeout != DEFAULT_EXECUTE_TIMEOUT:
                 timeout_str = _format_timeout(timeout)
                 return f'{prefix} {tool_name}("{command}", timeout={timeout_str})'
@@ -193,11 +218,12 @@ def format_tool_display(tool_name: str, tool_args: dict) -> str:
 def _format_content_block(block: dict) -> str:
     """Format a single content block dict for display.
 
-    Replaces large binary payloads (e.g. base64 image data) with a
+    Replaces large binary payloads (e.g. base64 image/video data) with a
     human-readable placeholder so they don't flood the terminal.
 
     Args:
-        block: An `ImageContentBlock` dictionary.
+        block: An `ImageContentBlock`, `VideoContentBlock`, or `FileContentBlock`
+            dictionary.
 
     Returns:
         A display-friendly string for the block.
@@ -207,6 +233,16 @@ def _format_content_block(block: dict) -> str:
         size_kb = len(b64) * 3 // 4 // 1024  # approximate decoded size
         mime = block.get("mime_type", "image")
         return f"[Image: {mime}, ~{size_kb}KB]"
+    if block.get("type") == "video" and isinstance(block.get("base64"), str):
+        b64 = block["base64"]
+        size_kb = len(b64) * 3 // 4 // 1024  # approximate decoded size
+        mime = block.get("mime_type", "video")
+        return f"[Video: {mime}, ~{size_kb}KB]"
+    if block.get("type") == "file" and isinstance(block.get("base64"), str):
+        b64 = block["base64"]
+        size_kb = len(b64) * 3 // 4 // 1024  # approximate decoded size
+        mime = block.get("mime_type", "file")
+        return f"[File: {mime}, ~{size_kb}KB]"
     try:
         return json.dumps(block)
     except (TypeError, ValueError):

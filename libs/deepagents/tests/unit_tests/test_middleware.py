@@ -35,7 +35,9 @@ from deepagents.middleware.filesystem import (
     FileData,
     FilesystemMiddleware,
     FilesystemState,
+    _build_evicted_content,
     _create_content_preview,
+    _extract_text_from_message,
     _supports_execution,
 )
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
@@ -1086,35 +1088,17 @@ class TestFilesystemMiddleware:
         assert result == tool_message
         assert result.content == content_blocks
 
-    def test_intercept_content_block_non_text_type(self):
-        """Test that content blocks with non-text type get evicted if large when stringified."""
+    def test_intercept_content_block_non_text_type_not_evicted(self):
+        """Test that non-text-only content blocks are not evicted regardless of size."""
         middleware = FilesystemMiddleware(tool_token_limit_before_evict=100)
         state = FilesystemState(messages=[], files={})
         runtime = ToolRuntime(state=state, context=None, tool_call_id="test_other", store=None, stream_writer=lambda _: None, config={})
 
-        # Create list with content block with different type that's large when stringified
-        content_blocks = [{"type": "image", "data": "x" * 5000}]
+        content_blocks = [{"type": "image", "base64": "x" * 5000, "mime_type": "image/png"}]
         tool_message = ToolMessage(content=content_blocks, tool_call_id="test_other")
         result = middleware._intercept_large_tool_result(tool_message, runtime)
 
-        # All content types are evicted if large when converted to string
-        assert isinstance(result, Command)
-        assert "/large_tool_results/test_other" in result.update["files"]
-
-    def test_intercept_list_content_gets_evicted_if_large(self):
-        """Test that list content gets evicted if large when stringified."""
-        middleware = FilesystemMiddleware(tool_token_limit_before_evict=100)
-        state = FilesystemState(messages=[], files={})
-        runtime = ToolRuntime(state=state, context=None, tool_call_id="test_list", store=None, stream_writer=lambda _: None, config={})
-
-        # Create list content that's large when stringified
-        list_content = [{"key": "x" * 1000} for _ in range(50)]
-        tool_message = ToolMessage(content=list_content, tool_call_id="test_list")
-        result = middleware._intercept_large_tool_result(tool_message, runtime)
-
-        # List content is evicted if large when converted to string
-        assert isinstance(result, Command)
-        assert "/large_tool_results/test_list" in result.update["files"]
+        assert result == tool_message
 
     def test_single_text_block_extracts_text_directly(self):
         """Test that single text block extracts text content directly, not stringified structure."""
@@ -1135,13 +1119,12 @@ class TestFilesystemMiddleware:
         assert file_text.startswith("Hello world!")
         assert not file_text.startswith("[{")
 
-    def test_multiple_text_blocks_stringifies_structure(self):
-        """Test that multiple text blocks stringify entire structure."""
+    def test_multiple_text_blocks_joins_text(self):
+        """Test that multiple text blocks are joined, not stringified."""
         middleware = FilesystemMiddleware(tool_token_limit_before_evict=100)
         state = FilesystemState(messages=[], files={})
         runtime = ToolRuntime(state=state, context=None, tool_call_id="test_multi", store=None, stream_writer=lambda _: None, config={})
 
-        # Create multiple text blocks
         content_blocks = [
             {"type": "text", "text": "First block " * 500},
             {"type": "text", "text": "Second block " * 500},
@@ -1150,34 +1133,52 @@ class TestFilesystemMiddleware:
         result = middleware._intercept_large_tool_result(tool_message, runtime)
 
         assert isinstance(result, Command)
-        # Check that the file contains stringified structure (starts with "[")
         file_content = result.update["files"]["/large_tool_results/test_multi"]["content"]
         file_text = "\n".join(file_content)
-        # Should be stringified list of dicts
-        assert file_text.startswith("[{")
+        assert file_text.startswith("First block")
+        assert "Second block" in file_text
+        assert not file_text.startswith("[{")
 
-    def test_mixed_content_blocks_stringifies_all(self):
-        """Test that mixed content block types (text + image) stringify entire structure."""
+    def test_mixed_content_blocks_preserves_non_text(self):
+        """Test that mixed content blocks (text + image) evict text but preserve image blocks."""
         middleware = FilesystemMiddleware(tool_token_limit_before_evict=100)
         state = FilesystemState(messages=[], files={})
         runtime = ToolRuntime(state=state, context=None, tool_call_id="test_mixed", store=None, stream_writer=lambda _: None, config={})
 
-        # Create mixed content blocks
+        image_block = {"type": "image", "url": "https://example.com/image.png"}
         content_blocks = [
             {"type": "text", "text": "Some text " * 200},
-            {"type": "image", "url": "https://example.com/image.png"},
+            image_block,
         ]
         tool_message = ToolMessage(content=content_blocks, tool_call_id="test_mixed")
         result = middleware._intercept_large_tool_result(tool_message, runtime)
 
         assert isinstance(result, Command)
-        # Check that the file contains stringified structure
         file_content = result.update["files"]["/large_tool_results/test_mixed"]["content"]
         file_text = "\n".join(file_content)
-        assert file_text.startswith("[{")
-        # Should contain both blocks in the stringified output
-        assert "'type': 'text'" in file_text
-        assert "'type': 'image'" in file_text
+        assert file_text.startswith("Some text")
+
+        returned_content = result.update["messages"][0].content
+        assert isinstance(returned_content, list)
+        assert len(returned_content) == 2
+        assert returned_content[0]["type"] == "text"
+        assert "Tool result too large" in returned_content[0]["text"]
+        assert returned_content[1] == image_block
+
+    def test_mixed_content_small_text_large_image_not_evicted(self):
+        """Test that text+image content is not evicted when only the image is large."""
+        middleware = FilesystemMiddleware(tool_token_limit_before_evict=1000)
+        state = FilesystemState(messages=[], files={})
+        runtime = ToolRuntime(state=state, context=None, tool_call_id="test_no_evict", store=None, stream_writer=lambda _: None, config={})
+
+        content_blocks = [
+            {"type": "text", "text": "small text"},
+            {"type": "image", "base64": "x" * 50000, "mime_type": "image/png"},
+        ]
+        tool_message = ToolMessage(content=content_blocks, tool_call_id="test_no_evict")
+        result = middleware._intercept_large_tool_result(tool_message, runtime)
+
+        assert result == tool_message
 
     def test_read_file_image_returns_standard_image_content_block(self):
         """Test image reads return standard image blocks with base64 + mime_type."""
@@ -1511,6 +1512,89 @@ class TestFilesystemMiddleware:
             # Should have all lines
             for i in range(num_lines):
                 assert f"line {i}" in preview
+
+
+class TestExtractTextFromMessage:
+    def test_string_content(self):
+        msg = ToolMessage(content="hello", tool_call_id="t1")
+        assert _extract_text_from_message(msg) == "hello"
+
+    def test_single_text_block(self):
+        msg = ToolMessage(content=[{"type": "text", "text": "hello"}], tool_call_id="t1")
+        assert _extract_text_from_message(msg) == "hello"
+
+    def test_multiple_text_blocks_joined(self):
+        msg = ToolMessage(
+            content=[
+                {"type": "text", "text": "first"},
+                {"type": "text", "text": "second"},
+            ],
+            tool_call_id="t1",
+        )
+        assert _extract_text_from_message(msg) == "first\nsecond"
+
+    def test_text_and_image_extracts_text_only(self):
+        msg = ToolMessage(
+            content=[
+                {"type": "text", "text": "description"},
+                {"type": "image", "url": "https://example.com/img.png"},
+            ],
+            tool_call_id="t1",
+        )
+        assert _extract_text_from_message(msg) == "description"
+
+    def test_image_only_returns_empty(self):
+        msg = ToolMessage(content=[{"type": "image", "url": "https://example.com/img.png"}], tool_call_id="t1")
+        assert _extract_text_from_message(msg) == ""
+
+    def test_plain_string_blocks(self):
+        msg = ToolMessage(content=["hello", "world"], tool_call_id="t1")
+        assert _extract_text_from_message(msg) == "hello\nworld"
+
+    def test_mixed_string_and_text_blocks(self):
+        msg = ToolMessage(
+            content=["plain string", {"type": "text", "text": "text block"}],
+            tool_call_id="t1",
+        )
+        assert _extract_text_from_message(msg) == "plain string\ntext block"
+
+
+class TestBuildEvictedContent:
+    def test_string_content_returns_string(self):
+        msg = ToolMessage(content="original", tool_call_id="t1")
+        result = _build_evicted_content(msg, "replacement")
+        assert result == "replacement"
+
+    def test_text_only_blocks_returns_string(self):
+        msg = ToolMessage(content=[{"type": "text", "text": "big text"}], tool_call_id="t1")
+        result = _build_evicted_content(msg, "replacement")
+        assert result == "replacement"
+
+    def test_text_and_image_preserves_image(self):
+        image_block = {"type": "image", "url": "https://example.com/img.png"}
+        msg = ToolMessage(
+            content=[{"type": "text", "text": "big text"}, image_block],
+            tool_call_id="t1",
+        )
+        result = _build_evicted_content(msg, "replacement")
+        assert isinstance(result, list)
+        assert len(result) == 2
+        assert result[0] == {"type": "text", "text": "replacement"}
+        assert result[1] == image_block
+
+    def test_multiple_non_text_blocks_preserved(self):
+        img1 = {"type": "image", "url": "https://example.com/1.png"}
+        img2 = {"type": "image", "url": "https://example.com/2.png"}
+        msg = ToolMessage(
+            content=[{"type": "text", "text": "big"}, img1, img2],
+            tool_call_id="t1",
+        )
+        result = _build_evicted_content(msg, "replacement")
+        assert isinstance(result, list)
+        assert len(result) == 3
+        assert result[0] == {"type": "text", "text": "replacement"}
+        assert result[1] == img1
+        assert result[2] == img2
 
 
 class TestPatchToolCallsMiddleware:

@@ -55,6 +55,9 @@ MODELS: list[str] = [
     "ollama:qwen3-coder:480b-cloud",
     "ollama:qwen3.5:397b-cloud",
     "ollama:deepseek-v3.2:cloud",
+    # Fireworks
+    "fireworks:accounts/fireworks/models/qwen3-235b-a22b-instruct-2507",
+    "fireworks:accounts/fireworks/models/deepseek-v3-0324",
 ]
 
 SET1: list[str] = [
@@ -69,6 +72,7 @@ SET1: list[str] = [
     "ollama:glm-5",
     "ollama:minimax-m2.5",
     "ollama:qwen3.5:397b-cloud",
+    "fireworks:accounts/fireworks/models/qwen3-235b-a22b-instruct-2507",
 ]
 
 

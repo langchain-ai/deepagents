@@ -766,6 +766,16 @@ class TestParseShellAllowList:
             result = parse_shell_allow_list(variant)
             assert result is SHELL_ALLOW_ALL
 
+    def test_all_mixed_with_commands_raises(self) -> None:
+        """Combining 'all' with other commands should raise ValueError."""
+        with pytest.raises(ValueError, match="Cannot combine 'all'"):
+            parse_shell_allow_list("all,ls")
+
+    def test_all_mixed_case_insensitive_raises(self) -> None:
+        """Combining 'ALL' with other commands should also raise."""
+        with pytest.raises(ValueError, match="Cannot combine 'all'"):
+            parse_shell_allow_list("ls,ALL,cat")
+
     def test_empty_commands_ignored(self) -> None:
         """Test that empty strings from split are ignored."""
         result = parse_shell_allow_list("ls,,cat,,,grep,")

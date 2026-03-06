@@ -698,7 +698,7 @@ class TestGrepRegexLimitation:
 
 
 class TestShellAllowAll:
-    """Tests for SHELL_ALLOW_ALL sentinel behaviour."""
+    """Tests for SHELL_ALLOW_ALL sentinel behavior."""
 
     def test_allows_any_command(self) -> None:
         """SHELL_ALLOW_ALL should approve any command."""
@@ -711,3 +711,9 @@ class TestShellAllowAll:
         """Empty/whitespace commands are still rejected."""
         assert not is_shell_command_allowed("", SHELL_ALLOW_ALL)
         assert not is_shell_command_allowed("   ", SHELL_ALLOW_ALL)
+
+    def test_spoofed_sentinel_does_not_bypass(self) -> None:
+        """A regular list containing '__ALL__' must NOT bypass allow-list checks."""
+        spoofed = ["__ALL__"]
+        assert spoofed is not SHELL_ALLOW_ALL
+        assert not is_shell_command_allowed("rm -rf /", spoofed)

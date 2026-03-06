@@ -3,18 +3,12 @@
 Provides `run_non_interactive` which runs a single user task against the
 agent graph, streams results to stdout, and exits with an appropriate code.
 
-Shell/auto-approve behaviour is determined by a two-axis decision:
+Shell commands are gated by an optional allow-list (`--shell-allow-list`):
 
-1. **Shell access** — controlled exclusively by `--shell-allow-list`:
-   - Not set → shell disabled.
-   - `--shell-allow-list=recommended` or explicit list → shell enabled,
-     commands gated by HITL against the list.
-   - `--shell-allow-list=all` → shell enabled, any command allowed.
-
-2. **HITL gating** — controlled by `--auto-approve`:
-   - Not set → HITL active when a `--shell-allow-list` (other than `all`)
-     is configured; auto-approved otherwise.
-   - `--auto-approve` → all tool calls (including shell) skip HITL.
+- Not set → shell disabled, all other tool calls auto-approved.
+- `recommended` or explicit list → shell enabled, commands validated
+    against the list; non-shell tools approved unconditionally.
+- `all` → shell enabled, any command allowed, all tools auto-approved.
 
 An optional quiet mode (`--quiet` / `-q`) redirects all console output to
 stderr, leaving stdout exclusively for the agent's response text.
@@ -41,6 +35,7 @@ from rich.text import Text
 
 from deepagents_cli.agent import DEFAULT_AGENT_NAME, create_cli_agent
 from deepagents_cli.config import (
+    SHELL_ALLOW_ALL,
     SHELL_TOOL_NAMES,
     build_langsmith_thread_url,
     create_model,
@@ -385,16 +380,15 @@ def _make_hitl_decision(
 ) -> dict[str, str]:
     """Decide whether to approve or reject a single action request.
 
-    This function is only invoked when HITL is active (`auto_approve=False`).
-    When `--auto-approve` is set, `interrupt_on` is empty and this function
-    is bypassed entirely.
+    This function is only invoked when a restrictive shell allow-list is
+    configured (not `all`). When shell is disabled or unrestricted,
+    `interrupt_on` is empty and this function is bypassed entirely.
 
     Shell tools are always gated: if an allow-list is configured, the command
-    is validated against it (including `SHELL_ALLOW_ALL` which approves
-    everything); if no allow-list is configured, shell commands are rejected
-    outright (defense-in-depth — the caller should disable shell tools when
-    no allow-list is present, but this function fails closed regardless).
-    Non-shell tools are approved unconditionally.
+    is validated against it; if no allow-list is configured, shell commands
+    are rejected outright (defense-in-depth — the caller should disable
+    shell tools when no allow-list is present, but this function fails
+    closed regardless). Non-shell tools are approved unconditionally.
 
     Args:
         action_request: The action-request dict emitted by the HITL middleware.
@@ -684,19 +678,15 @@ async def run_non_interactive(
     mcp_config_path: str | None = None,
     no_mcp: bool = False,
     trust_project_mcp: bool = False,
-    auto_approve: bool = False,
 ) -> int:
     """Run a single task non-interactively and exit.
 
-    Shell access is controlled by `--shell-allow-list`:
+    Shell access and auto-approval are controlled by `--shell-allow-list`:
 
     - Not set → shell disabled, all other tools auto-approved.
-    - `recommended` or explicit list → shell enabled, gated by allow-list
-        via HITL; non-shell tools approved unconditionally.
-    - `all` → shell enabled, any command allowed.
-
-    `--auto-approve` is orthogonal: when set it disables all HITL prompts
-    regardless of the shell configuration.
+    - `recommended` or explicit list → shell enabled, commands gated by
+        allow-list; non-shell tools approved unconditionally.
+    - `all` → shell enabled, any command allowed, all tools auto-approved.
 
     Note: startup header rendering avoids synchronous LangSmith URL lookups.
     A background thread resolves the thread URL concurrently and the result is
@@ -731,9 +721,6 @@ async def run_non_interactive(
         trust_project_mcp: When `True`, allow project-level stdio MCP
             servers. When `False` (default), project stdio servers are
             silently skipped.
-        auto_approve: When `True`, skip all HITL prompts. Orthogonal to shell
-            access — shell must still be enabled via `--shell-allow-list` for
-            shell commands to run.
 
     Returns:
         Exit code: 0 for success, 1 for error, 130 for keyboard interrupt.
@@ -837,17 +824,14 @@ async def run_non_interactive(
                 return 1
 
             # Shell access is controlled by --shell-allow-list:
-            #   not set        → shell disabled
+            #   not set        → shell disabled, auto-approve all other tools
             #   recommended/…  → shell enabled, gated by list
-            #   all            → shell enabled, any command
-            # --auto-approve is orthogonal: skips all HITL prompts.
-            from deepagents_cli.config import SHELL_ALLOW_ALL
-
+            #   all            → shell enabled, any command, auto-approve
             enable_shell = bool(settings.shell_allow_list)
-            shell_is_unrestricted = settings.shell_allow_list is SHELL_ALLOW_ALL
-            # HITL is needed only when shell has a restrictive allow-list
-            # and --auto-approve was not passed.
-            use_auto_approve = auto_approve or not enable_shell or shell_is_unrestricted
+            shell_is_unrestricted = isinstance(
+                settings.shell_allow_list, type(SHELL_ALLOW_ALL)
+            )
+            use_auto_approve = not enable_shell or shell_is_unrestricted
 
             agent, composite_backend = create_cli_agent(
                 model=model,

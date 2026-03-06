@@ -332,7 +332,16 @@ config: RunnableConfig = {"recursion_limit": 1000}
 console = Console(highlight=False)
 
 
-SHELL_ALLOW_ALL: list[str] = ["__ALL__"]
+class _ShellAllowAll(list):  # noqa: FURB189  # sentinel type, not a general-purpose list subclass
+    """Sentinel subclass for unrestricted shell access.
+
+    Using a dedicated type instead of a plain list lets consumers use
+    `isinstance` checks, which survive serialization/copy unlike identity
+    checks (`is`).
+    """
+
+
+SHELL_ALLOW_ALL: list[str] = _ShellAllowAll(["__ALL__"])
 """Sentinel value returned by `parse_shell_allow_list` for `--shell-allow-list=all`."""
 
 
@@ -343,12 +352,18 @@ def parse_shell_allow_list(allow_list_str: str | None) -> list[str] | None:
         allow_list_str: Comma-separated list of commands, `'recommended'` for
             safe defaults, or `'all'` to allow any command.
 
+            `'all'` must be the sole value — it is not recognized inside a
+            comma-separated list (unlike `'recommended'`).
+
             Can also include `'recommended'` in the list to merge with custom
             commands.
 
     Returns:
         List of allowed commands, `SHELL_ALLOW_ALL` if `'all'` was specified,
         or `None` if no allow-list configured.
+
+    Raises:
+        ValueError: If `'all'` is combined with other commands.
     """
     if not allow_list_str:
         return None
@@ -363,6 +378,14 @@ def parse_shell_allow_list(allow_list_str: str | None) -> list[str] | None:
 
     # Split by comma and strip whitespace
     commands = [cmd.strip() for cmd in allow_list_str.split(",") if cmd.strip()]
+
+    # Reject ambiguous input: 'all' mixed with other commands
+    if any(cmd.lower() == "all" for cmd in commands):
+        msg = (
+            "Cannot combine 'all' with other commands in --shell-allow-list. "
+            "Use '--shell-allow-list all' alone to allow any command."
+        )
+        raise ValueError(msg)
 
     # If "recommended" is in the list, merge with recommended commands
     result = []
@@ -884,25 +907,31 @@ def contains_dangerous_patterns(command: str) -> bool:
 def is_shell_command_allowed(command: str, allow_list: list[str] | None) -> bool:
     """Check if a shell command is in the allow-list.
 
-    The allow-list matches against the first token of the command (the executable name).
-    This allows read-only commands like ls, cat, grep, etc. to be auto-approved.
+    The allow-list matches against the first token of the command (the executable
+    name). This allows read-only commands like ls, cat, grep, etc. to be
+    auto-approved.
 
-    SECURITY: This function rejects commands containing dangerous shell patterns
-    (command substitution, redirects, process substitution, etc.) BEFORE parsing,
-    to prevent injection attacks that could bypass the allow-list.
+    When `allow_list` is the `SHELL_ALLOW_ALL` sentinel, all non-empty commands
+    are approved unconditionally — dangerous pattern checks are skipped.
+
+    SECURITY: For regular allow-lists, this function rejects commands containing
+    dangerous shell patterns (command substitution, redirects, process
+    substitution, etc.) BEFORE parsing, to prevent injection attacks that could
+    bypass the allow-list.
 
     Args:
-        command: The full shell command to check
-        allow_list: List of allowed command names (e.g., ["ls", "cat", "grep"])
+        command: The full shell command to check.
+        allow_list: List of allowed command names (e.g., `["ls", "cat", "grep"]`),
+            the `SHELL_ALLOW_ALL` sentinel to allow any command, or `None`.
 
     Returns:
-        True if the command is allowed, False otherwise.
+        `True` if the command is allowed, `False` otherwise.
     """
     if not allow_list or not command or not command.strip():
         return False
 
     # SHELL_ALLOW_ALL sentinel — skip pattern and token checks
-    if allow_list is SHELL_ALLOW_ALL:
+    if isinstance(allow_list, _ShellAllowAll):
         return True
 
     # SECURITY: Check for dangerous patterns BEFORE any parsing

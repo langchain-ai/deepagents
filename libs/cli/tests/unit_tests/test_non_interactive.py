@@ -115,6 +115,15 @@ class TestMakeHitlDecision:
             )
             assert result["type"] == "reject"
 
+    def test_shell_with_allow_all_approved(self, console: Console) -> None:
+        """Shell commands should be approved when SHELL_ALLOW_ALL is set."""
+        with patch("deepagents_cli.non_interactive.settings") as mock_settings:
+            mock_settings.shell_allow_list = SHELL_ALLOW_ALL
+            result = _make_hitl_decision(
+                {"name": "execute", "args": {"command": "rm -rf /"}}, console
+            )
+            assert result == {"type": "approve"}
+
     @pytest.mark.parametrize("tool_name", ["bash", "shell", "execute"])
     def test_all_shell_tool_names_recognised(
         self, tool_name: str, console: Console
@@ -912,59 +921,34 @@ class TestStartLangsmithThreadUrlLookup:
         assert state.url is None
 
 
-class TestAutoApproveShellLogic:
-    """Tests for the two-axis auto_approve x shell_allow_list decision."""
+class TestShellAllowListDecisionLogic:
+    """Tests for shell allow-list → enable_shell + auto_approve derivation."""
 
     @pytest.mark.parametrize(
-        ("auto_approve", "shell_allow_list", "expected_enable_shell", "expected_auto"),
+        ("shell_allow_list", "expected_enable_shell", "expected_auto"),
         [
             pytest.param(
-                True,
                 None,
                 False,
                 True,
-                id="auto-approve-alone-no-shell",
+                id="no-allow-list-disables-shell-auto-approves",
             ),
             pytest.param(
-                True,
-                ["ls", "cat"],
-                True,
-                True,
-                id="auto-approve-with-allow-list",
-            ),
-            pytest.param(
-                False,
                 ["ls", "cat"],
                 True,
                 False,
-                id="allow-list-enables-shell-with-hitl",
+                id="restrictive-list-enables-shell-with-gating",
             ),
             pytest.param(
-                False,
-                None,
-                False,
-                True,
-                id="no-flags-disables-shell-auto-approves",
-            ),
-            pytest.param(
-                False,
                 SHELL_ALLOW_ALL,
                 True,
                 True,
-                id="shell-allow-all-enables-shell-auto-approves",
-            ),
-            pytest.param(
-                True,
-                SHELL_ALLOW_ALL,
-                True,
-                True,
-                id="shell-allow-all-with-auto-approve",
+                id="allow-all-enables-shell-auto-approves",
             ),
         ],
     )
     async def test_shell_auto_approve_branches(
         self,
-        auto_approve: bool,
         shell_allow_list: list[str] | None,
         expected_enable_shell: bool,
         expected_auto: bool,
@@ -1015,10 +999,7 @@ class TestAutoApproveShellLogic:
             mock_agent.astream = MagicMock(return_value=_async_iter([]))
             mock_create_agent.return_value = (mock_agent, MagicMock())
 
-            await run_non_interactive(
-                message="test task",
-                auto_approve=auto_approve,
-            )
+            await run_non_interactive(message="test task")
 
         _, kwargs = mock_create_agent.call_args
         assert kwargs["enable_shell"] is expected_enable_shell

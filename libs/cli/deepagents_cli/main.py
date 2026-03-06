@@ -350,8 +350,7 @@ def parse_args() -> argparse.Namespace:
         dest="non_interactive_message",
         metavar="TEXT",
         help="Run a single task non-interactively and exit "
-        "(shell disabled unless --shell-allow-list is set). "
-        "Use --auto-approve to also skip HITL prompts",
+        "(shell disabled unless --shell-allow-list is set)",
     )
 
     parser.add_argument(
@@ -1089,7 +1088,6 @@ def cli_main() -> None:
                     mcp_config_path=getattr(args, "mcp_config", None),
                     no_mcp=getattr(args, "no_mcp", False),
                     trust_project_mcp=getattr(args, "trust_project_mcp", False),
-                    auto_approve=args.auto_approve,
                 )
             )
             sys.exit(exit_code)

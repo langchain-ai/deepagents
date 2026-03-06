@@ -403,7 +403,7 @@ def parse_args() -> argparse.Namespace:
         "--shell-allow-list",
         metavar="LIST",
         help="Comma-separated list of shell commands to auto-approve, "
-        "or 'recommended' for safe defaults. "
+        "'recommended' for safe defaults, or 'all' to allow any command. "
         "Applies to both -n and interactive modes.",
     )
     parser.add_argument(

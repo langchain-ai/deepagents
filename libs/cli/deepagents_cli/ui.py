@@ -110,7 +110,7 @@ def show_help() -> None:
         "  --no-stream                Buffer full response instead of streaming"
     )
     console.print(
-        "  --shell-allow-list CMDS    Comma-separated local shell commands to allow"
+        "  --shell-allow-list CMDS    Comma-separated commands, 'recommended', or 'all'"
     )
     console.print("  --default-model [MODEL]    Set, show, or manage the default model")
     console.print("  --clear-default-model      Clear the default model")
@@ -129,6 +129,10 @@ def show_help() -> None:
     )
     console.print(
         "  deepagents -n 'Search logs' --shell-allow-list ls,cat,grep # Specify list",
+        style=COLORS["dim"],
+    )
+    console.print(
+        "  deepagents -n 'Fix tests' --shell-allow-list all           # Any command",
         style=COLORS["dim"],
     )
     console.print()

@@ -10,6 +10,7 @@ import pytest
 from deepagents_cli import model_config
 from deepagents_cli.config import (
     RECOMMENDED_SAFE_SHELL_COMMANDS,
+    SHELL_ALLOW_ALL,
     ModelResult,
     Settings,
     _create_model_from_class,
@@ -753,6 +754,27 @@ class TestParseShellAllowList:
         # Total should be: 1 (ls) + len(recommended) - 1 (duplicate ls) + 1 (mycmd)
         # Which simplifies to: len(recommended) + 1
         assert len(result) == len(RECOMMENDED_SAFE_SHELL_COMMANDS) + 1
+
+    def test_all_returns_sentinel(self) -> None:
+        """Test that 'all' returns SHELL_ALLOW_ALL sentinel."""
+        result = parse_shell_allow_list("all")
+        assert result is SHELL_ALLOW_ALL
+
+    def test_all_case_insensitive(self) -> None:
+        """Test that 'ALL', 'All', etc. all return sentinel."""
+        for variant in ["ALL", "All", "aLl", "  all  "]:
+            result = parse_shell_allow_list(variant)
+            assert result is SHELL_ALLOW_ALL
+
+    def test_all_mixed_with_commands_raises(self) -> None:
+        """Combining 'all' with other commands should raise ValueError."""
+        with pytest.raises(ValueError, match="Cannot combine 'all'"):
+            parse_shell_allow_list("all,ls")
+
+    def test_all_mixed_case_insensitive_raises(self) -> None:
+        """Combining 'ALL' with other commands should also raise."""
+        with pytest.raises(ValueError, match="Cannot combine 'all'"):
+            parse_shell_allow_list("ls,ALL,cat")
 
     def test_empty_commands_ignored(self) -> None:
         """Test that empty strings from split are ignored."""

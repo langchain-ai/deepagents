@@ -295,6 +295,58 @@ def test_format_execute_description():
     assert "Working Directory:" in description
 
 
+def test_format_execute_description_with_hidden_unicode():
+    """Hidden Unicode in command should trigger warning and marker display."""
+    tool_call = cast(
+        "ToolCall",
+        {
+            "name": "execute",
+            "args": {"command": "echo a\u202eb"},
+            "id": "call-13",
+        },
+    )
+    description = _format_execute_description(
+        tool_call, cast("AgentState[Any]", None), cast("Runtime[Any]", None)
+    )
+    assert "Execute Command: echo ab" in description
+    assert "Hidden Unicode detected" in description
+    assert "U+202E" in description
+    assert "Raw:" in description
+
+
+def test_format_fetch_url_description_with_suspicious_url():
+    """Suspicious URL should trigger warning lines in fetch_url description."""
+    tool_call = cast(
+        "ToolCall",
+        {
+            "name": "fetch_url",
+            "args": {"url": "https://аpple.com"},
+            "id": "call-14",
+        },
+    )
+    description = _format_fetch_url_description(
+        tool_call, cast("AgentState[Any]", None), cast("Runtime[Any]", None)
+    )
+    assert "URL warning" in description
+
+
+def test_format_fetch_url_description_with_hidden_unicode_in_url():
+    """Hidden Unicode in URL should be stripped from display."""
+    tool_call = cast(
+        "ToolCall",
+        {
+            "name": "fetch_url",
+            "args": {"url": "https://exa\u200bmple.com"},
+            "id": "call-15",
+        },
+    )
+    description = _format_fetch_url_description(
+        tool_call, cast("AgentState[Any]", None), cast("Runtime[Any]", None)
+    )
+    assert "URL: https://example.com" in description
+    assert "\u200b" not in description
+
+
 class TestGetSystemPromptModelIdentity:
     """Tests for model identity section in get_system_prompt."""
 

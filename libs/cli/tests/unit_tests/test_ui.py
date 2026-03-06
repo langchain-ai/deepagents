@@ -168,6 +168,18 @@ class TestFormatToolDisplayOther:
         assert "arg1=" in result
         assert "arg2=" in result
 
+    def test_execute_hides_dangerous_unicode_in_command(self) -> None:
+        """Execute display should strip hidden Unicode and annotate changes."""
+        result = format_tool_display("execute", {"command": "echo he\u200bllo"})
+        assert "\u200b" not in result
+        assert "hidden chars removed" in result
+
+    def test_fetch_url_hides_dangerous_unicode_in_url(self) -> None:
+        """Fetch URL display should strip hidden Unicode and annotate changes."""
+        result = format_tool_display("fetch_url", {"url": "https://exa\u200bmple.com"})
+        assert "\u200b" not in result
+        assert "hidden chars removed" in result
+
 
 class TestFormatToolMessageContent:
     """Tests for `format_tool_message_content`."""

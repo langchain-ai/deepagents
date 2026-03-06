@@ -45,6 +45,7 @@ dependencies = [
     "daytona>=0.113.0,<1.0.0",
     "modal>=0.65.0,<2.0.0",
     "runloop-api-client>=0.69.0",
+    "bedrock-agentcore>=1.1.4",
 
     # Tools
     "tavily-python>=0.7.21,<1.0.0",

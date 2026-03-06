@@ -57,6 +57,7 @@ def _run_sandbox_setup(backend: SandboxBackendProtocol, setup_script_path: str) 
 
 
 _PROVIDER_TO_WORKING_DIR = {
+    "agentcore": "/tmp",  # noqa: S108
     "daytona": "/home/daytona",
     "langsmith": "/tmp",  # noqa: S108  # LangSmith sandbox working directory
     "modal": "/workspace",
@@ -155,7 +156,8 @@ def _get_provider(provider_name: str) -> SandboxProvider:
     """Get a SandboxProvider instance for the specified provider (internal).
 
     Args:
-        provider_name: Name of the provider ("daytona", "langsmith", "modal", "runloop")
+        provider_name: Name of the provider
+                    ("agentcore", "daytona", "langsmith", "modal", "runloop")
 
     Returns:
         SandboxProvider instance
@@ -163,6 +165,11 @@ def _get_provider(provider_name: str) -> SandboxProvider:
     Raises:
         ValueError: If provider_name is unknown
     """
+    if provider_name == "agentcore":
+        from deepagents_cli.integrations.bedrock_agentcore import AgentCoreProvider
+
+        return AgentCoreProvider()
+
     if provider_name == "daytona":
         from deepagents_cli.integrations.daytona import DaytonaProvider
 

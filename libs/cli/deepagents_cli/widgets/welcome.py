@@ -40,15 +40,22 @@ class WelcomeBanner(Static):
     }
     """
 
-    def __init__(self, thread_id: str | None = None, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        thread_id: str | None = None,
+        mcp_tool_count: int = 0,
+        **kwargs: Any,
+    ) -> None:
         """Initialize the welcome banner.
 
         Args:
             thread_id: Optional thread ID to display in the banner.
+            mcp_tool_count: Number of MCP tools loaded at startup.
             **kwargs: Additional arguments passed to parent.
         """
         # Avoid collision with Widget._thread_id (Textual internal int)
         self._cli_thread_id: str | None = thread_id
+        self._mcp_tool_count = mcp_tool_count
         self._project_name: str | None = get_langsmith_project_name()
         self._project_url: str | None = None
 
@@ -136,6 +143,11 @@ class WelcomeBanner(Static):
                 banner.append_text(thread_line)
             else:
                 banner.append(f"Thread: {self._cli_thread_id}\n", style="dim")
+
+        if self._mcp_tool_count > 0:
+            banner.append(f"{get_glyphs().checkmark} ", style="green")
+            label = "MCP tool" if self._mcp_tool_count == 1 else "MCP tools"
+            banner.append(f"Loaded {self._mcp_tool_count} {label}\n")
 
         banner.append(
             "Ready to code! What would you like to build?\n", style=COLORS["primary"]

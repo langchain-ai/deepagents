@@ -20,7 +20,6 @@ flag. See `run_non_interactive` for details.
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import logging
 import sys
@@ -47,7 +46,7 @@ from deepagents_cli.config import (
     settings,
 )
 from deepagents_cli.file_ops import FileOpTracker
-from deepagents_cli.hooks import dispatch_hook
+from deepagents_cli.hooks import dispatch_hook, dispatch_hook_fire_and_forget
 from deepagents_cli.model_config import ModelConfigError
 from deepagents_cli.sessions import generate_thread_id, get_checkpointer
 from deepagents_cli.textual_adapter import SessionStats, print_usage_table
@@ -222,7 +221,7 @@ def _process_interrupts(
                 continue
             state.pending_interrupts[interrupt_obj.id] = validated_request
             state.interrupt_occurred = True
-            asyncio.get_running_loop().create_task(dispatch_hook("input.required", {}))
+            dispatch_hook_fire_and_forget("input.required", {})
 
 
 def _process_ai_message(
@@ -570,6 +569,7 @@ async def _run_agent_loop(
         print_usage_table(state.stats, wall_time, console)
 
     await dispatch_hook("task.complete", {"thread_id": thread_id})
+    await dispatch_hook("session.end", {"thread_id": thread_id})
 
 
 def _build_non_interactive_header(

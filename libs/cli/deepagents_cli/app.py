@@ -1659,7 +1659,7 @@ class DeepAgentsApp(App):
         # Prevent concurrent user input while compaction modifies state
         self._agent_running = True
         try:
-            await dispatch_hook("compact", {})
+            await dispatch_hook("context.compact", {})
             await self._set_spinner("Compacting")
 
             from deepagents.middleware.summarization import (
@@ -2585,11 +2585,19 @@ class DeepAgentsApp(App):
         if self._agent_running and self._agent_worker:
             self._agent_worker.cancel()
 
-        asyncio.get_running_loop().create_task(
-            dispatch_hook(
-                "session.end", {"thread_id": getattr(self, "_lc_thread_id", "")}
-            )
-        )
+        # Dispatch synchronously — the event loop is about to be torn down by
+        # super().exit(), so an async task would never complete.
+        from deepagents_cli.hooks import _dispatch_hook_sync, _load_hooks
+
+        hooks = _load_hooks()
+        if hooks:
+            payload = json.dumps(
+                {
+                    "event": "session.end",
+                    "thread_id": getattr(self, "_lc_thread_id", ""),
+                }
+            ).encode()
+            _dispatch_hook_sync("session.end", payload, hooks)
 
         _write_iterm_escape(_ITERM_CURSOR_GUIDE_ON)
         super().exit(result=result, return_code=return_code, message=message)

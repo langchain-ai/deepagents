@@ -657,7 +657,8 @@ async def execute_task_textual(
                             else:
                                 tool_msg.set_error(output_str or "Error")
                                 await dispatch_hook(
-                                    "tool.error", {"tool": tool_msg._tool_name}
+                                    "tool.error",
+                                    {"tool_names": [tool_msg._tool_name]},
                                 )
                             # Clean up - remove from tracking dict after status update
                             adapter._current_tool_messages.pop(tool_id, None)
@@ -899,13 +900,12 @@ async def execute_task_textual(
                             tool_msg.set_running()
                     else:
                         # Batch approval - one dialog for all parallel tool calls
-                        tool_names = [r.get("name", "") for r in action_requests]
                         await dispatch_hook(
                             "permission.request",
                             {
-                                "tool_name": tool_names[0]
-                                if len(tool_names) == 1
-                                else ", ".join(filter(None, tool_names))
+                                "tool_names": [
+                                    r.get("name", "") for r in action_requests
+                                ]
                             },
                         )
                         future = await adapter._request_approval(

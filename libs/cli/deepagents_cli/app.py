@@ -536,6 +536,7 @@ class DeepAgentsApp(App):
         tools: list[BaseTool | Callable[..., Any] | dict[str, Any]] | None = None,
         sandbox: SandboxBackendProtocol | None = None,
         sandbox_type: str | None = None,
+        mcp_tool_count: int = 0,
         **kwargs: Any,
     ) -> None:
         """Initialize the Deep Agents application.
@@ -552,6 +553,7 @@ class DeepAgentsApp(App):
             tools: Tools used to create the agent (for model hot-swap)
             sandbox: Sandbox backend (for model hot-swap)
             sandbox_type: Type of sandbox provider (for model hot-swap)
+            mcp_tool_count: Number of MCP tools loaded (notification on mount).
             **kwargs: Additional arguments passed to parent
         """
         super().__init__(**kwargs)
@@ -568,6 +570,7 @@ class DeepAgentsApp(App):
         self._tools = tools or []
         self._sandbox = sandbox
         self._sandbox_type = sandbox_type
+        self._mcp_tool_count = mcp_tool_count
         self._status_bar: StatusBar | None = None
         self._chat_input: ChatInput | None = None
         self._quit_pending = False
@@ -607,7 +610,11 @@ class DeepAgentsApp(App):
         # Main chat area with scrollable messages
         # VerticalScroll tracks user scroll intent for better auto-scroll behavior
         with VerticalScroll(id="chat"):
-            yield WelcomeBanner(thread_id=self._lc_thread_id, id="welcome-banner")
+            yield WelcomeBanner(
+                thread_id=self._lc_thread_id,
+                mcp_tool_count=self._mcp_tool_count,
+                id="welcome-banner",
+            )
             yield Container(id="messages")
         with Container(id="bottom-app-container"):
             yield ChatInput(
@@ -3153,6 +3160,7 @@ async def run_textual_app(
     tools: list[BaseTool | Callable[..., Any] | dict[str, Any]] | None = None,
     sandbox: SandboxBackendProtocol | None = None,
     sandbox_type: str | None = None,
+    mcp_tool_count: int = 0,
 ) -> AppResult:
     """Run the Textual application.
 
@@ -3168,6 +3176,7 @@ async def run_textual_app(
         tools: Tools used to create the agent (for model hot-swap)
         sandbox: Sandbox backend (for model hot-swap)
         sandbox_type: Type of sandbox provider (for model hot-swap)
+        mcp_tool_count: Number of MCP tools loaded (notification on mount).
 
     Returns:
         An `AppResult` with the return code and final thread ID.
@@ -3184,6 +3193,7 @@ async def run_textual_app(
         tools=tools,
         sandbox=sandbox,
         sandbox_type=sandbox_type,
+        mcp_tool_count=mcp_tool_count,
     )
     await app.run_async()
     return AppResult(

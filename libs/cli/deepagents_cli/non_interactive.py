@@ -752,7 +752,8 @@ async def run_non_interactive(
                         mcp_config_path
                     )
                     tools.extend(mcp_tools)
-                    console.print(f"[green]✓ Loaded {len(mcp_tools)} MCP tools[/green]")
+                    label = "MCP tool" if len(mcp_tools) == 1 else "MCP tools"
+                    console.print(f"[green]✓ Loaded {len(mcp_tools)} {label}[/green]")
                 except FileNotFoundError as e:
                     console.print(f"[red]✗ MCP config file not found: {e}[/red]")
                     return 1

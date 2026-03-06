@@ -531,7 +531,6 @@ async def run_textual_cli_async(
 
                 mcp_tools, mcp_session_manager = await get_mcp_tools(mcp_config_path)
                 tools.extend(mcp_tools)
-                console.print(f"[green]✓ Loaded {len(mcp_tools)} MCP tools[/green]")
             except FileNotFoundError as e:
                 console.print(f"[red]✗ MCP config file not found: {e}[/red]")
                 sys.exit(1)
@@ -588,6 +587,9 @@ async def run_textual_cli_async(
 
         result = AppResult(return_code=1, thread_id=None)
         try:
+            mcp_tool_count = (
+                len(mcp_tools) if mcp_config_path and mcp_session_manager else 0
+            )
             result = await run_textual_app(
                 agent=agent,
                 assistant_id=assistant_id,
@@ -600,6 +602,7 @@ async def run_textual_cli_async(
                 tools=tools,
                 sandbox=sandbox_backend,
                 sandbox_type=sandbox_type if sandbox_type != "none" else None,
+                mcp_tool_count=mcp_tool_count,
             )
         finally:
             # Clean up MCP session manager if initialized

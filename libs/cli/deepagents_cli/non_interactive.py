@@ -54,6 +54,9 @@ from deepagents_cli.tools import fetch_url, http_request, web_search
 from deepagents_cli.unicode_security import (
     check_url_safety,
     detect_dangerous_unicode,
+    format_warning_detail,
+    iter_string_values,
+    looks_like_url_key,
     summarize_issues,
 )
 
@@ -82,11 +85,6 @@ _MESSAGE_DATA_LENGTH = 2
 _MAX_HITL_ITERATIONS = 50
 """Safety cap on the number of HITL interrupt round-trips to prevent infinite
 loops (e.g. when the agent keeps retrying rejected commands)."""
-
-_URL_ARG_KEYS: frozenset[str] = frozenset(
-    {"url", "uri", "href", "link", "base_url", "endpoint"}
-)
-"""Set of argument keys that likely contain URLs and should be checked for safety."""
 
 
 def _write_text(text: str) -> None:
@@ -447,6 +445,8 @@ def _make_hitl_decision(
 def _collect_action_request_warnings(action_request: ActionRequest) -> list[str]:
     """Collect Unicode/URL safety warnings for one action request.
 
+    Recursively inspects all nested string values in action arguments.
+
     Returns:
         Warning messages for suspicious values in action arguments.
     """
@@ -455,24 +455,24 @@ def _collect_action_request_warnings(action_request: ActionRequest) -> list[str]
     if not isinstance(args, dict):
         return warnings
 
-    for key, value in args.items():
-        if not isinstance(value, str):
-            continue
+    tool_name = str(action_request.get("name", "unknown"))
 
-        issues = detect_dangerous_unicode(value)
+    for arg_path, text in iter_string_values(args):
+        issues = detect_dangerous_unicode(text)
         if issues:
             warnings.append(
-                f"{key} contains hidden Unicode ({summarize_issues(issues)})"
+                f"{tool_name}.{arg_path} contains hidden Unicode "
+                f"({summarize_issues(issues)})"
             )
 
-        if key.lower() in _URL_ARG_KEYS:
-            safety = check_url_safety(value)
+        if looks_like_url_key(arg_path):
+            safety = check_url_safety(text)
             if safety.safe:
                 continue
-            detail = "; ".join(safety.warnings[:2])
+            detail = format_warning_detail(safety.warnings)
             if safety.decoded_domain:
                 detail = f"{detail}; decoded host: {safety.decoded_domain}"
-            warnings.append(f"{key} URL warning: {detail}")
+            warnings.append(f"{tool_name}.{arg_path} URL warning: {detail}")
 
     return warnings
 

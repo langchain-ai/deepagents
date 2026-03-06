@@ -143,6 +143,17 @@ class TestMakeHitlDecision:
         assert warnings
         assert any("URL warning" in warning for warning in warnings)
 
+    def test_collect_action_request_warnings_nested_values(self) -> None:
+        """Nested string values should be inspected recursively."""
+        warnings = _collect_action_request_warnings(
+            {
+                "name": "http_request",
+                "args": {"headers": {"Referer": "echo \u200bhello"}},
+            }
+        )
+        assert warnings
+        assert any("hidden Unicode" in warning for warning in warnings)
+
 
 class TestBuildNonInteractiveHeader:
     """Tests for _build_non_interactive_header()."""

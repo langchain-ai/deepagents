@@ -44,6 +44,7 @@ from deepagents_cli.subagents import list_subagents
 from deepagents_cli.unicode_security import (
     check_url_safety,
     detect_dangerous_unicode,
+    format_warning_detail,
     render_with_unicode_markers,
     strip_dangerous_unicode,
     summarize_issues,
@@ -282,7 +283,7 @@ def _format_fetch_url_description(
 
     warning_lines: list[str] = []
     if not safety.safe:
-        detail = "; ".join(safety.warnings[:2])
+        detail = format_warning_detail(safety.warnings)
         warning_lines.append(f"{get_glyphs().warning}  URL warning: {detail}")
     if safety.decoded_domain:
         warning_lines.append(

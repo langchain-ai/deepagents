@@ -25,6 +25,9 @@ from deepagents_cli.config import (
 from deepagents_cli.unicode_security import (
     check_url_safety,
     detect_dangerous_unicode,
+    format_warning_detail,
+    iter_string_values,
+    looks_like_url_key,
     render_with_unicode_markers,
     strip_dangerous_unicode,
     summarize_issues,
@@ -35,9 +38,6 @@ from deepagents_cli.widgets.tool_renderers import get_renderer
 _SHELL_COMMAND_TRUNCATE_LENGTH: int = 120
 _WARNING_PREVIEW_LIMIT: int = 3
 _WARNING_TEXT_TRUNCATE_LENGTH: int = 220
-_URL_ARG_KEYS: frozenset[str] = frozenset(
-    {"url", "uri", "href", "link", "base_url", "endpoint"}
-)
 
 
 class ApprovalMenu(Container):
@@ -390,6 +390,8 @@ class ApprovalMenu(Container):
     def _collect_security_warnings(self) -> list[str]:
         """Collect warning strings for suspicious Unicode and URL values.
 
+        Recursively inspects all nested string values in action arguments.
+
         Returns:
             Warning strings for the current action request batch.
         """
@@ -399,18 +401,18 @@ class ApprovalMenu(Container):
             args = action_request.get("args", {})
             if not isinstance(args, dict):
                 continue
-            for arg_path, text in _iter_string_values(args):
+            for arg_path, text in iter_string_values(args):
                 issues = detect_dangerous_unicode(text)
                 if issues:
                     warnings.append(
                         f"{tool_name}.{arg_path}: hidden Unicode "
                         f"({summarize_issues(issues)})"
                     )
-                if _looks_like_url_key(arg_path):
+                if looks_like_url_key(arg_path):
                     result = check_url_safety(text)
                     if result.safe:
                         continue
-                    detail = "; ".join(result.warnings[:2])
+                    detail = format_warning_detail(result.warnings)
                     if result.decoded_domain:
                         detail = f"{detail}; decoded host: {result.decoded_domain}"
                     warnings.append(f"{tool_name}.{arg_path}: {detail}")
@@ -419,62 +421,3 @@ class ApprovalMenu(Container):
     def on_blur(self, event: events.Blur) -> None:  # noqa: ARG002  # Textual event handler signature
         """Re-focus on blur to keep focus trapped until decision is made."""
         self.call_after_refresh(self.focus)
-
-
-def _iter_string_values(
-    data: dict[str, Any],
-    *,
-    prefix: str = "",
-) -> list[tuple[str, str]]:
-    """Flatten nested dict/list structures into key-path/string pairs.
-
-    Returns:
-        List of `(path, value)` tuples for all string leaves.
-    """
-    values: list[tuple[str, str]] = []
-    for key, value in data.items():
-        key_path = f"{prefix}.{key}" if prefix else key
-        if isinstance(value, str):
-            values.append((key_path, value))
-            continue
-        if isinstance(value, dict):
-            values.extend(_iter_string_values(value, prefix=key_path))
-            continue
-        if isinstance(value, list):
-            values.extend(_iter_string_values_from_list(value, prefix=key_path))
-    return values
-
-
-def _iter_string_values_from_list(
-    values: list[Any],
-    *,
-    prefix: str,
-) -> list[tuple[str, str]]:
-    """Flatten nested list values into key-path/string pairs.
-
-    Returns:
-        List of `(path, value)` tuples for all string leaves.
-    """
-    entries: list[tuple[str, str]] = []
-    for index, value in enumerate(values):
-        key_path = f"{prefix}[{index}]"
-        if isinstance(value, str):
-            entries.append((key_path, value))
-            continue
-        if isinstance(value, dict):
-            entries.extend(_iter_string_values(value, prefix=key_path))
-            continue
-        if isinstance(value, list):
-            entries.extend(_iter_string_values_from_list(value, prefix=key_path))
-    return entries
-
-
-def _looks_like_url_key(arg_path: str) -> bool:
-    """Return whether a key path suggests URL-like content.
-
-    Returns:
-        `True` for URL-like key names, otherwise `False`.
-    """
-    key = arg_path.rsplit(".", maxsplit=1)[-1]
-    key = key.split("[", maxsplit=1)[0].lower()
-    return key in _URL_ARG_KEYS

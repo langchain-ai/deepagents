@@ -9,13 +9,14 @@ from __future__ import annotations
 import ipaddress
 import unicodedata
 from dataclasses import dataclass
+from typing import Any
 from urllib.parse import urlparse
 
 _DANGEROUS_CODEPOINTS: frozenset[int] = frozenset(
     {
-        # BiDi embedding/override controls
+        # BiDi directional formatting controls (embeddings, overrides, pop)
         *range(0x202A, 0x202F),
-        # BiDi isolates
+        # BiDi isolate controls (isolates, pop isolate)
         *range(0x2066, 0x206A),
         # Zero-width and invisible formatting controls
         0x200B,  # ZERO WIDTH SPACE
@@ -66,11 +67,16 @@ CONFUSABLES: dict[str, str] = {
     "\u0570": "h",  # ARMENIAN SMALL LETTER HO
     "\u0578": "n",  # ARMENIAN SMALL LETTER VO
     "\u057d": "u",  # ARMENIAN SMALL LETTER SEH
-    # Fullwidth Latin examples
-    "\uff41": "a",  # Fullwidth a
-    "\uff45": "e",  # Fullwidth e
-    "\uff4f": "o",  # Fullwidth o
+    # Fullwidth Latin
+    "\uff41": "a",  # FULLWIDTH LATIN SMALL LETTER A
+    "\uff45": "e",  # FULLWIDTH LATIN SMALL LETTER E
+    "\uff4f": "o",  # FULLWIDTH LATIN SMALL LETTER O
 }
+
+URL_ARG_KEYS: frozenset[str] = frozenset(
+    {"url", "uri", "href", "link", "base_url", "endpoint"}
+)
+"""Argument key names that likely contain URLs and should be safety-checked."""
 
 _URL_SAFE_LOCAL_HOSTS: frozenset[str] = frozenset({"localhost"})
 
@@ -81,8 +87,8 @@ class UnicodeIssue:
 
     Attributes:
         position: Zero-based index in the original string.
-        character: The raw character found in the input.
-        codepoint: Uppercase code point string like `U+202E`.
+        character: The single raw character found in the input.
+        codepoint: Uppercase code point string like ``U+202E``.
         name: Unicode character name.
     """
 
@@ -91,23 +97,44 @@ class UnicodeIssue:
     codepoint: str
     name: str
 
+    def __post_init__(self) -> None:  # noqa: D105
+        if len(self.character) != 1:
+            msg = (
+                "character must be a single code point, "
+                f"got length {len(self.character)}"
+            )
+            raise ValueError(msg)
+        expected = f"U+{ord(self.character):04X}"
+        if self.codepoint != expected:
+            msg = (
+                f"codepoint {self.codepoint!r} does not match "
+                f"character (expected {expected})"
+            )
+            raise ValueError(msg)
+
 
 @dataclass(frozen=True, slots=True)
 class UrlSafetyResult:
     """Safety analysis output for a URL string.
 
+    A result may have `safe=True` with non-empty `warnings` when
+    informational warnings (e.g. punycode decoding) are present without
+    suspicious patterns.
+
     Attributes:
         safe: `True` if no suspicious patterns were found.
         decoded_domain: Punycode-decoded hostname when it differs from the
-            original hostname. `None` when unchanged or no hostname exists.
-        warnings: Human-readable warning strings.
-        issues: Dangerous Unicode issues found in the full URL.
+            original hostname.
+
+            `None` when unchanged or no hostname exists.
+        warnings: Human-readable warning strings (immutable).
+        issues: Dangerous Unicode issues found in the full URL (immutable).
     """
 
     safe: bool
     decoded_domain: str | None
-    warnings: list[str]
-    issues: list[UnicodeIssue]
+    warnings: tuple[str, ...]
+    issues: tuple[UnicodeIssue, ...]
 
 
 def detect_dangerous_unicode(text: str) -> list[UnicodeIssue]:
@@ -171,12 +198,16 @@ def render_with_unicode_markers(text: str) -> str:
 def summarize_issues(issues: list[UnicodeIssue], *, max_items: int = 3) -> str:
     """Summarize Unicode issues for warning messages.
 
+    Deduplicates by code point. When more than *max_items* unique entries exist,
+    the summary is truncated with a `+N more entries` suffix.
+
     Args:
         issues: A list of detected issues.
         max_items: Max unique code points to include in output.
 
     Returns:
-        Comma-separated summary like `U+202E RIGHT-TO-LEFT OVERRIDE, ...`.
+        Comma-separated summary, e.g.
+            `U+202E RIGHT-TO-LEFT OVERRIDE, U+200B ZERO WIDTH SPACE`.
     """
     unique_entries: list[str] = []
     seen: set[str] = set()
@@ -194,6 +225,24 @@ def summarize_issues(issues: list[UnicodeIssue], *, max_items: int = 3) -> str:
     remainder = len(unique_entries) - max_items
     suffix = "entry" if remainder == 1 else "entries"
     return f"{displayed}, +{remainder} more {suffix}"
+
+
+def format_warning_detail(warnings: tuple[str, ...], *, max_shown: int = 2) -> str:
+    """Join safety warnings into a display string with overflow indicator.
+
+    Args:
+        warnings: Warning strings from a `UrlSafetyResult`.
+        max_shown: Maximum warnings to include before truncating.
+
+    Returns:
+        Semicolon-separated detail string, e.g. `'warn1; warn2; +1 more'`.
+    """
+    shown = warnings[:max_shown]
+    detail = "; ".join(shown)
+    remaining = len(warnings) - max_shown
+    if remaining > 0:
+        detail += f"; +{remaining} more"
+    return detail
 
 
 def check_url_safety(url: str) -> UrlSafetyResult:
@@ -221,21 +270,25 @@ def check_url_safety(url: str) -> UrlSafetyResult:
         return UrlSafetyResult(
             safe=not suspicious,
             decoded_domain=None,
-            warnings=warnings,
-            issues=issues,
+            warnings=tuple(warnings),
+            issues=tuple(issues),
         )
 
-    decoded_hostname = _decode_hostname(hostname)
+    decoded_hostname, failed_punycode = _decode_hostname(hostname)
     decoded_domain = decoded_hostname if decoded_hostname != hostname else None
     if decoded_domain:
         warnings.append(f"Punycode domain decodes to '{decoded_domain}'")
+    if failed_punycode:
+        suspicious = True
+        labels = ", ".join(failed_punycode)
+        warnings.append(f"Punycode label(s) could not be decoded: {labels}")
 
     if _is_local_or_ip_hostname(decoded_hostname):
         return UrlSafetyResult(
             safe=not suspicious,
             decoded_domain=decoded_domain,
-            warnings=warnings,
-            issues=issues,
+            warnings=tuple(warnings),
+            issues=tuple(issues),
         )
 
     for label in _split_hostname_labels(decoded_hostname):
@@ -254,27 +307,29 @@ def check_url_safety(url: str) -> UrlSafetyResult:
     return UrlSafetyResult(
         safe=not suspicious,
         decoded_domain=decoded_domain,
-        warnings=warnings,
-        issues=issues,
+        warnings=tuple(warnings),
+        issues=tuple(issues),
     )
 
 
-def _decode_hostname(hostname: str) -> str:
+def _decode_hostname(hostname: str) -> tuple[str, list[str]]:
     """Decode `xn--` punycode labels into Unicode labels when possible.
 
     Returns:
-        Hostname with decodable punycode labels replaced by Unicode labels.
+        Tuple of (decoded hostname, list of labels that failed to decode).
     """
     decoded_labels: list[str] = []
+    failed_labels: list[str] = []
     for label in _split_hostname_labels(hostname):
         if label.startswith("xn--"):
             try:
                 decoded_labels.append(label.encode("ascii").decode("idna"))
             except UnicodeError:
                 decoded_labels.append(label)
+                failed_labels.append(label)
             continue
         decoded_labels.append(label)
-    return ".".join(decoded_labels)
+    return ".".join(decoded_labels), failed_labels
 
 
 def _split_hostname_labels(hostname: str) -> list[str]:
@@ -324,24 +379,26 @@ def _scripts_in_label(label: str) -> set[str]:
 def _label_has_suspicious_confusable_mix(label: str) -> bool:
     """Return whether a label has likely deceptive confusable characters.
 
+    Only flags labels that mix multiple scripts while containing confusable
+    characters. Single-script labels (even with confusables) are not flagged
+    because they represent legitimate use of that script.
+
     Returns:
-        `True` when the label contains risky confusable composition.
+        `True` when the label mixes scripts and contains confusable characters.
     """
     if not any(character in CONFUSABLES for character in label):
         return False
 
     scripts = _scripts_in_label(label)
-    if len(scripts) > 1:
-        return True
-
-    return "Latin" in scripts or "Fullwidth" in scripts
+    return len(scripts) > 1
 
 
 def _char_script(character: str) -> str:
     """Classify a character into a coarse Unicode script bucket.
 
     Returns:
-        One of the known script bucket labels.
+        One of: `'Fullwidth'`, `'Latin'`, `'Cyrillic'`, `'Greek'`, `'Armenian'`,
+            `'EastAsian'`, `'Inherited'`, `'Common'`, or `'Other'`.
     """
     name = unicodedata.name(character, "")
     category = unicodedata.category(character)
@@ -393,3 +450,67 @@ def _unicode_name(character: str) -> str:
         Unicode name string for the character.
     """
     return unicodedata.name(character, "UNKNOWN CHARACTER")
+
+
+# ---------------------------------------------------------------------------
+# Shared helpers for recursive argument inspection
+# ---------------------------------------------------------------------------
+
+
+def iter_string_values(
+    data: dict[str, Any],
+    *,
+    prefix: str = "",
+) -> list[tuple[str, str]]:
+    """Flatten nested dict/list structures into key-path/string pairs.
+
+    Returns:
+        List of ``(path, value)`` tuples for all string leaves.
+    """
+    values: list[tuple[str, str]] = []
+    for key, value in data.items():
+        key_path = f"{prefix}.{key}" if prefix else key
+        if isinstance(value, str):
+            values.append((key_path, value))
+            continue
+        if isinstance(value, dict):
+            values.extend(iter_string_values(value, prefix=key_path))
+            continue
+        if isinstance(value, list):
+            values.extend(_iter_string_values_from_list(value, prefix=key_path))
+    return values
+
+
+def _iter_string_values_from_list(
+    values: list[Any],
+    *,
+    prefix: str,
+) -> list[tuple[str, str]]:
+    """Flatten nested list values into key-path/string pairs.
+
+    Returns:
+        List of `(path, value)` tuples for all string leaves.
+    """
+    entries: list[tuple[str, str]] = []
+    for index, value in enumerate(values):
+        key_path = f"{prefix}[{index}]"
+        if isinstance(value, str):
+            entries.append((key_path, value))
+            continue
+        if isinstance(value, dict):
+            entries.extend(iter_string_values(value, prefix=key_path))
+            continue
+        if isinstance(value, list):
+            entries.extend(_iter_string_values_from_list(value, prefix=key_path))
+    return entries
+
+
+def looks_like_url_key(arg_path: str) -> bool:
+    """Return whether a key path suggests URL-like content.
+
+    Returns:
+        `True` for URL-like key names, otherwise `False`.
+    """
+    key = arg_path.rsplit(".", maxsplit=1)[-1]
+    key = key.split("[", maxsplit=1)[0].lower()
+    return key in URL_ARG_KEYS

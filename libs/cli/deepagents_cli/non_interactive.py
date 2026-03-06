@@ -720,6 +720,8 @@ async def run_non_interactive(
         trust_project_mcp: When `True`, allow project-level stdio MCP
             servers. When `False` (default), project stdio servers are
             silently skipped.
+        auto_approve: When `True`, auto-approve all tool calls without
+            human-in-the-loop prompts.
 
     Returns:
         Exit code: 0 for success, 1 for error, 130 for keyboard interrupt.

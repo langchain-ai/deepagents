@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import logging
 import webbrowser
+from contextlib import suppress
 from typing import TYPE_CHECKING
+
+from deepagents_cli.unicode_security import check_url_safety
 
 if TYPE_CHECKING:
     from textual.events import Click
@@ -30,6 +33,21 @@ def open_style_link(event: Click) -> None:
     url = event.style.link
     if not url:
         return
+
+    safety = check_url_safety(url)
+    if not safety.safe:
+        detail = "; ".join(safety.warnings[:2]) or "Suspicious URL"
+        logger.warning("Blocked suspicious URL: %s (%s)", url, detail)
+        with suppress(Exception):
+            app = getattr(event, "app", None)
+            notify = getattr(app, "notify", None)
+            if callable(notify):
+                notify(
+                    f"Blocked suspicious URL: {url}\n{detail}",
+                    severity="warning",
+                )
+        return
+
     try:
         webbrowser.open(url)
     except Exception:

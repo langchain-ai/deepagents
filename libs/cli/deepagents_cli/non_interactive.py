@@ -51,6 +51,11 @@ from deepagents_cli.model_config import ModelConfigError
 from deepagents_cli.sessions import generate_thread_id, get_checkpointer
 from deepagents_cli.textual_adapter import SessionStats, print_usage_table
 from deepagents_cli.tools import fetch_url, http_request, web_search
+from deepagents_cli.unicode_security import (
+    check_url_safety,
+    detect_dangerous_unicode,
+    summarize_issues,
+)
 
 if TYPE_CHECKING:
     from langchain_core.runnables import RunnableConfig
@@ -77,6 +82,11 @@ _MESSAGE_DATA_LENGTH = 2
 _MAX_HITL_ITERATIONS = 50
 """Safety cap on the number of HITL interrupt round-trips to prevent infinite
 loops (e.g. when the agent keeps retrying rejected commands)."""
+
+_URL_ARG_KEYS: frozenset[str] = frozenset(
+    {"url", "uri", "href", "link", "base_url", "endpoint"}
+)
+"""Set of argument keys that likely contain URLs and should be checked for safety."""
 
 
 def _write_text(text: str) -> None:
@@ -391,6 +401,9 @@ def _make_hitl_decision(
         Decision dict with a `type` key (`"approve"` or `"reject"`)
             and an optional `message` key with a human-readable explanation.
     """
+    for warning in _collect_action_request_warnings(action_request):
+        console.print(f"[yellow]Warning:[/yellow] {warning}")
+
     action_name = action_request.get("name", "")
 
     if action_name in SHELL_TOOL_NAMES:
@@ -429,6 +442,39 @@ def _make_hitl_decision(
 
     console.print(f"[dim]✓ Auto-approved action: {action_name}[/dim]")
     return {"type": "approve"}
+
+
+def _collect_action_request_warnings(action_request: ActionRequest) -> list[str]:
+    """Collect Unicode/URL safety warnings for one action request.
+
+    Returns:
+        Warning messages for suspicious values in action arguments.
+    """
+    warnings: list[str] = []
+    args = action_request.get("args", {})
+    if not isinstance(args, dict):
+        return warnings
+
+    for key, value in args.items():
+        if not isinstance(value, str):
+            continue
+
+        issues = detect_dangerous_unicode(value)
+        if issues:
+            warnings.append(
+                f"{key} contains hidden Unicode ({summarize_issues(issues)})"
+            )
+
+        if key.lower() in _URL_ARG_KEYS:
+            safety = check_url_safety(value)
+            if safety.safe:
+                continue
+            detail = "; ".join(safety.warnings[:2])
+            if safety.decoded_domain:
+                detail = f"{detail}; decoded host: {safety.decoded_domain}"
+            warnings.append(f"{key} URL warning: {detail}")
+
+    return warnings
 
 
 def _process_hitl_interrupts(state: StreamState, console: Console) -> None:

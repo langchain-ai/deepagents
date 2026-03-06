@@ -39,6 +39,13 @@ from deepagents_cli.config import (
 from deepagents_cli.integrations.sandbox_factory import get_default_working_dir
 from deepagents_cli.local_context import LocalContextMiddleware, _ExecutableBackend
 from deepagents_cli.subagents import list_subagents
+from deepagents_cli.unicode_security import (
+    check_url_safety,
+    detect_dangerous_unicode,
+    render_with_unicode_markers,
+    strip_dangerous_unicode,
+    summarize_issues,
+)
 
 DEFAULT_AGENT_NAME = "agent"
 """The default agent name used when no `-a` flag is provided."""
@@ -266,12 +273,28 @@ def _format_fetch_url_description(
         Formatted description string for the fetch_url tool call.
     """
     args = tool_call["args"]
-    url = args.get("url", "unknown")
+    url = str(args.get("url", "unknown"))
+    display_url = strip_dangerous_unicode(url)
     timeout = args.get("timeout", 30)
+    safety = check_url_safety(url)
+
+    warning_lines: list[str] = []
+    if not safety.safe:
+        detail = "; ".join(safety.warnings[:2])
+        warning_lines.append(f"{get_glyphs().warning}  URL warning: {detail}")
+    if safety.decoded_domain:
+        warning_lines.append(
+            f"{get_glyphs().warning}  Decoded domain: {safety.decoded_domain}"
+        )
+
+    warning_block = "\n".join(warning_lines)
+    if warning_block:
+        warning_block = f"\n{warning_block}"
 
     return (
-        f"URL: {url}\nTimeout: {timeout}s\n\n"
+        f"URL: {display_url}\nTimeout: {timeout}s\n\n"
         f"{get_glyphs().warning}  Will fetch and convert web content to markdown"
+        f"{warning_block}"
     )
 
 
@@ -317,8 +340,20 @@ def _format_execute_description(
         Formatted description string for the execute tool call.
     """
     args = tool_call["args"]
-    command = args.get("command", "N/A")
-    return f"Execute Command: {command}\nWorking Directory: {Path.cwd()}"
+    command_raw = str(args.get("command", "N/A"))
+    command = strip_dangerous_unicode(command_raw)
+    lines = [f"Execute Command: {command}", f"Working Directory: {Path.cwd()}"]
+
+    issues = detect_dangerous_unicode(command_raw)
+    if issues:
+        summary = summarize_issues(issues)
+        lines.append(f"{get_glyphs().warning}  Hidden Unicode detected: {summary}")
+        raw_marked = render_with_unicode_markers(command_raw)
+        if len(raw_marked) > 220:  # noqa: PLR2004  # UI display truncation threshold
+            raw_marked = raw_marked[:220] + "..."
+        lines.append(f"Raw: {raw_marked}")
+
+    return "\n".join(lines)
 
 
 def _add_interrupt_on() -> dict[str, InterruptOnConfig]:

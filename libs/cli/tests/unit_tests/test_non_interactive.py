@@ -16,6 +16,7 @@ from deepagents_cli.config import ModelResult
 from deepagents_cli.non_interactive import (
     ThreadUrlLookupState,
     _build_non_interactive_header,
+    _collect_action_request_warnings,
     _make_hitl_decision,
     _start_langsmith_thread_url_lookup,
     run_non_interactive,
@@ -125,6 +126,22 @@ class TestMakeHitlDecision:
                 {"name": tool_name, "args": {"command": "rm -rf /"}}, console
             )
             assert result["type"] == "reject"
+
+    def test_collect_action_request_warnings_for_hidden_unicode(self) -> None:
+        """Hidden Unicode in action args should generate warnings."""
+        warnings = _collect_action_request_warnings(
+            {"name": "execute", "args": {"command": "echo he\u200bllo"}}
+        )
+        assert warnings
+        assert any("hidden Unicode" in warning for warning in warnings)
+
+    def test_collect_action_request_warnings_for_suspicious_url(self) -> None:
+        """Suspicious URLs in action args should generate warnings."""
+        warnings = _collect_action_request_warnings(
+            {"name": "fetch_url", "args": {"url": "https://аpple.com"}}
+        )
+        assert warnings
+        assert any("URL warning" in warning for warning in warnings)
 
 
 class TestBuildNonInteractiveHeader:

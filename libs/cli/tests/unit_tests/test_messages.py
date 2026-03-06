@@ -402,3 +402,15 @@ class TestAppMessageOnClickOpensLink:
             msg.on_click(event)  # should not raise
 
         event.stop.assert_not_called()
+
+    def test_click_on_suspicious_url_is_blocked(self) -> None:
+        """Suspicious Unicode URL should not be opened."""
+        msg = AppMessage("test")
+        event = MagicMock()
+        event.style = Style(link="https://аpple.com")
+
+        with patch(_WEBBROWSER_OPEN) as mock_open:
+            msg.on_click(event)
+
+        mock_open.assert_not_called()
+        event.stop.assert_not_called()

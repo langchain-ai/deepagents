@@ -394,10 +394,11 @@ def _build_evicted_content(message: ToolMessage, replacement_text: str) -> str |
     """
     if isinstance(message.content, str):
         return replacement_text
-    non_text = [block for block in message.content_blocks if block["type"] != "text"]
-    if not non_text:
+    media_blocks = [block for block in message.content_blocks if block["type"] != "text"]
+    if not media_blocks:
+        # All content is text, so a plain string replacement is sufficient.
         return replacement_text
-    return [cast("ContentBlock", {"type": "text", "text": replacement_text}), *non_text]
+    return [cast("ContentBlock", {"type": "text", "text": replacement_text}), *media_blocks]
 
 
 class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]):

@@ -60,16 +60,19 @@ COLORS = {
     "agent": "#10b981",
     "thinking": "#34d399",
     "tool": "#fbbf24",
-    "mode_bash": "#ff1493",
+    "mode_shell": "#ff1493",
     "mode_command": "#8b5cf6",
 }
 """App color scheme."""
 
 MODE_PREFIXES: dict[str, str] = {
-    "bash": "!",
+    "shell": "!",
     "command": "/",
 }
 """Maps each non-normal mode to its trigger character."""
+
+PREFIX_TO_MODE: dict[str, str] = {v: k for k, v in MODE_PREFIXES.items()}
+"""Reverse lookup: trigger character -> mode name."""
 
 
 class CharsetMode(StrEnum):

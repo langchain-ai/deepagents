@@ -58,6 +58,9 @@ MODELS: list[str] = [
     # Baseten
     "baseten:zai-org/GLM-5",
     "baseten:MiniMaxAI/MiniMax-M2.5",
+    # Fireworks
+    "fireworks:accounts/fireworks/models/qwen3-235b-a22b-instruct-2507",
+    "fireworks:accounts/fireworks/models/deepseek-v3-0324",
 ]
 
 SET1: list[str] = [
@@ -74,6 +77,7 @@ SET1: list[str] = [
     "ollama:qwen3.5:397b-cloud",
     "baseten:zai-org/GLM-5",
     "baseten:MiniMaxAI/MiniMax-M2.5",
+    "fireworks:accounts/fireworks/models/qwen3-235b-a22b-instruct-2507",
 ]
 
 

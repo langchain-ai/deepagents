@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
+import shlex
 import signal
 import sys
 import uuid
@@ -21,7 +23,6 @@ from textual.binding import Binding, BindingType
 from textual.containers import Container, VerticalScroll
 from textual.css.query import NoMatches
 from textual.screen import ModalScreen
-from textual.widgets import Static
 
 from deepagents_cli.clipboard import copy_selection_to_clipboard
 from deepagents_cli.config import (
@@ -35,6 +36,7 @@ from deepagents_cli.config import (
     is_shell_command_allowed,
     settings,
 )
+from deepagents_cli.hooks import dispatch_hook
 from deepagents_cli.model_config import ModelSpec, save_recent_model
 from deepagents_cli.textual_adapter import (
     SessionStats,
@@ -76,9 +78,10 @@ if TYPE_CHECKING:
     from langgraph.checkpoint.base import BaseCheckpointSaver
     from langgraph.pregel import Pregel
     from textual.app import ComposeResult
-    from textual.events import Click, MouseUp, Paste, Resize
+    from textual.events import Click, MouseUp, Paste
     from textual.scrollbar import ScrollUp
     from textual.widget import Widget
+    from textual.widgets import Static
     from textual.worker import Worker
 
 # iTerm2 Cursor Guide Workaround
@@ -178,7 +181,100 @@ if _IS_ITERM:
     atexit.register(_restore_cursor_guide)
 
 
-InputMode = Literal["normal", "bash", "command"]
+def _extract_model_params_flag(raw_arg: str) -> tuple[str, dict[str, Any] | None]:
+    """Extract `--model-params` and its JSON value from a `/model` arg string.
+
+    Handles quoted (`'...'` / `"..."`) and bare `{...}` values with balanced
+    braces so that JSON containing spaces works without quoting.
+
+    Note:
+        The bare-brace mode counts `{` / `}` characters without awareness of
+        JSON string contents. Values that contain literal braces inside strings
+        (e.g., `{"stop": "end}here"}`) will mis-parse. Users should quote the
+        value in that case.
+
+    Args:
+        raw_arg: The argument string after `/model `.
+
+    Returns:
+        Tuple of `(remaining_args, parsed_dict | None)`. Returns `None` for the
+            dict when the flag is absent.
+
+    Raises:
+        ValueError: If the value is missing, has unclosed quotes,
+            unbalanced braces, or is not valid JSON.
+        TypeError: If the parsed JSON is not a dict.
+    """
+    flag = "--model-params"
+    idx = raw_arg.find(flag)
+    if idx == -1:
+        return raw_arg, None
+
+    before = raw_arg[:idx].rstrip()
+    after = raw_arg[idx + len(flag) :].lstrip()
+
+    if not after:
+        msg = "--model-params requires a JSON object value"
+        raise ValueError(msg)
+
+    # Determine the JSON string boundaries.
+    if after[0] in {"'", '"'}:
+        quote = after[0]
+        end = -1
+        backslash_count = 0
+        for i, ch in enumerate(after[1:], start=1):
+            if ch == "\\":
+                backslash_count += 1
+                continue
+            if ch == quote and backslash_count % 2 == 0:
+                end = i
+                break
+            backslash_count = 0
+        if end == -1:
+            msg = f"Unclosed {quote} in --model-params value"
+            raise ValueError(msg)
+        # Parse the quoted token with shlex so escaped quotes are unescaped.
+        json_str = shlex.split(after[: end + 1], posix=True)[0]
+        rest = after[end + 1 :].lstrip()
+    elif after[0] == "{":
+        # Walk forward to find the matching closing brace.
+        depth = 0
+        end = -1
+        for i, ch in enumerate(after):
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    end = i
+                    break
+        if end == -1:
+            msg = "Unbalanced braces in --model-params value"
+            raise ValueError(msg)
+        json_str = after[: end + 1]
+        rest = after[end + 1 :].lstrip()
+    else:
+        # Non-brace, non-quoted — take the next whitespace-delimited token.
+        parts = after.split(None, 1)
+        json_str = parts[0]
+        rest = parts[1] if len(parts) > 1 else ""
+
+    remaining = f"{before} {rest}".strip()
+    try:
+        params = json.loads(json_str)
+    except json.JSONDecodeError:
+        msg = (
+            f"Invalid JSON in --model-params: {json_str!r}. "
+            'Expected format: --model-params \'{"key": "value"}\''
+        )
+        raise ValueError(msg) from None
+    if not isinstance(params, dict):
+        msg = "--model-params must be a JSON object, got " + type(params).__name__
+        raise TypeError(msg)
+    return remaining, params
+
+
+InputMode = Literal["normal", "shell", "command"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -480,10 +576,10 @@ class DeepAgentsApp(App):
         # Agent task tracking for interruption
         self._agent_worker: Worker[None] | None = None
         self._agent_running = False
-        # Bash process tracking for interruption (! commands)
-        self._bash_process: asyncio.subprocess.Process | None = None
-        self._bash_worker: Worker[None] | None = None
-        self._bash_running = False
+        # Shell command process tracking for interruption (! commands)
+        self._shell_process: asyncio.subprocess.Process | None = None
+        self._shell_worker: Worker[None] | None = None
+        self._shell_running = False
         self._loading_widget: LoadingWidget | None = None
         self._token_tracker: TextualTokenTracker | None = None
         # Cumulative usage stats across all turns in this session
@@ -512,13 +608,12 @@ class DeepAgentsApp(App):
         with VerticalScroll(id="chat"):
             yield WelcomeBanner(thread_id=self._lc_thread_id, id="welcome-banner")
             yield Container(id="messages")
-            with Container(id="bottom-app-container"):
-                yield ChatInput(
-                    cwd=self._cwd,
-                    image_tracker=self._image_tracker,
-                    id="input-area",
-                )
-            yield Static(id="chat-spacer")  # Fills remaining space below input
+        with Container(id="bottom-app-container"):
+            yield ChatInput(
+                cwd=self._cwd,
+                image_tracker=self._image_tracker,
+                id="input-area",
+            )
 
         # Status bar at bottom
         yield StatusBar(cwd=self._cwd, id="status-bar")
@@ -601,9 +696,6 @@ class DeepAgentsApp(App):
             except Exception:
                 logger.debug("Failed to check for optional tools", exc_info=True)
 
-        # Size the spacer to fill remaining viewport below input
-        self.call_after_refresh(self._size_initial_spacer)
-
         # Auto-submit initial prompt if provided via -m flag.
         # This check must come first because _lc_thread_id and _agent are
         # always set (even for brand-new sessions), so an elif after the
@@ -620,15 +712,6 @@ class DeepAgentsApp(App):
             self.call_after_refresh(
                 lambda: asyncio.create_task(self._load_thread_history())
             )
-
-    def on_resize(self, _event: Resize) -> None:
-        """Handle terminal resize to recalculate layout."""
-        try:
-            self.query_one("#chat-spacer", Static)
-            # Spacer exists, recalculate its height
-            self.call_after_refresh(self._size_initial_spacer)
-        except NoMatches:
-            pass  # Spacer already removed, no action needed
 
     async def _prewarm_threads_cache(self) -> None:  # noqa: PLR6301  # Worker hook kept as instance method
         """Prewarm thread selector cache without blocking app startup."""
@@ -871,28 +954,6 @@ class DeepAgentsApp(App):
         # NOTE: Don't call _scroll_chat_to_bottom() here - it would re-anchor
         # and drag user back to bottom if they've scrolled away during streaming
 
-    def _size_initial_spacer(self) -> None:
-        """Size the spacer to fill remaining viewport below input."""
-        try:
-            chat = self.query_one("#chat", VerticalScroll)
-            welcome = self.query_one("#welcome-banner", WelcomeBanner)
-            input_container = self.query_one("#bottom-app-container", Container)
-            spacer = self.query_one("#chat-spacer", Static)
-            content_height = welcome.size.height + input_container.size.height + 4
-            spacer_height = chat.size.height - content_height
-            spacer.styles.height = max(0, spacer_height)
-        except NoMatches:
-            # Spacer may have been removed already (e.g., when resuming a session)
-            pass
-
-    async def _remove_spacer(self) -> None:
-        """Remove the initial spacer when first message is sent."""
-        try:
-            spacer = self.query_one("#chat-spacer", Static)
-            await spacer.remove()
-        except NoMatches:
-            pass
-
     async def _request_approval(
         self,
         action_requests: Any,  # noqa: ANN401  # ActionRequest uses dynamic typing
@@ -1006,8 +1067,8 @@ class DeepAgentsApp(App):
             value: The message text to process.
             mode: The input mode that determines message routing.
         """
-        if mode == "bash":
-            await self._handle_bash_command(value.removeprefix("!"))
+        if mode == "shell":
+            await self._handle_shell_command(value.removeprefix("!"))
         elif mode == "command":
             await self._handle_command(value)
         elif mode == "normal":
@@ -1024,6 +1085,8 @@ class DeepAgentsApp(App):
         # Reset quit pending state on any input
         self._quit_pending = False
 
+        await dispatch_hook("user.prompt", {})
+
         # Prevent message handling while a thread switch is in-flight.
         if self._thread_switching:
             self.notify(
@@ -1033,8 +1096,8 @@ class DeepAgentsApp(App):
             )
             return
 
-        # If agent or bash command is running, enqueue instead of processing
-        if self._agent_running or self._bash_running:
+        # If agent or shell command is running, enqueue instead of processing
+        if self._agent_running or self._shell_running:
             self._pending_messages.append(QueuedMessage(text=value, mode=mode))
             queued_widget = QueuedUserMessage(value)
             self._queued_widgets.append(queued_widget)
@@ -1062,28 +1125,28 @@ class DeepAgentsApp(App):
         if self._chat_input:
             self.call_after_refresh(self._chat_input.focus_input)
 
-    async def _handle_bash_command(self, command: str) -> None:
-        """Handle a bash command (! prefix).
+    async def _handle_shell_command(self, command: str) -> None:
+        """Handle a shell command (! prefix).
 
         Thin dispatcher that mounts the user message and spawns a worker
         so the event loop stays free for key events (Esc/Ctrl+C).
 
         Args:
-            command: The bash command to execute.
+            command: The shell command to execute.
         """
         await self._mount_message(UserMessage(f"!{command}"))
-        self._bash_running = True
+        self._shell_running = True
 
         if self._chat_input:
             self._chat_input.set_cursor_active(active=False)
 
-        self._bash_worker = self.run_worker(
-            self._run_bash_task(command),
+        self._shell_worker = self.run_worker(
+            self._run_shell_task(command),
             exclusive=False,
         )
 
-    async def _run_bash_task(self, command: str) -> None:
-        """Run a bash command in a background worker.
+    async def _run_shell_task(self, command: str) -> None:
+        """Run a shell command in a background worker.
 
         This mirrors `_run_agent_task`: running in a worker keeps the event
         loop free so Esc/Ctrl+C can cancel the worker -> raise
@@ -1103,18 +1166,18 @@ class DeepAgentsApp(App):
                 cwd=self._cwd,
                 start_new_session=(sys.platform != "win32"),
             )
-            self._bash_process = proc
+            self._shell_process = proc
 
             try:
                 stdout_bytes, stderr_bytes = await asyncio.wait_for(
                     proc.communicate(), timeout=60
                 )
             except TimeoutError:
-                await self._kill_bash_process()
+                await self._kill_shell_process()
                 await self._mount_message(ErrorMessage("Command timed out (60s limit)"))
                 return
             except asyncio.CancelledError:
-                await self._kill_bash_process()
+                await self._kill_shell_process()
                 raise
 
             output = (stdout_bytes or b"").decode(errors="replace").strip()
@@ -1137,35 +1200,35 @@ class DeepAgentsApp(App):
             chat.scroll_end(animate=False)
 
         except OSError as e:
-            logger.exception("Failed to execute bash command: %s", command)
+            logger.exception("Failed to execute shell command: %s", command)
             err_msg = f"Failed to run command: {e}"
             await self._mount_message(ErrorMessage(err_msg))
         finally:
-            await self._cleanup_bash_task()
+            await self._cleanup_shell_task()
 
-    async def _cleanup_bash_task(self) -> None:
-        """Clean up after bash task completes or is cancelled."""
-        was_interrupted = self._bash_process is not None and (
-            self._bash_worker is not None and self._bash_worker.is_cancelled
+    async def _cleanup_shell_task(self) -> None:
+        """Clean up after shell command task completes or is cancelled."""
+        was_interrupted = self._shell_process is not None and (
+            self._shell_worker is not None and self._shell_worker.is_cancelled
         )
-        self._bash_process = None
-        self._bash_running = False
-        self._bash_worker = None
+        self._shell_process = None
+        self._shell_running = False
+        self._shell_worker = None
         if was_interrupted:
             await self._mount_message(AppMessage("Command interrupted"))
         if self._chat_input:
             self._chat_input.set_cursor_active(active=True)
         await self._process_next_from_queue()
 
-    async def _kill_bash_process(self) -> None:
-        """Terminate the running bash process.
+    async def _kill_shell_process(self) -> None:
+        """Terminate the running shell command process.
 
         On POSIX, sends SIGTERM to the entire process group (killing children).
         On Windows, terminates only the root process. No-op if the process has
         already exited. Waits up to 5s for clean shutdown, then escalates
         to SIGKILL.
         """
-        proc = self._bash_process
+        proc = self._shell_process
         if proc is None or proc.returncode is not None:
             return
 
@@ -1178,7 +1241,7 @@ class DeepAgentsApp(App):
             return
         except OSError:
             logger.warning(
-                "Failed to terminate bash process (pid=%s)", proc.pid, exc_info=True
+                "Failed to terminate shell process (pid=%s)", proc.pid, exc_info=True
             )
             return
 
@@ -1186,7 +1249,7 @@ class DeepAgentsApp(App):
             await asyncio.wait_for(proc.wait(), timeout=5)
         except TimeoutError:
             logger.warning(
-                "Bash process (pid=%s) did not exit after SIGTERM; sending SIGKILL",
+                "Shell process (pid=%s) did not exit after SIGTERM; sending SIGKILL",
                 proc.pid,
             )
             with suppress(ProcessLookupError, OSError):
@@ -1295,7 +1358,8 @@ class DeepAgentsApp(App):
         elif cmd == "/help":
             await self._mount_message(UserMessage(command))
             help_text = Text(
-                "Commands: /quit, /clear, /compact, /model [--default], /remember, "
+                "Commands: /quit, /clear, /compact, "
+                "/model [--model-params JSON] [--default], /remember, "
                 "/tokens, /threads, /trace, /changelog, /docs, /feedback, /help\n\n"
                 "Interactive Features:\n"
                 "  Enter           Submit your message\n"
@@ -1303,7 +1367,7 @@ class DeepAgentsApp(App):
                 "  Shift+Tab       Toggle auto-approve mode\n"
                 "  @filename       Auto-complete files and inject content\n"
                 "  /command        Slash commands (/help, /clear, /quit)\n"
-                "  !command        Run bash commands directly\n\n"
+                "  !command        Run shell commands directly\n\n"
                 f"Docs: {DOCS_URL}",
                 style="dim italic",
             )
@@ -1428,17 +1492,32 @@ class DeepAgentsApp(App):
         elif cmd == "/model" or cmd.startswith("/model "):
             model_arg = None
             set_default = False
+            extra_kwargs: dict[str, Any] | None = None
             if cmd.startswith("/model "):
                 raw_arg = command.strip()[len("/model ") :].strip()
+                try:
+                    raw_arg, extra_kwargs = _extract_model_params_flag(raw_arg)
+                except (ValueError, TypeError) as exc:
+                    await self._mount_message(UserMessage(command))
+                    await self._mount_message(ErrorMessage(str(exc)))
+                    return
                 if raw_arg.startswith("--default"):
                     set_default = True
                     model_arg = raw_arg[len("--default") :].strip() or None
                 else:
-                    model_arg = raw_arg
+                    model_arg = raw_arg or None
 
             if set_default:
                 await self._mount_message(UserMessage(command))
-                if model_arg == "--clear":
+                if extra_kwargs:
+                    await self._mount_message(
+                        ErrorMessage(
+                            "--model-params cannot be used with --default. "
+                            "Model params are applied per-session, not "
+                            "persisted."
+                        )
+                    )
+                elif model_arg == "--clear":
                     await self._clear_default_model()
                 elif model_arg:
                     await self._set_default_model(model_arg)
@@ -1452,9 +1531,9 @@ class DeepAgentsApp(App):
             elif model_arg:
                 # Direct switch: /model claude-sonnet-4-5
                 await self._mount_message(UserMessage(command))
-                await self._switch_model(model_arg)
+                await self._switch_model(model_arg, extra_kwargs=extra_kwargs)
             else:
-                await self._show_model_selector()
+                await self._show_model_selector(extra_kwargs=extra_kwargs)
         else:
             await self._mount_message(UserMessage(command))
             await self._mount_message(AppMessage(f"Unknown command: {cmd}"))
@@ -1546,6 +1625,7 @@ class DeepAgentsApp(App):
         # Prevent concurrent user input while compaction modifies state
         self._agent_running = True
         try:
+            await dispatch_hook("context.compact", {})
             await self._set_spinner("Compacting")
 
             from deepagents.middleware.summarization import (
@@ -1920,7 +2000,7 @@ class DeepAgentsApp(App):
         # Command mode messages complete synchronously without spawning
         # a worker, so cleanup won't fire again. Continue draining the
         # queue if no worker was started.
-        busy = self._agent_running or self._bash_running
+        busy = self._agent_running or self._shell_running
         if not busy and self._pending_messages:
             await self._process_next_from_queue()
 
@@ -2171,9 +2251,6 @@ class DeepAgentsApp(App):
             # 3. Bulk load into store (sets visible window)
             _archived, visible = self._message_store.bulk_load(all_data)
 
-            # 4. Remove spacer once
-            await self._remove_spacer()
-
             # 5. Cache container ref (single query)
             try:
                 messages_container = self.query_one("#messages", Container)
@@ -2243,8 +2320,6 @@ class DeepAgentsApp(App):
         Args:
             widget: The message widget to mount
         """
-        await self._remove_spacer()
-
         try:
             messages = self.query_one("#messages", Container)
         except NoMatches:
@@ -2344,23 +2419,36 @@ class DeepAgentsApp(App):
                 "UI may be out of sync with message store"
             )
 
+    def _discard_queue(self) -> None:
+        """Clear pending messages and remove queued widgets from the DOM."""
+        self._pending_messages.clear()
+        for w in self._queued_widgets:
+            w.remove()
+        self._queued_widgets.clear()
+
+    def _cancel_worker(self, worker: Worker[None] | None) -> None:
+        """Discard the message queue and cancel an active worker.
+
+        Args:
+            worker: The worker to cancel.
+        """
+        self._discard_queue()
+        if worker is not None:
+            worker.cancel()
+
     def action_quit_or_interrupt(self) -> None:
         """Handle Ctrl+C - interrupt agent, reject approval, or quit on double press.
 
         Priority order:
-        1. If bash process is running, kill it
+        1. If shell command is running, kill it
         2. If approval menu is active, reject it
         3. If agent is running, interrupt it (preserve input)
         4. If double press (quit_pending), quit
         5. Otherwise show quit hint
         """
-        # If bash command is running, cancel the worker
-        if self._bash_running and self._bash_worker:
-            self._pending_messages.clear()
-            for w in self._queued_widgets:
-                w.remove()
-            self._queued_widgets.clear()
-            self._bash_worker.cancel()
+        # If shell command is running, cancel the worker
+        if self._shell_running and self._shell_worker:
+            self._cancel_worker(self._shell_worker)
             self._quit_pending = False
             return
 
@@ -2375,11 +2463,7 @@ class DeepAgentsApp(App):
 
         # If agent is running, interrupt it and discard queued messages
         if self._agent_running and self._agent_worker:
-            self._pending_messages.clear()
-            for w in self._queued_widgets:
-                w.remove()
-            self._queued_widgets.clear()
-            self._agent_worker.cancel()
+            self._cancel_worker(self._agent_worker)
             self._quit_pending = False
             return
 
@@ -2396,8 +2480,8 @@ class DeepAgentsApp(App):
         Priority order:
         1. If modal screen is active, dismiss it
         2. If completion popup is open, dismiss it
-        3. If input is in command/bash mode, exit to normal mode
-        4. If bash process is running, kill it
+        3. If input is in command/shell mode, exit to normal mode
+        4. If shell command is running, kill it
         5. If approval menu is active, reject it
         6. If agent is running, interrupt it
         """
@@ -2406,20 +2490,16 @@ class DeepAgentsApp(App):
             self.screen.dismiss(None)
             return
 
-        # Close completion popup or exit slash/bash mode
+        # Close completion popup or exit slash/shell command mode
         if self._chat_input:
             if self._chat_input.dismiss_completion():
                 return
             if self._chat_input.exit_mode():
                 return
 
-        # If bash command is running, cancel the worker
-        if self._bash_running and self._bash_worker:
-            self._pending_messages.clear()
-            for w in self._queued_widgets:
-                w.remove()
-            self._queued_widgets.clear()
-            self._bash_worker.cancel()
+        # If shell command is running, cancel the worker
+        if self._shell_running and self._shell_worker:
+            self._cancel_worker(self._shell_worker)
             return
 
         # If approval menu is active, reject it before cancelling the agent worker.
@@ -2432,11 +2512,7 @@ class DeepAgentsApp(App):
 
         # If agent is running, interrupt it and discard queued messages
         if self._agent_running and self._agent_worker:
-            self._pending_messages.clear()
-            for w in self._queued_widgets:
-                w.remove()
-            self._queued_widgets.clear()
-            self._agent_worker.cancel()
+            self._cancel_worker(self._agent_worker)
             return
 
     def action_quit_app(self) -> None:
@@ -2461,18 +2537,28 @@ class DeepAgentsApp(App):
             message: Optional message to display on exit.
         """
         # Discard queued messages so _cleanup_agent_task won't try to
-        # process them after the event loop is torn down.
-        self._pending_messages.clear()
-        for w in self._queued_widgets:
-            w.remove()
-        self._queued_widgets.clear()
-
-        # Cancel active workers so their subprocesses are terminated
+        # process them after the event loop is torn down, and cancel
+        # active workers so their subprocesses are terminated
         # (SIGTERM → SIGKILL) instead of being orphaned.
-        if self._bash_running and self._bash_worker:
-            self._bash_worker.cancel()
+        self._discard_queue()
+        if self._shell_running and self._shell_worker:
+            self._shell_worker.cancel()
         if self._agent_running and self._agent_worker:
             self._agent_worker.cancel()
+
+        # Dispatch synchronously — the event loop is about to be torn down by
+        # super().exit(), so an async task would never complete.
+        from deepagents_cli.hooks import _dispatch_hook_sync, _load_hooks
+
+        hooks = _load_hooks()
+        if hooks:
+            payload = json.dumps(
+                {
+                    "event": "session.end",
+                    "thread_id": getattr(self, "_lc_thread_id", ""),
+                }
+            ).encode()
+            _dispatch_hook_sync("session.end", payload, hooks)
 
         _write_iterm_escape(_ITERM_CURSOR_GUIDE_ON)
         super().exit(result=result, return_code=return_code, message=message)
@@ -2604,14 +2690,29 @@ class DeepAgentsApp(App):
     # Model Switching
     # =========================================================================
 
-    async def _show_model_selector(self) -> None:
-        """Show interactive model selector as a modal screen."""
+    async def _show_model_selector(
+        self,
+        *,
+        extra_kwargs: dict[str, Any] | None = None,
+    ) -> None:
+        """Show interactive model selector as a modal screen.
+
+        Args:
+            extra_kwargs: Extra constructor kwargs from `--model-params`.
+        """
+        from functools import partial
 
         def handle_result(result: tuple[str, str] | None) -> None:
             """Handle the model selector result."""
             if result is not None:
                 model_spec, _ = result
-                self.call_later(self._switch_model, model_spec)
+                self.call_later(
+                    partial(
+                        self._switch_model,
+                        model_spec,
+                        extra_kwargs=extra_kwargs,
+                    )
+                )
             # Refocus input after modal closes
             if self._chat_input:
                 self._chat_input.focus_input()
@@ -2778,7 +2879,12 @@ class DeepAgentsApp(App):
             if self._chat_input:
                 self._chat_input.set_cursor_active(active=not self._agent_running)
 
-    async def _switch_model(self, model_spec: str) -> None:
+    async def _switch_model(
+        self,
+        model_spec: str,
+        *,
+        extra_kwargs: dict[str, Any] | None = None,
+    ) -> None:
         """Switch to a new model, preserving conversation history.
 
         Args:
@@ -2787,6 +2893,7 @@ class DeepAgentsApp(App):
                 Can be in `provider:model` format
                 (e.g., `'anthropic:claude-sonnet-4-5'`) or just the model name
                 for auto-detection.
+            extra_kwargs: Extra constructor kwargs from `--model-params`.
         """
         logger.info("Switching model to %s", model_spec)
 
@@ -2850,7 +2957,7 @@ class DeepAgentsApp(App):
             return
 
         try:
-            result = create_model(model_spec)
+            result = create_model(model_spec, extra_kwargs=extra_kwargs)
         except ModelConfigError as e:
             await self._mount_message(ErrorMessage(str(e)))
             return

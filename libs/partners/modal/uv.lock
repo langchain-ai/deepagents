@@ -599,6 +599,7 @@ requires-dist = [
 [package.metadata.requires-dev]
 evals = [
     { name = "langchain-deepseek" },
+    { name = "langchain-fireworks" },
     { name = "langchain-groq" },
     { name = "langchain-mistralai" },
     { name = "langchain-ollama" },

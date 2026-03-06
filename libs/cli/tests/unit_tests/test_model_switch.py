@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from deepagents_cli import model_config
-from deepagents_cli.app import DeepAgentsApp
+from deepagents_cli.app import DeepAgentsApp, _extract_model_params_flag
 from deepagents_cli.config import ModelResult, settings
 from deepagents_cli.model_config import ModelConfigError, clear_caches
 from deepagents_cli.widgets.messages import AppMessage, ErrorMessage
@@ -644,3 +644,205 @@ class TestModelSwitchBareModelName:
         app._mount_message.assert_called_once()  # type: ignore[union-attr]
         assert len(captured_messages) == 1
         assert "Already using" in captured_messages[0]
+
+
+class TestExtractModelParamsFlag:
+    """Tests for _extract_model_params_flag helper."""
+
+    def test_no_flag(self) -> None:
+        """Returns original string and None when flag absent."""
+        remaining, params = _extract_model_params_flag("anthropic:claude-sonnet-4-5")
+        assert remaining == "anthropic:claude-sonnet-4-5"
+        assert params is None
+
+    def test_single_quoted_json(self) -> None:
+        """Extracts JSON from single-quoted value."""
+        raw = """--model-params '{"temperature": 0.7}' anthropic:claude-sonnet-4-5"""
+        remaining, params = _extract_model_params_flag(raw)
+        assert remaining == "anthropic:claude-sonnet-4-5"
+        assert params == {"temperature": 0.7}
+
+    def test_double_quoted_json_with_escaped_quotes(self) -> None:
+        """Extracts JSON from double-quoted value with escaped inner quotes."""
+        raw = '--model-params "{\\"temperature\\": 0.7}" anthropic:claude-sonnet-4-5'
+        remaining, params = _extract_model_params_flag(raw)
+        assert remaining == "anthropic:claude-sonnet-4-5"
+        assert params == {"temperature": 0.7}
+
+    def test_bare_braces(self) -> None:
+        """Extracts JSON from unquoted braces with balanced matching."""
+        raw = '--model-params {"temperature": 0.7, "max_tokens": 100}'
+        remaining, params = _extract_model_params_flag(raw)
+        assert remaining == ""
+        assert params == {"temperature": 0.7, "max_tokens": 100}
+
+    def test_bare_braces_with_model_after(self) -> None:
+        """Model arg after bare-brace JSON is preserved."""
+        raw = '--model-params {"temperature":0.7} anthropic:claude-sonnet-4-5'
+        remaining, params = _extract_model_params_flag(raw)
+        assert remaining == "anthropic:claude-sonnet-4-5"
+        assert params == {"temperature": 0.7}
+
+    def test_model_before_flag(self) -> None:
+        """Model arg before --model-params is preserved."""
+        raw = "anthropic:claude-sonnet-4-5 --model-params '{\"temperature\": 0.7}'"
+        remaining, params = _extract_model_params_flag(raw)
+        assert remaining == "anthropic:claude-sonnet-4-5"
+        assert params == {"temperature": 0.7}
+
+    def test_missing_value_raises(self) -> None:
+        """Raises ValueError when --model-params has no value."""
+        with pytest.raises(ValueError, match="requires a JSON object"):
+            _extract_model_params_flag("--model-params")
+
+    def test_invalid_json_raises(self) -> None:
+        """Raises ValueError with hint for malformed JSON."""
+        with pytest.raises(ValueError, match=r"Invalid JSON.*Expected format"):
+            _extract_model_params_flag("--model-params '{not json}'")
+
+    def test_non_dict_json_raises(self) -> None:
+        """Raises TypeError when JSON is not an object."""
+        with pytest.raises(TypeError, match="must be a JSON object"):
+            _extract_model_params_flag("--model-params '[1, 2, 3]'")
+
+    def test_unclosed_quote_raises(self) -> None:
+        """Raises ValueError for unclosed quote."""
+        with pytest.raises(ValueError, match="Unclosed"):
+            _extract_model_params_flag("""--model-params '{"temperature": 0.7}""")
+
+    def test_unbalanced_braces_raises(self) -> None:
+        """Raises ValueError for unbalanced braces."""
+        with pytest.raises(ValueError, match="Unbalanced"):
+            _extract_model_params_flag('--model-params {"temperature": 0.7')
+
+    def test_with_default_flag(self) -> None:
+        """Works alongside --default flag."""
+        raw = (
+            """--model-params '{"temperature": 0.7}' """
+            "--default anthropic:claude-sonnet-4-5"
+        )
+        remaining, params = _extract_model_params_flag(raw)
+        assert remaining == "--default anthropic:claude-sonnet-4-5"
+        assert params == {"temperature": 0.7}
+
+    def test_empty_object(self) -> None:
+        """Empty JSON object is valid."""
+        remaining, params = _extract_model_params_flag("--model-params '{}'")
+        assert remaining == ""
+        assert params == {}
+
+
+class TestModelSwitchExtraKwargs:
+    """Tests for extra_kwargs forwarding through _switch_model."""
+
+    async def test_extra_kwargs_forwarded_to_create_model(self) -> None:
+        """_switch_model passes extra_kwargs to create_model."""
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app._checkpointer = MagicMock()
+
+        settings.model_name = "gpt-4o"
+        settings.model_provider = "openai"
+
+        mock_model = MagicMock()
+        mock_result = MagicMock(spec=ModelResult)
+        mock_result.model = mock_model
+
+        with (
+            patch(
+                "deepagents_cli.model_config.has_provider_credentials",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_cli.app.create_model", return_value=mock_result
+            ) as mock_create,
+            patch("deepagents_cli.app.save_recent_model", return_value=True),
+            patch("deepagents_cli.agent.create_cli_agent") as mock_agent,
+        ):
+            mock_agent.return_value = (MagicMock(), MagicMock())
+            await app._switch_model(
+                "anthropic:claude-sonnet-4-5",
+                extra_kwargs={"temperature": 0.7},
+            )
+
+        mock_create.assert_called_once_with(
+            "anthropic:claude-sonnet-4-5",
+            extra_kwargs={"temperature": 0.7},
+        )
+
+    async def test_no_extra_kwargs_by_default(self) -> None:
+        """_switch_model passes None extra_kwargs when not provided."""
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app._checkpointer = MagicMock()
+
+        settings.model_name = "gpt-4o"
+        settings.model_provider = "openai"
+
+        mock_model = MagicMock()
+        mock_result = MagicMock(spec=ModelResult)
+        mock_result.model = mock_model
+
+        with (
+            patch(
+                "deepagents_cli.model_config.has_provider_credentials",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_cli.app.create_model", return_value=mock_result
+            ) as mock_create,
+            patch("deepagents_cli.app.save_recent_model", return_value=True),
+            patch("deepagents_cli.agent.create_cli_agent") as mock_agent,
+        ):
+            mock_agent.return_value = (MagicMock(), MagicMock())
+            await app._switch_model("anthropic:claude-sonnet-4-5")
+
+        mock_create.assert_called_once_with(
+            "anthropic:claude-sonnet-4-5",
+            extra_kwargs=None,
+        )
+
+
+class TestModelCommandIntegration:
+    """Tests for /model command handler integration."""
+
+    async def test_invalid_model_params_shows_error(self) -> None:
+        """/model with invalid --model-params JSON shows error."""
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+
+        captured_errors: list[str] = []
+        original_init = ErrorMessage.__init__
+
+        def capture_init(self: ErrorMessage, message: str, **kwargs: object) -> None:
+            captured_errors.append(message)
+            original_init(self, message, **kwargs)
+
+        with patch.object(ErrorMessage, "__init__", capture_init):
+            await app._handle_command("/model --model-params '{bad}'")
+
+        assert len(captured_errors) == 1
+        assert "Invalid JSON" in captured_errors[0]
+        assert "Expected format" in captured_errors[0]
+
+    async def test_model_params_with_default_rejected(self) -> None:
+        """/model --model-params with --default shows error."""
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+
+        captured_errors: list[str] = []
+        original_init = ErrorMessage.__init__
+
+        def capture_init(self: ErrorMessage, message: str, **kwargs: object) -> None:
+            captured_errors.append(message)
+            original_init(self, message, **kwargs)
+
+        cmd = (
+            """/model --model-params '{"temperature": 0.7}' """
+            "--default anthropic:claude-sonnet-4-5"
+        )
+        with patch.object(ErrorMessage, "__init__", capture_init):
+            await app._handle_command(cmd)
+
+        assert len(captured_errors) == 1
+        assert "cannot be used with --default" in captured_errors[0]

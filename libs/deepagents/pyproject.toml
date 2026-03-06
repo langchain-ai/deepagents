@@ -60,6 +60,7 @@ evals = [
   "langchain-deepseek",
   "langchain-groq",
   "langchain-ollama",
+  "langchain-fireworks",
 ]
 
 [build-system]

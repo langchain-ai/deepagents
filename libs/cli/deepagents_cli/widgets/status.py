@@ -75,8 +75,8 @@ class StatusBar(Horizontal):
         display: none;
     }
 
-    StatusBar .status-mode.bash {
-        background: __MODE_BASH__;
+    StatusBar .status-mode.shell {
+        background: __MODE_SHELL__;
         color: white;
         text-style: bold;
     }
@@ -129,7 +129,7 @@ class StatusBar(Horizontal):
         color: $text-muted;
         text-align: right;
     }
-    """.replace("__MODE_BASH__", COLORS["mode_bash"]).replace(
+    """.replace("__MODE_SHELL__", COLORS["mode_shell"]).replace(
         "__MODE_CMD__", COLORS["mode_command"]
     )
 
@@ -181,11 +181,11 @@ class StatusBar(Horizontal):
             indicator = self.query_one("#mode-indicator", Static)
         except NoMatches:
             return
-        indicator.remove_class("normal", "bash", "command")
+        indicator.remove_class("normal", "shell", "command")
 
-        if mode == "bash":
-            indicator.update("BASH")
-            indicator.add_class("bash")
+        if mode == "shell":
+            indicator.update("SHELL")
+            indicator.add_class("shell")
         elif mode == "command":
             indicator.update("CMD")
             indicator.add_class("command")
@@ -251,7 +251,7 @@ class StatusBar(Horizontal):
         """Set the current input mode.
 
         Args:
-            mode: One of "normal", "bash", or "command"
+            mode: One of "normal", "shell", or "command"
         """
         self.mode = mode
 

@@ -15,6 +15,7 @@
 #   OLLAMA_API_KEY     — needed for Ollama Cloud models
 #   OLLAMA_HOST        — set to https://ollama.com for cloud inference
 #   BASETEN_API_KEY    — needed for Baseten-hosted models
+#   FIREWORKS_API_KEY  — needed for Fireworks-hosted models
 
 name: "📊 Evals"
 
@@ -67,6 +68,8 @@ on:
           - "ollama:deepseek-v3.2:cloud"
           - "baseten:zai-org/GLM-5"
           - "baseten:MiniMaxAI/MiniMax-M2.5"
+          - "fireworks:accounts/fireworks/models/qwen3-235b-a22b-instruct-2507"
+          - "fireworks:accounts/fireworks/models/deepseek-v3-0324"
       models_override:
         description: "Override: comma-separated models (e.g. 'openai:gpt-4.1,openai:o3'). Takes priority over dropdown when non-empty."
         required: false
@@ -122,6 +125,7 @@ jobs:
       OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
       OLLAMA_HOST: "https://ollama.com"
       BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
+      FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
     steps:
       - name: "📋 Checkout Code"
         uses: actions/checkout@v6

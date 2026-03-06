@@ -274,6 +274,13 @@ _SWARM_SYSTEM_PROMPT_ADDITION = """
 Subagent limitations (continued):
 - A single subagent can handle large files for tasks like summarization. But when precise analysis is needed over a large file — counting, extraction, searching, or anything where accuracy matters — you MUST check the file size first and use `swarm` to split the work for any file over 500 lines. Do NOT send large files to a single `task` subagent for precise analysis, and do NOT try to process them with a single Python script via `execute` either.
 - CRITICAL: When a task requires looping over items and applying intelligence to each one (classifying, labeling, categorizing, identifying, tagging), you MUST use `swarm` (not `task`) — regardless of file size. Do NOT classify items inline, do NOT delegate to a single `task` subagent, and do NOT write Python regex/heuristic scripts. The only acceptable approach is `swarm`.
+- **Pre-pilot before full swarm fan-out:** Before launching the full swarm, run a calibration pilot:
+  1. Take a small sample (~20-30 items) and classify them YOURSELF first — write out your classifications with reasoning.
+  2. Send the SAME items to a single `task` subagent with your classification instructions.
+  3. DIFF the two results. For every disagreement, determine who is right and WHY the subagent got it wrong.
+  4. If you find systematic errors (e.g., the subagent consistently misclassifies a category boundary), add explicit corrective examples or rules to your instructions. For example: "IMPORTANT: 'What is [specific named thing]?' is entity, NOT description — unless the answer is an explanation/definition rather than a name."
+  5. Re-run the pilot with updated instructions until the subagent matches your classifications on the sample.
+  Only THEN launch the full swarm with the refined instructions.
 
 ## `swarm` (parallel subagent fan-out)
 

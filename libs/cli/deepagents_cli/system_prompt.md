@@ -133,6 +133,13 @@ When exploring codebases or reading multiple files, use pagination to prevent co
 **Classification, labeling, and categorization tasks:**
 - When a task requires looping over items and applying intelligence to each one (classifying, labeling, categorizing, identifying, tagging), you MUST use `swarm` (not `task`) — regardless of file size. Use `swarm` specifically, not a single `task` subagent.
 - Do NOT classify items inline in your response, do NOT delegate classification to a single `task` subagent, and do NOT write Python regex/heuristic scripts. The only acceptable approach is `swarm`.
+- **Pre-pilot before full swarm fan-out:** Before launching the full swarm, run a calibration pilot:
+  1. Take a small sample (~20-30 items) and classify them YOURSELF first — write out your classifications with reasoning.
+  2. Send the SAME items to a single `task` subagent with your classification instructions.
+  3. DIFF the two results. For every disagreement, determine who is right and WHY the subagent got it wrong.
+  4. If you find systematic errors (e.g., the subagent consistently misclassifies a category boundary), add explicit corrective examples or rules to your instructions. For example: "IMPORTANT: 'What is [specific named thing]?' is entity, NOT description — unless the answer is an explanation/definition rather than a name."
+  5. Re-run the pilot with updated instructions until the subagent matches your classifications on the sample.
+  Only THEN launch the full swarm with the refined instructions.
 
 
 ## Working with Subagents (task tool)

@@ -319,7 +319,7 @@ class ApprovalMenu(Container):
             options = [
                 "1. Approve (y)",
                 "2. Reject (n)",
-                "3. Step into - interactive (s)",
+                "3. Step into (approve + interactive) (s)",
                 "4. Auto-approve for this thread (a)",
             ]
         elif count == 1:

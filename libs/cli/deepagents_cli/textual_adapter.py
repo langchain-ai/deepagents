@@ -1027,6 +1027,8 @@ async def execute_task_textual(
                                     subagent_type,
                                     task_description,
                                 )
+                                # Stop spinner before entering subagent
+                                await adapter._set_spinner(None)
                                 await adapter._mount_message(
                                     AppMessage(
                                         f"Stepped into: {subagent_type} subagent\n"

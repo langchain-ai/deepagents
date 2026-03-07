@@ -64,6 +64,7 @@ from deepagents_cli.widgets.messages import (
 )
 from deepagents_cli.widgets.model_selector import ModelSelectorScreen
 from deepagents_cli.widgets.status import StatusBar
+from deepagents_cli.widgets.subagent_banner import SubagentBanner
 from deepagents_cli.widgets.thread_selector import ThreadSelectorScreen
 from deepagents_cli.widgets.welcome import WelcomeBanner
 
@@ -590,6 +591,7 @@ class DeepAgentsApp(App):
         self._mcp_tool_count = sum(len(s.tools) for s in (mcp_server_info or []))
         self._status_bar: StatusBar | None = None
         self._chat_input: ChatInput | None = None
+        self._subagent_banner: SubagentBanner | None = None
         self._quit_pending = False
         self._session_state: TextualSessionState | None = None
         self._ui_adapter: TextualUIAdapter | None = None
@@ -634,6 +636,7 @@ class DeepAgentsApp(App):
             )
             yield Container(id="messages")
         with Container(id="bottom-app-container"):
+            yield SubagentBanner(id="subagent-banner")
             yield ChatInput(
                 cwd=self._cwd,
                 image_tracker=self._image_tracker,
@@ -651,6 +654,7 @@ class DeepAgentsApp(App):
 
         self._status_bar = self.query_one("#status-bar", StatusBar)
         self._chat_input = self.query_one("#input-area", ChatInput)
+        self._subagent_banner = self.query_one("#subagent-banner", SubagentBanner)
 
         # Set initial auto-approve state
         if self._auto_approve:
@@ -1650,12 +1654,13 @@ class DeepAgentsApp(App):
             await self._mount_message(AppMessage("No active session."))
             return
 
-        lines = ["**Context Stack:**\n"]
+        text = Text()
+        text.append("Context Stack:\n", style="bold")
         for i, ctx in enumerate(self._session_state.context_stack):
             is_current = i == len(self._session_state.context_stack) - 1
             marker = " <-- current" if is_current else ""
             if ctx.subagent_type == "root":
-                lines.append(f"  [{i}] root (main conversation){marker}")
+                text.append(f"  [{i}] root (main conversation){marker}\n")
             else:
                 max_preview_len = 40
                 task_preview = (
@@ -1663,19 +1668,21 @@ class DeepAgentsApp(App):
                     if len(ctx.task_description) > max_preview_len
                     else ctx.task_description
                 )
-                lines.append(f"  [{i}] {ctx.subagent_type}{marker}")
+                text.append(f"  [{i}] ", style="dim")
+                text.append(ctx.subagent_type, style="bold")
+                text.append(f"{marker}\n")
                 if task_preview:
-                    lines.append(f'      task: "{task_preview}"')
+                    text.append(f'      task: "{task_preview}"\n')
 
         if self._session_state.depth > 0:
             ctx = self._session_state.current_context
             if ctx.summary_path:
-                lines.append(f"\nSummary: {ctx.summary_path}")
+                text.append(f"\nSummary: {ctx.summary_path}")
 
-        await self._mount_message(AppMessage("\n".join(lines)))
+        await self._mount_message(AppMessage(text))
 
     def _update_prompt_indicator(self) -> None:
-        """Update the prompt indicator to show subagent depth."""
+        """Update prompt indicator and subagent banner to reflect depth."""
         if not self._chat_input or not self._session_state:
             return
         try:
@@ -1687,8 +1694,15 @@ class DeepAgentsApp(App):
                 prompt_widget.update(
                     f"[{ctx.subagent_type}:{self._session_state.depth}] >"
                 )
+                if self._subagent_banner:
+                    self._subagent_banner.show(
+                        subagent_type=ctx.subagent_type,
+                        depth=self._session_state.depth,
+                    )
             else:
                 prompt_widget.update(">")
+                if self._subagent_banner:
+                    self._subagent_banner.hide()
         except NoMatches:
             pass
 

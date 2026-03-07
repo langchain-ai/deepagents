@@ -673,7 +673,7 @@ class TestModelDetailFooter:
         assert "No profile data available" in result
 
     def test_format_footer_overridden_fields(self) -> None:
-        """Overridden fields show * marker and override notice."""
+        """Overridden fields show yellow * marker and override legend."""
         from deepagents_cli.config import UNICODE_GLYPHS
         from deepagents_cli.model_config import ModelProfileEntry
 
@@ -686,8 +686,8 @@ class TestModelDetailFooter:
             overridden_keys=frozenset({"max_input_tokens"}),
         )
         result = ModelSelectorScreen._format_footer(entry, UNICODE_GLYPHS)
-        assert "*100.0K" in result
-        assert "* = override" in result
+        assert "[yellow]*" in result
+        assert "= override" in result
 
     def test_format_footer_partial_profile(self) -> None:
         """Profile with only token counts still renders without crash."""
@@ -717,7 +717,7 @@ class TestModelDetailFooter:
         assert "No profile data" not in result
 
     def test_format_footer_override_on_non_displayed_key(self) -> None:
-        """Override on a non-displayed key should not show notice."""
+        """Override on a non-displayed key should not show legend."""
         from deepagents_cli.config import UNICODE_GLYPHS
         from deepagents_cli.model_config import ModelProfileEntry
 
@@ -726,7 +726,7 @@ class TestModelDetailFooter:
             overridden_keys=frozenset({"supports_thinking"}),
         )
         result = ModelSelectorScreen._format_footer(entry, UNICODE_GLYPHS)
-        assert "* = override" not in result
+        assert "= override" not in result
 
     def test_format_footer_non_numeric_tokens(self) -> None:
         """Non-numeric token values render gracefully instead of crashing."""
@@ -742,7 +742,7 @@ class TestModelDetailFooter:
         assert "64.0K" in result
 
     def test_format_footer_cli_override(self) -> None:
-        """CLI-overridden key shows * marker and override notice."""
+        """CLI-overridden key shows yellow * marker and override legend."""
         from deepagents_cli.config import UNICODE_GLYPHS
         from deepagents_cli.model_config import ModelProfileEntry
 
@@ -755,8 +755,8 @@ class TestModelDetailFooter:
             overridden_keys=frozenset({"max_input_tokens"}),
         )
         result = ModelSelectorScreen._format_footer(entry, UNICODE_GLYPHS)
-        assert "*4096" in result or "*4.1K" in result or "*4.0K" in result
-        assert "* = override" in result
+        assert "[yellow]*" in result
+        assert "= override" in result
 
     async def test_footer_updates_on_navigation(self) -> None:
         """Footer content changes when navigating to a different model."""

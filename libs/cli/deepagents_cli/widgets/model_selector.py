@@ -530,7 +530,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         overridden = profile_entry["overridden_keys"]
 
         def _mark(key: str, text: str) -> str:
-            return f"*{text}" if key in overridden else text
+            return f"[yellow]*{text}[/yellow]" if key in overridden else text
 
         # Line 1: Context window
         parts_ctx: list[str] = []
@@ -598,7 +598,9 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             "structured_output",
         }
         has_visible_override = bool(overridden & displayed_keys)
-        line4 = "[dim]* = override[/dim]" if has_visible_override else ""
+        line4 = (
+            "[dim][yellow]*[/yellow] = override[/dim]" if has_visible_override else ""
+        )
 
         return f"{line1}\n{line2}\n{line3}\n{line4}"
 

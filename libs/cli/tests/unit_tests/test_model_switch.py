@@ -768,6 +768,7 @@ class TestModelSwitchExtraKwargs:
         mock_create.assert_called_once_with(
             "anthropic:claude-sonnet-4-5",
             extra_kwargs={"temperature": 0.7},
+            profile_overrides=None,
         )
 
     async def test_no_extra_kwargs_by_default(self) -> None:
@@ -800,6 +801,7 @@ class TestModelSwitchExtraKwargs:
         mock_create.assert_called_once_with(
             "anthropic:claude-sonnet-4-5",
             extra_kwargs=None,
+            profile_overrides=None,
         )
 
 

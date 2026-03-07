@@ -296,6 +296,7 @@ class TestBackgroundRuntimeLifecycleHookup:
                 assistant_id="agent",
                 enable_background_tasks=True,
                 background_runtime_mode="inmemory",
+                no_mcp=True,
             )
 
         fake_runtime.start.assert_awaited_once()

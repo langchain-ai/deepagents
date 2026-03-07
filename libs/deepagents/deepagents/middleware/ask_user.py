@@ -21,6 +21,7 @@ from langchain.tools import InjectedToolCallId
 from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
 from langgraph.types import Command, interrupt
+from pydantic import Field
 from typing_extensions import TypedDict
 
 logger = logging.getLogger(__name__)
@@ -29,23 +30,32 @@ logger = logging.getLogger(__name__)
 class Choice(TypedDict):
     """A single choice option for a multiple choice question."""
 
-    value: str
+    value: Annotated[str, Field(description="The display label for this choice.")]
 
 
 class Question(TypedDict):
-    """A question to ask the user.
+    """A question to ask the user."""
 
-    When `type` is `'multiple_choice'`, `choices` must be provided and
-    non-empty. The tool validates this at runtime.
-    """
+    question: Annotated[str, Field(description="The question text to display.")]
 
-    question: str
+    type: Annotated[
+        Literal["text", "multiple_choice"],
+        Field(description=("Question type. 'text' for free-form input, 'multiple_choice' for predefined options.")),
+    ]
 
-    type: Literal["text", "multiple_choice"]
+    choices: NotRequired[
+        Annotated[
+            list[Choice],
+            Field(description=("Options for multiple_choice questions. An 'Other' free-form option is always appended automatically.")),
+        ]
+    ]
 
-    choices: NotRequired[list[Choice]]
-
-    required: NotRequired[bool]
+    required: NotRequired[
+        Annotated[
+            bool,
+            Field(description="Whether the user must answer. Defaults to true if omitted."),
+        ]
+    ]
 
 
 class AskUserRequest(TypedDict):

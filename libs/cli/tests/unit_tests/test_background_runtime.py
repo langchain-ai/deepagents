@@ -129,3 +129,69 @@ class TestBackgroundRuntimeLifecycle:
             assert all(item.status == BackgroundTaskStatus.SUCCEEDED for item in finals)
         finally:
             await runtime.shutdown()
+
+    async def test_wait_for_no_pending_hitl_returns_immediately_when_idle(self) -> None:
+        runtime = BackgroundRuntime(require_hitl_for_shell=True)
+        await runtime.start()
+        try:
+            await asyncio.wait_for(runtime.wait_for_no_pending_hitl(), timeout=0.2)
+            assert runtime.pending_hitl_count() == 0
+        finally:
+            await runtime.shutdown()
+
+    async def test_wait_for_no_pending_hitl_blocks_until_resolution(self) -> None:
+        runtime = BackgroundRuntime(require_hitl_for_shell=True)
+        await runtime.start()
+        try:
+            task_id = await runtime.submit_shell_task("printf gated")
+
+            event = None
+            for _ in range(50):
+                event = runtime.pop_hitl_event()
+                if event is not None:
+                    break
+                await asyncio.sleep(0.01)
+            assert event is not None
+            assert runtime.pending_hitl_count() == 1
+
+            idle_wait = asyncio.create_task(runtime.wait_for_no_pending_hitl())
+            await asyncio.sleep(0)
+            assert not idle_wait.done()
+
+            runtime.resolve_hitl_event(
+                event.event_id,
+                decision=BackgroundApprovalDecision.APPROVE,
+            )
+            await asyncio.wait_for(idle_wait, timeout=1)
+            assert runtime.pending_hitl_count() == 0
+
+            final = await runtime.wait_task(task_id, timeout_seconds=5)
+            assert final.status == BackgroundTaskStatus.SUCCEEDED
+        finally:
+            await runtime.shutdown()
+
+    async def test_kill_pending_approval_unblocks_hitl_idle_wait(self) -> None:
+        runtime = BackgroundRuntime(require_hitl_for_shell=True)
+        await runtime.start()
+        try:
+            task_id = await runtime.submit_shell_task("printf never-approve")
+
+            event = None
+            for _ in range(50):
+                event = runtime.pop_hitl_event()
+                if event is not None:
+                    break
+                await asyncio.sleep(0.01)
+            assert event is not None
+            assert runtime.pending_hitl_count() == 1
+
+            idle_wait = asyncio.create_task(runtime.wait_for_no_pending_hitl())
+            await asyncio.sleep(0)
+            assert not idle_wait.done()
+
+            killed = await runtime.kill_task(task_id)
+            assert killed is True
+            await asyncio.wait_for(idle_wait, timeout=1)
+            assert runtime.pending_hitl_count() == 0
+        finally:
+            await runtime.shutdown()

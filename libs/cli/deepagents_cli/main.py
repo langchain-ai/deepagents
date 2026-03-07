@@ -647,6 +647,7 @@ async def run_textual_cli_async(
                 sandbox=sandbox_backend,
                 sandbox_type=sandbox_type if sandbox_type != "none" else None,
                 mcp_server_info=mcp_server_info,
+                profile_override=profile_override,
             )
         finally:
             # Clean up MCP session manager if initialized

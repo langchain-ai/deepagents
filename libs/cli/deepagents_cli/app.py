@@ -540,6 +540,7 @@ class DeepAgentsApp(App):
         sandbox: SandboxBackendProtocol | None = None,
         sandbox_type: str | None = None,
         mcp_server_info: list[MCPServerInfo] | None = None,
+        profile_override: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> None:
         """Initialize the Deep Agents application.
@@ -557,6 +558,8 @@ class DeepAgentsApp(App):
             sandbox: Sandbox backend (for model hot-swap)
             sandbox_type: Type of sandbox provider (for model hot-swap)
             mcp_server_info: MCP server metadata for the `/mcp` viewer.
+            profile_override: Extra profile fields from `--profile-override`,
+                retained for model hot-swap and footer display.
             **kwargs: Additional arguments passed to parent
         """
         super().__init__(**kwargs)
@@ -574,6 +577,7 @@ class DeepAgentsApp(App):
         self._sandbox = sandbox
         self._sandbox_type = sandbox_type
         self._mcp_server_info = mcp_server_info
+        self._profile_override = profile_override
         self._mcp_tool_count = sum(len(s.tools) for s in (mcp_server_info or []))
         self._status_bar: StatusBar | None = None
         self._chat_input: ChatInput | None = None
@@ -1714,7 +1718,10 @@ class DeepAgentsApp(App):
 
             try:
                 model_spec = f"{settings.model_provider}:{settings.model_name}"
-                result = create_model(model_spec)
+                result = create_model(
+                    model_spec,
+                    profile_overrides=self._profile_override,
+                )
                 model = result.model
             except Exception as exc:  # noqa: BLE001  # surface model config errors to user
                 await self._mount_message(
@@ -1724,10 +1731,10 @@ class DeepAgentsApp(App):
                 )
                 return
 
-            # create_model() applies config.toml overrides but not CLI
-            # --profile-override (the raw CLI dict isn't retained after
-            # startup). Patch settings.model_context_limit — which reflects
-            # both sources — into the fresh model
+            # create_model() receives --profile-override via self._profile_override,
+            # but settings.model_context_limit may have been set by additional
+            # runtime logic. Patch it into the fresh model when it differs from
+            # the profile value.
             ctx = settings.model_context_limit
             if ctx is not None:
                 # Guard against models that lack a profile dict
@@ -2405,6 +2412,10 @@ class DeepAgentsApp(App):
 
         # Store message data for virtualization
         message_data = MessageData.from_widget(widget)
+        # Ensure the widget's DOM id matches the store id so that
+        # features like click-to-show-timestamp can look it up.
+        if not widget.id:
+            widget.id = message_data.id
         self._message_store.append(message_data)
 
         # Queued-message widgets must always stay at the bottom so they
@@ -2550,7 +2561,9 @@ class DeepAgentsApp(App):
             self.exit()
         else:
             self._quit_pending = True
-            self.notify("Press Ctrl+C again to quit", timeout=3)
+            quit_timeout = 3
+            self.notify("Press Ctrl+C again to quit", timeout=quit_timeout)
+            self.set_timer(quit_timeout, lambda: setattr(self, "_quit_pending", False))
 
     def action_interrupt(self) -> None:
         """Handle escape key.
@@ -2798,6 +2811,7 @@ class DeepAgentsApp(App):
         screen = ModelSelectorScreen(
             current_model=settings.model_name,
             current_provider=settings.model_provider,
+            cli_profile_override=self._profile_override,
         )
         self.push_screen(screen, handle_result)
 
@@ -3047,7 +3061,11 @@ class DeepAgentsApp(App):
             return
 
         try:
-            result = create_model(model_spec, extra_kwargs=extra_kwargs)
+            result = create_model(
+                model_spec,
+                extra_kwargs=extra_kwargs,
+                profile_overrides=self._profile_override,
+            )
         except ModelConfigError as e:
             await self._mount_message(ErrorMessage(str(e)))
             return
@@ -3205,6 +3223,7 @@ async def run_textual_app(
     sandbox: SandboxBackendProtocol | None = None,
     sandbox_type: str | None = None,
     mcp_server_info: list[MCPServerInfo] | None = None,
+    profile_override: dict[str, Any] | None = None,
 ) -> AppResult:
     """Run the Textual application.
 
@@ -3221,6 +3240,8 @@ async def run_textual_app(
         sandbox: Sandbox backend (for model hot-swap)
         sandbox_type: Type of sandbox provider (for model hot-swap)
         mcp_server_info: MCP server metadata for the `/mcp` viewer.
+        profile_override: Extra profile fields from `--profile-override`,
+            retained for model hot-swap and footer display.
 
     Returns:
         An `AppResult` with the return code and final thread ID.
@@ -3238,6 +3259,7 @@ async def run_textual_app(
         sandbox=sandbox,
         sandbox_type=sandbox_type,
         mcp_server_info=mcp_server_info,
+        profile_override=profile_override,
     )
     await app.run_async()
     return AppResult(

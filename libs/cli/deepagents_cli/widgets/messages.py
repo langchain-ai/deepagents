@@ -38,18 +38,43 @@ logger = logging.getLogger(__name__)
 
 
 def _show_timestamp_toast(widget: Static | Vertical) -> None:
-    """Show a toast with the message's creation timestamp."""
+    """Show a toast with the message's creation timestamp.
+
+    No-ops silently if the widget is not mounted or has no associated message
+    data in the store.
+
+    Args:
+        widget: The message widget whose timestamp to display.
+    """
     from datetime import UTC, datetime
 
     try:
-        store = widget.app._message_store  # type: ignore[attr-defined]
-    except Exception:  # noqa: BLE001  # widget may not be mounted
+        app = widget.app
+    except Exception:  # noqa: BLE001  # Textual raises when widget has no app
         return
+    if not widget.id:
+        return
+    store = app._message_store  # type: ignore[attr-defined]
     data = store.get_message(widget.id)
     if not data:
         return
     dt = datetime.fromtimestamp(data.timestamp, tz=UTC).astimezone()
-    widget.app.notify(dt.strftime("%b %-d, %-I:%M:%S %p"), timeout=3)
+    label = f"{dt:%b} {dt.day}, {dt.hour % 12 or 12}:{dt:%M:%S} {dt:%p}"
+    app.notify(label, timeout=3)
+
+
+class _TimestampClickMixin:
+    """Mixin that shows a timestamp toast on click.
+
+    Add to any message widget that should display its creation timestamp when
+    clicked. Widgets needing additional click behavior (e.g. `ToolCallMessage`,
+    `AppMessage`) should override `on_click` and call `_show_timestamp_toast`
+    directly instead.
+    """
+
+    def on_click(self, event: Click) -> None:  # noqa: ARG002  # Textual event handler
+        """Show timestamp toast on click."""
+        _show_timestamp_toast(self)  # type: ignore[arg-type]
 
 
 def _mode_color(mode: str | None) -> str:
@@ -116,7 +141,7 @@ _TOOLS_WITH_HEADER_INFO: set[str] = {
 }
 
 
-class UserMessage(Static):
+class UserMessage(_TimestampClickMixin, Static):
     """Widget displaying a user message."""
 
     DEFAULT_CSS = """
@@ -195,10 +220,6 @@ class UserMessage(Static):
 
         yield Static(text)
 
-    def on_click(self, event: Click) -> None:  # noqa: ARG002  # Textual event handler
-        """Show timestamp toast on click."""
-        _show_timestamp_toast(self)
-
 
 class QueuedUserMessage(Static):
     """Widget displaying a queued (pending) user message in grey.
@@ -250,7 +271,7 @@ class QueuedUserMessage(Static):
         yield Static(text)
 
 
-class AssistantMessage(Vertical):
+class AssistantMessage(_TimestampClickMixin, Vertical):
     """Widget displaying an assistant message with markdown support.
 
     Uses MarkdownStream for smoother streaming instead of re-rendering
@@ -353,10 +374,6 @@ class AssistantMessage(Vertical):
         self._content = content
         if self._markdown:
             await self._markdown.update(content)
-
-    def on_click(self, event: Click) -> None:  # noqa: ARG002  # Textual event handler
-        """Show timestamp toast on click."""
-        _show_timestamp_toast(self)
 
 
 class ToolCallMessage(Vertical):
@@ -675,10 +692,12 @@ class ToolCallMessage(Vertical):
         self._update_output_display()
 
     def on_click(self, event: Click) -> None:
-        """Handle click to toggle output expansion and show timestamp."""
+        """Toggle output expansion, or show timestamp if no output."""
         event.stop()  # Prevent click from bubbling up and scrolling
-        self.toggle_output()
-        _show_timestamp_toast(self)
+        if self._output:
+            self.toggle_output()
+        else:
+            _show_timestamp_toast(self)
 
     def _format_output(
         self, output: str, *, is_preview: bool = False
@@ -1192,7 +1211,7 @@ class ToolCallMessage(Vertical):
         return filtered
 
 
-class DiffMessage(Static):
+class DiffMessage(_TimestampClickMixin, Static):
     """Widget displaying a diff with syntax highlighting."""
 
     DEFAULT_CSS = """
@@ -1262,12 +1281,8 @@ class DiffMessage(Static):
         if _detect_charset_mode() == CharsetMode.ASCII:
             self.styles.border = ("ascii", "cyan")
 
-    def on_click(self, event: Click) -> None:  # noqa: ARG002  # Textual event handler
-        """Show timestamp toast on click."""
-        _show_timestamp_toast(self)
 
-
-class ErrorMessage(Static):
+class ErrorMessage(_TimestampClickMixin, Static):
     """Widget displaying an error message."""
 
     DEFAULT_CSS = """
@@ -1299,10 +1314,6 @@ class ErrorMessage(Static):
         """Set border style based on charset mode."""
         if _detect_charset_mode() == CharsetMode.ASCII:
             self.styles.border_left = ("ascii", "red")
-
-    def on_click(self, event: Click) -> None:  # noqa: ARG002  # Textual event handler
-        """Show timestamp toast on click."""
-        _show_timestamp_toast(self)
 
 
 class AppMessage(Static):

@@ -306,7 +306,10 @@ class TestSlashCommandController:
 class TestScoreCommand:
     """Direct unit tests for SlashCommandController._score_command."""
 
-    score = staticmethod(SlashCommandController._score_command)
+    @staticmethod
+    def score(search: str, cmd: str, desc: str, keywords: str = "") -> float:
+        """Proxy score helper with explicit type signature for static analysis."""
+        return SlashCommandController._score_command(search, cmd, desc, keywords)
 
     def test_prefix_returns_200(self):
         assert self.score("hel", "/help", "Show help") == 200

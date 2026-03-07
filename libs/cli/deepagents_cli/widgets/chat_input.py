@@ -1483,8 +1483,6 @@ class ChatInput(Vertical):
         if self._completion_manager:
             self._completion_manager.reset()
         self.clear_completion_suggestions()
-        if self._text_area:
-            self._text_area.clear()
         return True
 
     def dismiss_completion(self) -> bool:

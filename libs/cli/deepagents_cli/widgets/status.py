@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult, RenderResult
+    from textual.geometry import Size
 
 
 class ModelLabel(Widget):
@@ -31,6 +32,21 @@ class ModelLabel(Widget):
 
     provider: reactive[str] = reactive("", layout=True)
     model: reactive[str] = reactive("", layout=True)
+
+    def get_content_width(self, container: Size, viewport: Size) -> int:  # noqa: ARG002
+        """Return the intrinsic width so `width: auto` works.
+
+        Args:
+            container: Size of the container.
+            viewport: Size of the viewport.
+
+        Returns:
+            Character length of the full provider:model string.
+        """
+        if not self.model:
+            return 0
+        full = f"{self.provider}:{self.model}" if self.provider else self.model
+        return len(full)
 
     def render(self) -> RenderResult:
         """Render the model label with width-aware truncation.
@@ -117,6 +133,10 @@ class StatusBar(Horizontal):
         color: $text-muted;
     }
 
+    StatusBar .status-spacer {
+        width: 1fr;
+    }
+
     StatusBar .status-tokens {
         width: auto;
         padding: 0 1;
@@ -124,7 +144,7 @@ class StatusBar(Horizontal):
     }
 
     StatusBar ModelLabel {
-        width: 1fr;
+        width: auto;
         padding: 0 2;
         color: $text-muted;
         text-align: right;
@@ -164,6 +184,7 @@ class StatusBar(Horizontal):
         )
         yield Static("", classes="status-message", id="status-message")
         yield Static("", classes="status-cwd", id="cwd-display")
+        yield Static("", classes="status-spacer")
         yield Static("", classes="status-tokens", id="tokens-display")
         yield ModelLabel(id="model-display")
 

@@ -45,6 +45,8 @@ class Question(TypedDict):
 
     choices: NotRequired[list[Choice]]
 
+    required: NotRequired[bool]
+
 
 class AskUserRequest(TypedDict):
     """Request payload sent via interrupt when asking the user questions."""
@@ -69,6 +71,8 @@ Each question can be either:
 - "multiple_choice": User selects from predefined options (an "Other" option is always available)
 
 For multiple choice questions, provide a list of choices. The user can pick one or type a custom answer via the "Other" option.
+
+By default all questions are required. Set "required" to false for optional questions that the user can skip.
 
 Use this tool when:
 - You need clarification on ambiguous requirements

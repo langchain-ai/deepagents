@@ -206,6 +206,68 @@ class TestAskUserMiddleware:
         assert "Bob" in tool_messages[0].content
         assert "blue" in tool_messages[0].content
 
+    def test_ask_user_optional_question(self) -> None:
+        """Test interrupt/resume with an optional question left blank."""
+        fake_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "ask_user",
+                                "args": {
+                                    "questions": [
+                                        {
+                                            "question": "Name?",
+                                            "type": "text",
+                                        },
+                                        {
+                                            "question": "Any notes?",
+                                            "type": "text",
+                                            "required": False,
+                                        },
+                                    ]
+                                },
+                                "id": "call_ask_opt",
+                                "type": "tool_call",
+                            },
+                        ],
+                    ),
+                    AIMessage(content="Done!"),
+                ]
+            )
+        )
+
+        checkpointer = InMemorySaver()
+        agent = create_agent(
+            model=fake_model,
+            middleware=[AskUserMiddleware()],
+            checkpointer=checkpointer,
+        )
+
+        config = {"configurable": {"thread_id": "test-ask-user-opt"}}
+
+        result = agent.invoke(
+            {"messages": [HumanMessage(content="ask me")]},
+            config=config,
+        )
+
+        assert "__interrupt__" in result
+        interrupt_value = result["__interrupt__"][0].value
+        assert len(interrupt_value["questions"]) == 2
+        assert interrupt_value["questions"][1].get("required") is False
+
+        result2 = agent.invoke(
+            Command(resume={"answers": ["Alice", ""]}),
+            config=config,
+        )
+
+        assert "__interrupt__" not in result2
+        tool_messages = [msg for msg in result2["messages"] if msg.type == "tool"]
+        assert len(tool_messages) == 1
+        assert "Alice" in tool_messages[0].content
+
     def test_ask_user_with_create_deep_agent(self) -> None:
         """Test that enable_ask_user adds the tool via create_deep_agent."""
         from deepagents import create_deep_agent  # noqa: PLC0415

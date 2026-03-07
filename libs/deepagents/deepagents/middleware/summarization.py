@@ -271,7 +271,7 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
             **deprecated_kwargs,
         )
 
-        # DeepAgents-specific attributes
+        # Deep Agents specific attributes
         self._backend = backend
         self._history_path_prefix = history_path_prefix
 

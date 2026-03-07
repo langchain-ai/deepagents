@@ -400,6 +400,32 @@ def get_available_models() -> dict[str, list[str]]:
     return available
 
 
+def _build_entry(
+    base: dict[str, Any],
+    overrides: dict[str, Any],
+    cli_override: dict[str, Any] | None,
+) -> ModelProfileEntry:
+    """Build a profile entry by merging base, overrides, and CLI override.
+
+    Args:
+        base: Upstream profile dict (empty for config-only models).
+        overrides: `config.toml` profile overrides.
+        cli_override: Extra fields from `--profile-override`.
+
+    Returns:
+        Profile entry with merged data and override tracking.
+    """
+    merged = {**base, **overrides}
+    overridden_keys = set(overrides)
+    if cli_override:
+        merged = {**merged, **cli_override}
+        overridden_keys |= set(cli_override)
+    return ModelProfileEntry(
+        profile=merged,
+        overridden_keys=frozenset(overridden_keys),
+    )
+
+
 def get_model_profiles(
     *,
     cli_override: dict[str, Any] | None = None,
@@ -441,14 +467,16 @@ def get_model_profiles(
             profiles = _load_provider_profiles(module_path)
         except ImportError:
             logger.debug(
-                "Could not import profiles from %s for model profiles",
+                "Could not import profiles from %s for provider '%s'",
                 module_path,
+                provider,
             )
             continue
         except Exception:
             logger.warning(
-                "Failed to load profiles from %s for model profiles",
+                "Failed to load profiles from %s for provider '%s'",
                 module_path,
+                provider,
                 exc_info=True,
             )
             continue
@@ -457,15 +485,7 @@ def get_model_profiles(
             spec = f"{provider}:{model_name}"
             seen_specs.add(spec)
             overrides = config.get_profile_overrides(provider, model_name=model_name)
-            merged = {**upstream_profile, **overrides}
-            overridden_keys = set(overrides)
-            if cli_override:
-                merged = {**merged, **cli_override}
-                overridden_keys |= set(cli_override)
-            result[spec] = ModelProfileEntry(
-                profile=merged,
-                overridden_keys=frozenset(overridden_keys),
-            )
+            result[spec] = _build_entry(upstream_profile, overrides, cli_override)
 
     # Add config-only models that have no upstream profile.
     for provider_name, provider_config in config.providers.items():
@@ -476,15 +496,7 @@ def get_model_profiles(
                 overrides = config.get_profile_overrides(
                     provider_name, model_name=model_name
                 )
-                merged = dict(overrides)
-                overridden_keys = set(overrides)
-                if cli_override:
-                    merged = {**merged, **cli_override}
-                    overridden_keys |= set(cli_override)
-                result[spec] = ModelProfileEntry(
-                    profile=merged,
-                    overridden_keys=frozenset(overridden_keys),
-                )
+                result[spec] = _build_entry({}, overrides, cli_override)
 
     frozen = MappingProxyType(result)
     # Only populate cache for the static (no CLI override) path.

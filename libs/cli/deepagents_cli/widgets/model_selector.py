@@ -532,27 +532,47 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         def _mark(key: str, text: str) -> str:
             return f"[yellow]*{text}[/yellow]" if key in overridden else text
 
+        def _format_token(key: str, suffix: str) -> str | None:
+            """Format a token-count profile key, falling back to the raw value.
+
+            Returns:
+                Formatted string with override marker, or None if key absent.
+            """
+            val = profile.get(key)
+            if val is None:
+                return None
+            try:
+                text = f"{format_token_count(int(val))} {suffix}"
+            except (ValueError, TypeError, OverflowError):
+                text = f"{val} {suffix}"
+            return _mark(key, text)
+
+        def _format_flags(keys: list[tuple[str, str]]) -> list[str]:
+            """Render boolean profile keys as green (on) or dim (off) labels.
+
+            Returns:
+                List of Rich-markup strings for present keys.
+            """
+            parts: list[str] = []
+            for key, label in keys:
+                if key in profile:
+                    styled = (
+                        f"[green]{label}[/green]"
+                        if profile[key]
+                        else f"[dim]{label}[/dim]"
+                    )
+                    parts.append(_mark(key, styled))
+            return parts
+
         # Line 1: Context window
-        parts_ctx: list[str] = []
-        max_in = profile.get("max_input_tokens")
-        max_out = profile.get("max_output_tokens")
-        if max_in is not None:
-            try:
-                formatted = f"{format_token_count(int(max_in))} in"
-            except (ValueError, TypeError, OverflowError):
-                formatted = f"{max_in} in"
-            parts_ctx.append(_mark("max_input_tokens", formatted))
-        if max_out is not None:
-            try:
-                formatted = f"{format_token_count(int(max_out))} out"
-            except (ValueError, TypeError, OverflowError):
-                formatted = f"{max_out} out"
-            parts_ctx.append(_mark("max_output_tokens", formatted))
+        token_keys = [("max_input_tokens", "in"), ("max_output_tokens", "out")]
+        ctx_parts = [p for k, s in token_keys if (p := _format_token(k, s)) is not None]
         sep = f" {glyphs.bullet} "
-        if parts_ctx:
-            line1 = f"Context: {sep.join(parts_ctx)}"
-        else:
-            line1 = "[dim]Context: unknown[/dim]"
+        line1 = (
+            f"Context: {sep.join(ctx_parts)}"
+            if ctx_parts
+            else "[dim]Context: unknown[/dim]"
+        )
 
         # Line 2: Input modalities
         modality_keys = [
@@ -562,12 +582,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             ("pdf_inputs", "pdf"),
             ("video_inputs", "video"),
         ]
-        modality_parts: list[str] = []
-        for key, label in modality_keys:
-            if key in profile:
-                val = profile[key]
-                styled = f"[green]{label}[/green]" if val else f"[dim]{label}[/dim]"
-                modality_parts.append(_mark(key, styled))
+        modality_parts = _format_flags(modality_keys)
         line2 = f"Input: {' '.join(modality_parts)}" if modality_parts else ""
 
         # Line 3: Capabilities
@@ -576,27 +591,11 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             ("tool_calling", "tool calling"),
             ("structured_output", "structured output"),
         ]
-        cap_parts: list[str] = []
-        for key, label in capability_keys:
-            if key in profile:
-                val = profile[key]
-                styled = f"[green]{label}[/green]" if val else f"[dim]{label}[/dim]"
-                cap_parts.append(_mark(key, styled))
+        cap_parts = _format_flags(capability_keys)
         line3 = f"Capabilities: {' '.join(cap_parts)}" if cap_parts else ""
 
         # Line 4: Override notice
-        displayed_keys = {
-            "max_input_tokens",
-            "max_output_tokens",
-            "text_inputs",
-            "image_inputs",
-            "audio_inputs",
-            "pdf_inputs",
-            "video_inputs",
-            "reasoning_output",
-            "tool_calling",
-            "structured_output",
-        }
+        displayed_keys = {k for k, _ in token_keys + modality_keys + capability_keys}
         has_visible_override = bool(overridden & displayed_keys)
         line4 = (
             "[dim][yellow]*[/yellow] = override[/dim]" if has_visible_override else ""

@@ -23,10 +23,10 @@ from deepagents_cli.clipboard import (
     logger as clipboard_logger,
 )
 from deepagents_cli.file_ops import FileOpTracker, _safe_read
-from deepagents_cli.image_utils import (
+from deepagents_cli.media_utils import (
     _get_clipboard_via_osascript,
     _get_macos_clipboard_image,
-    logger as image_utils_logger,
+    logger as media_utils_logger,
 )
 from deepagents_cli.tools import http_request, web_search
 
@@ -72,9 +72,9 @@ class TestToolsExceptionHandling:
 
     def test_web_search_handles_tavily_usage_limit_error(self):
         """Test that web_search catches Tavily UsageLimitExceededError."""
-        with patch("deepagents_cli.tools.tavily_client") as mock_client:
-            mock_client.search.side_effect = UsageLimitExceededError("Rate limit")
-
+        mock_client = MagicMock()
+        mock_client.search.side_effect = UsageLimitExceededError("Rate limit")
+        with patch("deepagents_cli.tools._get_tavily_client", return_value=mock_client):
             result = web_search("test query")
 
         assert "error" in result
@@ -83,9 +83,9 @@ class TestToolsExceptionHandling:
 
     def test_web_search_handles_tavily_invalid_api_key(self):
         """Test that web_search catches Tavily InvalidAPIKeyError."""
-        with patch("deepagents_cli.tools.tavily_client") as mock_client:
-            mock_client.search.side_effect = InvalidAPIKeyError("Invalid key")
-
+        mock_client = MagicMock()
+        mock_client.search.side_effect = InvalidAPIKeyError("Invalid key")
+        with patch("deepagents_cli.tools._get_tavily_client", return_value=mock_client):
             result = web_search("test query")
 
         assert "error" in result
@@ -93,9 +93,9 @@ class TestToolsExceptionHandling:
 
     def test_web_search_handles_tavily_bad_request(self):
         """Test that web_search catches Tavily BadRequestError."""
-        with patch("deepagents_cli.tools.tavily_client") as mock_client:
-            mock_client.search.side_effect = BadRequestError("Bad request")
-
+        mock_client = MagicMock()
+        mock_client.search.side_effect = BadRequestError("Bad request")
+        with patch("deepagents_cli.tools._get_tavily_client", return_value=mock_client):
             result = web_search("test query")
 
         assert "error" in result
@@ -103,9 +103,9 @@ class TestToolsExceptionHandling:
 
     def test_web_search_handles_tavily_timeout(self):
         """Test that web_search catches Tavily TimeoutError."""
-        with patch("deepagents_cli.tools.tavily_client") as mock_client:
-            mock_client.search.side_effect = TavilyTimeoutError(30.0)
-
+        mock_client = MagicMock()
+        mock_client.search.side_effect = TavilyTimeoutError(30.0)
+        with patch("deepagents_cli.tools._get_tavily_client", return_value=mock_client):
             result = web_search("test query")
 
         assert "error" in result
@@ -228,19 +228,19 @@ class TestClipboardExceptionHandling:
         assert clipboard_logger.name == "deepagents_cli.clipboard"
 
 
-class TestImageUtilsExceptionHandling:
-    """Test exception handling in image utilities."""
+class TestMediaUtilsExceptionHandling:
+    """Test exception handling in media utilities."""
 
-    def test_image_utils_logger_exists(self):
-        """Test that image_utils module has proper logging configured."""
-        assert image_utils_logger is not None
-        assert image_utils_logger.name == "deepagents_cli.image_utils"
+    def test_media_utils_logger_exists(self):
+        """Test that media_utils module has proper logging configured."""
+        assert media_utils_logger is not None
+        assert media_utils_logger.name == "deepagents_cli.media_utils"
 
-    def test_image_utils_exception_types(self):
-        """Test that image_utils uses proper exception types."""
+    def test_media_utils_exception_types(self):
+        """Test that media_utils uses proper exception types."""
         # Read the source file and check exception handling
         source_path = (
-            Path(__file__).parent.parent.parent / "deepagents_cli" / "image_utils.py"
+            Path(__file__).parent.parent.parent / "deepagents_cli" / "media_utils.py"
         )
         source = source_path.read_text()
         tree = ast.parse(source)
@@ -258,10 +258,10 @@ class TestImageUtilsExceptionHandling:
     def test_pngpaste_timeout_logs_and_returns_none(self, caplog):
         """Test that pngpaste timeout is logged and function falls back."""
         with (
-            patch("deepagents_cli.image_utils._get_executable") as mock_exec,
+            patch("deepagents_cli.media_utils._get_executable") as mock_exec,
             patch("subprocess.run") as mock_run,
             patch(
-                "deepagents_cli.image_utils._get_clipboard_via_osascript"
+                "deepagents_cli.media_utils._get_clipboard_via_osascript"
             ) as mock_osascript,
         ):
             mock_exec.return_value = "/usr/local/bin/pngpaste"
@@ -277,10 +277,10 @@ class TestImageUtilsExceptionHandling:
     def test_pngpaste_not_found_logs_and_falls_back(self, caplog):
         """Test that FileNotFoundError for pngpaste is logged."""
         with (
-            patch("deepagents_cli.image_utils._get_executable") as mock_exec,
+            patch("deepagents_cli.media_utils._get_executable") as mock_exec,
             patch("subprocess.run") as mock_run,
             patch(
-                "deepagents_cli.image_utils._get_clipboard_via_osascript"
+                "deepagents_cli.media_utils._get_clipboard_via_osascript"
             ) as mock_osascript,
         ):
             mock_exec.return_value = "/usr/local/bin/pngpaste"
@@ -296,7 +296,7 @@ class TestImageUtilsExceptionHandling:
     def test_osascript_timeout_logs_and_returns_none(self, caplog):
         """Test that osascript timeout is logged."""
         with (
-            patch("deepagents_cli.image_utils._get_executable") as mock_exec,
+            patch("deepagents_cli.media_utils._get_executable") as mock_exec,
             patch("subprocess.run") as mock_run,
             patch("tempfile.mkstemp") as mock_mkstemp,
             patch("os.close"),

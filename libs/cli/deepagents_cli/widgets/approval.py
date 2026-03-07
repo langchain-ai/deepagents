@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, ClassVar
 
+from rich.markup import escape as escape_markup
 from textual.binding import Binding, BindingType
 from textual.containers import Container, Vertical, VerticalScroll
 from textual.message import Message
@@ -21,10 +22,22 @@ from deepagents_cli.config import (
     _detect_charset_mode,
     get_glyphs,
 )
+from deepagents_cli.unicode_security import (
+    check_url_safety,
+    detect_dangerous_unicode,
+    format_warning_detail,
+    iter_string_values,
+    looks_like_url_key,
+    render_with_unicode_markers,
+    strip_dangerous_unicode,
+    summarize_issues,
+)
 from deepagents_cli.widgets.tool_renderers import get_renderer
 
 # Max length for truncated shell command display
 _SHELL_COMMAND_TRUNCATE_LENGTH: int = 120
+_WARNING_PREVIEW_LIMIT: int = 3
+_WARNING_TEXT_TRUNCATE_LENGTH: int = 220
 
 
 class ApprovalMenu(Container):
@@ -112,6 +125,7 @@ class ApprovalMenu(Container):
         self._command_expanded = False
         self._command_widget: Static | None = None
         self._has_expandable_command = self._check_expandable_command()
+        self._security_warnings = self._collect_security_warnings()
 
     def set_future(self, future: asyncio.Future[dict[str, str]]) -> None:
         """Set the future to resolve when user decides."""
@@ -147,12 +161,36 @@ class ApprovalMenu(Container):
             msg = "_get_command_display called with empty action_requests"
             raise RuntimeError(msg)
         req = self._action_requests[0]
-        command = str(req.get("args", {}).get("command", ""))
+        command_raw = str(req.get("args", {}).get("command", ""))
+        command = strip_dangerous_unicode(command_raw)
+        issues = detect_dangerous_unicode(command_raw)
+
         if expanded or len(command) <= _SHELL_COMMAND_TRUNCATE_LENGTH:
-            return f"[bold #f59e0b]{command}[/bold #f59e0b]"
-        truncated = command[:_SHELL_COMMAND_TRUNCATE_LENGTH] + get_glyphs().ellipsis
+            command_display = command
+        else:
+            command_display = (
+                command[:_SHELL_COMMAND_TRUNCATE_LENGTH] + get_glyphs().ellipsis
+            )
+
+        escaped_truncated = escape_markup(command_display)
+        display = f"[bold #f59e0b]{escaped_truncated}[/bold #f59e0b]"
+        if not expanded and len(command) > _SHELL_COMMAND_TRUNCATE_LENGTH:
+            display += " [dim](press 'e' to expand)[/dim]"
+
+        if not issues:
+            return display
+
+        issue_summary = escape_markup(summarize_issues(issues))
+        raw_with_markers = escape_markup(render_with_unicode_markers(command_raw))
+        if not expanded and len(raw_with_markers) > _WARNING_TEXT_TRUNCATE_LENGTH:
+            raw_with_markers = (
+                raw_with_markers[:_WARNING_TEXT_TRUNCATE_LENGTH] + get_glyphs().ellipsis
+            )
+
         return (
-            f"[bold #f59e0b]{truncated}[/bold #f59e0b] [dim](press 'e' to expand)[/dim]"
+            f"{display}\n"
+            f"[yellow]Warning:[/yellow] hidden chars detected ({issue_summary})\n"
+            f"[dim]raw: {raw_with_markers}[/dim]"
         )
 
     def compose(self) -> ComposeResult:
@@ -171,6 +209,20 @@ class ApprovalMenu(Container):
         else:
             title = f">>> {count} Tool Calls Require Approval <<<"
         yield Static(title, classes="approval-title")
+
+        if self._security_warnings:
+            warning_lines = ["[yellow]Warning:[/yellow] Potentially deceptive text"]
+            warning_lines.extend(
+                f"[dim]- {escape_markup(warning)}[/dim]"
+                for warning in self._security_warnings[:_WARNING_PREVIEW_LIMIT]
+            )
+            if len(self._security_warnings) > _WARNING_PREVIEW_LIMIT:
+                remaining = len(self._security_warnings) - _WARNING_PREVIEW_LIMIT
+                warning_lines.append(f"[dim]- +{remaining} more warning(s)[/dim]")
+            yield Static(
+                "\n".join(warning_lines),
+                classes="approval-security-warning",
+            )
 
         # For shell commands, show the command (expandable if long)
         if self._is_minimal and len(self._action_requests) == 1:
@@ -235,6 +287,15 @@ class ApprovalMenu(Container):
             if len(self._action_requests) > 1:
                 header = Static(f"[bold]{i + 1}. {tool_name}[/bold]")
                 await self._tool_info_container.mount(header)
+
+            # Show description if present
+            description = action_request.get("description")
+            if description:
+                desc_widget = Static(
+                    f"[dim]{description}[/dim]",
+                    classes="approval-description",
+                )
+                await self._tool_info_container.mount(desc_widget)
 
             # Get the appropriate renderer for this tool
             renderer = get_renderer(tool_name)
@@ -325,6 +386,37 @@ class ApprovalMenu(Container):
 
         # Post message
         self.post_message(self.Decided(decision))
+
+    def _collect_security_warnings(self) -> list[str]:
+        """Collect warning strings for suspicious Unicode and URL values.
+
+        Recursively inspects all nested string values in action arguments.
+
+        Returns:
+            Warning strings for the current action request batch.
+        """
+        warnings: list[str] = []
+        for action_request in self._action_requests:
+            tool_name = str(action_request.get("name", "unknown"))
+            args = action_request.get("args", {})
+            if not isinstance(args, dict):
+                continue
+            for arg_path, text in iter_string_values(args):
+                issues = detect_dangerous_unicode(text)
+                if issues:
+                    warnings.append(
+                        f"{tool_name}.{arg_path}: hidden Unicode "
+                        f"({summarize_issues(issues)})"
+                    )
+                if looks_like_url_key(arg_path):
+                    result = check_url_safety(text)
+                    if result.safe:
+                        continue
+                    detail = format_warning_detail(result.warnings)
+                    if result.decoded_domain:
+                        detail = f"{detail}; decoded host: {result.decoded_domain}"
+                    warnings.append(f"{tool_name}.{arg_path}: {detail}")
+        return warnings
 
     def on_blur(self, event: events.Blur) -> None:  # noqa: ARG002  # Textual event handler signature
         """Re-focus on blur to keep focus trapped until decision is made."""

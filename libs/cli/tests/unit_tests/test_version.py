@@ -3,40 +3,13 @@
 import subprocess
 import sys
 import tomllib
+from importlib.metadata import version as pkg_version
 from pathlib import Path
+from unittest.mock import patch
+
+import pytest
 
 from deepagents_cli._version import __version__
-
-
-def test_sdk_pin_matches_sdk_version() -> None:
-    """Verify that the CLI's pinned SDK version matches the actual SDK version.
-
-    The CLI pins an exact deepagents SDK version. This test ensures the pin
-    stays in sync.
-    """
-    cli_root = Path(__file__).parent.parent.parent
-    sdk_root = cli_root.parent / "deepagents"
-
-    with (sdk_root / "pyproject.toml").open("rb") as f:
-        sdk_version = tomllib.load(f)["project"]["version"]
-
-    with (cli_root / "pyproject.toml").open("rb") as f:
-        cli_deps = tomllib.load(f)["project"]["dependencies"]
-
-    sdk_pin = None
-    for dep in cli_deps:
-        if dep.startswith("deepagents=="):
-            sdk_pin = dep.split("==")[1]
-            break
-
-    assert sdk_pin is not None, (
-        "Could not find deepagents== pin in libs/cli/pyproject.toml dependencies"
-    )
-    assert sdk_pin == sdk_version, (
-        f"CLI pins deepagents=={sdk_pin} but SDK version is {sdk_version}. "
-        f"Update the deepagents dependency in libs/cli/pyproject.toml to "
-        f"deepagents=={sdk_version}"
-    )
 
 
 def test_version_matches_pyproject() -> None:
@@ -68,18 +41,76 @@ def test_cli_version_flag() -> None:
     # argparse exits with 0 for --version
     assert result.returncode == 0
     assert f"deepagents-cli {__version__}" in result.stdout
+    from importlib.metadata import version as pkg_version
+
+    sdk_version = pkg_version("deepagents")
+    assert f"deepagents (SDK) {sdk_version}" in result.stdout
 
 
-def test_version_slash_command_message_format() -> None:
-    """Verify the `/version` slash command message format matches expected output."""
-    # This tests the exact message format used in app.py's _handle_command for /version
-    expected_message = f"deepagents version: {__version__}"
-    assert "deepagents version:" in expected_message
-    assert __version__ in expected_message
+async def test_version_slash_command_message_format() -> None:
+    """Verify the `/version` slash command outputs both CLI and SDK versions."""
+    from deepagents_cli.app import DeepAgentsApp
+    from deepagents_cli.widgets.messages import AppMessage
+
+    sdk_version = pkg_version("deepagents")
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._handle_command("/version")
+        await pilot.pause()
+
+        app_msgs = app.query(AppMessage)
+        content = str(app_msgs[-1]._content)
+        assert f"deepagents-cli version: {__version__}" in content
+        assert f"deepagents (SDK) version: {sdk_version}" in content
+
+
+async def test_version_slash_command_sdk_unavailable() -> None:
+    """Verify `/version` shows 'unknown' when SDK package metadata is missing."""
+    from importlib.metadata import PackageNotFoundError
+
+    from deepagents_cli.app import DeepAgentsApp
+    from deepagents_cli.widgets.messages import AppMessage
+
+    def patched_version(name: str) -> str:
+        if name == "deepagents":
+            raise PackageNotFoundError(name)
+        return pkg_version(name)
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with patch("importlib.metadata.version", side_effect=patched_version):
+            await app._handle_command("/version")
+        await pilot.pause()
+
+        app_msgs = app.query(AppMessage)
+        content = str(app_msgs[-1]._content)
+        assert f"deepagents-cli version: {__version__}" in content
+        assert "deepagents (SDK) version: unknown" in content
+
+
+async def test_version_slash_command_cli_version_unavailable() -> None:
+    """Verify `/version` shows 'unknown' when CLI _version module is missing."""
+    from deepagents_cli.app import DeepAgentsApp
+    from deepagents_cli.widgets.messages import AppMessage
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        # Setting a module to None in sys.modules causes ImportError on import
+        with patch.dict(sys.modules, {"deepagents_cli._version": None}):
+            await app._handle_command("/version")
+        await pilot.pause()
+
+        app_msgs = app.query(AppMessage)
+        content = str(app_msgs[-1]._content)
+        assert "deepagents-cli version: unknown" in content
 
 
 def test_help_mentions_version_flag() -> None:
-    """Verify that the CLI help text mentions `--version`."""
+    """Verify that the CLI help text mentions `--version` and SDK."""
     result = subprocess.run(
         [sys.executable, "-m", "deepagents_cli.main", "help"],
         capture_output=True,
@@ -88,8 +119,9 @@ def test_help_mentions_version_flag() -> None:
     )
     # Help command should succeed
     assert result.returncode == 0
-    # Help output should mention --version
+    # Help output should mention --version and SDK
     assert "--version" in result.stdout
+    assert "SDK" in result.stdout
 
 
 def test_cli_help_flag() -> None:

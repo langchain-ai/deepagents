@@ -15,11 +15,6 @@ Screen {
     background: $background;
 }
 
-/* Spacer fills remaining viewport below input */
-#chat-spacer {
-    height: auto;
-}
-
 /* Welcome banner */
 #welcome-banner {
     height: auto;

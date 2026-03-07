@@ -145,12 +145,12 @@ MEMORY_SYSTEM_PROMPT = """<agent_memory>
     Agent: Sure, I'll write you an example for creating a deep agent in LangChain <example code in Python>
     User: Can you do this in JavaScript
     Agent: Let me save this to my memory.
-    Tool Call: edit_file(...) -> remembers that the user prefers to get LangChaincode examples in JavaScript
+    Tool Call: edit_file(...) -> remembers that the user prefers to get LangChain code examples in JavaScript
     Agent: Sure, here is the JavaScript example<example code in JavaScript>
 
     Example 3 (do not remember transient information):
     User: I'm going to play basketball tonight so I will be offline for a few hours.
-    Agent: Okay I'll add a black to your calendar.
+    Agent: Okay I'll add a block to your calendar.
     Tool Call: create_calendar_event(...) -> just calls a tool, does not commit anything to memory, as it is transient information
 </memory_guidelines>
 """
@@ -212,7 +212,7 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
                 config=config,
                 tool_call_id=None,
             )
-            return self._backend(tool_runtime)  # ty: ignore[invalid-argument-type]
+            return self._backend(tool_runtime)  # ty: ignore[call-top-callable, invalid-argument-type]
         return self._backend
 
     def _format_agent_memory(self, contents: dict[str, str]) -> str:
@@ -235,76 +235,6 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
         memory_body = "\n\n".join(sections)
         return MEMORY_SYSTEM_PROMPT.format(agent_memory=memory_body)
 
-    async def _load_memory_from_backend(
-        self,
-        backend: BackendProtocol,
-        path: str,
-    ) -> str | None:
-        """Load memory content from a backend path.
-
-        Args:
-            backend: Backend to load from.
-            path: Path to the AGENTS.md file.
-
-        Returns:
-            File content if found, None otherwise.
-        """
-        results = await backend.adownload_files([path])
-        # Should get exactly one response for one path
-        if len(results) != 1:
-            msg = f"Expected 1 response for path {path}, got {len(results)}"
-            raise AssertionError(msg)
-        response = results[0]
-
-        if response.error is not None:
-            # For now, memory files are treated as optional. file_not_found is expected
-            # and we skip silently to allow graceful degradation.
-            if response.error == "file_not_found":
-                return None
-            # Other errors should be raised
-            msg = f"Failed to download {path}: {response.error}"
-            raise ValueError(msg)
-
-        if response.content is not None:
-            return response.content.decode("utf-8")
-
-        return None
-
-    def _load_memory_from_backend_sync(
-        self,
-        backend: BackendProtocol,
-        path: str,
-    ) -> str | None:
-        """Load memory content from a backend path synchronously.
-
-        Args:
-            backend: Backend to load from.
-            path: Path to the AGENTS.md file.
-
-        Returns:
-            File content if found, None otherwise.
-        """
-        results = backend.download_files([path])
-        # Should get exactly one response for one path
-        if len(results) != 1:
-            msg = f"Expected 1 response for path {path}, got {len(results)}"
-            raise AssertionError(msg)
-        response = results[0]
-
-        if response.error is not None:
-            # For now, memory files are treated as optional. file_not_found is expected
-            # and we skip silently to allow graceful degradation.
-            if response.error == "file_not_found":
-                return None
-            # Other errors should be raised
-            msg = f"Failed to download {path}: {response.error}"
-            raise ValueError(msg)
-
-        if response.content is not None:
-            return response.content.decode("utf-8")
-
-        return None
-
     def before_agent(self, state: MemoryState, runtime: Runtime, config: RunnableConfig) -> MemoryStateUpdate | None:  # ty: ignore[invalid-method-override]
         """Load memory content before agent execution (synchronous).
 
@@ -326,10 +256,15 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
         backend = self._get_backend(state, runtime, config)
         contents: dict[str, str] = {}
 
-        for path in self.sources:
-            content = self._load_memory_from_backend_sync(backend, path)
-            if content:
-                contents[path] = content
+        results = backend.download_files(list(self.sources))
+        for path, response in zip(self.sources, results, strict=True):
+            if response.error is not None:
+                if response.error == "file_not_found":
+                    continue
+                msg = f"Failed to download {path}: {response.error}"
+                raise ValueError(msg)
+            if response.content is not None:
+                contents[path] = response.content.decode("utf-8")
                 logger.debug("Loaded memory from: %s", path)
 
         return MemoryStateUpdate(memory_contents=contents)
@@ -355,10 +290,15 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
         backend = self._get_backend(state, runtime, config)
         contents: dict[str, str] = {}
 
-        for path in self.sources:
-            content = await self._load_memory_from_backend(backend, path)
-            if content:
-                contents[path] = content
+        results = await backend.adownload_files(list(self.sources))
+        for path, response in zip(self.sources, results, strict=True):
+            if response.error is not None:
+                if response.error == "file_not_found":
+                    continue
+                msg = f"Failed to download {path}: {response.error}"
+                raise ValueError(msg)
+            if response.content is not None:
+                contents[path] = response.content.decode("utf-8")
                 logger.debug("Loaded memory from: %s", path)
 
         return MemoryStateUpdate(memory_contents=contents)

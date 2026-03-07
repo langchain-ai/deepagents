@@ -1,7 +1,9 @@
 """Middleware for providing filesystem tools to an agent."""
 # ruff: noqa: E501
 
+import asyncio
 import base64
+import concurrent.futures
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Annotated, Any, Literal, NotRequired, cast
@@ -17,7 +19,7 @@ from langchain.agents.middleware.types import (
 from langchain.tools import ToolRuntime
 from langchain.tools.tool_node import ToolCallRequest
 from langchain_core.messages import ToolMessage
-from langchain_core.messages.content import create_image_block
+from langchain_core.messages.content import ContentBlock, create_image_block
 from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.types import Command
 from typing_extensions import TypedDict
@@ -30,6 +32,7 @@ from deepagents.backends.protocol import (
     EditResult,
     SandboxBackendProtocol,
     WriteResult,
+    execute_accepts_timeout,
 )
 from deepagents.backends.utils import (
     format_content_with_line_numbers,
@@ -41,6 +44,7 @@ from deepagents.backends.utils import (
 from deepagents.middleware._utils import append_to_system_message
 
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
+GLOB_TIMEOUT = 20.0  # seconds
 LINE_NUMBER_WIDTH = 6
 DEFAULT_READ_OFFSET = 0
 DEFAULT_READ_LIMIT = 100
@@ -213,6 +217,8 @@ Usage notes:
   - Commands run in an isolated sandbox environment
   - Returns combined stdout/stderr output with exit code
   - If the output is very large, it may be truncated
+  - For long-running commands, use the optional timeout parameter to override the default timeout (e.g., execute(command="make build", timeout=300))
+  - A timeout of 0 may disable timeouts on backends that support no-timeout execution
   - VERY IMPORTANT: You MUST avoid using search commands like find and grep. Instead use the grep, glob tools to search. You MUST avoid read tools like cat, head, tail, and use read_file to read files.
   - When issuing multiple commands, use the ';' or '&&' operator to separate them. DO NOT use newlines (newlines are ok in quoted strings)
     - Use '&&' when commands depend on each other (e.g., "mkdir dir && cd dir")
@@ -224,6 +230,7 @@ Examples:
     - execute(command="pytest /foo/bar/tests")
     - execute(command="python /path/to/script.py")
     - execute(command="npm install && npm test")
+    - execute(command="make build", timeout=300)
 
   Bad examples (avoid these):
     - execute(command="cd /foo/bar && pytest tests")  # Use absolute path instead
@@ -234,7 +241,16 @@ Examples:
 Note: This tool is only available if the backend supports execution (SandboxBackendProtocol).
 If execution is not supported, the tool will return an error message."""
 
-FILESYSTEM_SYSTEM_PROMPT = """## Filesystem Tools `ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`
+FILESYSTEM_SYSTEM_PROMPT = """## Following Conventions
+
+- Read files before editing — understand existing content before making changes
+- Mimic existing style, naming conventions, and patterns
+
+## Tool Usage and File Reading
+
+Follow the tool docs for the available tools. In particular, for filesystem tools, use pagination (offset/limit) when reading large files.
+
+## Filesystem Tools `ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`
 
 You have access to a filesystem which you can interact with using these tools.
 All file paths must start with a /.
@@ -346,6 +362,45 @@ def _create_content_preview(content_str: str, *, head_lines: int = 5, tail_lines
     return head_sample + truncation_notice + tail_sample
 
 
+def _extract_text_from_message(message: ToolMessage) -> str:
+    """Extract text from a ToolMessage using its `content_blocks` property.
+
+    Joins all text content blocks and ignores non-text blocks (images, audio, etc.)
+    so that binary payloads don't inflate the size measurement.
+
+    Args:
+        message: The ToolMessage to extract text from.
+
+    Returns:
+        Joined text from all text content blocks, or stringified content as fallback.
+    """
+    texts = [block["text"] for block in message.content_blocks if block["type"] == "text"]
+    return "\n".join(texts)
+
+
+def _build_evicted_content(message: ToolMessage, replacement_text: str) -> str | list[ContentBlock]:
+    """Build replacement content for an evicted message, preserving non-text blocks.
+
+    For plain string content, returns the replacement text directly. For list content
+    with mixed block types (e.g., text + image), replaces all text blocks with a single
+    text block containing the replacement text while keeping non-text blocks intact.
+
+    Args:
+        message: The original ToolMessage being evicted.
+        replacement_text: The truncation notice and preview text.
+
+    Returns:
+        Replacement content: a string or list of content blocks.
+    """
+    if isinstance(message.content, str):
+        return replacement_text
+    media_blocks = [block for block in message.content_blocks if block["type"] != "text"]
+    if not media_blocks:
+        # All content is text, so a plain string replacement is sufficient.
+        return replacement_text
+    return [cast("ContentBlock", {"type": "text", "text": replacement_text}), *media_blocks]
+
+
 class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]):
     """Middleware for providing filesystem and optional execution tools to an agent.
 
@@ -406,6 +461,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         system_prompt: str | None = None,
         custom_tool_descriptions: dict[str, str] | None = None,
         tool_token_limit_before_evict: int | None = 20000,
+        max_execute_timeout: int = 3600,
     ) -> None:
         """Initialize the filesystem middleware.
 
@@ -415,7 +471,18 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             system_prompt: Optional custom system prompt override.
             custom_tool_descriptions: Optional custom tool descriptions override.
             tool_token_limit_before_evict: Optional token limit before evicting a tool result to the filesystem.
+            max_execute_timeout: Maximum allowed value in seconds for per-command timeout
+                overrides on the execute tool.
+
+                Defaults to 3600 seconds (1 hour). Any per-command timeout
+                exceeding this value will be rejected with an error message.
+
+        Raises:
+            ValueError: If `max_execute_timeout` is not positive.
         """
+        if max_execute_timeout <= 0:
+            msg = f"max_execute_timeout must be positive, got {max_execute_timeout}"
+            raise ValueError(msg)
         # Use provided backend or default to StateBackend factory
         self.backend = backend if backend is not None else (StateBackend)
 
@@ -423,6 +490,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         self._custom_system_prompt = system_prompt
         self._custom_tool_descriptions = custom_tool_descriptions or {}
         self._tool_token_limit_before_evict = tool_token_limit_before_evict
+        self._max_execute_timeout = max_execute_timeout
 
         self.tools = [
             self._create_ls_tool(),
@@ -444,7 +512,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             Resolved backend instance.
         """
         if callable(self.backend):
-            return self.backend(runtime)
+            return self.backend(runtime)  # ty: ignore[call-top-callable]
         return self.backend
 
     def _create_ls_tool(self) -> BaseTool:
@@ -755,7 +823,12 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 validated_path = validate_path(path)
             except ValueError as e:
                 return f"Error: {e}"
-            infos = resolved_backend.glob_info(pattern, path=validated_path)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(resolved_backend.glob_info, pattern, path=validated_path)
+                try:
+                    infos = future.result(timeout=GLOB_TIMEOUT)
+                except concurrent.futures.TimeoutError:
+                    return f"Error: glob timed out after {GLOB_TIMEOUT}s. Try a more specific pattern or a narrower path."
             paths = [fi.get("path", "") for fi in infos]
             result = truncate_if_too_long(paths)
             return str(result)
@@ -771,7 +844,13 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 validated_path = validate_path(path)
             except ValueError as e:
                 return f"Error: {e}"
-            infos = await resolved_backend.aglob_info(pattern, path=validated_path)
+            try:
+                infos = await asyncio.wait_for(
+                    resolved_backend.aglob_info(pattern, path=validated_path),
+                    timeout=GLOB_TIMEOUT,
+                )
+            except TimeoutError:
+                return f"Error: glob timed out after {GLOB_TIMEOUT}s. Try a more specific pattern or a narrower path."
             paths = [fi.get("path", "") for fi in infos]
             result = truncate_if_too_long(paths)
             return str(result)
@@ -834,11 +913,21 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         """Create the execute tool for sandbox command execution."""
         tool_description = self._custom_tool_descriptions.get("execute") or EXECUTE_TOOL_DESCRIPTION
 
-        def sync_execute(
+        def sync_execute(  # noqa: PLR0911 - early returns for distinct error conditions
             command: Annotated[str, "Shell command to execute in the sandbox environment."],
             runtime: ToolRuntime[None, FilesystemState],
+            timeout: Annotated[
+                int | None,
+                "Optional timeout in seconds for this command. Overrides the default timeout. Use 0 for no-timeout execution on backends that support it.",
+            ] = None,
         ) -> str:
             """Synchronous wrapper for execute tool."""
+            if timeout is not None:
+                if timeout < 0:
+                    return f"Error: timeout must be non-negative, got {timeout}."
+                if timeout > self._max_execute_timeout:
+                    return f"Error: timeout {timeout}s exceeds maximum allowed ({self._max_execute_timeout}s)."
+
             resolved_backend = self._get_backend(runtime)
 
             # Runtime check - fail gracefully if not supported
@@ -852,11 +941,19 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             # Safe cast: _supports_execution validates that execute()/aexecute() exist
             # (either SandboxBackendProtocol or CompositeBackend with sandbox default)
             executable = cast("SandboxBackendProtocol", resolved_backend)
+            if timeout is not None and not execute_accepts_timeout(type(executable)):
+                return (
+                    "Error: This sandbox backend does not support per-command "
+                    "timeout overrides. Update your sandbox package to the "
+                    "latest version, or omit the timeout parameter."
+                )
             try:
-                result = executable.execute(command)
+                result = executable.execute(command, timeout=timeout) if timeout is not None else executable.execute(command)
             except NotImplementedError as e:
                 # Handle case where execute() exists but raises NotImplementedError
                 return f"Error: Execution not available. {e}"
+            except ValueError as e:
+                return f"Error: Invalid parameter. {e}"
 
             # Format output for LLM consumption
             parts = [result.output]
@@ -870,11 +967,23 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
             return "".join(parts)
 
-        async def async_execute(
+        async def async_execute(  # noqa: PLR0911 - early returns for distinct error conditions
             command: Annotated[str, "Shell command to execute in the sandbox environment."],
             runtime: ToolRuntime[None, FilesystemState],
+            # ASYNC109 - timeout is a semantic parameter forwarded to the
+            # backend's implementation, not an asyncio.timeout() contract.
+            timeout: Annotated[  # noqa: ASYNC109
+                int | None,
+                "Optional timeout in seconds for this command. Overrides the default timeout. Use 0 for no-timeout execution on backends that support it.",
+            ] = None,
         ) -> str:
             """Asynchronous wrapper for execute tool."""
+            if timeout is not None:
+                if timeout < 0:
+                    return f"Error: timeout must be non-negative, got {timeout}."
+                if timeout > self._max_execute_timeout:
+                    return f"Error: timeout {timeout}s exceeds maximum allowed ({self._max_execute_timeout}s)."
+
             resolved_backend = self._get_backend(runtime)
 
             # Runtime check - fail gracefully if not supported
@@ -887,11 +996,19 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
             # Safe cast: _supports_execution validates that execute()/aexecute() exist
             executable = cast("SandboxBackendProtocol", resolved_backend)
+            if timeout is not None and not execute_accepts_timeout(type(executable)):
+                return (
+                    "Error: This sandbox backend does not support per-command "
+                    "timeout overrides. Update your sandbox package to the "
+                    "latest version, or omit the timeout parameter."
+                )
             try:
-                result = await executable.aexecute(command)
+                result = await executable.aexecute(command, timeout=timeout) if timeout is not None else await executable.aexecute(command)
             except NotImplementedError as e:
                 # Handle case where execute() exists but raises NotImplementedError
                 return f"Error: Execution not available. {e}"
+            except ValueError as e:
+                return f"Error: Invalid parameter. {e}"
 
             # Format output for LLM consumption
             parts = [result.output]
@@ -952,7 +1069,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             if has_execute_tool and backend_supports_execution:
                 prompt_parts.append(EXECUTION_SYSTEM_PROMPT)
 
-            system_prompt = "\n\n".join(prompt_parts)
+            system_prompt = "\n\n".join(prompt_parts).strip()
 
         if system_prompt:
             new_system_message = append_to_system_message(request.system_message, system_prompt)
@@ -1000,7 +1117,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             if has_execute_tool and backend_supports_execution:
                 prompt_parts.append(EXECUTION_SYSTEM_PROMPT)
 
-            system_prompt = "\n\n".join(prompt_parts)
+            system_prompt = "\n\n".join(prompt_parts).strip()
 
         if system_prompt:
             new_system_message = append_to_system_message(request.system_message, system_prompt)
@@ -1025,33 +1142,16 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             - files_update: Dict of file updates to apply to state, or None if eviction failed
 
         Note:
-            The entire content is converted to string, written to /large_tool_results/{tool_call_id},
-            and replaced with a truncated preview plus file reference. The replacement is always
-            returned as a plain string for consistency, regardless of original content type.
-
-            ToolMessage supports multimodal content blocks (images, audio, etc.), but these are
-            uncommon in tool results. For simplicity, all content is stringified and evicted.
-            The model can recover by reading the offloaded file from the backend.
+            Text is extracted from all text content blocks, joined, and used for both the
+            size check and eviction. Non-text blocks (images, audio, etc.) are preserved in
+            the replacement message so multimodal context is not lost. The model can recover
+            the full text by reading the offloaded file from the backend.
         """
         # Early exit if eviction not configured
         if not self._tool_token_limit_before_evict:
             return message, None
 
-        # Convert content to string once for both size check and eviction
-        # Special case: single text block - extract text directly for readability
-        if (
-            isinstance(message.content, list)
-            and len(message.content) == 1
-            and isinstance(message.content[0], dict)
-            and message.content[0].get("type") == "text"
-            and "text" in message.content[0]
-        ):
-            content_str = str(message.content[0]["text"])
-        elif isinstance(message.content, str):
-            content_str = message.content
-        else:
-            # Multiple blocks or non-text content - stringify entire structure
-            content_str = str(message.content)
+        content_str = _extract_text_from_message(message)
 
         # Check if content exceeds eviction threshold
         if len(content_str) <= NUM_CHARS_PER_TOKEN * self._tool_token_limit_before_evict:
@@ -1072,11 +1172,16 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             content_sample=content_sample,
         )
 
-        # Always return as plain string after eviction
+        evicted = _build_evicted_content(message, replacement_text)
         processed_message = ToolMessage(
-            content=replacement_text,
+            content=cast("str | list[str | dict]", evicted),
             tool_call_id=message.tool_call_id,
             name=message.name,
+            id=message.id,
+            artifact=message.artifact,
+            status=message.status,
+            additional_kwargs=dict(message.additional_kwargs),
+            response_metadata=dict(message.response_metadata),
         )
         return processed_message, result.files_update
 
@@ -1094,21 +1199,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         if not self._tool_token_limit_before_evict:
             return message, None
 
-        # Convert content to string once for both size check and eviction
-        # Special case: single text block - extract text directly for readability
-        if (
-            isinstance(message.content, list)
-            and len(message.content) == 1
-            and isinstance(message.content[0], dict)
-            and message.content[0].get("type") == "text"
-            and "text" in message.content[0]
-        ):
-            content_str = str(message.content[0]["text"])
-        elif isinstance(message.content, str):
-            content_str = message.content
-        else:
-            # Multiple blocks or non-text content - stringify entire structure
-            content_str = str(message.content)
+        content_str = _extract_text_from_message(message)
 
         if len(content_str) <= NUM_CHARS_PER_TOKEN * self._tool_token_limit_before_evict:
             return message, None
@@ -1128,11 +1219,16 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             content_sample=content_sample,
         )
 
-        # Always return as plain string after eviction
+        evicted = _build_evicted_content(message, replacement_text)
         processed_message = ToolMessage(
-            content=replacement_text,
+            content=cast("str | list[str | dict]", evicted),
             tool_call_id=message.tool_call_id,
             name=message.name,
+            id=message.id,
+            artifact=message.artifact,
+            status=message.status,
+            additional_kwargs=dict(message.additional_kwargs),
+            response_metadata=dict(message.response_metadata),
         )
         return processed_message, result.files_update
 

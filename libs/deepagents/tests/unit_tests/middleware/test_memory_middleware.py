@@ -849,3 +849,57 @@ def test_memory_middleware_order_matters(tmp_path: Path) -> None:
     assert first_pos > 0
     assert second_pos > 0
     assert first_pos < second_pos
+
+
+class _SpyBackend(FilesystemBackend):
+    """FilesystemBackend that counts download_files calls."""
+
+    def __init__(self, root_dir: str) -> None:
+        super().__init__(root_dir=root_dir, virtual_mode=False)
+        self.download_files_call_count = 0
+
+    def download_files(self, paths: list[str]) -> list:
+        self.download_files_call_count += 1
+        return super().download_files(paths)
+
+
+def test_before_agent_batches_download_into_single_call(tmp_path: Path) -> None:
+    """Verify that before_agent calls download_files exactly once for all sources."""
+    backend = _SpyBackend(root_dir=str(tmp_path))
+
+    path_a = str(tmp_path / "a" / "AGENTS.md")
+    path_b = str(tmp_path / "b" / "AGENTS.md")
+    path_c = str(tmp_path / "c" / "AGENTS.md")
+
+    backend.upload_files(
+        [
+            (path_a, b"# Memory A\nContent A"),
+            (path_b, b"# Memory B\nContent B"),
+            (path_c, b"# Memory C\nContent C"),
+        ]
+    )
+
+    middleware = MemoryMiddleware(backend=backend, sources=[path_a, path_b, path_c])
+    result = middleware.before_agent({}, None, {})  # type: ignore[arg-type]
+
+    assert result is not None
+    assert len(result["memory_contents"]) == 3
+    assert backend.download_files_call_count == 1
+
+
+def test_before_agent_batch_skips_missing_keeps_found(tmp_path: Path) -> None:
+    """Verify that missing files are skipped while found files are loaded in batch mode."""
+    backend = _SpyBackend(root_dir=str(tmp_path))
+
+    existing_path = str(tmp_path / "exists" / "AGENTS.md")
+    missing_path = str(tmp_path / "missing" / "AGENTS.md")
+
+    backend.upload_files([(existing_path, b"# Exists\nSome content")])
+
+    middleware = MemoryMiddleware(backend=backend, sources=[existing_path, missing_path])
+    result = middleware.before_agent({}, None, {})  # type: ignore[arg-type]
+
+    assert result is not None
+    assert existing_path in result["memory_contents"]
+    assert missing_path not in result["memory_contents"]
+    assert backend.download_files_call_count == 1

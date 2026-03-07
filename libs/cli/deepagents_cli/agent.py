@@ -1,33 +1,34 @@
 """Agent management and creation for the CLI."""
 
+from __future__ import annotations
+
 import os
 import shutil
 import tempfile
-from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from deepagents import create_deep_agent
-from deepagents.backends import CompositeBackend
+from deepagents.backends import CompositeBackend, LocalShellBackend
 from deepagents.backends.filesystem import FilesystemBackend
-from deepagents.backends.sandbox import SandboxBackendProtocol
 from deepagents.middleware import MemoryMiddleware, SkillsMiddleware
-
-from deepagents_cli.backends import CLIShellBackend, patch_filesystem_middleware
+from langgraph.checkpoint.memory import InMemorySaver
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Sequence
+
+    from deepagents.backends.sandbox import SandboxBackendProtocol
     from deepagents.middleware.subagents import CompiledSubAgent, SubAgent
-from langchain.agents.middleware import (
-    InterruptOnConfig,
-)
-from langchain.agents.middleware.types import AgentState
-from langchain.messages import ToolCall
-from langchain.tools import BaseTool
-from langchain_core.language_models import BaseChatModel
-from langgraph.checkpoint.base import BaseCheckpointSaver
-from langgraph.checkpoint.memory import InMemorySaver
-from langgraph.pregel import Pregel
-from langgraph.runtime import Runtime
+    from langchain.agents.middleware import InterruptOnConfig
+    from langchain.agents.middleware.types import AgentState
+    from langchain.messages import ToolCall
+    from langchain.tools import BaseTool
+    from langchain_core.language_models import BaseChatModel
+    from langgraph.checkpoint.base import BaseCheckpointSaver
+    from langgraph.pregel import Pregel
+    from langgraph.runtime import Runtime
+
+    from deepagents_cli.mcp_tools import MCPServerInfo
 
 from deepagents_cli.config import (
     COLORS,
@@ -38,11 +39,22 @@ from deepagents_cli.config import (
     settings,
 )
 from deepagents_cli.integrations.sandbox_factory import get_default_working_dir
-from deepagents_cli.local_context import LocalContextMiddleware
+from deepagents_cli.local_context import LocalContextMiddleware, _ExecutableBackend
 from deepagents_cli.subagents import list_subagents
+from deepagents_cli.unicode_security import (
+    check_url_safety,
+    detect_dangerous_unicode,
+    format_warning_detail,
+    render_with_unicode_markers,
+    strip_dangerous_unicode,
+    summarize_issues,
+)
 
 DEFAULT_AGENT_NAME = "agent"
 """The default agent name used when no `-a` flag is provided."""
+
+REQUIRE_COMPACT_TOOL_APPROVAL: bool = True
+"""When `True`, `compact_conversation` requires HITL approval like other gated tools."""
 
 
 def list_agents() -> None:
@@ -264,12 +276,28 @@ def _format_fetch_url_description(
         Formatted description string for the fetch_url tool call.
     """
     args = tool_call["args"]
-    url = args.get("url", "unknown")
+    url = str(args.get("url", "unknown"))
+    display_url = strip_dangerous_unicode(url)
     timeout = args.get("timeout", 30)
+    safety = check_url_safety(url)
+
+    warning_lines: list[str] = []
+    if not safety.safe:
+        detail = format_warning_detail(safety.warnings)
+        warning_lines.append(f"{get_glyphs().warning}  URL warning: {detail}")
+    if safety.decoded_domain:
+        warning_lines.append(
+            f"{get_glyphs().warning}  Decoded domain: {safety.decoded_domain}"
+        )
+
+    warning_block = "\n".join(warning_lines)
+    if warning_block:
+        warning_block = f"\n{warning_block}"
 
     return (
-        f"URL: {url}\nTimeout: {timeout}s\n\n"
+        f"URL: {display_url}\nTimeout: {timeout}s\n\n"
         f"{get_glyphs().warning}  Will fetch and convert web content to markdown"
+        f"{warning_block}"
     )
 
 
@@ -315,8 +343,20 @@ def _format_execute_description(
         Formatted description string for the execute tool call.
     """
     args = tool_call["args"]
-    command = args.get("command", "N/A")
-    return f"Execute Command: {command}\nWorking Directory: {Path.cwd()}"
+    command_raw = str(args.get("command", "N/A"))
+    command = strip_dangerous_unicode(command_raw)
+    lines = [f"Execute Command: {command}", f"Working Directory: {Path.cwd()}"]
+
+    issues = detect_dangerous_unicode(command_raw)
+    if issues:
+        summary = summarize_issues(issues)
+        lines.append(f"{get_glyphs().warning}  Hidden Unicode detected: {summary}")
+        raw_marked = render_with_unicode_markers(command_raw)
+        if len(raw_marked) > 220:  # noqa: PLR2004  # UI display truncation threshold
+            raw_marked = raw_marked[:220] + "..."
+        lines.append(f"Raw: {raw_marked}")
+
+    return "\n".join(lines)
 
 
 def _add_interrupt_on() -> dict[str, InterruptOnConfig]:
@@ -360,7 +400,7 @@ def _add_interrupt_on() -> dict[str, InterruptOnConfig]:
         "description": _format_task_description,  # type: ignore[typeddict-item]  # Callable description narrower than TypedDict expects
     }
 
-    return {
+    interrupt_map: dict[str, InterruptOnConfig] = {
         "execute": execute_interrupt_config,
         "write_file": write_file_interrupt_config,
         "edit_file": edit_file_interrupt_config,
@@ -368,6 +408,19 @@ def _add_interrupt_on() -> dict[str, InterruptOnConfig]:
         "fetch_url": fetch_url_interrupt_config,
         "task": task_interrupt_config,
     }
+
+    if REQUIRE_COMPACT_TOOL_APPROVAL:
+        interrupt_map["compact_conversation"] = {
+            "allowed_decisions": ["approve", "reject"],
+            "description": (
+                "Summarizes older messages into a shorter summary "
+                "using an LLM call, then replaces them in context. "
+                "Recent messages are kept as-is. Full history is "
+                "written to backend storage for agent retrieval."
+            ),
+        }
+
+    return interrupt_map
 
 
 def create_cli_agent(
@@ -384,6 +437,7 @@ def create_cli_agent(
     enable_shell: bool = True,
     enable_ask_user: bool = False,
     checkpointer: BaseCheckpointSaver | None = None,
+    mcp_server_info: list[MCPServerInfo] | None = None,
 ) -> tuple[Pregel, CompositeBackend]:
     """Create a CLI-configured agent with flexible options.
 
@@ -391,7 +445,7 @@ def create_cli_agent(
     both internally and from external code (e.g., benchmarking frameworks).
 
     Args:
-        model: LLM model to use (e.g., `'anthropic:claude-sonnet-4-5-20250929'`)
+        model: LLM model to use (e.g., `'anthropic:claude-sonnet-4-6'`)
         assistant_id: Agent identifier for memory/state storage
         tools: Additional tools to provide to agent
         sandbox: Optional sandbox backend for remote execution
@@ -412,13 +466,14 @@ def create_cli_agent(
             See `_add_interrupt_on` for the full list of gated tools.
         enable_memory: Enable `MemoryMiddleware` for persistent memory
         enable_skills: Enable `SkillsMiddleware` for custom agent skills
-        enable_shell: Enable shell execution via `CLIShellBackend`
+        enable_shell: Enable shell execution via `LocalShellBackend`
             (only in local mode). When enabled, the `execute` tool is available.
         enable_ask_user: Enable the `ask_user` tool for interactive questioning.
         checkpointer: Optional checkpointer for session persistence.
 
             If `None`, uses `InMemorySaver` (no persistence across
             CLI invocations).
+        mcp_server_info: MCP server metadata to surface in the system prompt.
 
     Returns:
         2-tuple of `(agent_graph, backend)`
@@ -440,10 +495,14 @@ def create_cli_agent(
 
     # Skills directories (if enabled)
     skills_dir = None
+    user_agent_skills_dir = None
     project_skills_dir = None
+    project_agent_skills_dir = None
     if enable_skills:
         skills_dir = settings.ensure_user_skills_dir(assistant_id)
+        user_agent_skills_dir = settings.get_user_agent_skills_dir()
         project_skills_dir = settings.get_project_skills_dir()
+        project_agent_skills_dir = settings.get_project_agent_skills_dir()
 
     # Load custom subagents from filesystem
     custom_subagents: list[SubAgent | CompiledSubAgent] = []
@@ -469,9 +528,7 @@ def create_cli_agent(
     # Add memory middleware
     if enable_memory:
         memory_sources = [str(settings.get_user_agent_md_path(assistant_id))]
-        project_agent_md = settings.get_project_agent_md_path()
-        if project_agent_md:
-            memory_sources.append(str(project_agent_md))
+        memory_sources.extend(str(p) for p in settings.get_project_agent_md_path())
 
         agent_middleware.append(
             MemoryMiddleware(
@@ -482,11 +539,15 @@ def create_cli_agent(
 
     # Add skills middleware
     if enable_skills:
-        # Built-in first (lowest precedence), then user, then project (highest)
+        # Lowest to highest precedence:
+        # built-in -> user .deepagents -> user .agents
+        # -> project .deepagents -> project .agents
         sources = [str(settings.get_built_in_skills_dir())]
-        sources.append(str(skills_dir))
+        sources.extend([str(skills_dir), str(user_agent_skills_dir)])
         if project_skills_dir:
             sources.append(str(project_skills_dir))
+        if project_agent_skills_dir:
+            sources.append(str(project_agent_skills_dir))
 
         agent_middleware.append(
             SkillsMiddleware(
@@ -505,10 +566,10 @@ def create_cli_agent(
             if settings.user_langchain_project:
                 shell_env["LANGSMITH_PROJECT"] = settings.user_langchain_project
 
-            # Use CLIShellBackend for filesystem + shell execution.
-            # Provides `execute` tool via FilesystemMiddleware with per-command
-            # timeout support.
-            backend = CLIShellBackend(
+            # Use LocalShellBackend for filesystem + shell execution.
+            # The SDK's FilesystemMiddleware exposes per-command timeout
+            # on the execute tool natively.
+            backend = LocalShellBackend(
                 root_dir=Path.cwd(),
                 inherit_env=True,
                 env=shell_env,
@@ -516,14 +577,19 @@ def create_cli_agent(
         else:
             # No shell access - use plain FilesystemBackend
             backend = FilesystemBackend()
-
-        # Local context middleware (git info, directory tree, etc.)
-        agent_middleware.append(LocalContextMiddleware())
     else:
         # ========== REMOTE SANDBOX MODE ==========
         backend = sandbox  # Remote sandbox (ModalBackend, etc.)
         # Note: Shell middleware not used in sandbox mode
         # File operations and execute tool are provided by the sandbox backend
+
+    # Local context middleware (git info, directory tree, etc.)
+    # Uses backend.execute() so it works in both local shell and remote sandbox modes.
+    # Only enabled when the backend supports shell execution.
+    if isinstance(backend, _ExecutableBackend):
+        agent_middleware.append(
+            LocalContextMiddleware(backend=backend, mcp_server_info=mcp_server_info)
+        )
 
     # Get or use custom system prompt
     if system_prompt is None:
@@ -567,13 +633,23 @@ def create_cli_agent(
             routes={},
         )
 
+    from deepagents.graph import resolve_model
+
+    model = resolve_model(model)
+
+    from deepagents.middleware.summarization import (
+        SummarizationToolMiddleware,
+        create_summarization_middleware,
+    )
+
+    agent_middleware.append(
+        SummarizationToolMiddleware(
+            create_summarization_middleware(model, composite_backend)
+        )
+    )
+
     # Create the agent
     # Use provided checkpointer or fallback to InMemorySaver
-    if sandbox is None and enable_shell:
-        # Patch FilesystemMiddleware so the SDK constructs our subclass with
-        # per-command timeout support on the execute tool. Only needed in local
-        # shell mode -- remote sandbox backends do not accept the timeout kwarg.
-        patch_filesystem_middleware()
     final_checkpointer = checkpointer if checkpointer is not None else InMemorySaver()
     agent = create_deep_agent(
         model=model,

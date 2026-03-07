@@ -131,6 +131,7 @@ class _ChoiceOption(Static):
         super().__init__(label, classes="ask-user-choice", **kwargs)
         self.choice_index = index
         self.selected = False
+        self._label = label
 
     def toggle(self) -> None:
         self.selected = not self.selected
@@ -146,15 +147,14 @@ class _ChoiceOption(Static):
 
     def _update_display(self) -> None:
         glyphs = get_glyphs()
-        label_text = self.renderable
-        if isinstance(label_text, str):
-            raw = label_text.lstrip()
-            for prefix in (f"{glyphs.cursor} ", "  "):
-                if raw.startswith(prefix):
-                    raw = raw[len(prefix) :]
-                    break
-            prefix = f"{glyphs.cursor} " if self.selected else "  "
-            self.update(f"{prefix}{raw}")
+        raw = self._label.lstrip()
+        for prefix in (f"{glyphs.cursor} ", "  "):
+            if raw.startswith(prefix):
+                raw = raw[len(prefix) :]
+                break
+        self._label = raw
+        prefix = f"{glyphs.cursor} " if self.selected else "  "
+        self.update(f"{prefix}{raw}")
 
 
 class _QuestionWidget(Vertical):

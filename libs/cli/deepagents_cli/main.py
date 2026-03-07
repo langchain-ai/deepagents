@@ -653,6 +653,114 @@ async def run_textual_cli_async(
         return result
 
 
+async def _run_acp_cli_async(
+    assistant_id: str,
+    *,
+    run_acp_agent: Callable[[Any], Any],
+    agent_server_cls: type[Any],
+    model_name: str | None = None,
+    model_params: dict[str, Any] | None = None,
+    profile_override: dict[str, Any] | None = None,
+    mcp_config_path: str | None = None,
+    no_mcp: bool = False,
+    trust_project_mcp: bool | None = None,
+) -> int:
+    """Run ACP server mode and return a process exit code.
+
+    Args:
+        assistant_id: Agent identifier to initialize.
+        run_acp_agent: ACP server runner function.
+        agent_server_cls: ACP server class constructor.
+        model_name: Optional model name to use.
+        model_params: Extra kwargs from `--model-params` to pass to the model.
+        profile_override: Extra profile fields from `--profile-override`.
+        mcp_config_path: Optional path to MCP servers JSON configuration file.
+        no_mcp: Disable all MCP tool loading.
+        trust_project_mcp: Controls project-level stdio server trust.
+
+    Returns:
+        Exit code for ACP mode.
+    """
+    from deepagents_cli.agent import create_cli_agent
+    from deepagents_cli.config import create_model, settings
+    from deepagents_cli.model_config import ModelConfigError
+    from deepagents_cli.tools import fetch_url, http_request, web_search
+
+    try:
+        model_result = create_model(
+            model_name,
+            extra_kwargs=model_params,
+            profile_overrides=profile_override,
+        )
+    except ModelConfigError as exc:
+        sys.stderr.write(f"Error: {exc}\n")
+        sys.stderr.flush()
+        return 1
+    model_result.apply_to_settings()
+
+    tools: list[Any] = [http_request, fetch_url]
+    if settings.has_tavily:
+        tools.append(web_search)
+
+    mcp_session_manager = None
+    mcp_server_info = None
+    try:
+        from deepagents_cli.mcp_tools import resolve_and_load_mcp_tools
+
+        (
+            mcp_tools,
+            mcp_session_manager,
+            mcp_server_info,
+        ) = await resolve_and_load_mcp_tools(
+            explicit_config_path=mcp_config_path,
+            no_mcp=no_mcp,
+            trust_project_mcp=trust_project_mcp,
+        )
+        tools.extend(mcp_tools)
+    except FileNotFoundError as exc:
+        msg = f"Error: MCP config file not found: {exc}\n"
+        sys.stderr.write(msg)
+        sys.stderr.flush()
+        return 1
+    except RuntimeError as exc:
+        msg = f"Error: Failed to load MCP tools: {exc}\n"
+        sys.stderr.write(msg)
+        sys.stderr.flush()
+        return 1
+
+    try:
+        agent_graph, _backend = create_cli_agent(
+            model=model_result.model,
+            assistant_id=assistant_id,
+            tools=tools,
+            mcp_server_info=mcp_server_info,
+        )
+    except Exception as exc:
+        sys.stderr.write(f"Error: failed to create agent: {exc}\n")
+        sys.stderr.flush()
+        logger.debug("ACP agent creation failed", exc_info=True)
+        return 1
+
+    server = agent_server_cls(agent_graph)  # Pregel is a CompiledStateGraph at runtime
+    exit_code = 0
+    try:
+        await run_acp_agent(server)
+    except KeyboardInterrupt:
+        pass
+    except Exception as exc:
+        sys.stderr.write(f"Error: ACP server failed: {exc}\n")
+        sys.stderr.flush()
+        logger.exception("ACP server crashed")
+        exit_code = 1
+    finally:
+        if mcp_session_manager is not None:
+            try:
+                await mcp_session_manager.cleanup()
+            except Exception:
+                logger.warning("MCP session cleanup failed", exc_info=True)
+    return exit_code
+
+
 def apply_stdin_pipe(args: argparse.Namespace) -> None:
     r"""Read piped stdin and merge it into the parsed CLI arguments.
 
@@ -951,43 +1059,26 @@ def cli_main() -> None:
                 sys.stderr.flush()
                 sys.exit(1)
 
-            from deepagents_cli.agent import create_cli_agent
-            from deepagents_cli.config import create_model
-            from deepagents_cli.model_config import ModelConfigError
-
-            try:
-                model_result = create_model(
-                    getattr(args, "model", None),
-                    extra_kwargs=model_params,
-                )
-            except ModelConfigError as e:
-                sys.stderr.write(f"Error: {e}\n")
+            if getattr(args, "no_mcp", False) and getattr(args, "mcp_config", None):
+                msg = "Error: --no-mcp and --mcp-config are mutually exclusive\n"
+                sys.stderr.write(msg)
                 sys.stderr.flush()
-                sys.exit(1)
-            model_result.apply_to_settings()
+                sys.exit(2)
 
-            try:
-                agent_graph, _backend = create_cli_agent(
-                    model=model_result.model,
+            exit_code = asyncio.run(
+                _run_acp_cli_async(
                     assistant_id=args.agent,
+                    run_acp_agent=run_acp_agent,
+                    agent_server_cls=AgentServerACP,
+                    model_name=getattr(args, "model", None),
+                    model_params=model_params,
+                    profile_override=profile_override,
+                    mcp_config_path=getattr(args, "mcp_config", None),
+                    no_mcp=getattr(args, "no_mcp", False),
+                    trust_project_mcp=getattr(args, "trust_project_mcp", False),
                 )
-            except Exception as exc:
-                sys.stderr.write(f"Error: failed to create agent: {exc}\n")
-                sys.stderr.flush()
-                logger.debug("ACP agent creation failed", exc_info=True)
-                sys.exit(1)
-
-            server = AgentServerACP(agent_graph)  # type: ignore[arg-type]  # Pregel is a CompiledStateGraph at runtime
-            try:
-                asyncio.run(run_acp_agent(server))
-            except KeyboardInterrupt:
-                pass
-            except Exception as exc:
-                sys.stderr.write(f"Error: ACP server failed: {exc}\n")
-                sys.stderr.flush()
-                logger.exception("ACP server crashed")
-                sys.exit(1)
-            sys.exit(0)
+            )
+            sys.exit(exit_code)
 
         # Apply shell-allow-list from command line if provided (overrides env var)
         if args.shell_allow_list:

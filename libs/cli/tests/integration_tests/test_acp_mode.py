@@ -67,6 +67,7 @@ async def test_cli_acp_mode_starts_session_and_exits() -> None:
     proc = await asyncio.create_subprocess_exec(
         "deepagents",
         "--acp",
+        "--no-mcp",
         stdin=aio_subprocess.PIPE,
         stdout=aio_subprocess.PIPE,
         stderr=aio_subprocess.PIPE,

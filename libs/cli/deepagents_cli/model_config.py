@@ -104,6 +104,13 @@ class ModelSpec:
         return f"{self.provider}:{self.model}"
 
 
+class ModelProfileEntry(TypedDict):
+    """Profile data for a model with override tracking."""
+
+    profile: dict[str, Any]
+    overridden_keys: frozenset[str]
+
+
 class ProviderConfig(TypedDict, total=False):
     """Configuration for a model provider.
 
@@ -194,6 +201,7 @@ registry fallback.
 _available_models_cache: dict[str, list[str]] | None = None
 _builtin_providers_cache: dict[str, Any] | None = None
 _default_config_cache: ModelConfig | None = None
+_profiles_cache: dict[str, ModelProfileEntry] | None = None
 
 
 def clear_caches() -> None:
@@ -201,10 +209,11 @@ def clear_caches() -> None:
 
     Intended for tests and for a hypothetical "refresh models" UI action.
     """
-    global _available_models_cache, _builtin_providers_cache, _default_config_cache  # noqa: PLW0603  # Module-level caches require global statement
+    global _available_models_cache, _builtin_providers_cache, _default_config_cache, _profiles_cache  # noqa: PLW0603, E501  # Module-level caches require global statement
     _available_models_cache = None
     _builtin_providers_cache = None
     _default_config_cache = None
+    _profiles_cache = None
 
 
 def _get_builtin_providers() -> dict[str, Any]:
@@ -382,6 +391,72 @@ def get_available_models() -> dict[str, list[str]]:
 
     _available_models_cache = available
     return available
+
+
+def get_model_profiles() -> dict[str, ModelProfileEntry]:
+    """Load upstream profiles merged with config.toml overrides.
+
+    Keyed by `provider:model` spec string. Each entry contains the
+    merged profile dict and the set of keys overridden by config.toml.
+
+    Results are cached; use `clear_caches()` to reset.
+
+    Returns:
+        Dictionary mapping spec strings to profile entries.
+    """
+    global _profiles_cache  # noqa: PLW0603  # Module-level cache requires global statement
+    if _profiles_cache is not None:
+        return _profiles_cache
+
+    result: dict[str, ModelProfileEntry] = {}
+    config = ModelConfig.load()
+
+    # Collect upstream profiles from provider packages.
+    seen_specs: set[str] = set()
+    provider_modules = _get_provider_profile_modules()
+    for provider, module_path in provider_modules:
+        try:
+            profiles = _load_provider_profiles(module_path)
+        except ImportError:
+            logger.debug(
+                "Could not import profiles from %s for model profiles",
+                module_path,
+            )
+            continue
+        except Exception:
+            logger.warning(
+                "Failed to load profiles from %s for model profiles",
+                module_path,
+                exc_info=True,
+            )
+            continue
+
+        for model_name, upstream_profile in profiles.items():
+            spec = f"{provider}:{model_name}"
+            seen_specs.add(spec)
+            overrides = config.get_profile_overrides(provider, model_name=model_name)
+            merged = {**upstream_profile, **overrides}
+            result[spec] = ModelProfileEntry(
+                profile=merged,
+                overridden_keys=frozenset(overrides),
+            )
+
+    # Add config-only models that have no upstream profile.
+    for provider_name, provider_config in config.providers.items():
+        config_models = provider_config.get("models", [])
+        for model_name in config_models:
+            spec = f"{provider_name}:{model_name}"
+            if spec not in seen_specs:
+                overrides = config.get_profile_overrides(
+                    provider_name, model_name=model_name
+                )
+                result[spec] = ModelProfileEntry(
+                    profile=dict(overrides),
+                    overridden_keys=frozenset(overrides),
+                )
+
+    _profiles_cache = result
+    return result
 
 
 def _is_langchain_supported_provider(provider: str) -> bool:

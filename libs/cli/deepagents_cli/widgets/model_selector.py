@@ -18,11 +18,13 @@ from textual.widgets import Input, Static
 if TYPE_CHECKING:
     from textual.app import ComposeResult
 
-from deepagents_cli.config import CharsetMode, _detect_charset_mode, get_glyphs
+from deepagents_cli.config import CharsetMode, Glyphs, _detect_charset_mode, get_glyphs
 from deepagents_cli.model_config import (
     ModelConfig,
+    ModelProfileEntry,
     clear_default_model,
     get_available_models,
+    get_model_profiles,
     has_provider_credentials,
     save_default_model,
 )
@@ -187,6 +189,12 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         margin-top: 1;
         text-align: center;
     }
+
+    ModelSelectorScreen .model-detail-footer {
+        height: 4;
+        padding: 0 2;
+        border-top: solid $primary-lighten-2;
+    }
     """
 
     def __init__(
@@ -223,6 +231,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
 
         config = ModelConfig.load()
         self._default_spec: str | None = config.default_model
+        self._profiles = get_model_profiles()
 
     def _find_current_model_index(self) -> int:
         """Find the index of the current model in the filtered list.
@@ -269,6 +278,9 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 self._options_container = Container(id="model-options")
                 yield self._options_container
 
+            # Model detail footer
+            yield Static("", classes="model-detail-footer", id="model-detail-footer")
+
             # Help text
             help_text = (
                 f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate"
@@ -285,6 +297,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             container.styles.border = ("ascii", "green")
 
         await self._update_display()
+        self._update_footer()
 
         # Focus the filter input
         filter_input = self.query_one("#model-filter", Input)
@@ -453,6 +466,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             else:
                 selected_widget.scroll_visible(animate=False)
 
+        self._update_footer()
+
     @staticmethod
     def _format_option_label(
         model_spec: str,
@@ -485,6 +500,105 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         suffix = " [dim](current)[/dim]" if current else ""
         default_suffix = " [cyan](default)[/cyan]" if is_default else ""
         return f"{cursor}{spec_text}{suffix}{default_suffix}"
+
+    @staticmethod
+    def _format_footer(
+        profile_entry: ModelProfileEntry | None,
+        glyphs: Glyphs,
+    ) -> str:
+        """Build the detail footer text for the highlighted model.
+
+        Args:
+            profile_entry: Profile data with override tracking, or None.
+            glyphs: Glyph set for display characters.
+
+        Returns:
+            Rich-markup string for the 4-line footer.
+        """
+        from deepagents_cli.textual_adapter import format_token_count
+
+        if profile_entry is None:
+            return "[dim]No profile data available[/dim]\n\n\n"
+
+        profile = profile_entry["profile"]
+        overridden = profile_entry["overridden_keys"]
+
+        def _mark(key: str, text: str) -> str:
+            return f"*{text}" if key in overridden else text
+
+        # Line 1: Context window
+        parts_ctx: list[str] = []
+        max_in = profile.get("max_input_tokens")
+        max_out = profile.get("max_output_tokens")
+        if max_in is not None:
+            formatted = f"{format_token_count(int(max_in))} in"
+            parts_ctx.append(_mark("max_input_tokens", formatted))
+        if max_out is not None:
+            formatted = f"{format_token_count(int(max_out))} out"
+            parts_ctx.append(_mark("max_output_tokens", formatted))
+        sep = f" {glyphs.bullet} "
+        if parts_ctx:
+            line1 = f"Context: {sep.join(parts_ctx)}"
+        else:
+            line1 = "[dim]Context: unknown[/dim]"
+
+        # Line 2: Input modalities
+        modality_keys = [
+            ("text_inputs", "text"),
+            ("image_inputs", "image"),
+            ("audio_inputs", "audio"),
+            ("pdf_inputs", "pdf"),
+            ("video_inputs", "video"),
+        ]
+        modality_parts: list[str] = []
+        for key, label in modality_keys:
+            if key in profile:
+                val = profile[key]
+                styled = f"[green]{label}[/green]" if val else f"[dim]{label}[/dim]"
+                modality_parts.append(_mark(key, styled))
+        line2 = f"Input: {' '.join(modality_parts)}" if modality_parts else ""
+
+        # Line 3: Capabilities
+        capability_keys = [
+            ("reasoning_output", "reasoning"),
+            ("tool_calling", "tool calling"),
+            ("structured_output", "structured output"),
+        ]
+        cap_parts: list[str] = []
+        for key, label in capability_keys:
+            if key in profile:
+                val = profile[key]
+                styled = f"[green]{label}[/green]" if val else f"[dim]{label}[/dim]"
+                cap_parts.append(_mark(key, styled))
+        line3 = f"Capabilities: {' '.join(cap_parts)}" if cap_parts else ""
+
+        # Line 4: Override notice
+        displayed_keys = {
+            "max_input_tokens",
+            "max_output_tokens",
+            "text_inputs",
+            "image_inputs",
+            "audio_inputs",
+            "pdf_inputs",
+            "video_inputs",
+            "reasoning_output",
+            "tool_calling",
+            "structured_output",
+        }
+        has_visible_override = bool(overridden & displayed_keys)
+        line4 = "[dim]* = config.toml override[/dim]" if has_visible_override else ""
+
+        return f"{line1}\n{line2}\n{line3}\n{line4}"
+
+    def _update_footer(self) -> None:
+        """Update the detail footer for the currently highlighted model."""
+        footer = self.query_one("#model-detail-footer", Static)
+        if not self._filtered_models:
+            footer.update("[dim]No model selected[/dim]")
+            return
+        spec, _ = self._filtered_models[self._selected_index]
+        entry = self._profiles.get(spec)
+        footer.update(self._format_footer(entry, get_glyphs()))
 
     def _move_selection(self, delta: int) -> None:
         """Move selection by delta, updating only the affected widgets.
@@ -532,6 +646,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             scroll_container.scroll_home(animate=False)
         else:
             new_widget.scroll_visible()
+
+        self._update_footer()
 
     def action_move_up(self) -> None:
         """Move selection up."""

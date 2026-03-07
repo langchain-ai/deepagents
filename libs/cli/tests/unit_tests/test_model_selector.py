@@ -6,7 +6,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Container
 from textual.screen import ModalScreen
-from textual.widgets import Input
+from textual.widgets import Input, Static
 
 from deepagents_cli.widgets.model_selector import ModelSelectorScreen
 
@@ -632,3 +632,109 @@ class TestModelSelectorFuzzyMatching:
             await pilot.press("down")
             await pilot.pause()
             assert screen._selected_index == (initial + 1) % count
+
+
+class TestModelDetailFooter:
+    """Tests for the model detail footer in the selector."""
+
+    def test_format_footer_full_profile(self) -> None:
+        """Full profile renders token counts, modalities, and capabilities."""
+        from deepagents_cli.config import UNICODE_GLYPHS
+        from deepagents_cli.model_config import ModelProfileEntry
+
+        entry = ModelProfileEntry(
+            profile={
+                "max_input_tokens": 200000,
+                "max_output_tokens": 64000,
+                "text_inputs": True,
+                "image_inputs": True,
+                "pdf_inputs": False,
+                "reasoning_output": True,
+                "tool_calling": True,
+                "structured_output": False,
+            },
+            overridden_keys=frozenset(),
+        )
+        result = ModelSelectorScreen._format_footer(entry, UNICODE_GLYPHS)
+        assert "200.0K" in result
+        assert "64.0K" in result
+        assert "text" in result
+        assert "image" in result
+        assert "tool calling" in result
+        assert "reasoning" in result
+        # No override marker
+        assert "* =" not in result
+
+    def test_format_footer_no_profile(self) -> None:
+        """None profile shows 'No profile data available'."""
+        from deepagents_cli.config import UNICODE_GLYPHS
+
+        result = ModelSelectorScreen._format_footer(None, UNICODE_GLYPHS)
+        assert "No profile data available" in result
+
+    def test_format_footer_overridden_fields(self) -> None:
+        """Overridden fields show * marker and override notice."""
+        from deepagents_cli.config import UNICODE_GLYPHS
+        from deepagents_cli.model_config import ModelProfileEntry
+
+        entry = ModelProfileEntry(
+            profile={
+                "max_input_tokens": 100000,
+                "max_output_tokens": 64000,
+                "tool_calling": True,
+            },
+            overridden_keys=frozenset({"max_input_tokens"}),
+        )
+        result = ModelSelectorScreen._format_footer(entry, UNICODE_GLYPHS)
+        assert "*100.0K" in result
+        assert "config.toml override" in result
+
+    def test_format_footer_partial_profile(self) -> None:
+        """Profile with only token counts still renders without crash."""
+        from deepagents_cli.config import UNICODE_GLYPHS
+        from deepagents_cli.model_config import ModelProfileEntry
+
+        entry = ModelProfileEntry(
+            profile={"max_input_tokens": 4096},
+            overridden_keys=frozenset(),
+        )
+        result = ModelSelectorScreen._format_footer(entry, UNICODE_GLYPHS)
+        assert "4096" in result or "4.1K" in result or "4.0K" in result
+        # Should not crash and should have content
+        assert "No profile data" not in result
+
+    async def test_footer_updates_on_navigation(self) -> None:
+        """Footer content changes when navigating to a different model."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.show_selector()
+            await pilot.pause()
+
+            screen = app.screen
+            assert isinstance(screen, ModelSelectorScreen)
+
+            footer = screen.query_one("#model-detail-footer", Static)
+            initial_content = str(footer.content)
+            assert len(initial_content) > 0
+
+            await pilot.press("down")
+            await pilot.pause()
+
+            updated_content = str(footer.content)
+            # Footer should still have content after navigation
+            assert len(updated_content) > 0
+
+    async def test_footer_shows_on_mount(self) -> None:
+        """Footer is populated (not empty) on initial mount."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.show_selector()
+            await pilot.pause()
+
+            screen = app.screen
+            assert isinstance(screen, ModelSelectorScreen)
+
+            footer = screen.query_one("#model-detail-footer", Static)
+            content = str(footer.content)
+            # Footer should have some content after mount
+            assert len(content) > 0

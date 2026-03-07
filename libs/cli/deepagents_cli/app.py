@@ -2340,6 +2340,10 @@ class DeepAgentsApp(App):
 
         # Store message data for virtualization
         message_data = MessageData.from_widget(widget)
+        # Ensure the widget's DOM id matches the store id so that
+        # features like click-to-show-timestamp can look it up.
+        if not widget.id:
+            widget.id = message_data.id
         self._message_store.append(message_data)
 
         # Queued-message widgets must always stay at the bottom so they

@@ -37,6 +37,21 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _show_timestamp_toast(widget: Static | Vertical) -> None:
+    """Show a toast with the message's creation timestamp."""
+    from datetime import UTC, datetime
+
+    try:
+        store = widget.app._message_store  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001  # widget may not be mounted
+        return
+    data = store.get_message(widget.id)
+    if not data:
+        return
+    dt = datetime.fromtimestamp(data.timestamp, tz=UTC).astimezone()
+    widget.app.notify(dt.strftime("%b %-d, %-I:%M:%S %p"), timeout=3)
+
+
 def _mode_color(mode: str | None) -> str:
     """Return the color string for a mode, falling back to primary.
 
@@ -179,6 +194,10 @@ class UserMessage(Static):
             text.append(content[last_end:])
 
         yield Static(text)
+
+    def on_click(self, event: Click) -> None:  # noqa: ARG002  # Textual event handler
+        """Show timestamp toast on click."""
+        _show_timestamp_toast(self)
 
 
 class QueuedUserMessage(Static):
@@ -334,6 +353,10 @@ class AssistantMessage(Vertical):
         self._content = content
         if self._markdown:
             await self._markdown.update(content)
+
+    def on_click(self, event: Click) -> None:  # noqa: ARG002  # Textual event handler
+        """Show timestamp toast on click."""
+        _show_timestamp_toast(self)
 
 
 class ToolCallMessage(Vertical):
@@ -652,9 +675,10 @@ class ToolCallMessage(Vertical):
         self._update_output_display()
 
     def on_click(self, event: Click) -> None:
-        """Handle click to toggle output expansion."""
+        """Handle click to toggle output expansion and show timestamp."""
         event.stop()  # Prevent click from bubbling up and scrolling
         self.toggle_output()
+        _show_timestamp_toast(self)
 
     def _format_output(
         self, output: str, *, is_preview: bool = False
@@ -1238,6 +1262,10 @@ class DiffMessage(Static):
         if _detect_charset_mode() == CharsetMode.ASCII:
             self.styles.border = ("ascii", "cyan")
 
+    def on_click(self, event: Click) -> None:  # noqa: ARG002  # Textual event handler
+        """Show timestamp toast on click."""
+        _show_timestamp_toast(self)
+
 
 class ErrorMessage(Static):
     """Widget displaying an error message."""
@@ -1271,6 +1299,10 @@ class ErrorMessage(Static):
         """Set border style based on charset mode."""
         if _detect_charset_mode() == CharsetMode.ASCII:
             self.styles.border_left = ("ascii", "red")
+
+    def on_click(self, event: Click) -> None:  # noqa: ARG002  # Textual event handler
+        """Show timestamp toast on click."""
+        _show_timestamp_toast(self)
 
 
 class AppMessage(Static):
@@ -1307,9 +1339,10 @@ class AppMessage(Static):
         )
         super().__init__(content, **kwargs)
 
-    def on_click(self, event: Click) -> None:  # noqa: PLR6301  # Textual event handler
-        """Open Rich-style hyperlinks on single click."""
+    def on_click(self, event: Click) -> None:
+        """Open Rich-style hyperlinks on single click and show timestamp."""
         open_style_link(event)
+        _show_timestamp_toast(self)
 
 
 class SummarizationMessage(AppMessage):

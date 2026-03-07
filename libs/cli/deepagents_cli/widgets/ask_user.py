@@ -98,17 +98,21 @@ class AskUserMenu(Container):
 
     def on_input_submitted(self, event: Input.Submitted) -> None:  # noqa: D102
         event.stop()
+        self.attempt_submit()
+
+    def attempt_submit(self) -> None:
+        """Submit answers if complete, otherwise focus the first unanswered field."""
         for i, qw in enumerate(self._question_widgets):
             self._answers[i] = qw.get_answer()
 
-        all_answered = all(a.strip() for a in self._answers)
-        if all_answered:
+        if all(a.strip() for a in self._answers):
             self._submit()
-        else:
-            for i, qw in enumerate(self._question_widgets):
-                if not self._answers[i].strip():
-                    qw.focus_input()
-                    break
+            return
+
+        for i, qw in enumerate(self._question_widgets):
+            if not self._answers[i].strip():
+                qw.focus_input()
+                break
 
     def _submit(self) -> None:
         if self._future and not self._future.done():
@@ -271,6 +275,17 @@ class _QuestionWidget(Vertical):
                 self._is_other_selected = False
                 if self._other_input:
                     self._other_input.display = False
+                menu = self._find_menu()
+                if menu is not None:
+                    menu.attempt_submit()
+
+    def _find_menu(self) -> AskUserMenu | None:
+        node: Any = self.parent
+        while node is not None:
+            if isinstance(node, AskUserMenu):
+                return node
+            node = node.parent
+        return None
 
     def _update_choice_selection(self) -> None:
         for i, cw in enumerate(self._choice_widgets):

@@ -245,9 +245,7 @@ class BackgroundRuntime:
             record.updated_at = datetime.now(UTC)
             record.error_text = "Killed by user (best-effort cancellation)."
             self._pending_updates.append(f"Task `{task_id}` marked as killed.")
-            self._pending_tui_notifications.append(
-                f"Background task {task_id} killed."
-            )
+            self._pending_tui_notifications.append(f"Background task {task_id} killed.")
             wait_event = self._wait_events.get(task_id)
             process = self._processes.get(task_id)
             hitl_event_id = self._task_hitl_event_ids.get(task_id)

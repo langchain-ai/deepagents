@@ -79,8 +79,7 @@ class BackgroundMiddleware(AgentMiddleware):
 
             lines = ["Background tasks:"]
             lines.extend(
-                f"- {record.task_id}: status={record.status}, "
-                f"command={record.command}"
+                f"- {record.task_id}: status={record.status}, command={record.command}"
                 for record in records
             )
             return "\n".join(lines)

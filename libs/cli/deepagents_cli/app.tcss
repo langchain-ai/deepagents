@@ -211,11 +211,11 @@ Screen {
 }
 
 .ask-user-menu .ask-user-text-input {
-    margin: 0 1;
+    margin: 1 1 0 1;
 }
 
 .ask-user-menu .ask-user-other-input {
-    margin: 0 1;
+    margin: 1 1 0 1;
 }
 
 /* Completion popup styling (used by ChatInput) - appears BELOW input */

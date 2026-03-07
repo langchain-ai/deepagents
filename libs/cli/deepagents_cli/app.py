@@ -2693,6 +2693,10 @@ class DeepAgentsApp(App):
         # ModelSelectorScreen); skip the toggle so it doesn't fire through.
         if isinstance(self.screen, ModalScreen):
             return
+        # Delegate shift+tab to ask_user navigation when interview is active.
+        if self._pending_ask_user_widget is not None:
+            self._pending_ask_user_widget.action_previous_question()
+            return
         self._auto_approve = not self._auto_approve
         if self._status_bar:
             self._status_bar.set_auto_approve(enabled=self._auto_approve)

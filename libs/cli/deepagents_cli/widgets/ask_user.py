@@ -36,6 +36,7 @@ class AskUserMenu(Container):
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "cancel", "Cancel", show=False),
+        Binding("tab", "next_question", "Next question", show=False, priority=True),
     ]
 
     class Answered(Message):
@@ -87,10 +88,15 @@ class AskUserMenu(Container):
                 yield qw
 
         yield Static("")
+        parts = [
+            f"{glyphs.arrow_up}/{glyphs.arrow_down} Select",
+            "Enter to continue",
+        ]
+        if len(self._questions) > 1:
+            parts.append("Tab/Shift+Tab switch question")
+        parts.append("Esc to cancel")
         yield Static(
-            f"{glyphs.arrow_up}/{glyphs.arrow_down} Select"
-            f" {glyphs.bullet} Enter to continue"
-            f" {glyphs.bullet} Esc to cancel",
+            f" {glyphs.bullet} ".join(parts),
             classes="ask-user-help",
         )
 
@@ -111,7 +117,7 @@ class AskUserMenu(Container):
                 qw._other_input and qw._other_input is event.input
             ):
                 answer = qw.get_answer()
-                if answer.strip():
+                if answer.strip() or not qw._required:
                     self.confirm_and_advance(qw._index)
                 return
 
@@ -129,14 +135,17 @@ class AskUserMenu(Container):
         # All confirmed — collect final answers and submit.
         for i, qw in enumerate(self._question_widgets):
             self._answers[i] = qw.get_answer()
-        if all(a.strip() for a in self._answers):
+        if all(
+            a.strip() or not self._question_widgets[i]._required
+            for i, a in enumerate(self._answers)
+        ):
             self._submit()
             return
 
-        # Edge case: a confirmed text field was left empty (shouldn't happen
-        # normally). Re-open it.
+        # Edge case: a confirmed required text field was left empty
+        # (shouldn't happen normally). Re-open it.
         for i, a in enumerate(self._answers):
-            if not a.strip():
+            if not a.strip() and self._question_widgets[i]._required:
                 self._confirmed[i] = False
                 self._set_active_question(i)
                 return
@@ -160,6 +169,16 @@ class AskUserMenu(Container):
         if self._future and not self._future.done():
             self._future.set_result({"type": "answered", "answers": self._answers})
         self.post_message(self.Answered(self._answers))
+
+    def action_next_question(self) -> None:
+        """Navigate to the next question without confirming."""
+        if self._current_question < len(self._question_widgets) - 1:
+            self._set_active_question(self._current_question + 1)
+
+    def action_previous_question(self) -> None:
+        """Navigate to the previous question without confirming."""
+        if self._current_question > 0:
+            self._set_active_question(self._current_question - 1)
 
     def action_cancel(self) -> None:  # noqa: D102
         if self._submitted:
@@ -227,6 +246,7 @@ class _QuestionWidget(Vertical):
         self._index = index
         self._q_type = question.get("type", "text")
         self._choices: list[dict[str, str]] = question.get("choices", [])
+        self._required: bool = question.get("required", True)
         self._choice_widgets: list[_ChoiceOption] = []
         self._selected_choice = 0
         self._text_input: Input | None = None
@@ -235,7 +255,8 @@ class _QuestionWidget(Vertical):
 
     def compose(self) -> ComposeResult:
         q_text = self._question.get("question", "")
-        yield Static(f"[bold]{self._index + 1}. {q_text}[/bold]")
+        suffix = " [dim](required)[/dim]" if self._required else ""
+        yield Static(f"[bold]{self._index + 1}. {q_text}[/bold]{suffix}")
 
         if self._q_type == "multiple_choice" and self._choices:
             glyphs = get_glyphs()
@@ -270,6 +291,8 @@ class _QuestionWidget(Vertical):
     def focus_input(self) -> None:
         if self._text_input:
             self._text_input.focus()
+        elif self._is_other_selected and self._other_input:
+            self._other_input.focus()
         elif self._choice_widgets:
             self.focus()
 
@@ -293,6 +316,10 @@ class _QuestionWidget(Vertical):
             and self._other_input
             and self._other_input.has_focus
         ):
+            # Jump directly to the last real choice instead of requiring
+            # two presses (one to defocus, one to navigate).
+            self._selected_choice = max(0, len(self._choices) - 1)
+            self._update_choice_selection()
             self.focus()
             return
         old = self._selected_choice

@@ -912,16 +912,16 @@ test = [
 
 [[package]]
 name = "deepagents-acp"
-version = "0.0.3"
+version = "0.0.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "agent-client-protocol" },
     { name = "deepagents" },
     { name = "python-dotenv" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/24/f6/e0414641e363b03569c2c5f69c01d5d77890a09bc9234e7f5e0a4a884a3d/deepagents_acp-0.0.3.tar.gz", hash = "sha256:24a792b027b724f0518741fa804ef0ed829abf0c57fc4056f519257fb706e287", size = 13084649, upload-time = "2026-02-12T19:07:33.687Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/6a/1e/a545ca48441973f91d2b14a8c55160f5070ed1ec6092e080ec8d2f303f7c/deepagents_acp-0.0.4.tar.gz", hash = "sha256:db7250af6a257be19960fd88ddbfa4667500741efac16f5da8ab3e33f8ceda63", size = 13084672, upload-time = "2026-02-13T03:45:34.092Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/1f/1e/32727f9e383b2d626ef162184ddb41414813d41112bdce81cdc7e9a40f46/deepagents_acp-0.0.3-py3-none-any.whl", hash = "sha256:fe9939b42e10f5b4b9d5630b05c070c03de5293033c1caaae62c4cf55a54124e", size = 13409, upload-time = "2026-02-12T19:07:32.653Z" },
+    { url = "https://files.pythonhosted.org/packages/0d/c8/08ad801c9528474ccf9be6084ebf4f23c75e0661c7b10806e5d3ae4e64f8/deepagents_acp-0.0.4-py3-none-any.whl", hash = "sha256:3d2bb80a9dd6c229724699f48b8d73385bd8f9691d82b7aef095c977de1db1a6", size = 13423, upload-time = "2026-02-13T03:45:32.188Z" },
 ]
 
 [[package]]
@@ -1048,7 +1048,7 @@ requires-dist = [
     { name = "aiosqlite", specifier = ">=0.19.0,<1.0.0" },
     { name = "daytona", specifier = ">=0.113.0,<1.0.0" },
     { name = "deepagents", editable = "../deepagents" },
-    { name = "deepagents-acp", specifier = ">=0.0.3" },
+    { name = "deepagents-acp", specifier = ">=0.0.4" },
     { name = "deepagents-cli", extras = ["anthropic", "bedrock", "cohere", "deepseek", "fireworks", "google-genai", "groq", "huggingface", "ibm", "mistralai", "nvidia", "ollama", "openai", "openrouter", "perplexity", "vertexai", "xai"], marker = "extra == 'all-providers'" },
     { name = "langchain", specifier = ">=1.2.10,<2.0.0" },
     { name = "langchain-anthropic", marker = "extra == 'anthropic'", specifier = ">=1.0.0,<2.0.0" },

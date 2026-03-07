@@ -897,7 +897,7 @@ def cli_main() -> None:
     # Check dependencies first
     check_cli_dependencies()
 
-    from deepagents_cli.config import console, settings
+    from deepagents_cli.config import console
 
     try:
         args = parse_args()
@@ -939,6 +939,7 @@ def cli_main() -> None:
         if getattr(args, "acp", False):
             from acp import run_agent as run_acp_agent
             from deepagents_acp.server import AgentServerACP
+
             from deepagents_cli.agent import create_cli_agent
             from deepagents_cli.config import create_model
             from deepagents_cli.model_config import ModelConfigError
@@ -958,7 +959,7 @@ def cli_main() -> None:
                 model=model_result.model,
                 assistant_id=args.agent,
             )
-            server = AgentServerACP(agent_graph)
+            server = AgentServerACP(agent_graph)  # type: ignore[arg-type]  # Pregel is a CompiledStateGraph at runtime
             asyncio.run(run_acp_agent(server))
             sys.exit(0)
 

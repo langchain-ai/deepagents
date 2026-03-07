@@ -306,7 +306,7 @@ class TestSlashCommandController:
 class TestScoreCommand:
     """Direct unit tests for SlashCommandController._score_command."""
 
-    score = staticmethod(SlashCommandController._score_command)
+    score = SlashCommandController._score_command
 
     def test_prefix_returns_200(self):
         assert self.score("hel", "/help", "Show help") == 200

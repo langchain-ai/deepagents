@@ -1,49 +1,61 @@
-"""ACP client code adapted from
+"""ACP client code adapted from the python-sdk examples.
 
-https://github.com/agentclientprotocol/python-sdk/blob/main/examples/client.py
+See: https://github.com/agentclientprotocol/python-sdk/blob/main/examples/client.py
 """
+
+from __future__ import annotations
 
 import asyncio
 import asyncio.subprocess as aio_subprocess
 import contextlib
 import os
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from acp import PROTOCOL_VERSION, Client, RequestError, connect_to_agent
-from acp.core import ClientSideConnection
 from acp.schema import ClientCapabilities, Implementation
+
+if TYPE_CHECKING:
+    from acp.core import ClientSideConnection
 
 
 class _AcpSmokeClient(Client):
     async def request_permission(self, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401, ARG002  # required by ACP Client protocol
-        raise RequestError.method_not_found("session/request_permission")
+        msg = "session/request_permission"
+        raise RequestError.method_not_found(msg)
 
     async def write_text_file(self, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401, ARG002  # required by ACP Client protocol
-        raise RequestError.method_not_found("fs/write_text_file")
+        msg = "fs/write_text_file"
+        raise RequestError.method_not_found(msg)
 
     async def read_text_file(self, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401, ARG002  # required by ACP Client protocol
-        raise RequestError.method_not_found("fs/read_text_file")
+        msg = "fs/read_text_file"
+        raise RequestError.method_not_found(msg)
 
     async def create_terminal(self, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401, ARG002  # required by ACP Client protocol
-        raise RequestError.method_not_found("terminal/create")
+        msg = "terminal/create"
+        raise RequestError.method_not_found(msg)
 
     async def terminal_output(self, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401, ARG002  # required by ACP Client protocol
-        raise RequestError.method_not_found("terminal/output")
+        msg = "terminal/output"
+        raise RequestError.method_not_found(msg)
 
     async def release_terminal(self, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401, ARG002  # required by ACP Client protocol
-        raise RequestError.method_not_found("terminal/release")
+        msg = "terminal/release"
+        raise RequestError.method_not_found(msg)
 
     async def wait_for_terminal_exit(self, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401, ARG002  # required by ACP Client protocol
-        raise RequestError.method_not_found("terminal/wait_for_exit")
+        msg = "terminal/wait_for_exit"
+        raise RequestError.method_not_found(msg)
 
     async def kill_terminal(self, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401, ARG002  # required by ACP Client protocol
-        raise RequestError.method_not_found("terminal/kill")
+        msg = "terminal/kill"
+        raise RequestError.method_not_found(msg)
 
-    async def ext_method(self, method: str, params: dict) -> dict:
+    async def ext_method(self, method: str, params: dict) -> dict:  # noqa: ARG002
         raise RequestError.method_not_found(method)
 
-    async def ext_notification(self, method: str, params: dict) -> None:
+    async def ext_notification(self, method: str, params: dict) -> None:  # noqa: ARG002
         raise RequestError.method_not_found(method)
 
 
@@ -83,7 +95,8 @@ async def test_cli_acp_mode_starts_session_and_exits() -> None:
         )
 
         session = await asyncio.wait_for(
-            conn.new_session(mcp_servers=[], cwd=str(Path.cwd()), timeout=15)
+            conn.new_session(mcp_servers=[], cwd=str(Path.cwd())),
+            timeout=15,
         )
         assert session.session_id is not None
     finally:

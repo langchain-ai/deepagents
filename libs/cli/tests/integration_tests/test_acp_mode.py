@@ -106,4 +106,6 @@ async def test_cli_acp_mode_starts_session_and_exits() -> None:
                 await asyncio.wait_for(proc.wait(), timeout=10)
 
         if proc.stderr is not None:
-            _ = await proc.stderr.read()
+            stderr_output = await proc.stderr.read()
+            if stderr_output:
+                print(f"ACP subprocess stderr:\n{stderr_output.decode()}")  # noqa: T201

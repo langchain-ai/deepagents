@@ -897,7 +897,7 @@ def cli_main() -> None:
     # Check dependencies first
     check_cli_dependencies()
 
-    from deepagents_cli.config import console
+    from deepagents_cli.config import console, settings
 
     try:
         args = parse_args()
@@ -937,8 +937,17 @@ def cli_main() -> None:
                 sys.exit(1)
 
         if getattr(args, "acp", False):
-            from acp import run_agent as run_acp_agent
-            from deepagents_acp.server import AgentServerACP
+            try:
+                from acp import run_agent as run_acp_agent
+                from deepagents_acp.server import AgentServerACP
+            except ImportError as exc:
+                msg = (
+                    f"ACP dependencies not available: {exc}\n"
+                    "Install with: pip install deepagents-acp\n"
+                )
+                sys.stderr.write(msg)
+                sys.stderr.flush()
+                sys.exit(1)
 
             from deepagents_cli.agent import create_cli_agent
             from deepagents_cli.config import create_model
@@ -955,13 +964,34 @@ def cli_main() -> None:
                 sys.exit(1)
             model_result.apply_to_settings()
 
-            agent_graph, _backend = create_cli_agent(
-                model=model_result.model,
-                assistant_id=args.agent,
-            )
+            try:
+                agent_graph, _backend = create_cli_agent(
+                    model=model_result.model,
+                    assistant_id=args.agent,
+                )
+            except Exception as exc:
+                sys.stderr.write(f"Error: failed to create agent: {exc}\n")
+                sys.stderr.flush()
+                logger.debug("ACP agent creation failed", exc_info=True)
+                sys.exit(1)
+
             server = AgentServerACP(agent_graph)  # type: ignore[arg-type]  # Pregel is a CompiledStateGraph at runtime
-            asyncio.run(run_acp_agent(server))
+            try:
+                asyncio.run(run_acp_agent(server))
+            except KeyboardInterrupt:
+                pass
+            except Exception as exc:
+                sys.stderr.write(f"Error: ACP server failed: {exc}\n")
+                sys.stderr.flush()
+                logger.exception("ACP server crashed")
+                sys.exit(1)
             sys.exit(0)
+
+        # Apply shell-allow-list from command line if provided (overrides env var)
+        if args.shell_allow_list:
+            from deepagents_cli.config import parse_shell_allow_list
+
+            settings.shell_allow_list = parse_shell_allow_list(args.shell_allow_list)
 
         apply_stdin_pipe(args)
 

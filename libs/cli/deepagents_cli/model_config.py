@@ -104,6 +104,20 @@ class ModelSpec:
         return f"{self.provider}:{self.model}"
 
 
+class ModelProfileEntry(TypedDict):
+    """Profile data for a model with override tracking."""
+
+    profile: dict[str, Any]
+    """Merged profile dict (upstream defaults + config.toml overrides).
+
+    Keys vary by provider (e.g., `max_input_tokens`, `tool_calling`).
+    """
+
+    overridden_keys: frozenset[str]
+    """Keys in `profile` whose values came from config.toml rather than the
+    upstream provider package."""
+
+
 class ProviderConfig(TypedDict, total=False):
     """Configuration for a model provider.
 
@@ -142,6 +156,14 @@ class ProviderConfig(TypedDict, total=False):
     every model from this provider. Model-keyed sub-tables (e.g.,
     `[params."qwen3:4b"]`) override individual values for that model only;
     the merge is shallow (model wins on conflict).
+    """
+
+    profile: dict[str, Any]
+    """Overrides merged into the model's runtime profile dict.
+
+    Flat keys (e.g., `max_input_tokens = 4096`) are provider-wide defaults.
+    Model-keyed sub-tables (e.g., `[profile."claude-sonnet-4-5"]`) override
+    individual values for that model only; the merge is shallow.
     """
 
 
@@ -186,6 +208,7 @@ registry fallback.
 _available_models_cache: dict[str, list[str]] | None = None
 _builtin_providers_cache: dict[str, Any] | None = None
 _default_config_cache: ModelConfig | None = None
+_profiles_cache: Mapping[str, ModelProfileEntry] | None = None
 
 
 def clear_caches() -> None:
@@ -193,10 +216,11 @@ def clear_caches() -> None:
 
     Intended for tests and for a hypothetical "refresh models" UI action.
     """
-    global _available_models_cache, _builtin_providers_cache, _default_config_cache  # noqa: PLW0603  # Module-level caches require global statement
+    global _available_models_cache, _builtin_providers_cache, _default_config_cache, _profiles_cache  # noqa: PLW0603, E501  # Module-level caches require global statement
     _available_models_cache = None
     _builtin_providers_cache = None
     _default_config_cache = None
+    _profiles_cache = None
 
 
 def _get_builtin_providers() -> dict[str, Any]:
@@ -374,6 +398,111 @@ def get_available_models() -> dict[str, list[str]]:
 
     _available_models_cache = available
     return available
+
+
+def _build_entry(
+    base: dict[str, Any],
+    overrides: dict[str, Any],
+    cli_override: dict[str, Any] | None,
+) -> ModelProfileEntry:
+    """Build a profile entry by merging base, overrides, and CLI override.
+
+    Args:
+        base: Upstream profile dict (empty for config-only models).
+        overrides: `config.toml` profile overrides.
+        cli_override: Extra fields from `--profile-override`.
+
+    Returns:
+        Profile entry with merged data and override tracking.
+    """
+    merged = {**base, **overrides}
+    overridden_keys = set(overrides)
+    if cli_override:
+        merged = {**merged, **cli_override}
+        overridden_keys |= set(cli_override)
+    return ModelProfileEntry(
+        profile=merged,
+        overridden_keys=frozenset(overridden_keys),
+    )
+
+
+def get_model_profiles(
+    *,
+    cli_override: dict[str, Any] | None = None,
+) -> Mapping[str, ModelProfileEntry]:
+    """Load upstream profiles merged with config.toml overrides.
+
+    Keyed by `provider:model` spec string. Each entry contains the
+    merged profile dict and the set of keys overridden by config.toml.
+
+    Unlike `get_available_models()`, this includes all models from upstream
+    profiles regardless of capability filters (tool calling, text I/O).
+
+    Results are cached when `cli_override` is None; use `clear_caches()`
+    to reset. When `cli_override` is provided the cache is bypassed
+    because CLI overrides are session-specific.
+
+    Args:
+        cli_override: Extra profile fields from `--profile-override`.
+
+            When provided, these are merged on top of every profile entry
+            (after upstream + config.toml) and their keys are added to
+            `overridden_keys`.
+
+    Returns:
+        Read-only mapping of spec strings to profile entries.
+    """
+    global _profiles_cache  # noqa: PLW0603  # Module-level cache requires global statement
+    if cli_override is None and _profiles_cache is not None:
+        return _profiles_cache
+
+    result: dict[str, ModelProfileEntry] = {}
+    config = ModelConfig.load()
+
+    # Collect upstream profiles from provider packages.
+    seen_specs: set[str] = set()
+    provider_modules = _get_provider_profile_modules()
+    for provider, module_path in provider_modules:
+        try:
+            profiles = _load_provider_profiles(module_path)
+        except ImportError:
+            logger.debug(
+                "Could not import profiles from %s for provider '%s'",
+                module_path,
+                provider,
+            )
+            continue
+        except Exception:
+            logger.warning(
+                "Failed to load profiles from %s for provider '%s'",
+                module_path,
+                provider,
+                exc_info=True,
+            )
+            continue
+
+        for model_name, upstream_profile in profiles.items():
+            spec = f"{provider}:{model_name}"
+            seen_specs.add(spec)
+            overrides = config.get_profile_overrides(provider, model_name=model_name)
+            result[spec] = _build_entry(upstream_profile, overrides, cli_override)
+
+    # Add config-only models that have no upstream profile.
+    for provider_name, provider_config in config.providers.items():
+        config_models = provider_config.get("models", [])
+        for model_name in config_models:
+            spec = f"{provider_name}:{model_name}"
+            if spec not in seen_specs:
+                overrides = config.get_profile_overrides(
+                    provider_name, model_name=model_name
+                )
+                result[spec] = _build_entry({}, overrides, cli_override)
+
+    frozen = MappingProxyType(result)
+    # Only populate cache for the static (no CLI override) path.
+    if cli_override is None:
+        _profiles_cache = frozen
+    return frozen
 
 
 def _is_langchain_supported_provider(provider: str) -> bool:
@@ -569,8 +698,9 @@ class ModelConfig:
                     class_path,
                 )
 
-            params = provider.get("params", {})
             models = set(provider.get("models", []))
+
+            params = provider.get("params", {})
             for key, value in params.items():
                 if isinstance(value, dict) and key not in models:
                     logger.warning(
@@ -686,10 +816,36 @@ class ModelConfig:
         if not provider:
             return {}
         params = provider.get("params", {})
-        # Flat keys are provider-wide defaults; dict values are per-model overrides
         result = {k: v for k, v in params.items() if not isinstance(v, dict)}
         if model_name:
             overrides = params.get(model_name)
+            if isinstance(overrides, dict):
+                result.update(overrides)
+        return result
+
+    def get_profile_overrides(
+        self, provider_name: str, *, model_name: str | None = None
+    ) -> dict[str, Any]:
+        """Get profile overrides for a provider.
+
+        Reads the `profile` table from the provider config. Flat keys are
+        provider-wide defaults; model-keyed sub-tables are per-model overrides
+        that shallow-merge on top (model wins on conflict).
+
+        Args:
+            provider_name: The provider to look up.
+            model_name: Optional model name for per-model overrides.
+
+        Returns:
+            Dictionary of profile overrides (empty if none configured).
+        """
+        provider = self.providers.get(provider_name)
+        if not provider:
+            return {}
+        profile = provider.get("profile", {})
+        result = {k: v for k, v in profile.items() if not isinstance(v, dict)}
+        if model_name:
+            overrides = profile.get(model_name)
             if isinstance(overrides, dict):
                 result.update(overrides)
         return result

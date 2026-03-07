@@ -129,6 +129,17 @@ class TestGetCommandDisplay:
         rendered = render(display)
         assert command in rendered.plain
 
+    def test_command_display_with_hidden_unicode_shows_warning(self) -> None:
+        """Hidden Unicode should be surfaced with explicit warning details."""
+        command = "echo a\u202eb"
+        menu = ApprovalMenu({"name": "shell", "args": {"command": command}})
+        display = menu._get_command_display(expanded=True)
+        rendered = render(display)
+        assert "echo ab" in rendered.plain
+        assert "hidden chars detected" in rendered.plain
+        assert "U+202E" in rendered.plain
+        assert "raw:" in rendered.plain
+
 
 class TestToggleExpand:
     """Tests for `ApprovalMenu.action_toggle_expand`."""
@@ -215,6 +226,25 @@ class TestToolSetConsistency:
         menu = ApprovalMenu({"name": "execute", "args": {"command": "echo hello"}})
         # execute should use minimal display like shell/bash
         assert menu._is_minimal is True
+
+
+class TestSecurityWarnings:
+    """Tests for approval-level Unicode/URL warning collection."""
+
+    def test_collects_hidden_unicode_warning(self) -> None:
+        """Hidden Unicode in args should populate security warnings."""
+        menu = ApprovalMenu({"name": "shell", "args": {"command": "echo he\u200bllo"}})
+        assert menu._security_warnings
+        assert any("hidden Unicode" in warning for warning in menu._security_warnings)
+
+    def test_collects_url_warning_for_suspicious_domain(self) -> None:
+        """Suspicious URL args should populate security warnings."""
+        menu = ApprovalMenu({"name": "fetch_url", "args": {"url": "https://аpple.com"}})
+        assert menu._security_warnings
+        assert any(
+            "URL" in warning or "Domain" in warning
+            for warning in menu._security_warnings
+        )
 
 
 class TestGetCommandDisplayGuard:

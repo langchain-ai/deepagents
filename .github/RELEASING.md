@@ -30,9 +30,13 @@ To release the CLI:
 1. Merge conventional commits to `main` (see [Commit Format](#commit-format))
 2. Wait for release-please to create/update the release PR
 3. Review the generated changelog in the PR
-4. Merge the release PR — this creates a **draft** GitHub release
-5. Review and edit the release notes in the GitHub UI
-6. Click "Publish release" — this triggers PyPI publication
+4. **Verify the SDK pin** — check that `deepagents==` in `libs/cli/pyproject.toml` is up to date. If the latest SDK version has been confirmed compatible, you should bump the pin on `main` and let release-please regenerate the PR before merging. See [Release Failed: CLI SDK Pin Mismatch](#release-failed-cli-sdk-pin-mismatch) for recovery if this is missed.
+5. Merge the release PR — this creates a **draft** GitHub release
+6. Review and edit the release notes in the GitHub UI
+7. Click "Publish release" — this triggers PyPI publication
+
+> [!IMPORTANT]
+> When developing CLI features that depend on new SDK functionality, bump the SDK pin as part of that work — don't defer it to release time. The pin should always reflect the minimum SDK version the CLI actually requires!
 
 ### Version Bumping
 

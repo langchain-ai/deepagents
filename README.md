@@ -1,9 +1,9 @@
 <div align="center">
   <a href="https://docs.langchain.com/oss/python/deepagents/overview#deep-agents-overview">
     <picture>
-      <source media="(prefers-color-scheme: light)" srcset=".github/images/logo-dark.svg">
-      <source media="(prefers-color-scheme: dark)" srcset=".github/images/logo-light.svg">
-      <img alt="Deep Agents Logo" src=".github/images/logo-dark.svg" width="80%">
+      <source media="(prefers-color-scheme: dark)" srcset=".github/images/logo-dark.svg">
+      <source media="(prefers-color-scheme: light)" srcset=".github/images/logo-light.svg">
+      <img alt="Deep Agents Logo" src=".github/images/logo-dark.svg" width="50%">
     </picture>
   </a>
 </div>
@@ -52,6 +52,9 @@ result = agent.invoke({"messages": [{"role": "user", "content": "Research LangGr
 
 The agent can plan, read/write files, and manage its own context. Add tools, customize prompts, or swap models as needed.
 
+> [!TIP]
+> For developing, debugging, and deploying AI agents and LLM applications, see [LangSmith](https://docs.langchain.com/langsmith/home).
+
 ## Customization
 
 Add your own tools, swap models, customize prompts, configure sub-agents, and more. See the [documentation](https://docs.langchain.com/oss/python/deepagents/overview) for full details.
@@ -70,14 +73,31 @@ MCP is supported via [`langchain-mcp-adapters`](https://github.com/langchain-ai/
 
 ## Deep Agents CLI
 
-Try Deep Agents instantly from the terminal:
+Try Deep Agents instantly from the terminal. Install:
 
 ```bash
-uv tool install deepagents-cli
+curl -LsSf https://raw.githubusercontent.com/langchain-ai/deepagents/main/scripts/install.sh | bash
+```
+
+```bash
+# With model provider extras (OpenAI is included by default)
+DEEPAGENTS_EXTRAS="anthropic,groq" curl -LsSf https://raw.githubusercontent.com/langchain-ai/deepagents/main/scripts/install.sh | bash
+```
+
+Or install directly with `uv`:
+
+```bash
+# Install with chosen model providers (OpenAI is included by default)
+uv tool install 'deepagents-cli[anthropic,groq]'
+```
+
+Run the CLI:
+
+```bash
 deepagents
 ```
 
-The CLI adds conversation resume, web search, remote sandboxes (Modal, Runloop, Daytona, & more), persistent memory, custom skills, headless mode, and human-in-the-loop approval. See the [CLI documentation](https://docs.langchain.com/oss/python/deepagents/cli) for more.
+The CLI adds conversation resume, web search, remote sandboxes (Modal, Runloop, Daytona, & more), persistent memory, custom skills, headless mode, and human-in-the-loop approval. See the [CLI documentation](https://docs.langchain.com/oss/python/deepagents/cli) and [source code](https://github.com/langchain-ai/deepagents/tree/main/libs/cli) for more.
 
 ## LangGraph Native
 

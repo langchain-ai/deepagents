@@ -45,6 +45,7 @@ class MessageType(StrEnum):
     TOOL = "tool"
     ERROR = "error"
     APP = "app"
+    SUMMARIZATION = "summarization"
     DIFF = "diff"
 
 
@@ -147,6 +148,7 @@ class MessageData:
             AssistantMessage,
             DiffMessage,
             ErrorMessage,
+            SummarizationMessage,
             ToolCallMessage,
             UserMessage,
         )
@@ -176,6 +178,9 @@ class MessageData:
 
             case MessageType.APP:
                 return AppMessage(self.content, id=self.id)
+
+            case MessageType.SUMMARIZATION:
+                return SummarizationMessage(self.content, id=self.id)
 
             case MessageType.DIFF:
                 return DiffMessage(
@@ -209,6 +214,7 @@ class MessageData:
             AssistantMessage,
             DiffMessage,
             ErrorMessage,
+            SummarizationMessage,
             ToolCallMessage,
             UserMessage,
         )
@@ -260,15 +266,21 @@ class MessageData:
                 id=widget_id,
             )
 
-        # Check DiffMessage before AppMessage: both extend Static, so check
-        # the more specific type first to avoid misclassification if the
-        # inheritance hierarchy ever changes.
+        # Check specialized subclasses before AppMessage so we keep their type
+        # when serializing and can restore their specific styling later.
         if isinstance(widget, DiffMessage):
             return cls(
                 type=MessageType.DIFF,
                 content=widget._diff_content,
                 id=widget_id,
                 diff_file_path=widget._file_path,
+            )
+
+        if isinstance(widget, SummarizationMessage):
+            return cls(
+                type=MessageType.SUMMARIZATION,
+                content=str(widget._content),
+                id=widget_id,
             )
 
         if isinstance(widget, AppMessage):

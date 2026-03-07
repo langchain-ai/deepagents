@@ -1,8 +1,11 @@
 """Unit tests for main entry point."""
 
+import asyncio
 import inspect
+from collections.abc import AsyncIterator
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -251,3 +254,49 @@ class TestFormatToolWarnings:
         """Unknown tools get a generic message."""
         assert format_tool_warning_tui("foo") == "foo is not installed."
         assert format_tool_warning_cli("foo") == "foo is not installed."
+
+
+class TestBackgroundRuntimeLifecycleHookup:
+    """Tests for background runtime wiring in run_textual_cli_async."""
+
+    async def test_runtime_started_and_shutdown_when_enabled(self) -> None:
+        from contextlib import asynccontextmanager
+
+        fake_runtime = MagicMock()
+        fake_runtime.start = AsyncMock()
+        fake_runtime.shutdown = AsyncMock()
+
+        @asynccontextmanager
+        async def fake_checkpointer() -> AsyncIterator[MagicMock]:
+            await asyncio.sleep(0)
+            yield MagicMock()
+
+        fake_model_result = SimpleNamespace(
+            model="mock-model",
+            apply_to_settings=MagicMock(),
+        )
+
+        with (
+            patch("deepagents_cli.config.create_model", return_value=fake_model_result),
+            patch("deepagents_cli.sessions.get_checkpointer", fake_checkpointer),
+            patch(
+                "deepagents_cli.agent.create_cli_agent",
+                return_value=(MagicMock(), MagicMock()),
+            ),
+            patch(
+                "deepagents_cli.app.run_textual_app",
+                new=AsyncMock(return_value=AppResult(return_code=0, thread_id="t1")),
+            ),
+            patch(
+                "deepagents_cli.background_runtime.BackgroundRuntime",
+                return_value=fake_runtime,
+            ),
+        ):
+            await run_textual_cli_async(
+                assistant_id="agent",
+                enable_background_tasks=True,
+                background_runtime_mode="inmemory",
+            )
+
+        fake_runtime.start.assert_awaited_once()
+        fake_runtime.shutdown.assert_awaited_once()

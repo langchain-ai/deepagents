@@ -64,8 +64,7 @@ fi
 
 PACKAGE="deepagents-cli${EXTRAS}"
 echo "Installing ${PACKAGE}..." >&2
-"$UV_BIN" tool install --python "$PYTHON_VERSION" "$PACKAGE" 2>/dev/null \
-  || "$UV_BIN" tool upgrade --python "$PYTHON_VERSION" "$PACKAGE"
+"$UV_BIN" tool install -U --python "$PYTHON_VERSION" "$PACKAGE"
 
 echo ""
 echo "deepagents-cli installed successfully."
@@ -73,3 +72,6 @@ echo "Run:  deepagents"
 echo ""
 echo "If the command is not found, restart your shell or run:"
 echo "  source ~/.zshrc   # (or ~/.bashrc)"
+echo ""
+echo "For help and support, see the Deep Agents CLI docs:"
+echo "  https://docs.langchain.com/oss/python/deepagents/cli/overview"

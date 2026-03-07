@@ -31,7 +31,9 @@ on:
         type: choice
         options:
           - all
+          - set0
           - set1
+          - set2
           - "anthropic:claude-haiku-4-5-20251001"
           - "anthropic:claude-sonnet-4-20250514"
           - "anthropic:claude-sonnet-4-5-20250929"
@@ -68,8 +70,15 @@ on:
           - "ollama:deepseek-v3.2:cloud"
           - "baseten:zai-org/GLM-5"
           - "baseten:MiniMaxAI/MiniMax-M2.5"
+          - "baseten:moonshotai/Kimi-K2.5"
+          - "baseten:deepseek-ai/DeepSeek-V3.2"
+          - "baseten:Qwen/Qwen3-Coder-480B-A35B-Instruct"
           - "fireworks:accounts/fireworks/models/qwen3-235b-a22b-instruct-2507"
           - "fireworks:accounts/fireworks/models/deepseek-v3-0324"
+          - "fireworks:accounts/fireworks/models/minimax-m2p1"
+          - "fireworks:accounts/fireworks/models/kimi-k2p5"
+          - "fireworks:accounts/fireworks/models/glm-5"
+          - "fireworks:accounts/fireworks/models/minimax-m2p5"
       models_override:
         description: "Override: comma-separated models (e.g. 'openai:gpt-4.1,openai:o3'). Takes priority over dropdown when non-empty."
         required: false
@@ -174,3 +183,10 @@ jobs:
 
       - name: "🧾 Write summary"
         run: uv run --with tabulate python .github/scripts/aggregate_evals.py
+
+      - name: "📤 Upload JSON summary"
+        uses: actions/upload-artifact@v7
+        with:
+          name: evals-summary
+          path: evals_summary.json
+          if-no-files-found: warn

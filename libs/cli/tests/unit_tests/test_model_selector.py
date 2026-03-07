@@ -703,6 +703,44 @@ class TestModelDetailFooter:
         # Should not crash and should have content
         assert "No profile data" not in result
 
+    def test_format_footer_empty_profile(self) -> None:
+        """Empty profile dict shows 'Context: unknown' fallback."""
+        from deepagents_cli.config import UNICODE_GLYPHS
+        from deepagents_cli.model_config import ModelProfileEntry
+
+        entry = ModelProfileEntry(
+            profile={},
+            overridden_keys=frozenset(),
+        )
+        result = ModelSelectorScreen._format_footer(entry, UNICODE_GLYPHS)
+        assert "Context: unknown" in result
+        assert "No profile data" not in result
+
+    def test_format_footer_override_on_non_displayed_key(self) -> None:
+        """Override on a non-displayed key should not show notice."""
+        from deepagents_cli.config import UNICODE_GLYPHS
+        from deepagents_cli.model_config import ModelProfileEntry
+
+        entry = ModelProfileEntry(
+            profile={"max_input_tokens": 4096, "supports_thinking": True},
+            overridden_keys=frozenset({"supports_thinking"}),
+        )
+        result = ModelSelectorScreen._format_footer(entry, UNICODE_GLYPHS)
+        assert "config.toml override" not in result
+
+    def test_format_footer_non_numeric_tokens(self) -> None:
+        """Non-numeric token values render gracefully instead of crashing."""
+        from deepagents_cli.config import UNICODE_GLYPHS
+        from deepagents_cli.model_config import ModelProfileEntry
+
+        entry = ModelProfileEntry(
+            profile={"max_input_tokens": "unlimited", "max_output_tokens": 64000},
+            overridden_keys=frozenset(),
+        )
+        result = ModelSelectorScreen._format_footer(entry, UNICODE_GLYPHS)
+        assert "unlimited" in result
+        assert "64.0K" in result
+
     async def test_footer_updates_on_navigation(self) -> None:
         """Footer content changes when navigating to a different model."""
         app = ModelSelectorTestApp()
@@ -715,17 +753,16 @@ class TestModelDetailFooter:
 
             footer = screen.query_one("#model-detail-footer", Static)
             initial_content = str(footer.content)
-            assert len(initial_content) > 0
+            assert "Context:" in initial_content or "No profile" in initial_content
 
             await pilot.press("down")
             await pilot.pause()
 
             updated_content = str(footer.content)
-            # Footer should still have content after navigation
-            assert len(updated_content) > 0
+            assert "Context:" in updated_content or "No profile" in updated_content
 
     async def test_footer_shows_on_mount(self) -> None:
-        """Footer is populated (not empty) on initial mount."""
+        """Footer is populated with structural content on initial mount."""
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
             app.show_selector()
@@ -736,5 +773,24 @@ class TestModelDetailFooter:
 
             footer = screen.query_one("#model-detail-footer", Static)
             content = str(footer.content)
-            # Footer should have some content after mount
-            assert len(content) > 0
+            assert "Context:" in content or "No profile" in content
+
+    async def test_footer_no_model_when_filter_empty(self) -> None:
+        """Footer shows 'No model selected' when filter matches nothing."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.show_selector()
+            await pilot.pause()
+
+            for char in "xyz999qqq":
+                await pilot.press(char)
+            # Pump several frames so all deferred call_after_refresh
+            # callbacks complete after the last keystroke
+            for _ in range(5):
+                await pilot.pause()
+
+            screen = app.screen
+            assert isinstance(screen, ModelSelectorScreen)
+            assert len(screen._filtered_models) == 0
+            footer = screen.query_one("#model-detail-footer", Static)
+            assert "No model selected" in str(footer.content)

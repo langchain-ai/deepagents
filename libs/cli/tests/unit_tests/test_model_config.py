@@ -1877,3 +1877,40 @@ max_input_tokens = 4096
         assert model_config._profiles_cache is not None
         clear_caches()
         assert model_config._profiles_cache is None
+
+    def test_overridden_keys_subset_of_profile(self, tmp_path: Path) -> None:
+        """overridden_keys is always a subset of profile keys."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.anthropic]
+[models.providers.anthropic.profile]
+max_input_tokens = 100000
+""")
+        fake_profiles = {
+            "claude-sonnet-4-5": {
+                "tool_calling": True,
+                "max_input_tokens": 200000,
+                "max_output_tokens": 64000,
+            },
+        }
+
+        def mock_load(module_path: str) -> dict[str, Any]:
+            if module_path == "langchain_anthropic.data._profiles":
+                return fake_profiles
+            msg = "not installed"
+            raise ImportError(msg)
+
+        with (
+            patch(
+                "deepagents_cli.model_config._load_provider_profiles",
+                side_effect=mock_load,
+            ),
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+        ):
+            profiles = get_model_profiles()
+
+        for spec, entry in profiles.items():
+            assert entry["overridden_keys"] <= entry["profile"].keys(), (
+                f"{spec}: overridden_keys {entry['overridden_keys']} "
+                f"not a subset of profile keys {set(entry['profile'].keys())}"
+            )

@@ -108,7 +108,14 @@ class ModelProfileEntry(TypedDict):
     """Profile data for a model with override tracking."""
 
     profile: dict[str, Any]
+    """Merged profile dict (upstream defaults + config.toml overrides).
+
+    Keys vary by provider (e.g., `max_input_tokens`, `tool_calling`).
+    """
+
     overridden_keys: frozenset[str]
+    """Keys in `profile` whose values came from config.toml rather than the
+    upstream provider package."""
 
 
 class ProviderConfig(TypedDict, total=False):
@@ -201,7 +208,7 @@ registry fallback.
 _available_models_cache: dict[str, list[str]] | None = None
 _builtin_providers_cache: dict[str, Any] | None = None
 _default_config_cache: ModelConfig | None = None
-_profiles_cache: dict[str, ModelProfileEntry] | None = None
+_profiles_cache: Mapping[str, ModelProfileEntry] | None = None
 
 
 def clear_caches() -> None:
@@ -393,16 +400,19 @@ def get_available_models() -> dict[str, list[str]]:
     return available
 
 
-def get_model_profiles() -> dict[str, ModelProfileEntry]:
+def get_model_profiles() -> Mapping[str, ModelProfileEntry]:
     """Load upstream profiles merged with config.toml overrides.
 
     Keyed by `provider:model` spec string. Each entry contains the
     merged profile dict and the set of keys overridden by config.toml.
 
+    Unlike `get_available_models()`, this includes all models from upstream
+    profiles regardless of capability filters (tool calling, text I/O).
+
     Results are cached; use `clear_caches()` to reset.
 
     Returns:
-        Dictionary mapping spec strings to profile entries.
+        Read-only mapping of spec strings to profile entries.
     """
     global _profiles_cache  # noqa: PLW0603  # Module-level cache requires global statement
     if _profiles_cache is not None:
@@ -455,8 +465,8 @@ def get_model_profiles() -> dict[str, ModelProfileEntry]:
                     overridden_keys=frozenset(overrides),
                 )
 
-    _profiles_cache = result
-    return result
+    _profiles_cache = MappingProxyType(result)
+    return _profiles_cache
 
 
 def _is_langchain_supported_provider(provider: str) -> bool:

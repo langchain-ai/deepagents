@@ -385,6 +385,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         if not self._filtered_models:
             no_matches = Static("[dim]No matching models[/dim]")
             await self._options_container.mount(no_matches)
+            self._update_footer()
             return
 
         # Group by provider
@@ -531,10 +532,16 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         max_in = profile.get("max_input_tokens")
         max_out = profile.get("max_output_tokens")
         if max_in is not None:
-            formatted = f"{format_token_count(int(max_in))} in"
+            try:
+                formatted = f"{format_token_count(int(max_in))} in"
+            except (ValueError, TypeError, OverflowError):
+                formatted = f"{max_in} in"
             parts_ctx.append(_mark("max_input_tokens", formatted))
         if max_out is not None:
-            formatted = f"{format_token_count(int(max_out))} out"
+            try:
+                formatted = f"{format_token_count(int(max_out))} out"
+            except (ValueError, TypeError, OverflowError):
+                formatted = f"{max_out} out"
             parts_ctx.append(_mark("max_output_tokens", formatted))
         sep = f" {glyphs.bullet} "
         if parts_ctx:
@@ -596,9 +603,15 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         if not self._filtered_models:
             footer.update("[dim]No model selected[/dim]")
             return
-        spec, _ = self._filtered_models[self._selected_index]
+        index = min(self._selected_index, len(self._filtered_models) - 1)
+        spec, _ = self._filtered_models[index]
         entry = self._profiles.get(spec)
-        footer.update(self._format_footer(entry, get_glyphs()))
+        try:
+            text = self._format_footer(entry, get_glyphs())
+        except Exception:  # Resilient footer rendering
+            logger.debug("Failed to format footer for %s", spec, exc_info=True)
+            text = "[dim]Could not load profile details[/dim]\n\n\n"
+        footer.update(text)
 
     def _move_selection(self, delta: int) -> None:
         """Move selection by delta, updating only the affected widgets.

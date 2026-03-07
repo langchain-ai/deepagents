@@ -74,6 +74,7 @@ if TYPE_CHECKING:
 
     from deepagents.backends import CompositeBackend
     from deepagents.backends.sandbox import SandboxBackendProtocol
+    from deepagents.middleware.ask_user import Question
     from deepagents.middleware.summarization import SummarizationMiddleware
     from langchain_core.runnables import RunnableConfig
     from langchain_core.tools import BaseTool
@@ -1080,13 +1081,13 @@ class DeepAgentsApp(App):
 
     async def _request_ask_user(
         self,
-        questions: list[dict[str, Any]],
+        questions: list[Question],
     ) -> asyncio.Future:
         """Display the ask_user widget and return a Future with user response.
 
         Args:
             questions: List of question dicts, each with `question`, `type`,
-                and optional `choices` keys.
+                and optional `choices` and `required` keys.
 
         Returns:
             A Future that resolves to a dict with `'type'` (`'answered'` or
@@ -1105,7 +1106,10 @@ class DeepAgentsApp(App):
                         "Timed out waiting for previous ask-user widget to "
                         "clear. Forcefully cleaning up."
                     )
+                    old_widget = self._pending_ask_user_widget
                     self._pending_ask_user_widget = None
+                    if old_widget is not None:
+                        old_widget.action_cancel()
                     break
                 await asyncio.sleep(0.1)
 

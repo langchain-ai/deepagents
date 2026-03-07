@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
+    from deepagents.middleware.ask_user import AskUserRequest
     from rich.console import Console
 
 from langchain.agents.middleware.human_in_the_loop import (
@@ -291,7 +292,10 @@ class TextualUIAdapter:
     """
 
     _request_ask_user: Callable[..., Awaitable[Any]] | None
-    """Async callback for ask_user interrupts. Returns a Future with user answers."""
+    """Async callback for ask_user interrupts.
+
+    When awaited, returns a Future that resolves to user answers.
+    """
 
     _scroll_to_bottom: Callable[[], None] | None
     """Callback to scroll chat to bottom."""
@@ -341,7 +345,8 @@ class TextualUIAdapter:
             set_active_message: Callback to set the active streaming message ID.
             sync_message_content: Callback to sync final content back to the
                 message store after streaming completes.
-            request_ask_user: Async callable for ask_user interrupts.
+            request_ask_user: Async callable that displays an ask_user widget
+                and returns a Future resolving to user answers.
         """
         self._mount_message = mount_message
         self._update_status = update_status
@@ -536,7 +541,7 @@ async def execute_task_textual(
             interrupt_occurred = False
             suppress_resumed_output = False
             pending_interrupts: dict[str, HITLRequest] = {}
-            pending_ask_user: dict[str, dict] = {}
+            pending_ask_user: dict[str, AskUserRequest] = {}
 
             async for chunk in agent.astream(
                 stream_input,
@@ -907,12 +912,20 @@ async def execute_task_textual(
                             await adapter._set_spinner(None)
                         try:
                             future = await adapter._request_ask_user(questions)
-                            result = await future
                         except Exception:
-                            logger.exception(
-                                "ask_user widget failed; treating as cancelled"
-                            )
+                            logger.exception("Failed to mount ask_user widget")
                             result = {"type": "cancelled"}
+                            future = None
+
+                        if future is not None:
+                            try:
+                                result = await future
+                            except Exception:
+                                logger.exception(
+                                    "ask_user future resolution failed; "
+                                    "treating as cancelled"
+                                )
+                                result = {"type": "cancelled"}
 
                         if isinstance(result, dict):
                             if result.get("type") == "answered":

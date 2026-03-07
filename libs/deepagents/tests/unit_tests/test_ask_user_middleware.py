@@ -1,5 +1,6 @@
 """Tests for AskUserMiddleware functionality."""
 
+import pytest
 from langchain.agents import create_agent
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.memory import InMemorySaver
@@ -10,6 +11,8 @@ from deepagents.middleware.ask_user import (
     AskUserRequest,
     AskUserResponse,
     Question,
+    _parse_answers,
+    _validate_questions,
 )
 from tests.unit_tests.chat_model import GenericFakeChatModel
 
@@ -301,3 +304,103 @@ class TestAskUserMiddleware:
                 tool_names.update(node_data.data.tools_by_name.keys())
 
         assert "ask_user" not in tool_names
+
+
+class TestValidateQuestions:
+    """Tests for _validate_questions helper."""
+
+    def test_raises_on_mc_missing_choices(self) -> None:
+        """Multiple-choice question without choices key raises ValueError."""
+        questions: list[Question] = [
+            Question(question="Pick one", type="multiple_choice"),
+        ]
+        with pytest.raises(ValueError, match="non-empty 'choices' list"):
+            _validate_questions(questions)
+
+    def test_raises_on_mc_empty_choices(self) -> None:
+        """Multiple-choice question with empty choices list raises ValueError."""
+        questions: list[Question] = [
+            Question(question="Pick one", type="multiple_choice", choices=[]),
+        ]
+        with pytest.raises(ValueError, match="non-empty 'choices' list"):
+            _validate_questions(questions)
+
+    def test_passes_for_text_question(self) -> None:
+        """Text question without choices should not raise."""
+        questions: list[Question] = [
+            Question(question="Name?", type="text"),
+        ]
+        _validate_questions(questions)
+
+    def test_passes_for_valid_mc(self) -> None:
+        """Multiple-choice question with valid choices should not raise."""
+        questions: list[Question] = [
+            Question(
+                question="Color?",
+                type="multiple_choice",
+                choices=[{"value": "red"}, {"value": "blue"}],
+            ),
+        ]
+        _validate_questions(questions)
+
+
+class TestParseAnswers:
+    """Tests for _parse_answers helper."""
+
+    def test_happy_path(self) -> None:
+        """Well-formed response produces correct ToolMessage."""
+        questions: list[Question] = [
+            Question(question="Name?", type="text"),
+            Question(question="Color?", type="text"),
+        ]
+        cmd = _parse_answers({"answers": ["Alice", "blue"]}, questions, "tc1")
+        messages = cmd.update["messages"]
+        assert len(messages) == 1
+        assert "Alice" in messages[0].content
+        assert "blue" in messages[0].content
+        assert messages[0].tool_call_id == "tc1"
+
+    def test_malformed_non_dict(self) -> None:
+        """Non-dict response falls back to empty answers."""
+        questions: list[Question] = [
+            Question(question="Name?", type="text"),
+        ]
+        cmd = _parse_answers("bad", questions, "tc1")
+        assert "(no answer)" in cmd.update["messages"][0].content
+
+    def test_malformed_missing_answers_key(self) -> None:
+        """Dict without 'answers' key falls back to empty answers."""
+        questions: list[Question] = [
+            Question(question="Name?", type="text"),
+        ]
+        cmd = _parse_answers({"foo": "bar"}, questions, "tc1")
+        assert "(no answer)" in cmd.update["messages"][0].content
+
+    def test_fewer_answers_than_questions(self) -> None:
+        """Fewer answers than questions fills missing with '(no answer)'."""
+        questions: list[Question] = [
+            Question(question="Name?", type="text"),
+            Question(question="Color?", type="text"),
+        ]
+        cmd = _parse_answers({"answers": ["Alice"]}, questions, "tc1")
+        content = cmd.update["messages"][0].content
+        assert "Alice" in content
+        assert "(no answer)" in content
+
+    def test_more_answers_than_questions(self) -> None:
+        """Extra answers are silently ignored."""
+        questions: list[Question] = [
+            Question(question="Name?", type="text"),
+        ]
+        cmd = _parse_answers({"answers": ["Alice", "extra"]}, questions, "tc1")
+        content = cmd.update["messages"][0].content
+        assert "Alice" in content
+        assert "extra" not in content
+
+    def test_none_response(self) -> None:
+        """None response falls back gracefully."""
+        questions: list[Question] = [
+            Question(question="Name?", type="text"),
+        ]
+        cmd = _parse_answers(None, questions, "tc1")
+        assert "(no answer)" in cmd.update["messages"][0].content

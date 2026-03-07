@@ -1,6 +1,9 @@
 """Tests for ask_user tool integration in the CLI."""
 
+from __future__ import annotations
+
 import asyncio
+from typing import TYPE_CHECKING
 
 from textual.app import App, ComposeResult
 from textual.widgets import Input, Static
@@ -8,9 +11,12 @@ from textual.widgets import Input, Static
 from deepagents_cli.tool_display import format_tool_display
 from deepagents_cli.widgets.ask_user import AskUserMenu
 
+if TYPE_CHECKING:
+    from deepagents.middleware.ask_user import Question
+
 
 class _AskUserTestApp(App[None]):
-    def __init__(self, questions: list[dict[str, object]]) -> None:
+    def __init__(self, questions: list[Question]) -> None:
         super().__init__()
         self._questions = questions
 

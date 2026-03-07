@@ -12,6 +12,11 @@ from textual.widgets import Input, Static
 if TYPE_CHECKING:
     import asyncio
 
+    from deepagents.middleware.ask_user import (
+        AskUserWidgetResult,
+        Choice,
+        Question,
+    )
     from textual import events
     from textual.app import ComposeResult
 
@@ -54,7 +59,7 @@ class AskUserMenu(Container):
 
     def __init__(  # noqa: D107
         self,
-        questions: list[dict[str, Any]],
+        questions: list[Question],
         id: str | None = None,  # noqa: A002
         **kwargs: Any,
     ) -> None:
@@ -63,11 +68,11 @@ class AskUserMenu(Container):
         self._answers: list[str] = [""] * len(questions)
         self._current_question = 0
         self._confirmed: list[bool] = [False] * len(questions)
-        self._future: asyncio.Future[dict[str, Any]] | None = None
+        self._future: asyncio.Future[AskUserWidgetResult] | None = None
         self._question_widgets: list[_QuestionWidget] = []
         self._submitted = False
 
-    def set_future(self, future: asyncio.Future[dict[str, Any]]) -> None:
+    def set_future(self, future: asyncio.Future[AskUserWidgetResult]) -> None:
         """Set the future to resolve when user answers."""
         self._future = future
 
@@ -188,9 +193,9 @@ class AskUserMenu(Container):
             self._future.set_result({"type": "cancelled"})
         self.post_message(self.Cancelled())
 
-    def on_blur(self, event: events.Blur) -> None:  # noqa: D102
-        # No-op: prevent blur from propagating and dismissing the menu
-        pass
+    def on_blur(self, event: events.Blur) -> None:  # noqa: PLR6301  # Textual event handler
+        """Prevent blur from propagating and dismissing the menu."""
+        event.stop()
 
 
 class _ChoiceOption(Static):
@@ -203,14 +208,17 @@ class _ChoiceOption(Static):
         self._label = label
 
     def toggle(self) -> None:
+        """Toggle the selected state."""
         self.selected = not self.selected
         self._update_display()
 
     def select(self) -> None:
+        """Mark this choice as selected."""
         self.selected = True
         self._update_display()
 
     def deselect(self) -> None:
+        """Mark this choice as deselected."""
         self.selected = False
         self._update_display()
 
@@ -240,12 +248,12 @@ class _QuestionWidget(Vertical):
     can_focus = True
     can_focus_children = True
 
-    def __init__(self, question: dict[str, Any], index: int, **kwargs: Any) -> None:
+    def __init__(self, question: Question, index: int, **kwargs: Any) -> None:
         super().__init__(classes="ask-user-question", **kwargs)
         self._question = question
         self._index = index
         self._q_type = question.get("type", "text")
-        self._choices: list[dict[str, str]] = question.get("choices", [])
+        self._choices: list[Choice] = question.get("choices", [])
         self._required: bool = question.get("required", True)
         self._choice_widgets: list[_ChoiceOption] = []
         self._selected_choice = 0
@@ -289,6 +297,7 @@ class _QuestionWidget(Vertical):
             yield self._text_input
 
     def focus_input(self) -> None:
+        """Focus the appropriate input for this question."""
         if self._text_input:
             self._text_input.focus()
         elif self._is_other_selected and self._other_input:
@@ -297,6 +306,7 @@ class _QuestionWidget(Vertical):
             self.focus()
 
     def get_answer(self) -> str:
+        """Return the current answer text for this question."""
         if self._q_type == "text" or not self._choices:
             return self._text_input.value if self._text_input else ""
 
@@ -309,6 +319,7 @@ class _QuestionWidget(Vertical):
         return ""
 
     def action_move_up(self) -> None:
+        """Move selection up in the choice list."""
         if self._q_type != "multiple_choice" or not self._choice_widgets:
             return
         if (
@@ -328,6 +339,7 @@ class _QuestionWidget(Vertical):
             self._update_choice_selection()
 
     def action_move_down(self) -> None:
+        """Move selection down in the choice list."""
         if self._q_type != "multiple_choice" or not self._choice_widgets:
             return
         max_idx = len(self._choice_widgets) - 1
@@ -337,6 +349,7 @@ class _QuestionWidget(Vertical):
             self._update_choice_selection()
 
     def action_select_or_submit(self) -> None:
+        """Confirm current choice or open the Other input."""
         if self._q_type == "multiple_choice" and self._choice_widgets:
             is_other = self._selected_choice == len(self._choices)
             if is_other:

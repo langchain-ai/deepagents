@@ -69,9 +69,35 @@ class AskUserRequest(TypedDict):
 
 
 class AskUserResponse(TypedDict):
-    """Response payload from the user answering questions."""
+    """Response payload from the user answering questions.
+
+    This models the resume payload consumed by `_parse_answers`, not the full
+    widget response (which includes a `type` discriminator handled by the
+    adapter before reaching the middleware).
+    """
 
     answers: list[str]
+
+
+class AskUserAnswered(TypedDict):
+    """Widget result when the user submits answers."""
+
+    type: Literal["answered"]
+    """Discriminator tag, always `'answered'`."""
+
+    answers: list[str]
+    """User-provided answers, one per question."""
+
+
+class AskUserCancelled(TypedDict):
+    """Widget result when the user cancels the prompt."""
+
+    type: Literal["cancelled"]
+    """Discriminator tag, always `'cancelled'`."""
+
+
+# Discriminated union for the ask_user widget Future result.
+AskUserWidgetResult = AskUserAnswered | AskUserCancelled
 
 
 ASK_USER_TOOL_DESCRIPTION = """Ask the user one or more questions when you need clarification or input before proceeding.
@@ -127,8 +153,9 @@ def _parse_answers(
 ) -> Command[Any]:
     """Parse an interrupt response into a `Command` with a `ToolMessage`.
 
-    Validates that the response is a dict with an `'answers'` key and logs a
-    warning when the number of answers does not match the number of questions.
+    Checks whether the response is a dict with an `'answers'` key, falling back
+    to empty answers on malformed input. Logs an error when the number of
+    answers does not match the number of questions.
 
     Args:
         response: Raw value returned by `interrupt()`.
@@ -139,7 +166,7 @@ def _parse_answers(
         `Command` containing a formatted `ToolMessage` with Q&A pairs.
     """
     if not isinstance(response, dict) or "answers" not in response:
-        logger.warning(
+        logger.error(
             "ask_user received malformed resume payload (expected dict with 'answers' key, got %s); treating all answers as empty",
             type(response).__name__,
         )

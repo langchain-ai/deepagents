@@ -1,3 +1,4 @@
+import json
 import re
 import uuid
 from collections.abc import Sequence
@@ -13,7 +14,6 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.load import load
 from langchain_core.messages import AnyMessage, HumanMessage
 from langgraph.checkpoint.memory import InMemorySaver
-from langsmith import Client
 
 from deepagents import create_deep_agent
 from deepagents.backends.filesystem import FilesystemBackend
@@ -49,7 +49,7 @@ SYSTEM_PROMPT = dedent(
     """
 )
 
-ls_client = Client()
+_FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 
 def _write_file(p: Path, content: str) -> None:
@@ -220,12 +220,16 @@ def _called_compact(trajectory: AgentTrajectory) -> bool:
 
 
 def _load_seed_messages() -> list[AnyMessage]:
-    """Load seed messages from the shared LangSmith run."""
-    run = ls_client.read_run("7c1618cc-0447-40b4-8c4e-c4dc5ad32c21")
-    return load(run.outputs["messages"])
+    """Load seed messages from a local fixture file.
+
+    The fixture was originally captured from LangSmith run
+    `7c1618cc-0447-40b4-8c4e-c4dc5ad32c21`.
+    """
+    fixture = _FIXTURES_DIR / "summarization_seed_messages.json"
+    data = json.loads(fixture.read_text())
+    return load(data)
 
 
-@pytest.mark.skip(reason="Requires permissions to read ls_client.read_run")
 @pytest.mark.langsmith
 def test_compact_tool_new_task(tmp_path: Path, model: BaseChatModel) -> None:
 
@@ -241,7 +245,6 @@ def test_compact_tool_new_task(tmp_path: Path, model: BaseChatModel) -> None:
     assert _called_compact(trajectory)
 
 
-@pytest.mark.skip(reason="Requires permissions to read ls_client.read_run")
 @pytest.mark.langsmith
 def test_compact_tool_not_overly_sensitive(tmp_path: Path, model: BaseChatModel) -> None:
 
@@ -257,7 +260,6 @@ def test_compact_tool_not_overly_sensitive(tmp_path: Path, model: BaseChatModel)
     assert not _called_compact(trajectory)
 
 
-@pytest.mark.skip(reason="Requires permissions to read ls_client.read_run")
 @pytest.mark.langsmith
 def test_compact_tool_large_reads(tmp_path: Path, model: BaseChatModel) -> None:
     another_large_file = "https://raw.githubusercontent.com/langchain-ai/deepagents/5c90376c02754c67d448908e55d1e953f54b8acd/libs/deepagents/deepagents/middleware/filesystem.py"

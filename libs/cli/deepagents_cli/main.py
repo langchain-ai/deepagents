@@ -894,8 +894,10 @@ def cli_main() -> None:
         print(f"deepagents-cli {__version__}\ndeepagents (SDK) {sdk_version}")  # noqa: T201  # CLI version output
         sys.exit(0)
 
-    # Check dependencies first
-    check_cli_dependencies()
+    # ACP mode does not require Textual, so skip UI dependency checks when
+    # the flag is present in raw argv.
+    if "--acp" not in sys.argv[1:]:
+        check_cli_dependencies()
 
     from deepagents_cli.config import console, settings
 

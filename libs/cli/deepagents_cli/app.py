@@ -1082,16 +1082,31 @@ class DeepAgentsApp(App):
         self,
         questions: list[dict[str, Any]],
     ) -> asyncio.Future:
-        """Display the ask_user widget and return a Future with user answers.
+        """Display the ask_user widget and return a Future with user response.
+
+        Args:
+            questions: List of question dicts, each with `question`, `type`,
+                and optional `choices` keys.
 
         Returns:
-            A Future that resolves to the user's answers.
+            A Future that resolves to a dict with `'type'` (`'answered'` or
+                `'cancelled'`) and, when answered, an `'answers'` list.
         """
         loop = asyncio.get_running_loop()
         result_future: asyncio.Future = loop.create_future()
 
         if self._pending_ask_user_widget is not None:
-            while self._pending_ask_user_widget is not None:  # noqa: ASYNC110
+            import time
+
+            deadline = time.monotonic() + 30
+            while self._pending_ask_user_widget is not None:
+                if time.monotonic() > deadline:
+                    logger.error(
+                        "Timed out waiting for previous ask-user widget to "
+                        "clear. Forcefully cleaning up."
+                    )
+                    self._pending_ask_user_widget = None
+                    break
                 await asyncio.sleep(0.1)
 
         unique_id = f"ask-user-menu-{uuid.uuid4().hex[:8]}"
@@ -1104,7 +1119,7 @@ class DeepAgentsApp(App):
             messages = self.query_one("#messages", Container)
             await self._mount_before_queued(messages, menu)
             self.call_after_refresh(menu.scroll_visible)
-            self.call_after_refresh(menu.focus)
+            self.call_after_refresh(menu.focus_active)
         except Exception as e:
             logger.exception(
                 "Failed to mount ask-user menu (id=%s)",
@@ -2550,6 +2565,13 @@ class DeepAgentsApp(App):
             self._quit_pending = False
             return
 
+        # If ask_user menu is active, cancel it before cancelling the agent
+        # worker, following the same pattern as the approval widget above.
+        if self._pending_ask_user_widget:
+            self._pending_ask_user_widget.action_cancel()
+            self._quit_pending = False
+            return
+
         # If agent is running, interrupt it and discard queued messages
         if self._agent_running and self._agent_worker:
             self._cancel_worker(self._agent_worker)
@@ -2599,6 +2621,12 @@ class DeepAgentsApp(App):
         # avoid leaving a stale approval widget interactive after interruption.
         if self._pending_approval_widget:
             self._pending_approval_widget.action_select_reject()
+            return
+
+        # If ask_user menu is active, cancel it before cancelling the agent
+        # worker, following the same pattern as the approval widget above.
+        if self._pending_ask_user_widget:
+            self._pending_ask_user_widget.action_cancel()
             return
 
         # If agent is running, interrupt it and discard queued messages
@@ -2742,7 +2770,11 @@ class DeepAgentsApp(App):
         """Route unfocused paste events to chat input for drag/drop reliability."""
         if not self._chat_input:
             return
-        if self._pending_approval_widget or self._is_input_focused():
+        if (
+            self._pending_approval_widget
+            or self._pending_ask_user_widget
+            or self._is_input_focused()
+        ):
             return
         if self._chat_input.handle_external_paste(event.text):
             event.prevent_default()
@@ -2760,7 +2792,7 @@ class DeepAgentsApp(App):
             return
         if isinstance(self.screen, ModalScreen):
             return
-        if self._pending_approval_widget:
+        if self._pending_approval_widget or self._pending_ask_user_widget:
             return
         self._chat_input.focus_input()
 
@@ -2768,8 +2800,8 @@ class DeepAgentsApp(App):
         """Handle clicks anywhere in the terminal to focus on the command line."""
         if not self._chat_input:
             return
-        # Don't steal focus from approval widget
-        if self._pending_approval_widget:
+        # Don't steal focus from approval or ask_user widgets
+        if self._pending_approval_widget or self._pending_ask_user_widget:
             return
         self.call_after_refresh(self._chat_input.focus_input)
 

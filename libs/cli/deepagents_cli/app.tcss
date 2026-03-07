@@ -195,6 +195,16 @@ Screen {
     margin-bottom: 1;
 }
 
+.ask-user-menu .ask-user-question-active {
+    border-left: thick $success;
+    padding-left: 1;
+}
+
+.ask-user-menu .ask-user-question-inactive {
+    opacity: 0.5;
+    padding-left: 2;
+}
+
 .ask-user-menu .ask-user-choice {
     height: 1;
     padding: 0 1;

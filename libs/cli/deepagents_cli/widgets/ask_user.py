@@ -61,8 +61,10 @@ class AskUserMenu(Container):
         self._questions = questions
         self._answers: list[str] = [""] * len(questions)
         self._current_question = 0
+        self._confirmed: list[bool] = [False] * len(questions)
         self._future: asyncio.Future[dict[str, Any]] | None = None
         self._question_widgets: list[_QuestionWidget] = []
+        self._submitted = False
 
     def set_future(self, future: asyncio.Future[dict[str, Any]]) -> None:
         """Set the future to resolve when user answers."""
@@ -86,45 +88,89 @@ class AskUserMenu(Container):
 
         yield Static("")
         yield Static(
-            f"Enter to submit {glyphs.bullet} Esc to cancel",
+            f"{glyphs.arrow_up}/{glyphs.arrow_down} Select"
+            f" {glyphs.bullet} Enter to continue"
+            f" {glyphs.bullet} Esc to cancel",
             classes="ask-user-help",
         )
 
     async def on_mount(self) -> None:  # noqa: D102
         if _detect_charset_mode() == CharsetMode.ASCII:
             self.styles.border = ("ascii", "green")
-        if self._question_widgets:
-            self._question_widgets[0].focus_input()
+        self._set_active_question(0)
+
+    def focus_active(self) -> None:
+        """Focus the current active question's input."""
+        self._set_active_question(self._current_question)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:  # noqa: D102
         event.stop()
-        self.attempt_submit()
+        # Find which question owns this Input and confirm it.
+        for qw in self._question_widgets:
+            if (qw._text_input and qw._text_input is event.input) or (
+                qw._other_input and qw._other_input is event.input
+            ):
+                answer = qw.get_answer()
+                if answer.strip():
+                    self.confirm_and_advance(qw._index)
+                return
 
-    def attempt_submit(self) -> None:
-        """Submit answers if complete, otherwise focus the first unanswered field."""
+    def confirm_and_advance(self, index: int) -> None:
+        """Confirm the answer at `index` and advance to the next question."""
+        self._answers[index] = self._question_widgets[index].get_answer()
+        self._confirmed[index] = True
+
+        # Find next unconfirmed question.
+        for i in range(index + 1, len(self._question_widgets)):
+            if not self._confirmed[i]:
+                self._set_active_question(i)
+                return
+
+        # All confirmed — collect final answers and submit.
         for i, qw in enumerate(self._question_widgets):
             self._answers[i] = qw.get_answer()
-
         if all(a.strip() for a in self._answers):
             self._submit()
             return
 
+        # Edge case: a confirmed text field was left empty (shouldn't happen
+        # normally). Re-open it.
+        for i, a in enumerate(self._answers):
+            if not a.strip():
+                self._confirmed[i] = False
+                self._set_active_question(i)
+                return
+
+    def _set_active_question(self, index: int) -> None:
+        """Update the visual indicator and focus for the active question."""
+        self._current_question = index
         for i, qw in enumerate(self._question_widgets):
-            if not self._answers[i].strip():
+            if i == index:
+                qw.add_class("ask-user-question-active")
+                qw.remove_class("ask-user-question-inactive")
                 qw.focus_input()
-                break
+            else:
+                qw.remove_class("ask-user-question-active")
+                qw.add_class("ask-user-question-inactive")
 
     def _submit(self) -> None:
+        if self._submitted:
+            return
+        self._submitted = True
         if self._future and not self._future.done():
             self._future.set_result({"type": "answered", "answers": self._answers})
         self.post_message(self.Answered(self._answers))
 
     def action_cancel(self) -> None:  # noqa: D102
+        if self._submitted:
+            return
+        self._submitted = True
         if self._future and not self._future.done():
             self._future.set_result({"type": "cancelled"})
         self.post_message(self.Cancelled())
 
     def on_blur(self, event: events.Blur) -> None:  # noqa: D102
+        # No-op: prevent blur from propagating and dismissing the menu
         pass
 
 
@@ -277,7 +323,7 @@ class _QuestionWidget(Vertical):
                     self._other_input.display = False
                 menu = self._find_menu()
                 if menu is not None:
-                    menu.attempt_submit()
+                    menu.confirm_and_advance(self._index)
 
     def _find_menu(self) -> AskUserMenu | None:
         node: Any = self.parent

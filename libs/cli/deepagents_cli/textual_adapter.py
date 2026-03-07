@@ -545,7 +545,7 @@ async def execute_task_textual(
                 config=config,
                 durability="exit",
             ):
-                if not isinstance(chunk, tuple) or len(chunk) != 3:  # noqa: PLR2004  # Retry count threshold
+                if not isinstance(chunk, tuple) or len(chunk) != 3:  # noqa: PLR2004  # stream chunk is a 3-tuple (namespace, mode, data)
                     continue
 
                 namespace, current_stream_mode, data = chunk
@@ -604,7 +604,7 @@ async def execute_task_textual(
                     if not is_main_agent:
                         continue
 
-                    if not isinstance(data, tuple) or len(data) != 2:  # noqa: PLR2004  # Tool call part index
+                    if not isinstance(data, tuple) or len(data) != 2:  # noqa: PLR2004  # message stream data is a 2-tuple (message, metadata)
                         continue
 
                     message, metadata = data
@@ -905,8 +905,14 @@ async def execute_task_textual(
                     if adapter._request_ask_user:
                         if adapter._set_spinner:
                             await adapter._set_spinner(None)
-                        future = await adapter._request_ask_user(questions)
-                        result = await future
+                        try:
+                            future = await adapter._request_ask_user(questions)
+                            result = await future
+                        except Exception:
+                            logger.exception(
+                                "ask_user widget failed; treating as cancelled"
+                            )
+                            result = {"type": "cancelled"}
 
                         if isinstance(result, dict):
                             if result.get("type") == "answered":
@@ -931,6 +937,10 @@ async def execute_task_textual(
                             }
                             any_rejected = True
                     else:
+                        logger.warning(
+                            "ask_user interrupt received but no UI callback is "
+                            "registered; sending placeholder answers"
+                        )
                         resume_payload[interrupt_id] = {
                             "answers": ["(ask_user not supported)" for _ in questions]
                         }

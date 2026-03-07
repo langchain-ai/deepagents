@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Annotated, Any, Literal, cast
 
 if TYPE_CHECKING:
@@ -22,6 +23,8 @@ from langchain_core.tools import tool
 from langgraph.types import Command, interrupt
 from typing_extensions import TypedDict
 
+logger = logging.getLogger(__name__)
+
 
 class Choice(TypedDict):
     """A single choice option for a multiple choice question."""
@@ -30,7 +33,11 @@ class Choice(TypedDict):
 
 
 class Question(TypedDict):
-    """A question to ask the user."""
+    """A question to ask the user.
+
+    When `type` is `'multiple_choice'`, `choices` must be provided and
+    non-empty. The tool validates this at runtime.
+    """
 
     question: str
 
@@ -87,19 +94,52 @@ When using `ask_user`:
 - Never ask questions you can answer yourself from the available context"""
 
 
-@tool(description=ASK_USER_TOOL_DESCRIPTION)
-def ask_user(
+def _validate_questions(questions: list[Question]) -> None:
+    """Validate that multiple-choice questions include non-empty choices.
+
+    Raises:
+        ValueError: If a `multiple_choice` question has missing or empty `choices`.
+    """
+    for q in questions:
+        if q.get("type") == "multiple_choice" and not q.get("choices"):
+            msg = f"multiple_choice question {q.get('question')!r} requires a non-empty 'choices' list"
+            raise ValueError(msg)
+
+
+def _parse_answers(
+    response: object,
     questions: list[Question],
-    tool_call_id: Annotated[str, InjectedToolCallId],
+    tool_call_id: str,
 ) -> Command[Any]:
-    """Ask the user one or more questions."""
-    ask_request = AskUserRequest(
-        type="ask_user",
-        questions=questions,
-        tool_call_id=tool_call_id,
-    )
-    response: AskUserResponse = interrupt(ask_request)
-    answers = response["answers"]
+    """Parse an interrupt response into a `Command` with a `ToolMessage`.
+
+    Validates that the response is a dict with an `'answers'` key and logs a
+    warning when the number of answers does not match the number of questions.
+
+    Args:
+        response: Raw value returned by `interrupt()`.
+        questions: The questions that were asked.
+        tool_call_id: Originating tool call ID for the `ToolMessage`.
+
+    Returns:
+        `Command` containing a formatted `ToolMessage` with Q&A pairs.
+    """
+    if not isinstance(response, dict) or "answers" not in response:
+        logger.warning(
+            "ask_user received malformed resume payload (expected dict with 'answers' key, got %s); treating all answers as empty",
+            type(response).__name__,
+        )
+        answers: list[str] = []
+    else:
+        answers = cast("list[str]", cast("dict[str, Any]", response)["answers"])
+
+    if len(answers) != len(questions):
+        logger.warning(
+            "ask_user answer count mismatch: expected %d, got %d",
+            len(questions),
+            len(answers),
+        )
+
     formatted_answers = []
     for i, q in enumerate(questions):
         answer = answers[i] if i < len(answers) else "(no answer)"
@@ -126,7 +166,14 @@ class AskUserMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         system_prompt: str = ASK_USER_SYSTEM_PROMPT,
         tool_description: str = ASK_USER_TOOL_DESCRIPTION,
     ) -> None:
-        """Initialize AskUserMiddleware."""
+        """Initialize AskUserMiddleware.
+
+        Args:
+            system_prompt: System-level instructions injected into every LLM
+                request to guide `ask_user` usage.
+            tool_description: Description string passed to the `ask_user` tool
+                decorator, visible to the LLM in the tool schema.
+        """
         super().__init__()
         self.system_prompt = system_prompt
         self.tool_description = tool_description
@@ -137,23 +184,14 @@ class AskUserMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             tool_call_id: Annotated[str, InjectedToolCallId],
         ) -> Command[Any]:
             """Ask the user one or more questions."""
+            _validate_questions(questions)
             ask_request = AskUserRequest(
                 type="ask_user",
                 questions=questions,
                 tool_call_id=tool_call_id,
             )
-            response: AskUserResponse = interrupt(ask_request)
-            answers = response["answers"]
-            formatted_answers = []
-            for i, q in enumerate(questions):
-                answer = answers[i] if i < len(answers) else "(no answer)"
-                formatted_answers.append(f"Q: {q['question']}\nA: {answer}")
-            result_text = "\n\n".join(formatted_answers)
-            return Command(
-                update={
-                    "messages": [ToolMessage(result_text, tool_call_id=tool_call_id)],
-                }
-            )
+            response = interrupt(ask_request)
+            return _parse_answers(response, questions, tool_call_id)
 
         _ask_user.name = "ask_user"
         self.tools = [_ask_user]

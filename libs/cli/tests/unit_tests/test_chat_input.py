@@ -983,6 +983,48 @@ class TestModePrefixStripping:
             assert app.submitted[0].value == "!already-prefixed"
 
 
+class TestExitModePreservesText:
+    """Exiting shell/command mode should preserve typed text."""
+
+    async def test_exit_shell_mode_keeps_text(self) -> None:
+        """Pressing Escape in shell mode should switch to normal but keep text."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            # Enter shell mode with some text
+            chat._text_area.text = "!ls -la"
+            await _pause_for_strip(pilot)
+            assert chat.mode == "shell"
+            assert chat._text_area.text == "ls -la"
+
+            # Exit mode — text should be preserved
+            assert chat.exit_mode() is True
+            assert chat.mode == "normal"
+            assert chat._text_area.text == "ls -la"
+
+    async def test_exit_command_mode_keeps_text(self) -> None:
+        """Pressing Escape in command mode should switch to normal but keep text."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.insert("/")
+            await _pause_for_strip(pilot)
+            assert chat.mode == "command"
+
+            chat.dismiss_completion()
+            chat._text_area.insert("help")
+            await pilot.pause()
+            assert chat._text_area.text == "help"
+
+            assert chat.exit_mode() is True
+            assert chat.mode == "normal"
+            assert chat._text_area.text == "help"
+
+
 class TestHistoryRecallModeReset:
     """Regression: history recall must not inherit a stale shell/command mode."""
 

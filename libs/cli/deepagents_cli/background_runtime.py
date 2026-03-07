@@ -109,6 +109,8 @@ class BackgroundRuntime:
             str, asyncio.Future[tuple[BackgroundApprovalDecision, str | None]]
         ] = {}
         self._task_hitl_event_ids: dict[str, str] = {}
+        self._hitl_idle_event = asyncio.Event()
+        self._hitl_idle_event.set()
 
         @self._broker.task(task_name="deepagents.background.execute_shell")
         async def _execute_background_shell(
@@ -326,6 +328,19 @@ class BackgroundRuntime:
                 return None
             return self._hitl_events.popleft()
 
+    def pending_hitl_count(self) -> int:
+        """Return number of pending HITL approvals."""
+        with self._lock:
+            return len(self._hitl_waiters)
+
+    async def wait_for_no_pending_hitl(self) -> None:
+        """Wait until all pending HITL approvals are resolved."""
+        with self._lock:
+            if not self._hitl_waiters:
+                return
+            idle_event = self._hitl_idle_event
+        await idle_event.wait()
+
     def resolve_hitl_event(
         self,
         event_id: str,
@@ -336,6 +351,7 @@ class BackgroundRuntime:
         """Resolve a pending HITL event."""
         with self._lock:
             waiter = self._hitl_waiters.pop(event_id, None)
+            self._sync_hitl_idle_event_locked()
         if waiter is None or waiter.done():
             return
         waiter.set_result((decision, message))
@@ -565,6 +581,7 @@ class BackgroundRuntime:
             self._hitl_waiters[event_id] = waiter
             self._task_hitl_event_ids[task_id] = event_id
             self._hitl_events.append(approval_event)
+            self._sync_hitl_idle_event_locked()
             self._pending_updates.append(
                 f"Task `{task_id}` awaiting approval for shell execution."
             )
@@ -574,6 +591,12 @@ class BackgroundRuntime:
         finally:
             with self._lock:
                 self._task_hitl_event_ids.pop(task_id, None)
+
+    def _sync_hitl_idle_event_locked(self) -> None:
+        if self._hitl_waiters:
+            self._hitl_idle_event.clear()
+            return
+        self._hitl_idle_event.set()
 
 
 def _safe_str(value: object) -> str | None:

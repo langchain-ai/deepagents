@@ -43,19 +43,21 @@ class BackgroundMiddleware(AgentMiddleware):
         Returns:
             Message update payload when updates are available, else `None`.
         """
-        updates = self._runtime.consume_status_updates()
-        if not updates:
-            return None
+        return self._build_background_update_message()
 
-        lines = ["[SYSTEM][BACKGROUND] Recent background task updates:"]
-        lines.extend(f"- {line}" for line in updates)
-        if any("running" in item.lower() for item in updates):
-            lines.append(
-                "[SYSTEM][BACKGROUND] If you depend on results, call "
-                "`wait_background_task` before proceeding."
-            )
+    async def abefore_model(
+        self,
+        state: BackgroundMiddlewareState,  # noqa: ARG002  # required by interface
+        runtime: Runtime[Any],  # noqa: ARG002  # required by interface
+    ) -> dict[str, Any] | None:
+        """Block model calls while background HITL approvals are pending.
 
-        return {"messages": [HumanMessage(content="\n".join(lines))]}
+        Returns:
+            Message update payload when updates are available, else `None`.
+        """
+        if self._runtime.pending_hitl_count() > 0:
+            await self._runtime.wait_for_no_pending_hitl()
+        return self._build_background_update_message()
 
     def _build_submit_tool(self) -> BaseTool:
         async def _submit_background_task(command: str) -> str:
@@ -147,6 +149,20 @@ class BackgroundMiddleware(AgentMiddleware):
             ),
             coroutine=_wait_background_task,
         )
+
+    def _build_background_update_message(self) -> dict[str, Any] | None:
+        updates = self._runtime.consume_status_updates()
+        if not updates:
+            return None
+
+        lines = ["[SYSTEM][BACKGROUND] Recent background task updates:"]
+        lines.extend(f"- {line}" for line in updates)
+        if any("running" in item.lower() for item in updates):
+            lines.append(
+                "[SYSTEM][BACKGROUND] If you depend on results, call "
+                "`wait_background_task` before proceeding."
+            )
+        return {"messages": [HumanMessage(content="\n".join(lines))]}
 
 
 __all__ = ["BackgroundMiddleware", "BackgroundMiddlewareState"]

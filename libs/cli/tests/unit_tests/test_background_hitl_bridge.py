@@ -124,3 +124,30 @@ class TestBackgroundHitlBridge:
                 assert saw_completion_message
         finally:
             await runtime.shutdown()
+
+    async def test_bridge_resolves_pending_hitl_idle_wait(self) -> None:
+        runtime = BackgroundRuntime(require_hitl_for_shell=True)
+        await runtime.start()
+        try:
+            app = DeepAgentsApp(background_runtime=runtime)
+
+            async def approve_request(
+                _requests, _assistant_id
+            ) -> asyncio.Future[dict[str, str]]:
+                await asyncio.sleep(0)
+                fut = asyncio.get_running_loop().create_future()
+                fut.set_result({"type": "approve"})
+                return fut
+
+            app._request_approval = approve_request  # type: ignore[method-assign]
+
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                task_id = await runtime.submit_shell_task("printf approved")
+                idle_wait = asyncio.create_task(runtime.wait_for_no_pending_hitl())
+                await asyncio.wait_for(idle_wait, timeout=2)
+                final = await runtime.wait_task(task_id, timeout_seconds=5)
+                assert final.status == BackgroundTaskStatus.SUCCEEDED
+                assert runtime.pending_hitl_count() == 0
+        finally:
+            await runtime.shutdown()

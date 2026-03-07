@@ -17,6 +17,7 @@ from deepagents_cli.background_runtime import (
 
 if TYPE_CHECKING:
     from langchain_core.tools import BaseTool
+    from langgraph.runtime import Runtime
 
 
 def _find_tool(middleware: BackgroundMiddleware, name: str) -> BaseTool:
@@ -109,3 +110,42 @@ class TestBackgroundMiddleware:
         assert isinstance(messages, list)
         assert isinstance(messages[0], HumanMessage)
         assert "[SYSTEM][BACKGROUND]" in str(messages[0].content)
+
+    async def test_abefore_model_blocks_when_pending_hitl_exists(self) -> None:
+        runtime = BackgroundRuntime(require_hitl_for_shell=False)
+        middleware = BackgroundMiddleware(runtime)
+
+        wait_for_no_pending_hitl = AsyncMock()
+        runtime.pending_hitl_count = MagicMock(return_value=1)  # type: ignore[method-assign]
+        runtime.wait_for_no_pending_hitl = wait_for_no_pending_hitl  # type: ignore[method-assign]
+        runtime.consume_status_updates = MagicMock(  # type: ignore[method-assign]
+            return_value=["Task `a1` succeeded."]
+        )
+
+        result = await middleware.abefore_model(
+            state={"messages": []},
+            runtime=cast("Runtime[Any]", MagicMock()),
+        )
+
+        wait_for_no_pending_hitl.assert_awaited_once()
+        assert result is not None
+        messages = result.get("messages")
+        assert isinstance(messages, list)
+        assert isinstance(messages[0], HumanMessage)
+
+    async def test_abefore_model_skips_wait_when_no_pending_hitl(self) -> None:
+        runtime = BackgroundRuntime(require_hitl_for_shell=False)
+        middleware = BackgroundMiddleware(runtime)
+
+        wait_for_no_pending_hitl = AsyncMock()
+        runtime.pending_hitl_count = MagicMock(return_value=0)  # type: ignore[method-assign]
+        runtime.wait_for_no_pending_hitl = wait_for_no_pending_hitl  # type: ignore[method-assign]
+        runtime.consume_status_updates = MagicMock(return_value=[])  # type: ignore[method-assign]
+
+        result = await middleware.abefore_model(
+            state={"messages": []},
+            runtime=cast("Runtime[Any]", MagicMock()),
+        )
+
+        wait_for_no_pending_hitl.assert_not_called()
+        assert result is None

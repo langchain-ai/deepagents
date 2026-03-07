@@ -12,7 +12,7 @@ from deepagents_cli.tool_display import format_tool_display
 from deepagents_cli.widgets.ask_user import AskUserMenu
 
 if TYPE_CHECKING:
-    from deepagents.middleware.ask_user import Question
+    from deepagents_cli.ask_user import Question
 
 
 class _AskUserTestApp(App[None]):

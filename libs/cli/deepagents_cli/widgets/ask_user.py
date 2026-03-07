@@ -12,13 +12,14 @@ from textual.widgets import Input, Static
 if TYPE_CHECKING:
     import asyncio
 
-    from deepagents.middleware.ask_user import (
+    from textual import events
+    from textual.app import ComposeResult
+
+    from deepagents_cli.ask_user import (
         AskUserWidgetResult,
         Choice,
         Question,
     )
-    from textual import events
-    from textual.app import ComposeResult
 
 from deepagents_cli.config import (
     CharsetMode,

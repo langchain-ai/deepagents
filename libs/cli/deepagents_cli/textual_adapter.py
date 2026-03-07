@@ -15,8 +15,9 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
-    from deepagents.middleware.ask_user import AskUserRequest
     from rich.console import Console
+
+    from deepagents_cli.ask_user import AskUserRequest
 
 from langchain.agents.middleware.human_in_the_loop import (
     ApproveDecision,

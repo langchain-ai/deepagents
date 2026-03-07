@@ -525,6 +525,12 @@ def create_cli_agent(
     # Build middleware stack based on enabled features
     agent_middleware = []
 
+    # Add ask_user middleware (must be early so its tool is available)
+    if enable_ask_user:
+        from deepagents_cli.ask_user import AskUserMiddleware
+
+        agent_middleware.append(AskUserMiddleware())
+
     # Add memory middleware
     if enable_memory:
         memory_sources = [str(settings.get_user_agent_md_path(assistant_id))]
@@ -658,7 +664,6 @@ def create_cli_agent(
         backend=composite_backend,
         middleware=agent_middleware,
         interrupt_on=interrupt_on,
-        enable_ask_user=enable_ask_user,
         checkpointer=final_checkpointer,
         subagents=custom_subagents or None,
     ).with_config(config)

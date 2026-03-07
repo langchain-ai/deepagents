@@ -74,7 +74,6 @@ if TYPE_CHECKING:
 
     from deepagents.backends import CompositeBackend
     from deepagents.backends.sandbox import SandboxBackendProtocol
-    from deepagents.middleware.ask_user import Question
     from deepagents.middleware.summarization import SummarizationMiddleware
     from langchain_core.runnables import RunnableConfig
     from langchain_core.tools import BaseTool
@@ -87,6 +86,7 @@ if TYPE_CHECKING:
     from textual.widgets import Static
     from textual.worker import Worker
 
+    from deepagents_cli.ask_user import Question
     from deepagents_cli.mcp_tools import MCPServerInfo
 
 # iTerm2 Cursor Guide Workaround

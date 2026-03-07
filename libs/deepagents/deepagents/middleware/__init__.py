@@ -47,7 +47,6 @@ Use a **plain tool** when:
 * The tool is specific to a single consumer (e.g. CLI-only)
 """
 
-from deepagents.middleware.ask_user import AskUserMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.skills import SkillsMiddleware
@@ -55,7 +54,6 @@ from deepagents.middleware.subagents import CompiledSubAgent, SubAgent, SubAgent
 from deepagents.middleware.summarization import SummarizationMiddleware, SummarizationToolMiddleware
 
 __all__ = [
-    "AskUserMiddleware",
     "CompiledSubAgent",
     "FilesystemMiddleware",
     "MemoryMiddleware",

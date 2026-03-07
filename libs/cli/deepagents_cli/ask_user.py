@@ -40,20 +40,32 @@ class Question(TypedDict):
 
     type: Annotated[
         Literal["text", "multiple_choice"],
-        Field(description=("Question type. 'text' for free-form input, 'multiple_choice' for predefined options.")),
+        Field(
+            description=(
+                "Question type. 'text' for free-form input, 'multiple_choice' for "
+                "predefined options."
+            )
+        ),
     ]
 
     choices: NotRequired[
         Annotated[
             list[Choice],
-            Field(description=("Options for multiple_choice questions. An 'Other' free-form option is always appended automatically.")),
+            Field(
+                description=(
+                    "Options for multiple_choice questions. An 'Other' free-form "
+                    "option is always appended automatically."
+                )
+            ),
         ]
     ]
 
     required: NotRequired[
         Annotated[
             bool,
-            Field(description="Whether the user must answer. Defaults to true if omitted."),
+            Field(
+                description="Whether the user must answer. Defaults to true if omitted."
+            ),
         ]
     ]
 
@@ -119,7 +131,7 @@ Use this tool when:
 Do NOT use this tool for:
 - Simple yes/no confirmations (just proceed with your best judgment)
 - Questions you can answer yourself from context
-- Trivial decisions that don't meaningfully affect the outcome"""
+- Trivial decisions that don't meaningfully affect the outcome"""  # noqa: E501
 
 ASK_USER_SYSTEM_PROMPT = """## `ask_user`
 
@@ -131,7 +143,7 @@ When using `ask_user`:
 - Use multiple choice when there are clear options to choose from
 - Use text input when you need free-form responses
 - Group related questions into a single ask_user call rather than making multiple calls
-- Never ask questions you can answer yourself from the available context"""
+- Never ask questions you can answer yourself from the available context"""  # noqa: E501
 
 
 def _validate_questions(questions: list[Question]) -> None:
@@ -142,7 +154,11 @@ def _validate_questions(questions: list[Question]) -> None:
     """
     for q in questions:
         if q.get("type") == "multiple_choice" and not q.get("choices"):
-            msg = f"multiple_choice question {q.get('question')!r} requires a non-empty 'choices' list"
+            msg = (
+                f"multiple_choice question "
+                f"{q.get('question')!r} requires a "
+                f"non-empty 'choices' list"
+            )
             raise ValueError(msg)
 
 
@@ -167,7 +183,9 @@ def _parse_answers(
     """
     if not isinstance(response, dict) or "answers" not in response:
         logger.error(
-            "ask_user received malformed resume payload (expected dict with 'answers' key, got %s); treating all answers as empty",
+            "ask_user received malformed resume payload "
+            "(expected dict with 'answers' key, got %s); "
+            "treating all answers as empty",
             type(response).__name__,
         )
         answers: list[str] = []
@@ -224,7 +242,11 @@ class AskUserMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             questions: list[Question],
             tool_call_id: Annotated[str, InjectedToolCallId],
         ) -> Command[Any]:
-            """Ask the user one or more questions."""
+            """Ask the user one or more questions.
+
+            Returns:
+                `Command` containing the parsed user answers as a `ToolMessage`.
+            """
             _validate_questions(questions)
             ask_request = AskUserRequest(
                 type="ask_user",
@@ -242,7 +264,11 @@ class AskUserMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         request: ModelRequest[ContextT],
         handler: Callable[[ModelRequest[ContextT]], ModelResponse[ResponseT]],
     ) -> ModelResponse[ResponseT] | AIMessage:
-        """Inject the ask_user system prompt."""
+        """Inject the ask_user system prompt.
+
+        Returns:
+            Model response from the wrapped handler.
+        """
         if request.system_message is not None:
             new_system_content = [
                 *request.system_message.content_blocks,
@@ -250,15 +276,23 @@ class AskUserMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             ]
         else:
             new_system_content = [{"type": "text", "text": self.system_prompt}]
-        new_system_message = SystemMessage(content=cast("list[str | dict[str, str]]", new_system_content))
+        new_system_message = SystemMessage(
+            content=cast("list[str | dict[str, str]]", new_system_content)
+        )
         return handler(request.override(system_message=new_system_message))
 
     async def awrap_model_call(
         self,
         request: ModelRequest[ContextT],
-        handler: Callable[[ModelRequest[ContextT]], Awaitable[ModelResponse[ResponseT]]],
+        handler: Callable[
+            [ModelRequest[ContextT]], Awaitable[ModelResponse[ResponseT]]
+        ],
     ) -> ModelResponse[ResponseT] | AIMessage:
-        """Inject the ask_user system prompt (async)."""
+        """Inject the ask_user system prompt (async).
+
+        Returns:
+            Model response from the wrapped handler.
+        """
         if request.system_message is not None:
             new_system_content = [
                 *request.system_message.content_blocks,
@@ -266,5 +300,7 @@ class AskUserMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             ]
         else:
             new_system_content = [{"type": "text", "text": self.system_prompt}]
-        new_system_message = SystemMessage(content=cast("list[str | dict[str, str]]", new_system_content))
+        new_system_message = SystemMessage(
+            content=cast("list[str | dict[str, str]]", new_system_content)
+        )
         return await handler(request.override(system_message=new_system_message))

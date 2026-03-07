@@ -58,29 +58,6 @@ def _micro_tool_call_ratio() -> float | None:
     return round(total_actual / total_expected, 2)
 
 
-def _solve_rate() -> float | None:
-    """Compute solve rate: sum of per-test expected_steps / duration_s for solved tests.
-
-    For each test that passed and has both `expected_steps` and `duration_s`,
-    the per-test contribution is ``expected_steps / duration_s``. Tests that
-    did not pass contribute zero. The result is the mean across all eligible
-    tests.
-
-    Returns ``None`` when no tests have the required data.
-    """
-    values: list[float] = []
-    for r in _EFFICIENCY_RESULTS:
-        if r.expected_steps is None or r.duration_s is None:
-            continue
-        if r.passed:
-            values.append(r.expected_steps / r.duration_s if r.duration_s > 0 else 0.0)
-        else:
-            values.append(0.0)
-    if not values:
-        return None
-    return round(statistics.mean(values), 4)
-
-
 def pytest_configure(config: pytest.Config) -> None:
     _ = config
     _evals_utils._on_efficiency_result = _EFFICIENCY_RESULTS.append
@@ -101,16 +78,11 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
 
     _RESULTS["total"] += 1
 
-    duration = float(report.duration)
-    _DURATIONS_S.append(duration)
+    _DURATIONS_S.append(float(report.duration))
 
     outcome = report.outcome
     if outcome in {"passed", "failed", "skipped"}:
         _RESULTS[outcome] += 1
-
-    if _EFFICIENCY_RESULTS and _EFFICIENCY_RESULTS[-1].duration_s is None:
-        _EFFICIENCY_RESULTS[-1].duration_s = duration
-        _EFFICIENCY_RESULTS[-1].passed = outcome == "passed"
 
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
@@ -121,7 +93,6 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     correctness = round((_RESULTS["passed"] / _RESULTS["total"]) if _RESULTS["total"] else 0.0, 2)
     step_ratio = _micro_step_ratio()
     tool_call_ratio = _micro_tool_call_ratio()
-    solve_rate = _solve_rate()
     median_duration_s = round(statistics.median(_DURATIONS_S), 4) if _DURATIONS_S else 0.0
 
     payload: dict[str, object] = {
@@ -132,7 +103,6 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         "correctness": correctness,
         "step_ratio": step_ratio,
         "tool_call_ratio": tool_call_ratio,
-        "solve_rate": solve_rate,
         "median_duration_s": median_duration_s,
     }
 
@@ -150,8 +120,6 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
             terminal_reporter.write_line(f"step_ratio: {step_ratio:.2f}")
         if tool_call_ratio is not None:
             terminal_reporter.write_line(f"tool_call_ratio: {tool_call_ratio:.2f}")
-        if solve_rate is not None:
-            terminal_reporter.write_line(f"solve_rate: {solve_rate:.4f}")
         terminal_reporter.write_line(f"median_duration_s: {median_duration_s:.4f}")
 
     report_path_opt = session.config.getoption("--evals-report-file")

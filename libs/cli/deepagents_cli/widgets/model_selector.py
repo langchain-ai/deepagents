@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from textual.binding import Binding, BindingType
 from textual.containers import Container, Vertical, VerticalScroll
@@ -201,12 +201,17 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         self,
         current_model: str | None = None,
         current_provider: str | None = None,
+        cli_profile_override: dict[str, Any] | None = None,
     ) -> None:
         """Initialize the ModelSelectorScreen.
 
         Args:
             current_model: The currently active model name (to highlight).
             current_provider: The provider of the current model.
+            cli_profile_override: Extra profile fields from `--profile-override`.
+
+                Merged on top of upstream + config.toml profiles so that CLI
+                overrides appear with `*` markers in the detail footer.
         """
         super().__init__()
         self._current_model = current_model
@@ -231,7 +236,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
 
         config = ModelConfig.load()
         self._default_spec: str | None = config.default_model
-        self._profiles = get_model_profiles()
+        self._profiles = get_model_profiles(cli_override=cli_profile_override)
 
     def _find_current_model_index(self) -> int:
         """Find the index of the current model in the filtered list.
@@ -593,7 +598,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             "structured_output",
         }
         has_visible_override = bool(overridden & displayed_keys)
-        line4 = "[dim]* = config.toml override[/dim]" if has_visible_override else ""
+        line4 = "[dim]* = override[/dim]" if has_visible_override else ""
 
         return f"{line1}\n{line2}\n{line3}\n{line4}"
 

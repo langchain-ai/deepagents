@@ -1914,3 +1914,75 @@ max_input_tokens = 100000
                 f"{spec}: overridden_keys {entry['overridden_keys']} "
                 f"not a subset of profile keys {set(entry['profile'].keys())}"
             )
+
+    def test_cli_override_merged_on_top(self) -> None:
+        """CLI override is merged on top of upstream + config.toml."""
+        fake_profiles = {
+            "claude-sonnet-4-5": {
+                "tool_calling": True,
+                "max_input_tokens": 200000,
+                "max_output_tokens": 64000,
+            },
+        }
+
+        def mock_load(module_path: str) -> dict[str, Any]:
+            if module_path == "langchain_anthropic.data._profiles":
+                return fake_profiles
+            msg = "not installed"
+            raise ImportError(msg)
+
+        with patch(
+            "deepagents_cli.model_config._load_provider_profiles",
+            side_effect=mock_load,
+        ):
+            profiles = get_model_profiles(cli_override={"max_input_tokens": 4096})
+
+        entry = profiles["anthropic:claude-sonnet-4-5"]
+        assert entry["profile"]["max_input_tokens"] == 4096
+        assert entry["profile"]["max_output_tokens"] == 64000
+        assert "max_input_tokens" in entry["overridden_keys"]
+
+    def test_cli_override_skips_cache(self) -> None:
+        """cli_override path does not populate module-level cache."""
+        fake_profiles = {
+            "test-model": {"tool_calling": True},
+        }
+
+        def mock_load(module_path: str) -> dict[str, Any]:
+            if module_path == "langchain_anthropic.data._profiles":
+                return fake_profiles
+            msg = "not installed"
+            raise ImportError(msg)
+
+        with patch(
+            "deepagents_cli.model_config._load_provider_profiles",
+            side_effect=mock_load,
+        ):
+            get_model_profiles(cli_override={"max_input_tokens": 4096})
+
+        assert model_config._profiles_cache is None
+
+    def test_cli_override_on_config_only_model(self, tmp_path: Path) -> None:
+        """CLI override applies to config-only models with no upstream profile."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.custom]
+models = ["my-model"]
+[models.providers.custom.profile]
+max_input_tokens = 8192
+""")
+
+        with (
+            patch(
+                "deepagents_cli.model_config._load_provider_profiles",
+                side_effect=ImportError("not installed"),
+            ),
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+        ):
+            profiles = get_model_profiles(cli_override={"max_output_tokens": 2048})
+
+        entry = profiles["custom:my-model"]
+        assert entry["profile"]["max_input_tokens"] == 8192
+        assert entry["profile"]["max_output_tokens"] == 2048
+        assert "max_output_tokens" in entry["overridden_keys"]
+        assert "max_input_tokens" in entry["overridden_keys"]

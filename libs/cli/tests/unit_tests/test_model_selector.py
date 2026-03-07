@@ -687,7 +687,7 @@ class TestModelDetailFooter:
         )
         result = ModelSelectorScreen._format_footer(entry, UNICODE_GLYPHS)
         assert "*100.0K" in result
-        assert "config.toml override" in result
+        assert "* = override" in result
 
     def test_format_footer_partial_profile(self) -> None:
         """Profile with only token counts still renders without crash."""
@@ -726,7 +726,7 @@ class TestModelDetailFooter:
             overridden_keys=frozenset({"supports_thinking"}),
         )
         result = ModelSelectorScreen._format_footer(entry, UNICODE_GLYPHS)
-        assert "config.toml override" not in result
+        assert "* = override" not in result
 
     def test_format_footer_non_numeric_tokens(self) -> None:
         """Non-numeric token values render gracefully instead of crashing."""
@@ -740,6 +740,23 @@ class TestModelDetailFooter:
         result = ModelSelectorScreen._format_footer(entry, UNICODE_GLYPHS)
         assert "unlimited" in result
         assert "64.0K" in result
+
+    def test_format_footer_cli_override(self) -> None:
+        """CLI-overridden key shows * marker and override notice."""
+        from deepagents_cli.config import UNICODE_GLYPHS
+        from deepagents_cli.model_config import ModelProfileEntry
+
+        entry = ModelProfileEntry(
+            profile={
+                "max_input_tokens": 4096,
+                "max_output_tokens": 64000,
+                "tool_calling": True,
+            },
+            overridden_keys=frozenset({"max_input_tokens"}),
+        )
+        result = ModelSelectorScreen._format_footer(entry, UNICODE_GLYPHS)
+        assert "*4096" in result or "*4.1K" in result or "*4.0K" in result
+        assert "* = override" in result
 
     async def test_footer_updates_on_navigation(self) -> None:
         """Footer content changes when navigating to a different model."""

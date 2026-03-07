@@ -400,7 +400,10 @@ def get_available_models() -> dict[str, list[str]]:
     return available
 
 
-def get_model_profiles() -> Mapping[str, ModelProfileEntry]:
+def get_model_profiles(
+    *,
+    cli_override: dict[str, Any] | None = None,
+) -> Mapping[str, ModelProfileEntry]:
     """Load upstream profiles merged with config.toml overrides.
 
     Keyed by `provider:model` spec string. Each entry contains the
@@ -409,13 +412,22 @@ def get_model_profiles() -> Mapping[str, ModelProfileEntry]:
     Unlike `get_available_models()`, this includes all models from upstream
     profiles regardless of capability filters (tool calling, text I/O).
 
-    Results are cached; use `clear_caches()` to reset.
+    Results are cached when `cli_override` is None; use `clear_caches()`
+    to reset. When `cli_override` is provided the cache is bypassed
+    because CLI overrides are session-specific.
+
+    Args:
+        cli_override: Extra profile fields from `--profile-override`.
+
+            When provided, these are merged on top of every profile entry
+            (after upstream + config.toml) and their keys are added to
+            `overridden_keys`.
 
     Returns:
         Read-only mapping of spec strings to profile entries.
     """
     global _profiles_cache  # noqa: PLW0603  # Module-level cache requires global statement
-    if _profiles_cache is not None:
+    if cli_override is None and _profiles_cache is not None:
         return _profiles_cache
 
     result: dict[str, ModelProfileEntry] = {}
@@ -446,9 +458,13 @@ def get_model_profiles() -> Mapping[str, ModelProfileEntry]:
             seen_specs.add(spec)
             overrides = config.get_profile_overrides(provider, model_name=model_name)
             merged = {**upstream_profile, **overrides}
+            overridden_keys = set(overrides)
+            if cli_override:
+                merged = {**merged, **cli_override}
+                overridden_keys |= set(cli_override)
             result[spec] = ModelProfileEntry(
                 profile=merged,
-                overridden_keys=frozenset(overrides),
+                overridden_keys=frozenset(overridden_keys),
             )
 
     # Add config-only models that have no upstream profile.
@@ -460,13 +476,21 @@ def get_model_profiles() -> Mapping[str, ModelProfileEntry]:
                 overrides = config.get_profile_overrides(
                     provider_name, model_name=model_name
                 )
+                merged = dict(overrides)
+                overridden_keys = set(overrides)
+                if cli_override:
+                    merged = {**merged, **cli_override}
+                    overridden_keys |= set(cli_override)
                 result[spec] = ModelProfileEntry(
-                    profile=dict(overrides),
-                    overridden_keys=frozenset(overrides),
+                    profile=merged,
+                    overridden_keys=frozenset(overridden_keys),
                 )
 
-    _profiles_cache = MappingProxyType(result)
-    return _profiles_cache
+    frozen = MappingProxyType(result)
+    # Only populate cache for the static (no CLI override) path.
+    if cli_override is None:
+        _profiles_cache = frozen
+    return frozen
 
 
 def _is_langchain_supported_provider(provider: str) -> bool:

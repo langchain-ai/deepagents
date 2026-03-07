@@ -2485,7 +2485,9 @@ class DeepAgentsApp(App):
             self.exit()
         else:
             self._quit_pending = True
-            self.notify("Press Ctrl+C again to quit", timeout=3)
+            quit_timeout = 3
+            self.notify("Press Ctrl+C again to quit", timeout=quit_timeout)
+            self.set_timer(quit_timeout, lambda: setattr(self, "_quit_pending", False))
 
     def action_interrupt(self) -> None:
         """Handle escape key.

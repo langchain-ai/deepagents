@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from langgraph.pregel import Pregel
     from langgraph.runtime import Runtime
 
+    from deepagents_cli.background_runtime import BackgroundRuntime
     from deepagents_cli.mcp_tools import MCPServerInfo
 
 from deepagents_cli.config import (
@@ -436,6 +437,8 @@ def create_cli_agent(
     enable_skills: bool = True,
     enable_shell: bool = True,
     enable_ask_user: bool = False,
+    enable_background_tasks: bool = False,
+    background_runtime: BackgroundRuntime | None = None,
     checkpointer: BaseCheckpointSaver | None = None,
     mcp_server_info: list[MCPServerInfo] | None = None,
 ) -> tuple[Pregel, CompositeBackend]:
@@ -469,6 +472,9 @@ def create_cli_agent(
         enable_shell: Enable shell execution via `LocalShellBackend`
             (only in local mode). When enabled, the `execute` tool is available.
         enable_ask_user: Enable the `ask_user` tool for interactive questioning.
+        enable_background_tasks: Enable background-task middleware tools.
+        background_runtime: Shared background runtime used by
+            `BackgroundMiddleware`.
         checkpointer: Optional checkpointer for session persistence.
 
             If `None`, uses `InMemorySaver` (no persistence across
@@ -596,6 +602,11 @@ def create_cli_agent(
         agent_middleware.append(
             LocalContextMiddleware(backend=backend, mcp_server_info=mcp_server_info)
         )
+
+    if enable_background_tasks and background_runtime is not None:
+        from deepagents_cli.background_middleware import BackgroundMiddleware
+
+        agent_middleware.append(BackgroundMiddleware(background_runtime))
 
     # Get or use custom system prompt
     if system_prompt is None:

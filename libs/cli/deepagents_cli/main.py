@@ -21,7 +21,7 @@ import sys
 import traceback
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 if TYPE_CHECKING:
     from langchain_core.tools import BaseTool
@@ -431,6 +431,18 @@ def parse_args() -> argparse.Namespace:
         help="Trust project-level MCP configs with stdio servers "
         "(skip interactive approval prompt)",
     )
+    parser.add_argument(
+        "--background-tasks",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable background task tools in interactive mode",
+    )
+    parser.add_argument(
+        "--background-runtime-mode",
+        choices=["inmemory"],
+        default="inmemory",
+        help="Background runtime mode (default: inmemory)",
+    )
 
     try:
         from importlib.metadata import (
@@ -483,6 +495,8 @@ async def run_textual_cli_async(
     mcp_config_path: str | None = None,
     no_mcp: bool = False,
     trust_project_mcp: bool | None = None,
+    enable_background_tasks: bool = False,
+    background_runtime_mode: str = "inmemory",
 ) -> "AppResult":
     """Run the Textual CLI interface (async version).
 
@@ -512,6 +526,8 @@ async def run_textual_cli_async(
         trust_project_mcp: Controls project-level stdio server trust.
 
             `True` to allow, `False` to deny, `None` to check trust store.
+        enable_background_tasks: Enable background-task tools/runtime.
+        background_runtime_mode: Background runtime mode (`inmemory`).
 
     Returns:
         An `AppResult` with the return code and final thread ID.
@@ -586,6 +602,7 @@ async def run_textual_cli_async(
         # Handle sandbox mode
         sandbox_backend = None
         sandbox_cm = None
+        background_runtime = None
 
         if sandbox_type != "none":
             # Deferred: sandbox_factory imports provider-specific SDKs,
@@ -608,6 +625,19 @@ async def run_textual_cli_async(
                 console.print(Text(str(e), style="dim"))
                 sys.exit(1)
 
+        if enable_background_tasks:
+            from deepagents_cli.background_runtime import BackgroundRuntime
+
+            try:
+                mode = cast("Literal['inmemory']", background_runtime_mode)
+                background_runtime = BackgroundRuntime(mode=mode)
+                await background_runtime.start()
+            except Exception as e:  # noqa: BLE001  # Friendly startup error
+                console.print()
+                console.print("[red]Background runtime startup failed[/red]")
+                console.print(Text(str(e), style="dim"))
+                sys.exit(1)
+
         try:
             agent, composite_backend = create_cli_agent(
                 model=model,
@@ -616,6 +646,9 @@ async def run_textual_cli_async(
                 sandbox=sandbox_backend,
                 sandbox_type=sandbox_type if sandbox_type != "none" else None,
                 auto_approve=auto_approve,
+                enable_ask_user=enable_ask_user,
+                enable_background_tasks=enable_background_tasks,
+                background_runtime=background_runtime,
                 enable_ask_user=enable_ask_user,
                 checkpointer=checkpointer,
                 mcp_server_info=mcp_server_info,
@@ -649,6 +682,7 @@ async def run_textual_cli_async(
                 sandbox_type=sandbox_type if sandbox_type != "none" else None,
                 mcp_server_info=mcp_server_info,
                 profile_override=profile_override,
+                background_runtime=background_runtime,
             )
         finally:
             # Clean up MCP session manager if initialized
@@ -659,6 +693,11 @@ async def run_textual_cli_async(
                     logger.warning("MCP session cleanup failed", exc_info=True)
 
             # Clean up sandbox after app exits (success or error)
+            if background_runtime is not None:
+                try:
+                    await background_runtime.shutdown()
+                except Exception:
+                    logger.warning("Background runtime cleanup failed", exc_info=True)
             if sandbox_cm is not None:
                 try:
                     sandbox_cm.__exit__(None, None, None)
@@ -1359,6 +1398,8 @@ def cli_main() -> None:
                         mcp_config_path=getattr(args, "mcp_config", None),
                         no_mcp=getattr(args, "no_mcp", False),
                         trust_project_mcp=mcp_trust_decision,
+                        enable_background_tasks=args.background_tasks,
+                        background_runtime_mode=args.background_runtime_mode,
                     )
                 )
                 return_code = result.return_code

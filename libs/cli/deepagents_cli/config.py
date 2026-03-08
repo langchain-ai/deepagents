@@ -507,6 +507,89 @@ class Settings:
             shell_allow_list=shell_allow_list,
         )
 
+    def reload_from_environment(self, *, start_path: Path | None = None) -> list[str]:
+        """Reload selected settings from environment variables and project files.
+
+        This refreshes only fields that are expected to change at runtime
+        (API keys, project root, shell allow-list, and LangSmith settings).
+
+        Runtime model state and the original user LangSmith project are
+        intentionally preserved.
+
+        Args:
+            start_path: Directory to start project detection from (defaults to cwd).
+
+        Returns:
+            A list of human-readable change descriptions.
+        """
+        dotenv.load_dotenv(override=True)
+
+        api_key_fields = {
+            "openai_api_key",
+            "anthropic_api_key",
+            "google_api_key",
+            "nvidia_api_key",
+            "tavily_api_key",
+        }
+        reloadable_fields = (
+            "openai_api_key",
+            "anthropic_api_key",
+            "google_api_key",
+            "nvidia_api_key",
+            "tavily_api_key",
+            "google_cloud_project",
+            "deepagents_langchain_project",
+            "project_root",
+            "shell_allow_list",
+        )
+
+        previous = {field: getattr(self, field) for field in reloadable_fields}
+
+        model_name = self.model_name
+        model_provider = self.model_provider
+        model_context_limit = self.model_context_limit
+        user_langchain_project = self.user_langchain_project
+
+        refreshed = {
+            "openai_api_key": os.environ.get("OPENAI_API_KEY"),
+            "anthropic_api_key": os.environ.get("ANTHROPIC_API_KEY"),
+            "google_api_key": os.environ.get("GOOGLE_API_KEY"),
+            "nvidia_api_key": os.environ.get("NVIDIA_API_KEY"),
+            "tavily_api_key": os.environ.get("TAVILY_API_KEY"),
+            "google_cloud_project": os.environ.get("GOOGLE_CLOUD_PROJECT"),
+            "deepagents_langchain_project": os.environ.get(
+                "DEEPAGENTS_LANGSMITH_PROJECT"
+            ),
+            "project_root": _find_project_root(start_path),
+            "shell_allow_list": parse_shell_allow_list(
+                os.environ.get("DEEPAGENTS_SHELL_ALLOW_LIST")
+            ),
+        }
+
+        for field, value in refreshed.items():
+            setattr(self, field, value)
+
+        self.model_name = model_name
+        self.model_provider = model_provider
+        self.model_context_limit = model_context_limit
+        self.user_langchain_project = user_langchain_project
+
+        def _display(field: str, value: object) -> str:
+            if field in api_key_fields:
+                return "set" if value else "unset"
+            return str(value)
+
+        changes: list[str] = []
+        for field in reloadable_fields:
+            old_value = previous[field]
+            new_value = refreshed[field]
+            if old_value != new_value:
+                changes.append(
+                    f"{field}: {_display(field, old_value)} -> "
+                    f"{_display(field, new_value)}"
+                )
+        return changes
+
     @property
     def has_openai(self) -> bool:
         """Check if OpenAI API key is configured."""

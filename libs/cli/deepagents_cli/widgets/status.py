@@ -141,8 +141,11 @@ class StatusBar(Horizontal):
         padding: 0 1;
     }
 
-    StatusBar .status-spacer {
+    StatusBar .status-left-collapsible {
         width: 1fr;
+        min-width: 0;
+        height: 1;
+        overflow-x: hidden;
     }
 
     StatusBar .status-tokens {
@@ -191,16 +194,16 @@ class StatusBar(Horizontal):
             classes="status-auto-approve off",
             id="auto-approve-indicator",
         )
-        yield Static("", classes="status-message", id="status-message")
-        yield Static("", classes="status-cwd", id="cwd-display")
-        yield Static("", classes="status-branch", id="branch-display")
-        yield Static("", classes="status-spacer")
+        with Horizontal(classes="status-left-collapsible"):
+            yield Static("", classes="status-message", id="status-message")
+            yield Static("", classes="status-cwd", id="cwd-display")
+            yield Static("", classes="status-branch", id="branch-display")
         yield Static("", classes="status-tokens", id="tokens-display")
         yield ModelLabel(id="model-display")
 
-    _BRANCH_WIDTH_THRESHOLD = 80
+    _BRANCH_WIDTH_THRESHOLD = 100
     """Hide git branch display below this terminal width."""
-    _CWD_WIDTH_THRESHOLD = 50
+    _CWD_WIDTH_THRESHOLD = 70
     """Hide cwd display below this terminal width."""
 
     def on_resize(self, event: events.Resize) -> None:

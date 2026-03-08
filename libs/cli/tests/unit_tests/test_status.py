@@ -75,8 +75,8 @@ class TestResizePriority:
     """Branch hides before cwd, cwd hides before model."""
 
     async def test_branch_hidden_on_narrow_terminal(self) -> None:
-        """Branch display should be hidden when terminal width < 80."""
-        async with StatusBarApp().run_test(size=(60, 24)) as pilot:
+        """Branch display should be hidden when terminal width < 100."""
+        async with StatusBarApp().run_test(size=(80, 24)) as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
             bar.branch = "main"
             await pilot.pause()
@@ -84,8 +84,8 @@ class TestResizePriority:
             assert branch.display is False
 
     async def test_branch_visible_on_wide_terminal(self) -> None:
-        """Branch display should be visible when terminal width >= 80."""
-        async with StatusBarApp().run_test(size=(100, 24)) as pilot:
+        """Branch display should be visible when terminal width >= 100."""
+        async with StatusBarApp().run_test(size=(120, 24)) as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
             bar.branch = "main"
             await pilot.pause()
@@ -93,14 +93,14 @@ class TestResizePriority:
             assert branch.display is True
 
     async def test_cwd_hidden_on_very_narrow_terminal(self) -> None:
-        """Cwd display should be hidden when terminal width < 50."""
-        async with StatusBarApp().run_test(size=(40, 24)) as pilot:
+        """Cwd display should be hidden when terminal width < 70."""
+        async with StatusBarApp().run_test(size=(60, 24)) as pilot:
             cwd = pilot.app.query_one("#cwd-display")
             assert cwd.display is False
 
     async def test_cwd_visible_branch_hidden_at_medium_width(self) -> None:
-        """Between 50-79 cols: cwd visible, branch hidden."""
-        async with StatusBarApp().run_test(size=(65, 24)) as pilot:
+        """Between 70-99 cols: cwd visible, branch hidden."""
+        async with StatusBarApp().run_test(size=(85, 24)) as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
             bar.branch = "main"
             await pilot.pause()
@@ -111,12 +111,23 @@ class TestResizePriority:
 
     async def test_resize_restores_branch_visibility(self) -> None:
         """Widening terminal should restore branch display."""
-        async with StatusBarApp().run_test(size=(60, 24)) as pilot:
+        async with StatusBarApp().run_test(size=(80, 24)) as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
             bar.branch = "main"
             await pilot.pause()
             branch = pilot.app.query_one("#branch-display")
             assert branch.display is False
-            await pilot.resize_terminal(100, 24)
+            await pilot.resize_terminal(120, 24)
             await pilot.pause()
             assert branch.display is True
+
+    async def test_model_visible_at_narrow_width(self) -> None:
+        """Model display should remain visible even at very narrow widths."""
+        async with StatusBarApp().run_test(size=(40, 24)) as pilot:
+            from deepagents_cli.widgets.status import ModelLabel
+
+            model = pilot.app.query_one("#model-display", ModelLabel)
+            model.provider = "anthropic"
+            model.model = "claude-sonnet-4-5"
+            await pilot.pause()
+            assert model.display is True

@@ -1242,11 +1242,7 @@ async def execute_task_textual(
                 # LangGraph so the agent can try a different approach.
                 # At root level, return early so the user can provide feedback.
                 in_subagent = getattr(session_state, "depth", 0) > 0
-                if (
-                    suppress_resumed_output
-                    and not in_subagent
-                    and not pending_ask_user
-                ):
+                if suppress_resumed_output and not in_subagent and not pending_ask_user:
                     await adapter._mount_message(
                         AppMessage(
                             "Command rejected. Tell the agent what you'd like instead."

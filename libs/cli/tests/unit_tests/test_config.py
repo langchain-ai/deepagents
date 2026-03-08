@@ -20,6 +20,7 @@ from deepagents_cli.config import (
     detect_provider,
     fetch_langsmith_project_url,
     get_langsmith_project_name,
+    newline_shortcut,
     parse_shell_allow_list,
     reset_langsmith_url_cache,
     settings,
@@ -188,6 +189,20 @@ class TestSettingsGetProjectAgentMdPath:
         s = Settings.__new__(Settings)
         s.project_root = tmp_path
         assert s.get_project_agent_md_path() == []
+
+
+class TestNewlineShortcut:
+    """Tests for platform-specific newline shortcut labels."""
+
+    def test_returns_option_enter_on_macos(self) -> None:
+        """Should show Option+Enter on darwin."""
+        with patch("deepagents_cli.config.sys.platform", "darwin"):
+            assert newline_shortcut() == "Option+Enter"
+
+    def test_returns_ctrl_j_on_non_macos(self) -> None:
+        """Should show Ctrl+J on non-darwin platforms."""
+        with patch("deepagents_cli.config.sys.platform", "linux"):
+            assert newline_shortcut() == "Ctrl+J"
 
 
 class TestValidateModelCapabilities:

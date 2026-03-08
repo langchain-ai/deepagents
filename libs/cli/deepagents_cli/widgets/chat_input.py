@@ -640,7 +640,7 @@ class ChatInput(Vertical):
 
     Features:
     - Multi-line input with TextArea
-    - Enter to submit, Ctrl+J for newlines (reliable across terminals)
+    - Enter to submit, modifier key for newlines (see `config.newline_shortcut`)
     - Up/Down arrows for command history at input boundaries (start/end of text)
     - Autocomplete for @ (files) and / (commands)
     """

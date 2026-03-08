@@ -1490,7 +1490,7 @@ class DeepAgentsApp(App):
             await self._mount_message(UserMessage(command))
             help_text = Text(
                 "Commands: /quit, /clear, /compact, /mcp, "
-                "/model [--model-params JSON] [--default], /remember, "
+                "/model [--model-params JSON] [--default], /reload, /remember, "
                 "/tokens, /threads, /trace, /changelog, /docs, /feedback, /help\n\n"
                 "Interactive Features:\n"
                 "  Enter           Submit your message\n"
@@ -1667,6 +1667,32 @@ class DeepAgentsApp(App):
                 await self._switch_model(model_arg, extra_kwargs=extra_kwargs)
             else:
                 await self._show_model_selector(extra_kwargs=extra_kwargs)
+        elif cmd == "/reload":
+            await self._mount_message(UserMessage(command))
+            try:
+                changes = settings.reload_from_environment()
+
+                from deepagents_cli.model_config import clear_caches
+
+                clear_caches()
+            except Exception:
+                logger.exception("Failed to reload configuration")
+                await self._mount_message(
+                    AppMessage(
+                        "Failed to reload configuration. Check your .env "
+                        "file and environment variables for syntax errors, "
+                        "then try again."
+                    )
+                )
+                return
+            if changes:
+                report = "Configuration reloaded. Changes:\n" + "\n".join(
+                    f"  - {change}" for change in changes
+                )
+            else:
+                report = "Configuration reloaded. No changes detected."
+            report += "\nModel config caches cleared."
+            await self._mount_message(AppMessage(report))
         else:
             await self._mount_message(UserMessage(command))
             await self._mount_message(AppMessage(f"Unknown command: {cmd}"))

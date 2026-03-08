@@ -957,7 +957,7 @@ async def list_threads_command(
     table.add_column("Thread ID", style="bold")
     table.add_column("Agent")
     table.add_column("Messages", justify="right")
-    table.add_column("Last Used", style="dim")
+    table.add_column("Last Used")
 
     for t in threads:
         table.add_row(
@@ -969,6 +969,11 @@ async def list_threads_command(
 
     console.print()
     console.print(table)
+    if len(threads) >= limit:
+        console.print(
+            f"[dim]Showing last {limit} threads. "
+            "Override with -n/--limit or DA_CLI_RECENT_THREADS.[/dim]"
+        )
     console.print()
 
 

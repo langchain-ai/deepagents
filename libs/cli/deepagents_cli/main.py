@@ -259,6 +259,7 @@ def parse_args() -> argparse.Namespace:
         "--agent", default=None, help="Filter by agent name (default: show all)"
     )
     threads_list.add_argument(
+        "-n",
         "--limit",
         type=int,
         default=None,

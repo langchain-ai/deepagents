@@ -683,15 +683,14 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             )
         return f"Select Thread (current: {self._current_thread})"
 
-    @staticmethod
-    def _build_help_text() -> str:
+    def _build_help_text(self) -> str:
         """Build the footer help text for the selector.
 
         Returns:
             Footer guidance for the active selector bindings.
         """
         glyphs = get_glyphs()
-        return (
+        lines = (
             f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate"
             f" {glyphs.bullet} Enter select"
             f" {glyphs.bullet} Tab/Shift+Tab focus options"
@@ -699,6 +698,21 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             f" {glyphs.bullet} Ctrl+D delete"
             f" {glyphs.bullet} Esc cancel"
         )
+        limit = self._effective_thread_limit()
+        if len(self._threads) >= limit:
+            lines += (
+                f"\nShowing last {limit} threads. "
+                "Set DA_CLI_RECENT_THREADS to override."
+            )
+        return lines
+
+    def _effective_thread_limit(self) -> int:
+        """Return the resolved thread limit for display purposes."""
+        if self._thread_limit is not None:
+            return self._thread_limit
+        from deepagents_cli.sessions import get_thread_limit
+
+        return get_thread_limit()
 
     def _format_sort_toggle_label(self) -> str:
         """Return the control-panel sort label for the toggle switch."""

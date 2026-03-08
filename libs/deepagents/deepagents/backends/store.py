@@ -311,11 +311,17 @@ class StoreBackend(BackendProtocol):
 
         for item in items:
             # Check if file is in the specified directory or a subdirectory
-            if not str(item.key).startswith(normalized_path):
-                continue
-
-            # Get the relative path after the directory
-            relative = str(item.key)[len(normalized_path) :]
+            # Special case: if path is root ("/"), match files without leading slash
+            item_key_str = str(item.key)
+            if normalized_path == "/":
+                if "/" in item_key_str:
+                    continue
+                relative = item_key_str
+            else:
+                if not item_key_str.startswith(normalized_path):
+                    continue
+                # Get the relative path after the directory
+                relative = item_key_str[len(normalized_path) :]
 
             # If relative path contains '/', it's in a subdirectory
             if "/" in relative:

@@ -257,6 +257,15 @@ def reset_glyphs_cache() -> None:
     _glyphs_cache = None
 
 
+def newline_shortcut() -> str:
+    """Get the platform-appropriate newline shortcut label.
+
+    Returns:
+        Shortcut label shown in CLI help text and welcome banners.
+    """
+    return "Option+Enter" if sys.platform == "darwin" else "Ctrl+J"
+
+
 # Text art banners (Unicode and ASCII variants)
 
 _UNICODE_BANNER = f"""

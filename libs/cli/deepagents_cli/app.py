@@ -34,6 +34,7 @@ from deepagents_cli.config import (
     create_model,
     detect_provider,
     is_shell_command_allowed,
+    newline_shortcut,
     settings,
 )
 from deepagents_cli.hooks import dispatch_hook
@@ -1462,7 +1463,7 @@ class DeepAgentsApp(App):
                 "/tokens, /threads, /trace, /changelog, /docs, /feedback, /help\n\n"
                 "Interactive Features:\n"
                 "  Enter           Submit your message\n"
-                "  Ctrl+J          Insert newline\n"
+                f"  {newline_shortcut():<15} Insert newline\n"
                 "  Shift+Tab       Toggle auto-approve mode\n"
                 "  @filename       Auto-complete files and inject content\n"
                 "  /command        Slash commands (/help, /clear, /quit)\n"

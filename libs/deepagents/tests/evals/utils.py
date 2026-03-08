@@ -807,6 +807,8 @@ class EfficiencyResult:
     actual_steps: int
     expected_tool_calls: int | None
     actual_tool_calls: int
+    duration_s: float | None = None
+    passed: bool | None = None
 
 
 _on_efficiency_result: Callable[[EfficiencyResult], None] | None = None

@@ -132,6 +132,18 @@ class BackgroundMiddleware(AgentMiddleware):
             except ValueError as exc:
                 return str(exc)
 
+            if str(record.status) == "rejected":
+                summary = [
+                    (
+                        f"Background task {record.task_id} was rejected by user "
+                        "before execution."
+                    ),
+                    f"status={record.status}",
+                ]
+                if record.error_text:
+                    summary.append(f"reason:\n{record.error_text}")
+                return "\n".join(summary)
+
             summary = [f"Background task {record.task_id} completed."]
             summary.append(f"status={record.status}")
             if record.exit_code is not None:

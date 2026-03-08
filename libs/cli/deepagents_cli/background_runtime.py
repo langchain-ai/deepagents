@@ -29,6 +29,7 @@ class BackgroundTaskStatus(StrEnum):
     RUNNING = "running"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
+    REJECTED = "rejected"
     KILLED = "killed"
 
 
@@ -238,6 +239,7 @@ class BackgroundRuntime:
             if record.status in {
                 BackgroundTaskStatus.SUCCEEDED,
                 BackgroundTaskStatus.FAILED,
+                BackgroundTaskStatus.REJECTED,
                 BackgroundTaskStatus.KILLED,
             }:
                 return False
@@ -304,6 +306,7 @@ class BackgroundRuntime:
             if record.status in {
                 BackgroundTaskStatus.SUCCEEDED,
                 BackgroundTaskStatus.FAILED,
+                BackgroundTaskStatus.REJECTED,
                 BackgroundTaskStatus.KILLED,
             }:
                 return record
@@ -398,7 +401,10 @@ class BackgroundRuntime:
         except Exception as exc:  # noqa: BLE001
             with self._lock:
                 record = self._records.get(task_id)
-                if record and record.status != BackgroundTaskStatus.KILLED:
+                if record and record.status not in {
+                    BackgroundTaskStatus.KILLED,
+                    BackgroundTaskStatus.REJECTED,
+                }:
                     record.status = BackgroundTaskStatus.FAILED
                     record.updated_at = datetime.now(UTC)
                     record.error_text = str(exc)
@@ -420,7 +426,10 @@ class BackgroundRuntime:
                 return
 
             event = self._wait_events.get(task_id)
-            if record.status == BackgroundTaskStatus.KILLED:
+            if record.status in {
+                BackgroundTaskStatus.KILLED,
+                BackgroundTaskStatus.REJECTED,
+            }:
                 if event is not None:
                     event.set()
                 return
@@ -490,15 +499,9 @@ class BackgroundRuntime:
                         record is not None
                         and record.status != BackgroundTaskStatus.KILLED
                     ):
-                        record.status = BackgroundTaskStatus.FAILED
+                        record.status = BackgroundTaskStatus.REJECTED
                         record.error_text = reason or "Rejected by user"
                         record.updated_at = datetime.now(UTC)
-                        self._pending_updates.append(
-                            f"Task `{task_id}` rejected by approval."
-                        )
-                        self._pending_tui_notifications.append(
-                            f"Background task {task_id} rejected by approval."
-                        )
                         event = self._wait_events.get(task_id)
                         if event is not None:
                             event.set()

@@ -95,6 +95,8 @@ class TestBackgroundRuntimeLifecycle:
             )
             approved = await runtime.wait_task(approved_task, timeout_seconds=5)
             assert approved.status == BackgroundTaskStatus.SUCCEEDED
+            runtime.consume_tui_notifications()
+            runtime.consume_status_updates()
 
             rejected_task = await runtime.submit_shell_task("printf reject-no")
             event2 = None
@@ -110,9 +112,17 @@ class TestBackgroundRuntimeLifecycle:
                 message="Rejected by test",
             )
             rejected = await runtime.wait_task(rejected_task, timeout_seconds=5)
-            assert rejected.status == BackgroundTaskStatus.FAILED
+            assert rejected.status == BackgroundTaskStatus.REJECTED
             assert rejected.error_text is not None
             assert "Rejected by test" in rejected.error_text
+            assert not any(
+                "rejected by" in item.lower()
+                for item in runtime.consume_tui_notifications()
+            )
+            assert not any(
+                "rejected by" in item.lower()
+                for item in runtime.consume_status_updates()
+            )
         finally:
             await runtime.shutdown()
 
@@ -193,5 +203,28 @@ class TestBackgroundRuntimeLifecycle:
             assert killed is True
             await asyncio.wait_for(idle_wait, timeout=1)
             assert runtime.pending_hitl_count() == 0
+        finally:
+            await runtime.shutdown()
+
+    async def test_kill_rejected_task_returns_false(self) -> None:
+        runtime = BackgroundRuntime(require_hitl_for_shell=True)
+        await runtime.start()
+        try:
+            task_id = await runtime.submit_shell_task("printf reject-no")
+            event = None
+            for _ in range(50):
+                event = runtime.pop_hitl_event()
+                if event is not None:
+                    break
+                await asyncio.sleep(0.01)
+            assert event is not None
+            runtime.resolve_hitl_event(
+                event.event_id,
+                decision=BackgroundApprovalDecision.REJECT,
+                message="Rejected by user",
+            )
+            await runtime.wait_task(task_id, timeout_seconds=5)
+            killed = await runtime.kill_task(task_id)
+            assert killed is False
         finally:
             await runtime.shutdown()

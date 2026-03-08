@@ -30,7 +30,7 @@ from langgraph.types import Command, Interrupt
 from pydantic import TypeAdapter, ValidationError
 
 from deepagents_cli.ask_user import AskUserRequest
-from deepagents_cli.config import settings
+from deepagents_cli.config import ConversationContext, settings
 from deepagents_cli.file_ops import FileOpTracker
 from deepagents_cli.hooks import dispatch_hook
 from deepagents_cli.input import MediaTracker, parse_file_mentions
@@ -219,6 +219,59 @@ HITLDecision = ApproveDecision | EditDecision | RejectDecision
 _HITL_REQUEST_ADAPTER = TypeAdapter(HITLRequest)
 _ASK_USER_INTERRUPT_ADAPTER = TypeAdapter(AskUserRequest)
 """Validator for incoming `ask_user` interrupt payloads."""
+
+
+@dataclass
+class ExecuteTaskResult:
+    """Result of execute_task_textual, potentially containing a step-into context."""
+
+    step_into_context: ConversationContext | None = None
+    stats: SessionStats = field(default_factory=SessionStats)
+
+
+def _create_branch_context(
+    assistant_id: str | None,
+    subagent_type: str,
+    task_description: str,
+    parent_tool_call_id: str | None = None,
+) -> ConversationContext:
+    """Create a new conversation context for stepping into a subagent.
+
+    Creates the branch directory and summary file.
+
+    Returns:
+        A new ConversationContext with isolated thread ID and summary path.
+    """
+    branch_id = uuid.uuid4().hex[:8]
+    thread_id = str(uuid.uuid4())
+
+    agent_name = assistant_id or "agent"
+    branch_dir = settings.user_deepagents_dir / agent_name / "branches" / branch_id
+    branch_dir.mkdir(parents=True, exist_ok=True)
+
+    summary_path = branch_dir / "summary.md"
+    summary_template = f"""# Branch Summary: {subagent_type}
+
+## Task
+{task_description}
+
+## Findings
+
+<!-- Add your findings here -->
+
+## Conclusion
+
+<!-- Summary for parent context -->
+"""
+    summary_path.write_text(summary_template)
+
+    return ConversationContext(
+        thread_id=thread_id,
+        subagent_type=subagent_type,
+        task_description=task_description,
+        summary_path=summary_path,
+        parent_tool_call_id=parent_tool_call_id,
+    )
 
 
 def _build_stream_config(
@@ -444,7 +497,7 @@ async def execute_task_textual(
     adapter: TextualUIAdapter,
     backend: Any = None,  # noqa: ANN401  # Dynamic backend type
     image_tracker: MediaTracker | None = None,
-) -> SessionStats:
+) -> ExecuteTaskResult:
     """Execute a task with output directed to Textual UI.
 
     This is the Textual-compatible version of execute_task() that uses
@@ -460,8 +513,8 @@ async def execute_task_textual(
         image_tracker: Optional tracker for images
 
     Returns:
-        Stats accumulated over this turn (request count, token counts,
-            wall-clock time).
+        ExecuteTaskResult with session stats and optional step_into_context
+        if the user chose to step into a subagent.
 
     Raises:
         ValidationError: If HITL request validation fails (re-raised).
@@ -1106,6 +1159,34 @@ async def execute_task_textual(
                                                 tool_name, args
                                             )
 
+                            elif decision_type == "step_into":
+                                # User wants to step into this subagent
+                                task_args = decision.get("args", {})
+                                subagent_type = task_args.get(
+                                    "subagent_type", "general-purpose"
+                                )
+                                task_description = task_args.get("description", "")
+                                step_into_ctx = _create_branch_context(
+                                    assistant_id,
+                                    subagent_type,
+                                    task_description,
+                                    parent_tool_call_id=interrupt_id,
+                                )
+                                # Stop spinner before entering subagent
+                                if adapter._set_spinner:
+                                    await adapter._set_spinner(None)
+                                await adapter._mount_message(
+                                    AppMessage(
+                                        f"Stepped into: {subagent_type} subagent\n"
+                                        f"Summary file: {step_into_ctx.summary_path}\n"
+                                        "Type /return to exit, /summary to edit "
+                                        "summary, /context to see stack"
+                                    )
+                                )
+                                return ExecuteTaskResult(
+                                    step_into_context=step_into_ctx
+                                )
+
                             elif decision_type == "reject":
                                 decisions = [
                                     RejectDecision(type="reject")
@@ -1156,14 +1237,23 @@ async def execute_task_textual(
                 suppress_resumed_output = any_rejected
 
             if interrupt_occurred and resume_payload:
-                if suppress_resumed_output and not pending_ask_user:
+                # When inside a subagent, rejection should be scoped to the
+                # current HITL interrupt — send the RejectDecision back to
+                # LangGraph so the agent can try a different approach.
+                # At root level, return early so the user can provide feedback.
+                in_subagent = getattr(session_state, "depth", 0) > 0
+                if suppress_resumed_output and not in_subagent and not pending_ask_user:
                     await adapter._mount_message(
                         AppMessage(
                             "Command rejected. Tell the agent what you'd like instead."
                         )
                     )
                     turn_stats.wall_time_seconds = time.monotonic() - start_time
-                    return turn_stats
+                    return ExecuteTaskResult(stats=turn_stats)
+                if suppress_resumed_output and in_subagent:
+                    await adapter._mount_message(
+                        AppMessage("Rejected — agent will continue.")
+                    )
 
                 stream_input = Command(resume=resume_payload)
             else:
@@ -1216,7 +1306,7 @@ async def execute_task_textual(
                 )
             else:
                 adapter._token_tracker.show()  # Restore previous value
-        return turn_stats
+        return ExecuteTaskResult(stats=turn_stats)
 
     except KeyboardInterrupt:
         # Clear active message immediately so it won't block pruning
@@ -1264,13 +1354,13 @@ async def execute_task_textual(
                 )
             else:
                 adapter._token_tracker.show()  # Restore previous value
-        return turn_stats
+        return ExecuteTaskResult(stats=turn_stats)
 
     # Update token tracker and return stats
     turn_stats.wall_time_seconds = time.monotonic() - start_time
     if adapter._token_tracker and (captured_input_tokens or captured_output_tokens):
         adapter._token_tracker.add(captured_input_tokens, captured_output_tokens)
-    return turn_stats
+    return ExecuteTaskResult(stats=turn_stats)
 
 
 async def _flush_assistant_text_ns(

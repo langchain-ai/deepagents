@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import shlex
+import shutil
 import signal
 import sys
 import time
@@ -30,6 +31,7 @@ from deepagents_cli.config import (
     DOCS_URL,
     SHELL_TOOL_NAMES,
     CharsetMode,
+    SessionState,
     _detect_charset_mode,
     build_langsmith_thread_url,
     create_model,
@@ -66,6 +68,7 @@ from deepagents_cli.widgets.messages import (
 )
 from deepagents_cli.widgets.model_selector import ModelSelectorScreen
 from deepagents_cli.widgets.status import StatusBar
+from deepagents_cli.widgets.subagent_banner import SubagentBanner
 from deepagents_cli.widgets.thread_selector import ThreadSelectorScreen
 from deepagents_cli.widgets.welcome import WelcomeBanner
 
@@ -336,8 +339,12 @@ class TextualTokenTracker:
         self._update_callback(self.current_context)
 
 
-class TextualSessionState:
-    """Session state for the Textual app."""
+class TextualSessionState(SessionState):
+    """Session state for the Textual app.
+
+    Extends SessionState with context stack support for step-into subagents.
+    Uses 8-char hex thread IDs for compact display.
+    """
 
     def __init__(
         self,
@@ -351,16 +358,19 @@ class TextualSessionState:
             auto_approve: Whether to auto-approve tool calls
             thread_id: Optional thread ID (generates 8-char hex if not provided)
         """
-        self.auto_approve = auto_approve
-        self.thread_id = thread_id or uuid.uuid4().hex[:8]
+        super().__init__(auto_approve=auto_approve)
+        # Override root thread_id with compact format
+        self.context_stack[0].thread_id = thread_id or uuid.uuid4().hex[:8]
 
     def reset_thread(self) -> str:
-        """Reset to a new thread.
+        """Reset to a new thread (and context stack).
 
         Returns:
-            The new thread_id.
+            The new thread_id (8-char hex).
         """
-        self.thread_id = uuid.uuid4().hex[:8]
+        self.reset_to_root()
+        # Use compact thread IDs for the Textual UI
+        self.context_stack[0].thread_id = uuid.uuid4().hex[:8]
         return self.thread_id
 
 
@@ -526,7 +536,9 @@ class DeepAgentsApp(App):
         Binding("n", "approval_no", "No", show=False),
         Binding("2", "approval_no", "No", show=False),
         Binding("a", "approval_auto", "Auto", show=False),
-        Binding("3", "approval_auto", "Auto", show=False),
+        Binding("3", "approval_auto_or_step", "Auto/Step", show=False),
+        Binding("s", "approval_step_into", "Step into", show=False),
+        Binding("4", "approval_auto_when_task", "Auto (task)", show=False),
     ]
 
     def __init__(
@@ -589,6 +601,7 @@ class DeepAgentsApp(App):
         self._mcp_tool_count = sum(len(s.tools) for s in (mcp_server_info or []))
         self._status_bar: StatusBar | None = None
         self._chat_input: ChatInput | None = None
+        self._subagent_banner: SubagentBanner | None = None
         self._quit_pending = False
         self._session_state: TextualSessionState | None = None
         self._ui_adapter: TextualUIAdapter | None = None
@@ -634,6 +647,7 @@ class DeepAgentsApp(App):
             )
             yield Container(id="messages")
         with Container(id="bottom-app-container"):
+            yield SubagentBanner(id="subagent-banner")
             yield ChatInput(
                 cwd=self._cwd,
                 image_tracker=self._image_tracker,
@@ -651,6 +665,7 @@ class DeepAgentsApp(App):
 
         self._status_bar = self.query_one("#status-bar", StatusBar)
         self._chat_input = self.query_one("#input-area", ChatInput)
+        self._subagent_banner = self.query_one("#subagent-banner", SubagentBanner)
 
         # Set initial auto-approve state
         if self._auto_approve:
@@ -1491,7 +1506,8 @@ class DeepAgentsApp(App):
             help_text = Text(
                 "Commands: /quit, /clear, /compact, /mcp, "
                 "/model [--model-params JSON] [--default], /reload, /remember, "
-                "/tokens, /threads, /trace, /changelog, /docs, /feedback, /help\n\n"
+                "/tokens, /threads, /trace, /changelog, /docs, /feedback, /help\n"
+                "Step-into: /return, /summary, /context\n\n"
                 "Interactive Features:\n"
                 "  Enter           Submit your message\n"
                 f"  {newline_shortcut():<15} Insert newline\n"
@@ -1545,9 +1561,11 @@ class DeepAgentsApp(App):
                 self._token_tracker.reset()
             # Clear status message (e.g., "Interrupted" from previous session)
             self._update_status("")
-            # Reset thread to start fresh conversation
+            # Reset thread and context stack to start fresh conversation
             if self._session_state:
-                new_thread_id = self._session_state.reset_thread()
+                self._session_state.reset_to_root()
+                new_thread_id = self._session_state.thread_id
+                self._update_prompt_indicator()
                 try:
                     banner = self.query_one("#welcome-banner", WelcomeBanner)
                     banner.update_thread_id(new_thread_id)
@@ -1667,6 +1685,12 @@ class DeepAgentsApp(App):
                 await self._switch_model(model_arg, extra_kwargs=extra_kwargs)
             else:
                 await self._show_model_selector(extra_kwargs=extra_kwargs)
+        elif cmd == "/return":
+            await self._handle_return_command(command)
+        elif cmd == "/summary":
+            await self._handle_summary_command(command)
+        elif cmd == "/context":
+            await self._handle_context_command(command)
         elif cmd == "/reload":
             await self._mount_message(UserMessage(command))
             try:
@@ -1709,6 +1733,124 @@ class DeepAgentsApp(App):
                 pass
 
         self.call_after_refresh(_scroll_after_command)
+
+    async def _handle_return_command(self, command: str) -> None:
+        """Handle /return — exit from a stepped-into subagent."""
+        await self._mount_message(UserMessage(command))
+        if not self._session_state or not hasattr(self._session_state, "depth"):
+            await self._mount_message(AppMessage("No active session."))
+            return
+        if self._session_state.depth == 0:
+            await self._mount_message(
+                AppMessage("Already at root context — nothing to return from.")
+            )
+            return
+
+        child_ctx = self._session_state.pop_context()
+        summary_content = ""
+        if child_ctx.summary_path and child_ctx.summary_path.exists():
+            summary_content = child_ctx.summary_path.read_text()
+            # Clean up branch directory
+            branch_dir = child_ctx.summary_path.parent
+            shutil.rmtree(branch_dir, ignore_errors=True)
+
+        depth_label = (
+            "root"
+            if self._session_state.depth == 0
+            else self._session_state.current_context.subagent_type
+        )
+        await self._mount_message(AppMessage(f"Returned to {depth_label}"))
+
+        # Update prompt indicator
+        self._update_prompt_indicator()
+
+        # Inject summary into parent conversation
+        summary_msg = (
+            f"[Subagent '{child_ctx.subagent_type}' completed]\n\n{summary_content}"
+        )
+        await self._handle_user_message(summary_msg)
+
+    async def _handle_summary_command(self, command: str) -> None:
+        """Handle /summary — view/edit the summary file for current branch."""
+        await self._mount_message(UserMessage(command))
+        if not self._session_state or self._session_state.depth == 0:
+            await self._mount_message(
+                AppMessage("Not in a subagent context — no summary file.")
+            )
+            return
+
+        ctx = self._session_state.current_context
+        if not ctx.summary_path:
+            await self._mount_message(AppMessage("No summary file for this context."))
+            return
+
+        await self._mount_message(AppMessage(f"Summary file: {ctx.summary_path}"))
+        if ctx.summary_path.exists():
+            content = ctx.summary_path.read_text()
+            msg = AssistantMessage(f"```markdown\n{content}\n```")
+            await self._mount_message(msg)
+            await msg.write_initial_content()
+        else:
+            await self._mount_message(AppMessage("File does not exist yet."))
+
+    async def _handle_context_command(self, command: str) -> None:
+        """Handle /context — show the conversation stack."""
+        await self._mount_message(UserMessage(command))
+        if not self._session_state or not hasattr(self._session_state, "context_stack"):
+            await self._mount_message(AppMessage("No active session."))
+            return
+
+        text = Text()
+        text.append("Context Stack:\n", style="bold")
+        for i, ctx in enumerate(self._session_state.context_stack):
+            is_current = i == len(self._session_state.context_stack) - 1
+            marker = " <-- current" if is_current else ""
+            if ctx.subagent_type == "root":
+                text.append(f"  [{i}] root (main conversation){marker}\n")
+            else:
+                max_preview_len = 40
+                task_preview = (
+                    ctx.task_description[:max_preview_len] + "..."
+                    if len(ctx.task_description) > max_preview_len
+                    else ctx.task_description
+                )
+                text.append(f"  [{i}] ", style="dim")
+                text.append(ctx.subagent_type, style="bold")
+                text.append(f"{marker}\n")
+                if task_preview:
+                    text.append(f'      task: "{task_preview}"\n')
+
+        if self._session_state.depth > 0:
+            ctx = self._session_state.current_context
+            if ctx.summary_path:
+                text.append(f"\nSummary: {ctx.summary_path}")
+
+        await self._mount_message(AppMessage(text))
+
+    def _update_prompt_indicator(self) -> None:
+        """Update prompt indicator and subagent banner to reflect depth."""
+        if not self._chat_input or not self._session_state:
+            return
+        try:
+            from textual.widgets import Static
+
+            prompt_widget = self._chat_input.query_one("#prompt", Static)
+            if self._session_state.depth > 0:
+                ctx = self._session_state.current_context
+                prompt_widget.update(
+                    f"[{ctx.subagent_type}:{self._session_state.depth}] >"
+                )
+                if self._subagent_banner:
+                    self._subagent_banner.show(
+                        subagent_type=ctx.subagent_type,
+                        depth=self._session_state.depth,
+                    )
+            else:
+                prompt_widget.update(">")
+                if self._subagent_banner:
+                    self._subagent_banner.hide()
+        except NoMatches:
+            pass
 
     async def _get_conversation_token_line(self) -> str | None:
         """Return a short string with the conversation-only token count.
@@ -2108,8 +2250,9 @@ class DeepAgentsApp(App):
         if self._ui_adapter is None:
             return
         turn_stats: SessionStats | None = None
+        step_into_pushed = False
         try:
-            turn_stats = await execute_task_textual(
+            result = await execute_task_textual(
                 user_input=message,
                 agent=self._agent,
                 assistant_id=self._assistant_id,
@@ -2118,12 +2261,52 @@ class DeepAgentsApp(App):
                 backend=self._backend,
                 image_tracker=self._image_tracker,
             )
+            turn_stats = result.stats
+
+            # Handle step-into if user chose to enter a subagent
+            if result.step_into_context and self._session_state:
+                ctx = result.step_into_context
+                self._session_state.push_context(ctx)
+                step_into_pushed = True
+                self._update_prompt_indicator()
+
+                # Build initial prompt with task description
+                initial_prompt = (
+                    f"{ctx.task_description}\n\n---\n"
+                    "**Interactive Session Info:**\n"
+                    "This is an interactive session. The user has stepped "
+                    "into this conversation to work with you directly.\n"
+                    f"A summary file has been created at: `{ctx.summary_path}`\n"
+                    'When the user asks you to "add to the summary" or '
+                    '"update the summary", edit that file.\n'
+                    "The summary will be returned to the parent conversation "
+                    "when the user types `/return`."
+                )
+
+                # Invoke the agent with the task in the new context
+                await execute_task_textual(
+                    user_input=initial_prompt,
+                    agent=self._agent,
+                    assistant_id=self._assistant_id,
+                    session_state=self._session_state,
+                    adapter=self._ui_adapter,
+                    backend=self._backend,
+                )
+
         except Exception as e:  # noqa: BLE001  # Resilient tool rendering
             # Ensure any in-flight tool calls don't remain stuck in "Running..."
             # when streaming aborts before tool results arrive.
             if self._ui_adapter:
                 self._ui_adapter.finalize_pending_tools_with_error(f"Agent error: {e}")
             await self._mount_message(ErrorMessage(f"Agent error: {e}"))
+            # Pop context if we pushed one to avoid stuck state
+            if (
+                step_into_pushed
+                and self._session_state
+                and self._session_state.depth > 0
+            ):
+                self._session_state.pop_context()
+                self._update_prompt_indicator()
         finally:
             # Clean up loading widget and agent state
             await self._cleanup_agent_task()
@@ -2823,9 +3006,24 @@ class DeepAgentsApp(App):
             self._pending_approval_widget.action_select_reject()
 
     def action_approval_auto(self) -> None:
-        """Handle auto/3 in approval menu."""
+        """Handle 'a' in approval menu — always auto-approve."""
         if self._pending_approval_widget:
             self._pending_approval_widget.action_select_auto()
+
+    def action_approval_auto_or_step(self) -> None:
+        """Handle '3' in approval menu — step-into for task, auto otherwise."""
+        if self._pending_approval_widget:
+            self._pending_approval_widget.action_select_auto_or_step()
+
+    def action_approval_step_into(self) -> None:
+        """Handle 's' in approval menu — step into (task tool only)."""
+        if self._pending_approval_widget:
+            self._pending_approval_widget.action_select_step_into()
+
+    def action_approval_auto_when_task(self) -> None:
+        """Handle '4' in approval menu — auto-approve (task tool with 4 options)."""
+        if self._pending_approval_widget:
+            self._pending_approval_widget.action_select_auto_when_task()
 
     def action_approval_escape(self) -> None:
         """Handle escape in approval menu - reject."""

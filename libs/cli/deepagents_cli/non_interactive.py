@@ -742,13 +742,20 @@ async def run_non_interactive(
     result.apply_to_settings()
     thread_id = generate_thread_id()
 
+    metadata: dict[str, str] = {
+        "assistant_id": assistant_id,
+        "agent_name": assistant_id,
+        "updated_at": datetime.now(UTC).isoformat(),
+    }
+    from deepagents_cli.textual_adapter import _get_git_branch
+
+    branch = _get_git_branch()
+    if branch:
+        metadata["git_branch"] = branch
+
     config: RunnableConfig = {
         "configurable": {"thread_id": thread_id},
-        "metadata": {
-            "assistant_id": assistant_id,
-            "agent_name": assistant_id,
-            "updated_at": datetime.now(UTC).isoformat(),
-        },
+        "metadata": metadata,
     }
 
     thread_url_lookup: ThreadUrlLookupState | None = None

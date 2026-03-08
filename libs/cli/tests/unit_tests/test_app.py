@@ -1,12 +1,17 @@
 """Unit tests for DeepAgentsApp."""
 
+from __future__ import annotations
+
 import asyncio
 import io
 import os
 import signal
 import webbrowser
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 from unittest.mock import AsyncMock, MagicMock, call, patch
+
+if TYPE_CHECKING:
+    from deepagents_cli.sessions import ThreadInfo
 
 import pytest
 from textual import events
@@ -15,7 +20,7 @@ from textual.binding import Binding, BindingType
 from textual.containers import Container
 from textual.css.query import NoMatches
 from textual.screen import ModalScreen
-from textual.widgets import Static
+from textual.widgets import Checkbox, Input, Static
 
 from deepagents_cli.app import (
     _ITERM_CURSOR_GUIDE_OFF,
@@ -134,6 +139,16 @@ class TestThreadCachePrewarm:
 
 class TestAppBindings:
     """Test app keybindings."""
+
+    def test_ctrl_c_binding_has_priority(self) -> None:
+        """Ctrl+C should be priority-bound so focused modal inputs don't swallow it."""
+        bindings = [b for b in DeepAgentsApp.BINDINGS if isinstance(b, Binding)]
+        bindings_by_key = {b.key: b for b in bindings}
+        ctrl_c = bindings_by_key.get("ctrl+c")
+
+        assert ctrl_c is not None
+        assert ctrl_c.action == "quit_or_interrupt"
+        assert ctrl_c.priority is True
 
     def test_toggle_tool_output_has_ctrl_e_binding(self) -> None:
         """Ctrl+E should be bound to toggle_tool_output with priority."""
@@ -326,6 +341,424 @@ class TestModalScreenEscapeDismissal:
 
             assert app.modal_dismissed is True
             assert app.interrupt_called is False
+
+
+class TestModalScreenCtrlDHandling:
+    """Tests for app-level Ctrl+D behavior while modals are open."""
+
+    async def test_ctrl_d_deletes_in_thread_selector_instead_of_quitting(self) -> None:
+        """App-level quit binding should delegate to thread delete in the modal."""
+        from deepagents_cli.widgets.thread_selector import ThreadSelectorScreen
+
+        mock_threads: list[ThreadInfo] = [
+            {
+                "thread_id": "thread-123",
+                "agent_name": "agent",
+                "updated_at": "2026-03-08T02:00:00+00:00",
+                "created_at": "2026-03-08T01:00:00+00:00",
+                "initial_prompt": "prompt",
+            }
+        ]
+        with patch(
+            "deepagents_cli.sessions.list_threads",
+            new_callable=AsyncMock,
+            return_value=mock_threads,
+        ):
+            app = DeepAgentsApp()
+            async with app.run_test() as pilot:
+                await pilot.pause()
+
+                screen = ThreadSelectorScreen(
+                    current_thread=None,
+                    initial_threads=mock_threads,
+                )
+                app.push_screen(screen)
+                await pilot.pause()
+
+                with patch.object(app, "exit") as mock_exit:
+                    await pilot.press("ctrl+d")
+                    await pilot.pause()
+                    await pilot.pause()
+
+                assert screen._confirming_delete is True
+                mock_exit.assert_not_called()
+
+    async def test_escape_closes_thread_delete_confirm_without_dismissing_modal(
+        self,
+    ) -> None:
+        """Escape should close thread delete confirmation before dismissing modal."""
+        from deepagents_cli.widgets.thread_selector import ThreadSelectorScreen
+
+        mock_threads: list[ThreadInfo] = [
+            {
+                "thread_id": "thread-123",
+                "agent_name": "agent",
+                "updated_at": "2026-03-08T02:00:00+00:00",
+                "created_at": "2026-03-08T01:00:00+00:00",
+                "initial_prompt": "prompt",
+            }
+        ]
+        with patch(
+            "deepagents_cli.sessions.list_threads",
+            new_callable=AsyncMock,
+            return_value=mock_threads,
+        ):
+            app = DeepAgentsApp()
+            async with app.run_test() as pilot:
+                await pilot.pause()
+
+                screen = ThreadSelectorScreen(
+                    current_thread=None,
+                    initial_threads=mock_threads,
+                )
+                app.push_screen(screen)
+                await pilot.pause()
+
+                await pilot.press("ctrl+d")
+                await pilot.pause()
+                await pilot.pause()
+                assert screen.is_delete_confirmation_open is True
+
+                await pilot.press("escape")
+                await pilot.pause()
+                await pilot.pause()
+
+                assert app.screen is screen
+                assert screen.is_delete_confirmation_open is False
+
+    async def test_ctrl_d_twice_quits_from_delete_confirmation(self) -> None:
+        """Ctrl+D should use a double-press quit flow inside delete confirmation."""
+        from deepagents_cli.widgets.thread_selector import (
+            DeleteThreadConfirmScreen,
+            ThreadSelectorScreen,
+        )
+
+        mock_threads: list[ThreadInfo] = [
+            {
+                "thread_id": "thread-123",
+                "agent_name": "agent",
+                "updated_at": "2026-03-08T02:00:00+00:00",
+                "created_at": "2026-03-08T01:00:00+00:00",
+                "initial_prompt": "prompt",
+            }
+        ]
+        with patch(
+            "deepagents_cli.sessions.list_threads",
+            new_callable=AsyncMock,
+            return_value=mock_threads,
+        ):
+            app = DeepAgentsApp()
+            async with app.run_test() as pilot:
+                await pilot.pause()
+
+                screen = ThreadSelectorScreen(
+                    current_thread=None,
+                    initial_threads=mock_threads,
+                )
+                app.push_screen(screen)
+                await pilot.pause()
+
+                await pilot.press("ctrl+d")
+                await pilot.pause()
+                await pilot.pause()
+                assert isinstance(app.screen, DeleteThreadConfirmScreen)
+
+                with (
+                    patch.object(app, "notify") as notify_mock,
+                    patch.object(app, "exit") as exit_mock,
+                ):
+                    await pilot.press("ctrl+d")
+                    await pilot.pause()
+                    notify_mock.assert_called_once_with(
+                        "Press Ctrl+D again to quit",
+                        timeout=3,
+                    )
+                    assert app._quit_pending is True
+                    exit_mock.assert_not_called()
+
+                    await pilot.press("ctrl+d")
+                    await pilot.pause()
+                    exit_mock.assert_called_once()
+
+    async def test_ctrl_c_still_works_from_delete_confirmation(self) -> None:
+        """Ctrl+C should preserve the normal double-press quit flow in confirmation."""
+        from deepagents_cli.widgets.thread_selector import (
+            DeleteThreadConfirmScreen,
+            ThreadSelectorScreen,
+        )
+
+        mock_threads: list[ThreadInfo] = [
+            {
+                "thread_id": "thread-123",
+                "agent_name": "agent",
+                "updated_at": "2026-03-08T02:00:00+00:00",
+                "created_at": "2026-03-08T01:00:00+00:00",
+                "initial_prompt": "prompt",
+            }
+        ]
+        with patch(
+            "deepagents_cli.sessions.list_threads",
+            new_callable=AsyncMock,
+            return_value=mock_threads,
+        ):
+            app = DeepAgentsApp()
+            async with app.run_test() as pilot:
+                await pilot.pause()
+
+                screen = ThreadSelectorScreen(
+                    current_thread=None,
+                    initial_threads=mock_threads,
+                )
+                app.push_screen(screen)
+                await pilot.pause()
+
+                await pilot.press("ctrl+d")
+                await pilot.pause()
+                await pilot.pause()
+                assert isinstance(app.screen, DeleteThreadConfirmScreen)
+
+                with (
+                    patch.object(app, "notify") as notify_mock,
+                    patch.object(app, "exit") as exit_mock,
+                ):
+                    app.action_quit_or_interrupt()
+                    notify_mock.assert_called_once_with(
+                        "Press Ctrl+C again to quit",
+                        timeout=3,
+                    )
+                    assert app._quit_pending is True
+                    exit_mock.assert_not_called()
+
+                    app.action_quit_or_interrupt()
+                    exit_mock.assert_called_once()
+
+    async def test_ctrl_d_quits_from_model_selector_with_input_focused(
+        self,
+    ) -> None:
+        """Ctrl+D should not be swallowed or ignored in the model selector."""
+        from deepagents_cli.widgets.model_selector import ModelSelectorScreen
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            screen = ModelSelectorScreen(
+                current_model="claude-sonnet-4-5",
+                current_provider="anthropic",
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+
+            filter_input = screen.query_one("#model-filter", Input)
+            assert filter_input.has_focus
+
+            with patch.object(app, "exit") as exit_mock:
+                await pilot.press("ctrl+d")
+                await pilot.pause()
+
+            exit_mock.assert_called_once()
+
+    async def test_ctrl_d_quits_from_mcp_viewer(self) -> None:
+        """Ctrl+D should still quit while the MCP viewer modal is open."""
+        from deepagents_cli.mcp_tools import MCPServerInfo, MCPToolInfo
+        from deepagents_cli.widgets.mcp_viewer import MCPViewerScreen
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            screen = MCPViewerScreen(
+                server_info=[
+                    MCPServerInfo(
+                        name="filesystem",
+                        transport="stdio",
+                        tools=[
+                            MCPToolInfo(
+                                name="read_file",
+                                description="Read a file",
+                            )
+                        ],
+                    )
+                ]
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+
+            with patch.object(app, "exit") as exit_mock:
+                await pilot.press("ctrl+d")
+                await pilot.pause()
+
+            exit_mock.assert_called_once()
+
+
+class TestModalScreenShiftTabHandling:
+    """Tests for app-level Shift+Tab behavior while modals are open."""
+
+    async def test_shift_tab_moves_backward_in_thread_selector(self) -> None:
+        """Shift+Tab should move backward in the thread selector controls."""
+        from deepagents_cli.widgets.thread_selector import ThreadSelectorScreen
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            screen = ThreadSelectorScreen(
+                current_thread=None,
+                initial_threads=[
+                    {
+                        "thread_id": "thread-123",
+                        "agent_name": "agent",
+                        "updated_at": "2026-03-08T02:00:00+00:00",
+                        "created_at": "2026-03-08T01:00:00+00:00",
+                        "initial_prompt": "prompt",
+                    }
+                ],
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+
+            assert app._auto_approve is False
+            filter_input = screen.query_one("#thread-filter", Input)
+            sort_switch = screen.query_one("#thread-sort-toggle", Checkbox)
+
+            await pilot.press("tab")
+            await pilot.pause()
+            assert sort_switch.has_focus
+
+            await pilot.press("shift+tab")
+            await pilot.pause()
+
+            assert filter_input.has_focus
+            assert app._auto_approve is False
+
+
+class TestModalScreenCtrlCHandling:
+    """Tests for app-level Ctrl+C behavior while modals are open."""
+
+    async def test_ctrl_c_quits_from_thread_selector_with_input_focused(
+        self,
+    ) -> None:
+        """Ctrl+C should reach the app even when the thread filter has focus."""
+        from deepagents_cli.widgets.thread_selector import ThreadSelectorScreen
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            screen = ThreadSelectorScreen(
+                current_thread=None,
+                initial_threads=[
+                    {
+                        "thread_id": "thread-123",
+                        "agent_name": "agent",
+                        "updated_at": "2026-03-08T02:00:00+00:00",
+                        "created_at": "2026-03-08T01:00:00+00:00",
+                        "initial_prompt": "prompt",
+                    }
+                ],
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+
+            filter_input = screen.query_one("#thread-filter", Input)
+            assert filter_input.has_focus
+
+            with (
+                patch.object(app, "notify") as notify_mock,
+                patch.object(app, "exit") as exit_mock,
+            ):
+                await pilot.press("ctrl+c")
+                await pilot.pause()
+                notify_mock.assert_called_once_with(
+                    "Press Ctrl+C again to quit",
+                    timeout=3,
+                )
+                assert app._quit_pending is True
+                exit_mock.assert_not_called()
+
+                await pilot.press("ctrl+c")
+                await pilot.pause()
+                exit_mock.assert_called_once()
+
+    async def test_ctrl_c_quits_from_model_selector_with_input_focused(
+        self,
+    ) -> None:
+        """Ctrl+C should not be swallowed by the model filter input."""
+        from deepagents_cli.widgets.model_selector import ModelSelectorScreen
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            screen = ModelSelectorScreen(
+                current_model="claude-sonnet-4-5",
+                current_provider="anthropic",
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+
+            filter_input = screen.query_one("#model-filter", Input)
+            assert filter_input.has_focus
+
+            with (
+                patch.object(app, "notify") as notify_mock,
+                patch.object(app, "exit") as exit_mock,
+            ):
+                await pilot.press("ctrl+c")
+                await pilot.pause()
+                notify_mock.assert_called_once_with(
+                    "Press Ctrl+C again to quit",
+                    timeout=3,
+                )
+                assert app._quit_pending is True
+                exit_mock.assert_not_called()
+
+                await pilot.press("ctrl+c")
+                await pilot.pause()
+                exit_mock.assert_called_once()
+
+    async def test_ctrl_c_quits_from_mcp_viewer(self) -> None:
+        """Ctrl+C should still trigger app quit flow while the MCP modal is open."""
+        from deepagents_cli.mcp_tools import MCPServerInfo, MCPToolInfo
+        from deepagents_cli.widgets.mcp_viewer import MCPViewerScreen
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            screen = MCPViewerScreen(
+                server_info=[
+                    MCPServerInfo(
+                        name="filesystem",
+                        transport="stdio",
+                        tools=[
+                            MCPToolInfo(
+                                name="read_file",
+                                description="Read a file",
+                            )
+                        ],
+                    )
+                ]
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+
+            with (
+                patch.object(app, "notify") as notify_mock,
+                patch.object(app, "exit") as exit_mock,
+            ):
+                await pilot.press("ctrl+c")
+                await pilot.pause()
+                notify_mock.assert_called_once_with(
+                    "Press Ctrl+C again to quit",
+                    timeout=3,
+                )
+                assert app._quit_pending is True
+                exit_mock.assert_not_called()
+
+                await pilot.press("ctrl+c")
+                await pilot.pause()
+                exit_mock.assert_called_once()
 
 
 class TestMountMessageNoMatches:

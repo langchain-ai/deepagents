@@ -5,9 +5,10 @@ from asyncio import Future
 from collections.abc import AsyncIterator, Generator
 from datetime import datetime
 from io import StringIO
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
@@ -15,6 +16,7 @@ from langgraph.types import Command
 from pydantic import ValidationError
 from rich.console import Console
 
+from deepagents_cli import textual_adapter
 from deepagents_cli.textual_adapter import (
     ModelStats,
     SessionStats,
@@ -124,6 +126,10 @@ class TestTextualUIAdapterInit:
 class TestBuildStreamConfig:
     """Tests for `_build_stream_config` metadata construction."""
 
+    def setup_method(self) -> None:
+        """Clear the git-branch cache between tests."""
+        textual_adapter._git_branch_cache.clear()
+
     def test_assistant_fields_present(self) -> None:
         """Assistant-specific metadata should be present when `assistant_id` is set."""
         config = _build_stream_config("t-456", assistant_id="my-agent")
@@ -142,17 +148,65 @@ class TestBuildStreamConfig:
     def test_no_assistant_fields_when_none(self) -> None:
         """Assistant-specific fields should be absent when `assistant_id` is `None`."""
         config = _build_stream_config("t-789", assistant_id=None)
-        assert config["metadata"] == {}
+        metadata = config["metadata"]
+        assert "assistant_id" not in metadata
+        assert "agent_name" not in metadata
+        assert "updated_at" not in metadata
 
     def test_no_assistant_fields_when_empty_string(self) -> None:
         """Empty-string `assistant_id` should be treated as absent."""
         config = _build_stream_config("t-000", assistant_id="")
-        assert config["metadata"] == {}
+        metadata = config["metadata"]
+        assert "assistant_id" not in metadata
+        assert "agent_name" not in metadata
+        assert "updated_at" not in metadata
+
+    def test_git_branch_included_when_available(self) -> None:
+        """Git branch should be included in metadata when in a git repo."""
+        with patch(
+            "deepagents_cli.textual_adapter._get_git_branch",
+            return_value="feature-branch",
+        ):
+            config = _build_stream_config("t-git", assistant_id="agent")
+        assert config["metadata"]["git_branch"] == "feature-branch"
+
+    def test_git_branch_absent_when_not_in_repo(self) -> None:
+        """Git branch should be absent when not in a git repo."""
+        with patch(
+            "deepagents_cli.textual_adapter._get_git_branch",
+            return_value=None,
+        ):
+            config = _build_stream_config("t-nogit", assistant_id="agent")
+        assert "git_branch" not in config["metadata"]
 
     def test_configurable_thread_id(self) -> None:
         """`configurable.thread_id` should match the provided thread ID."""
         config = _build_stream_config("t-abc", assistant_id=None)
         assert config["configurable"]["thread_id"] == "t-abc"
+
+
+class TestGetGitBranch:
+    """Tests for `_get_git_branch` caching."""
+
+    def setup_method(self) -> None:
+        """Clear the git-branch cache between tests."""
+        textual_adapter._git_branch_cache.clear()
+
+    def test_reuses_cached_branch_for_same_working_directory(self) -> None:
+        """Repeated lookups in one repo should only spawn `git` once."""
+        result = MagicMock(returncode=0, stdout="feature-branch\n")
+
+        with (
+            patch(
+                "deepagents_cli.textual_adapter.Path.cwd",
+                return_value=Path("/tmp/repo"),
+            ),
+            patch("subprocess.run", return_value=result) as mock_run,
+        ):
+            assert textual_adapter._get_git_branch() == "feature-branch"
+            assert textual_adapter._get_git_branch() == "feature-branch"
+
+        assert mock_run.call_count == 1
 
 
 class TestIsSummarizationChunk:

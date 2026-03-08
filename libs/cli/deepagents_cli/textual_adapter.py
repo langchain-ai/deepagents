@@ -10,6 +10,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -45,6 +46,9 @@ from deepagents_cli.widgets.messages import (
 )
 
 logger = logging.getLogger(__name__)
+
+_git_branch_cache: dict[str, str | None] = {}
+"""Cache git-branch lookups by current working directory."""
 
 
 @dataclass
@@ -221,6 +225,32 @@ _ASK_USER_INTERRUPT_ADAPTER = TypeAdapter(AskUserRequest)
 """Validator for incoming `ask_user` interrupt payloads."""
 
 
+def _get_git_branch() -> str | None:
+    """Return the current git branch name, or None if not in a repo."""
+    import subprocess  # noqa: S404
+
+    cwd = str(Path.cwd())
+    if cwd in _git_branch_cache:
+        return _git_branch_cache[cwd]
+
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],  # noqa: S607
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+        if result.returncode == 0:
+            branch = result.stdout.strip() or None
+            _git_branch_cache[cwd] = branch
+            return branch
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        logger.debug("Could not determine git branch", exc_info=True)
+    _git_branch_cache[cwd] = None
+    return None
+
+
 def _build_stream_config(
     thread_id: str,
     assistant_id: str | None,
@@ -247,6 +277,9 @@ def _build_stream_config(
                 "updated_at": datetime.now(UTC).isoformat(),
             }
         )
+    branch = _get_git_branch()
+    if branch:
+        metadata["git_branch"] = branch
     return {
         "configurable": {"thread_id": thread_id},
         "metadata": metadata,

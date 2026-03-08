@@ -132,6 +132,9 @@ class Glyphs:
     tree_last: str  # "└── " vs "`-- "
     tree_vertical: str  # "│   " vs "|   "
 
+    # Status bar
+    git_branch: str  # "↗" vs "git:"
+
 
 UNICODE_GLYPHS = Glyphs(
     tool_prefix="⏺",
@@ -158,6 +161,7 @@ UNICODE_GLYPHS = Glyphs(
     tree_branch="├── ",
     tree_last="└── ",
     tree_vertical="│   ",
+    git_branch="↗",
 )
 
 ASCII_GLYPHS = Glyphs(
@@ -185,6 +189,7 @@ ASCII_GLYPHS = Glyphs(
     tree_branch="+-- ",
     tree_last="`-- ",
     tree_vertical="|   ",
+    git_branch="git:",
 )
 
 _glyphs_cache: Glyphs | None = None
@@ -616,7 +621,7 @@ class Settings:
         new_project = refreshed["deepagents_langchain_project"]
         if new_project:
             os.environ["LANGSMITH_PROJECT"] = new_project
-        elif _deepagents_project:
+        elif previous["deepagents_langchain_project"]:
             # Override was previously active but new value is unset; restore.
             if _original_langsmith_project:
                 os.environ["LANGSMITH_PROJECT"] = _original_langsmith_project

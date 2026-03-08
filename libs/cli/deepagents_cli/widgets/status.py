@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -13,11 +14,12 @@ from textual.reactive import reactive
 from textual.widget import Widget
 from textual.widgets import Static
 
-from deepagents_cli.config import COLORS, settings
+from deepagents_cli.config import COLORS, get_glyphs, settings
 
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
+    from textual import events
     from textual.app import ComposeResult, RenderResult
     from textual.geometry import Size
 
@@ -72,7 +74,7 @@ class ModelLabel(Widget):
 
 
 class StatusBar(Horizontal):
-    """Status bar showing mode, auto-approve status, and working directory."""
+    """Status bar showing mode, auto-approve, cwd, git branch, tokens, and model."""
 
     DEFAULT_CSS = """
     StatusBar {
@@ -133,8 +135,17 @@ class StatusBar(Horizontal):
         color: $text-muted;
     }
 
-    StatusBar .status-spacer {
+    StatusBar .status-branch {
+        width: auto;
+        color: $text-muted;
+        padding: 0 1;
+    }
+
+    StatusBar .status-left-collapsible {
         width: 1fr;
+        min-width: 0;
+        height: 1;
+        overflow-x: hidden;
     }
 
     StatusBar .status-tokens {
@@ -157,6 +168,7 @@ class StatusBar(Horizontal):
     status_message: reactive[str] = reactive("", init=False)
     auto_approve: reactive[bool] = reactive(default=False, init=False)
     cwd: reactive[str] = reactive("", init=False)
+    branch: reactive[str] = reactive("", init=False)
     tokens: reactive[int] = reactive(0, init=False)
 
     def __init__(self, cwd: str | Path | None = None, **kwargs: Any) -> None:
@@ -174,7 +186,8 @@ class StatusBar(Horizontal):
         """Compose the status bar layout.
 
         Yields:
-            Widgets for mode, auto-approve, message, tokens, and model display.
+            Widgets for mode, auto-approve, message, cwd, branch, tokens, and
+                model display.
         """
         yield Static("", classes="status-mode normal", id="mode-indicator")
         yield Static(
@@ -182,11 +195,32 @@ class StatusBar(Horizontal):
             classes="status-auto-approve off",
             id="auto-approve-indicator",
         )
-        yield Static("", classes="status-message", id="status-message")
-        yield Static("", classes="status-cwd", id="cwd-display")
-        yield Static("", classes="status-spacer")
+        with Horizontal(classes="status-left-collapsible"):
+            yield Static("", classes="status-message", id="status-message")
+            yield Static("", classes="status-cwd", id="cwd-display")
+            yield Static("", classes="status-branch", id="branch-display")
         yield Static("", classes="status-tokens", id="tokens-display")
         yield ModelLabel(id="model-display")
+
+    _BRANCH_WIDTH_THRESHOLD = 100
+    """Hide git branch display below this terminal width."""
+    _CWD_WIDTH_THRESHOLD = 70
+    """Hide cwd display below this terminal width."""
+
+    def on_resize(self, event: events.Resize) -> None:
+        """Manage visibility of status items based on terminal width.
+
+        Priority (highest first): model, cwd, git branch.
+        """
+        width = event.size.width
+        with suppress(NoMatches):
+            self.query_one("#branch-display", Static).display = (
+                width >= self._BRANCH_WIDTH_THRESHOLD
+            )
+        with suppress(NoMatches):
+            self.query_one("#cwd-display", Static).display = (
+                width >= self._CWD_WIDTH_THRESHOLD
+            )
 
     def on_mount(self) -> None:
         """Set reactive values after mount to trigger watchers safely."""
@@ -236,6 +270,15 @@ class StatusBar(Horizontal):
         except NoMatches:
             return
         display.update(self._format_cwd(new_value))
+
+    def watch_branch(self, new_value: str) -> None:
+        """Update branch display when it changes."""
+        try:
+            display = self.query_one("#branch-display", Static)
+        except NoMatches:
+            return
+        icon = get_glyphs().git_branch
+        display.update(f"{icon} {new_value}" if new_value else "")
 
     def watch_status_message(self, new_value: str) -> None:
         """Update status message display."""

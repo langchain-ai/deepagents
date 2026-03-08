@@ -25,10 +25,6 @@ inputs:
     description: 'GitHub token for API access'
     required: false
     default: ${{ github.token }}
-  auto_approve:
-    description: 'Auto-approve tool usage (default: true for CI)'
-    required: false
-    default: 'true'
   working_directory:
     description: 'Working directory for the agent'
     required: false
@@ -42,7 +38,7 @@ inputs:
     required: false
     default: ''
   enable_memory:
-    description: 'Cache agent memory (AGENTS.md, sessions) across workflow runs (default: true)'
+    description: 'Persist agent memory (AGENTS.md, sessions) across workflow runs using actions/cache. When enabled, memory is keyed by agent_name + memory_scope so the agent can recall prior context.'
     required: false
     default: 'true'
   memory_scope:
@@ -53,6 +49,10 @@ inputs:
     description: 'Agent identity name — controls memory namespace (default: agent)'
     required: false
     default: 'agent'
+  shell_allow_list:
+    description: 'Comma-separated shell allow list passed to --shell-allow-list (default: recommended,git,gh)'
+    required: false
+    default: 'recommended,git,gh'
   timeout:
     description: 'Maximum agent runtime in minutes (default: 30)'
     required: false
@@ -73,9 +73,8 @@ runs:
   using: 'composite'
   steps:
     - name: Set up Python and uv
-      uses: astral-sh/setup-uv@v6
+      uses: astral-sh/setup-uv@v7
       with:
-        python-version: '3.11'
         enable-cache: true
 
     - name: Resolve cache key
@@ -120,7 +119,7 @@ runs:
     - name: Restore agent memory
       if: inputs.enable_memory == 'true'
       id: restore-memory
-      uses: actions/cache/restore@v4
+      uses: actions/cache/restore@v5
       with:
         path: |
           ~/.deepagents/${{ inputs.agent_name }}/
@@ -195,11 +194,11 @@ runs:
         GOOGLE_API_KEY: ${{ inputs.google_api_key }}
         GITHUB_TOKEN: ${{ inputs.github_token }}
         INPUT_MODEL: ${{ inputs.model }}
-        INPUT_AUTO_APPROVE: ${{ inputs.auto_approve }}
         INPUT_PROMPT: ${{ inputs.prompt }}
         INPUT_AGENT_NAME: ${{ inputs.agent_name }}
         INPUT_CLI_VERSION: ${{ inputs.cli_version }}
         INPUT_TIMEOUT: ${{ inputs.timeout }}
+        INPUT_SHELL_ALLOW_LIST: ${{ inputs.shell_allow_list }}
       run: |
         # Build command (pin version if specified, matching the install step)
         if [ -n "$INPUT_CLI_VERSION" ]; then
@@ -209,14 +208,11 @@ runs:
         fi
 
         CMD+=(--agent "$INPUT_AGENT_NAME")
-        CMD+=(--shell-allow-list "recommended,git,gh")
+        CMD+=(--shell-allow-list "$INPUT_SHELL_ALLOW_LIST")
+        CMD+=(--auto-approve)
 
         if [ -n "$INPUT_MODEL" ]; then
           CMD+=(--model "$INPUT_MODEL")
-        fi
-
-        if [ "$INPUT_AUTO_APPROVE" == "true" ]; then
-          CMD+=(--auto-approve)
         fi
 
         # Create temp file for output
@@ -245,7 +241,7 @@ runs:
 
     - name: Save agent memory
       if: inputs.enable_memory == 'true' && always()
-      uses: actions/cache/save@v4
+      uses: actions/cache/save@v5
       with:
         path: |
           ~/.deepagents/${{ inputs.agent_name }}/

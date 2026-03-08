@@ -1093,7 +1093,12 @@ async def execute_task_textual(
                 suppress_resumed_output = any_rejected
 
             if interrupt_occurred and hitl_response:
-                if suppress_resumed_output:
+                # When inside a subagent, rejection should be scoped to the
+                # current HITL interrupt — send the RejectDecision back to
+                # LangGraph so the agent can try a different approach.
+                # At root level, return early so the user can provide feedback.
+                in_subagent = getattr(session_state, "depth", 0) > 0
+                if suppress_resumed_output and not in_subagent:
                     await adapter._mount_message(
                         AppMessage(
                             "Command rejected. Tell the agent what you'd like instead."
@@ -1101,6 +1106,10 @@ async def execute_task_textual(
                     )
                     turn_stats.wall_time_seconds = time.monotonic() - start_time
                     return ExecuteTaskResult(stats=turn_stats)
+                if suppress_resumed_output and in_subagent:
+                    await adapter._mount_message(
+                        AppMessage("Rejected — agent will continue.")
+                    )
 
                 stream_input = Command(resume=hitl_response)
             else:

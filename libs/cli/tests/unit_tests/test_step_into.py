@@ -52,9 +52,30 @@ class _FakeAgent:
 
     def __init__(self, chunks: list[tuple]) -> None:
         self._chunks = chunks
+        self._call_count = 0
 
     async def astream(self, *_: Any, **__: Any) -> AsyncIterator[tuple[Any, ...]]:
+        self._call_count += 1
         for chunk in self._chunks:
+            yield chunk
+
+
+class _MultiturnFakeAgent:
+    """Fake agent that yields different chunks on each astream call.
+
+    Used to test rejection-resume flows where the first call returns
+    an interrupt and the second call (after Command(resume=...)) returns
+    a normal completion.
+    """
+
+    def __init__(self, turns: list[list[tuple]]) -> None:
+        self._turns = turns
+        self._call_count = 0
+
+    async def astream(self, *_: Any, **__: Any) -> AsyncIterator[tuple[Any, ...]]:
+        idx = min(self._call_count, len(self._turns) - 1)
+        self._call_count += 1
+        for chunk in self._turns[idx]:
             yield chunk
 
 
@@ -552,3 +573,146 @@ class TestStepIntoEdgeCases:
             threads.add(state.thread_id)
         # All 6 thread IDs (root + 5 subagents) should be unique
         assert len(threads) == 6
+
+
+# ---------------------------------------------------------------------------
+# 7. Rejection scoping inside subagent
+# ---------------------------------------------------------------------------
+
+
+class TestRejectionScopingInSubagent:
+    """Rejection inside a stepped-into subagent should NOT bubble up.
+
+    When the user rejects a tool call while inside a subagent, the
+    rejection should be sent back to LangGraph via Command(resume=...)
+    so the agent can try a different approach.  At root level (depth=0),
+    rejection should still return early as before.
+    """
+
+    async def test_rejection_at_root_returns_early(self) -> None:
+        """At depth=0, rejection should cause an early return."""
+        reject_future: Future[object] = Future()
+        reject_future.set_result({"type": "reject"})
+
+        async def mock_approval(  # noqa: RUF029
+            _r: list[dict[str, object]],
+            _a: str,
+        ) -> Future[object]:
+            return reject_future
+
+        hitl_value = {
+            "action_requests": [{"name": "bash", "args": {"command": "rm -rf /"}}],
+            "review_configs": [
+                {"action_name": "bash", "allowed_decisions": ["approve", "reject"]}
+            ],
+        }
+        interrupt = Interrupt(value=hitl_value, resumable=True, ns=None)
+        agent = _FakeAgent(
+            [
+                ((), "updates", {"__interrupt__": [interrupt]}),
+            ]
+        )
+
+        mounted: list[object] = []
+
+        async def record_mount(w: object) -> None:
+            await asyncio.sleep(0)
+            mounted.append(w)
+
+        adapter = TextualUIAdapter(
+            mount_message=record_mount,
+            update_status=_noop_status,
+            request_approval=mock_approval,
+        )
+
+        # Root level: depth=0
+        session = SimpleNamespace(thread_id="t1", auto_approve=False, depth=0)
+
+        result = await execute_task_textual(
+            user_input="do it",
+            agent=agent,
+            assistant_id="test",
+            session_state=session,
+            adapter=adapter,
+        )
+
+        # Should return early — no step_into_context
+        assert result.step_into_context is None
+        # Agent should only be called once (no resume after rejection)
+        assert agent._call_count == 1
+        # "Command rejected" message should be mounted
+        reject_msgs = [
+            w
+            for w in mounted
+            if isinstance(w, AppMessage) and "rejected" in str(w._content).lower()
+        ]
+        assert len(reject_msgs) == 1
+
+    async def test_rejection_in_subagent_resumes_agent(self) -> None:
+        """At depth>0, rejection should resume the agent, not return early."""
+        reject_future: Future[object] = Future()
+        reject_future.set_result({"type": "reject"})
+
+        async def mock_approval(  # noqa: RUF029
+            _r: list[dict[str, object]],
+            _a: str,
+        ) -> Future[object]:
+            return reject_future
+
+        hitl_value = {
+            "action_requests": [{"name": "bash", "args": {"command": "rm -rf /"}}],
+            "review_configs": [
+                {"action_name": "bash", "allowed_decisions": ["approve", "reject"]}
+            ],
+        }
+        interrupt = Interrupt(value=hitl_value, resumable=True, ns=None)
+
+        # Turn 1: interrupt → rejection → resume
+        # Turn 2: agent finishes normally (no interrupt)
+        agent = _MultiturnFakeAgent(
+            [
+                [((), "updates", {"__interrupt__": [interrupt]})],
+                [],  # empty = agent completes
+            ]
+        )
+
+        mounted: list[object] = []
+
+        async def record_mount(w: object) -> None:
+            await asyncio.sleep(0)
+            mounted.append(w)
+
+        adapter = TextualUIAdapter(
+            mount_message=record_mount,
+            update_status=_noop_status,
+            request_approval=mock_approval,
+        )
+
+        # Inside subagent: depth=1
+        session = SimpleNamespace(thread_id="t1", auto_approve=False, depth=1)
+
+        await execute_task_textual(
+            user_input="do it",
+            agent=agent,
+            assistant_id="test",
+            session_state=session,
+            adapter=adapter,
+        )
+
+        # Should NOT return early — agent should be called twice
+        # (once for initial stream, once for resume after rejection)
+        assert agent._call_count == 2
+        # "Rejected — agent will continue" message should be mounted
+        continue_msgs = [
+            w
+            for w in mounted
+            if isinstance(w, AppMessage) and "continue" in str(w._content).lower()
+        ]
+        assert len(continue_msgs) == 1
+        # Should NOT have "Command rejected" (root-level message)
+        root_reject_msgs = [
+            w
+            for w in mounted
+            if isinstance(w, AppMessage) and "tell the agent" in str(w._content).lower()
+        ]
+        assert len(root_reject_msgs) == 0

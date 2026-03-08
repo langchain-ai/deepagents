@@ -65,10 +65,10 @@ class ApprovalMenu(Container):
         Binding("enter", "select", "Select", show=False),
         Binding("1", "select_approve", "Approve", show=False),
         Binding("y", "select_approve", "Approve", show=False),
-        Binding("2", "select_reject", "Reject", show=False),
-        Binding("n", "select_reject", "Reject", show=False),
-        Binding("3", "select_auto", "Auto-approve", show=False),
+        Binding("2", "select_auto", "Auto-approve", show=False),
         Binding("a", "select_auto", "Auto-approve", show=False),
+        Binding("3", "select_reject", "Reject", show=False),
+        Binding("n", "select_reject", "Reject", show=False),
         Binding("e", "toggle_expand", "Expand command", show=False),
     ]
 
@@ -254,7 +254,7 @@ class ApprovalMenu(Container):
         glyphs = get_glyphs()
         help_text = (
             f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate {glyphs.bullet} "
-            f"Enter select {glyphs.bullet} y/n/a quick keys {glyphs.bullet} Esc reject"
+            f"Enter select {glyphs.bullet} y/a/n quick keys {glyphs.bullet} Esc reject"
         )
         if self._has_expandable_command:
             help_text += f" {glyphs.bullet} e expand"
@@ -309,14 +309,14 @@ class ApprovalMenu(Container):
         if count == 1:
             options = [
                 "1. Approve (y)",
-                "2. Reject (n)",
-                "3. Auto-approve for this thread (a)",
+                "2. Auto-approve for this thread (a)",
+                "3. Reject (n)",
             ]
         else:
             options = [
                 f"1. Approve all {count} (y)",
-                f"2. Reject all {count} (n)",
-                "3. Auto-approve for this thread (a)",
+                "2. Auto-approve for this thread (a)",
+                f"3. Reject all {count} (n)",
             ]
 
         for i, (text, widget) in enumerate(
@@ -350,14 +350,14 @@ class ApprovalMenu(Container):
         self._update_options()
         self._handle_selection(0)
 
-    def action_select_reject(self) -> None:
-        """Select reject option."""
+    def action_select_auto(self) -> None:
+        """Select auto-approve option."""
         self._selected = 1
         self._update_options()
         self._handle_selection(1)
 
-    def action_select_auto(self) -> None:
-        """Select auto-approve option."""
+    def action_select_reject(self) -> None:
+        """Select reject option."""
         self._selected = 2
         self._update_options()
         self._handle_selection(2)
@@ -375,8 +375,8 @@ class ApprovalMenu(Container):
         """Handle the selected option."""
         decision_map = {
             0: "approve",
-            1: "reject",
-            2: "auto_approve_all",
+            1: "auto_approve_all",
+            2: "reject",
         }
         decision = {"type": decision_map[option]}
 

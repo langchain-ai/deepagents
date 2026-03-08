@@ -336,10 +336,10 @@ class TestUserMessageModeRendering:
 class TestQueuedUserMessageModeRendering:
     """Test `QueuedUserMessage` renders mode-specific prefix indicators (dimmed)."""
 
-    def test_shell_prefix_renders_dimmed_bang(self) -> None:
-        """`QueuedUserMessage('!ls')` should render dimmed `'! '` prefix."""
+    def test_shell_prefix_renders_dimmed_dollar(self) -> None:
+        """`QueuedUserMessage('!ls')` should render dimmed `'$ '` prefix."""
         text = _compose_text(QueuedUserMessage("!ls"))
-        assert text.plain == "! ls"
+        assert text.plain == "$ ls"
 
     def test_command_prefix_renders_dimmed_slash(self) -> None:
         """`QueuedUserMessage('/help')` should render dimmed `'/ '` prefix."""

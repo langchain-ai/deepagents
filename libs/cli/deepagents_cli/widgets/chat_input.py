@@ -1413,6 +1413,8 @@ class ChatInput(Vertical):
         try:
             prompt = self.query_one("#prompt", Static)
         except NoMatches:
+            logger.warning("watch_mode: #prompt widget not found")
+            self.post_message(self.ModeChanged(mode))
             return
         self.remove_class("mode-shell", "mode-command")
         glyph = MODE_DISPLAY_GLYPHS.get(mode)
@@ -1420,6 +1422,11 @@ class ChatInput(Vertical):
             prompt.update(glyph)
             self.add_class(f"mode-{mode}")
         else:
+            if mode != "normal":
+                logger.warning(
+                    "No display glyph for mode %r; falling back to '>'",
+                    mode,
+                )
             prompt.update(">")
         self.post_message(self.ModeChanged(mode))
 

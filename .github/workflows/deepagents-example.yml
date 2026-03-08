@@ -31,6 +31,7 @@ jobs:
     steps:
       - name: Acknowledge trigger
         if: github.event_name == 'issue_comment'
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

@@ -423,6 +423,58 @@ class TestGetSystemPromptModelIdentity:
         assert "context window" not in prompt
 
 
+class TestGetSystemPromptNonInteractive:
+    """Tests for interactive vs non-interactive system prompt."""
+
+    def test_interactive_prompt_mentions_interactive_cli(self) -> None:
+        mock_settings = Mock()
+        mock_settings.model_name = None
+
+        with patch("deepagents_cli.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent", interactive=True)
+
+        assert "interactive CLI" in prompt
+        assert "ask questions before acting" in prompt
+
+    def test_non_interactive_prompt_mentions_headless(self) -> None:
+        mock_settings = Mock()
+        mock_settings.model_name = None
+
+        with patch("deepagents_cli.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent", interactive=False)
+
+        assert "non-interactive" in prompt
+        assert "no human" in prompt.lower()
+
+    def test_non_interactive_prompt_does_not_ask_questions(self) -> None:
+        mock_settings = Mock()
+        mock_settings.model_name = None
+
+        with patch("deepagents_cli.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent", interactive=False)
+
+        assert "ask questions before acting" not in prompt
+
+    def test_non_interactive_prompt_instructs_autonomous_execution(self) -> None:
+        mock_settings = Mock()
+        mock_settings.model_name = None
+
+        with patch("deepagents_cli.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent", interactive=False)
+
+        assert "Do NOT ask clarifying questions" in prompt
+        assert "reasonable assumptions" in prompt
+
+    def test_default_is_interactive(self) -> None:
+        mock_settings = Mock()
+        mock_settings.model_name = None
+
+        with patch("deepagents_cli.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent")
+
+        assert "interactive CLI" in prompt
+
+
 class TestDefaultAgentName:
     """Tests for the DEFAULT_AGENT_NAME constant."""
 

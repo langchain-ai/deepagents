@@ -839,6 +839,7 @@ async def run_non_interactive(
                 tools=tools,
                 sandbox=sandbox_backend,
                 sandbox_type=sandbox_type if sandbox_type != "none" else None,
+                interactive=False,
                 auto_approve=use_auto_approve,
                 enable_shell=enable_shell,
                 checkpointer=checkpointer,

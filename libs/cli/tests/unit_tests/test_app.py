@@ -6,7 +6,7 @@ import os
 import signal
 import webbrowser
 from typing import ClassVar
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 from textual import events
@@ -596,6 +596,60 @@ class TestMessageQueue:
             # message should also have been picked up (mounted as UserMessage)
             user_msgs = app.query(UserMessage)
             assert any(w._content == "hello agent" for w in user_msgs)
+
+
+class TestAskUserLifecycle:
+    """Tests for ask_user widget cleanup flows."""
+
+    async def test_request_ask_user_timeout_cleans_old_widget(self) -> None:
+        """Timeout cleanup should cancel then remove the previous widget."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            old_widget = MagicMock()
+            old_widget.remove = AsyncMock()
+            app._pending_ask_user_widget = old_widget
+
+            with patch("deepagents_cli.app._monotonic", side_effect=[0.0, 31.0]):
+                await app._request_ask_user([{"question": "Name?", "type": "text"}])
+
+            old_widget.action_cancel.assert_called_once()
+            old_widget.remove.assert_awaited_once()
+            assert old_widget.mock_calls[:2] == [call.action_cancel(), call.remove()]
+            assert app._pending_ask_user_widget is not old_widget
+
+    async def test_on_ask_user_menu_answered_ignores_remove_errors(self) -> None:
+        """Answered handler should swallow remove races and clear tracking."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            widget = MagicMock()
+            widget.remove = AsyncMock(side_effect=RuntimeError("already removed"))
+            app._pending_ask_user_widget = widget
+
+            await app.on_ask_user_menu_answered(object())
+            await pilot.pause()
+
+            assert app._pending_ask_user_widget is None
+            widget.remove.assert_awaited_once()
+
+    async def test_on_ask_user_menu_cancelled_ignores_remove_errors(self) -> None:
+        """Cancelled handler should swallow remove races and clear tracking."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            widget = MagicMock()
+            widget.remove = AsyncMock(side_effect=RuntimeError("already removed"))
+            app._pending_ask_user_widget = widget
+
+            await app.on_ask_user_menu_cancelled(object())
+            await pilot.pause()
+
+            assert app._pending_ask_user_widget is None
+            widget.remove.assert_awaited_once()
 
 
 class TestTraceCommand:

@@ -19,6 +19,7 @@ from deepagents_cli.config import (
     get_banner,
     get_glyphs,
     get_langsmith_project_name,
+    newline_shortcut,
 )
 from deepagents_cli.widgets._links import open_style_link
 
@@ -154,7 +155,10 @@ class WelcomeBanner(Static):
         )
         bullet = get_glyphs().bullet
         banner.append(
-            f"Enter send {bullet} Ctrl+J newline {bullet} @ files {bullet} / commands",
+            (
+                f"Enter send {bullet} {newline_shortcut()} newline "
+                f"{bullet} @ files {bullet} / commands"
+            ),
             style="dim",
         )
         return banner

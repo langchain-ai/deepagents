@@ -17,17 +17,19 @@ if TYPE_CHECKING:
 
     from rich.console import Console
 
+    from deepagents_cli.ask_user import AskUserWidgetResult, Question
+
 from langchain.agents.middleware.human_in_the_loop import (
     ApproveDecision,
     EditDecision,
     HITLRequest,
-    HITLResponse,
     RejectDecision,
 )
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.types import Command, Interrupt
 from pydantic import TypeAdapter, ValidationError
 
+from deepagents_cli.ask_user import AskUserRequest
 from deepagents_cli.config import settings
 from deepagents_cli.file_ops import FileOpTracker
 from deepagents_cli.hooks import dispatch_hook
@@ -215,6 +217,8 @@ def print_usage_table(
 HITLDecision = ApproveDecision | EditDecision | RejectDecision
 
 _HITL_REQUEST_ADAPTER = TypeAdapter(HITLRequest)
+_ASK_USER_INTERRUPT_ADAPTER = TypeAdapter(AskUserRequest)
+"""Validator for incoming `ask_user` interrupt payloads."""
 
 
 def _get_git_branch() -> str | None:
@@ -313,6 +317,18 @@ class TextualUIAdapter:
     allowing the app to sync its status bar and session state.
     """
 
+    _request_ask_user: (
+        Callable[
+            [list[Question]],
+            Awaitable[asyncio.Future[AskUserWidgetResult] | None],
+        ]
+        | None
+    )
+    """Async callback for `ask_user` interrupts.
+
+    When awaited, returns a `Future` that resolves to user answers.
+    """
+
     _scroll_to_bottom: Callable[[], None] | None
     """Callback to scroll chat to bottom."""
 
@@ -344,6 +360,13 @@ class TextualUIAdapter:
         set_spinner: Callable[[str | None], Awaitable[None]] | None = None,
         set_active_message: Callable[[str | None], None] | None = None,
         sync_message_content: Callable[[str, str], None] | None = None,
+        request_ask_user: (
+            Callable[
+                [list[Question]],
+                Awaitable[asyncio.Future[AskUserWidgetResult] | None],
+            ]
+            | None
+        ) = None,
     ) -> None:
         """Initialize the adapter.
 
@@ -360,6 +383,8 @@ class TextualUIAdapter:
             set_active_message: Callback to set the active streaming message ID.
             sync_message_content: Callback to sync final content back to the
                 message store after streaming completes.
+            request_ask_user: Async callable that displays an `ask_user` widget
+                and returns a `Future` resolving to user answers.
         """
         self._mount_message = mount_message
         self._update_status = update_status
@@ -369,6 +394,7 @@ class TextualUIAdapter:
         self._set_spinner = set_spinner
         self._set_active_message = set_active_message
         self._sync_message_content = sync_message_content
+        self._request_ask_user = request_ask_user
 
         # State tracking
         self._current_tool_messages: dict[str, ToolCallMessage] = {}
@@ -551,9 +577,9 @@ async def execute_task_textual(
     try:
         while True:
             interrupt_occurred = False
-            hitl_response: dict[str, HITLResponse] = {}
             suppress_resumed_output = False
             pending_interrupts: dict[str, HITLRequest] = {}
+            pending_ask_user: dict[str, AskUserRequest] = {}
 
             async for chunk in agent.astream(
                 stream_input,
@@ -562,7 +588,7 @@ async def execute_task_textual(
                 config=config,
                 durability="exit",
             ):
-                if not isinstance(chunk, tuple) or len(chunk) != 3:  # noqa: PLR2004  # Retry count threshold
+                if not isinstance(chunk, tuple) or len(chunk) != 3:  # noqa: PLR2004  # stream chunk is a 3-tuple (namespace, mode, data)
                     continue
 
                 namespace, current_stream_mode, data = chunk
@@ -585,19 +611,39 @@ async def execute_task_textual(
                         interrupts: list[Interrupt] = data["__interrupt__"]
                         if interrupts:
                             for interrupt_obj in interrupts:
-                                try:
-                                    validated_request = (
-                                        _HITL_REQUEST_ADAPTER.validate_python(
-                                            interrupt_obj.value
+                                iv = interrupt_obj.value
+                                if (
+                                    isinstance(iv, dict)
+                                    and iv.get("type") == "ask_user"
+                                ):
+                                    try:
+                                        validated_ask_user = (
+                                            _ASK_USER_INTERRUPT_ADAPTER.validate_python(
+                                                iv
+                                            )
                                         )
-                                    )
-                                    pending_interrupts[interrupt_obj.id] = (
-                                        validated_request
-                                    )
-                                    interrupt_occurred = True
-                                    await dispatch_hook("input.required", {})
-                                except ValidationError:  # noqa: TRY203  # Re-raise preserves exception context in handler
-                                    raise
+                                        pending_ask_user[interrupt_obj.id] = (
+                                            validated_ask_user
+                                        )
+                                        interrupt_occurred = True
+                                        await dispatch_hook("input.required", {})
+                                    except ValidationError:
+                                        logger.exception(
+                                            "Invalid ask_user interrupt payload"
+                                        )
+                                        raise
+                                else:
+                                    try:
+                                        validated_request = (
+                                            _HITL_REQUEST_ADAPTER.validate_python(iv)
+                                        )
+                                        pending_interrupts[interrupt_obj.id] = (
+                                            validated_request
+                                        )
+                                        interrupt_occurred = True
+                                        await dispatch_hook("input.required", {})
+                                    except ValidationError:  # noqa: TRY203  # Re-raise preserves exception context in handler
+                                        raise
 
                     # Check for todo updates (not yet implemented in Textual UI)
                     chunk_data = next(iter(data.values())) if data else None
@@ -614,7 +660,7 @@ async def execute_task_textual(
                     if not is_main_agent:
                         continue
 
-                    if not isinstance(data, tuple) or len(data) != 2:  # noqa: PLR2004  # Tool call part index
+                    if not isinstance(data, tuple) or len(data) != 2:  # noqa: PLR2004  # message stream data is a 2-tuple (message, metadata)
                         continue
 
                     message, metadata = data
@@ -907,17 +953,114 @@ async def execute_task_textual(
             # Handle HITL after stream completes
             if interrupt_occurred:
                 any_rejected = False
+                resume_payload: dict[str, Any] = {}
+
+                for interrupt_id, ask_req in list(pending_ask_user.items()):
+                    questions = ask_req["questions"]
+
+                    if adapter._request_ask_user:
+                        if adapter._set_spinner:
+                            await adapter._set_spinner(None)
+                        result: dict[str, Any] = {
+                            "type": "error",
+                            "error": "ask_user callback returned no response",
+                        }
+                        try:
+                            future = await adapter._request_ask_user(questions)
+                        except Exception:
+                            logger.exception("Failed to mount ask_user widget")
+                            result = {
+                                "type": "error",
+                                "error": "failed to display ask_user prompt",
+                            }
+                            future = None
+
+                        if future is None:
+                            logger.error(
+                                "ask_user callback returned no Future; "
+                                "reporting as error"
+                            )
+                        else:
+                            try:
+                                future_result = await future
+                                if isinstance(future_result, dict):
+                                    result = future_result
+                                else:
+                                    logger.error(
+                                        "ask_user future returned non-dict result: %s",
+                                        type(future_result).__name__,
+                                    )
+                                    result = {
+                                        "type": "error",
+                                        "error": "invalid ask_user widget result",
+                                    }
+                            except Exception:
+                                logger.exception(
+                                    "ask_user future resolution failed; "
+                                    "reporting as error"
+                                )
+                                result = {
+                                    "type": "error",
+                                    "error": "failed to receive ask_user response",
+                                }
+
+                        result_type = result.get("type")
+                        if result_type == "answered":
+                            answers = result.get("answers", [])
+                            if isinstance(answers, list):
+                                resume_payload[interrupt_id] = {"answers": answers}
+                                tool_id = ask_req["tool_call_id"]
+                                if tool_id in adapter._current_tool_messages:
+                                    tool_msg = adapter._current_tool_messages[tool_id]
+                                    tool_msg.set_success("User answered")
+                                    adapter._current_tool_messages.pop(tool_id, None)
+                            else:
+                                logger.error(
+                                    "ask_user answered payload had non-list "
+                                    "answers: %s",
+                                    type(answers).__name__,
+                                )
+                                resume_payload[interrupt_id] = {
+                                    "status": "error",
+                                    "error": "invalid ask_user answers payload",
+                                    "answers": ["" for _ in questions],
+                                }
+                                any_rejected = True
+                        elif result_type == "cancelled":
+                            resume_payload[interrupt_id] = {
+                                "status": "cancelled",
+                                "answers": ["" for _ in questions],
+                            }
+                            any_rejected = True
+                        else:
+                            error_text = result.get("error")
+                            if not isinstance(error_text, str) or not error_text:
+                                error_text = "ask_user interaction failed"
+                            resume_payload[interrupt_id] = {
+                                "status": "error",
+                                "error": error_text,
+                                "answers": ["" for _ in questions],
+                            }
+                            any_rejected = True
+                    else:
+                        logger.warning(
+                            "ask_user interrupt received but no UI callback is "
+                            "registered; reporting as error"
+                        )
+                        resume_payload[interrupt_id] = {
+                            "status": "error",
+                            "error": "ask_user not supported by this UI",
+                            "answers": ["" for _ in questions],
+                        }
 
                 for interrupt_id, hitl_request in list(pending_interrupts.items()):
                     action_requests = hitl_request["action_requests"]
 
                     if session_state.auto_approve:
-                        # Auto-approve silently - start running animation
                         decisions: list[HITLDecision] = [
                             ApproveDecision(type="approve") for _ in action_requests
                         ]
-                        hitl_response[interrupt_id] = {"decisions": decisions}
-                        # Mark all tools as running
+                        resume_payload[interrupt_id] = {"decisions": decisions}
                         for tool_msg in list(adapter._current_tool_messages.values()):
                             tool_msg.set_running()
                     else:
@@ -935,16 +1078,13 @@ async def execute_task_textual(
                         )
                         decision = await future
 
-                        # Handle the batch decision
                         if isinstance(decision, dict):
                             decision_type = decision.get("type")
 
                             if decision_type == "auto_approve_all":
-                                # Enable auto-approve for session
                                 session_state.auto_approve = True
                                 if adapter._on_auto_approve_enabled:
                                     adapter._on_auto_approve_enabled()
-                                # Approve all
                                 decisions = [
                                     ApproveDecision(type="approve")
                                     for _ in action_requests
@@ -954,10 +1094,12 @@ async def execute_task_textual(
                                 )
                                 for tool_msg in tool_msgs:
                                     tool_msg.set_running()
-                                # Mark file ops as approved
                                 for action_request in action_requests:
                                     tool_name = action_request.get("name")
-                                    if tool_name in {"write_file", "edit_file"}:
+                                    if tool_name in {
+                                        "write_file",
+                                        "edit_file",
+                                    }:
                                         args = action_request.get("args", {})
                                         if isinstance(args, dict):
                                             file_op_tracker.mark_hitl_approved(
@@ -965,7 +1107,6 @@ async def execute_task_textual(
                                             )
 
                             elif decision_type == "approve":
-                                # Approve all
                                 decisions = [
                                     ApproveDecision(type="approve")
                                     for _ in action_requests
@@ -975,10 +1116,12 @@ async def execute_task_textual(
                                 )
                                 for tool_msg in tool_msgs:
                                     tool_msg.set_running()
-                                # Mark file ops as approved
                                 for action_request in action_requests:
                                     tool_name = action_request.get("name")
-                                    if tool_name in {"write_file", "edit_file"}:
+                                    if tool_name in {
+                                        "write_file",
+                                        "edit_file",
+                                    }:
                                         args = action_request.get("args", {})
                                         if isinstance(args, dict):
                                             file_op_tracker.mark_hitl_approved(
@@ -986,7 +1129,6 @@ async def execute_task_textual(
                                             )
 
                             elif decision_type == "reject":
-                                # Reject all
                                 decisions = [
                                     RejectDecision(type="reject")
                                     for _ in action_requests
@@ -1028,15 +1170,15 @@ async def execute_task_textual(
                             adapter._current_tool_messages.clear()
                             any_rejected = True
 
-                        hitl_response[interrupt_id] = {"decisions": decisions}
+                        resume_payload[interrupt_id] = {"decisions": decisions}
 
                         if any_rejected:
                             break
 
                 suppress_resumed_output = any_rejected
 
-            if interrupt_occurred and hitl_response:
-                if suppress_resumed_output:
+            if interrupt_occurred and resume_payload:
+                if suppress_resumed_output and not pending_ask_user:
                     await adapter._mount_message(
                         AppMessage(
                             "Command rejected. Tell the agent what you'd like instead."
@@ -1045,7 +1187,7 @@ async def execute_task_textual(
                     turn_stats.wall_time_seconds = time.monotonic() - start_time
                     return turn_stats
 
-                stream_input = Command(resume=hitl_response)
+                stream_input = Command(resume=resume_payload)
             else:
                 await dispatch_hook("task.complete", {"thread_id": thread_id})
                 break

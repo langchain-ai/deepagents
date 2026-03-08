@@ -214,7 +214,7 @@ _profiles_cache: Mapping[str, ModelProfileEntry] | None = None
 def clear_caches() -> None:
     """Reset module-level caches so the next call recomputes from scratch.
 
-    Intended for tests and for a hypothetical "refresh models" UI action.
+    Intended for tests and for the `/reload` command.
     """
     global _available_models_cache, _builtin_providers_cache, _default_config_cache, _profiles_cache  # noqa: PLW0603, E501  # Module-level caches require global statement
     _available_models_cache = None

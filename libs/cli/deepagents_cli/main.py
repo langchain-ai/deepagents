@@ -381,6 +381,15 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--ask-user",
+        action="store_true",
+        help=(
+            "Enable the ask_user tool, allowing the agent to ask "
+            "you questions during execution (opt-in)."
+        ),
+    )
+
+    parser.add_argument(
         "--sandbox",
         choices=["none", "modal", "daytona", "runloop", "langsmith"],
         default="none",
@@ -470,6 +479,7 @@ async def run_textual_cli_async(
     thread_id: str | None = None,
     is_resumed: bool = False,
     initial_prompt: str | None = None,
+    enable_ask_user: bool = False,
     mcp_config_path: str | None = None,
     no_mcp: bool = False,
     trust_project_mcp: bool | None = None,
@@ -494,6 +504,7 @@ async def run_textual_cli_async(
         thread_id: Thread ID to use (new or resumed)
         is_resumed: Whether this is a resumed session
         initial_prompt: Optional prompt to auto-submit when session starts
+        enable_ask_user: Enable the ask_user tool
         mcp_config_path: Optional path to MCP servers JSON configuration file.
 
             Merged on top of auto-discovered configs (highest precedence).
@@ -605,6 +616,7 @@ async def run_textual_cli_async(
                 sandbox=sandbox_backend,
                 sandbox_type=sandbox_type if sandbox_type != "none" else None,
                 auto_approve=auto_approve,
+                enable_ask_user=enable_ask_user,
                 checkpointer=checkpointer,
                 mcp_server_info=mcp_server_info,
             )
@@ -627,6 +639,7 @@ async def run_textual_cli_async(
                 assistant_id=assistant_id,
                 backend=composite_backend,
                 auto_approve=auto_approve,
+                enable_ask_user=enable_ask_user,
                 cwd=Path.cwd(),
                 thread_id=thread_id,
                 initial_prompt=initial_prompt,
@@ -1342,6 +1355,7 @@ def cli_main() -> None:
                         thread_id=thread_id,
                         is_resumed=is_resumed,
                         initial_prompt=getattr(args, "initial_prompt", None),
+                        enable_ask_user=getattr(args, "ask_user", False),
                         mcp_config_path=getattr(args, "mcp_config", None),
                         no_mcp=getattr(args, "no_mcp", False),
                         trust_project_mcp=mcp_trust_decision,

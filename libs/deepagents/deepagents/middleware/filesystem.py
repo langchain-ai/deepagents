@@ -153,7 +153,7 @@ Usage:
 - Image files (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`) are returned as multimodal image content blocks (see https://docs.langchain.com/oss/python/langchain/messages#multimodal).
 
 For image tasks:
-- Use `read_file(file_path=...)` for `.png/.jpg/.jpeg/.gif/.webp`
+- Use `read_file(path=...)` for `.png/.jpg/.jpeg/.gif/.webp`
 - Do NOT use `offset`/`limit` for images (pagination is text-only)
 - If image details were compacted from history, call `read_file` again on the same path
 
@@ -523,7 +523,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         token_limit = self._tool_token_limit_before_evict
 
         def sync_read_file(
-            file_path: Annotated[str, "Absolute path to the file to read. Must be absolute, not relative."],
+            path: Annotated[str, "Absolute path to the file to read. Must be absolute, not relative."],
             runtime: ToolRuntime[None, FilesystemState],
             offset: Annotated[int, "Line number to start reading from (0-indexed). Use for pagination of large files."] = DEFAULT_READ_OFFSET,
             limit: Annotated[int, "Maximum number of lines to read. Use for pagination of large files."] = DEFAULT_READ_LIMIT,
@@ -531,7 +531,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             """Synchronous wrapper for read_file tool."""
             resolved_backend = self._get_backend(runtime)
             try:
-                validated_path = validate_path(file_path)
+                validated_path = validate_path(path)
             except ValueError as e:
                 return f"Error: {e}"
 
@@ -572,7 +572,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             return result
 
         async def async_read_file(
-            file_path: Annotated[str, "Absolute path to the file to read. Must be absolute, not relative."],
+            path: Annotated[str, "Absolute path to the file to read. Must be absolute, not relative."],
             runtime: ToolRuntime[None, FilesystemState],
             offset: Annotated[int, "Line number to start reading from (0-indexed). Use for pagination of large files."] = DEFAULT_READ_OFFSET,
             limit: Annotated[int, "Maximum number of lines to read. Use for pagination of large files."] = DEFAULT_READ_LIMIT,
@@ -580,7 +580,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             """Asynchronous wrapper for read_file tool."""
             resolved_backend = self._get_backend(runtime)
             try:
-                validated_path = validate_path(file_path)
+                validated_path = validate_path(path)
             except ValueError as e:
                 return f"Error: {e}"
 
@@ -632,14 +632,14 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         tool_description = self._custom_tool_descriptions.get("write_file") or WRITE_FILE_TOOL_DESCRIPTION
 
         def sync_write_file(
-            file_path: Annotated[str, "Absolute path where the file should be created. Must be absolute, not relative."],
+            path: Annotated[str, "Absolute file path where the file should be created. Must be absolute, not relative."],
             content: Annotated[str, "The text content to write to the file. This parameter is required."],
             runtime: ToolRuntime[None, FilesystemState],
         ) -> Command | str:
             """Synchronous wrapper for write_file tool."""
             resolved_backend = self._get_backend(runtime)
             try:
-                validated_path = validate_path(file_path)
+                validated_path = validate_path(path)
             except ValueError as e:
                 return f"Error: {e}"
             res: WriteResult = resolved_backend.write(validated_path, content)
@@ -661,14 +661,14 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             return f"Updated file {res.path}"
 
         async def async_write_file(
-            file_path: Annotated[str, "Absolute path where the file should be created. Must be absolute, not relative."],
+            path: Annotated[str, "Absolute file path where the file should be created. Must be absolute, not relative."],
             content: Annotated[str, "The text content to write to the file. This parameter is required."],
             runtime: ToolRuntime[None, FilesystemState],
         ) -> Command | str:
             """Asynchronous wrapper for write_file tool."""
             resolved_backend = self._get_backend(runtime)
             try:
-                validated_path = validate_path(file_path)
+                validated_path = validate_path(path)
             except ValueError as e:
                 return f"Error: {e}"
             res: WriteResult = await resolved_backend.awrite(validated_path, content)
@@ -701,7 +701,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         tool_description = self._custom_tool_descriptions.get("edit_file") or EDIT_FILE_TOOL_DESCRIPTION
 
         def sync_edit_file(
-            file_path: Annotated[str, "Absolute path to the file to edit. Must be absolute, not relative."],
+            path: Annotated[str, "Absolute file path to edit. Must be absolute, not relative."],
             old_string: Annotated[str, "The exact text to find and replace. Must be unique in the file unless replace_all is True."],
             new_string: Annotated[str, "The text to replace old_string with. Must be different from old_string."],
             runtime: ToolRuntime[None, FilesystemState],
@@ -711,7 +711,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             """Synchronous wrapper for edit_file tool."""
             resolved_backend = self._get_backend(runtime)
             try:
-                validated_path = validate_path(file_path)
+                validated_path = validate_path(path)
             except ValueError as e:
                 return f"Error: {e}"
             res: EditResult = resolved_backend.edit(validated_path, old_string, new_string, replace_all=replace_all)
@@ -732,7 +732,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             return f"Successfully replaced {res.occurrences} instance(s) of the string in '{res.path}'"
 
         async def async_edit_file(
-            file_path: Annotated[str, "Absolute path to the file to edit. Must be absolute, not relative."],
+            path: Annotated[str, "Absolute file path to edit. Must be absolute, not relative."],
             old_string: Annotated[str, "The exact text to find and replace. Must be unique in the file unless replace_all is True."],
             new_string: Annotated[str, "The text to replace old_string with. Must be different from old_string."],
             runtime: ToolRuntime[None, FilesystemState],
@@ -742,7 +742,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             """Asynchronous wrapper for edit_file tool."""
             resolved_backend = self._get_backend(runtime)
             try:
-                validated_path = validate_path(file_path)
+                validated_path = validate_path(path)
             except ValueError as e:
                 return f"Error: {e}"
             res: EditResult = await resolved_backend.aedit(validated_path, old_string, new_string, replace_all=replace_all)

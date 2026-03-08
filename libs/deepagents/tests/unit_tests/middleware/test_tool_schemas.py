@@ -22,9 +22,9 @@ class TestFilesystemToolSchemas:
         # Expected tools and their user-facing args (excludes `runtime` which is internal)
         expected_tools = {
             "ls": ["path"],
-            "read_file": ["file_path", "offset", "limit"],
-            "write_file": ["file_path", "content"],
-            "edit_file": ["file_path", "old_string", "new_string", "replace_all"],
+            "read_file": ["path", "offset", "limit"],
+            "write_file": ["path", "content"],
+            "edit_file": ["path", "old_string", "new_string", "replace_all"],
             "glob": ["pattern", "path"],
             "grep": ["pattern", "path", "glob", "output_mode"],
             "execute": ["command"],

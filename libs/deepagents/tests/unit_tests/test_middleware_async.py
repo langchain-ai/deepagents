@@ -556,7 +556,7 @@ class TestFilesystemMiddlewareAsync:
         read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
         result = await read_file_tool.ainvoke(
             {
-                "file_path": "/test.txt",
+                "path": "/test.txt",
                 "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
             }
         )
@@ -580,7 +580,7 @@ class TestFilesystemMiddlewareAsync:
         read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
         result = await read_file_tool.ainvoke(
             {
-                "file_path": "/test.txt",
+                "path": "/test.txt",
                 "offset": 1,
                 "limit": 2,
                 "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
@@ -598,7 +598,7 @@ class TestFilesystemMiddlewareAsync:
         write_file_tool = next(tool for tool in middleware.tools if tool.name == "write_file")
         result = await write_file_tool.ainvoke(
             {
-                "file_path": "/test.txt",
+                "path": "/test.txt",
                 "content": "Hello world",
                 "runtime": ToolRuntime(state=state, context=None, tool_call_id="tc1", store=None, stream_writer=lambda _: None, config={}),
             }
@@ -623,7 +623,7 @@ class TestFilesystemMiddlewareAsync:
         edit_file_tool = next(tool for tool in middleware.tools if tool.name == "edit_file")
         result = await edit_file_tool.ainvoke(
             {
-                "file_path": "/test.txt",
+                "path": "/test.txt",
                 "old_string": "Hello",
                 "new_string": "Hi",
                 "runtime": ToolRuntime(state=state, context=None, tool_call_id="tc2", store=None, stream_writer=lambda _: None, config={}),
@@ -649,7 +649,7 @@ class TestFilesystemMiddlewareAsync:
         edit_file_tool = next(tool for tool in middleware.tools if tool.name == "edit_file")
         result = await edit_file_tool.ainvoke(
             {
-                "file_path": "/test.txt",
+                "path": "/test.txt",
                 "old_string": "Hello",
                 "new_string": "Hi",
                 "replace_all": True,

@@ -364,7 +364,7 @@ class TestDeepAgentEndToEnd:
                         tool_calls=[
                             {
                                 "name": "read_file",
-                                "args": {"file_path": file_path, "limit": 3},
+                                "args": {"path": file_path, "limit": 3},
                                 "id": "call_1",
                                 "type": "tool_call",
                             }
@@ -430,7 +430,7 @@ class TestDeepAgentEndToEnd:
                         tool_calls=[
                             {
                                 "name": "read_file",
-                                "args": {"file_path": file_path},
+                                "args": {"path": file_path},
                                 "id": "call_1",
                                 "type": "tool_call",
                             }
@@ -525,7 +525,7 @@ class TestDeepAgentEndToEnd:
                         tool_calls=[
                             {
                                 "name": "write_file",
-                                "args": {"file_path": "/test.txt", "content": "Hello World"},
+                                "args": {"path": "/test.txt", "content": "Hello World"},
                                 "id": "call_1",
                                 "type": "tool_call",
                             }
@@ -611,7 +611,7 @@ class TestDeepAgentEndToEnd:
                         tool_calls=[
                             {
                                 "name": "write_file",
-                                "args": {"file_path": "/test.txt", "content": "Test content"},
+                                "args": {"path": "/test.txt", "content": "Test content"},
                                 "id": "call_1",
                                 "type": "tool_call",
                             }
@@ -680,7 +680,7 @@ class TestDeepAgentEndToEnd:
                         tool_calls=[
                             {
                                 "name": "write_file",
-                                "args": {"file_path": "/test.txt", "content": "Hello World"},
+                                "args": {"path": "/test.txt", "content": "Hello World"},
                                 "id": "call_1",
                                 "type": "tool_call",
                             }
@@ -765,7 +765,7 @@ class TestDeepAgentEndToEnd:
                         tool_calls=[
                             {
                                 "name": "write_file",
-                                "args": {"file_path": "/test.txt", "content": "Test content"},
+                                "args": {"path": "/test.txt", "content": "Test content"},
                                 "id": "call_1",
                                 "type": "tool_call",
                             }
@@ -842,7 +842,7 @@ class TestDeepAgentEndToEnd:
                         tool_calls=[
                             {
                                 "name": "read_file",
-                                "args": {"file_path": file_path, "offset": 0, "limit": 100},
+                                "args": {"path": file_path, "offset": 0, "limit": 100},
                                 "id": "call_1",
                                 "type": "tool_call",
                             }
@@ -900,7 +900,7 @@ class TestDeepAgentEndToEnd:
                         tool_calls=[
                             {
                                 "name": "read_file",
-                                "args": {"file_path": file_path},
+                                "args": {"path": file_path},
                                 "id": "call_1",
                                 "type": "tool_call",
                             }
@@ -957,7 +957,7 @@ class TestDeepAgentEndToEnd:
                         tool_calls=[
                             {
                                 "name": "read_file",
-                                "args": {"file_path": file_path, "offset": 50, "limit": 200},
+                                "args": {"path": file_path, "offset": 50, "limit": 200},
                                 "id": "call_1",
                                 "type": "tool_call",
                             }
@@ -1012,7 +1012,7 @@ class TestDeepAgentEndToEnd:
                         tool_calls=[
                             {
                                 "name": "read_file",
-                                "args": {"file_path": file_path, "offset": 0, "limit": 100},
+                                "args": {"path": file_path, "offset": 0, "limit": 100},
                                 "id": "call_1",
                                 "type": "tool_call",
                             }
@@ -1086,7 +1086,7 @@ class TestDeepAgentEndToEnd:
                         tool_calls=[
                             {
                                 "name": "read_file",
-                                "args": {"file_path": file_path, "offset": 0, "limit": 1},
+                                "args": {"path": file_path, "offset": 0, "limit": 1},
                                 "id": "call_1",
                                 "type": "tool_call",
                             }
@@ -1146,7 +1146,7 @@ class TestDeepAgentEndToEnd:
                             {
                                 "name": "write_file",
                                 "args": {
-                                    "file_path": "/large_tool_results/evicted_data",
+                                    "path": "/large_tool_results/evicted_data",
                                     "content": large_content,
                                 },
                                 "id": "call_write",
@@ -1159,7 +1159,7 @@ class TestDeepAgentEndToEnd:
                         tool_calls=[
                             {
                                 "name": "read_file",
-                                "args": {"file_path": "/large_tool_results/evicted_data"},
+                                "args": {"path": "/large_tool_results/evicted_data"},
                                 "id": "call_read",
                                 "type": "tool_call",
                             },

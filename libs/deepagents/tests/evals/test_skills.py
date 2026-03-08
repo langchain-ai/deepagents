@@ -36,7 +36,7 @@ def test_read_skill_full_content(model: BaseChatModel) -> None:
         # 1 tool call request: read_file.
         expect=(
             TrajectoryExpectations(num_agent_steps=2, num_tool_call_requests=1)
-            .require_tool_call(step=1, name="read_file", args_contains={"file_path": "/skills/user/data-analysis/SKILL.md"})
+            .require_tool_call(step=1, name="read_file", args_contains={"path": "/skills/user/data-analysis/SKILL.md"})
             .require_final_text_contains("ALPHA-7-ZULU")
         ),
     )
@@ -67,7 +67,7 @@ def test_read_skill_by_name(model: BaseChatModel) -> None:
         # 1 tool call request: read_file (code-review only).
         expect=(
             TrajectoryExpectations(num_agent_steps=2, num_tool_call_requests=1)
-            .require_tool_call(step=1, name="read_file", args_contains={"file_path": "/skills/user/code-review/SKILL.md"})
+            .require_tool_call(step=1, name="read_file", args_contains={"path": "/skills/user/code-review/SKILL.md"})
             .require_final_text_contains("BRAVO-LIMA")
         ),
     )
@@ -99,8 +99,8 @@ def test_combine_two_skills(model: BaseChatModel) -> None:
         # 2 tool call requests: read_file (frontend-deploy) + read_file (backend-deploy).
         expect=(
             TrajectoryExpectations(num_agent_steps=2, num_tool_call_requests=2)
-            .require_tool_call(step=1, name="read_file", args_contains={"file_path": "/skills/user/frontend-deploy/SKILL.md"})
-            .require_tool_call(step=1, name="read_file", args_contains={"file_path": "/skills/user/backend-deploy/SKILL.md"})
+            .require_tool_call(step=1, name="read_file", args_contains={"path": "/skills/user/frontend-deploy/SKILL.md"})
+            .require_tool_call(step=1, name="read_file", args_contains={"path": "/skills/user/backend-deploy/SKILL.md"})
             .require_final_text_contains("3000")
             .require_final_text_contains("8080")
         ),
@@ -128,7 +128,7 @@ def test_update_skill_typo_fix_no_read(model: BaseChatModel) -> None:
         ),
         expect=(
             TrajectoryExpectations(num_agent_steps=2, num_tool_call_requests=1)
-            .require_tool_call(step=1, name="edit_file", args_contains={"file_path": "/skills/user/testing/SKILL.md"})
+            .require_tool_call(step=1, name="edit_file", args_contains={"path": "/skills/user/testing/SKILL.md"})
             .require_final_text_contains("DONE")
         ),
     )
@@ -157,8 +157,8 @@ def test_update_skill_typo_fix_requires_read(model: BaseChatModel) -> None:
         # 2 tool call requests: read_file + edit_file.
         expect=(
             TrajectoryExpectations(num_agent_steps=3, num_tool_call_requests=2)
-            .require_tool_call(step=1, name="read_file", args_contains={"file_path": "/skills/user/testing/SKILL.md"})
-            .require_tool_call(step=2, name="edit_file", args_contains={"file_path": "/skills/user/testing/SKILL.md"})
+            .require_tool_call(step=1, name="read_file", args_contains={"path": "/skills/user/testing/SKILL.md"})
+            .require_tool_call(step=2, name="edit_file", args_contains={"path": "/skills/user/testing/SKILL.md"})
         ),
     )
     assert "covreage" not in trajectory.files["/skills/user/testing/SKILL.md"]
@@ -195,8 +195,8 @@ def test_find_skill_in_correct_path(model: BaseChatModel) -> None:
         ),
         expect=(
             TrajectoryExpectations(num_agent_steps=3, num_tool_call_requests=2)
-            .require_tool_call(step=1, name="read_file", args_contains={"file_path": "/skills/project/deployment/SKILL.md"})
-            .require_tool_call(step=2, name="edit_file", args_contains={"file_path": "/skills/project/deployment/SKILL.md"})
+            .require_tool_call(step=1, name="read_file", args_contains={"path": "/skills/project/deployment/SKILL.md"})
+            .require_tool_call(step=2, name="edit_file", args_contains={"path": "/skills/project/deployment/SKILL.md"})
         ),
     )
     assert "Slack notification" in trajectory.files["/skills/project/deployment/SKILL.md"]

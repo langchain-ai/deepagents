@@ -50,9 +50,9 @@ Important: The MAGIC_TOKEN is SAPPHIRE-13.
         ),
         expect=(
             TrajectoryExpectations(num_agent_steps=4, num_tool_call_requests=3)
-            .require_tool_call(step=1, name="read_file", args_contains={"file_path": "/docs/notes_for_release.md"})
+            .require_tool_call(step=1, name="read_file", args_contains={"path": "/docs/notes_for_release.md"})
             .require_tool_call(step=2, name="ls", args_contains={"path": "/docs"})
-            .require_tool_call(step=3, name="read_file", args_contains={"file_path": "/docs/release_notes.md"})
+            .require_tool_call(step=3, name="read_file", args_contains={"path": "/docs/release_notes.md"})
             .require_final_text_contains("SAPPHIRE-13")
         ),
     )
@@ -88,8 +88,8 @@ def test_write_files_in_parallel(model: str) -> None:
         # 2 tool call requests: write_file to /a.md and write_file to /b.md.
         expect=(
             TrajectoryExpectations(num_agent_steps=2, num_tool_call_requests=2)
-            .require_tool_call(step=1, name="write_file", args_contains={"file_path": "/a.md"})
-            .require_tool_call(step=1, name="write_file", args_contains={"file_path": "/b.md"})
+            .require_tool_call(step=1, name="write_file", args_contains={"path": "/a.md"})
+            .require_tool_call(step=1, name="write_file", args_contains={"path": "/b.md"})
             .require_final_text_contains("DONE")
         ),
     )
@@ -111,10 +111,10 @@ def test_write_files_in_parallel_confirm_with_verification(model: str) -> None:
         # 4 tool call requests: 2 write_file + 2 read_file.
         expect=(
             TrajectoryExpectations(num_agent_steps=3, num_tool_call_requests=4)
-            .require_tool_call(step=1, name="write_file", args_contains={"file_path": "/a.md"})
-            .require_tool_call(step=1, name="write_file", args_contains={"file_path": "/b.md"})
-            .require_tool_call(step=2, name="read_file", args_contains={"file_path": "/a.md"})
-            .require_tool_call(step=2, name="read_file", args_contains={"file_path": "/b.md"})
+            .require_tool_call(step=1, name="write_file", args_contains={"path": "/a.md"})
+            .require_tool_call(step=1, name="write_file", args_contains={"path": "/b.md"})
+            .require_tool_call(step=2, name="read_file", args_contains={"path": "/a.md"})
+            .require_tool_call(step=2, name="read_file", args_contains={"path": "/b.md"})
             .require_final_text_contains("DONE")
         ),
     )
@@ -143,8 +143,8 @@ def test_write_files_in_parallel_ambiguous_confirmation(model: str) -> None:
         # Only enforce the parallel writes; do not enforce step/tool-call counts.
         expect=(
             TrajectoryExpectations(num_agent_steps=None, num_tool_call_requests=None)
-            .require_tool_call(step=1, name="write_file", args_contains={"file_path": "/a.md"})
-            .require_tool_call(step=1, name="write_file", args_contains={"file_path": "/b.md"})
+            .require_tool_call(step=1, name="write_file", args_contains={"path": "/a.md"})
+            .require_tool_call(step=1, name="write_file", args_contains={"path": "/b.md"})
         ),
     )
     assert trajectory.files["/a.md"] == "bar"
@@ -261,8 +261,8 @@ def test_read_files_in_parallel(model: BaseChatModel) -> None:
         # 2 tool call requests: read_file /a.md and read_file /b.md.
         expect=(
             TrajectoryExpectations(num_agent_steps=2, num_tool_call_requests=2)
-            .require_tool_call(step=1, name="read_file", args_contains={"file_path": "/a.md"})
-            .require_tool_call(step=1, name="read_file", args_contains={"file_path": "/b.md"})
+            .require_tool_call(step=1, name="read_file", args_contains={"path": "/a.md"})
+            .require_tool_call(step=1, name="read_file", args_contains={"path": "/b.md"})
             .require_final_text_contains("[YES]")
         ),
     )
@@ -383,11 +383,11 @@ Clues: about programming readability; software craftsmanship.
         expect=(
             TrajectoryExpectations(num_agent_steps=3, num_tool_call_requests=6)
             .require_tool_call(step=1, name="ls", args_contains={"path": "/quotes"})
-            .require_tool_call(step=2, name="read_file", args_contains={"file_path": "/quotes/q1.txt"})
-            .require_tool_call(step=2, name="read_file", args_contains={"file_path": "/quotes/q2.txt"})
-            .require_tool_call(step=2, name="read_file", args_contains={"file_path": "/quotes/q3.txt"})
-            .require_tool_call(step=2, name="read_file", args_contains={"file_path": "/quotes/q4.txt"})
-            .require_tool_call(step=2, name="read_file", args_contains={"file_path": "/quotes/q5.txt"})
+            .require_tool_call(step=2, name="read_file", args_contains={"path": "/quotes/q1.txt"})
+            .require_tool_call(step=2, name="read_file", args_contains={"path": "/quotes/q2.txt"})
+            .require_tool_call(step=2, name="read_file", args_contains={"path": "/quotes/q3.txt"})
+            .require_tool_call(step=2, name="read_file", args_contains={"path": "/quotes/q4.txt"})
+            .require_tool_call(step=2, name="read_file", args_contains={"path": "/quotes/q5.txt"})
             .require_final_text_contains("/quotes/q3.txt")
         ),
     )
@@ -428,11 +428,11 @@ Clues: about programming readability; software craftsmanship.
         expect=(
             TrajectoryExpectations(num_agent_steps=3, num_tool_call_requests=6)
             .require_tool_call(step=1, name="ls", args_contains={"path": "/quotes"})
-            .require_tool_call(step=2, name="read_file", args_contains={"file_path": "/quotes/q1.txt"})
-            .require_tool_call(step=2, name="read_file", args_contains={"file_path": "/quotes/q2.txt"})
-            .require_tool_call(step=2, name="read_file", args_contains={"file_path": "/quotes/q3.txt"})
-            .require_tool_call(step=2, name="read_file", args_contains={"file_path": "/quotes/q4.txt"})
-            .require_tool_call(step=2, name="read_file", args_contains={"file_path": "/quotes/q5.txt"})
+            .require_tool_call(step=2, name="read_file", args_contains={"path": "/quotes/q1.txt"})
+            .require_tool_call(step=2, name="read_file", args_contains={"path": "/quotes/q2.txt"})
+            .require_tool_call(step=2, name="read_file", args_contains={"path": "/quotes/q3.txt"})
+            .require_tool_call(step=2, name="read_file", args_contains={"path": "/quotes/q4.txt"})
+            .require_tool_call(step=2, name="read_file", args_contains={"path": "/quotes/q5.txt"})
             .require_final_text_contains("/quotes/q3.txt")
         ),
     )

@@ -1204,7 +1204,7 @@ class TestFilesystemMiddleware:
         )
 
         read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
-        result = read_file_tool.invoke({"file_path": "/app/frame_001.jpg", "runtime": runtime})
+        result = read_file_tool.invoke({"path": "/app/frame_001.jpg", "runtime": runtime})
 
         assert isinstance(result, ToolMessage)
         assert result.name == "read_file"
@@ -1235,7 +1235,7 @@ class TestFilesystemMiddleware:
         )
 
         read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
-        result = read_file_tool.invoke({"file_path": "/app/missing.png", "runtime": runtime})
+        result = read_file_tool.invoke({"path": "/app/missing.png", "runtime": runtime})
 
         assert isinstance(result, str)
         assert result == "Error reading image: file_not_found"

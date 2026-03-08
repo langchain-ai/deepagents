@@ -139,7 +139,7 @@ class TestApplyEventToMessages:
         event = {
             "cutoff_index": 4,
             "summary_message": summary_msg,
-            "file_path": None,
+            "path": None,
         }
         result = SummarizationMiddleware._apply_event_to_messages(messages, event)
         # summary + messages[4:] -> 1 + 6 = 7
@@ -226,7 +226,7 @@ class TestCompactSuccess:
         prior_event = {
             "cutoff_index": 5,
             "summary_message": prior_summary,
-            "file_path": None,
+            "path": None,
         }
         runtime = _make_runtime(messages, event=prior_event)
 
@@ -455,7 +455,7 @@ class TestMalformedEvent:
         event = {
             "cutoff_index": 10,
             "summary_message": summary_msg,
-            "file_path": None,
+            "path": None,
         }
         result = SummarizationMiddleware._apply_event_to_messages(messages, event)
         assert len(result) == 1
@@ -504,7 +504,7 @@ class TestComputeStateCutoff:
         event: dict[str, Any] = {
             "cutoff_index": 10,
             "summary_message": MagicMock(),
-            "file_path": None,
+            "path": None,
         }
         # old(10) + new(1) - 1 = 10
         assert SummarizationMiddleware._compute_state_cutoff(event, 1) == 10
@@ -514,7 +514,7 @@ class TestComputeStateCutoff:
         event: dict[str, Any] = {
             "cutoff_index": 0,
             "summary_message": MagicMock(),
-            "file_path": None,
+            "path": None,
         }
         # old(0) + new(3) - 1 = 2
         assert SummarizationMiddleware._compute_state_cutoff(event, 3) == 2

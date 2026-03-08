@@ -30,13 +30,13 @@ def test_parallel_write_file_calls_trigger_list_reducer() -> None:
                     tool_calls=[
                         {
                             "name": "write_file",
-                            "args": {"file_path": "/test1.txt", "content": "hello"},
+                            "args": {"path": "/test1.txt", "content": "hello"},
                             "id": "call_write_file_1",
                             "type": "tool_call",
                         },
                         {
                             "name": "write_file",
-                            "args": {"file_path": "/test2.txt", "content": "world"},
+                            "args": {"path": "/test2.txt", "content": "world"},
                             "id": "call_write_file_2",
                             "type": "tool_call",
                         },
@@ -80,7 +80,7 @@ def test_edit_file_single_replacement() -> None:
                     tool_calls=[
                         {
                             "name": "write_file",
-                            "args": {"file_path": "/code.py", "content": "def hello():\n    print('hello world')"},
+                            "args": {"path": "/code.py", "content": "def hello():\n    print('hello world')"},
                             "id": "call_write_1",
                             "type": "tool_call",
                         },
@@ -92,7 +92,7 @@ def test_edit_file_single_replacement() -> None:
                         {
                             "name": "edit_file",
                             "args": {
-                                "file_path": "/code.py",
+                                "path": "/code.py",
                                 "old_string": "hello world",
                                 "new_string": "hello universe",
                             },
@@ -137,7 +137,7 @@ def test_edit_file_replace_all() -> None:
                         {
                             "name": "write_file",
                             "args": {
-                                "file_path": "/data.txt",
+                                "path": "/data.txt",
                                 "content": "foo bar foo baz foo",
                             },
                             "id": "call_write_1",
@@ -151,7 +151,7 @@ def test_edit_file_replace_all() -> None:
                         {
                             "name": "edit_file",
                             "args": {
-                                "file_path": "/data.txt",
+                                "path": "/data.txt",
                                 "old_string": "foo",
                                 "new_string": "qux",
                                 "replace_all": True,
@@ -194,7 +194,7 @@ def test_edit_file_nonexistent_file() -> None:
                         {
                             "name": "edit_file",
                             "args": {
-                                "file_path": "/nonexistent.txt",
+                                "path": "/nonexistent.txt",
                                 "old_string": "hello",
                                 "new_string": "goodbye",
                             },
@@ -238,7 +238,7 @@ def test_edit_file_string_not_found() -> None:
                     tool_calls=[
                         {
                             "name": "write_file",
-                            "args": {"file_path": "/test.txt", "content": "hello world"},
+                            "args": {"path": "/test.txt", "content": "hello world"},
                             "id": "call_write_1",
                             "type": "tool_call",
                         },
@@ -250,7 +250,7 @@ def test_edit_file_string_not_found() -> None:
                         {
                             "name": "edit_file",
                             "args": {
-                                "file_path": "/test.txt",
+                                "path": "/test.txt",
                                 "old_string": "goodbye",
                                 "new_string": "farewell",
                             },
@@ -291,7 +291,7 @@ def test_grep_finds_written_file() -> None:
                         {
                             "name": "write_file",
                             "args": {
-                                "file_path": "/project/main.py",
+                                "path": "/project/main.py",
                                 "content": "import os\nimport sys\n\ndef main():\n    print('Hello World')",
                             },
                             "id": "call_write_1",
@@ -300,7 +300,7 @@ def test_grep_finds_written_file() -> None:
                         {
                             "name": "write_file",
                             "args": {
-                                "file_path": "/project/utils.py",
+                                "path": "/project/utils.py",
                                 "content": "def helper():\n    return 42",
                             },
                             "id": "call_write_2",
@@ -365,7 +365,7 @@ def test_parallel_edit_file_calls() -> None:
                         {
                             "name": "write_file",
                             "args": {
-                                "file_path": "/multi.txt",
+                                "path": "/multi.txt",
                                 "content": "line one\nline two\nline three",
                             },
                             "id": "call_write_1",
@@ -379,7 +379,7 @@ def test_parallel_edit_file_calls() -> None:
                         {
                             "name": "edit_file",
                             "args": {
-                                "file_path": "/multi.txt",
+                                "path": "/multi.txt",
                                 "old_string": "one",
                                 "new_string": "1",
                             },
@@ -389,7 +389,7 @@ def test_parallel_edit_file_calls() -> None:
                         {
                             "name": "edit_file",
                             "args": {
-                                "file_path": "/multi.txt",
+                                "path": "/multi.txt",
                                 "old_string": "two",
                                 "new_string": "2",
                             },
@@ -426,7 +426,7 @@ def test_path_traversal_returns_error_message() -> None:
                         {
                             "name": "edit_file",
                             "args": {
-                                "file_path": "./question/..",
+                                "path": "./question/..",
                                 "old_string": "test",
                                 "new_string": "replaced",
                             },
@@ -471,7 +471,7 @@ def test_windows_absolute_path_returns_error_message() -> None:
                         {
                             "name": "read_file",
                             "args": {
-                                "file_path": "C:\\Users\\test\\file.txt",
+                                "path": "C:\\Users\\test\\file.txt",
                             },
                             "id": "call_windows_path",
                             "type": "tool_call",
@@ -515,7 +515,7 @@ def test_tilde_path_returns_error_message() -> None:
                         {
                             "name": "write_file",
                             "args": {
-                                "file_path": "~/secret.txt",
+                                "path": "~/secret.txt",
                                 "content": "secret data",
                             },
                             "id": "call_tilde_path",

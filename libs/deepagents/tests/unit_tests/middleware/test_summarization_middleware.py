@@ -1447,7 +1447,7 @@ def test_no_truncation_when_trigger_is_none() -> None:
                 {
                     "id": "tc1",
                     "name": "write_file",
-                    "args": {"file_path": "/test.txt", "content": large_content},
+                    "args": {"path": "/test.txt", "content": large_content},
                 }
             ],
         ),
@@ -1490,7 +1490,7 @@ def test_truncate_old_write_file_tool_call() -> None:
                 {
                     "id": "tc1",
                     "name": "write_file",
-                    "args": {"file_path": "/test.txt", "content": large_content},
+                    "args": {"path": "/test.txt", "content": large_content},
                 }
             ],
         ),
@@ -1549,7 +1549,7 @@ def test_truncate_old_edit_file_tool_call() -> None:
                     "id": "tc1",
                     "name": "edit_file",
                     "args": {
-                        "file_path": "/test.py",
+                        "path": "/test.py",
                         "old_string": large_old_string,
                         "new_string": large_new_string,
                     },
@@ -1606,7 +1606,7 @@ def test_truncate_ignores_other_tool_calls() -> None:
                 {
                     "id": "tc1",
                     "name": "read_file",
-                    "args": {"file_path": "/test.txt", "content": large_content},
+                    "args": {"path": "/test.txt", "content": large_content},
                 }
             ],
         ),
@@ -1661,7 +1661,7 @@ def test_truncate_respects_recent_messages() -> None:
                 {
                     "id": "tc1",
                     "name": "write_file",
-                    "args": {"file_path": "/test.txt", "content": large_content},
+                    "args": {"path": "/test.txt", "content": large_content},
                 }
             ],
         ),
@@ -1716,7 +1716,7 @@ def test_truncate_with_token_keep_policy() -> None:
                 {
                     "id": "tc1",
                     "name": "write_file",
-                    "args": {"file_path": "/test.txt", "content": large_content},
+                    "args": {"path": "/test.txt", "content": large_content},
                 }
             ],
         ),
@@ -1775,7 +1775,7 @@ def test_truncate_with_fraction_trigger_and_keep() -> None:
                 {
                     "id": "tc1",
                     "name": "write_file",
-                    "args": {"file_path": "/test.txt", "content": large_content},
+                    "args": {"path": "/test.txt", "content": large_content},
                 }
             ],
         ),
@@ -1828,7 +1828,7 @@ def test_truncate_before_summarization() -> None:
                 {
                     "id": "tc1",
                     "name": "write_file",
-                    "args": {"file_path": "/test.txt", "content": large_content},
+                    "args": {"path": "/test.txt", "content": large_content},
                 }
             ],
         ),
@@ -1881,7 +1881,7 @@ def test_truncate_without_summarization() -> None:
                 {
                     "id": "tc1",
                     "name": "write_file",
-                    "args": {"file_path": "/test.txt", "content": large_content},
+                    "args": {"path": "/test.txt", "content": large_content},
                 }
             ],
         ),
@@ -1937,7 +1937,7 @@ def test_truncate_preserves_small_arguments() -> None:
                 {
                     "id": "tc1",
                     "name": "write_file",
-                    "args": {"file_path": "/test.txt", "content": small_content},
+                    "args": {"path": "/test.txt", "content": small_content},
                 }
             ],
         ),
@@ -1989,12 +1989,12 @@ def test_truncate_mixed_tool_calls() -> None:
                 {
                     "id": "tc1",
                     "name": "read_file",
-                    "args": {"file_path": "/test.txt"},
+                    "args": {"path": "/test.txt"},
                 },
                 {
                     "id": "tc2",
                     "name": "write_file",
-                    "args": {"file_path": "/output.txt", "content": large_content},
+                    "args": {"path": "/output.txt", "content": large_content},
                 },
                 {
                     "id": "tc3",
@@ -2028,7 +2028,7 @@ def test_truncate_mixed_tool_calls() -> None:
 
     # read_file should be unchanged
     assert first_ai_msg.tool_calls[0]["name"] == "read_file"
-    assert first_ai_msg.tool_calls[0]["args"]["file_path"] == "/test.txt"
+    assert first_ai_msg.tool_calls[0]["args"]["path"] == "/test.txt"
 
     # write_file should be cleaned
     assert first_ai_msg.tool_calls[1]["name"] == "write_file"
@@ -2066,7 +2066,7 @@ def test_truncate_custom_truncation_text() -> None:
                 {
                     "id": "tc1",
                     "name": "write_file",
-                    "args": {"file_path": "/test.txt", "content": large_content},
+                    "args": {"path": "/test.txt", "content": large_content},
                 }
             ],
         ),
@@ -2119,7 +2119,7 @@ async def test_truncate_async_works() -> None:
                 {
                     "id": "tc1",
                     "name": "write_file",
-                    "args": {"file_path": "/test.txt", "content": large_content},
+                    "args": {"path": "/test.txt", "content": large_content},
                 }
             ],
         ),

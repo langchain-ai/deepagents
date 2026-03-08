@@ -21,7 +21,7 @@ async def test_path_traversal_returns_error_message_async() -> None:
                         {
                             "name": "edit_file",
                             "args": {
-                                "file_path": "./question/..",
+                                "path": "./question/..",
                                 "old_string": "test",
                                 "new_string": "replaced",
                             },
@@ -66,7 +66,7 @@ async def test_windows_absolute_path_returns_error_message_async() -> None:
                         {
                             "name": "read_file",
                             "args": {
-                                "file_path": "C:\\Users\\test\\file.txt",
+                                "path": "C:\\Users\\test\\file.txt",
                             },
                             "id": "call_windows_path",
                             "type": "tool_call",
@@ -110,7 +110,7 @@ async def test_tilde_path_returns_error_message_async() -> None:
                         {
                             "name": "write_file",
                             "args": {
-                                "file_path": "~/secret.txt",
+                                "path": "~/secret.txt",
                                 "content": "secret data",
                             },
                             "id": "call_tilde_path",

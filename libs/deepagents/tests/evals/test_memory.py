@@ -73,7 +73,7 @@ instead (e.g., "/config_api.txt") without asking for confirmation.
         expect=TrajectoryExpectations(num_agent_steps=2, num_tool_call_requests=1).require_tool_call(
             step=1,
             name="write_file",
-            args_contains={"file_path": "/config_api.txt"},
+            args_contains={"path": "/config_api.txt"},
         ),
     )
     assert "/config_api.txt" in trajectory.files

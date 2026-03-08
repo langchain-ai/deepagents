@@ -16,7 +16,7 @@ from textual.css.query import NoMatches
 from textual.fuzzy import Matcher
 from textual.message import Message
 from textual.screen import ModalScreen
-from textual.widgets import Input, Static, Switch
+from textual.widgets import Checkbox, Input, Static
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
@@ -38,6 +38,7 @@ _COL_AGENT = 14
 _COL_MSGS = 4
 _COL_BRANCH = 16
 _COL_TIMESTAMP = 16
+_MAX_SEARCH_TEXT_LEN = 200
 _COL_PROMPT = 48
 _COLUMN_ORDER = (
     "thread_id",
@@ -426,14 +427,8 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
     }
 
     ThreadSelectorScreen .thread-column-toggle {
-        height: 1;
-        align: left middle;
-        margin-bottom: 1;
-    }
-
-    ThreadSelectorScreen .thread-column-label {
         width: 1fr;
-        margin-left: 1;
+        height: auto;
     }
 
     ThreadSelectorScreen .thread-list-header {
@@ -684,28 +679,21 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                         classes="thread-controls-help",
                         markup=False,
                     )
-                    with Horizontal(classes="thread-column-toggle"):
-                        yield Switch(
-                            self._sort_by_updated,
-                            id=_SORT_SWITCH_ID,
-                        )
-                        yield Static(
-                            self._format_sort_toggle_label(),
-                            classes="thread-column-label",
-                            id="thread-sort-label",
-                            markup=False,
-                        )
+                    yield Checkbox(
+                        self._format_sort_toggle_label(),
+                        self._sort_by_updated,
+                        id=_SORT_SWITCH_ID,
+                        classes="thread-column-toggle",
+                        compact=True,
+                    )
                     for key in _COLUMN_ORDER:
-                        with Horizontal(classes="thread-column-toggle"):
-                            yield Switch(
-                                self._columns.get(key, False),
-                                id=self._switch_id(key),
-                            )
-                            yield Static(
-                                _COLUMN_TOGGLE_LABELS[key],
-                                classes="thread-column-label",
-                                markup=False,
-                            )
+                        yield Checkbox(
+                            _COLUMN_TOGGLE_LABELS[key],
+                            self._columns.get(key, False),
+                            id=self._switch_id(key),
+                            classes="thread-column-toggle",
+                            compact=True,
+                        )
 
             yield Static(
                 self._build_help_text(),
@@ -724,15 +712,13 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
         if self._has_initial_threads:
             self.call_after_refresh(self._scroll_selected_into_view)
-            self._schedule_message_count_load()
-            self._schedule_initial_prompt_load()
             if self._current_thread:
                 self._resolve_thread_url()
-            self.run_worker(
-                self._load_threads, exclusive=True, group="thread-selector-load"
-            )
-            return
 
+        # _load_threads replaces self._threads and schedules background
+        # enrichment (message counts, initial prompts) after load completes.
+        # Avoid eagerly scheduling enrichment on stale initial_threads that
+        # will be replaced.
         self.run_worker(
             self._load_threads, exclusive=True, group="thread-selector-load"
         )
@@ -744,8 +730,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             event: The input changed event.
         """
         self._filter_text = event.value
-        self._update_filtered_list()
-        self._schedule_list_rebuild()
+        self._schedule_filter_and_rebuild()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         """Handle Enter key when filter input is focused.
@@ -785,13 +770,13 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             len(filter_input.value)
         )
 
-    def on_switch_changed(self, event: Switch.Changed) -> None:
+    def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
         """Persist column toggle changes and refresh the table.
 
         Args:
-            event: The switch change event.
+            event: The checkbox change event.
         """
-        if event.switch.id == _SORT_SWITCH_ID:
+        if event.checkbox.id == _SORT_SWITCH_ID:
             if self._sort_by_updated == event.value:
                 return
             self._sort_by_updated = event.value
@@ -802,7 +787,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             self._schedule_list_rebuild()
             return
 
-        column_key = self._switch_column_key(event.switch.id)
+        column_key = self._switch_column_key(event.checkbox.id)
         if column_key is None or column_key not in self._columns:
             return
         if self._columns[column_key] == event.value:
@@ -816,7 +801,11 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
         from deepagents_cli.model_config import save_thread_columns
 
-        save_thread_columns(self._columns)
+        snapshot = dict(self._columns)
+        self.run_worker(
+            asyncio.to_thread(save_thread_columns, snapshot),
+            group="thread-selector-save",
+        )
         self._schedule_list_rebuild()
 
     def _normalize_sort_column_visibility(self) -> None:
@@ -877,19 +866,105 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
     def _get_search_text(thread: ThreadInfo) -> str:
         """Build searchable text from thread fields.
 
+        The result is capped at `_MAX_SEARCH_TEXT_LEN` characters so that
+        Textual's fuzzy `Matcher` (which uses recursive backtracking) does
+        not hit exponential performance on long initial prompts with
+        repeated characters.
+
         Args:
             thread: Thread metadata.
 
         Returns:
-            Concatenated searchable string.
+            Concatenated searchable string, truncated to a safe length.
         """
         parts = [
-            thread.get("initial_prompt") or "",
             thread["thread_id"],
             thread.get("agent_name") or "",
             thread.get("git_branch") or "",
+            thread.get("initial_prompt") or "",
         ]
-        return " ".join(parts)
+        text = " ".join(parts)
+        return text[:_MAX_SEARCH_TEXT_LEN]
+
+    def _schedule_filter_and_rebuild(self) -> None:
+        """Queue a filter + rebuild, coalescing rapid keystrokes."""
+        self.run_worker(
+            self._filter_and_build,
+            exclusive=True,
+            group="thread-selector-render",
+        )
+
+    async def _filter_and_build(self) -> None:
+        """Run fuzzy filtering in a thread then rebuild the list."""
+        query = self._filter_text.strip()
+        threads = list(self._threads)
+        sort_by_updated = self._sort_by_updated
+
+        filtered = await asyncio.to_thread(
+            self._compute_filtered, query, threads, sort_by_updated
+        )
+        self._filtered_threads = filtered
+        if query:
+            self._selected_index = 0
+        else:
+            self._sync_selected_index()
+        await self._build_list()
+
+    @staticmethod
+    def _compute_filtered(
+        query: str,
+        threads: list[ThreadInfo],
+        sort_by_updated: bool,
+    ) -> list[ThreadInfo]:
+        """Compute filtered thread list off the main thread.
+
+        Args:
+            query: Current search query text.
+            threads: Full thread list snapshot.
+            sort_by_updated: Whether to sort by `updated_at`.
+
+        Returns:
+            Filtered and sorted thread list.
+        """
+        sort_key = _active_sort_key(sort_by_updated)
+
+        if not query:
+            result = list(threads)
+            result.sort(key=lambda t: t.get(sort_key) or "", reverse=True)
+            return result
+
+        tokens = query.split()
+        try:
+            matchers = [Matcher(token, case_sensitive=False) for token in tokens]
+            scored: list[tuple[float, ThreadInfo]] = []
+            for thread in threads:
+                search_text = ThreadSelectorScreen._get_search_text(thread)
+                scores = [matcher.match(search_text) for matcher in matchers]
+                if all(score > 0 for score in scores):
+                    scored.append((min(scores), thread))
+        except Exception:
+            logger.warning(
+                "Fuzzy matcher failed for query %r, falling back to full list",
+                query,
+                exc_info=True,
+            )
+            result = list(threads)
+            result.sort(key=lambda t: t.get(sort_key) or "", reverse=True)
+            return result
+
+        return [
+            thread
+            for _, thread in sorted(
+                scored,
+                key=lambda item: (
+                    item[0],
+                    item[1].get(sort_key) or "",
+                    item[1].get("updated_at") or "",
+                    item[1]["thread_id"],
+                ),
+                reverse=True,
+            )
+        ]
 
     def _schedule_list_rebuild(self) -> None:
         """Queue a list rebuild, coalescing rapid updates."""
@@ -980,7 +1055,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             )
             return
 
-        self._refresh_labels()
+        self._refresh_cell_labels()
 
     async def _load_initial_prompts(self) -> None:
         """Populate initial prompts in background and refresh rows."""
@@ -1004,12 +1079,34 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             )
             return
 
-        self._update_filtered_list()
-        self._refresh_labels()
+        if self._filter_text.strip():
+            # Prompts may affect fuzzy match results; rebuild the filtered
+            # list but preserve the user's cursor position.
+            saved_tid = (
+                self._filtered_threads[self._selected_index]["thread_id"]
+                if self._selected_index < len(self._filtered_threads)
+                else None
+            )
+            self._update_filtered_list()
+            if saved_tid is not None:
+                for i, thread in enumerate(self._filtered_threads):
+                    if thread["thread_id"] == saved_tid:
+                        self._selected_index = i
+                        break
+            self._schedule_list_rebuild()
+        else:
+            self._refresh_cell_labels()
 
-    def _refresh_labels(self) -> None:
-        """Refresh row content after background data loads complete."""
-        self._schedule_list_rebuild()
+    def _refresh_cell_labels(self) -> None:
+        """Update visible cell text in-place without rebuilding the DOM."""
+        for widget in self._option_widgets:
+            thread = widget.thread
+            for key in _visible_column_keys(self._columns):
+                try:
+                    cell = widget.query_one(f".thread-cell-{key}", Static)
+                except NoMatches:
+                    continue
+                cell.update(_format_column_value(thread, key))
 
     def _resolve_thread_url(self) -> None:
         """Start exclusive background worker to resolve LangSmith thread URL."""
@@ -1084,21 +1181,22 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             except NoMatches:
                 return
 
-            await scroll.remove_children()
-            self._update_help_widgets()
+            with self.app.batch_update():
+                await scroll.remove_children()
+                self._update_help_widgets()
 
-            if not self._filtered_threads:
-                self._option_widgets = []
-                await scroll.mount(
-                    Static(
-                        "[dim]No threads found[/dim]",
-                        classes="thread-empty",
+                if not self._filtered_threads:
+                    self._option_widgets = []
+                    await scroll.mount(
+                        Static(
+                            "[dim]No threads found[/dim]",
+                            classes="thread-empty",
+                        )
                     )
-                )
-                return
+                    return
 
-            self._option_widgets, selected_widget = self._create_option_widgets()
-            await scroll.mount(*self._option_widgets)
+                self._option_widgets, selected_widget = self._create_option_widgets()
+                await scroll.mount(*self._option_widgets)
 
             if selected_widget:
                 self.call_after_refresh(self._scroll_selected_into_view)
@@ -1226,16 +1324,11 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         except NoMatches:
             pass
 
-        try:
-            sort_label = self.query_one("#thread-sort-label", Static)
-            sort_label.update(self._format_sort_toggle_label())
-        except NoMatches:
-            pass
-
         with contextlib.suppress(NoMatches):
-            sort_switch = self.query_one(f"#{_SORT_SWITCH_ID}", Switch)
-            if sort_switch.value != self._sort_by_updated:
-                sort_switch.value = self._sort_by_updated
+            sort_checkbox = self.query_one(f"#{_SORT_SWITCH_ID}", Checkbox)
+            sort_checkbox.label = self._format_sort_toggle_label()
+            if sort_checkbox.value != self._sort_by_updated:
+                sort_checkbox.value = self._sort_by_updated
 
     def _apply_sort(self) -> None:
         """Sort filtered threads by the active sort key."""
@@ -1329,12 +1422,13 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             thread_id = self._filtered_threads[self._selected_index]["thread_id"]
             self.dismiss(thread_id)
 
-    def _filter_focus_order(self) -> list[Input | Switch]:
+    def _filter_focus_order(self) -> list[Input | Checkbox]:
         """Return the tab order for filter controls in the side panel."""
         filter_input = self.query_one("#thread-filter", Input)
-        sort_switch = self.query_one(f"#{_SORT_SWITCH_ID}", Switch)
+        sort_switch = self.query_one(f"#{_SORT_SWITCH_ID}", Checkbox)
         switches = [
-            self.query_one(f"#{self._switch_id(key)}", Switch) for key in _COLUMN_ORDER
+            self.query_one(f"#{self._switch_id(key)}", Checkbox)
+            for key in _COLUMN_ORDER
         ]
         return [filter_input, sort_switch, *switches]
 
@@ -1348,7 +1442,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             controls[0].focus()
             return
 
-        index = controls.index(cast("Input | Switch", focused))
+        index = controls.index(cast("Input | Checkbox", focused))
         controls[(index + 1) % len(controls)].focus()
 
     def action_focus_previous_filter(self) -> None:
@@ -1361,7 +1455,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             controls[-1].focus()
             return
 
-        index = controls.index(cast("Input | Switch", focused))
+        index = controls.index(cast("Input | Checkbox", focused))
         controls[(index - 1) % len(controls)].focus()
 
     def action_toggle_sort(self) -> None:

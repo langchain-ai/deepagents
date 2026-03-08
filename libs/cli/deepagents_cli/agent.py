@@ -136,12 +136,17 @@ def reset_agent(agent_name: str, source_agent: str | None = None) -> None:
     console.print(f"Location: {agent_dir}\n", style=COLORS["dim"])
 
 
-def get_system_prompt(assistant_id: str, sandbox_type: str | None = None) -> str:
+def get_system_prompt(
+    assistant_id: str,
+    sandbox_type: str | None = None,
+    *,
+    interactive: bool = True,
+) -> str:
     """Get the base system prompt for the agent.
 
     Loads the immutable system prompt from `system_prompt.md` and
     interpolates dynamic sections (model identity, working directory,
-    skills path).
+    skills path, execution mode).
 
     Args:
         assistant_id: The agent identifier for path references
@@ -149,6 +154,8 @@ def get_system_prompt(assistant_id: str, sandbox_type: str | None = None) -> str
             (`'daytona'`, `'langsmith'`, `'modal'`, `'runloop'`).
 
             If `None`, agent is operating in local mode.
+        interactive: When `False`, the prompt is tailored for headless
+            non-interactive execution (no human in the loop).
 
     Returns:
         The system prompt string
@@ -165,6 +172,36 @@ def get_system_prompt(assistant_id: str, sandbox_type: str | None = None) -> str
     template = (Path(__file__).parent / "system_prompt.md").read_text()
 
     skills_path = f"~/.deepagents/{assistant_id}/skills/"
+
+    if interactive:
+        mode_description = "an interactive CLI on the user's computer"
+        interactive_preamble = (
+            "The user sends you messages and you respond with text and tool "
+            "calls. Your tools run on the user's machine. The user can see "
+            "your responses and tool outputs in real time, so keep them "
+            "informed — but don't over-explain."
+        )
+        ambiguity_guidance = (
+            "- If the request is ambiguous, ask questions before acting.\n"
+            "- If asked how to approach something, explain first, then act."
+        )
+    else:
+        mode_description = (
+            "non-interactive (headless) mode — there is no human operator "
+            "monitoring your output in real time"
+        )
+        interactive_preamble = (
+            "You received a single task and must complete it fully and "
+            "autonomously. There is no human available to answer follow-up "
+            "questions, so do NOT ask for clarification — make reasonable "
+            "assumptions and proceed."
+        )
+        ambiguity_guidance = (
+            "- Do NOT ask clarifying questions — there is no human to answer "
+            "them. Make reasonable assumptions and proceed.\n"
+            "- If you encounter ambiguity, choose the most reasonable "
+            "interpretation and note your assumption briefly."
+        )
 
     # Build model identity section
     model_identity_section = ""
@@ -209,7 +246,10 @@ def get_system_prompt(assistant_id: str, sandbox_type: str | None = None) -> str
         )
 
     return (
-        template.replace("{model_identity_section}", model_identity_section)
+        template.replace("{mode_description}", mode_description)
+        .replace("{interactive_preamble}", interactive_preamble)
+        .replace("{ambiguity_guidance}", ambiguity_guidance)
+        .replace("{model_identity_section}", model_identity_section)
         .replace("{working_dir_section}", working_dir_section)
         .replace("{skills_path}", skills_path)
     )
@@ -431,6 +471,7 @@ def create_cli_agent(
     sandbox: SandboxBackendProtocol | None = None,
     sandbox_type: str | None = None,
     system_prompt: str | None = None,
+    interactive: bool = True,
     auto_approve: bool = False,
     enable_memory: bool = True,
     enable_skills: bool = True,
@@ -457,7 +498,11 @@ def create_cli_agent(
             Used for system prompt generation.
         system_prompt: Override the default system prompt.
 
-            If `None`, generates one based on `sandbox_type` and `assistant_id`.
+            If `None`, generates one based on `sandbox_type`, `assistant_id`,
+            and `interactive`.
+        interactive: When `False`, the auto-generated system prompt is
+            tailored for headless non-interactive execution. Ignored when
+            `system_prompt` is provided explicitly.
         auto_approve: If `True`, no tools trigger human-in-the-loop
             interrupts — all calls (shell execution, file writes/edits,
             web search, URL fetch) run automatically.
@@ -600,7 +645,9 @@ def create_cli_agent(
     # Get or use custom system prompt
     if system_prompt is None:
         system_prompt = get_system_prompt(
-            assistant_id=assistant_id, sandbox_type=sandbox_type
+            assistant_id=assistant_id,
+            sandbox_type=sandbox_type,
+            interactive=interactive,
         )
 
     # Configure interrupt_on based on auto_approve setting

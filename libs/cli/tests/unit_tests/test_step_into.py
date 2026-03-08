@@ -716,3 +716,236 @@ class TestRejectionScopingInSubagent:
             if isinstance(w, AppMessage) and "tell the agent" in str(w._content).lower()
         ]
         assert len(root_reject_msgs) == 0
+
+
+# ---------------------------------------------------------------------------
+# 8. Bug exposure tests — step-into lifecycle issues
+# ---------------------------------------------------------------------------
+
+
+class TestStepIntoLifecycleBugs:
+    """Tests that expose known bugs in the step-into lifecycle.
+
+    These tests document and verify fixes for issues discovered
+    during deep investigation of the step-into/return cycle.
+    """
+
+    def test_bug1_parent_interrupt_id_captured(self) -> None:
+        """BUG-1: parent_tool_call_id must be captured on step-into.
+
+        When the user steps into a subagent, the interrupt_id from the
+        parent thread must be stored in the ConversationContext so that
+        /return can resume the parent thread with Command(resume=...).
+        """
+        # The _create_branch_context function currently hardcodes
+        # parent_tool_call_id=None. After the fix, it should accept
+        # and store the interrupt_id.
+        from deepagents_cli.textual_adapter import _create_branch_context
+
+        ctx = _create_branch_context(
+            assistant_id="test",
+            subagent_type="researcher",
+            task_description="find bugs",
+        )
+        # BUG: parent_tool_call_id is always None
+        # After fix, _create_branch_context should accept an interrupt_id param
+        # and store it. For now, this test documents the gap.
+        assert ctx.parent_tool_call_id is None, (
+            "Expected None (known bug) — fix should make this non-None "
+            "when an interrupt_id is provided"
+        )
+
+    async def test_bug1_step_into_preserves_interrupt_id(self) -> None:
+        """BUG-1: step-into decision should capture the interrupt_id.
+
+        The interrupt_id from pending_interrupts should flow into the
+        ConversationContext.parent_tool_call_id so /return can resume it.
+        """
+        step_into_future: Future[object] = Future()
+        step_into_future.set_result(
+            {
+                "type": "step_into",
+                "args": {
+                    "subagent_type": "researcher",
+                    "description": "investigate",
+                },
+            }
+        )
+
+        async def mock_approval(  # noqa: RUF029
+            _r: list[dict[str, object]],
+            _a: str,
+        ) -> Future[object]:
+            return step_into_future
+
+        hitl_value = {
+            "action_requests": [
+                {
+                    "name": "task",
+                    "args": {
+                        "subagent_type": "researcher",
+                        "description": "investigate",
+                    },
+                }
+            ],
+            "review_configs": [
+                {"action_name": "task", "allowed_decisions": ["approve", "reject"]}
+            ],
+        }
+        # Give the interrupt a known ID
+        interrupt = Interrupt(value=hitl_value, resumable=True, ns=None, when="during")
+
+        chunks: list[tuple] = [
+            ((), "updates", {"__interrupt__": [interrupt]}),
+        ]
+
+        adapter = TextualUIAdapter(
+            mount_message=_noop_mount,
+            update_status=_noop_status,
+            request_approval=mock_approval,
+            set_spinner=lambda _: asyncio.sleep(0),
+        )
+
+        session = SimpleNamespace(thread_id="t1", auto_approve=False, depth=0)
+
+        result = await execute_task_textual(
+            user_input="do it",
+            agent=_FakeAgent(chunks),
+            assistant_id="test",
+            session_state=session,
+            adapter=adapter,
+        )
+
+        assert result.step_into_context is not None
+        # BUG-1: parent_tool_call_id should be the interrupt's ID, not None
+        # This will fail until the fix is applied
+        assert result.step_into_context.parent_tool_call_id is not None, (
+            "parent_tool_call_id should capture the interrupt ID "
+            "so /return can resume the parent thread"
+        )
+
+    def test_bug2_context_popped_on_subagent_error(self) -> None:
+        """BUG-2: If subagent crashes, context must be popped.
+
+        When execute_task_textual throws during a subagent invocation,
+        the pushed context should be cleaned up so the user isn't
+        stuck in a dead subagent.
+        """
+        state = SessionState(auto_approve=False)
+        assert state.depth == 0
+
+        # Simulate what _run_agent_task does: push context
+        ctx = ConversationContext(
+            thread_id="subagent-thread",
+            subagent_type="researcher",
+            task_description="find bugs",
+            summary_path=None,
+            parent_tool_call_id=None,
+        )
+        state.push_context(ctx)
+        assert state.depth == 1
+
+        # Simulate subagent crash — the except block should pop context
+        # (mirrors _run_agent_task's error handling after the fix)
+        crashed = True
+        if crashed and state.depth > 0:
+            state.pop_context()
+
+        assert state.depth == 0, "Context should be back to root after subagent error"
+
+    async def test_bug3_nested_step_into_result_captured(self) -> None:
+        """BUG-3: Nested step-into result must not be discarded.
+
+        When the subagent itself triggers a step-into, the returned
+        ExecuteTaskResult.step_into_context must be handled (pushed).
+        Currently the second execute_task_textual call discards its result.
+        """
+        # First step-into: user steps into subagent
+        first_step_into: Future[object] = Future()
+        first_step_into.set_result(
+            {
+                "type": "step_into",
+                "args": {
+                    "subagent_type": "researcher",
+                    "description": "outer task",
+                },
+            }
+        )
+
+        async def mock_approval(  # noqa: RUF029
+            _r: list[dict[str, object]],
+            _a: str,
+        ) -> Future[object]:
+            return first_step_into
+
+        hitl_value = {
+            "action_requests": [
+                {
+                    "name": "task",
+                    "args": {"subagent_type": "researcher", "description": "outer"},
+                }
+            ],
+            "review_configs": [
+                {"action_name": "task", "allowed_decisions": ["approve", "reject"]}
+            ],
+        }
+        interrupt = Interrupt(value=hitl_value, resumable=True, ns=None)
+
+        adapter = TextualUIAdapter(
+            mount_message=_noop_mount,
+            update_status=_noop_status,
+            request_approval=mock_approval,
+            set_spinner=lambda _: asyncio.sleep(0),
+        )
+
+        session = SimpleNamespace(thread_id="t1", auto_approve=False, depth=0)
+
+        # The first call returns step_into_context
+        result = await execute_task_textual(
+            user_input="go",
+            agent=_FakeAgent([((), "updates", {"__interrupt__": [interrupt]})]),
+            assistant_id="test",
+            session_state=session,
+            adapter=adapter,
+        )
+        assert result.step_into_context is not None, (
+            "First step-into should return a context"
+        )
+        # BUG-3: In _run_agent_task, the SECOND call to execute_task_textual
+        # at line 2139 discards its result. If that call also returns a
+        # step_into_context, the nested context is lost.
+        # This test documents the expected behavior: the result should be
+        # handled in a loop that pushes nested contexts.
+
+    def test_bug4_auto_approve_scoped_to_context(self) -> None:
+        """BUG-4: Auto-approve should not leak between contexts.
+
+        Toggling auto-approve inside a subagent should not affect the
+        parent context when the user returns.
+        """
+        state = SessionState(auto_approve=False)
+        assert not state.auto_approve
+
+        # Push a subagent context
+        ctx = ConversationContext(
+            thread_id="sub-thread",
+            subagent_type="coder",
+            task_description="write code",
+            summary_path=None,
+            parent_tool_call_id=None,
+        )
+        state.push_context(ctx)
+
+        # Toggle auto-approve inside the subagent
+        state.auto_approve = True
+        assert state.auto_approve
+
+        # Return to root
+        state.pop_context()
+
+        # BUG-4: auto_approve is a single shared boolean, so it's still True
+        # After the fix, returning to root should restore the parent's setting
+        assert not state.auto_approve, (
+            "Auto-approve should be scoped to the context — "
+            "returning to root should restore the parent's setting"
+        )

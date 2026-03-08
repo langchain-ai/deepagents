@@ -619,7 +619,6 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         self._selected_index = 0
         self._option_widgets: list[ThreadOption] = []
         self._filter_text = ""
-        self._sort_by_updated = True
         self._confirming_delete = False
         self._render_lock = asyncio.Lock()
         self._filter_input: Input | None = None
@@ -628,10 +627,12 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         from deepagents_cli.model_config import (
             load_thread_columns,
             load_thread_relative_time,
+            load_thread_sort_order,
         )
 
         self._columns = load_thread_columns()
         self._relative_time = load_thread_relative_time()
+        self._sort_by_updated = load_thread_sort_order() == "updated_at"
 
         self._sync_selected_index()
         self._column_widths = self._compute_column_widths()
@@ -918,6 +919,8 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             self._sync_selected_index()
             self._update_help_widgets()
             self._schedule_list_rebuild()
+
+            self._persist_sort_order("updated_at" if event.value else "created_at")
             return
 
         if event.checkbox.id == _RELATIVE_TIME_SWITCH_ID:
@@ -1609,6 +1612,22 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         self._sync_selected_index()
         self._update_help_widgets()
         self._schedule_list_rebuild()
+
+        self._persist_sort_order(
+            "updated_at" if self._sort_by_updated else "created_at"
+        )
+
+    def _persist_sort_order(self, order: str) -> None:
+        """Save sort-order preference to config, notifying on failure."""
+
+        async def _save() -> None:
+            from deepagents_cli.model_config import save_thread_sort_order
+
+            ok = await asyncio.to_thread(save_thread_sort_order, order)
+            if not ok:
+                self.app.notify("Could not save sort preference", severity="warning")
+
+        self.run_worker(_save(), group="thread-selector-save")
 
     def action_delete_thread(self) -> None:
         """Show delete confirmation for the highlighted thread."""

@@ -10,7 +10,7 @@ from rich.console import Console
 
 from deepagents_cli.agent import DEFAULT_AGENT_NAME
 from deepagents_cli.main import _DEFAULT_AGENT_NAME, parse_args
-from deepagents_cli.ui import show_help
+from deepagents_cli.ui import show_help, show_threads_list_help
 
 
 class TestInitialPromptArg:
@@ -343,4 +343,38 @@ class TestHelpScreenDrift:
         assert not missing, (
             f"Flags in argparse but missing from show_help(): {missing}\n"
             "Add them to the Options section in ui.show_help()."
+        )
+
+    def test_threads_list_flags_appear_in_help(self) -> None:
+        """Every `threads list`-specific --flag must appear in show_threads_list_help().
+
+        We capture the argparse -h output for the subcommand, then compare
+        only the optional-arguments section (after "options:") to avoid
+        matching inherited global flags in the usage line.
+        """
+        stdout_buf = io.StringIO()
+        with (
+            patch.object(sys, "argv", ["deepagents", "threads", "list", "-h"]),
+            patch("sys.stdout", stdout_buf),
+            patch("deepagents_cli.ui.console", Console(file=io.StringIO())),
+            pytest.raises(SystemExit),
+        ):
+            parse_args()
+        raw = stdout_buf.getvalue()
+
+        # Only look at the "options:" section to avoid inherited global flags
+        options_section = raw.split("options:")[-1] if "options:" in raw else raw
+        parser_flags = set(re.findall(r"--[\w][\w-]*", options_section))
+        parser_flags.discard("--help")
+
+        help_buf = io.StringIO()
+        test_console = Console(file=help_buf, highlight=False, width=200)
+        with patch("deepagents_cli.ui.console", test_console):
+            show_threads_list_help()
+        help_flags = set(re.findall(r"--[\w][\w-]*", help_buf.getvalue()))
+
+        missing = parser_flags - help_flags
+        assert not missing, (
+            f"Flags in argparse but missing from show_threads_list_help(): {missing}\n"
+            "Add them to the Options section in ui.show_threads_list_help()."
         )

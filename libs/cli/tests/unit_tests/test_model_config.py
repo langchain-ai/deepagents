@@ -201,6 +201,55 @@ class TestThreadRelativeTimePersistence:
         assert data["threads"]["relative_time"] is False
 
 
+class TestThreadSortOrderPersistence:
+    """Tests for thread sort-order preference persistence."""
+
+    def test_save_and_load_round_trip(self, tmp_path: Path) -> None:
+        """Saved sort order should load back on the next session."""
+        from deepagents_cli.model_config import (
+            load_thread_sort_order,
+            save_thread_sort_order,
+        )
+
+        config_path = tmp_path / "config.toml"
+        assert save_thread_sort_order("created_at", config_path) is True
+        assert load_thread_sort_order(config_path) == "created_at"
+
+        assert save_thread_sort_order("updated_at", config_path) is True
+        assert load_thread_sort_order(config_path) == "updated_at"
+
+    def test_default_is_updated_at(self, tmp_path: Path) -> None:
+        """When no config file exists, sort order defaults to updated_at."""
+        from deepagents_cli.model_config import load_thread_sort_order
+
+        config_path = tmp_path / "config.toml"
+        assert load_thread_sort_order(config_path) == "updated_at"
+
+    def test_invalid_value_falls_back_to_default(self, tmp_path: Path) -> None:
+        """An unrecognized sort_order value should fall back to updated_at."""
+        from deepagents_cli.model_config import load_thread_sort_order
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[threads]\nsort_order = "bogus"\n')
+        assert load_thread_sort_order(config_path) == "updated_at"
+
+    def test_preserves_other_config_sections(self, tmp_path: Path) -> None:
+        """Saving sort order should not clobber other config sections."""
+        from deepagents_cli.model_config import save_thread_sort_order
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[models]\ndefault = "anthropic:claude-sonnet-4-5"\n')
+
+        save_thread_sort_order("created_at", config_path)
+
+        import tomllib
+
+        with config_path.open("rb") as f:
+            data = tomllib.load(f)
+        assert data["models"]["default"] == "anthropic:claude-sonnet-4-5"
+        assert data["threads"]["sort_order"] == "created_at"
+
+
 class TestProviderApiKeyEnv:
     """Tests for PROVIDER_API_KEY_ENV constant."""
 

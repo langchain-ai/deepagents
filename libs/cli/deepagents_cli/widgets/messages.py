@@ -18,6 +18,7 @@ from textual.widgets import Markdown, Static
 
 from deepagents_cli.config import (
     COLORS,
+    MODE_DISPLAY_GLYPHS,
     PREFIX_TO_MODE,
     CharsetMode,
     _detect_charset_mode,
@@ -184,7 +185,8 @@ class UserMessage(_TimestampClickMixin, Static):
         # mode trigger character (e.g. "!" for shell commands, "/" for commands).
         mode = PREFIX_TO_MODE.get(content[:1]) if content else None
         if mode:
-            text.append(f"{content[0]} ", style=f"bold {_mode_color(mode)}")
+            glyph = MODE_DISPLAY_GLYPHS.get(mode, content[0])
+            text.append(f"{glyph} ", style=f"bold {_mode_color(mode)}")
             content = content[1:]
         else:
             text.append("> ", style=f"bold {COLORS['primary']}")

@@ -71,6 +71,12 @@ MODE_PREFIXES: dict[str, str] = {
 }
 """Maps each non-normal mode to its trigger character."""
 
+MODE_DISPLAY_GLYPHS: dict[str, str] = {
+    "shell": "$",
+    "command": "/",
+}
+"""Maps each non-normal mode to its display glyph shown in the prompt/UI."""
+
 PREFIX_TO_MODE: dict[str, str] = {v: k for k, v in MODE_PREFIXES.items()}
 """Reverse lookup: trigger character -> mode name."""
 

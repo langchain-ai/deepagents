@@ -306,10 +306,10 @@ def _compose_text(widget: UserMessage | QueuedUserMessage) -> Text:
 class TestUserMessageModeRendering:
     """Test `UserMessage` renders mode-specific prefix indicators and colors."""
 
-    def test_shell_prefix_renders_bang_indicator(self) -> None:
-        """`UserMessage('!ls')` should render with `'! '` prefix and shell body."""
+    def test_shell_prefix_renders_dollar_indicator(self) -> None:
+        """`UserMessage('!ls')` should render with `'$ '` prefix and shell body."""
         text = _compose_text(UserMessage("!ls"))
-        assert text.plain == "! ls"
+        assert text.plain == "$ ls"
         first_span = text._spans[0]
         assert COLORS["mode_shell"] in str(first_span.style)
 

@@ -9,6 +9,7 @@ import os
 import shlex
 import signal
 import sys
+import time
 import uuid
 import webbrowser
 from collections import deque
@@ -69,6 +70,7 @@ from deepagents_cli.widgets.thread_selector import ThreadSelectorScreen
 from deepagents_cli.widgets.welcome import WelcomeBanner
 
 logger = logging.getLogger(__name__)
+_monotonic = time.monotonic
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -87,7 +89,7 @@ if TYPE_CHECKING:
     from textual.widgets import Static
     from textual.worker import Worker
 
-    from deepagents_cli.ask_user import Question
+    from deepagents_cli.ask_user import AskUserWidgetResult, Question
     from deepagents_cli.mcp_tools import MCPServerInfo
 
 # iTerm2 Cursor Guide Workaround
@@ -534,6 +536,7 @@ class DeepAgentsApp(App):
         assistant_id: str | None = None,
         backend: CompositeBackend | None = None,
         auto_approve: bool = False,
+        enable_ask_user: bool = False,
         cwd: str | Path | None = None,
         thread_id: str | None = None,
         initial_prompt: str | None = None,
@@ -552,6 +555,8 @@ class DeepAgentsApp(App):
             assistant_id: Agent identifier for memory storage
             backend: Backend for file operations
             auto_approve: Whether to start with auto-approve enabled
+            enable_ask_user: Whether `ask_user` should stay enabled when
+                recreating agents (for example during model hot-swap)
             cwd: Current working directory to display
             thread_id: Optional thread ID for session persistence
             initial_prompt: Optional prompt to auto-submit when session starts
@@ -569,6 +574,7 @@ class DeepAgentsApp(App):
         self._assistant_id = assistant_id
         self._backend = backend
         self._auto_approve = auto_approve
+        self._enable_ask_user = enable_ask_user
         self._cwd = str(cwd) if cwd else str(Path.cwd())
         # Avoid collision with App._thread_id
         self._lc_thread_id = thread_id
@@ -1080,10 +1086,31 @@ class DeepAgentsApp(App):
         if self._session_state:
             self._session_state.auto_approve = True
 
+    async def _remove_ask_user_widget(  # noqa: PLR6301  # Shared helper used by ask_user event handlers
+        self,
+        widget: AskUserMenu,
+        *,
+        context: str,
+    ) -> None:
+        """Remove an ask_user widget without surfacing cleanup races.
+
+        Args:
+            widget: Ask-user widget instance to remove.
+            context: Short context string for diagnostics.
+        """
+        try:
+            await widget.remove()
+        except Exception:
+            logger.debug(
+                "Failed to remove ask-user widget during %s",
+                context,
+                exc_info=True,
+            )
+
     async def _request_ask_user(
         self,
         questions: list[Question],
-    ) -> asyncio.Future:
+    ) -> asyncio.Future[AskUserWidgetResult]:
         """Display the ask_user widget and return a Future with user response.
 
         Args:
@@ -1095,22 +1122,24 @@ class DeepAgentsApp(App):
                 `'cancelled'`) and, when answered, an `'answers'` list.
         """
         loop = asyncio.get_running_loop()
-        result_future: asyncio.Future = loop.create_future()
+        result_future: asyncio.Future[AskUserWidgetResult] = loop.create_future()
 
         if self._pending_ask_user_widget is not None:
-            import time
-
-            deadline = time.monotonic() + 30
+            deadline = _monotonic() + 30
             while self._pending_ask_user_widget is not None:
-                if time.monotonic() > deadline:
+                if _monotonic() > deadline:
                     logger.error(
                         "Timed out waiting for previous ask-user widget to "
                         "clear. Forcefully cleaning up."
                     )
                     old_widget = self._pending_ask_user_widget
-                    self._pending_ask_user_widget = None
                     if old_widget is not None:
                         old_widget.action_cancel()
+                        self._pending_ask_user_widget = None
+                        await self._remove_ask_user_widget(
+                            old_widget,
+                            context="ask-user timeout cleanup",
+                        )
                     break
                 await asyncio.sleep(0.1)
 
@@ -1142,8 +1171,9 @@ class DeepAgentsApp(App):
     ) -> None:
         """Handle ask_user menu answers - remove widget and refocus input."""
         if self._pending_ask_user_widget:
-            await self._pending_ask_user_widget.remove()
+            widget = self._pending_ask_user_widget
             self._pending_ask_user_widget = None
+            await self._remove_ask_user_widget(widget, context="ask-user answered")
 
         if self._chat_input:
             self.call_after_refresh(self._chat_input.focus_input)
@@ -1154,8 +1184,9 @@ class DeepAgentsApp(App):
     ) -> None:
         """Handle ask_user menu cancellation - remove widget and refocus input."""
         if self._pending_ask_user_widget:
-            await self._pending_ask_user_widget.remove()
+            widget = self._pending_ask_user_widget
             self._pending_ask_user_widget = None
+            await self._remove_ask_user_widget(widget, context="ask-user cancelled")
 
         if self._chat_input:
             self.call_after_refresh(self._chat_input.focus_input)
@@ -3134,6 +3165,7 @@ class DeepAgentsApp(App):
                 sandbox=self._sandbox,
                 sandbox_type=self._sandbox_type,
                 auto_approve=self._auto_approve,
+                enable_ask_user=self._enable_ask_user,
                 checkpointer=self._checkpointer,
                 mcp_server_info=self._mcp_server_info,
             )
@@ -3256,6 +3288,7 @@ async def run_textual_app(
     assistant_id: str | None = None,
     backend: CompositeBackend | None = None,
     auto_approve: bool = False,
+    enable_ask_user: bool = False,
     cwd: str | Path | None = None,
     thread_id: str | None = None,
     initial_prompt: str | None = None,
@@ -3273,6 +3306,8 @@ async def run_textual_app(
         assistant_id: Agent identifier for memory storage
         backend: Backend for file operations
         auto_approve: Whether to start with auto-approve enabled
+        enable_ask_user: Whether `ask_user` should stay enabled when
+            recreating agents (for example during model hot-swap)
         cwd: Current working directory to display
         thread_id: Optional thread ID for session persistence
         initial_prompt: Optional prompt to auto-submit when session starts
@@ -3292,6 +3327,7 @@ async def run_textual_app(
         assistant_id=assistant_id,
         backend=backend,
         auto_approve=auto_approve,
+        enable_ask_user=enable_ask_user,
         cwd=cwd,
         thread_id=thread_id,
         initial_prompt=initial_prompt,

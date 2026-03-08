@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import shlex
+import shutil
 import signal
 import sys
 import uuid
@@ -1607,6 +1608,9 @@ class DeepAgentsApp(App):
         summary_content = ""
         if child_ctx.summary_path and child_ctx.summary_path.exists():
             summary_content = child_ctx.summary_path.read_text()
+            # Clean up branch directory
+            branch_dir = child_ctx.summary_path.parent
+            shutil.rmtree(branch_dir, ignore_errors=True)
 
         depth_label = (
             "root"
@@ -2104,6 +2108,7 @@ class DeepAgentsApp(App):
         if self._ui_adapter is None:
             return
         turn_stats: SessionStats | None = None
+        step_into_pushed = False
         try:
             result = await execute_task_textual(
                 user_input=message,
@@ -2120,6 +2125,7 @@ class DeepAgentsApp(App):
             if result.step_into_context and self._session_state:
                 ctx = result.step_into_context
                 self._session_state.push_context(ctx)
+                step_into_pushed = True
                 self._update_prompt_indicator()
 
                 # Build initial prompt with task description
@@ -2151,6 +2157,14 @@ class DeepAgentsApp(App):
             if self._ui_adapter:
                 self._ui_adapter.finalize_pending_tools_with_error(f"Agent error: {e}")
             await self._mount_message(ErrorMessage(f"Agent error: {e}"))
+            # Pop context if we pushed one to avoid stuck state
+            if (
+                step_into_pushed
+                and self._session_state
+                and self._session_state.depth > 0
+            ):
+                self._session_state.pop_context()
+                self._update_prompt_indicator()
         finally:
             # Clean up loading widget and agent state
             await self._cleanup_agent_task()

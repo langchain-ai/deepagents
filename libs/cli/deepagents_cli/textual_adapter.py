@@ -229,6 +229,7 @@ def _create_branch_context(
     assistant_id: str | None,
     subagent_type: str,
     task_description: str,
+    parent_tool_call_id: str | None = None,
 ) -> ConversationContext:
     """Create a new conversation context for stepping into a subagent.
 
@@ -265,7 +266,7 @@ def _create_branch_context(
         subagent_type=subagent_type,
         task_description=task_description,
         summary_path=summary_path,
-        parent_tool_call_id=None,
+        parent_tool_call_id=parent_tool_call_id,
     )
 
 
@@ -1026,6 +1027,7 @@ async def execute_task_textual(
                                     assistant_id,
                                     subagent_type,
                                     task_description,
+                                    parent_tool_call_id=interrupt_id,
                                 )
                                 # Stop spinner before entering subagent
                                 if adapter._set_spinner:

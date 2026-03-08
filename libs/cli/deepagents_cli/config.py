@@ -767,6 +767,7 @@ class ConversationContext:
     task_description: str  # Original task from parent (empty for root)
     summary_path: Path | None  # Where summary will be written (None for root)
     parent_tool_call_id: str | None  # For ToolMessage to parent
+    parent_auto_approve: bool | None = None  # Saved parent auto_approve on push
 
 
 class SessionState:
@@ -835,11 +836,19 @@ class SessionState:
         return self.depth > 0
 
     def push_context(self, ctx: ConversationContext) -> None:
-        """Push a new context onto the stack (entering a subagent)."""
+        """Push a new context onto the stack (entering a subagent).
+
+        Saves the current auto_approve state so it can be restored on pop.
+        Resets auto_approve to False for the new context.
+        """
+        ctx.parent_auto_approve = self.auto_approve
+        self.auto_approve = False
         self.context_stack.append(ctx)
 
     def pop_context(self) -> ConversationContext:
         """Pop the current context from the stack (returning from subagent).
+
+        Restores the parent's auto_approve state.
 
         Returns:
             The popped context.
@@ -850,7 +859,10 @@ class SessionState:
         if self.depth == 0:
             msg = "Cannot pop root context"
             raise ValueError(msg)
-        return self.context_stack.pop()
+        ctx = self.context_stack.pop()
+        if ctx.parent_auto_approve is not None:
+            self.auto_approve = ctx.parent_auto_approve
+        return ctx
 
     def reset_to_root(self) -> None:
         """Reset to a fresh root context (used by /clear)."""

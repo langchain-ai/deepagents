@@ -88,6 +88,15 @@ class ThreadInfo(TypedDict):
     updated_at: str | None
     """ISO timestamp of the last update."""
 
+    created_at: NotRequired[str | None]
+    """ISO timestamp of thread creation (earliest checkpoint)."""
+
+    git_branch: NotRequired[str | None]
+    """Git branch active when the thread was created."""
+
+    initial_prompt: NotRequired[str | None]
+    """First human message in the thread."""
+
     message_count: NotRequired[int]
     """Number of messages in the thread."""
 
@@ -180,7 +189,9 @@ async def list_threads(
                 SELECT thread_id,
                        json_extract(metadata, '$.agent_name') as agent_name,
                        MAX(json_extract(metadata, '$.updated_at')) as updated_at,
-                       MAX(checkpoint_id) as latest_checkpoint_id
+                       MAX(checkpoint_id) as latest_checkpoint_id,
+                       MIN(json_extract(metadata, '$.updated_at')) as created_at,
+                       json_extract(metadata, '$.git_branch') as git_branch
                 FROM checkpoints
                 WHERE json_extract(metadata, '$.agent_name') = ?
                 GROUP BY thread_id
@@ -193,7 +204,9 @@ async def list_threads(
                 SELECT thread_id,
                        json_extract(metadata, '$.agent_name') as agent_name,
                        MAX(json_extract(metadata, '$.updated_at')) as updated_at,
-                       MAX(checkpoint_id) as latest_checkpoint_id
+                       MAX(checkpoint_id) as latest_checkpoint_id,
+                       MIN(json_extract(metadata, '$.updated_at')) as created_at,
+                       json_extract(metadata, '$.git_branch') as git_branch
                 FROM checkpoints
                 GROUP BY thread_id
                 ORDER BY updated_at DESC
@@ -209,6 +222,8 @@ async def list_threads(
                     agent_name=r[1],
                     updated_at=r[2],
                     latest_checkpoint_id=r[3],
+                    created_at=r[4],
+                    git_branch=r[5],
                 )
                 for r in rows
             ]
@@ -452,6 +467,78 @@ async def _count_messages_from_checkpoint(
                 exc_info=True,
             )
             return 0
+
+
+async def _extract_initial_prompt(
+    conn: aiosqlite.Connection,
+    thread_id: str,
+    serde: JsonPlusSerializer,
+) -> str | None:
+    """Extract the first human message from the earliest checkpoint.
+
+    Args:
+        conn: Database connection.
+        thread_id: The thread ID to extract from.
+        serde: Serializer for decoding checkpoint data.
+
+    Returns:
+        First human message content, or None if not found.
+    """
+    query = """
+        SELECT type, checkpoint
+        FROM checkpoints
+        WHERE thread_id = ?
+        ORDER BY checkpoint_id DESC
+        LIMIT 1
+    """
+    async with conn.execute(query, (thread_id,)) as cursor:
+        row = await cursor.fetchone()
+        if not row or not row[0] or not row[1]:
+            return None
+
+        type_str, checkpoint_blob = row
+        try:
+            data = serde.loads_typed((type_str, checkpoint_blob))
+            channel_values = data.get("channel_values", {})
+            messages = channel_values.get("messages", [])
+            for msg in messages:
+                if getattr(msg, "type", None) == "human":
+                    content = msg.content
+                    if isinstance(content, str):
+                        return content
+                    if isinstance(content, list):
+                        parts = [
+                            p.get("text", "") if isinstance(p, dict) else str(p)
+                            for p in content
+                        ]
+                        return " ".join(parts).strip() or None
+                    return str(content)
+        except (ValueError, TypeError, KeyError):
+            logger.debug(
+                "Failed to extract initial prompt for thread %s",
+                thread_id,
+                exc_info=True,
+            )
+    return None
+
+
+async def populate_thread_initial_prompts(threads: list[ThreadInfo]) -> None:
+    """Populate `initial_prompt` for thread rows in the background.
+
+    Args:
+        threads: Thread rows to enrich in place.
+    """
+    if not threads:
+        return
+
+    serde = await _get_jsonplus_serializer()
+    async with _connect() as conn:
+        for thread in threads:
+            if "initial_prompt" in thread:
+                continue
+            thread["initial_prompt"] = await _extract_initial_prompt(
+                conn, thread["thread_id"], serde
+            )
 
 
 async def get_most_recent(agent_name: str | None = None) -> str | None:

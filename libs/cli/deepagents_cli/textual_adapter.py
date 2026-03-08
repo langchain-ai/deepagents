@@ -217,6 +217,25 @@ HITLDecision = ApproveDecision | EditDecision | RejectDecision
 _HITL_REQUEST_ADAPTER = TypeAdapter(HITLRequest)
 
 
+def _get_git_branch() -> str | None:
+    """Return the current git branch name, or None if not in a repo."""
+    import subprocess  # noqa: S404
+
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],  # noqa: S607
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip() or None
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        pass
+    return None
+
+
 def _build_stream_config(
     thread_id: str,
     assistant_id: str | None,
@@ -243,6 +262,9 @@ def _build_stream_config(
                 "updated_at": datetime.now(UTC).isoformat(),
             }
         )
+    branch = _get_git_branch()
+    if branch:
+        metadata["git_branch"] = branch
     return {
         "configurable": {"thread_id": thread_id},
         "metadata": metadata,

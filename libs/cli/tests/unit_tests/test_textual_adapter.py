@@ -140,12 +140,40 @@ class TestBuildStreamConfig:
     def test_no_assistant_fields_when_none(self) -> None:
         """Assistant-specific fields should be absent when `assistant_id` is `None`."""
         config = _build_stream_config("t-789", assistant_id=None)
-        assert config["metadata"] == {}
+        metadata = config["metadata"]
+        assert "assistant_id" not in metadata
+        assert "agent_name" not in metadata
+        assert "updated_at" not in metadata
 
     def test_no_assistant_fields_when_empty_string(self) -> None:
         """Empty-string `assistant_id` should be treated as absent."""
         config = _build_stream_config("t-000", assistant_id="")
-        assert config["metadata"] == {}
+        metadata = config["metadata"]
+        assert "assistant_id" not in metadata
+        assert "agent_name" not in metadata
+        assert "updated_at" not in metadata
+
+    def test_git_branch_included_when_available(self) -> None:
+        """Git branch should be included in metadata when in a git repo."""
+        from unittest.mock import patch
+
+        with patch(
+            "deepagents_cli.textual_adapter._get_git_branch",
+            return_value="feature-branch",
+        ):
+            config = _build_stream_config("t-git", assistant_id="agent")
+        assert config["metadata"]["git_branch"] == "feature-branch"
+
+    def test_git_branch_absent_when_not_in_repo(self) -> None:
+        """Git branch should be absent when not in a git repo."""
+        from unittest.mock import patch
+
+        with patch(
+            "deepagents_cli.textual_adapter._get_git_branch",
+            return_value=None,
+        ):
+            config = _build_stream_config("t-nogit", assistant_id="agent")
+        assert "git_branch" not in config["metadata"]
 
     def test_configurable_thread_id(self) -> None:
         """`configurable.thread_id` should match the provided thread ID."""

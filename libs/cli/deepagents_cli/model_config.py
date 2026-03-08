@@ -1066,6 +1066,89 @@ def suppress_warning(key: str, config_path: Path | None = None) -> bool:
     return True
 
 
+THREAD_COLUMN_DEFAULTS: dict[str, bool] = {
+    "thread_id": False,
+    "messages": True,
+    "created_at": True,
+    "updated_at": True,
+    "git_branch": False,
+    "initial_prompt": True,
+    "agent_name": False,
+}
+"""Default visibility for thread selector columns."""
+
+
+def load_thread_columns(config_path: Path | None = None) -> dict[str, bool]:
+    """Load thread column visibility from config file.
+
+    Args:
+        config_path: Path to config file.
+
+    Returns:
+        Dict mapping column names to visibility booleans.
+    """
+    if config_path is None:
+        config_path = DEFAULT_CONFIG_PATH
+
+    result = dict(THREAD_COLUMN_DEFAULTS)
+    try:
+        if not config_path.exists():
+            return result
+        with config_path.open("rb") as f:
+            data = tomllib.load(f)
+        columns = data.get("threads", {}).get("columns", {})
+        if isinstance(columns, dict):
+            for key in result:
+                if key in columns and isinstance(columns[key], bool):
+                    result[key] = columns[key]
+    except (OSError, tomllib.TOMLDecodeError):
+        logger.debug("Could not read thread column config", exc_info=True)
+    return result
+
+
+def save_thread_columns(
+    columns: dict[str, bool], config_path: Path | None = None
+) -> bool:
+    """Save thread column visibility to config file.
+
+    Args:
+        columns: Dict mapping column names to visibility booleans.
+        config_path: Path to config file.
+
+    Returns:
+        True if save succeeded, False on I/O error.
+    """
+    if config_path is None:
+        config_path = DEFAULT_CONFIG_PATH
+
+    try:
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if config_path.exists():
+            with config_path.open("rb") as f:
+                data = tomllib.load(f)
+        else:
+            data = {}
+
+        if "threads" not in data:
+            data["threads"] = {}
+        data["threads"]["columns"] = columns
+
+        fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "wb") as f:
+                tomli_w.dump(data, f)
+            Path(tmp_path).replace(config_path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                Path(tmp_path).unlink()
+            raise
+    except (OSError, tomllib.TOMLDecodeError):
+        logger.exception("Could not save thread column preferences")
+        return False
+    return True
+
+
 def save_recent_model(model_spec: str, config_path: Path | None = None) -> bool:
     """Update the recently used model in config file.
 

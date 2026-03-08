@@ -23,20 +23,39 @@ MOCK_THREADS: list[ThreadInfo] = [
         "agent_name": "my-agent",
         "updated_at": "2025-01-15T10:30:00",
         "message_count": 5,
+        "created_at": "2025-01-15T09:00:00",
+        "git_branch": "main",
+        "initial_prompt": "Hello world",
     },
     {
         "thread_id": "def67890",
         "agent_name": "other-agent",
         "updated_at": "2025-01-14T08:00:00",
         "message_count": 12,
+        "created_at": "2025-01-14T07:00:00",
+        "git_branch": "feature-x",
+        "initial_prompt": "Fix the bug",
     },
     {
         "thread_id": "ghi11111",
         "agent_name": "my-agent",
         "updated_at": "2025-01-13T15:45:00",
         "message_count": 3,
+        "created_at": "2025-01-13T14:00:00",
+        "git_branch": None,
+        "initial_prompt": None,
     },
 ]
+
+_ALL_COLUMNS_ON = {
+    "thread_id": True,
+    "messages": True,
+    "created_at": True,
+    "updated_at": True,
+    "git_branch": True,
+    "initial_prompt": True,
+    "agent_name": True,
+}
 
 
 def _patch_list_threads(threads: list[ThreadInfo] | None = None) -> Any:  # noqa: ANN401
@@ -50,6 +69,17 @@ def _patch_list_threads(threads: list[ThreadInfo] | None = None) -> Any:  # noqa
         "deepagents_cli.sessions.list_threads",
         new_callable=AsyncMock,
         return_value=data,
+    )
+
+
+def _patch_columns(columns: dict[str, bool] | None = None) -> Any:  # noqa: ANN401
+    """Patch load_thread_columns to return given columns."""
+    from deepagents_cli.model_config import THREAD_COLUMN_DEFAULTS
+
+    cols = columns if columns is not None else THREAD_COLUMN_DEFAULTS
+    return patch(
+        "deepagents_cli.model_config.load_thread_columns",
+        return_value=dict(cols),
     )
 
 
@@ -181,25 +211,6 @@ class TestThreadSelectorKeyboardNavigation:
                 expected = (0 - 1) % count
                 assert screen._selected_index == expected
 
-    async def test_j_k_navigation(self) -> None:
-        """j/k keys should navigate like down/up arrows."""
-        with _patch_list_threads():
-            app = ThreadSelectorTestApp()
-            async with app.run_test() as pilot:
-                app.show_selector()
-                await pilot.pause()
-
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-
-                await pilot.press("j")
-                await pilot.pause()
-                assert screen._selected_index == 1
-
-                await pilot.press("k")
-                await pilot.pause()
-                assert screen._selected_index == 0
-
     async def test_enter_selects_thread(self) -> None:
         """Enter should select the current thread and dismiss."""
         with _patch_list_threads():
@@ -285,7 +296,7 @@ class TestThreadSelectorEmptyState:
                 assert app.result is None
 
     async def test_arrow_keys_on_empty_list_do_not_crash(self) -> None:
-        """Arrow keys, j/k, and page keys on empty list should be no-ops."""
+        """Arrow keys and page keys on empty list should be no-ops."""
         with _patch_list_threads(threads=[]):
             app = ThreadSelectorTestApp()
             async with app.run_test() as pilot:
@@ -296,8 +307,7 @@ class TestThreadSelectorEmptyState:
                 assert isinstance(screen, ThreadSelectorScreen)
                 assert len(screen._threads) == 0
 
-                # All navigation keys should be safe on an empty list
-                for key in ("up", "down", "j", "k", "pageup", "pagedown"):
+                for key in ("up", "down", "pageup", "pagedown"):
                     await pilot.press(key)
                     await pilot.pause()
 
@@ -329,12 +339,12 @@ class TestThreadSelectorNavigateAndSelect:
                 assert app.result == "def67890"
 
 
-class TestThreadSelectorTabNavigation:
-    """Tests for tab/shift+tab navigation."""
+class TestThreadSelectorTabSort:
+    """Tests for tab toggling sort between updated_at and created_at."""
 
-    async def test_tab_moves_down(self) -> None:
-        """Tab should move selection down."""
-        with _patch_list_threads():
+    async def test_tab_toggles_sort(self) -> None:
+        """Tab should toggle sort order between updated and created."""
+        with _patch_list_threads(), _patch_columns():
             app = ThreadSelectorTestApp()
             async with app.run_test() as pilot:
                 app.show_selector()
@@ -342,30 +352,15 @@ class TestThreadSelectorTabNavigation:
 
                 screen = app.screen
                 assert isinstance(screen, ThreadSelectorScreen)
+                assert screen._sort_by_updated is True
 
                 await pilot.press("tab")
                 await pilot.pause()
-                assert screen._selected_index == 1
+                assert screen._sort_by_updated is False
 
-    async def test_shift_tab_moves_up(self) -> None:
-        """Shift+tab should move selection up."""
-        with _patch_list_threads():
-            app = ThreadSelectorTestApp()
-            async with app.run_test() as pilot:
-                app.show_selector()
-                await pilot.pause()
-
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-
-                # Move down first, then shift+tab back
                 await pilot.press("tab")
                 await pilot.pause()
-                assert screen._selected_index == 1
-
-                await pilot.press("shift+tab")
-                await pilot.pause()
-                assert screen._selected_index == 0
+                assert screen._sort_by_updated is True
 
 
 class TestThreadSelectorDownWrap:
@@ -446,9 +441,6 @@ class TestThreadSelectorClickHandling:
                 screen = app.screen
                 assert isinstance(screen, ThreadSelectorScreen)
 
-                # Post a Clicked message from the second option widget.
-                # (pilot.click(type) always hits the first match, so we
-                # exercise the handler directly for an exact-widget test.)
                 from deepagents_cli.widgets.thread_selector import ThreadOption
 
                 assert len(screen._option_widgets) > 1, (
@@ -512,29 +504,28 @@ class TestThreadSelectorFormatLabel:
     def test_selected_shows_cursor(self) -> None:
         """Selected option should include a cursor glyph."""
         label = ThreadSelectorScreen._format_option_label(
-            MOCK_THREADS[0], selected=True, current=False
+            MOCK_THREADS[0], selected=True, current=False, columns=_ALL_COLUMNS_ON
         )
-        # Should not start with spaces (cursor glyph present)
         assert not label.startswith("  ")
 
     def test_unselected_has_no_cursor(self) -> None:
         """Unselected option should start with spaces instead of cursor."""
         label = ThreadSelectorScreen._format_option_label(
-            MOCK_THREADS[0], selected=False, current=False
+            MOCK_THREADS[0], selected=False, current=False, columns=_ALL_COLUMNS_ON
         )
         assert label.startswith("  ")
 
     def test_current_shows_suffix(self) -> None:
         """Current thread should show (current) suffix."""
         label = ThreadSelectorScreen._format_option_label(
-            MOCK_THREADS[0], selected=False, current=True
+            MOCK_THREADS[0], selected=False, current=True, columns=_ALL_COLUMNS_ON
         )
         assert "(current)" in label
 
     def test_not_current_no_suffix(self) -> None:
         """Non-current thread should not show (current) suffix."""
         label = ThreadSelectorScreen._format_option_label(
-            MOCK_THREADS[0], selected=False, current=False
+            MOCK_THREADS[0], selected=False, current=False, columns=_ALL_COLUMNS_ON
         )
         assert "(current)" not in label
 
@@ -542,14 +533,14 @@ class TestThreadSelectorFormatLabel:
         """Thread with no agent_name should show 'unknown'."""
         thread = ThreadInfo(thread_id="test123", agent_name=None, updated_at=None)
         label = ThreadSelectorScreen._format_option_label(
-            thread, selected=False, current=False
+            thread, selected=False, current=False, columns=_ALL_COLUMNS_ON
         )
         assert "unknown" in label
 
     def test_includes_message_count(self) -> None:
         """Label should include message count."""
         label = ThreadSelectorScreen._format_option_label(
-            MOCK_THREADS[0], selected=False, current=False
+            MOCK_THREADS[0], selected=False, current=False, columns=_ALL_COLUMNS_ON
         )
         assert "5" in label
 
@@ -561,18 +552,42 @@ class TestThreadSelectorFormatLabel:
             updated_at="2025-01-15T10:30:00",
         )
         label = ThreadSelectorScreen._format_option_label(
-            thread, selected=False, current=False
+            thread, selected=False, current=False, columns=_ALL_COLUMNS_ON
         )
         assert "..." in label
 
-    def test_columns_align_with_header(self) -> None:
-        """Option labels should align with the column header."""
-        header = ThreadSelectorScreen._format_header()
+    def test_includes_initial_prompt(self) -> None:
+        """Label should include initial prompt when column is enabled."""
         label = ThreadSelectorScreen._format_option_label(
-            MOCK_THREADS[0], selected=False, current=False
+            MOCK_THREADS[0], selected=False, current=False, columns=_ALL_COLUMNS_ON
         )
-        # "Thread" column starts at the same offset as the thread ID
-        assert header.index("Thread") == label.index("abc12345")
+        assert "Hello world" in label
+
+    def test_includes_git_branch(self) -> None:
+        """Label should include git branch when column is enabled."""
+        label = ThreadSelectorScreen._format_option_label(
+            MOCK_THREADS[0], selected=False, current=False, columns=_ALL_COLUMNS_ON
+        )
+        assert "main" in label
+
+    def test_hidden_columns_not_shown(self) -> None:
+        """Columns set to False should not appear in the label."""
+        cols = {
+            "thread_id": False,
+            "messages": False,
+            "created_at": False,
+            "updated_at": True,
+            "git_branch": False,
+            "initial_prompt": False,
+            "agent_name": False,
+        }
+        label = ThreadSelectorScreen._format_option_label(
+            MOCK_THREADS[0], selected=False, current=False, columns=cols
+        )
+        assert "abc12345" not in label
+        assert "my-agent" not in label
+        assert "Hello world" not in label
+        assert "main" not in label
 
     def test_long_values_are_truncated(self) -> None:
         """Thread ID and agent name exceeding column width are truncated."""
@@ -583,9 +598,8 @@ class TestThreadSelectorFormatLabel:
             message_count=0,
         )
         label = ThreadSelectorScreen._format_option_label(
-            thread, selected=False, current=False
+            thread, selected=False, current=False, columns=_ALL_COLUMNS_ON
         )
-        # Thread ID column is 10 chars, agent column is 14 chars
         assert "abcdef1234567890" not in label
         assert "abcdef1234" in label
         assert "very-long-agent-name-here" not in label
@@ -618,7 +632,6 @@ class TestThreadSelectorBuildTitle:
         assert isinstance(title, Text)
         assert "abc12345" in title.plain
 
-        # Verify the thread ID span carries a cyan + link style
         spans = [s for s in title._spans if s.style and "link" in str(s.style)]
         assert len(spans) > 0
         assert "cyan" in str(spans[0].style)
@@ -761,13 +774,13 @@ class TestFetchThreadUrl:
 class TestThreadSelectorColumnHeader:
     """Tests for the anchored column header."""
 
-    def test_header_contains_column_names(self) -> None:
-        """Column header string should contain all column names."""
-        header = ThreadSelectorScreen._format_header()
-        assert "Thread" in header
-        assert "Agent" in header
+    def test_header_contains_default_column_names(self) -> None:
+        """Column header should contain visible column names based on defaults."""
+        screen = ThreadSelectorScreen(current_thread=None)
+        header = screen._format_header()
         assert "Msgs" in header
         assert "Updated" in header
+        assert "Prompt" in header
 
     async def test_header_widget_is_mounted(self) -> None:
         """Column header widget should be present in the mounted screen."""
@@ -793,7 +806,6 @@ class TestThreadSelectorColumnHeader:
                 assert isinstance(screen, ThreadSelectorScreen)
 
                 header = screen.query_one(".thread-list-header", Static)
-                # Header's parent should be the Vertical, not VerticalScroll
                 assert isinstance(header.parent, Vertical)
 
 
@@ -816,10 +828,8 @@ class TestThreadSelectorErrorHandling:
                 assert isinstance(screen, ThreadSelectorScreen)
                 assert len(screen._threads) == 0
 
-                # No option widgets should have been created
                 assert len(screen._option_widgets) == 0
 
-                # Escape should still dismiss
                 await pilot.press("escape")
                 await pilot.pause()
 
@@ -994,8 +1004,6 @@ class TestThreadSelectorPrefetchedRows:
         ]
         app = ThreadSelectorTestApp(current_thread="abc12345")
 
-        # Use an Event gate so the mock cannot resolve until we allow it,
-        # avoiding race conditions across Python versions (3.13 in particular).
         gate = asyncio.Event()
 
         async def _list_threads(*_args: object, **_kwargs: object) -> list[ThreadInfo]:
@@ -1023,7 +1031,6 @@ class TestThreadSelectorPrefetchedRows:
                 with pytest.raises(NoMatches):
                     screen.query_one("#thread-loading", Static)
 
-                # Release the mock so the background refresh can complete.
                 gate.set()
 
                 for _ in range(10):
@@ -1080,6 +1087,123 @@ class TestThreadSelectorPrefetchedRows:
                 )
                 assert len(screen._threads) == 1
                 assert screen._threads[0]["thread_id"] == "new12345"
+
+
+class TestThreadSelectorSearch:
+    """Tests for fuzzy search filtering."""
+
+    async def test_search_filters_threads(self) -> None:
+        """Typing in search should filter threads by initial prompt."""
+        with _patch_list_threads():
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                assert len(screen._filtered_threads) == 3
+
+                screen._filter_text = "Hello"
+                screen._update_filtered_list()
+                assert len(screen._filtered_threads) == 1
+                assert screen._filtered_threads[0]["thread_id"] == "abc12345"
+
+    def test_empty_search_returns_all(self) -> None:
+        """Empty search text should return all threads."""
+        screen = ThreadSelectorScreen(
+            current_thread=None,
+            initial_threads=MOCK_THREADS,
+        )
+        screen._filter_text = ""
+        screen._update_filtered_list()
+        assert len(screen._filtered_threads) == 3
+
+    def test_search_by_thread_id(self) -> None:
+        """Search should match thread IDs."""
+        screen = ThreadSelectorScreen(
+            current_thread=None,
+            initial_threads=MOCK_THREADS,
+        )
+        screen._filter_text = "def678"
+        screen._update_filtered_list()
+        assert len(screen._filtered_threads) == 1
+        assert screen._filtered_threads[0]["thread_id"] == "def67890"
+
+
+class TestThreadSelectorDelete:
+    """Tests for ctrl+d delete functionality."""
+
+    async def test_delete_shows_confirmation(self) -> None:
+        """Ctrl+D should show a delete confirmation overlay."""
+        with _patch_list_threads():
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                assert screen._confirming_delete is False
+
+                await pilot.press("ctrl+d")
+                await pilot.pause()
+                await pilot.pause()
+
+                assert screen._confirming_delete is True
+
+    async def test_delete_escape_cancels(self) -> None:
+        """Escape during delete confirmation should cancel."""
+        with _patch_list_threads():
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+
+                await pilot.press("ctrl+d")
+                await pilot.pause()
+                await pilot.pause()
+                assert screen._confirming_delete is True
+
+                await pilot.press("escape")
+                await pilot.pause()
+                await pilot.pause()
+
+                assert screen._confirming_delete is False
+                assert app.dismissed is False
+
+
+class TestThreadSelectorColumnConfig:
+    """Tests for column visibility configuration."""
+
+    def test_default_columns(self) -> None:
+        """Default column config should match THREAD_COLUMN_DEFAULTS."""
+        from deepagents_cli.model_config import THREAD_COLUMN_DEFAULTS
+
+        with _patch_columns():
+            screen = ThreadSelectorScreen(current_thread=None)
+        assert screen._columns == THREAD_COLUMN_DEFAULTS
+
+    def test_format_label_respects_columns(self) -> None:
+        """Label should only include enabled columns."""
+        cols_minimal = {
+            "thread_id": False,
+            "messages": False,
+            "created_at": False,
+            "updated_at": True,
+            "git_branch": False,
+            "initial_prompt": False,
+            "agent_name": False,
+        }
+        label = ThreadSelectorScreen._format_option_label(
+            MOCK_THREADS[0], selected=False, current=False, columns=cols_minimal
+        )
+        assert "abc12345" not in label
+        assert "my-agent" not in label
+        assert "Hello world" not in label
 
 
 def _get_widget_text(widget: Static) -> str:
@@ -1201,10 +1325,8 @@ class TestResumeThread:
 
         await app._resume_thread("new-thread")
 
-        # Thread IDs should be restored to previous values
         assert app._lc_thread_id == "old-thread"
         assert app._session_state.thread_id == "old-thread"
-        # Should show error message
         assert any(
             "Failed to switch" in _get_widget_text(call.args[0])
             for call in app._mount_message.call_args_list  # type: ignore[union-attr]
@@ -1225,7 +1347,6 @@ class TestResumeThread:
         app._clear_messages = AsyncMock()  # type: ignore[assignment]
         app._token_tracker = MagicMock()
         app._update_status = MagicMock()  # type: ignore[assignment]
-        # First call (in try block) fails; second call (in rollback) succeeds
         app._load_thread_history = AsyncMock(  # type: ignore[assignment]
             side_effect=[RuntimeError("checkpoint corrupt"), None]
         )
@@ -1589,7 +1710,6 @@ class TestBuildThreadMessage:
         assert isinstance(result, Text)
         assert "Resumed thread: " in result.plain
         assert "tid-123" in result.plain
-        # Verify the thread ID span has the link style
         spans = [s for s in result._spans if s.style and "link" in str(s.style)]
         assert len(spans) == 1
         assert url in str(spans[0].style)

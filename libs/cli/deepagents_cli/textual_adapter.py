@@ -293,9 +293,9 @@ class TextualUIAdapter:
     """
 
     _request_ask_user: Callable[..., Awaitable[Any]] | None
-    """Async callback for ask_user interrupts.
+    """Async callback for `ask_user` interrupts.
 
-    When awaited, returns a Future that resolves to user answers.
+    When awaited, returns a `Future` that resolves to user answers.
     """
 
     _scroll_to_bottom: Callable[[], None] | None
@@ -346,8 +346,8 @@ class TextualUIAdapter:
             set_active_message: Callback to set the active streaming message ID.
             sync_message_content: Callback to sync final content back to the
                 message store after streaming completes.
-            request_ask_user: Async callable that displays an ask_user widget
-                and returns a Future resolving to user answers.
+            request_ask_user: Async callable that displays an `ask_user` widget
+                and returns a `Future` resolving to user answers.
         """
         self._mount_message = mount_message
         self._update_status = update_status

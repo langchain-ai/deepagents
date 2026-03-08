@@ -1149,6 +1149,67 @@ def save_thread_columns(
     return True
 
 
+def load_thread_relative_time(config_path: Path | None = None) -> bool:
+    """Load the relative-time display preference for thread timestamps.
+
+    Args:
+        config_path: Path to config file.
+
+    Returns:
+        True if timestamps should display as relative time.
+    """
+    if config_path is None:
+        config_path = DEFAULT_CONFIG_PATH
+    try:
+        if not config_path.exists():
+            return True
+        with config_path.open("rb") as f:
+            data = tomllib.load(f)
+        value = data.get("threads", {}).get("relative_time")
+        if isinstance(value, bool):
+            return value
+    except (OSError, tomllib.TOMLDecodeError):
+        logger.debug("Could not read thread relative_time config", exc_info=True)
+    return True
+
+
+def save_thread_relative_time(enabled: bool, config_path: Path | None = None) -> bool:
+    """Save the relative-time display preference for thread timestamps.
+
+    Args:
+        enabled: Whether to display relative timestamps.
+        config_path: Path to config file.
+
+    Returns:
+        True if save succeeded, False on I/O error.
+    """
+    if config_path is None:
+        config_path = DEFAULT_CONFIG_PATH
+    try:
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        if config_path.exists():
+            with config_path.open("rb") as f:
+                data = tomllib.load(f)
+        else:
+            data = {}
+        if "threads" not in data:
+            data["threads"] = {}
+        data["threads"]["relative_time"] = enabled
+        fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "wb") as f:
+                tomli_w.dump(data, f)
+            Path(tmp_path).replace(config_path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                Path(tmp_path).unlink()
+            raise
+    except (OSError, tomllib.TOMLDecodeError):
+        logger.exception("Could not save thread relative_time preference")
+        return False
+    return True
+
+
 def save_recent_model(model_spec: str, config_path: Path | None = None) -> bool:
     """Update the recently used model in config file.
 

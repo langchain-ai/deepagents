@@ -8,7 +8,7 @@ import pytest
 from rich.style import Style
 from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
-from textual.containers import Container, Vertical
+from textual.containers import Container, Horizontal, Vertical
 from textual.css.query import NoMatches
 from textual.screen import ModalScreen
 from textual.widgets import Checkbox, Input, Static
@@ -357,9 +357,10 @@ class TestThreadSelectorTabSort:
                 assert isinstance(screen, ThreadSelectorScreen)
                 assert screen._sort_by_updated is True
                 original_columns = dict(screen._columns)
-                header = screen.query_one("#thread-header", Static)
+                header = screen.query_one("#thread-header", Horizontal)
+                updated_cell = header.query_one(".thread-cell-updated_at", Static)
                 sort_switch = screen.query_one("#thread-sort-toggle", Checkbox)
-                assert "Updated (sort)" in str(header._Static__content)
+                assert "Updated (v)" in str(updated_cell._Static__content)
                 assert sort_switch.value is True
                 assert "Sort by Updated" in str(sort_switch.label)
 
@@ -367,7 +368,8 @@ class TestThreadSelectorTabSort:
                 await pilot.pause()
                 assert screen._sort_by_updated is False
                 assert screen._columns == original_columns
-                assert "Created (sort)" in str(header._Static__content)
+                created_cell = header.query_one(".thread-cell-created_at", Static)
+                assert "Created (v)" in str(created_cell._Static__content)
                 assert sort_switch.value is False
                 assert "Sort by Created" in str(sort_switch.label)
 
@@ -402,6 +404,13 @@ class TestThreadSelectorTabSort:
                 await pilot.press("tab")
                 await pilot.pause()
                 assert sort_switch.has_focus
+
+                relative_time_switch = screen.query_one(
+                    "#thread-relative-time", Checkbox
+                )
+                await pilot.press("tab")
+                await pilot.pause()
+                assert relative_time_switch.has_focus
 
                 await pilot.press("tab")
                 await pilot.pause()
@@ -972,14 +981,14 @@ class TestThreadSelectorColumnHeader:
     """Tests for the anchored column header."""
 
     def test_header_contains_default_column_names(self) -> None:
-        """Column header should contain visible column names based on defaults."""
-        with _patch_columns():
-            screen = ThreadSelectorScreen(current_thread=None)
-        header = screen._format_header()
-        assert "Created" in header
-        assert "Msgs" in header
-        assert "Updated (sort)" in header
-        assert "Prompt" in header
+        """Column header labels should contain visible column names."""
+        from deepagents_cli.widgets.thread_selector import _format_header_label
+
+        sort_key = "updated_at"
+        assert "Created" in _format_header_label("created_at", sort_key=sort_key)
+        assert "Msgs" in _format_header_label("messages", sort_key=sort_key)
+        assert "Updated (v)" in _format_header_label("updated_at", sort_key=sort_key)
+        assert "Prompt" in _format_header_label("initial_prompt", sort_key=sort_key)
 
     async def test_header_widget_is_mounted(self) -> None:
         """Column header widget should be present in the mounted screen."""
@@ -991,7 +1000,7 @@ class TestThreadSelectorColumnHeader:
 
                 screen = app.screen
                 assert isinstance(screen, ThreadSelectorScreen)
-                screen.query_one(".thread-list-header", Static)
+                screen.query_one(".thread-list-header", Horizontal)
 
     async def test_header_stays_outside_scroll(self) -> None:
         """Header should be outside VerticalScroll (anchored, not scrollable)."""
@@ -1004,7 +1013,7 @@ class TestThreadSelectorColumnHeader:
                 screen = app.screen
                 assert isinstance(screen, ThreadSelectorScreen)
 
-                header = screen.query_one(".thread-list-header", Static)
+                header = screen.query_one(".thread-list-header", Horizontal)
                 assert isinstance(header.parent, Vertical)
 
 
@@ -1524,7 +1533,7 @@ class TestThreadSelectorColumnConfig:
                 screen = app.screen
                 assert isinstance(screen, ThreadSelectorScreen)
 
-                assert "Prompt" in screen._format_header()
+                assert screen._columns["initial_prompt"] is True
 
                 prompt_switch = screen.query_one(
                     f"#{screen._switch_id('initial_prompt')}",
@@ -1534,7 +1543,6 @@ class TestThreadSelectorColumnConfig:
                 await pilot.pause()
 
                 assert screen._columns["initial_prompt"] is False
-                assert "Prompt" not in screen._format_header()
                 mock_save.assert_called()
                 assert mock_save.call_args.args[0]["initial_prompt"] is False
 

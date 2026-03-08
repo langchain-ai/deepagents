@@ -37,9 +37,9 @@ _COL_TID = 10
 _COL_AGENT = 14
 _COL_MSGS = 4
 _COL_BRANCH = 16
-_COL_TIMESTAMP = 16
+_COL_TIMESTAMP = None
 _MAX_SEARCH_TEXT_LEN = 200
-_COL_PROMPT = 48
+_COL_PROMPT = None
 _COLUMN_ORDER = (
     "thread_id",
     "agent_name",
@@ -76,9 +76,10 @@ _COLUMN_TOGGLE_LABELS = {
     "git_branch": "Git Branch",
     "initial_prompt": "Initial Prompt",
 }
-_RIGHT_ALIGNED_COLUMNS = {"messages"}
+_RIGHT_ALIGNED_COLUMNS: set[str] = set()
 _SWITCH_ID_PREFIX = "thread-column-"
 _SORT_SWITCH_ID = "thread-sort-toggle"
+_RELATIVE_TIME_SWITCH_ID = "thread-relative-time"
 
 
 def _active_sort_key(sort_by_updated: bool) -> str:
@@ -134,9 +135,19 @@ def _truncate_value(value: str, width: int | None) -> str:
     return display[: width - len(ellipsis)] + ellipsis
 
 
-def _format_column_value(thread: ThreadInfo, key: str) -> str:
-    """Return the display text for one thread column."""
-    from deepagents_cli.sessions import format_timestamp
+def _format_column_value(
+    thread: ThreadInfo, key: str, *, relative_time: bool = False
+) -> str:
+    """Return the display text for one thread column.
+
+    Args:
+        thread: Thread metadata for the row.
+        key: Column key to format.
+        relative_time: Use relative timestamps instead of absolute.
+    """
+    from deepagents_cli.sessions import format_relative_timestamp, format_timestamp
+
+    fmt = format_relative_timestamp if relative_time else format_timestamp
 
     value: str
     if key == "thread_id":
@@ -149,13 +160,13 @@ def _format_column_value(thread: ThreadInfo, key: str) -> str:
         raw_count = thread.get("message_count")
         value = str(raw_count) if raw_count is not None else "..."
     elif key == "created_at":
-        value = format_timestamp(thread.get("created_at"))
+        value = fmt(thread.get("created_at"))
     elif key == "updated_at":
-        value = format_timestamp(thread.get("updated_at"))
+        value = fmt(thread.get("updated_at"))
     elif key == "git_branch":
         value = thread.get("git_branch") or ""
     elif key == "initial_prompt":
-        value = thread.get("initial_prompt") or ""
+        value = _collapse_whitespace(thread.get("initial_prompt") or "")
     else:
         value = ""
 
@@ -166,11 +177,7 @@ def _format_header_label(key: str, *, sort_key: str) -> str:
     """Return the rendered header label for a column."""
     label = _COLUMN_LABELS[key]
     if key == sort_key:
-        active_label = f"{label} (sort)"
-        if (_COLUMN_WIDTHS[key] or 0) >= len(active_label):
-            label = active_label
-        else:
-            label = f"{label}*"
+        label = f"{label} (v)"
     return _truncate_value(label, _COLUMN_WIDTHS[key])
 
 
@@ -185,6 +192,7 @@ class ThreadOption(Horizontal):
         columns: dict[str, bool],
         selected: bool,
         current: bool,
+        relative_time: bool = False,
         classes: str = "",
     ) -> None:
         """Initialize a thread option row.
@@ -195,6 +203,7 @@ class ThreadOption(Horizontal):
             columns: Column visibility settings.
             selected: Whether the row is highlighted.
             current: Whether the row is the active thread.
+            relative_time: Use relative timestamps.
             classes: CSS classes for styling.
         """
         super().__init__(classes=classes)
@@ -204,6 +213,7 @@ class ThreadOption(Horizontal):
         self._columns = dict(columns)
         self._selected = selected
         self._current = current
+        self._relative_time = relative_time
 
     class Clicked(Message):
         """Message sent when a thread option is clicked."""
@@ -232,7 +242,9 @@ class ThreadOption(Horizontal):
         )
         for key in _visible_column_keys(self._columns):
             yield Static(
-                _format_column_value(self.thread, key),
+                _format_column_value(
+                    self.thread, key, relative_time=self._relative_time
+                ),
                 classes=f"thread-cell thread-cell-{key}",
                 expand=key == "initial_prompt",
                 markup=False,
@@ -436,6 +448,8 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         padding: 0 1;
         color: $text-muted;
         text-style: bold;
+        width: 100%;
+        overflow-x: hidden;
     }
 
     ThreadSelectorScreen .thread-list {
@@ -449,6 +463,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         height: 1;
         width: 100%;
         padding: 0 1;
+        overflow-x: hidden;
     }
 
     ThreadSelectorScreen .thread-option:hover {
@@ -488,12 +503,11 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
     ThreadSelectorScreen .thread-cell-messages {
         width: 4;
-        content-align: right middle;
     }
 
     ThreadSelectorScreen .thread-cell-created_at,
     ThreadSelectorScreen .thread-cell-updated_at {
-        width: 16;
+        width: auto;
     }
 
     ThreadSelectorScreen .thread-cell-git_branch {
@@ -502,6 +516,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
     ThreadSelectorScreen .thread-cell-initial_prompt {
         width: 1fr;
+        text-overflow: ellipsis;
     }
 
     ThreadSelectorScreen .thread-selector-help {
@@ -551,9 +566,13 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         self._confirming_delete = False
         self._render_lock = asyncio.Lock()
 
-        from deepagents_cli.model_config import load_thread_columns
+        from deepagents_cli.model_config import (
+            load_thread_columns,
+            load_thread_relative_time,
+        )
 
         self._columns = load_thread_columns()
+        self._relative_time = load_thread_relative_time()
 
         self._sync_selected_index()
 
@@ -604,19 +623,19 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             )
         return f"Select Thread (current: {self._current_thread})"
 
-    def _build_help_text(self) -> str:
+    @staticmethod
+    def _build_help_text() -> str:
         """Build the footer help text for the selector.
 
         Returns:
             Footer guidance for the active selector bindings.
         """
         glyphs = get_glyphs()
-        sort_label = "updated" if self._sort_by_updated else "created"
         return (
             f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate"
             f" {glyphs.bullet} Enter select"
-            f" {glyphs.bullet} Tab/Shift+Tab focus filters"
-            f" {glyphs.bullet} Sort toggle ({sort_label})"
+            f" {glyphs.bullet} Tab/Shift+Tab focus options"
+            f" {glyphs.bullet} Space toggle option"
             f" {glyphs.bullet} Ctrl+D delete"
             f" {glyphs.bullet} Esc cancel"
         )
@@ -645,12 +664,19 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
             with Horizontal(classes="thread-selector-body"):
                 with Vertical(classes="thread-table-pane"):
-                    yield Static(
-                        self._format_header(),
+                    with Horizontal(
                         classes="thread-list-header",
                         id="thread-header",
-                        markup=False,
-                    )
+                    ):
+                        yield Static("", classes="thread-cell thread-cell-cursor")
+                        sort_key = _active_sort_key(self._sort_by_updated)
+                        for key in _visible_column_keys(self._columns):
+                            yield Static(
+                                _format_header_label(key, sort_key=sort_key),
+                                classes=f"thread-cell thread-cell-{key}",
+                                expand=key == "initial_prompt",
+                                markup=False,
+                            )
 
                     with VerticalScroll(classes="thread-list"):
                         if self._has_initial_threads:
@@ -683,6 +709,13 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                         self._format_sort_toggle_label(),
                         self._sort_by_updated,
                         id=_SORT_SWITCH_ID,
+                        classes="thread-column-toggle",
+                        compact=True,
+                    )
+                    yield Checkbox(
+                        "Relative Timestamps",
+                        self._relative_time,
+                        id=_RELATIVE_TIME_SWITCH_ID,
                         classes="thread-column-toggle",
                         compact=True,
                     )
@@ -780,10 +813,23 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             if self._sort_by_updated == event.value:
                 return
             self._sort_by_updated = event.value
-            self._normalize_sort_column_visibility()
             self._apply_sort()
             self._sync_selected_index()
             self._update_help_widgets()
+            self._schedule_list_rebuild()
+            return
+
+        if event.checkbox.id == _RELATIVE_TIME_SWITCH_ID:
+            if self._relative_time == event.value:
+                return
+            self._relative_time = event.value
+
+            from deepagents_cli.model_config import save_thread_relative_time
+
+            self.run_worker(
+                asyncio.to_thread(save_thread_relative_time, event.value),
+                group="thread-selector-save",
+            )
             self._schedule_list_rebuild()
             return
 
@@ -794,7 +840,6 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             return
 
         self._columns[column_key] = event.value
-        self._normalize_sort_column_visibility()
         self._apply_sort()
         self._sync_selected_index()
         self._update_help_widgets()
@@ -807,15 +852,6 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             group="thread-selector-save",
         )
         self._schedule_list_rebuild()
-
-    def _normalize_sort_column_visibility(self) -> None:
-        """Move sort to the other timestamp column when the active one is hidden."""
-        if self._sort_by_updated:
-            if not self._columns.get("updated_at") and self._columns.get("created_at"):
-                self._sort_by_updated = False
-            return
-        if not self._columns.get("created_at") and self._columns.get("updated_at"):
-            self._sort_by_updated = True
 
     def _update_filtered_list(self) -> None:
         """Update filtered threads based on search text using fuzzy matching."""
@@ -1106,7 +1142,9 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                     cell = widget.query_one(f".thread-cell-{key}", Static)
                 except NoMatches:
                     continue
-                cell.update(_format_column_value(thread, key))
+                cell.update(
+                    _format_column_value(thread, key, relative_time=self._relative_time)
+                )
 
     def _resolve_thread_url(self) -> None:
         """Start exclusive background worker to resolve LangSmith thread URL."""
@@ -1226,6 +1264,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                 columns=self._columns,
                 selected=is_selected,
                 current=is_current,
+                relative_time=self._relative_time,
                 classes=classes,
             )
             widgets.append(widget)
@@ -1250,25 +1289,6 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         else:
             self._option_widgets[self._selected_index].scroll_visible(animate=False)
 
-    def _format_header(self) -> str:
-        """Build the column header label.
-
-        Returns:
-            Formatted header string with column names.
-        """
-        parts = ["  "]
-        sort_key = _active_sort_key(self._sort_by_updated)
-        for key in _visible_column_keys(self._columns):
-            label = _format_header_label(key, sort_key=sort_key)
-            width = _COLUMN_WIDTHS[key]
-            if width is None:
-                parts.append(label)
-            elif key in _RIGHT_ALIGNED_COLUMNS:
-                parts.append(f"{label:>{width}}  ")
-            else:
-                parts.append(f"{label:<{width}}  ")
-        return "".join(parts).rstrip()
-
     @staticmethod
     def _format_option_label(
         thread: ThreadInfo,
@@ -1276,6 +1296,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         selected: bool,
         current: bool,
         columns: dict[str, bool] | None = None,
+        relative_time: bool = False,
     ) -> str:
         """Build the display label for a thread option.
 
@@ -1284,6 +1305,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             selected: Whether this option is currently highlighted.
             current: Whether this is the active thread.
             columns: Column visibility settings.
+            relative_time: Use relative timestamps.
 
         Returns:
             Rich-markup label string.
@@ -1296,7 +1318,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
         parts = [cursor]
         for key in _visible_column_keys(cols):
-            value = _format_column_value(thread, key)
+            value = _format_column_value(thread, key, relative_time=relative_time)
             width = _COLUMN_WIDTHS[key]
             if width is None:
                 parts.append(value)
@@ -1312,11 +1334,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
     def _update_help_widgets(self) -> None:
         """Update visible header and help text after state changes."""
-        try:
-            header_widget = self.query_one("#thread-header", Static)
-            header_widget.update(self._format_header())
-        except NoMatches:
-            pass
+        self._schedule_header_rebuild()
 
         try:
             help_widget = self.query_one("#thread-help", Static)
@@ -1329,6 +1347,35 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             sort_checkbox.label = self._format_sort_toggle_label()
             if sort_checkbox.value != self._sort_by_updated:
                 sort_checkbox.value = self._sort_by_updated
+
+    def _schedule_header_rebuild(self) -> None:
+        """Queue a header rebuild to reflect column/sort changes."""
+        self.run_worker(
+            self._rebuild_header,
+            exclusive=True,
+            group="thread-selector-header",
+        )
+
+    async def _rebuild_header(self) -> None:
+        """Replace header cells to match current visible columns."""
+        try:
+            header = self.query_one("#thread-header", Horizontal)
+        except NoMatches:
+            return
+        sort_key = _active_sort_key(self._sort_by_updated)
+        with self.app.batch_update():
+            await header.remove_children()
+            cells: list[Static] = [Static("", classes="thread-cell thread-cell-cursor")]
+            cells.extend(
+                Static(
+                    _format_header_label(key, sort_key=sort_key),
+                    classes=f"thread-cell thread-cell-{key}",
+                    expand=key == "initial_prompt",
+                    markup=False,
+                )
+                for key in _visible_column_keys(self._columns)
+            )
+            await header.mount(*cells)
 
     def _apply_sort(self) -> None:
         """Sort filtered threads by the active sort key."""
@@ -1426,11 +1473,17 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         """Return the tab order for filter controls in the side panel."""
         filter_input = self.query_one("#thread-filter", Input)
         sort_switch = self.query_one(f"#{_SORT_SWITCH_ID}", Checkbox)
-        switches = [
+        relative_switch = self.query_one(f"#{_RELATIVE_TIME_SWITCH_ID}", Checkbox)
+        column_switches = [
             self.query_one(f"#{self._switch_id(key)}", Checkbox)
             for key in _COLUMN_ORDER
         ]
-        return [filter_input, sort_switch, *switches]
+        return [
+            filter_input,
+            sort_switch,
+            relative_switch,
+            *column_switches,
+        ]
 
     def action_focus_next_filter(self) -> None:
         """Move focus through the filter and column-toggle controls."""

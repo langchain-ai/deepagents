@@ -132,6 +132,49 @@ def format_timestamp(iso_timestamp: str | None) -> str:
         return ""
 
 
+def format_relative_timestamp(iso_timestamp: str | None) -> str:
+    """Format ISO timestamp as relative time (e.g., '5m ago', '2h ago').
+
+    Args:
+        iso_timestamp: ISO 8601 timestamp string, or `None`.
+
+    Returns:
+        Relative time string or empty string if invalid.
+    """
+    if not iso_timestamp:
+        return ""
+    try:
+        dt = datetime.fromisoformat(iso_timestamp).astimezone()
+    except (ValueError, TypeError):
+        logger.debug(
+            "Failed to parse timestamp %r; displaying as blank",
+            iso_timestamp,
+            exc_info=True,
+        )
+        return ""
+
+    delta = datetime.now(tz=dt.tzinfo) - dt
+    seconds = int(delta.total_seconds())
+    if seconds < 0:
+        return "just now"
+    if seconds < 60:  # noqa: PLR2004
+        return f"{seconds}s ago"
+    minutes = seconds // 60
+    if minutes < 60:  # noqa: PLR2004
+        return f"{minutes}m ago"
+    hours = minutes // 60
+    if hours < 24:  # noqa: PLR2004
+        return f"{hours}h ago"
+    days = hours // 24
+    if days < 30:  # noqa: PLR2004
+        return f"{days}d ago"
+    months = days // 30
+    if months < 12:  # noqa: PLR2004
+        return f"{months}mo ago"
+    years = days // 365
+    return f"{years}y ago"
+
+
 def get_db_path() -> Path:
     """Get path to global database.
 

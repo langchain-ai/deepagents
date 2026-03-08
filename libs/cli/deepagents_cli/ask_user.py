@@ -89,6 +89,13 @@ class AskUserResponse(TypedDict):
     """
 
     answers: list[str]
+    """User answers, one entry per asked question."""
+
+    status: NotRequired[Literal["answered", "cancelled", "error"]]
+    """Optional adapter outcome status for the resumed interrupt payload."""
+
+    error: NotRequired[str]
+    """Optional error detail when `status` is `'error'`."""
 
 
 class AskUserAnswered(TypedDict):
@@ -147,18 +154,36 @@ When using `ask_user`:
 
 
 def _validate_questions(questions: list[Question]) -> None:
-    """Validate that multiple-choice questions include non-empty choices.
+    """Validate ask_user question structure before interrupting.
 
     Raises:
-        ValueError: If a `multiple_choice` question has missing or empty `choices`.
+        ValueError: If the questions list or an individual question is invalid.
     """
+    if not questions:
+        msg = "ask_user requires at least one question"
+        raise ValueError(msg)
+
     for q in questions:
-        if q.get("type") == "multiple_choice" and not q.get("choices"):
+        question_text = q.get("question")
+        if not isinstance(question_text, str) or not question_text.strip():
+            msg = "ask_user questions must have non-empty 'question' text"
+            raise ValueError(msg)
+
+        question_type = q.get("type")
+        if question_type not in {"text", "multiple_choice"}:
+            msg = f"unsupported ask_user question type: {question_type!r}"
+            raise ValueError(msg)
+
+        if question_type == "multiple_choice" and not q.get("choices"):
             msg = (
                 f"multiple_choice question "
                 f"{q.get('question')!r} requires a "
                 f"non-empty 'choices' list"
             )
+            raise ValueError(msg)
+
+        if question_type == "text" and q.get("choices"):
+            msg = f"text question {q.get('question')!r} must not define 'choices'"
             raise ValueError(msg)
 
 
@@ -169,9 +194,14 @@ def _parse_answers(
 ) -> Command[Any]:
     """Parse an interrupt response into a `Command` with a `ToolMessage`.
 
-    Checks whether the response is a dict with an `'answers'` key, falling back
-    to empty answers on malformed input. Logs an error when the number of
-    answers does not match the number of questions.
+    Supports explicit status signaling from the adapter:
+
+    - `answered` (default): consume provided `answers`
+    - `cancelled`: synthesize `(cancelled)` answers
+    - `error`: synthesize `(error: ...)` answers
+
+    Malformed payloads are converted into explicit error answers instead of
+    silently defaulting to `(no answer)`.
 
     Args:
         response: Raw value returned by `interrupt()`.
@@ -181,23 +211,74 @@ def _parse_answers(
     Returns:
         `Command` containing a formatted `ToolMessage` with Q&A pairs.
     """
-    if not isinstance(response, dict) or "answers" not in response:
+    status: str = "answered"
+    error_text: str | None = None
+    answers: list[str]
+    if not isinstance(response, dict):
         logger.error(
             "ask_user received malformed resume payload "
-            "(expected dict with 'answers' key, got %s); "
-            "treating all answers as empty",
+            "(expected dict, got %s); returning explicit error answers",
             type(response).__name__,
         )
-        answers: list[str] = []
+        answers = []
+        status = "error"
+        error_text = "invalid ask_user response payload"
     else:
-        answers = cast("list[str]", cast("dict[str, Any]", response)["answers"])
+        response_dict = cast("dict[str, Any]", response)
+        response_status = response_dict.get("status")
+        if isinstance(response_status, str):
+            status = response_status
 
-    if len(answers) != len(questions):
-        logger.warning(
-            "ask_user answer count mismatch: expected %d, got %d",
-            len(questions),
-            len(answers),
-        )
+        if "answers" not in response_dict:
+            if status == "answered":
+                logger.error(
+                    "ask_user received resume payload without 'answers'; "
+                    "returning explicit error answers"
+                )
+                answers = []
+                status = "error"
+                error_text = "missing ask_user answers payload"
+            else:
+                answers = []
+        else:
+            raw_answers = response_dict["answers"]
+            if isinstance(raw_answers, list):
+                answers = [str(answer) for answer in raw_answers]
+            else:
+                logger.error(
+                    "ask_user received non-list 'answers' payload (%s); "
+                    "returning explicit error answers",
+                    type(raw_answers).__name__,
+                )
+                answers = []
+                status = "error"
+                error_text = "invalid ask_user answers payload"
+
+        if status == "error":
+            response_error = response_dict.get("error")
+            if isinstance(response_error, str) and response_error:
+                error_text = response_error
+        elif status == "cancelled":
+            answers = ["(cancelled)" for _ in questions]
+        elif status == "answered":
+            if len(answers) != len(questions):
+                logger.warning(
+                    "ask_user answer count mismatch: expected %d, got %d",
+                    len(questions),
+                    len(answers),
+                )
+        else:
+            logger.error(
+                "ask_user received unknown status %r; returning explicit error answers",
+                status,
+            )
+            answers = []
+            status = "error"
+            error_text = "invalid ask_user response status"
+
+    if status == "error":
+        detail = error_text or "ask_user interaction failed"
+        answers = [f"(error: {detail})" for _ in questions]
 
     formatted_answers = []
     for i, q in enumerate(questions):

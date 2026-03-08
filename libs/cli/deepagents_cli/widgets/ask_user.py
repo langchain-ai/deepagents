@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, ClassVar
+import logging
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from textual.binding import Binding, BindingType
 from textual.containers import Container, Vertical
@@ -28,6 +29,7 @@ from deepagents_cli.config import (
 )
 
 OTHER_CHOICE_LABEL = "Other (type your answer)"
+logger = logging.getLogger(__name__)
 
 
 class AskUserMenu(Container):
@@ -204,9 +206,9 @@ class _ChoiceOption(Static):
 
     def __init__(self, label: str, index: int, **kwargs: Any) -> None:
         super().__init__(label, classes="ask-user-choice", **kwargs)
-        self.choice_index = index
-        self.selected = False
-        self._label = label
+        self.choice_index: int = index
+        self.selected: bool = False
+        self._label: str = label
 
     def toggle(self) -> None:
         """Toggle the selected state."""
@@ -251,16 +253,19 @@ class _QuestionWidget(Vertical):
 
     def __init__(self, question: Question, index: int, **kwargs: Any) -> None:
         super().__init__(classes="ask-user-question", **kwargs)
-        self._question = question
-        self._index = index
-        self._q_type = question.get("type", "text")
+        question_type = question.get("type", "text")
+        self._question: Question = question
+        self._index: int = index
+        self._q_type: Literal["text", "multiple_choice"] = (
+            "multiple_choice" if question_type == "multiple_choice" else "text"
+        )
         self._choices: list[Choice] = question.get("choices", [])
         self._required: bool = question.get("required", True)
         self._choice_widgets: list[_ChoiceOption] = []
-        self._selected_choice = 0
+        self._selected_choice: int = 0
         self._text_input: Input | None = None
         self._other_input: Input | None = None
-        self._is_other_selected = False
+        self._is_other_selected: bool = False
 
     def compose(self) -> ComposeResult:
         q_text = self._question.get("question", "")
@@ -372,6 +377,10 @@ class _QuestionWidget(Vertical):
             if isinstance(node, AskUserMenu):
                 return node
             node = node.parent
+        logger.warning(
+            "Failed to find AskUserMenu ancestor for question index %d",
+            self._index,
+        )
         return None
 
     def _update_choice_selection(self) -> None:

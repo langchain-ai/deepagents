@@ -9,10 +9,10 @@ from textual.app import App, ComposeResult
 from textual.widgets import Input, Static
 
 from deepagents_cli.tool_display import format_tool_display
-from deepagents_cli.widgets.ask_user import AskUserMenu
+from deepagents_cli.widgets.ask_user import AskUserMenu, _QuestionWidget
 
 if TYPE_CHECKING:
-    from deepagents_cli.ask_user import Question
+    from deepagents_cli.ask_user import AskUserWidgetResult, Question
 
 
 class _AskUserTestApp(App[None]):
@@ -67,6 +67,16 @@ class TestAskUserToolDisplay:
 
 
 class TestAskUserMenu:
+    def test_find_menu_logs_when_hierarchy_is_missing(
+        self,
+        caplog,
+    ) -> None:
+        """`_find_menu` should warn when no AskUserMenu ancestor exists."""
+        question_widget = _QuestionWidget({"question": "Name?", "type": "text"}, 0)
+        with caplog.at_level("WARNING", logger="deepagents_cli.widgets.ask_user"):
+            assert question_widget._find_menu() is None
+        assert "Failed to find AskUserMenu ancestor" in caplog.text
+
     async def test_text_input_receives_focus_on_mount(self) -> None:
         """The text Input must have focus after mount so the user can type."""
         app = _AskUserTestApp([{"question": "What is your name?", "type": "text"}])
@@ -102,7 +112,7 @@ class TestAskUserMenu:
 
         async with app.run_test() as pilot:
             menu = app.query_one("#ask-user-menu", AskUserMenu)
-            future: asyncio.Future[dict[str, object]] = (
+            future: asyncio.Future[AskUserWidgetResult] = (
                 asyncio.get_running_loop().create_future()
             )
             menu.set_future(future)
@@ -123,7 +133,7 @@ class TestAskUserMenu:
 
         async with app.run_test() as pilot:
             menu = app.query_one("#ask-user-menu", AskUserMenu)
-            future: asyncio.Future[dict[str, object]] = (
+            future: asyncio.Future[AskUserWidgetResult] = (
                 asyncio.get_running_loop().create_future()
             )
             menu.set_future(future)
@@ -150,7 +160,7 @@ class TestAskUserMenu:
 
         async with app.run_test() as pilot:
             menu = app.query_one("#ask-user-menu", AskUserMenu)
-            future: asyncio.Future[dict[str, object]] = (
+            future: asyncio.Future[AskUserWidgetResult] = (
                 asyncio.get_running_loop().create_future()
             )
             menu.set_future(future)
@@ -175,7 +185,7 @@ class TestAskUserMenu:
 
         async with app.run_test() as pilot:
             menu = app.query_one("#ask-user-menu", AskUserMenu)
-            future: asyncio.Future[dict[str, object]] = (
+            future: asyncio.Future[AskUserWidgetResult] = (
                 asyncio.get_running_loop().create_future()
             )
             menu.set_future(future)
@@ -216,7 +226,7 @@ class TestAskUserMenu:
 
         async with app.run_test() as pilot:
             menu = app.query_one("#ask-user-menu", AskUserMenu)
-            future: asyncio.Future[dict[str, object]] = (
+            future: asyncio.Future[AskUserWidgetResult] = (
                 asyncio.get_running_loop().create_future()
             )
             menu.set_future(future)
@@ -446,7 +456,7 @@ class TestAskUserMenu:
 
         async with app.run_test() as pilot:
             menu = app.query_one("#ask-user-menu", AskUserMenu)
-            future: asyncio.Future[dict[str, object]] = (
+            future: asyncio.Future[AskUserWidgetResult] = (
                 asyncio.get_running_loop().create_future()
             )
             menu.set_future(future)
@@ -465,7 +475,7 @@ class TestAskUserMenu:
 
         async with app.run_test() as pilot:
             menu = app.query_one("#ask-user-menu", AskUserMenu)
-            future: asyncio.Future[dict[str, object]] = (
+            future: asyncio.Future[AskUserWidgetResult] = (
                 asyncio.get_running_loop().create_future()
             )
             menu.set_future(future)
@@ -544,3 +554,48 @@ class TestAskUserMenu:
             await pilot.pause()
             assert menu._current_question == 0
             assert other_input.has_focus
+
+    async def test_cancel_after_submit_does_not_override_answer(self) -> None:
+        """Cancel after submit should be ignored by the `_submitted` guard."""
+        app = _AskUserTestApp([{"question": "Name?", "type": "text"}])
+
+        async with app.run_test() as pilot:
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            future: asyncio.Future[AskUserWidgetResult] = (
+                asyncio.get_running_loop().create_future()
+            )
+            menu.set_future(future)
+
+            await pilot.pause()
+            text_input = menu.query_one(".ask-user-text-input", Input)
+            text_input.value = "Alice"
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+
+            menu.action_cancel()
+            await pilot.pause()
+
+            assert future.done()
+            assert future.result() == {"type": "answered", "answers": ["Alice"]}
+
+    async def test_submit_after_cancel_does_not_override_cancel(self) -> None:
+        """Submit after cancel should be ignored by the `_submitted` guard."""
+        app = _AskUserTestApp([{"question": "Name?", "type": "text"}])
+
+        async with app.run_test() as pilot:
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            future: asyncio.Future[AskUserWidgetResult] = (
+                asyncio.get_running_loop().create_future()
+            )
+            menu.set_future(future)
+
+            await pilot.pause()
+            menu.action_cancel()
+            await pilot.pause()
+
+            menu._submit()
+            await pilot.pause()
+
+            assert future.done()
+            assert future.result() == {"type": "cancelled"}

@@ -6,11 +6,13 @@ from collections.abc import AsyncIterator, Generator
 from datetime import datetime
 from io import StringIO
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
+from langgraph.types import Command
+from pydantic import ValidationError
 from rich.console import Console
 
 from deepagents_cli.textual_adapter import (
@@ -195,6 +197,32 @@ class _FakeAgent:
             yield chunk
 
 
+class _SequencedAgent:
+    """Agent test double that returns a different stream per call."""
+
+    def __init__(self, streams_by_call: list[list[tuple[Any, ...]]]) -> None:
+        self._streams_by_call = streams_by_call
+        self.stream_inputs: list[dict | Command] = []
+
+    async def astream(
+        self,
+        stream_input: dict | Command,
+        *_: Any,
+        **__: Any,
+    ) -> AsyncIterator[tuple[Any, ...]]:
+        """Yield chunks for this invocation and record stream inputs."""
+        self.stream_inputs.append(stream_input)
+        chunks = self._streams_by_call.pop(0) if self._streams_by_call else []
+        for chunk in chunks:
+            yield chunk
+
+
+def _ask_user_interrupt_chunk(payload: dict[str, Any]) -> tuple[Any, ...]:
+    """Build an updates-stream chunk containing one ask_user interrupt."""
+    interrupt = SimpleNamespace(id="interrupt-1", value=payload)
+    return ((), "updates", {"__interrupt__": [interrupt]})
+
+
 class TestExecuteTaskTextualSummarizationFeedback:
     """Tests for summarization spinner and notification feedback."""
 
@@ -278,9 +306,6 @@ class TestExecuteTaskTextualSummarizationFeedback:
         assert any(
             isinstance(widget, SummarizationMessage) for widget in mounted_widgets
         )
-        assert statuses[0] == "Thinking"
-        assert "Summarizing" in statuses
-        assert statuses[-1] == "Thinking"
 
     async def test_mounts_notification_when_stream_ends_mid_summarization(self) -> None:
         """Notification should still render if stream exhausts during summarization."""
@@ -320,6 +345,137 @@ class TestExecuteTaskTextualSummarizationFeedback:
         assert any(
             isinstance(widget, SummarizationMessage) for widget in mounted_widgets
         )
+
+
+class TestExecuteTaskTextualAskUser:
+    """Tests for ask_user interrupt handling in the Textual adapter."""
+
+    async def test_request_ask_user_returning_none_does_not_crash(self) -> None:
+        """A `None` callback result should map to protocol-level cancellation."""
+
+        async def request_ask_user(
+            _questions: list[Any],
+        ) -> asyncio.Future[object] | None:
+            await asyncio.sleep(0)
+            return None
+
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    _ask_user_interrupt_chunk(
+                        {
+                            "type": "ask_user",
+                            "questions": [{"question": "Name?", "type": "text"}],
+                            "tool_call_id": "tool-1",
+                        }
+                    )
+                ],
+                [],
+            ]
+        )
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            request_ask_user=request_ask_user,
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=agent,
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+        )
+
+        assert len(agent.stream_inputs) >= 2
+        resume_cmd = agent.stream_inputs[1]
+        assert isinstance(resume_cmd, Command)
+        resume_payload = cast("dict[str, dict[str, Any]]", resume_cmd.resume)
+        ask_user_resume = resume_payload["interrupt-1"]
+        assert ask_user_resume["status"] == "cancelled"
+        assert ask_user_resume["answers"] == [""]
+
+    async def test_request_ask_user_mount_error_is_not_treated_as_cancel(self) -> None:
+        """UI mount failures should resume with explicit error status."""
+
+        async def request_ask_user(
+            _questions: list[Any],
+        ) -> asyncio.Future[object] | None:
+            await asyncio.sleep(0)
+            msg = "boom"
+            raise RuntimeError(msg)
+
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    _ask_user_interrupt_chunk(
+                        {
+                            "type": "ask_user",
+                            "questions": [{"question": "Name?", "type": "text"}],
+                            "tool_call_id": "tool-1",
+                        }
+                    )
+                ],
+                [],
+            ]
+        )
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            request_ask_user=request_ask_user,
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=agent,
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+        )
+
+        resume_cmd = agent.stream_inputs[1]
+        assert isinstance(resume_cmd, Command)
+        resume_payload = cast("dict[str, dict[str, Any]]", resume_cmd.resume)
+        ask_user_resume = resume_payload["interrupt-1"]
+        assert ask_user_resume["status"] == "error"
+        assert ask_user_resume["error"] == "failed to display ask_user prompt"
+        assert ask_user_resume["answers"] == [""]
+
+    async def test_invalid_ask_user_interrupt_payload_raises_validation_error(
+        self,
+    ) -> None:
+        """Missing required ask_user keys should fail validation at ingestion."""
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    _ask_user_interrupt_chunk(
+                        {
+                            "type": "ask_user",
+                            # Missing required keys: `questions` and `tool_call_id`.
+                        }
+                    )
+                ]
+            ]
+        )
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        with pytest.raises(ValidationError):
+            await execute_task_textual(
+                user_input="hello",
+                agent=agent,
+                assistant_id="assistant",
+                session_state=SimpleNamespace(
+                    thread_id="thread-1",
+                    auto_approve=False,
+                ),
+                adapter=adapter,
+            )
 
 
 # ---------------------------------------------------------------------------

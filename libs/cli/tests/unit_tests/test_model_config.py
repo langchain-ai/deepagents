@@ -160,6 +160,47 @@ updated_at = false
         }
 
 
+class TestThreadRelativeTimePersistence:
+    """Tests for thread relative-time preference persistence."""
+
+    def test_save_and_load_round_trip(self, tmp_path: Path) -> None:
+        """Saved relative-time preference should load back on the next session."""
+        from deepagents_cli.model_config import (
+            load_thread_relative_time,
+            save_thread_relative_time,
+        )
+
+        config_path = tmp_path / "config.toml"
+        assert save_thread_relative_time(False, config_path) is True
+        assert load_thread_relative_time(config_path) is False
+
+        assert save_thread_relative_time(True, config_path) is True
+        assert load_thread_relative_time(config_path) is True
+
+    def test_default_is_true(self, tmp_path: Path) -> None:
+        """When no config file exists, relative time defaults to True."""
+        from deepagents_cli.model_config import load_thread_relative_time
+
+        config_path = tmp_path / "config.toml"
+        assert load_thread_relative_time(config_path) is True
+
+    def test_preserves_other_config_sections(self, tmp_path: Path) -> None:
+        """Saving relative-time should not clobber other config sections."""
+        from deepagents_cli.model_config import save_thread_relative_time
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[models]\ndefault = "anthropic:claude-sonnet-4-5"\n')
+
+        save_thread_relative_time(False, config_path)
+
+        import tomllib
+
+        with config_path.open("rb") as f:
+            data = tomllib.load(f)
+        assert data["models"]["default"] == "anthropic:claude-sonnet-4-5"
+        assert data["threads"]["relative_time"] is False
+
+
 class TestProviderApiKeyEnv:
     """Tests for PROVIDER_API_KEY_ENV constant."""
 

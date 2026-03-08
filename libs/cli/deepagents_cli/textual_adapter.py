@@ -246,7 +246,7 @@ def _get_git_branch() -> str | None:
             _git_branch_cache[cwd] = branch
             return branch
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-        pass
+        logger.debug("Could not determine git branch", exc_info=True)
     _git_branch_cache[cwd] = None
     return None
 

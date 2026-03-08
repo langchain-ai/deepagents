@@ -1688,7 +1688,7 @@ class DeepAgentsApp(App):
                 from deepagents_cli.model_config import clear_caches
 
                 clear_caches()
-            except Exception:
+            except (OSError, ValueError):
                 logger.exception("Failed to reload configuration")
                 await self._mount_message(
                     AppMessage(

@@ -606,7 +606,7 @@ class Settings:
         new_project = refreshed["deepagents_langchain_project"]
         if new_project:
             os.environ["LANGSMITH_PROJECT"] = new_project
-        elif _deepagents_project:
+        elif previous["deepagents_langchain_project"]:
             # Override was previously active but new value is unset; restore.
             if _original_langsmith_project:
                 os.environ["LANGSMITH_PROJECT"] = _original_langsmith_project

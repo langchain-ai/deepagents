@@ -80,6 +80,7 @@ _COLUMN_TOGGLE_LABELS = {
     "git_branch": "Git Branch",
     "initial_prompt": "Initial Prompt",
 }
+# Reserved for future right-aligned columns (e.g., message counts).
 _RIGHT_ALIGNED_COLUMNS: set[str] = set()
 _SWITCH_ID_PREFIX = "thread-column-"
 _SORT_SWITCH_ID = "thread-sort-toggle"
@@ -166,6 +167,9 @@ def _format_column_value(
         thread: Thread metadata for the row.
         key: Column key to format.
         relative_time: Use relative timestamps instead of absolute.
+
+    Returns:
+        Formatted display text for the column cell.
     """
     from deepagents_cli.sessions import format_relative_timestamp, format_timestamp
 
@@ -887,7 +891,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         )
 
     def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
-        """Persist column toggle changes and refresh the table.
+        """Route sort, relative-time, and column-visibility checkbox changes.
 
         Args:
             event: The checkbox change event.
@@ -993,6 +997,10 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         across the header and all visible rows. Textual's `width: auto`
         computes per-widget widths, so the screen computes those shared widths
         from the visible data instead.
+
+        Returns:
+            Dict mapping column keys to their effective pixel widths, with
+                `None` for flex columns.
         """
         widths = dict(_COLUMN_WIDTHS)
 
@@ -1422,7 +1430,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             help_widget = self.query_one("#thread-help", Static)
             help_widget.update(self._build_help_text())
         except NoMatches:
-            pass
+            logger.debug("Help widget #thread-help not found during update")
 
         with contextlib.suppress(NoMatches):
             sort_checkbox = self.query_one(f"#{_SORT_SWITCH_ID}", Checkbox)
@@ -1644,6 +1652,14 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             await delete_thread(thread_id)
         except (OSError, sqlite3.Error):
             logger.warning("Failed to delete thread %s", thread_id, exc_info=True)
+            self.app.notify(
+                f"Failed to delete thread {thread_id[:8]}",
+                severity="error",
+                timeout=3,
+            )
+            with contextlib.suppress(NoMatches):
+                self.query_one("#thread-filter", Input).focus()
+            return
 
         self._threads = [
             thread for thread in self._threads if thread["thread_id"] != thread_id

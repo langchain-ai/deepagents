@@ -3,7 +3,7 @@
 import asyncio
 import json
 import sqlite3
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, patch
@@ -239,6 +239,75 @@ class TestFormatTimestamp:
         """Returns empty for invalid timestamp."""
         result = sessions.format_timestamp("not a timestamp")
         assert result == ""
+
+
+class TestFormatRelativeTimestamp:
+    """Tests for format_relative_timestamp helper."""
+
+    def test_none_returns_empty(self) -> None:
+        """Returns empty string for None input."""
+        assert sessions.format_relative_timestamp(None) == ""
+
+    def test_empty_returns_empty(self) -> None:
+        """Returns empty string for empty string input."""
+        assert sessions.format_relative_timestamp("") == ""
+
+    def test_invalid_returns_empty(self) -> None:
+        """Returns empty string for invalid timestamp."""
+        assert sessions.format_relative_timestamp("not a timestamp") == ""
+
+    def test_seconds_ago(self) -> None:
+        """Recent timestamps show seconds."""
+        ts = (datetime.now(tz=UTC) - timedelta(seconds=30)).isoformat()
+        result = sessions.format_relative_timestamp(ts)
+        assert result.endswith("s ago")
+
+    def test_minutes_ago(self) -> None:
+        """Timestamps within the hour show minutes."""
+        ts = (datetime.now(tz=UTC) - timedelta(minutes=5)).isoformat()
+        result = sessions.format_relative_timestamp(ts)
+        assert result.endswith("m ago")
+
+    def test_hours_ago(self) -> None:
+        """Timestamps within the day show hours."""
+        ts = (datetime.now(tz=UTC) - timedelta(hours=3)).isoformat()
+        result = sessions.format_relative_timestamp(ts)
+        assert result.endswith("h ago")
+
+    def test_days_ago(self) -> None:
+        """Timestamps within the month show days."""
+        ts = (datetime.now(tz=UTC) - timedelta(days=10)).isoformat()
+        result = sessions.format_relative_timestamp(ts)
+        assert result.endswith("d ago")
+
+    def test_months_ago(self) -> None:
+        """Timestamps within the year show months."""
+        ts = (datetime.now(tz=UTC) - timedelta(days=90)).isoformat()
+        result = sessions.format_relative_timestamp(ts)
+        assert result.endswith("mo ago")
+
+    def test_years_ago(self) -> None:
+        """Timestamps over a year show years."""
+        ts = (datetime.now(tz=UTC) - timedelta(days=400)).isoformat()
+        result = sessions.format_relative_timestamp(ts)
+        assert result.endswith("y ago")
+
+    def test_future_timestamp_returns_just_now(self) -> None:
+        """Future timestamps return 'just now'."""
+        ts = (datetime.now(tz=UTC) + timedelta(minutes=5)).isoformat()
+        assert sessions.format_relative_timestamp(ts) == "just now"
+
+    def test_boundary_60_seconds(self) -> None:
+        """At exactly 60 seconds, should show 1m ago."""
+        ts = (datetime.now(tz=UTC) - timedelta(seconds=60)).isoformat()
+        result = sessions.format_relative_timestamp(ts)
+        assert result == "1m ago"
+
+    def test_boundary_59_seconds(self) -> None:
+        """At 59 seconds, should still show seconds."""
+        ts = (datetime.now(tz=UTC) - timedelta(seconds=59)).isoformat()
+        result = sessions.format_relative_timestamp(ts)
+        assert result.endswith("s ago")
 
 
 class TestTextualSessionState:

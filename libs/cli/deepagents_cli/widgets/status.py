@@ -74,7 +74,7 @@ class ModelLabel(Widget):
 
 
 class StatusBar(Horizontal):
-    """Status bar showing mode, auto-approve status, and working directory."""
+    """Status bar showing mode, auto-approve, cwd, git branch, tokens, and model."""
 
     DEFAULT_CSS = """
     StatusBar {
@@ -186,7 +186,8 @@ class StatusBar(Horizontal):
         """Compose the status bar layout.
 
         Yields:
-            Widgets for mode, auto-approve, message, tokens, and model display.
+            Widgets for mode, auto-approve, message, cwd, branch, tokens, and
+                model display.
         """
         yield Static("", classes="status-mode normal", id="mode-indicator")
         yield Static(

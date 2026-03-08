@@ -246,7 +246,7 @@ async def list_threads(
                        MAX(json_extract(metadata, '$.updated_at')) as updated_at,
                        MAX(checkpoint_id) as latest_checkpoint_id,
                        MIN(json_extract(metadata, '$.updated_at')) as created_at,
-                       json_extract(metadata, '$.git_branch') as git_branch
+                       MAX(json_extract(metadata, '$.git_branch')) as git_branch
                 FROM checkpoints
                 WHERE json_extract(metadata, '$.agent_name') = ?
                 GROUP BY thread_id
@@ -261,7 +261,7 @@ async def list_threads(
                        MAX(json_extract(metadata, '$.updated_at')) as updated_at,
                        MAX(checkpoint_id) as latest_checkpoint_id,
                        MIN(json_extract(metadata, '$.updated_at')) as created_at,
-                       json_extract(metadata, '$.git_branch') as git_branch
+                       MAX(json_extract(metadata, '$.git_branch')) as git_branch
                 FROM checkpoints
                 GROUP BY thread_id
                 ORDER BY updated_at DESC
@@ -576,7 +576,7 @@ async def _extract_initial_prompt(
     thread_id: str,
     serde: JsonPlusSerializer,
 ) -> str | None:
-    """Extract the first human message from the earliest checkpoint.
+    """Extract the first human message from the latest checkpoint.
 
     Args:
         conn: Database connection.
@@ -673,7 +673,7 @@ async def _load_latest_checkpoint_summary(
         type_str, checkpoint_blob = row
         try:
             data = serde.loads_typed((type_str, checkpoint_blob))
-        except (ValueError, TypeError, KeyError):
+        except (ValueError, TypeError, KeyError, AttributeError):
             logger.warning(
                 "Failed to deserialize checkpoint for thread %s; "
                 "message count and initial prompt may be incomplete",

@@ -1690,6 +1690,113 @@ class TestThreadSelectorDelete:
                 selected_thread = screen._filtered_threads[screen._selected_index]
                 assert selected_thread["thread_id"] == "ghi11111"
 
+    async def test_delete_last_remaining_thread(self) -> None:
+        """Deleting the only thread should leave an empty list without errors."""
+        single_thread: list[ThreadInfo] = [
+            {
+                "thread_id": "only-one",
+                "agent_name": "agent",
+                "updated_at": "2025-01-15T10:30:00",
+            }
+        ]
+        with (
+            _patch_list_threads(single_thread),
+            patch(
+                "deepagents_cli.sessions.delete_thread",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+        ):
+            app = ThreadSelectorTestApp(current_thread=None)
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                assert len(screen._filtered_threads) == 1
+
+                await pilot.press("ctrl+d")
+                await pilot.pause()
+                await pilot.pause()
+                assert isinstance(app.screen, DeleteThreadConfirmScreen)
+
+                await pilot.press("enter")
+                await pilot.pause()
+                await pilot.pause()
+
+                assert app.screen is screen
+                assert screen._filtered_threads == []
+                assert screen._selected_index == 0
+
+    async def test_delete_last_item_in_list_moves_selection_backward(self) -> None:
+        """Deleting the bottom thread should move selection to the previous one."""
+        with (
+            _patch_list_threads(),
+            patch(
+                "deepagents_cli.sessions.delete_thread",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+        ):
+            app = ThreadSelectorTestApp(current_thread=None)
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                last_index = len(screen._filtered_threads) - 1
+
+                for _ in range(last_index):
+                    await pilot.press("down")
+                    await pilot.pause()
+                assert screen._selected_index == last_index
+
+                await pilot.press("ctrl+d")
+                await pilot.pause()
+                await pilot.pause()
+                assert isinstance(app.screen, DeleteThreadConfirmScreen)
+
+                await pilot.press("enter")
+                await pilot.pause()
+                await pilot.pause()
+
+                assert app.screen is screen
+                assert screen._selected_index < last_index
+                assert screen._selected_index == len(screen._filtered_threads) - 1
+
+    async def test_delete_failure_keeps_thread_in_list(self) -> None:
+        """DB failure during delete should keep the thread visible."""
+        with (
+            _patch_list_threads(),
+            patch(
+                "deepagents_cli.sessions.delete_thread",
+                new_callable=AsyncMock,
+                side_effect=OSError("disk full"),
+            ),
+        ):
+            app = ThreadSelectorTestApp(current_thread=None)
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                original_count = len(screen._filtered_threads)
+
+                await pilot.press("ctrl+d")
+                await pilot.pause()
+                await pilot.pause()
+                assert isinstance(app.screen, DeleteThreadConfirmScreen)
+
+                await pilot.press("enter")
+                await pilot.pause()
+                await pilot.pause()
+
+                assert app.screen is screen
+                assert len(screen._filtered_threads) == original_count
+
 
 class TestThreadSelectorColumnConfig:
     """Tests for column visibility configuration."""
@@ -2491,3 +2598,39 @@ class TestConvertMessagesToData:
         """Empty input should return empty output."""
         result = DeepAgentsApp._convert_messages_to_data([])
         assert result == []
+
+
+class TestColumnKeyConsistency:
+    """Verify all column dicts stay in sync."""
+
+    def test_all_column_dicts_share_same_keys(self) -> None:
+        """All parallel column dicts must have the same key set."""
+        from deepagents_cli.model_config import THREAD_COLUMN_DEFAULTS
+        from deepagents_cli.widgets.thread_selector import (
+            _COLUMN_LABELS,
+            _COLUMN_ORDER,
+            _COLUMN_TOGGLE_LABELS,
+            _COLUMN_WIDTHS,
+        )
+
+        order_keys = set(_COLUMN_ORDER)
+        assert order_keys == set(_COLUMN_WIDTHS), (
+            f"_COLUMN_WIDTHS keys differ: "
+            f"missing={order_keys - set(_COLUMN_WIDTHS)}, "
+            f"extra={set(_COLUMN_WIDTHS) - order_keys}"
+        )
+        assert order_keys == set(_COLUMN_LABELS), (
+            f"_COLUMN_LABELS keys differ: "
+            f"missing={order_keys - set(_COLUMN_LABELS)}, "
+            f"extra={set(_COLUMN_LABELS) - order_keys}"
+        )
+        assert order_keys == set(_COLUMN_TOGGLE_LABELS), (
+            f"_COLUMN_TOGGLE_LABELS keys differ: "
+            f"missing={order_keys - set(_COLUMN_TOGGLE_LABELS)}, "
+            f"extra={set(_COLUMN_TOGGLE_LABELS) - order_keys}"
+        )
+        assert order_keys == set(THREAD_COLUMN_DEFAULTS), (
+            f"THREAD_COLUMN_DEFAULTS keys differ: "
+            f"missing={order_keys - set(THREAD_COLUMN_DEFAULTS)}, "
+            f"extra={set(THREAD_COLUMN_DEFAULTS) - order_keys}"
+        )

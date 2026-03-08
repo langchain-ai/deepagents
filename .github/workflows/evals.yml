@@ -73,12 +73,12 @@ on:
           - "baseten:moonshotai/Kimi-K2.5"
           - "baseten:deepseek-ai/DeepSeek-V3.2"
           - "baseten:Qwen/Qwen3-Coder-480B-A35B-Instruct"
-          - "fireworks:accounts/fireworks/models/qwen3-235b-a22b-instruct-2507"
-          - "fireworks:accounts/fireworks/models/deepseek-v3-0324"
-          - "fireworks:accounts/fireworks/models/minimax-m2p1"
-          - "fireworks:accounts/fireworks/models/kimi-k2p5"
-          - "fireworks:accounts/fireworks/models/glm-5"
-          - "fireworks:accounts/fireworks/models/minimax-m2p5"
+          - "fireworks:fireworks/qwen3-vl-235b-a22b-thinking"
+          - "fireworks:fireworks/deepseek-v3-0324"
+          - "fireworks:fireworks/minimax-m2p1"
+          - "fireworks:fireworks/kimi-k2p5"
+          - "fireworks:fireworks/glm-5"
+          - "fireworks:fireworks/minimax-m2p5"
       models_override:
         description: "Override: comma-separated models (e.g. 'openai:gpt-4.1,openai:o3'). Takes priority over dropdown when non-empty."
         required: false

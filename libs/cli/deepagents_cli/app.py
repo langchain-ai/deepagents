@@ -9,6 +9,7 @@ import os
 import shlex
 import signal
 import sys
+import time
 import uuid
 import webbrowser
 from collections import deque
@@ -34,6 +35,7 @@ from deepagents_cli.config import (
     create_model,
     detect_provider,
     is_shell_command_allowed,
+    newline_shortcut,
     settings,
 )
 from deepagents_cli.hooks import dispatch_hook
@@ -45,6 +47,7 @@ from deepagents_cli.textual_adapter import (
     format_token_count,
 )
 from deepagents_cli.widgets.approval import ApprovalMenu
+from deepagents_cli.widgets.ask_user import AskUserMenu
 from deepagents_cli.widgets.chat_input import ChatInput
 from deepagents_cli.widgets.loading import LoadingWidget
 from deepagents_cli.widgets.message_store import (
@@ -67,6 +70,7 @@ from deepagents_cli.widgets.thread_selector import ThreadSelectorScreen
 from deepagents_cli.widgets.welcome import WelcomeBanner
 
 logger = logging.getLogger(__name__)
+_monotonic = time.monotonic
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -85,6 +89,7 @@ if TYPE_CHECKING:
     from textual.widgets import Static
     from textual.worker import Worker
 
+    from deepagents_cli.ask_user import AskUserWidgetResult, Question
     from deepagents_cli.mcp_tools import MCPServerInfo
 
 # iTerm2 Cursor Guide Workaround
@@ -531,6 +536,7 @@ class DeepAgentsApp(App):
         assistant_id: str | None = None,
         backend: CompositeBackend | None = None,
         auto_approve: bool = False,
+        enable_ask_user: bool = False,
         cwd: str | Path | None = None,
         thread_id: str | None = None,
         initial_prompt: str | None = None,
@@ -549,6 +555,8 @@ class DeepAgentsApp(App):
             assistant_id: Agent identifier for memory storage
             backend: Backend for file operations
             auto_approve: Whether to start with auto-approve enabled
+            enable_ask_user: Whether `ask_user` should stay enabled when
+                recreating agents (for example during model hot-swap)
             cwd: Current working directory to display
             thread_id: Optional thread ID for session persistence
             initial_prompt: Optional prompt to auto-submit when session starts
@@ -566,6 +574,7 @@ class DeepAgentsApp(App):
         self._assistant_id = assistant_id
         self._backend = backend
         self._auto_approve = auto_approve
+        self._enable_ask_user = enable_ask_user
         self._cwd = str(cwd) if cwd else str(Path.cwd())
         # Avoid collision with App._thread_id
         self._lc_thread_id = thread_id
@@ -584,6 +593,7 @@ class DeepAgentsApp(App):
         self._session_state: TextualSessionState | None = None
         self._ui_adapter: TextualUIAdapter | None = None
         self._pending_approval_widget: ApprovalMenu | None = None
+        self._pending_ask_user_widget: AskUserMenu | None = None
         # Agent task tracking for interruption
         self._agent_worker: Worker[None] | None = None
         self._agent_running = False
@@ -668,6 +678,7 @@ class DeepAgentsApp(App):
                 set_spinner=self._set_spinner,
                 set_active_message=self._set_active_message,
                 sync_message_content=self._sync_message_content,
+                request_ask_user=self._request_ask_user,
             )
             self._ui_adapter.set_token_tracker(self._token_tracker)
 
@@ -1075,6 +1086,111 @@ class DeepAgentsApp(App):
         if self._session_state:
             self._session_state.auto_approve = True
 
+    async def _remove_ask_user_widget(  # noqa: PLR6301  # Shared helper used by ask_user event handlers
+        self,
+        widget: AskUserMenu,
+        *,
+        context: str,
+    ) -> None:
+        """Remove an ask_user widget without surfacing cleanup races.
+
+        Args:
+            widget: Ask-user widget instance to remove.
+            context: Short context string for diagnostics.
+        """
+        try:
+            await widget.remove()
+        except Exception:
+            logger.debug(
+                "Failed to remove ask-user widget during %s",
+                context,
+                exc_info=True,
+            )
+
+    async def _request_ask_user(
+        self,
+        questions: list[Question],
+    ) -> asyncio.Future[AskUserWidgetResult]:
+        """Display the ask_user widget and return a Future with user response.
+
+        Args:
+            questions: List of question dicts, each with `question`, `type`,
+                and optional `choices` and `required` keys.
+
+        Returns:
+            A Future that resolves to a dict with `'type'` (`'answered'` or
+                `'cancelled'`) and, when answered, an `'answers'` list.
+        """
+        loop = asyncio.get_running_loop()
+        result_future: asyncio.Future[AskUserWidgetResult] = loop.create_future()
+
+        if self._pending_ask_user_widget is not None:
+            deadline = _monotonic() + 30
+            while self._pending_ask_user_widget is not None:
+                if _monotonic() > deadline:
+                    logger.error(
+                        "Timed out waiting for previous ask-user widget to "
+                        "clear. Forcefully cleaning up."
+                    )
+                    old_widget = self._pending_ask_user_widget
+                    if old_widget is not None:
+                        old_widget.action_cancel()
+                        self._pending_ask_user_widget = None
+                        await self._remove_ask_user_widget(
+                            old_widget,
+                            context="ask-user timeout cleanup",
+                        )
+                    break
+                await asyncio.sleep(0.1)
+
+        unique_id = f"ask-user-menu-{uuid.uuid4().hex[:8]}"
+        menu = AskUserMenu(questions, id=unique_id)
+        menu.set_future(result_future)
+
+        self._pending_ask_user_widget = menu
+
+        try:
+            messages = self.query_one("#messages", Container)
+            await self._mount_before_queued(messages, menu)
+            self.call_after_refresh(menu.scroll_visible)
+            self.call_after_refresh(menu.focus_active)
+        except Exception as e:
+            logger.exception(
+                "Failed to mount ask-user menu (id=%s)",
+                unique_id,
+            )
+            self._pending_ask_user_widget = None
+            if not result_future.done():
+                result_future.set_exception(e)
+
+        return result_future
+
+    async def on_ask_user_menu_answered(
+        self,
+        event: Any,  # noqa: ARG002, ANN401
+    ) -> None:
+        """Handle ask_user menu answers - remove widget and refocus input."""
+        if self._pending_ask_user_widget:
+            widget = self._pending_ask_user_widget
+            self._pending_ask_user_widget = None
+            await self._remove_ask_user_widget(widget, context="ask-user answered")
+
+        if self._chat_input:
+            self.call_after_refresh(self._chat_input.focus_input)
+
+    async def on_ask_user_menu_cancelled(
+        self,
+        event: Any,  # noqa: ARG002, ANN401
+    ) -> None:
+        """Handle ask_user menu cancellation - remove widget and refocus input."""
+        if self._pending_ask_user_widget:
+            widget = self._pending_ask_user_widget
+            self._pending_ask_user_widget = None
+            await self._remove_ask_user_widget(widget, context="ask-user cancelled")
+
+        if self._chat_input:
+            self.call_after_refresh(self._chat_input.focus_input)
+
     async def _process_message(self, value: str, mode: InputMode) -> None:
         """Route a message to the appropriate handler based on mode.
 
@@ -1374,11 +1490,11 @@ class DeepAgentsApp(App):
             await self._mount_message(UserMessage(command))
             help_text = Text(
                 "Commands: /quit, /clear, /compact, /mcp, "
-                "/model [--model-params JSON] [--default], /remember, "
+                "/model [--model-params JSON] [--default], /reload, /remember, "
                 "/tokens, /threads, /trace, /changelog, /docs, /feedback, /help\n\n"
                 "Interactive Features:\n"
                 "  Enter           Submit your message\n"
-                "  Ctrl+J          Insert newline\n"
+                f"  {newline_shortcut():<15} Insert newline\n"
                 "  Shift+Tab       Toggle auto-approve mode\n"
                 "  @filename       Auto-complete files and inject content\n"
                 "  /command        Slash commands (/help, /clear, /quit)\n"
@@ -1551,6 +1667,32 @@ class DeepAgentsApp(App):
                 await self._switch_model(model_arg, extra_kwargs=extra_kwargs)
             else:
                 await self._show_model_selector(extra_kwargs=extra_kwargs)
+        elif cmd == "/reload":
+            await self._mount_message(UserMessage(command))
+            try:
+                changes = settings.reload_from_environment()
+
+                from deepagents_cli.model_config import clear_caches
+
+                clear_caches()
+            except Exception:
+                logger.exception("Failed to reload configuration")
+                await self._mount_message(
+                    AppMessage(
+                        "Failed to reload configuration. Check your .env "
+                        "file and environment variables for syntax errors, "
+                        "then try again."
+                    )
+                )
+                return
+            if changes:
+                report = "Configuration reloaded. Changes:\n" + "\n".join(
+                    f"  - {change}" for change in changes
+                )
+            else:
+                report = "Configuration reloaded. No changes detected."
+            report += "\nModel config caches cleared."
+            await self._mount_message(AppMessage(report))
         else:
             await self._mount_message(UserMessage(command))
             await self._mount_message(AppMessage(f"Unknown command: {cmd}"))
@@ -2485,6 +2627,13 @@ class DeepAgentsApp(App):
             self._quit_pending = False
             return
 
+        # If ask_user menu is active, cancel it before cancelling the agent
+        # worker, following the same pattern as the approval widget above.
+        if self._pending_ask_user_widget:
+            self._pending_ask_user_widget.action_cancel()
+            self._quit_pending = False
+            return
+
         # If agent is running, interrupt it and discard queued messages
         if self._agent_running and self._agent_worker:
             self._cancel_worker(self._agent_worker)
@@ -2534,6 +2683,12 @@ class DeepAgentsApp(App):
         # avoid leaving a stale approval widget interactive after interruption.
         if self._pending_approval_widget:
             self._pending_approval_widget.action_select_reject()
+            return
+
+        # If ask_user menu is active, cancel it before cancelling the agent
+        # worker, following the same pattern as the approval widget above.
+        if self._pending_ask_user_widget:
+            self._pending_ask_user_widget.action_cancel()
             return
 
         # If agent is running, interrupt it and discard queued messages
@@ -2599,6 +2754,10 @@ class DeepAgentsApp(App):
         # shift+tab is reused for navigation inside modal screens (e.g.
         # ModelSelectorScreen); skip the toggle so it doesn't fire through.
         if isinstance(self.screen, ModalScreen):
+            return
+        # Delegate shift+tab to ask_user navigation when interview is active.
+        if self._pending_ask_user_widget is not None:
+            self._pending_ask_user_widget.action_previous_question()
             return
         self._auto_approve = not self._auto_approve
         if self._status_bar:
@@ -2677,7 +2836,11 @@ class DeepAgentsApp(App):
         """Route unfocused paste events to chat input for drag/drop reliability."""
         if not self._chat_input:
             return
-        if self._pending_approval_widget or self._is_input_focused():
+        if (
+            self._pending_approval_widget
+            or self._pending_ask_user_widget
+            or self._is_input_focused()
+        ):
             return
         if self._chat_input.handle_external_paste(event.text):
             event.prevent_default()
@@ -2695,7 +2858,7 @@ class DeepAgentsApp(App):
             return
         if isinstance(self.screen, ModalScreen):
             return
-        if self._pending_approval_widget:
+        if self._pending_approval_widget or self._pending_ask_user_widget:
             return
         self._chat_input.focus_input()
 
@@ -2703,8 +2866,8 @@ class DeepAgentsApp(App):
         """Handle clicks anywhere in the terminal to focus on the command line."""
         if not self._chat_input:
             return
-        # Don't steal focus from approval widget
-        if self._pending_approval_widget:
+        # Don't steal focus from approval or ask_user widgets
+        if self._pending_approval_widget or self._pending_ask_user_widget:
             return
         self.call_after_refresh(self._chat_input.focus_input)
 
@@ -3028,6 +3191,7 @@ class DeepAgentsApp(App):
                 sandbox=self._sandbox,
                 sandbox_type=self._sandbox_type,
                 auto_approve=self._auto_approve,
+                enable_ask_user=self._enable_ask_user,
                 checkpointer=self._checkpointer,
                 mcp_server_info=self._mcp_server_info,
             )
@@ -3150,6 +3314,7 @@ async def run_textual_app(
     assistant_id: str | None = None,
     backend: CompositeBackend | None = None,
     auto_approve: bool = False,
+    enable_ask_user: bool = False,
     cwd: str | Path | None = None,
     thread_id: str | None = None,
     initial_prompt: str | None = None,
@@ -3167,6 +3332,8 @@ async def run_textual_app(
         assistant_id: Agent identifier for memory storage
         backend: Backend for file operations
         auto_approve: Whether to start with auto-approve enabled
+        enable_ask_user: Whether `ask_user` should stay enabled when
+            recreating agents (for example during model hot-swap)
         cwd: Current working directory to display
         thread_id: Optional thread ID for session persistence
         initial_prompt: Optional prompt to auto-submit when session starts
@@ -3186,6 +3353,7 @@ async def run_textual_app(
         assistant_id=assistant_id,
         backend=backend,
         auto_approve=auto_approve,
+        enable_ask_user=enable_ask_user,
         cwd=cwd,
         thread_id=thread_id,
         initial_prompt=initial_prompt,

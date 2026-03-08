@@ -19,6 +19,8 @@
 | [text-to-sql-agent](text-to-sql-agent/) | Natural language to SQL agent with planning, skill-based workflows, and the Chinook demo database |
 | [ralph_mode](ralph_mode/) | Autonomous looping pattern that runs with fresh context each iteration, using the filesystem for persistence |
 | [downloading_agents](downloading_agents/) | Shows how agents are just folders—download a zip, unzip, and run |
+| [nvidia_aiq](https://github.com/NVIDIA-AI-Blueprints/aiq/tree/develop) | NVIDIA blueprint for production deep research across enteprise sources using deep agent architecture |
+| [nvidia_vss](https://github.com/NVIDIA-AI-Blueprints/video-search-and-summarization) | NVIDIA blueprint for production visual search and summarization using deep agent architecture |
 
 Each example has its own README with setup instructions.
 

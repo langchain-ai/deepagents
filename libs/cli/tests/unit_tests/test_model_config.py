@@ -11,6 +11,7 @@ import pytest
 from deepagents_cli import model_config
 from deepagents_cli.model_config import (
     PROVIDER_API_KEY_ENV,
+    THREAD_COLUMN_DEFAULTS,
     ModelConfig,
     ModelConfigError,
     ModelProfileEntry,
@@ -24,7 +25,9 @@ from deepagents_cli.model_config import (
     get_model_profiles,
     has_provider_credentials,
     is_warning_suppressed,
+    load_thread_columns,
     save_recent_model,
+    save_thread_columns,
     suppress_warning,
 )
 
@@ -118,6 +121,43 @@ class TestHasProviderCredentials:
         """Returns False when provider env var is not set."""
         with patch.dict("os.environ", {}, clear=True):
             assert has_provider_credentials("anthropic") is False
+
+
+class TestThreadColumnPersistence:
+    """Tests for thread selector column visibility persistence."""
+
+    def test_save_and_load_round_trip(self, tmp_path):
+        """Saved thread column choices should load back on the next session."""
+        config_path = tmp_path / "config.toml"
+        columns = {
+            "thread_id": True,
+            "messages": False,
+            "created_at": True,
+            "updated_at": False,
+            "git_branch": True,
+            "initial_prompt": False,
+            "agent_name": True,
+        }
+
+        assert save_thread_columns(columns, config_path) is True
+        assert load_thread_columns(config_path) == columns
+
+    def test_load_merges_partial_config_with_defaults(self, tmp_path):
+        """Missing thread column keys should fall back to defaults."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            """
+[threads.columns]
+thread_id = true
+updated_at = false
+"""
+        )
+
+        assert load_thread_columns(config_path) == {
+            **THREAD_COLUMN_DEFAULTS,
+            "thread_id": True,
+            "updated_at": False,
+        }
 
 
 class TestProviderApiKeyEnv:

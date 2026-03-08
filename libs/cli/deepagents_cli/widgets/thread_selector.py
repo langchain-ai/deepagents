@@ -3,23 +3,24 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import sqlite3
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, ClassVar, cast
 
 from rich.style import Style
 from rich.text import Text
 from textual.binding import Binding, BindingType
-from textual.containers import Vertical, VerticalScroll
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
 from textual.fuzzy import Matcher
 from textual.message import Message
 from textual.screen import ModalScreen
-from textual.widgets import Input, Static
+from textual.widgets import Input, Static, Switch
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
-    from textual.events import Click
+    from textual.events import Click, Key
 
 from deepagents_cli.config import (
     CharsetMode,
@@ -37,31 +38,171 @@ _COL_AGENT = 14
 _COL_MSGS = 4
 _COL_BRANCH = 16
 _COL_TIMESTAMP = 16
-_COL_PROMPT = 30
+_COL_PROMPT = 48
+_COLUMN_ORDER = (
+    "thread_id",
+    "agent_name",
+    "messages",
+    "created_at",
+    "updated_at",
+    "git_branch",
+    "initial_prompt",
+)
+_COLUMN_WIDTHS: dict[str, int | None] = {
+    "thread_id": _COL_TID,
+    "agent_name": _COL_AGENT,
+    "messages": _COL_MSGS,
+    "created_at": _COL_TIMESTAMP,
+    "updated_at": _COL_TIMESTAMP,
+    "git_branch": _COL_BRANCH,
+    "initial_prompt": _COL_PROMPT,
+}
+_COLUMN_LABELS = {
+    "thread_id": "Thread ID",
+    "agent_name": "Agent",
+    "messages": "Msgs",
+    "created_at": "Created",
+    "updated_at": "Updated",
+    "git_branch": "Branch",
+    "initial_prompt": "Prompt",
+}
+_COLUMN_TOGGLE_LABELS = {
+    "thread_id": "Thread ID",
+    "agent_name": "Agent Name",
+    "messages": "# Messages",
+    "created_at": "Created At",
+    "updated_at": "Updated At",
+    "git_branch": "Git Branch",
+    "initial_prompt": "Initial Prompt",
+}
+_RIGHT_ALIGNED_COLUMNS = {"messages"}
+_SWITCH_ID_PREFIX = "thread-column-"
+_SORT_SWITCH_ID = "thread-sort-toggle"
 
 
-class ThreadOption(Static):
+def _active_sort_key(sort_by_updated: bool) -> str:
+    """Return the active timestamp field used for sorting."""
+    return "updated_at" if sort_by_updated else "created_at"
+
+
+def _visible_column_keys(columns: dict[str, bool]) -> list[str]:
+    """Return visible columns in the on-screen order.
+
+    Args:
+        columns: Column visibility settings keyed by column name.
+
+    Returns:
+        Visible column keys in display order.
+    """
+    return [key for key in _COLUMN_ORDER if columns.get(key)]
+
+
+def _collapse_whitespace(value: str) -> str:
+    """Normalize a text value onto a single display line.
+
+    Args:
+        value: Raw text to display in a single cell.
+
+    Returns:
+        The input text collapsed to a single line.
+    """
+    return " ".join(value.split())
+
+
+def _truncate_value(value: str, width: int | None) -> str:
+    """Trim text to fit a fixed-width column.
+
+    Args:
+        value: Raw cell text.
+        width: Maximum column width, or `None` for no truncation.
+
+    Returns:
+        The possibly truncated display string.
+    """
+    if width is None:
+        return value
+
+    display = _collapse_whitespace(value)
+    if len(display) <= width:
+        return display
+
+    glyphs = get_glyphs()
+    ellipsis = glyphs.ellipsis
+    if width <= len(ellipsis):
+        return display[:width]
+    return display[: width - len(ellipsis)] + ellipsis
+
+
+def _format_column_value(thread: ThreadInfo, key: str) -> str:
+    """Return the display text for one thread column."""
+    from deepagents_cli.sessions import format_timestamp
+
+    value: str
+    if key == "thread_id":
+        # Strip UUID separators in the compact table preview so truncation
+        # never leaves a dangling trailing hyphen in the thread ID column.
+        value = thread["thread_id"].replace("-", "")
+    elif key == "agent_name":
+        value = thread.get("agent_name") or "unknown"
+    elif key == "messages":
+        raw_count = thread.get("message_count")
+        value = str(raw_count) if raw_count is not None else "..."
+    elif key == "created_at":
+        value = format_timestamp(thread.get("created_at"))
+    elif key == "updated_at":
+        value = format_timestamp(thread.get("updated_at"))
+    elif key == "git_branch":
+        value = thread.get("git_branch") or ""
+    elif key == "initial_prompt":
+        value = thread.get("initial_prompt") or ""
+    else:
+        value = ""
+
+    return _truncate_value(value, _COLUMN_WIDTHS[key])
+
+
+def _format_header_label(key: str, *, sort_key: str) -> str:
+    """Return the rendered header label for a column."""
+    label = _COLUMN_LABELS[key]
+    if key == sort_key:
+        active_label = f"{label} (sort)"
+        if (_COLUMN_WIDTHS[key] or 0) >= len(active_label):
+            label = active_label
+        else:
+            label = f"{label}*"
+    return _truncate_value(label, _COLUMN_WIDTHS[key])
+
+
+class ThreadOption(Horizontal):
     """A clickable thread option in the selector."""
 
     def __init__(
         self,
-        label: str,
-        thread_id: str,
+        thread: ThreadInfo,
         index: int,
         *,
+        columns: dict[str, bool],
+        selected: bool,
+        current: bool,
         classes: str = "",
     ) -> None:
-        """Initialize a thread option.
+        """Initialize a thread option row.
 
         Args:
-            label: The display text for the option.
-            thread_id: The thread identifier.
-            index: The index of this option in the list.
+            thread: Thread metadata for the row.
+            index: The index of this option in the filtered list.
+            columns: Column visibility settings.
+            selected: Whether the row is highlighted.
+            current: Whether the row is the active thread.
             classes: CSS classes for styling.
         """
-        super().__init__(label, classes=classes)
-        self.thread_id = thread_id
+        super().__init__(classes=classes)
+        self.thread = thread
+        self.thread_id = thread["thread_id"]
         self.index = index
+        self._columns = dict(columns)
+        self._selected = selected
+        self._current = current
 
     class Clicked(Message):
         """Message sent when a thread option is clicked."""
@@ -77,6 +218,47 @@ class ThreadOption(Static):
             self.thread_id = thread_id
             self.index = index
 
+    def compose(self) -> ComposeResult:
+        """Compose the row cells.
+
+        Yields:
+            Static cells for each visible column.
+        """
+        yield Static(
+            self._cursor_text(),
+            classes="thread-cell thread-cell-cursor",
+            markup=False,
+        )
+        for key in _visible_column_keys(self._columns):
+            yield Static(
+                _format_column_value(self.thread, key),
+                classes=f"thread-cell thread-cell-{key}",
+                expand=key == "initial_prompt",
+                markup=False,
+            )
+
+    def _cursor_text(self) -> str:
+        """Return the cursor indicator for the row."""
+        return get_glyphs().cursor if self._selected else ""
+
+    def set_selected(self, selected: bool) -> None:
+        """Update row selection styling without rebuilding the row.
+
+        Args:
+            selected: Whether the row should be highlighted.
+        """
+        self._selected = selected
+        if selected:
+            self.add_class("thread-option-selected")
+        else:
+            self.remove_class("thread-option-selected")
+
+        try:
+            cursor = self.query_one(".thread-cell-cursor", Static)
+        except NoMatches:
+            return
+        cursor.update(self._cursor_text())
+
     def on_click(self, event: Click) -> None:
         """Handle click on this option.
 
@@ -85,6 +267,73 @@ class ThreadOption(Static):
         """
         event.stop()
         self.post_message(self.Clicked(self.thread_id, self.index))
+
+
+class DeleteThreadConfirmScreen(ModalScreen[bool]):
+    """Confirmation modal shown before deleting a thread."""
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("enter", "confirm", "Confirm", show=False, priority=True),
+        Binding("escape", "cancel", "Cancel", show=False, priority=True),
+    ]
+
+    CSS = """
+    DeleteThreadConfirmScreen {
+        align: center middle;
+    }
+
+    DeleteThreadConfirmScreen > Vertical {
+        width: 50;
+        height: auto;
+        background: $surface;
+        border: solid red;
+        padding: 1 2;
+    }
+
+    DeleteThreadConfirmScreen .thread-confirm-text {
+        text-align: center;
+        margin-bottom: 1;
+    }
+
+    DeleteThreadConfirmScreen .thread-confirm-help {
+        text-align: center;
+        color: $text-muted;
+        text-style: italic;
+    }
+    """
+
+    def __init__(self, thread_id: str) -> None:
+        """Initialize the confirmation modal.
+
+        Args:
+            thread_id: Thread ID the user is being asked to delete.
+        """
+        super().__init__()
+        self._delete_thread_id = thread_id
+
+    def compose(self) -> ComposeResult:
+        """Compose the confirmation dialog.
+
+        Yields:
+            Widgets for the delete confirmation prompt.
+        """
+        with Vertical(id="delete-confirm"):
+            yield Static(
+                f"Delete thread [bold]{self._delete_thread_id}[/bold]?",
+                classes="thread-confirm-text",
+            )
+            yield Static(
+                "Enter to confirm, Esc to cancel",
+                classes="thread-confirm-help",
+            )
+
+    def action_confirm(self) -> None:
+        """Confirm deletion."""
+        self.dismiss(True)
+
+    def action_cancel(self) -> None:
+        """Cancel deletion."""
+        self.dismiss(False)
 
 
 class ThreadSelectorScreen(ModalScreen[str | None]):
@@ -106,7 +355,14 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         Binding("enter", "select", "Select", show=False, priority=True),
         Binding("escape", "cancel", "Cancel", show=False, priority=True),
         Binding("ctrl+d", "delete_thread", "Delete", show=False, priority=True),
-        Binding("tab", "toggle_sort", "Toggle sort", show=False, priority=True),
+        Binding("tab", "focus_next_filter", "Next filter", show=False, priority=True),
+        Binding(
+            "shift+tab",
+            "focus_previous_filter",
+            "Previous filter",
+            show=False,
+            priority=True,
+        ),
     ]
 
     CSS = """
@@ -114,7 +370,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         align: center middle;
     }
 
-    ThreadSelectorScreen > Vertical {
+    ThreadSelectorScreen #thread-selector-shell {
         width: 100%;
         max-width: 98%;
         height: 90%;
@@ -139,9 +395,50 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         border: solid $primary;
     }
 
+    ThreadSelectorScreen .thread-selector-body {
+        height: 1fr;
+    }
+
+    ThreadSelectorScreen .thread-table-pane {
+        width: 1fr;
+        min-width: 40;
+        height: 1fr;
+    }
+
+    ThreadSelectorScreen .thread-controls {
+        width: 28;
+        min-width: 24;
+        height: 1fr;
+        margin-left: 1;
+        padding-left: 1;
+        border-left: solid $primary-lighten-2;
+    }
+
+    ThreadSelectorScreen .thread-controls-title {
+        text-style: bold;
+        color: $primary;
+        margin-bottom: 1;
+    }
+
+    ThreadSelectorScreen .thread-controls-help {
+        color: $text-muted;
+        margin-bottom: 1;
+    }
+
+    ThreadSelectorScreen .thread-column-toggle {
+        height: 1;
+        align: left middle;
+        margin-bottom: 1;
+    }
+
+    ThreadSelectorScreen .thread-column-label {
+        width: 1fr;
+        margin-left: 1;
+    }
+
     ThreadSelectorScreen .thread-list-header {
         height: 1;
-        padding: 0 2 0 1;
+        padding: 0 1;
         color: $text-muted;
         text-style: bold;
     }
@@ -155,6 +452,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
     ThreadSelectorScreen .thread-option {
         height: 1;
+        width: 100%;
         padding: 0 1;
     }
 
@@ -175,6 +473,42 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         text-style: italic;
     }
 
+    ThreadSelectorScreen .thread-cell {
+        height: 1;
+        padding-right: 1;
+    }
+
+    ThreadSelectorScreen .thread-cell-cursor {
+        width: 2;
+        color: $primary;
+    }
+
+    ThreadSelectorScreen .thread-cell-thread_id {
+        width: 10;
+    }
+
+    ThreadSelectorScreen .thread-cell-agent_name {
+        width: 14;
+    }
+
+    ThreadSelectorScreen .thread-cell-messages {
+        width: 4;
+        content-align: right middle;
+    }
+
+    ThreadSelectorScreen .thread-cell-created_at,
+    ThreadSelectorScreen .thread-cell-updated_at {
+        width: 16;
+    }
+
+    ThreadSelectorScreen .thread-cell-git_branch {
+        width: 16;
+    }
+
+    ThreadSelectorScreen .thread-cell-initial_prompt {
+        width: 1fr;
+    }
+
     ThreadSelectorScreen .thread-selector-help {
         height: auto;
         color: $text-muted;
@@ -189,28 +523,6 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         margin-top: 2;
     }
 
-    ThreadSelectorScreen .thread-confirm-overlay {
-        align: center middle;
-    }
-
-    ThreadSelectorScreen .thread-confirm-box {
-        width: 50;
-        height: auto;
-        background: $surface;
-        border: solid red;
-        padding: 1 2;
-    }
-
-    ThreadSelectorScreen .thread-confirm-text {
-        text-align: center;
-        margin-bottom: 1;
-    }
-
-    ThreadSelectorScreen .thread-confirm-help {
-        text-align: center;
-        color: $text-muted;
-        text-style: italic;
-    }
     """
 
     def __init__(
@@ -242,12 +554,32 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         self._filter_text = ""
         self._sort_by_updated = True
         self._confirming_delete = False
+        self._render_lock = asyncio.Lock()
 
         from deepagents_cli.model_config import load_thread_columns
 
         self._columns = load_thread_columns()
 
         self._sync_selected_index()
+
+    @staticmethod
+    def _switch_id(column_key: str) -> str:
+        """Return the DOM id for a column toggle switch."""
+        return f"{_SWITCH_ID_PREFIX}{column_key}"
+
+    @staticmethod
+    def _switch_column_key(switch_id: str | None) -> str | None:
+        """Extract the column key from a switch id.
+
+        Args:
+            switch_id: Widget id for a switch in the control panel.
+
+        Returns:
+            The corresponding column key, or `None` for unrelated ids.
+        """
+        if not switch_id or not switch_id.startswith(_SWITCH_ID_PREFIX):
+            return None
+        return switch_id.removeprefix(_SWITCH_ID_PREFIX)
 
     def _sync_selected_index(self) -> None:
         """Select the current thread when it exists in the loaded rows."""
@@ -277,59 +609,114 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             )
         return f"Select Thread (current: {self._current_thread})"
 
+    def _build_help_text(self) -> str:
+        """Build the footer help text for the selector.
+
+        Returns:
+            Footer guidance for the active selector bindings.
+        """
+        glyphs = get_glyphs()
+        sort_label = "updated" if self._sort_by_updated else "created"
+        return (
+            f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate"
+            f" {glyphs.bullet} Enter select"
+            f" {glyphs.bullet} Tab/Shift+Tab focus filters"
+            f" {glyphs.bullet} Sort toggle ({sort_label})"
+            f" {glyphs.bullet} Ctrl+D delete"
+            f" {glyphs.bullet} Esc cancel"
+        )
+
+    def _format_sort_toggle_label(self) -> str:
+        """Return the control-panel sort label for the toggle switch."""
+        label = "Updated At" if self._sort_by_updated else "Created At"
+        return f"Sort by {label}"
+
     def compose(self) -> ComposeResult:
         """Compose the screen layout.
 
         Yields:
             Widgets for the thread selector UI.
         """
-        glyphs = get_glyphs()
-
-        with Vertical():
+        with Vertical(id="thread-selector-shell"):
             yield Static(
                 self._build_title(), classes="thread-selector-title", id="thread-title"
             )
 
             yield Input(
                 placeholder="Type to search threads...",
+                select_on_focus=False,
                 id="thread-filter",
             )
 
-            yield Static(
-                self._format_header(), classes="thread-list-header", id="thread-header"
-            )
-
-            with VerticalScroll(classes="thread-list"):
-                if self._has_initial_threads:
-                    if self._filtered_threads:
-                        self._option_widgets, _ = self._create_option_widgets()
-                        yield from self._option_widgets
-                    else:
-                        yield Static(
-                            "[dim]No threads found[/dim]",
-                            classes="thread-empty",
-                        )
-                else:
+            with Horizontal(classes="thread-selector-body"):
+                with Vertical(classes="thread-table-pane"):
                     yield Static(
-                        "[dim]Loading threads...[/dim]",
-                        classes="thread-empty",
-                        id="thread-loading",
+                        self._format_header(),
+                        classes="thread-list-header",
+                        id="thread-header",
+                        markup=False,
                     )
 
-            sort_label = "updated" if self._sort_by_updated else "created"
-            help_text = (
-                f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate"
-                f" {glyphs.bullet} Enter select"
-                f" {glyphs.bullet} Tab sort ({sort_label})"
-                f" {glyphs.bullet} Ctrl+D delete"
-                f" {glyphs.bullet} Esc cancel"
+                    with VerticalScroll(classes="thread-list"):
+                        if self._has_initial_threads:
+                            if self._filtered_threads:
+                                self._option_widgets, _ = self._create_option_widgets()
+                                yield from self._option_widgets
+                            else:
+                                yield Static(
+                                    "[dim]No threads found[/dim]",
+                                    classes="thread-empty",
+                                )
+                        else:
+                            yield Static(
+                                "[dim]Loading threads...[/dim]",
+                                classes="thread-empty",
+                                id="thread-loading",
+                            )
+
+                with Vertical(classes="thread-controls"):
+                    yield Static("Options", classes="thread-controls-title")
+                    yield Static(
+                        (
+                            "Tab through sort and column toggles. "
+                            "Column visibility persists between sessions."
+                        ),
+                        classes="thread-controls-help",
+                        markup=False,
+                    )
+                    with Horizontal(classes="thread-column-toggle"):
+                        yield Switch(
+                            self._sort_by_updated,
+                            id=_SORT_SWITCH_ID,
+                        )
+                        yield Static(
+                            self._format_sort_toggle_label(),
+                            classes="thread-column-label",
+                            id="thread-sort-label",
+                            markup=False,
+                        )
+                    for key in _COLUMN_ORDER:
+                        with Horizontal(classes="thread-column-toggle"):
+                            yield Switch(
+                                self._columns.get(key, False),
+                                id=self._switch_id(key),
+                            )
+                            yield Static(
+                                _COLUMN_TOGGLE_LABELS[key],
+                                classes="thread-column-label",
+                                markup=False,
+                            )
+
+            yield Static(
+                self._build_help_text(),
+                classes="thread-selector-help",
+                id="thread-help",
             )
-            yield Static(help_text, classes="thread-selector-help", id="thread-help")
 
     async def on_mount(self) -> None:
         """Fetch threads, configure border for ASCII terminals, and build the list."""
         if _detect_charset_mode() == CharsetMode.ASCII:
-            container = self.query_one(Vertical)
+            container = self.query_one("#thread-selector-shell", Vertical)
             container.styles.border = ("ascii", "green")
 
         filter_input = self.query_one("#thread-filter", Input)
@@ -358,7 +745,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         """
         self._filter_text = event.value
         self._update_filtered_list()
-        self.call_after_refresh(self._rebuild_list_from_filter)
+        self._schedule_list_rebuild()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         """Handle Enter key when filter input is focused.
@@ -368,6 +755,78 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         """
         event.stop()
         self.action_select()
+
+    def on_key(self, event: Key) -> None:
+        """Return focus to search when letters are typed from other controls.
+
+        Args:
+            event: The key event.
+        """
+        if self._confirming_delete:
+            return
+
+        filter_input = self.query_one("#thread-filter", Input)
+        if filter_input.has_focus:
+            return
+
+        character = event.character
+        if not character or not character.isalpha():
+            return
+
+        filter_input.focus()
+        filter_input.insert_text_at_cursor(character)
+        self.set_timer(0, self._collapse_search_selection)
+        event.stop()
+
+    def _collapse_search_selection(self) -> None:
+        """Place the search cursor at the end without an active selection."""
+        filter_input = self.query_one("#thread-filter", Input)
+        filter_input.selection = type(filter_input.selection).cursor(
+            len(filter_input.value)
+        )
+
+    def on_switch_changed(self, event: Switch.Changed) -> None:
+        """Persist column toggle changes and refresh the table.
+
+        Args:
+            event: The switch change event.
+        """
+        if event.switch.id == _SORT_SWITCH_ID:
+            if self._sort_by_updated == event.value:
+                return
+            self._sort_by_updated = event.value
+            self._normalize_sort_column_visibility()
+            self._apply_sort()
+            self._sync_selected_index()
+            self._update_help_widgets()
+            self._schedule_list_rebuild()
+            return
+
+        column_key = self._switch_column_key(event.switch.id)
+        if column_key is None or column_key not in self._columns:
+            return
+        if self._columns[column_key] == event.value:
+            return
+
+        self._columns[column_key] = event.value
+        self._normalize_sort_column_visibility()
+        self._apply_sort()
+        self._sync_selected_index()
+        self._update_help_widgets()
+
+        from deepagents_cli.model_config import save_thread_columns
+
+        save_thread_columns(self._columns)
+        self._schedule_list_rebuild()
+
+    def _normalize_sort_column_visibility(self) -> None:
+        """Move sort to the other timestamp column when the active one is hidden."""
+        if self._sort_by_updated:
+            if not self._columns.get("updated_at") and self._columns.get("created_at"):
+                self._sort_by_updated = False
+            return
+        if not self._columns.get("created_at") and self._columns.get("updated_at"):
+            self._sort_by_updated = True
 
     def _update_filtered_list(self) -> None:
         """Update filtered threads based on search text using fuzzy matching."""
@@ -384,8 +843,8 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             scored: list[tuple[float, ThreadInfo]] = []
             for thread in self._threads:
                 search_text = self._get_search_text(thread)
-                scores = [m.match(search_text) for m in matchers]
-                if all(s > 0 for s in scores):
+                scores = [matcher.match(search_text) for matcher in matchers]
+                if all(score > 0 for score in scores):
                     scored.append((min(scores), thread))
         except Exception:
             logger.warning(
@@ -394,10 +853,24 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                 exc_info=True,
             )
             self._filtered_threads = list(self._threads)
+            self._apply_sort()
             self._sync_selected_index()
             return
 
-        self._filtered_threads = [thread for _, thread in sorted(scored, reverse=True)]
+        sort_key = _active_sort_key(self._sort_by_updated)
+        self._filtered_threads = [
+            thread
+            for _, thread in sorted(
+                scored,
+                key=lambda item: (
+                    item[0],
+                    item[1].get(sort_key) or "",
+                    item[1].get("updated_at") or "",
+                    item[1]["thread_id"],
+                ),
+                reverse=True,
+            )
+        ]
         self._selected_index = 0
 
     @staticmethod
@@ -411,16 +884,20 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             Concatenated searchable string.
         """
         parts = [
+            thread.get("initial_prompt") or "",
             thread["thread_id"],
             thread.get("agent_name") or "",
-            thread.get("initial_prompt") or "",
             thread.get("git_branch") or "",
         ]
         return " ".join(parts)
 
-    async def _rebuild_list_from_filter(self) -> None:
-        """Rebuild the list after filter changes."""
-        await self._build_list()
+    def _schedule_list_rebuild(self) -> None:
+        """Queue a list rebuild, coalescing rapid updates."""
+        self.run_worker(
+            self._build_list,
+            exclusive=True,
+            group="thread-selector-render",
+        )
 
     def _schedule_message_count_load(self) -> None:
         """Schedule background message-count loading when counts are missing."""
@@ -482,7 +959,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             self._resolve_thread_url()
 
     async def _load_message_counts(self) -> None:
-        """Populate thread message counts in background and refresh labels."""
+        """Populate thread message counts in background and refresh rows."""
         from deepagents_cli.sessions import populate_thread_message_counts
 
         if not self._threads:
@@ -506,7 +983,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         self._refresh_labels()
 
     async def _load_initial_prompts(self) -> None:
-        """Populate initial prompts in background and refresh labels."""
+        """Populate initial prompts in background and refresh rows."""
         from deepagents_cli.sessions import populate_thread_initial_prompts
 
         if not self._threads:
@@ -531,22 +1008,8 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         self._refresh_labels()
 
     def _refresh_labels(self) -> None:
-        """Refresh row labels after background data loads complete."""
-        if not self._filtered_threads or not self._option_widgets:
-            return
-
-        for index, thread in enumerate(self._filtered_threads):
-            if index >= len(self._option_widgets):
-                break
-            widget = self._option_widgets[index]
-            widget.update(
-                self._format_option_label(
-                    thread,
-                    selected=index == self._selected_index,
-                    current=thread["thread_id"] == self._current_thread,
-                    columns=self._columns,
-                )
-            )
+        """Refresh row content after background data loads complete."""
+        self._schedule_list_rebuild()
 
     def _resolve_thread_url(self) -> None:
         """Start exclusive background worker to resolve LangSmith thread URL."""
@@ -594,14 +1057,18 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             detail: Human-readable error detail to show.
         """
         try:
-            scroll = self.query_one(".thread-list", VerticalScroll)
-            await scroll.remove_children()
-            await scroll.mount(
-                Static(
-                    f"[red]Failed to load threads: {detail}. Press Esc to close.[/red]",
-                    classes="thread-empty",
+            async with self._render_lock:
+                scroll = self.query_one(".thread-list", VerticalScroll)
+                await scroll.remove_children()
+                await scroll.mount(
+                    Static(
+                        (
+                            f"[red]Failed to load threads: {detail}. "
+                            "Press Esc to close.[/red]"
+                        ),
+                        classes="thread-empty",
+                    )
                 )
-            )
         except Exception:
             logger.warning(
                 "Could not display error message in thread selector UI",
@@ -611,30 +1078,30 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
     async def _build_list(self) -> None:
         """Build the thread option widgets."""
-        scroll = self.query_one(".thread-list", VerticalScroll)
-        await scroll.remove_children()
+        async with self._render_lock:
+            try:
+                scroll = self.query_one(".thread-list", VerticalScroll)
+            except NoMatches:
+                return
 
-        try:
-            header_widget = self.query_one("#thread-header", Static)
-            header_widget.update(self._format_header())
-        except NoMatches:
-            pass
+            await scroll.remove_children()
+            self._update_help_widgets()
 
-        if not self._filtered_threads:
-            self._option_widgets = []
-            await scroll.mount(
-                Static(
-                    "[dim]No threads found[/dim]",
-                    classes="thread-empty",
+            if not self._filtered_threads:
+                self._option_widgets = []
+                await scroll.mount(
+                    Static(
+                        "[dim]No threads found[/dim]",
+                        classes="thread-empty",
+                    )
                 )
-            )
-            return
+                return
 
-        self._option_widgets, selected_widget = self._create_option_widgets()
-        await scroll.mount(*self._option_widgets)
+            self._option_widgets, selected_widget = self._create_option_widgets()
+            await scroll.mount(*self._option_widgets)
 
-        if selected_widget:
-            self._scroll_selected_into_view()
+            if selected_widget:
+                self.call_after_refresh(self._scroll_selected_into_view)
 
     def _create_option_widgets(self) -> tuple[list[ThreadOption], ThreadOption | None]:
         """Build option widgets from filtered threads without mounting.
@@ -655,16 +1122,12 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             if is_current:
                 classes += " thread-option-current"
 
-            label = self._format_option_label(
-                thread,
+            widget = ThreadOption(
+                thread=thread,
+                index=i,
+                columns=self._columns,
                 selected=is_selected,
                 current=is_current,
-                columns=self._columns,
-            )
-            widget = ThreadOption(
-                label=label,
-                thread_id=thread["thread_id"],
-                index=i,
                 classes=classes,
             )
             widgets.append(widget)
@@ -696,21 +1159,17 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             Formatted header string with column names.
         """
         parts = ["  "]
-        if self._columns.get("thread_id"):
-            parts.append(f"{'Thread':<{_COL_TID}}  ")
-        if self._columns.get("agent_name"):
-            parts.append(f"{'Agent':<{_COL_AGENT}}  ")
-        if self._columns.get("messages"):
-            parts.append(f"{'Msgs':>{_COL_MSGS}}  ")
-        if self._columns.get("git_branch"):
-            parts.append(f"{'Branch':<{_COL_BRANCH}}  ")
-        if self._sort_by_updated and self._columns.get("updated_at"):
-            parts.append(f"{'Updated':<{_COL_TIMESTAMP}}  ")
-        elif not self._sort_by_updated and self._columns.get("created_at"):
-            parts.append(f"{'Created':<{_COL_TIMESTAMP}}  ")
-        if self._columns.get("initial_prompt"):
-            parts.append("Prompt")
-        return "".join(parts)
+        sort_key = _active_sort_key(self._sort_by_updated)
+        for key in _visible_column_keys(self._columns):
+            label = _format_header_label(key, sort_key=sort_key)
+            width = _COLUMN_WIDTHS[key]
+            if width is None:
+                parts.append(label)
+            elif key in _RIGHT_ALIGNED_COLUMNS:
+                parts.append(f"{label:>{width}}  ")
+            else:
+                parts.append(f"{label:<{width}}  ")
+        return "".join(parts).rstrip()
 
     @staticmethod
     def _format_option_label(
@@ -732,57 +1191,61 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             Rich-markup label string.
         """
         from deepagents_cli.model_config import THREAD_COLUMN_DEFAULTS
-        from deepagents_cli.sessions import format_timestamp
 
         cols = columns if columns is not None else THREAD_COLUMN_DEFAULTS
-
         glyphs = get_glyphs()
         cursor = f"{glyphs.cursor} " if selected else "  "
 
         parts = [cursor]
+        for key in _visible_column_keys(cols):
+            value = _format_column_value(thread, key)
+            width = _COLUMN_WIDTHS[key]
+            if width is None:
+                parts.append(value)
+            elif key in _RIGHT_ALIGNED_COLUMNS:
+                parts.append(f"{value:>{width}}  ")
+            else:
+                parts.append(f"{value:<{width}}  ")
 
-        if cols.get("thread_id"):
-            tid = thread["thread_id"][:_COL_TID]
-            parts.append(f"{tid:<{_COL_TID}}  ")
-
-        if cols.get("agent_name"):
-            agent = (thread.get("agent_name") or "unknown")[:_COL_AGENT]
-            parts.append(f"{agent:<{_COL_AGENT}}  ")
-
-        if cols.get("messages"):
-            raw_count = thread.get("message_count")
-            msgs = str(raw_count) if raw_count is not None else "..."
-            parts.append(f"{msgs:>{_COL_MSGS}}  ")
-
-        if cols.get("git_branch"):
-            branch = (thread.get("git_branch") or "")[:_COL_BRANCH]
-            parts.append(f"{branch:<{_COL_BRANCH}}  ")
-
-        if cols.get("updated_at"):
-            timestamp = format_timestamp(thread.get("updated_at"))
-            parts.append(f"{timestamp:<{_COL_TIMESTAMP}}  ")
-        elif cols.get("created_at"):
-            timestamp = format_timestamp(thread.get("created_at"))
-            parts.append(f"{timestamp:<{_COL_TIMESTAMP}}  ")
-
-        if cols.get("initial_prompt"):
-            prompt = thread.get("initial_prompt") or ""
-            if len(prompt) > _COL_PROMPT:
-                prompt = prompt[: _COL_PROMPT - 1] + glyphs.ellipsis
-            parts.append(prompt)
-
-        label = "".join(parts)
+        label = "".join(parts).rstrip()
         if current:
             label += " [dim](current)[/dim]"
         return label
 
+    def _update_help_widgets(self) -> None:
+        """Update visible header and help text after state changes."""
+        try:
+            header_widget = self.query_one("#thread-header", Static)
+            header_widget.update(self._format_header())
+        except NoMatches:
+            pass
+
+        try:
+            help_widget = self.query_one("#thread-help", Static)
+            help_widget.update(self._build_help_text())
+        except NoMatches:
+            pass
+
+        try:
+            sort_label = self.query_one("#thread-sort-label", Static)
+            sort_label.update(self._format_sort_toggle_label())
+        except NoMatches:
+            pass
+
+        with contextlib.suppress(NoMatches):
+            sort_switch = self.query_one(f"#{_SORT_SWITCH_ID}", Switch)
+            if sort_switch.value != self._sort_by_updated:
+                sort_switch.value = self._sort_by_updated
+
     def _apply_sort(self) -> None:
         """Sort filtered threads by the active sort key."""
-        key = "updated_at" if self._sort_by_updated else "created_at"
-        self._filtered_threads.sort(key=lambda t: t.get(key) or "", reverse=True)
+        key = _active_sort_key(self._sort_by_updated)
+        self._filtered_threads.sort(
+            key=lambda thread: thread.get(key) or "", reverse=True
+        )
 
     def _move_selection(self, delta: int) -> None:
-        """Move selection by delta, re-rendering only the old and new widgets.
+        """Move selection by delta, updating only the affected rows.
 
         Args:
             delta: Positions to move (negative for up, positive for down).
@@ -795,35 +1258,14 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         new_index = (old_index + delta) % count
         self._selected_index = new_index
 
-        old_widget = self._option_widgets[old_index]
-        old_widget.remove_class("thread-option-selected")
-        old_thread = self._filtered_threads[old_index]
-        old_widget.update(
-            self._format_option_label(
-                old_thread,
-                selected=False,
-                current=old_thread["thread_id"] == self._current_thread,
-                columns=self._columns,
-            )
-        )
-
-        new_widget = self._option_widgets[new_index]
-        new_widget.add_class("thread-option-selected")
-        new_thread = self._filtered_threads[new_index]
-        new_widget.update(
-            self._format_option_label(
-                new_thread,
-                selected=True,
-                current=new_thread["thread_id"] == self._current_thread,
-                columns=self._columns,
-            )
-        )
+        self._option_widgets[old_index].set_selected(False)
+        self._option_widgets[new_index].set_selected(True)
 
         if new_index == 0:
             scroll = self.query_one(".thread-list", VerticalScroll)
             scroll.scroll_home(animate=False)
         else:
-            new_widget.scroll_visible()
+            self._option_widgets[new_index].scroll_visible()
 
     def action_move_up(self) -> None:
         """Move selection up."""
@@ -887,44 +1329,50 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             thread_id = self._filtered_threads[self._selected_index]["thread_id"]
             self.dismiss(thread_id)
 
+    def _filter_focus_order(self) -> list[Input | Switch]:
+        """Return the tab order for filter controls in the side panel."""
+        filter_input = self.query_one("#thread-filter", Input)
+        sort_switch = self.query_one(f"#{_SORT_SWITCH_ID}", Switch)
+        switches = [
+            self.query_one(f"#{self._switch_id(key)}", Switch) for key in _COLUMN_ORDER
+        ]
+        return [filter_input, sort_switch, *switches]
+
+    def action_focus_next_filter(self) -> None:
+        """Move focus through the filter and column-toggle controls."""
+        if self._confirming_delete:
+            return
+        controls = self._filter_focus_order()
+        focused = self.focused
+        if focused not in controls:
+            controls[0].focus()
+            return
+
+        index = controls.index(cast("Input | Switch", focused))
+        controls[(index + 1) % len(controls)].focus()
+
+    def action_focus_previous_filter(self) -> None:
+        """Move focus backward through the filter and column-toggle controls."""
+        if self._confirming_delete:
+            return
+        controls = self._filter_focus_order()
+        focused = self.focused
+        if focused not in controls:
+            controls[-1].focus()
+            return
+
+        index = controls.index(cast("Input | Switch", focused))
+        controls[(index - 1) % len(controls)].focus()
+
     def action_toggle_sort(self) -> None:
         """Toggle sort between updated_at and created_at."""
         if self._confirming_delete:
             return
         self._sort_by_updated = not self._sort_by_updated
-
-        old_columns = dict(self._columns)
-        if self._sort_by_updated:
-            self._columns["updated_at"] = True
-            self._columns["created_at"] = False
-        else:
-            self._columns["created_at"] = True
-            self._columns["updated_at"] = False
-
-        if old_columns != self._columns:
-            from deepagents_cli.model_config import save_thread_columns
-
-            save_thread_columns(self._columns)
-
         self._apply_sort()
         self._sync_selected_index()
-
-        glyphs = get_glyphs()
-        sort_label = "updated" if self._sort_by_updated else "created"
-        help_text = (
-            f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate"
-            f" {glyphs.bullet} Enter select"
-            f" {glyphs.bullet} Tab sort ({sort_label})"
-            f" {glyphs.bullet} Ctrl+D delete"
-            f" {glyphs.bullet} Esc cancel"
-        )
-        try:
-            help_widget = self.query_one("#thread-help", Static)
-            help_widget.update(help_text)
-        except NoMatches:
-            pass
-
-        self.call_after_refresh(self._rebuild_list_from_filter)
+        self._update_help_widgets()
+        self._schedule_list_rebuild()
 
     def action_delete_thread(self) -> None:
         """Show delete confirmation for the highlighted thread."""
@@ -933,32 +1381,32 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         self._confirming_delete = True
         thread = self._filtered_threads[self._selected_index]
         tid = thread["thread_id"]
-        self.run_worker(self._show_delete_confirm(tid), group="thread-delete-confirm")
+        self.app.push_screen(
+            DeleteThreadConfirmScreen(tid),
+            lambda confirmed: self._on_delete_confirmed(tid, confirmed),
+        )
 
-    async def _show_delete_confirm(self, thread_id: str) -> None:
-        """Show a delete confirmation overlay.
+    @property
+    def is_delete_confirmation_open(self) -> bool:
+        """Return whether the delete confirmation overlay is visible."""
+        return self._confirming_delete
+
+    def _on_delete_confirmed(self, thread_id: str, confirmed: bool | None) -> None:
+        """Handle the result from the delete confirmation modal.
 
         Args:
-            thread_id: Thread ID to delete.
+            thread_id: Thread ID that was targeted.
+            confirmed: Whether deletion was confirmed.
         """
-        from textual.containers import Center
-
-        overlay = Vertical(
-            Static(
-                f"Delete thread [bold]{thread_id}[/bold]?",
-                classes="thread-confirm-text",
-            ),
-            Static(
-                "Enter to confirm, Esc to cancel",
-                classes="thread-confirm-help",
-            ),
-            classes="thread-confirm-box",
-            id="delete-confirm",
-        )
-        wrapper = Center(
-            overlay, classes="thread-confirm-overlay", id="confirm-overlay"
-        )
-        await self.mount(wrapper)
+        self._confirming_delete = False
+        if confirmed:
+            self.run_worker(
+                self._handle_delete_confirm(thread_id),
+                group="thread-delete-execute",
+            )
+            return
+        with contextlib.suppress(NoMatches):
+            self.query_one("#thread-filter", Input).focus()
 
     async def _handle_delete_confirm(self, thread_id: str) -> None:
         """Execute thread deletion after confirmation.
@@ -968,45 +1416,35 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         """
         from deepagents_cli.sessions import delete_thread
 
+        preferred_thread_id: str | None = None
+        if self._selected_index + 1 < len(self._filtered_threads):
+            preferred_thread_id = self._filtered_threads[self._selected_index + 1][
+                "thread_id"
+            ]
+        elif self._selected_index > 0:
+            preferred_thread_id = self._filtered_threads[self._selected_index - 1][
+                "thread_id"
+            ]
+
         try:
             await delete_thread(thread_id)
         except (OSError, sqlite3.Error):
             logger.warning("Failed to delete thread %s", thread_id, exc_info=True)
 
-        self._threads = [t for t in self._threads if t["thread_id"] != thread_id]
+        self._threads = [
+            thread for thread in self._threads if thread["thread_id"] != thread_id
+        ]
         self._update_filtered_list()
+        if preferred_thread_id is not None:
+            for index, thread in enumerate(self._filtered_threads):
+                if thread["thread_id"] == preferred_thread_id:
+                    self._selected_index = index
+                    break
         if self._selected_index >= len(self._filtered_threads):
             self._selected_index = max(0, len(self._filtered_threads) - 1)
         await self._build_list()
-
-    async def _dismiss_delete_confirm(self) -> None:
-        """Remove the delete confirmation overlay."""
-        self._confirming_delete = False
-        try:
-            overlay = self.query_one("#confirm-overlay")
-            await overlay.remove()
-        except NoMatches:
-            pass
-
-    async def on_key(self, event: object) -> None:
-        """Handle key events for delete confirmation.
-
-        Args:
-            event: The key event.
-        """
-        if not self._confirming_delete:
-            return
-
-        key = getattr(event, "key", "")
-        if key == "enter":
-            event.stop()  # type: ignore[union-attr]
-            if self._filtered_threads:
-                tid = self._filtered_threads[self._selected_index]["thread_id"]
-                await self._dismiss_delete_confirm()
-                await self._handle_delete_confirm(tid)
-        elif key == "escape":
-            event.stop()  # type: ignore[union-attr]
-            await self._dismiss_delete_confirm()
+        with contextlib.suppress(NoMatches):
+            self.query_one("#thread-filter", Input).focus()
 
     def on_click(self, event: Click) -> None:  # noqa: PLR6301  # Textual event handler
         """Open Rich-style hyperlinks on single click."""
@@ -1026,9 +1464,4 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
     def action_cancel(self) -> None:
         """Cancel the selection."""
-        if self._confirming_delete:
-            self.run_worker(
-                self._dismiss_delete_confirm(), group="thread-delete-cancel"
-            )
-            return
         self.dismiss(None)

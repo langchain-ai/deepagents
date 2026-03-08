@@ -11,11 +11,14 @@ from textual.binding import Binding, BindingType
 from textual.containers import Container, Vertical
 from textual.css.query import NoMatches
 from textual.screen import ModalScreen
-from textual.widgets import Static
+from textual.widgets import Input, Static, Switch
 
 from deepagents_cli.app import DeepAgentsApp
 from deepagents_cli.sessions import ThreadInfo
-from deepagents_cli.widgets.thread_selector import ThreadSelectorScreen
+from deepagents_cli.widgets.thread_selector import (
+    DeleteThreadConfirmScreen,
+    ThreadSelectorScreen,
+)
 
 MOCK_THREADS: list[ThreadInfo] = [
     {
@@ -340,10 +343,10 @@ class TestThreadSelectorNavigateAndSelect:
 
 
 class TestThreadSelectorTabSort:
-    """Tests for tab toggling sort between updated_at and created_at."""
+    """Tests for sort toggling and focus traversal in the selector."""
 
-    async def test_tab_toggles_sort(self) -> None:
-        """Tab should toggle sort order between updated and created."""
+    async def test_sort_switch_toggles_sort(self) -> None:
+        """The sort switch should toggle sort order between updated and created."""
         with _patch_list_threads(), _patch_columns():
             app = ThreadSelectorTestApp()
             async with app.run_test() as pilot:
@@ -353,14 +356,195 @@ class TestThreadSelectorTabSort:
                 screen = app.screen
                 assert isinstance(screen, ThreadSelectorScreen)
                 assert screen._sort_by_updated is True
+                original_columns = dict(screen._columns)
+                header = screen.query_one("#thread-header", Static)
+                sort_switch = screen.query_one("#thread-sort-toggle", Switch)
+                sort_label = screen.query_one("#thread-sort-label", Static)
+                assert "Updated (sort)" in str(header._Static__content)
+                assert sort_switch.value is True
+                assert "Sort by Updated At" in str(sort_label._Static__content)
 
-                await pilot.press("tab")
+                sort_switch.toggle()
                 await pilot.pause()
                 assert screen._sort_by_updated is False
+                assert screen._columns == original_columns
+                assert "Created (sort)" in str(header._Static__content)
+                assert sort_switch.value is False
+                assert "Sort by Created At" in str(sort_label._Static__content)
+
+    async def test_tab_moves_focus_into_column_switches(self) -> None:
+        """Tab should move focus from the search input into the controls."""
+        with _patch_list_threads(), _patch_columns():
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+
+                filter_input = screen.query_one("#thread-filter", Input)
+                sort_switch = screen.query_one("#thread-sort-toggle", Switch)
+                thread_id_switch = screen.query_one(
+                    f"#{ThreadSelectorScreen._switch_id('thread_id')}",
+                    Switch,
+                )
+                agent_name_switch = screen.query_one(
+                    f"#{ThreadSelectorScreen._switch_id('agent_name')}",
+                    Switch,
+                )
+                messages_switch = screen.query_one(
+                    f"#{ThreadSelectorScreen._switch_id('messages')}",
+                    Switch,
+                )
+
+                assert filter_input.has_focus
 
                 await pilot.press("tab")
                 await pilot.pause()
-                assert screen._sort_by_updated is True
+                assert sort_switch.has_focus
+
+                await pilot.press("tab")
+                await pilot.pause()
+                assert thread_id_switch.has_focus
+
+                await pilot.press("tab")
+                await pilot.pause()
+                assert agent_name_switch.has_focus
+
+                await pilot.press("tab")
+                await pilot.pause()
+                assert messages_switch.has_focus
+
+    async def test_shift_tab_moves_focus_backward_through_controls(self) -> None:
+        """Shift+Tab should move focus backward through the controls."""
+        with _patch_list_threads(), _patch_columns():
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+
+                filter_input = screen.query_one("#thread-filter", Input)
+                sort_switch = screen.query_one("#thread-sort-toggle", Switch)
+                assert filter_input.has_focus
+
+                await pilot.press("tab")
+                await pilot.pause()
+                assert sort_switch.has_focus
+
+                await pilot.press("shift+tab")
+                await pilot.pause()
+                assert filter_input.has_focus
+
+    async def test_switch_toggle_keeps_focus_on_current_control(self) -> None:
+        """Toggling a switch should not bounce focus back to the search input."""
+        with _patch_list_threads(), _patch_columns():
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+
+                sort_switch = screen.query_one("#thread-sort-toggle", Switch)
+                filter_input = screen.query_one("#thread-filter", Input)
+
+                await pilot.press("tab")
+                await pilot.pause()
+                assert sort_switch.has_focus
+
+                sort_switch.toggle()
+                await pilot.pause()
+
+                assert sort_switch.has_focus
+                assert not filter_input.has_focus
+
+    async def test_typing_letter_from_controls_refocuses_search(self) -> None:
+        """Typing a letter on a control should jump back to fuzzy search."""
+        with _patch_list_threads(), _patch_columns():
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+
+                filter_input = screen.query_one("#thread-filter", Input)
+                sort_switch = screen.query_one("#thread-sort-toggle", Switch)
+
+                await pilot.press("tab")
+                await pilot.pause()
+                assert sort_switch.has_focus
+
+                await pilot.press("f")
+                await pilot.pause()
+
+                assert filter_input.has_focus
+                assert filter_input.value == "f"
+                assert screen._filter_text == "f"
+                assert len(screen._filtered_threads) == 1
+                assert screen._filtered_threads[0]["thread_id"] == "def67890"
+
+    async def test_typing_multiple_letters_from_controls_appends_search(self) -> None:
+        """Typing multiple letters after refocus should append, not replace."""
+        with _patch_list_threads(), _patch_columns():
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+
+                filter_input = screen.query_one("#thread-filter", Input)
+                sort_switch = screen.query_one("#thread-sort-toggle", Switch)
+
+                await pilot.press("tab")
+                await pilot.pause()
+                assert sort_switch.has_focus
+
+                await pilot.press("f")
+                await pilot.pause()
+                await pilot.press("i")
+                await pilot.pause()
+
+                assert filter_input.has_focus
+                assert filter_input.value == "fi"
+                assert screen._filter_text == "fi"
+                assert len(screen._filtered_threads) == 1
+                assert screen._filtered_threads[0]["thread_id"] == "def67890"
+
+    async def test_space_from_controls_does_not_refocus_search(self) -> None:
+        """Space on a control should keep switch behavior instead of search focus."""
+        with _patch_list_threads(), _patch_columns():
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+
+                filter_input = screen.query_one("#thread-filter", Input)
+                sort_switch = screen.query_one("#thread-sort-toggle", Switch)
+
+                await pilot.press("tab")
+                await pilot.pause()
+                assert sort_switch.has_focus
+                assert sort_switch.value is True
+
+                await pilot.press("space")
+                await pilot.pause()
+
+                assert sort_switch.has_focus
+                assert not filter_input.has_focus
+                assert filter_input.value == ""
+                assert sort_switch.value is False
 
 
 class TestThreadSelectorDownWrap:
@@ -601,9 +785,23 @@ class TestThreadSelectorFormatLabel:
             thread, selected=False, current=False, columns=_ALL_COLUMNS_ON
         )
         assert "abcdef1234567890" not in label
-        assert "abcdef1234" in label
+        assert "abcdef123" in label
         assert "very-long-agent-name-here" not in label
-        assert "very-long-agen" in label
+        assert "very-long-age" in label
+
+    def test_uuid_thread_id_display_omits_hyphen_separator(self) -> None:
+        """UUID-style IDs should not show a dangling hyphen in the preview."""
+        thread = ThreadInfo(
+            thread_id="ffc0ebe3-3478-4455-b9b3-9e6f1bed9414",
+            agent_name="agent",
+            updated_at=None,
+            message_count=0,
+        )
+        label = ThreadSelectorScreen._format_option_label(
+            thread, selected=False, current=False, columns=_ALL_COLUMNS_ON
+        )
+        assert "ffc0ebe3-" not in label
+        assert "ffc0ebe33" in label
 
 
 class TestThreadSelectorBuildTitle:
@@ -776,10 +974,12 @@ class TestThreadSelectorColumnHeader:
 
     def test_header_contains_default_column_names(self) -> None:
         """Column header should contain visible column names based on defaults."""
-        screen = ThreadSelectorScreen(current_thread=None)
+        with _patch_columns():
+            screen = ThreadSelectorScreen(current_thread=None)
         header = screen._format_header()
+        assert "Created" in header
         assert "Msgs" in header
-        assert "Updated" in header
+        assert "Updated (sort)" in header
         assert "Prompt" in header
 
     async def test_header_widget_is_mounted(self) -> None:
@@ -1130,6 +1330,52 @@ class TestThreadSelectorSearch:
         assert len(screen._filtered_threads) == 1
         assert screen._filtered_threads[0]["thread_id"] == "def67890"
 
+    async def test_typing_in_search_filters_without_crashing(self) -> None:
+        """Typing into the live search box should filter by initial prompt."""
+        with _patch_list_threads():
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                for char in "fix":
+                    await pilot.press(char)
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                assert len(screen._filtered_threads) == 1
+                assert screen._filtered_threads[0]["thread_id"] == "def67890"
+                assert app.dismissed is False
+
+    def test_equal_match_scores_do_not_crash_sorting(self) -> None:
+        """Fuzzy search should handle tied scores without comparing dict rows."""
+        threads: list[ThreadInfo] = [
+            {
+                "thread_id": "thread-a",
+                "agent_name": "agent",
+                "updated_at": "2026-03-08T02:00:00+00:00",
+                "created_at": "2026-03-08T01:00:00+00:00",
+                "initial_prompt": "prompt one",
+            },
+            {
+                "thread_id": "thread-b",
+                "agent_name": "agent",
+                "updated_at": "2026-03-08T03:00:00+00:00",
+                "created_at": "2026-03-08T01:30:00+00:00",
+                "initial_prompt": "prompt two",
+            },
+        ]
+        screen = ThreadSelectorScreen(current_thread=None, initial_threads=threads)
+
+        screen._filter_text = "p"
+        screen._update_filtered_list()
+
+        assert [thread["thread_id"] for thread in screen._filtered_threads] == [
+            "thread-b",
+            "thread-a",
+        ]
+
 
 class TestThreadSelectorDelete:
     """Tests for ctrl+d delete functionality."""
@@ -1152,6 +1398,23 @@ class TestThreadSelectorDelete:
 
                 assert screen._confirming_delete is True
 
+    async def test_delete_confirmation_uses_screen_overlay(self) -> None:
+        """Delete confirmation should open as a modal above the selector."""
+        with _patch_list_threads():
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+
+                await pilot.press("ctrl+d")
+                await pilot.pause()
+                await pilot.pause()
+
+                assert isinstance(app.screen, DeleteThreadConfirmScreen)
+
     async def test_delete_escape_cancels(self) -> None:
         """Escape during delete confirmation should cancel."""
         with _patch_list_threads():
@@ -1167,13 +1430,52 @@ class TestThreadSelectorDelete:
                 await pilot.pause()
                 await pilot.pause()
                 assert screen._confirming_delete is True
+                assert isinstance(app.screen, DeleteThreadConfirmScreen)
 
                 await pilot.press("escape")
                 await pilot.pause()
                 await pilot.pause()
 
                 assert screen._confirming_delete is False
+                assert app.screen is screen
                 assert app.dismissed is False
+
+    async def test_delete_keeps_selection_on_next_thread(self) -> None:
+        """Deleting a row should move selection to the next visible thread."""
+        with (
+            _patch_list_threads(),
+            patch(
+                "deepagents_cli.sessions.delete_thread",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+        ):
+            app = ThreadSelectorTestApp(current_thread=None)
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+
+                await pilot.press("down")
+                await pilot.pause()
+                assert screen._selected_index == 1
+                assert screen._filtered_threads[1]["thread_id"] == "def67890"
+
+                await pilot.press("ctrl+d")
+                await pilot.pause()
+                await pilot.pause()
+                assert isinstance(app.screen, DeleteThreadConfirmScreen)
+
+                await pilot.press("enter")
+                await pilot.pause()
+                await pilot.pause()
+
+                assert app.screen is screen
+                assert screen._selected_index == 1
+                selected_thread = screen._filtered_threads[screen._selected_index]
+                assert selected_thread["thread_id"] == "ghi11111"
 
 
 class TestThreadSelectorColumnConfig:
@@ -1204,6 +1506,38 @@ class TestThreadSelectorColumnConfig:
         assert "abc12345" not in label
         assert "my-agent" not in label
         assert "Hello world" not in label
+
+    async def test_switch_toggles_column_and_persists(self) -> None:
+        """Clicking a column switch should hide the column and save the choice."""
+        with (
+            _patch_list_threads(),
+            _patch_columns(),
+            patch(
+                "deepagents_cli.model_config.save_thread_columns",
+                return_value=True,
+            ) as mock_save,
+        ):
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+
+                assert "Prompt" in screen._format_header()
+
+                prompt_switch = screen.query_one(
+                    f"#{screen._switch_id('initial_prompt')}",
+                    Switch,
+                )
+                prompt_switch.value = False
+                await pilot.pause()
+
+                assert screen._columns["initial_prompt"] is False
+                assert "Prompt" not in screen._format_header()
+                mock_save.assert_called()
+                assert mock_save.call_args.args[0]["initial_prompt"] is False
 
 
 def _get_widget_text(widget: Static) -> str:

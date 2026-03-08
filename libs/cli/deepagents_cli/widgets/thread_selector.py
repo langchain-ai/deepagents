@@ -618,6 +618,8 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         self._sort_by_updated = True
         self._confirming_delete = False
         self._render_lock = asyncio.Lock()
+        self._filter_input: Input | None = None
+        self._filter_controls: list[Input | Checkbox] | None = None
 
         from deepagents_cli.model_config import (
             load_thread_columns,
@@ -698,6 +700,30 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         """Return the control-panel sort label for the toggle switch."""
         label = "Updated At" if self._sort_by_updated else "Created At"
         return f"Sort by {label}"
+
+    def _get_filter_input(self) -> Input:
+        """Return the cached search input widget."""
+        if self._filter_input is None:
+            self._filter_input = self.query_one("#thread-filter", Input)
+        return self._filter_input
+
+    def _filter_focus_order(self) -> list[Input | Checkbox]:
+        """Return the cached tab order for filter controls in the side panel."""
+        if self._filter_controls is None:
+            filter_input = self._get_filter_input()
+            sort_switch = self.query_one(f"#{_SORT_SWITCH_ID}", Checkbox)
+            relative_switch = self.query_one(f"#{_RELATIVE_TIME_SWITCH_ID}", Checkbox)
+            column_switches = [
+                self.query_one(f"#{self._switch_id(key)}", Checkbox)
+                for key in _COLUMN_ORDER
+            ]
+            self._filter_controls = [
+                filter_input,
+                sort_switch,
+                relative_switch,
+                *column_switches,
+            ]
+        return self._filter_controls
 
     def compose(self) -> ComposeResult:
         """Compose the screen layout.
@@ -796,7 +822,8 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             container = self.query_one("#thread-selector-shell", Vertical)
             container.styles.border = ("ascii", "green")
 
-        filter_input = self.query_one("#thread-filter", Input)
+        filter_input = self._get_filter_input()
+        self._filter_focus_order()
         filter_input.focus()
 
         if self._has_initial_threads:
@@ -839,7 +866,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         if self._confirming_delete:
             return
 
-        filter_input = self.query_one("#thread-filter", Input)
+        filter_input = self._get_filter_input()
         if filter_input.has_focus:
             return
 
@@ -854,7 +881,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
     def _collapse_search_selection(self) -> None:
         """Place the search cursor at the end without an active selection."""
-        filter_input = self.query_one("#thread-filter", Input)
+        filter_input = self._get_filter_input()
         filter_input.selection = type(filter_input.selection).cursor(
             len(filter_input.value)
         )
@@ -899,6 +926,8 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         self._apply_sort()
         self._sync_selected_index()
         self._update_help_widgets()
+        if event.value and column_key in {"messages", "initial_prompt"}:
+            self._schedule_checkpoint_enrichment()
 
         from deepagents_cli.model_config import save_thread_columns
 
@@ -1028,7 +1057,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         else:
             self._sync_selected_index()
         self._column_widths = self._compute_column_widths()
-        await self._build_list()
+        await self._build_list(recompute_widths=False)
 
     @staticmethod
     def _compute_filtered(
@@ -1094,33 +1123,50 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             group="thread-selector-render",
         )
 
-    def _schedule_message_count_load(self) -> None:
-        """Schedule background message-count loading when counts are missing."""
-        has_missing_counts = self._threads and any(
+    def _pending_checkpoint_fields(self) -> tuple[bool, bool]:
+        """Return which visible checkpoint-derived fields still need loading."""
+        load_counts = self._columns.get("messages", False) and any(
             "message_count" not in thread for thread in self._threads
         )
-        if has_missing_counts:
-            self.run_worker(
-                self._load_message_counts,
-                exclusive=True,
-                group="thread-selector-counts",
-            )
-
-    def _schedule_initial_prompt_load(self) -> None:
-        """Schedule background initial-prompt loading when prompts are missing."""
-        has_missing = self._threads and any(
+        load_prompts = self._columns.get("initial_prompt", False) and any(
             "initial_prompt" not in thread for thread in self._threads
         )
-        if has_missing:
-            self.run_worker(
-                self._load_initial_prompts,
-                exclusive=True,
-                group="thread-selector-prompts",
-            )
+        return load_counts, load_prompts
+
+    async def _populate_visible_checkpoint_details(self) -> tuple[bool, bool]:
+        """Load any still-missing checkpoint-derived fields for visible columns.
+
+        Returns:
+            Tuple indicating whether message counts and prompts were requested.
+        """
+        from deepagents_cli.sessions import populate_thread_checkpoint_details
+
+        load_counts, load_prompts = self._pending_checkpoint_fields()
+        if not load_counts and not load_prompts:
+            return False, False
+
+        await populate_thread_checkpoint_details(
+            self._threads,
+            include_message_count=load_counts,
+            include_initial_prompt=load_prompts,
+        )
+        return load_counts, load_prompts
+
+    def _schedule_checkpoint_enrichment(self) -> None:
+        """Schedule one checkpoint-enrichment pass for missing row fields."""
+        has_missing_counts, has_missing_prompts = self._pending_checkpoint_fields()
+        if not has_missing_counts and not has_missing_prompts:
+            return
+        self.run_worker(
+            self._load_checkpoint_details,
+            exclusive=True,
+            group="thread-selector-checkpoints",
+        )
 
     async def _load_threads(self) -> None:
         """Load thread rows first, then kick off background enrichment."""
         from deepagents_cli.sessions import (
+            apply_cached_thread_initial_prompts,
             apply_cached_thread_message_counts,
             list_threads,
         )
@@ -1142,64 +1188,52 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             return
 
         apply_cached_thread_message_counts(self._threads)
+        apply_cached_thread_initial_prompts(self._threads)
+        if not self._has_initial_threads:
+            try:
+                await self._populate_visible_checkpoint_details()
+            except (OSError, sqlite3.Error):
+                logger.debug(
+                    "Could not preload checkpoint details for thread selector",
+                    exc_info=True,
+                )
+            except Exception:
+                logger.warning(
+                    "Unexpected error preloading checkpoint details "
+                    "for thread selector",
+                    exc_info=True,
+                )
         self._update_filtered_list()
         self._sync_selected_index()
 
         await self._build_list()
 
-        self._schedule_message_count_load()
-        self._schedule_initial_prompt_load()
+        self._schedule_checkpoint_enrichment()
 
         if self._current_thread:
             self._resolve_thread_url()
 
-    async def _load_message_counts(self) -> None:
-        """Populate thread message counts in background and refresh rows."""
-        from deepagents_cli.sessions import populate_thread_message_counts
-
+    async def _load_checkpoint_details(self) -> None:
+        """Populate checkpoint-derived thread fields in one background pass."""
         if not self._threads:
             return
 
         try:
-            await populate_thread_message_counts(self._threads)
+            _, load_prompts = await self._populate_visible_checkpoint_details()
         except (OSError, sqlite3.Error):
             logger.debug(
-                "Could not load message counts for thread selector",
+                "Could not load checkpoint details for thread selector",
                 exc_info=True,
             )
             return
         except Exception:
             logger.warning(
-                "Unexpected error loading message counts for thread selector",
+                "Unexpected error loading checkpoint details for thread selector",
                 exc_info=True,
             )
             return
 
-        self._refresh_cell_labels()
-
-    async def _load_initial_prompts(self) -> None:
-        """Populate initial prompts in background and refresh rows."""
-        from deepagents_cli.sessions import populate_thread_initial_prompts
-
-        if not self._threads:
-            return
-
-        try:
-            await populate_thread_initial_prompts(self._threads)
-        except (OSError, sqlite3.Error):
-            logger.debug(
-                "Could not load initial prompts for thread selector",
-                exc_info=True,
-            )
-            return
-        except Exception:
-            logger.warning(
-                "Unexpected error loading initial prompts for thread selector",
-                exc_info=True,
-            )
-            return
-
-        if self._filter_text.strip():
+        if load_prompts and self._filter_text.strip():
             # Prompts may affect fuzzy match results; rebuild the filtered
             # list but preserve the user's cursor position.
             saved_tid = (
@@ -1295,15 +1329,20 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             )
         self.focus()
 
-    async def _build_list(self) -> None:
-        """Build the thread option widgets."""
+    async def _build_list(self, *, recompute_widths: bool = True) -> None:
+        """Build the thread option widgets.
+
+        Args:
+            recompute_widths: Whether to recalculate shared column widths first.
+        """
         async with self._render_lock:
             try:
                 scroll = self.query_one(".thread-list", VerticalScroll)
             except NoMatches:
                 return
 
-            self._column_widths = self._compute_column_widths()
+            if recompute_widths:
+                self._column_widths = self._compute_column_widths()
             with self.app.batch_update():
                 await scroll.remove_children()
                 self._update_help_widgets()
@@ -1374,49 +1413,6 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             scroll.scroll_home(animate=False)
         else:
             self._option_widgets[self._selected_index].scroll_visible(animate=False)
-
-    @staticmethod
-    def _format_option_label(
-        thread: ThreadInfo,
-        *,
-        selected: bool,
-        current: bool,
-        columns: dict[str, bool] | None = None,
-        relative_time: bool = False,
-    ) -> str:
-        """Build the display label for a thread option.
-
-        Args:
-            thread: Thread metadata from `list_threads`.
-            selected: Whether this option is currently highlighted.
-            current: Whether this is the active thread.
-            columns: Column visibility settings.
-            relative_time: Use relative timestamps.
-
-        Returns:
-            Rich-markup label string.
-        """
-        from deepagents_cli.model_config import THREAD_COLUMN_DEFAULTS
-
-        cols = columns if columns is not None else THREAD_COLUMN_DEFAULTS
-        glyphs = get_glyphs()
-        cursor = f"{glyphs.cursor} " if selected else "  "
-
-        parts = [cursor]
-        for key in _visible_column_keys(cols):
-            value = _format_column_value(thread, key, relative_time=relative_time)
-            width = _COLUMN_WIDTHS[key]
-            if width is None:
-                parts.append(value)
-            elif key in _RIGHT_ALIGNED_COLUMNS:
-                parts.append(f"{value:>{width}}  ")
-            else:
-                parts.append(f"{value:<{width}}  ")
-
-        label = "".join(parts).rstrip()
-        if current:
-            label += " [dim](current)[/dim]"
-        return label
 
     def _update_help_widgets(self) -> None:
         """Update visible header and help text after state changes."""
@@ -1556,22 +1552,6 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             thread_id = self._filtered_threads[self._selected_index]["thread_id"]
             self.dismiss(thread_id)
 
-    def _filter_focus_order(self) -> list[Input | Checkbox]:
-        """Return the tab order for filter controls in the side panel."""
-        filter_input = self.query_one("#thread-filter", Input)
-        sort_switch = self.query_one(f"#{_SORT_SWITCH_ID}", Checkbox)
-        relative_switch = self.query_one(f"#{_RELATIVE_TIME_SWITCH_ID}", Checkbox)
-        column_switches = [
-            self.query_one(f"#{self._switch_id(key)}", Checkbox)
-            for key in _COLUMN_ORDER
-        ]
-        return [
-            filter_input,
-            sort_switch,
-            relative_switch,
-            *column_switches,
-        ]
-
     def action_focus_next_filter(self) -> None:
         """Move focus through the filter and column-toggle controls."""
         if self._confirming_delete:
@@ -1640,7 +1620,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             )
             return
         with contextlib.suppress(NoMatches):
-            self.query_one("#thread-filter", Input).focus()
+            self._get_filter_input().focus()
 
     async def _handle_delete_confirm(self, thread_id: str) -> None:
         """Execute thread deletion after confirmation.

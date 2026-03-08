@@ -15,7 +15,7 @@ from textual.binding import Binding, BindingType
 from textual.containers import Container
 from textual.css.query import NoMatches
 from textual.screen import ModalScreen
-from textual.widgets import Input, Static, Switch
+from textual.widgets import Checkbox, Input, Static
 
 from deepagents_cli.app import (
     _ITERM_CURSOR_GUIDE_OFF,
@@ -590,7 +590,7 @@ class TestModalScreenShiftTabHandling:
 
             assert app._auto_approve is False
             filter_input = screen.query_one("#thread-filter", Input)
-            sort_switch = screen.query_one("#thread-sort-toggle", Switch)
+            sort_switch = screen.query_one("#thread-sort-toggle", Checkbox)
 
             await pilot.press("tab")
             await pilot.pause()

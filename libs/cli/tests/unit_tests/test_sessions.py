@@ -5,6 +5,7 @@ import json
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -13,6 +14,9 @@ from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from deepagents_cli import sessions
 from deepagents_cli.app import TextualSessionState
 from deepagents_cli.sessions import get_thread_limit
+
+if TYPE_CHECKING:
+    import aiosqlite
 
 
 class TestGenerateThreadId:
@@ -420,17 +424,20 @@ class TestListThreadsWithMessageCount:
                 ),
                 patch.object(
                     sessions,
-                    "_count_messages_from_checkpoint",
+                    "_load_latest_checkpoint_summary",
                     new_callable=AsyncMock,
-                    return_value=3,
-                ) as mock_count,
+                    return_value=sessions._CheckpointSummary(
+                        message_count=3,
+                        initial_prompt=None,
+                    ),
+                ) as mock_summary,
             ):
                 first = asyncio.run(sessions.list_threads(include_message_count=True))
                 second = asyncio.run(sessions.list_threads(include_message_count=True))
 
                 assert first[0]["message_count"] == 3
                 assert second[0]["message_count"] == 3
-                assert mock_count.await_count == 1
+                assert mock_summary.await_count == 1
         finally:
             sessions._message_count_cache.clear()
 
@@ -452,10 +459,19 @@ class TestListThreadsWithMessageCount:
                 ),
                 patch.object(
                     sessions,
-                    "_count_messages_from_checkpoint",
+                    "_load_latest_checkpoint_summary",
                     new_callable=AsyncMock,
-                    side_effect=[3, 4],
-                ) as mock_count,
+                    side_effect=[
+                        sessions._CheckpointSummary(
+                            message_count=3,
+                            initial_prompt=None,
+                        ),
+                        sessions._CheckpointSummary(
+                            message_count=4,
+                            initial_prompt=None,
+                        ),
+                    ],
+                ) as mock_summary,
             ):
                 first = asyncio.run(sessions.list_threads(include_message_count=True))
                 assert first[0]["message_count"] == 3
@@ -478,9 +494,55 @@ class TestListThreadsWithMessageCount:
 
                 second = asyncio.run(sessions.list_threads(include_message_count=True))
                 assert second[0]["message_count"] == 4
-                assert mock_count.await_count == 2
+                assert mock_summary.await_count == 2
         finally:
             sessions._message_count_cache.clear()
+
+
+class TestPopulateThreadCheckpointDetails:
+    """Tests for combined checkpoint-detail enrichment."""
+
+    async def test_shared_summary_populates_count_and_prompt_once(self) -> None:
+        """One summary lookup should fill both fields for a thread row."""
+        threads: list[sessions.ThreadInfo] = [
+            {
+                "thread_id": "thread-a",
+                "agent_name": "agent",
+                "updated_at": "2026-03-08T02:00:00+00:00",
+                "latest_checkpoint_id": "cp_1",
+            }
+        ]
+
+        with (
+            patch.object(
+                sessions,
+                "_get_jsonplus_serializer",
+                new_callable=AsyncMock,
+                return_value=object(),
+            ),
+            patch.object(
+                sessions,
+                "_load_latest_checkpoint_summary",
+                new_callable=AsyncMock,
+                return_value=sessions._CheckpointSummary(
+                    message_count=4,
+                    initial_prompt="hello world",
+                ),
+            ) as mock_summary,
+        ):
+            await sessions._populate_checkpoint_fields(  # pyright: ignore[reportPrivateUsage]
+                cast(
+                    "aiosqlite.Connection",
+                    object(),  # connection is unused by the mocked loader
+                ),
+                threads,
+                include_message_count=True,
+                include_initial_prompt=True,
+            )
+
+        assert threads[0]["message_count"] == 4
+        assert threads[0]["initial_prompt"] == "hello world"
+        assert mock_summary.await_count == 1
 
 
 class TestApplyCachedThreadMessageCounts:
@@ -534,6 +596,59 @@ class TestApplyCachedThreadMessageCounts:
             assert "message_count" not in threads[0]
         finally:
             sessions._message_count_cache.clear()
+
+
+class TestApplyCachedThreadInitialPrompts:
+    """Tests for applying cached thread prompts to rows."""
+
+    def test_populates_rows_from_cache(self) -> None:
+        """Rows with matching freshness should get prompts from cache."""
+        sessions._initial_prompt_cache.clear()
+        try:
+            sessions._initial_prompt_cache["thread-a"] = ("cp_1", "hello world")
+            threads: list[sessions.ThreadInfo] = [
+                {
+                    "thread_id": "thread-a",
+                    "agent_name": "agent1",
+                    "updated_at": "2024-01-01T00:00:00+00:00",
+                    "latest_checkpoint_id": "cp_1",
+                },
+                {
+                    "thread_id": "thread-b",
+                    "agent_name": "agent2",
+                    "updated_at": "2024-01-01T00:00:00+00:00",
+                    "latest_checkpoint_id": "cp_1",
+                },
+            ]
+
+            populated = sessions.apply_cached_thread_initial_prompts(threads)
+
+            assert populated == 1
+            assert threads[0]["initial_prompt"] == "hello world"
+            assert "initial_prompt" not in threads[1]
+        finally:
+            sessions._initial_prompt_cache.clear()
+
+    def test_skips_stale_cache_entries(self) -> None:
+        """Rows should not use prompt cache when freshness token changes."""
+        sessions._initial_prompt_cache.clear()
+        try:
+            sessions._initial_prompt_cache["thread-a"] = ("cp_1", "hello world")
+            threads: list[sessions.ThreadInfo] = [
+                {
+                    "thread_id": "thread-a",
+                    "agent_name": "agent1",
+                    "updated_at": "2024-01-01T00:00:00+00:00",
+                    "latest_checkpoint_id": "cp_2",
+                }
+            ]
+
+            populated = sessions.apply_cached_thread_initial_prompts(threads)
+
+            assert populated == 0
+            assert "initial_prompt" not in threads[0]
+        finally:
+            sessions._initial_prompt_cache.clear()
 
 
 class TestGetCachedThreads:
@@ -607,9 +722,126 @@ class TestGetCachedThreads:
             sessions._recent_threads_cache.clear()
             sessions._message_count_cache.clear()
 
+    def test_applies_cached_initial_prompts_to_snapshot(self) -> None:
+        """Returned snapshot should hydrate prompts from prompt cache."""
+        sessions._recent_threads_cache.clear()
+        sessions._initial_prompt_cache.clear()
+        try:
+            sessions._recent_threads_cache[None, 5] = [
+                {
+                    "thread_id": "thread-a",
+                    "agent_name": "agent1",
+                    "updated_at": "2024-01-01T00:00:00+00:00",
+                    "latest_checkpoint_id": "cp_1",
+                }
+            ]
+            sessions._initial_prompt_cache["thread-a"] = ("cp_1", "hello world")
+
+            rows = sessions.get_cached_threads(limit=5)
+
+            assert rows is not None
+            assert rows[0]["initial_prompt"] == "hello world"
+            assert "initial_prompt" not in sessions._recent_threads_cache[None, 5][0]
+        finally:
+            sessions._recent_threads_cache.clear()
+            sessions._initial_prompt_cache.clear()
+
 
 class TestPrewarmThreadMessageCounts:
-    """Tests for prewarm_thread_message_counts error handling."""
+    """Tests for thread-selector cache prewarming."""
+
+    async def test_prewarm_respects_visible_thread_columns(self) -> None:
+        """Prewarm should only fetch checkpoint fields for visible columns."""
+        threads: list[sessions.ThreadInfo] = [
+            {
+                "thread_id": "thread-a",
+                "agent_name": "agent",
+                "updated_at": "2026-03-08T02:00:00+00:00",
+            }
+        ]
+
+        with (
+            patch.object(
+                sessions,
+                "list_threads",
+                new_callable=AsyncMock,
+                return_value=threads,
+            ),
+            patch(
+                "deepagents_cli.model_config.load_thread_columns",
+                return_value={
+                    "thread_id": False,
+                    "messages": True,
+                    "created_at": True,
+                    "updated_at": True,
+                    "git_branch": False,
+                    "initial_prompt": False,
+                    "agent_name": False,
+                },
+            ),
+            patch.object(
+                sessions,
+                "populate_thread_checkpoint_details",
+                new_callable=AsyncMock,
+                return_value=threads,
+            ) as mock_populate,
+        ):
+            await sessions.prewarm_thread_message_counts(limit=3)
+
+        mock_populate.assert_awaited_once_with(
+            threads,
+            include_message_count=True,
+            include_initial_prompt=False,
+        )
+
+    async def test_prewarm_populates_checkpoint_details_before_caching(self) -> None:
+        """Prefetched rows should include prompt/count data in the recent cache."""
+        sessions._recent_threads_cache.clear()
+        threads: list[sessions.ThreadInfo] = [
+            {
+                "thread_id": "thread-a",
+                "agent_name": "agent",
+                "updated_at": "2026-03-08T02:00:00+00:00",
+            }
+        ]
+
+        async def _populate(
+            rows: list[sessions.ThreadInfo],
+            *,
+            include_message_count: bool,
+            include_initial_prompt: bool,
+        ) -> list[sessions.ThreadInfo]:
+            await asyncio.sleep(0)
+            assert include_message_count is True
+            assert include_initial_prompt is True
+            rows[0]["message_count"] = 6
+            rows[0]["initial_prompt"] = "hello world"
+            return rows
+
+        try:
+            with (
+                patch.object(
+                    sessions,
+                    "list_threads",
+                    new_callable=AsyncMock,
+                    return_value=threads,
+                ),
+                patch.object(
+                    sessions,
+                    "populate_thread_checkpoint_details",
+                    new_callable=AsyncMock,
+                    side_effect=_populate,
+                ) as mock_populate,
+            ):
+                await sessions.prewarm_thread_message_counts(limit=3)
+
+            mock_populate.assert_awaited_once()
+            cached = sessions.get_cached_threads(limit=3)
+            assert cached is not None
+            assert cached[0]["message_count"] == 6
+            assert cached[0]["initial_prompt"] == "hello world"
+        finally:
+            sessions._recent_threads_cache.clear()
 
     async def test_unexpected_errors_log_warning(self) -> None:
         """Unexpected prewarm failures should be visible at warning level."""

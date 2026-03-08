@@ -51,16 +51,6 @@ MOCK_THREADS: list[ThreadInfo] = [
     },
 ]
 
-_ALL_COLUMNS_ON = {
-    "thread_id": True,
-    "messages": True,
-    "created_at": True,
-    "updated_at": True,
-    "git_branch": True,
-    "initial_prompt": True,
-    "agent_name": True,
-}
-
 
 def _patch_list_threads(threads: list[ThreadInfo] | None = None) -> Any:  # noqa: ANN401
     """Return a patch context manager for `list_threads`.
@@ -488,6 +478,44 @@ class TestThreadSelectorTabSort:
                 await pilot.pause()
                 assert filter_input.has_focus
 
+    async def test_cached_filter_controls_handle_tab_and_typing(self) -> None:
+        """Tab traversal and type-to-search should use cached control lookups."""
+        with _patch_list_threads(), _patch_columns():
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+
+                filter_input = screen.query_one("#thread-filter", Input)
+                sort_switch = screen.query_one("#thread-sort-toggle", Checkbox)
+                controls = screen._filter_focus_order()
+                event = MagicMock()
+                event.character = "f"
+                cached_input = MagicMock(spec=Input)
+                cached_input.has_focus = False
+                screen._filter_input = cached_input
+
+                with (
+                    patch.object(
+                        screen,
+                        "query_one",
+                        side_effect=AssertionError("unexpected DOM query"),
+                    ),
+                    patch.object(screen, "set_timer"),
+                ):
+                    assert screen._filter_focus_order() == controls
+                    assert controls[0] is filter_input
+                    assert controls[1] is sort_switch
+
+                    screen.on_key(event)
+
+                cached_input.focus.assert_called_once()
+                cached_input.insert_text_at_cursor.assert_called_once_with("f")
+                event.stop.assert_called_once()
+
     async def test_switch_toggle_keeps_focus_on_current_control(self) -> None:
         """Toggling a switch should not bounce focus back to the search input."""
         with _patch_list_threads(), _patch_columns():
@@ -729,130 +757,6 @@ class TestThreadSelectorOnClickOpensLink:
             screen.on_click(event)  # should not raise
 
         event.stop.assert_not_called()
-
-
-class TestThreadSelectorFormatLabel:
-    """Tests for _format_option_label static method."""
-
-    def test_selected_shows_cursor(self) -> None:
-        """Selected option should include a cursor glyph."""
-        label = ThreadSelectorScreen._format_option_label(
-            MOCK_THREADS[0], selected=True, current=False, columns=_ALL_COLUMNS_ON
-        )
-        assert not label.startswith("  ")
-
-    def test_unselected_has_no_cursor(self) -> None:
-        """Unselected option should start with spaces instead of cursor."""
-        label = ThreadSelectorScreen._format_option_label(
-            MOCK_THREADS[0], selected=False, current=False, columns=_ALL_COLUMNS_ON
-        )
-        assert label.startswith("  ")
-
-    def test_current_shows_suffix(self) -> None:
-        """Current thread should show (current) suffix."""
-        label = ThreadSelectorScreen._format_option_label(
-            MOCK_THREADS[0], selected=False, current=True, columns=_ALL_COLUMNS_ON
-        )
-        assert "(current)" in label
-
-    def test_not_current_no_suffix(self) -> None:
-        """Non-current thread should not show (current) suffix."""
-        label = ThreadSelectorScreen._format_option_label(
-            MOCK_THREADS[0], selected=False, current=False, columns=_ALL_COLUMNS_ON
-        )
-        assert "(current)" not in label
-
-    def test_missing_agent_name_shows_unknown(self) -> None:
-        """Thread with no agent_name should show 'unknown'."""
-        thread = ThreadInfo(thread_id="test123", agent_name=None, updated_at=None)
-        label = ThreadSelectorScreen._format_option_label(
-            thread, selected=False, current=False, columns=_ALL_COLUMNS_ON
-        )
-        assert "unknown" in label
-
-    def test_includes_message_count(self) -> None:
-        """Label should include message count."""
-        label = ThreadSelectorScreen._format_option_label(
-            MOCK_THREADS[0], selected=False, current=False, columns=_ALL_COLUMNS_ON
-        )
-        assert "5" in label
-
-    def test_missing_message_count_shows_placeholder(self) -> None:
-        """Rows without loaded counts should show an explicit placeholder."""
-        thread = ThreadInfo(
-            thread_id="abc12345",
-            agent_name="my-agent",
-            updated_at="2025-01-15T10:30:00",
-        )
-        label = ThreadSelectorScreen._format_option_label(
-            thread, selected=False, current=False, columns=_ALL_COLUMNS_ON
-        )
-        assert "..." in label
-
-    def test_includes_initial_prompt(self) -> None:
-        """Label should include initial prompt when column is enabled."""
-        label = ThreadSelectorScreen._format_option_label(
-            MOCK_THREADS[0], selected=False, current=False, columns=_ALL_COLUMNS_ON
-        )
-        assert "Hello world" in label
-
-    def test_includes_git_branch(self) -> None:
-        """Label should include git branch when column is enabled."""
-        label = ThreadSelectorScreen._format_option_label(
-            MOCK_THREADS[0], selected=False, current=False, columns=_ALL_COLUMNS_ON
-        )
-        assert "main" in label
-
-    def test_hidden_columns_not_shown(self) -> None:
-        """Columns set to False should not appear in the label."""
-        cols = {
-            "thread_id": False,
-            "messages": False,
-            "created_at": False,
-            "updated_at": True,
-            "git_branch": False,
-            "initial_prompt": False,
-            "agent_name": False,
-        }
-        label = ThreadSelectorScreen._format_option_label(
-            MOCK_THREADS[0], selected=False, current=False, columns=cols
-        )
-        assert "abc12345" not in label
-        assert "my-agent" not in label
-        assert "Hello world" not in label
-        assert "main" not in label
-
-    def test_long_values_are_truncated(self) -> None:
-        """Thread ID and agent name exceeding column width are truncated."""
-        from deepagents_cli.widgets.thread_selector import _format_column_value
-
-        thread = ThreadInfo(
-            thread_id="abcdef1234567890",
-            agent_name="very-long-agent-name-here",
-            updated_at=None,
-            message_count=0,
-        )
-        label = ThreadSelectorScreen._format_option_label(
-            thread, selected=False, current=False, columns=_ALL_COLUMNS_ON
-        )
-        assert "abcdef1234567890" not in label
-        assert "abcdef123" in label
-        assert "very-long-agent-name-here" not in label
-        assert _format_column_value(thread, "agent_name") in label
-
-    def test_uuid_thread_id_display_omits_hyphen_separator(self) -> None:
-        """UUID-style IDs should not show a dangling hyphen in the preview."""
-        thread = ThreadInfo(
-            thread_id="ffc0ebe3-3478-4455-b9b3-9e6f1bed9414",
-            agent_name="agent",
-            updated_at=None,
-            message_count=0,
-        )
-        label = ThreadSelectorScreen._format_option_label(
-            thread, selected=False, current=False, columns=_ALL_COLUMNS_ON
-        )
-        assert "ffc0ebe3-" not in label
-        assert "ffc0ebe33" in label
 
 
 class TestThreadSelectorBuildTitle:
@@ -1281,9 +1185,9 @@ class TestThreadSelectorLimit:
 
                 mock_lt.assert_awaited_once_with(limit=5, include_message_count=False)
 
-    async def test_message_counts_are_loaded_in_background(self) -> None:
-        """Missing counts should be populated asynchronously after list render."""
-        threads_without_counts: list[ThreadInfo] = [
+    async def test_checkpoint_details_are_loaded_for_initial_render(self) -> None:
+        """Visible checkpoint fields should be loaded before first non-cached render."""
+        threads_without_details: list[ThreadInfo] = [
             {
                 "thread_id": "abc12345",
                 "agent_name": "my-agent",
@@ -1291,20 +1195,29 @@ class TestThreadSelectorLimit:
             }
         ]
 
-        async def _populate(threads: list[ThreadInfo]) -> list[ThreadInfo]:
+        async def _populate(
+            threads: list[ThreadInfo],
+            *,
+            include_message_count: bool,
+            include_initial_prompt: bool,
+        ) -> list[ThreadInfo]:
             await asyncio.sleep(0)
+            assert include_message_count is True
+            assert include_initial_prompt is True
             for thread in threads:
                 thread["message_count"] = 9
+                thread["initial_prompt"] = "loaded prompt"
             return threads
 
         with (
             patch(
                 "deepagents_cli.sessions.list_threads",
                 new_callable=AsyncMock,
-                return_value=threads_without_counts,
+                return_value=threads_without_details,
             ) as mock_lt,
+            _patch_columns(),
             patch(
-                "deepagents_cli.sessions.populate_thread_message_counts",
+                "deepagents_cli.sessions.populate_thread_checkpoint_details",
                 new_callable=AsyncMock,
                 side_effect=_populate,
             ) as mock_populate,
@@ -1324,7 +1237,9 @@ class TestThreadSelectorLimit:
 
                 screen = app.screen
                 assert isinstance(screen, ThreadSelectorScreen)
+                assert len(screen._option_widgets) == 1
                 assert screen._threads[0]["message_count"] == 9
+                assert screen._threads[0]["initial_prompt"] == "loaded prompt"
 
     async def test_cached_counts_skip_background_population(self) -> None:
         """If cache fills counts before paint, background populate is skipped."""
@@ -1333,6 +1248,7 @@ class TestThreadSelectorLimit:
                 "thread_id": "abc12345",
                 "agent_name": "my-agent",
                 "updated_at": "2025-01-15T10:30:00",
+                "initial_prompt": "prompt",
                 "latest_checkpoint_id": "cp_1",
             }
         ]
@@ -1352,7 +1268,7 @@ class TestThreadSelectorLimit:
                 side_effect=_apply_cached,
             ) as mock_apply_cached,
             patch(
-                "deepagents_cli.sessions.populate_thread_message_counts",
+                "deepagents_cli.sessions.populate_thread_checkpoint_details",
                 new_callable=AsyncMock,
             ) as mock_populate,
         ):
@@ -1370,11 +1286,11 @@ class TestThreadSelectorLimit:
                 assert screen._threads[0]["message_count"] == 11
 
 
-class TestThreadSelectorMessageCountErrors:
-    """Tests for thread selector message-count load error handling."""
+class TestThreadSelectorCheckpointDetailErrors:
+    """Tests for thread selector checkpoint-detail load error handling."""
 
-    async def test_unexpected_message_count_error_logs_warning(self) -> None:
-        """Unexpected count-load errors should be visible at warning level."""
+    async def test_unexpected_checkpoint_detail_error_logs_warning(self) -> None:
+        """Unexpected checkpoint-load errors should be visible at warning level."""
         screen = ThreadSelectorScreen(
             initial_threads=[
                 {
@@ -1387,7 +1303,7 @@ class TestThreadSelectorMessageCountErrors:
 
         with (
             patch(
-                "deepagents_cli.sessions.populate_thread_message_counts",
+                "deepagents_cli.sessions.populate_thread_checkpoint_details",
                 new_callable=AsyncMock,
                 side_effect=RuntimeError("unexpected type mismatch"),
             ),
@@ -1395,7 +1311,7 @@ class TestThreadSelectorMessageCountErrors:
                 "deepagents_cli.widgets.thread_selector.logger.warning"
             ) as mock_warning,
         ):
-            await screen._load_message_counts()
+            await screen._load_checkpoint_details()
 
         mock_warning.assert_called_once()
 
@@ -1469,6 +1385,54 @@ class TestThreadSelectorPrefetchedRows:
                 )
                 assert len(screen._threads) == 2
                 assert screen._threads[0]["thread_id"] == "new12345"
+
+    async def test_prefetched_prompt_is_preserved_during_refresh(self) -> None:
+        """Refreshing prefetched rows should not blank the prompt column first."""
+        prefetched: list[ThreadInfo] = [
+            {
+                "thread_id": "abc12345",
+                "agent_name": "my-agent",
+                "updated_at": "2025-01-15T10:30:00",
+                "latest_checkpoint_id": "cp_1",
+                "initial_prompt": "cached prompt",
+            }
+        ]
+        refreshed: list[ThreadInfo] = [
+            {
+                "thread_id": "abc12345",
+                "agent_name": "my-agent",
+                "updated_at": "2025-01-15T10:30:00",
+                "latest_checkpoint_id": "cp_1",
+            }
+        ]
+
+        from deepagents_cli import sessions
+
+        sessions._initial_prompt_cache.clear()
+        sessions._initial_prompt_cache["abc12345"] = ("cp_1", "cached prompt")
+        try:
+            with patch(
+                "deepagents_cli.sessions.list_threads",
+                new_callable=AsyncMock,
+                return_value=refreshed,
+            ):
+                app = ThreadSelectorTestApp(current_thread="abc12345")
+                async with app.run_test() as pilot:
+                    app.push_screen(
+                        ThreadSelectorScreen(
+                            current_thread="abc12345",
+                            thread_limit=20,
+                            initial_threads=prefetched,
+                        )
+                    )
+                    await pilot.pause()
+                    await pilot.pause(0.1)
+
+                    screen = app.screen
+                    assert isinstance(screen, ThreadSelectorScreen)
+                    assert screen._threads[0]["initial_prompt"] == "cached prompt"
+        finally:
+            sessions._initial_prompt_cache.clear()
 
     async def test_empty_prefetched_snapshot_still_refreshes(self) -> None:
         """An empty cached snapshot should still hydrate from SQLite in background."""
@@ -1601,6 +1565,30 @@ class TestThreadSelectorSearch:
             "thread-a",
         ]
 
+    async def test_filter_and_build_reuses_precomputed_widths(self) -> None:
+        """Filter rebuilds should not recompute column widths twice."""
+        with _patch_list_threads(), _patch_columns():
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+
+                with (
+                    patch.object(
+                        screen,
+                        "_compute_column_widths",
+                        wraps=screen._compute_column_widths,
+                    ) as mock_widths,
+                    patch.object(screen, "_update_help_widgets"),
+                ):
+                    screen._filter_text = "fix"
+                    await screen._filter_and_build()
+
+                assert mock_widths.call_count == 1
+
 
 class TestThreadSelectorDelete:
     """Tests for ctrl+d delete functionality."""
@@ -1714,24 +1702,6 @@ class TestThreadSelectorColumnConfig:
             screen = ThreadSelectorScreen(current_thread=None)
         assert screen._columns == THREAD_COLUMN_DEFAULTS
 
-    def test_format_label_respects_columns(self) -> None:
-        """Label should only include enabled columns."""
-        cols_minimal = {
-            "thread_id": False,
-            "messages": False,
-            "created_at": False,
-            "updated_at": True,
-            "git_branch": False,
-            "initial_prompt": False,
-            "agent_name": False,
-        }
-        label = ThreadSelectorScreen._format_option_label(
-            MOCK_THREADS[0], selected=False, current=False, columns=cols_minimal
-        )
-        assert "abc12345" not in label
-        assert "my-agent" not in label
-        assert "Hello world" not in label
-
     async def test_switch_toggles_column_and_persists(self) -> None:
         """Clicking a column switch should hide the column and save the choice."""
         with (
@@ -1762,6 +1732,70 @@ class TestThreadSelectorColumnConfig:
                 assert screen._columns["initial_prompt"] is False
                 mock_save.assert_called()
                 assert mock_save.call_args.args[0]["initial_prompt"] is False
+
+    async def test_enabling_prompt_column_triggers_prompt_load(self) -> None:
+        """Turning on the prompt column should fetch missing prompt data."""
+        threads_without_prompt: list[ThreadInfo] = [
+            {
+                "thread_id": "abc12345",
+                "agent_name": "my-agent",
+                "updated_at": "2025-01-15T10:30:00",
+                "message_count": 5,
+            }
+        ]
+        columns = {
+            "thread_id": True,
+            "messages": True,
+            "created_at": True,
+            "updated_at": True,
+            "git_branch": True,
+            "initial_prompt": False,
+            "agent_name": True,
+        }
+
+        async def _populate(
+            rows: list[ThreadInfo],
+            *,
+            include_message_count: bool,
+            include_initial_prompt: bool,
+        ) -> list[ThreadInfo]:
+            await asyncio.sleep(0)
+            assert include_message_count is False
+            assert include_initial_prompt is True
+            rows[0]["initial_prompt"] = "loaded prompt"
+            return rows
+
+        with (
+            _patch_list_threads(threads_without_prompt),
+            _patch_columns(columns),
+            patch(
+                "deepagents_cli.sessions.populate_thread_checkpoint_details",
+                new_callable=AsyncMock,
+                side_effect=_populate,
+            ) as mock_populate,
+        ):
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                assert mock_populate.await_count == 0
+
+                prompt_switch = screen.query_one(
+                    f"#{screen._switch_id('initial_prompt')}",
+                    Checkbox,
+                )
+                prompt_switch.value = True
+
+                for _ in range(10):
+                    if mock_populate.await_count >= 1:
+                        break
+                    await pilot.pause(0.05)
+
+                mock_populate.assert_awaited_once()
+                assert screen._threads[0]["initial_prompt"] == "loaded prompt"
 
 
 def _get_widget_text(widget: Static) -> str:

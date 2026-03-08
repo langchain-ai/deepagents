@@ -257,6 +257,18 @@ def reset_glyphs_cache() -> None:
     _glyphs_cache = None
 
 
+def newline_shortcut() -> str:
+    """Return the platform-native label for the newline keyboard shortcut.
+
+    macOS labels the modifier "Option" while other platforms use Ctrl+J
+    as the most reliable cross-terminal shortcut.
+
+    Returns:
+        A human-readable shortcut string, e.g. `'Option+Enter'` or `'Ctrl+J'`.
+    """
+    return "Option+Enter" if sys.platform == "darwin" else "Ctrl+J"
+
+
 # Text art banners (Unicode and ASCII variants)
 
 _UNICODE_BANNER = f"""
@@ -472,12 +484,12 @@ class Settings:
         Returns:
             Settings instance with detected configuration
         """
-        # Detect API keys
-        openai_key = os.environ.get("OPENAI_API_KEY")
-        anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
-        google_key = os.environ.get("GOOGLE_API_KEY")
-        nvidia_key = os.environ.get("NVIDIA_API_KEY")
-        tavily_key = os.environ.get("TAVILY_API_KEY")
+        # Detect API keys (normalize empty strings to None)
+        openai_key = os.environ.get("OPENAI_API_KEY") or None
+        anthropic_key = os.environ.get("ANTHROPIC_API_KEY") or None
+        google_key = os.environ.get("GOOGLE_API_KEY") or None
+        nvidia_key = os.environ.get("NVIDIA_API_KEY") or None
+        tavily_key = os.environ.get("TAVILY_API_KEY") or None
         google_cloud_project = os.environ.get("GOOGLE_CLOUD_PROJECT")
 
         # Detect LangSmith configuration
@@ -509,6 +521,111 @@ class Settings:
             project_root=project_root,
             shell_allow_list=shell_allow_list,
         )
+
+    def reload_from_environment(self, *, start_path: Path | None = None) -> list[str]:
+        """Reload selected settings from environment variables and project files.
+
+        This refreshes only fields that are expected to change at runtime
+        (API keys, Google Cloud project, project root, shell allow-list, and
+        LangSmith tracing project).
+
+        Runtime model state (`model_name`, `model_provider`,
+        `model_context_limit`) and the original user LangSmith project
+        (`user_langchain_project`) are intentionally preserved -- they are
+        not in `reloadable_fields` and are never touched by this method.
+
+        Args:
+            start_path: Directory to start project detection from (defaults to cwd).
+
+        Returns:
+            A list of human-readable change descriptions.
+        """
+        dotenv.load_dotenv(override=True)
+
+        api_key_fields = {
+            "openai_api_key",
+            "anthropic_api_key",
+            "google_api_key",
+            "nvidia_api_key",
+            "tavily_api_key",
+        }
+        reloadable_fields = (
+            "openai_api_key",
+            "anthropic_api_key",
+            "google_api_key",
+            "nvidia_api_key",
+            "tavily_api_key",
+            "google_cloud_project",
+            "deepagents_langchain_project",
+            "project_root",
+            "shell_allow_list",
+        )
+
+        previous = {field: getattr(self, field) for field in reloadable_fields}
+
+        try:
+            shell_allow_list = parse_shell_allow_list(
+                os.environ.get("DEEPAGENTS_SHELL_ALLOW_LIST")
+            )
+        except ValueError:
+            logger.warning(
+                "Invalid DEEPAGENTS_SHELL_ALLOW_LIST during reload; "
+                "keeping previous value"
+            )
+            shell_allow_list = previous["shell_allow_list"]
+
+        try:
+            project_root = _find_project_root(start_path)
+        except OSError:
+            logger.warning(
+                "Could not detect project root during reload; keeping previous value"
+            )
+            project_root = previous["project_root"]
+
+        refreshed = {
+            "openai_api_key": os.environ.get("OPENAI_API_KEY") or None,
+            "anthropic_api_key": os.environ.get("ANTHROPIC_API_KEY") or None,
+            "google_api_key": os.environ.get("GOOGLE_API_KEY") or None,
+            "nvidia_api_key": os.environ.get("NVIDIA_API_KEY") or None,
+            "tavily_api_key": os.environ.get("TAVILY_API_KEY") or None,
+            "google_cloud_project": os.environ.get("GOOGLE_CLOUD_PROJECT"),
+            "deepagents_langchain_project": os.environ.get(
+                "DEEPAGENTS_LANGSMITH_PROJECT"
+            ),
+            "project_root": project_root,
+            "shell_allow_list": shell_allow_list,
+        }
+
+        for field, value in refreshed.items():
+            setattr(self, field, value)
+
+        # Sync the LANGSMITH_PROJECT env var so LangSmith tracing picks up
+        # the change
+        new_project = refreshed["deepagents_langchain_project"]
+        if new_project:
+            os.environ["LANGSMITH_PROJECT"] = new_project
+        elif _deepagents_project:
+            # Override was previously active but new value is unset; restore.
+            if _original_langsmith_project:
+                os.environ["LANGSMITH_PROJECT"] = _original_langsmith_project
+            else:
+                os.environ.pop("LANGSMITH_PROJECT", None)
+
+        def _display(field: str, value: object) -> str:
+            if field in api_key_fields:
+                return "set" if value else "unset"
+            return str(value)
+
+        changes: list[str] = []
+        for field in reloadable_fields:
+            old_value = previous[field]
+            new_value = refreshed[field]
+            if old_value != new_value:
+                changes.append(
+                    f"{field}: {_display(field, old_value)} -> "
+                    f"{_display(field, new_value)}"
+                )
+        return changes
 
     @property
     def has_openai(self) -> bool:

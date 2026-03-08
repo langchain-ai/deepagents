@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 
     from rich.console import Console
 
-    from deepagents_cli.ask_user import AskUserRequest
+    from deepagents_cli.ask_user import AskUserWidgetResult, Question
 
 from langchain.agents.middleware.human_in_the_loop import (
     ApproveDecision,
@@ -29,6 +29,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.types import Command, Interrupt
 from pydantic import TypeAdapter, ValidationError
 
+from deepagents_cli.ask_user import AskUserRequest
 from deepagents_cli.config import settings
 from deepagents_cli.file_ops import FileOpTracker
 from deepagents_cli.hooks import dispatch_hook
@@ -216,6 +217,8 @@ def print_usage_table(
 HITLDecision = ApproveDecision | EditDecision | RejectDecision
 
 _HITL_REQUEST_ADAPTER = TypeAdapter(HITLRequest)
+_ASK_USER_INTERRUPT_ADAPTER = TypeAdapter(AskUserRequest)
+"""Validator for incoming `ask_user` interrupt payloads."""
 
 
 def _build_stream_config(
@@ -292,7 +295,13 @@ class TextualUIAdapter:
     allowing the app to sync its status bar and session state.
     """
 
-    _request_ask_user: Callable[..., Awaitable[Any]] | None
+    _request_ask_user: (
+        Callable[
+            [list[Question]],
+            Awaitable[asyncio.Future[AskUserWidgetResult] | None],
+        ]
+        | None
+    )
     """Async callback for `ask_user` interrupts.
 
     When awaited, returns a `Future` that resolves to user answers.
@@ -329,7 +338,13 @@ class TextualUIAdapter:
         set_spinner: Callable[[str | None], Awaitable[None]] | None = None,
         set_active_message: Callable[[str | None], None] | None = None,
         sync_message_content: Callable[[str, str], None] | None = None,
-        request_ask_user: Callable[..., Awaitable[Any]] | None = None,
+        request_ask_user: (
+            Callable[
+                [list[Question]],
+                Awaitable[asyncio.Future[AskUserWidgetResult] | None],
+            ]
+            | None
+        ) = None,
     ) -> None:
         """Initialize the adapter.
 
@@ -579,9 +594,22 @@ async def execute_task_textual(
                                     isinstance(iv, dict)
                                     and iv.get("type") == "ask_user"
                                 ):
-                                    pending_ask_user[interrupt_obj.id] = iv
-                                    interrupt_occurred = True
-                                    await dispatch_hook("input.required", {})
+                                    try:
+                                        validated_ask_user = (
+                                            _ASK_USER_INTERRUPT_ADAPTER.validate_python(
+                                                iv
+                                            )
+                                        )
+                                        pending_ask_user[interrupt_obj.id] = (
+                                            validated_ask_user
+                                        )
+                                        interrupt_occurred = True
+                                        await dispatch_hook("input.required", {})
+                                    except ValidationError:
+                                        logger.exception(
+                                            "Invalid ask_user interrupt payload"
+                                        )
+                                        raise
                                 else:
                                     try:
                                         validated_request = (
@@ -906,57 +934,101 @@ async def execute_task_textual(
                 resume_payload: dict[str, Any] = {}
 
                 for interrupt_id, ask_req in list(pending_ask_user.items()):
-                    questions = ask_req.get("questions", [])
+                    questions = ask_req["questions"]
 
                     if adapter._request_ask_user:
                         if adapter._set_spinner:
                             await adapter._set_spinner(None)
+                        result: dict[str, Any] = {
+                            "type": "error",
+                            "error": "ask_user callback returned no response",
+                        }
                         try:
                             future = await adapter._request_ask_user(questions)
                         except Exception:
                             logger.exception("Failed to mount ask_user widget")
-                            result = {"type": "cancelled"}
+                            result = {
+                                "type": "error",
+                                "error": "failed to display ask_user prompt",
+                            }
                             future = None
 
-                        if future is not None:
+                        if future is None:
+                            logger.error(
+                                "ask_user callback returned no Future; "
+                                "reporting as error"
+                            )
+                        else:
                             try:
-                                result = await future
+                                future_result = await future
+                                if isinstance(future_result, dict):
+                                    result = future_result
+                                else:
+                                    logger.error(
+                                        "ask_user future returned non-dict result: %s",
+                                        type(future_result).__name__,
+                                    )
+                                    result = {
+                                        "type": "error",
+                                        "error": "invalid ask_user widget result",
+                                    }
                             except Exception:
                                 logger.exception(
                                     "ask_user future resolution failed; "
-                                    "treating as cancelled"
+                                    "reporting as error"
                                 )
-                                result = {"type": "cancelled"}
+                                result = {
+                                    "type": "error",
+                                    "error": "failed to receive ask_user response",
+                                }
 
-                        if isinstance(result, dict):
-                            if result.get("type") == "answered":
-                                answers = result.get("answers", [])
+                        result_type = result.get("type")
+                        if result_type == "answered":
+                            answers = result.get("answers", [])
+                            if isinstance(answers, list):
                                 resume_payload[interrupt_id] = {"answers": answers}
-                                tool_id = ask_req.get("tool_call_id")
-                                if (
-                                    tool_id
-                                    and tool_id in adapter._current_tool_messages
-                                ):
+                                tool_id = ask_req["tool_call_id"]
+                                if tool_id in adapter._current_tool_messages:
                                     tool_msg = adapter._current_tool_messages[tool_id]
                                     tool_msg.set_success("User answered")
                                     adapter._current_tool_messages.pop(tool_id, None)
                             else:
+                                logger.error(
+                                    "ask_user answered payload had non-list "
+                                    "answers: %s",
+                                    type(answers).__name__,
+                                )
                                 resume_payload[interrupt_id] = {
-                                    "answers": ["(cancelled)" for _ in questions]
+                                    "status": "error",
+                                    "error": "invalid ask_user answers payload",
+                                    "answers": ["" for _ in questions],
                                 }
                                 any_rejected = True
-                        else:
+                        elif result_type == "cancelled":
                             resume_payload[interrupt_id] = {
-                                "answers": ["(cancelled)" for _ in questions]
+                                "status": "cancelled",
+                                "answers": ["" for _ in questions],
+                            }
+                            any_rejected = True
+                        else:
+                            error_text = result.get("error")
+                            if not isinstance(error_text, str) or not error_text:
+                                error_text = "ask_user interaction failed"
+                            resume_payload[interrupt_id] = {
+                                "status": "error",
+                                "error": error_text,
+                                "answers": ["" for _ in questions],
                             }
                             any_rejected = True
                     else:
                         logger.warning(
                             "ask_user interrupt received but no UI callback is "
-                            "registered; sending placeholder answers"
+                            "registered; reporting as error"
                         )
                         resume_payload[interrupt_id] = {
-                            "answers": ["(ask_user not supported)" for _ in questions]
+                            "status": "error",
+                            "error": "ask_user not supported by this UI",
+                            "answers": ["" for _ in questions],
                         }
 
                 for interrupt_id, hitl_request in list(pending_interrupts.items()):

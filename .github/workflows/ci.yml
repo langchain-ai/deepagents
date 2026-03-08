@@ -41,6 +41,8 @@ jobs:
     steps:
       - name: "📋 Checkout Code"
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: "🔍 Check for changes"
         uses: dorny/paths-filter@v3

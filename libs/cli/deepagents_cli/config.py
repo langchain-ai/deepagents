@@ -257,6 +257,18 @@ def reset_glyphs_cache() -> None:
     _glyphs_cache = None
 
 
+def newline_shortcut() -> str:
+    """Return the platform-native label for the newline keyboard shortcut.
+
+    macOS labels the modifier "Option" while other platforms use Ctrl+J
+    as the most reliable cross-terminal shortcut.
+
+    Returns:
+        A human-readable shortcut string, e.g. `'Option+Enter'` or `'Ctrl+J'`.
+    """
+    return "Option+Enter" if sys.platform == "darwin" else "Ctrl+J"
+
+
 # Text art banners (Unicode and ASCII variants)
 
 _UNICODE_BANNER = f"""

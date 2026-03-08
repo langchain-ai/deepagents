@@ -46,12 +46,12 @@ SET0: list[str] = [
     "baseten:deepseek-ai/DeepSeek-V3.2",
     "baseten:Qwen/Qwen3-Coder-480B-A35B-Instruct",
     # Fireworks
-    "fireworks:accounts/fireworks/models/qwen3-235b-a22b-instruct-2507",
-    "fireworks:accounts/fireworks/models/deepseek-v3-0324",
-    "fireworks:accounts/fireworks/models/minimax-m2p1",
-    "fireworks:accounts/fireworks/models/kimi-k2p5",
-    "fireworks:accounts/fireworks/models/glm-5",
-    "fireworks:accounts/fireworks/models/minimax-m2p5",
+    "fireworks:fireworks/qwen3-vl-235b-a22b-thinking",
+    "fireworks:fireworks/deepseek-v3-0324",
+    "fireworks:fireworks/minimax-m2p1",
+    "fireworks:fireworks/kimi-k2p5",
+    "fireworks:fireworks/glm-5",
+    "fireworks:fireworks/minimax-m2p5",
 ]
 
 SET1: list[str] = [
@@ -68,7 +68,7 @@ SET1: list[str] = [
     "ollama:qwen3.5:397b-cloud",
     "baseten:zai-org/GLM-5",
     "baseten:MiniMaxAI/MiniMax-M2.5",
-    "fireworks:accounts/fireworks/models/qwen3-235b-a22b-instruct-2507",
+    "fireworks:fireworks/qwen3-vl-235b-a22b-thinking",
 ]
 
 # These are a bit slower

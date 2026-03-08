@@ -95,7 +95,6 @@ if TYPE_CHECKING:
 
     from deepagents_cli.ask_user import AskUserWidgetResult, Question
     from deepagents_cli.background_runtime import BackgroundRuntime
-    from deepagents_cli.ask_user import AskUserWidgetResult, Question
     from deepagents_cli.mcp_tools import MCPServerInfo
 
 # iTerm2 Cursor Guide Workaround

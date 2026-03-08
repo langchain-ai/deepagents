@@ -6,6 +6,8 @@ body:
   - type: markdown
     attributes:
       value: |
+        > **All contributions must be in English.** See the [language policy](https://docs.langchain.com/oss/python/contributing/overview#language-policy).
+
         Thank you for taking the time to request a new feature.
 
         Use this to request NEW FEATURES or ENHANCEMENTS in Deep Agents. For bug reports, please use the bug report template. For usage questions and general design questions, please use the [Deep Agents Forum](https://forum.langchain.com/c/oss-product-help-lc-and-lg/deep-agents/18).

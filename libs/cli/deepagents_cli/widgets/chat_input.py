@@ -45,6 +45,16 @@ _PASTE_BURST_FLUSH_DELAY_SECONDS = 0.08
 _PASTE_BURST_START_CHARS = {"'", '"'}
 """Characters that can start dropped-path payloads."""
 
+_BACKSLASH_ENTER_GAP_SECONDS = 0.15
+"""Maximum gap between a `\\` key and a following `enter` key to treat the
+pair as a terminal-emitted shift+enter sequence.
+
+Some terminals (e.g. VSCode's built-in terminal) send a literal backslash
+followed by carriage-return when the user presses shift+enter.  The gap is
+generous (150 ms) because the terminal emits both characters nearly
+simultaneously; a human deliberately typing `\\` then pressing Enter would
+have a much larger gap."""
+
 if TYPE_CHECKING:
     from textual import events
     from textual.app import ComposeResult
@@ -323,6 +333,7 @@ class ChatTextArea(TextArea):
         self._paste_burst_buffer = ""
         self._paste_burst_last_char_time: float | None = None
         self._paste_burst_timer: Timer | None = None
+        self._backslash_pending_time: float | None = None
 
     def set_app_focus(self, *, has_focus: bool) -> None:
         """Set whether the app should show the cursor as active.
@@ -417,6 +428,17 @@ class ChatTextArea(TextArea):
 
         self.insert(payload)
 
+    def _delete_preceding_backslash(self) -> None:
+        """Delete the backslash character immediately before the cursor."""
+        row, col = self.cursor_location
+        if col > 0:
+            start = (row, col - 1)
+            self.delete(start, self.cursor_location)
+        elif row > 0:
+            prev_line = self.document.get_line(row - 1)
+            start = (row - 1, len(prev_line))
+            self.delete(start, self.cursor_location)
+
     async def _on_key(self, event: events.Key) -> None:
         """Handle key events."""
         now = time.monotonic()
@@ -449,6 +471,25 @@ class ChatTextArea(TextArea):
             event.prevent_default()
             event.stop()
             return
+
+        # Some terminals (e.g. VSCode built-in) send a literal backslash
+        # followed by enter for shift+enter.  When enter arrives shortly
+        # after a backslash, delete the backslash and insert a newline.
+        if (
+            event.key == "enter"
+            and self._backslash_pending_time is not None
+            and (now - self._backslash_pending_time) <= _BACKSLASH_ENTER_GAP_SECONDS
+        ):
+            self._backslash_pending_time = None
+            event.prevent_default()
+            event.stop()
+            self._delete_preceding_backslash()
+            self.insert("\n")
+            return
+        self._backslash_pending_time = None
+
+        if event.key == "backslash" and event.character == "\\":
+            self._backslash_pending_time = now
 
         # Modifier+Enter inserts newline (Ctrl+J is most reliable across terminals)
         if event.key in {"shift+enter", "ctrl+j", "alt+enter", "ctrl+enter"}:
@@ -569,6 +610,7 @@ class ChatTextArea(TextArea):
 
     async def _on_paste(self, event: events.Paste) -> None:
         """Handle paste events and detect dragged file paths."""
+        self._backslash_pending_time = None
         if self._paste_burst_buffer:
             self._flush_paste_burst()
 
@@ -590,6 +632,7 @@ class ChatTextArea(TextArea):
         self._paste_burst_buffer = ""
         self._paste_burst_last_char_time = None
         self._cancel_paste_burst_timer()
+        self._backslash_pending_time = None
         self._navigating_history = True
         self.text = text
         # Move cursor to end
@@ -605,6 +648,7 @@ class ChatTextArea(TextArea):
         self._paste_burst_buffer = ""
         self._paste_burst_last_char_time = None
         self._cancel_paste_burst_timer()
+        self._backslash_pending_time = None
         self.text = ""
         self.move_cursor((0, 0))
 

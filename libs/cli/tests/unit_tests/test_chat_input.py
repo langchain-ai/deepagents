@@ -1851,3 +1851,73 @@ class TestDroppedVideoPaste:
             assert "[video 1]" in text
             assert len(app.tracker.get_images()) == 1
             assert len(app.tracker.get_videos()) == 1
+
+
+class TestBackslashEnterNewline:
+    """Test that backslash followed quickly by enter inserts a newline.
+
+    Some terminals (e.g. VSCode built-in) send a literal backslash followed
+    by enter when the user presses shift+enter.  The widget detects this
+    pair and collapses it into a newline.
+    """
+
+    async def test_backslash_then_enter_inserts_newline(self) -> None:
+        """Rapid backslash + enter should produce a newline, not submit."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            ta.insert("hello")
+            await pilot.pause()
+
+            await pilot.press("backslash")
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert "\n" in ta.text
+            assert "\\" not in ta.text
+            assert len(app.submitted) == 0
+
+    async def test_backslash_alone_inserts_normally(self) -> None:
+        """A lone backslash should be inserted immediately as normal text."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            await pilot.press("backslash")
+            await pilot.pause()
+
+            assert ta.text == "\\"
+
+    async def test_backslash_then_letter_inserts_both(self) -> None:
+        """Backslash followed by a letter should insert both characters."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            await pilot.press("backslash")
+            await pilot.press("a")
+            await pilot.pause()
+
+            assert "\\" in ta.text
+            assert "a" in ta.text
+
+    async def test_backslash_enter_on_empty_prompt_does_not_submit(self) -> None:
+        """Backslash + enter on empty prompt should not submit."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            await pilot.press("backslash")
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(app.submitted) == 0

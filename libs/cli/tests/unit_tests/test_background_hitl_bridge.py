@@ -56,7 +56,13 @@ class TestBackgroundHitlBridge:
                 await pilot.pause()
                 task_id = await runtime.submit_shell_task("printf rejected")
                 final = await runtime.wait_task(task_id, timeout_seconds=5)
-                assert final.status == BackgroundTaskStatus.FAILED
+                assert final.status == BackgroundTaskStatus.REJECTED
+
+                await pilot.pause()
+                app_msgs = app.query(AppMessage)
+                assert not any(
+                    "rejected" in str(widget._content).lower() for widget in app_msgs
+                )
         finally:
             await runtime.shutdown()
 

@@ -77,6 +77,28 @@ class TestBackgroundMiddleware:
         wait_mock.assert_awaited_once_with("abc", timeout_seconds=30.0)
         assert "status=succeeded" in output
 
+    async def test_wait_tool_reports_rejected_by_user(self) -> None:
+        runtime = BackgroundRuntime(require_hitl_for_shell=False)
+        middleware = BackgroundMiddleware(runtime)
+        wait_tool = _find_tool(middleware, "wait_background_task")
+
+        wait_mock = AsyncMock(
+            return_value=BackgroundTaskRecord(
+                task_id="abc",
+                command="printf x",
+                status=BackgroundTaskStatus.REJECTED,
+                created_at=datetime.now(UTC),
+                updated_at=datetime.now(UTC),
+                error_text="Rejected by user",
+            )
+        )
+        runtime.wait_task = wait_mock  # type: ignore[method-assign]
+        output = await wait_tool.ainvoke(cast("Any", {"task_id": "abc"}))
+        assert "rejected by user before execution" in output.lower()
+        assert "status=rejected" in output
+        assert "reason:\nRejected by user" in output
+        assert "completed" not in output.lower()
+
     async def test_wait_tool_timeout_reports_still_running(self) -> None:
         runtime = BackgroundRuntime(require_hitl_for_shell=False)
         middleware = BackgroundMiddleware(runtime)

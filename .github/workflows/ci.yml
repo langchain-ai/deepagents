@@ -50,51 +50,47 @@ jobs:
         with:
           # Each package filter includes workflow/action paths so that CI
           # infrastructure changes are validated against all packages.
+          #
+          # NOTE: Do NOT add negation patterns (e.g. '!libs/foo/**/*.md')
+          # here. dorny/paths-filter evaluates patterns with OR logic, so a
+          # negation like '!libs/deepagents/**/*.md' becomes "match anything
+          # NOT in that glob" — causing unrelated files (e.g. .github/
+          # templates) to match every filter and trigger full CI.
+          # See: https://github.com/dorny/paths-filter/issues/97
           filters: |
             deepagents:
               - 'libs/deepagents/**'
-              - '!libs/deepagents/**/*.md'
-              - '!libs/deepagents/images/**'
               - '.github/workflows/ci.yml'
               - '.github/workflows/_lint.yml'
               - '.github/workflows/_test.yml'
               - '.github/actions/**'
             cli:
               - 'libs/cli/**'
-              - '!libs/cli/**/*.md'
-              - '!libs/cli/images/**'
               - 'libs/deepagents/**'
-              - '!libs/deepagents/**/*.md'
-              - '!libs/deepagents/images/**'
               - '.github/workflows/ci.yml'
               - '.github/workflows/_lint.yml'
               - '.github/workflows/_test.yml'
               - '.github/actions/**'
             harbor:
               - 'libs/harbor/**'
-              - '!libs/harbor/**/*.md'
-              - '!libs/harbor/images/**'
               - '.github/workflows/ci.yml'
               - '.github/workflows/_lint.yml'
               - '.github/workflows/_test.yml'
               - '.github/actions/**'
             daytona:
               - 'libs/partners/daytona/**'
-              - '!libs/partners/daytona/**/*.md'
               - '.github/workflows/ci.yml'
               - '.github/workflows/_lint.yml'
               - '.github/workflows/_test.yml'
               - '.github/actions/**'
             modal:
               - 'libs/partners/modal/**'
-              - '!libs/partners/modal/**/*.md'
               - '.github/workflows/ci.yml'
               - '.github/workflows/_lint.yml'
               - '.github/workflows/_test.yml'
               - '.github/actions/**'
             runloop:
               - 'libs/partners/runloop/**'
-              - '!libs/partners/runloop/**/*.md'
               - '.github/workflows/ci.yml'
               - '.github/workflows/_lint.yml'
               - '.github/workflows/_test.yml'

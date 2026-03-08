@@ -649,7 +649,6 @@ async def run_textual_cli_async(
                 enable_ask_user=enable_ask_user,
                 enable_background_tasks=enable_background_tasks,
                 background_runtime=background_runtime,
-                enable_ask_user=enable_ask_user,
                 checkpointer=checkpointer,
                 mcp_server_info=mcp_server_info,
             )

@@ -43,6 +43,7 @@ from deepagents_cli.model_config import ModelSpec, save_recent_model
 from deepagents_cli.textual_adapter import (
     SessionStats,
     TextualUIAdapter,
+    _get_git_branch,
     execute_task_textual,
     format_token_count,
 )
@@ -664,6 +665,9 @@ class DeepAgentsApp(App):
         # Set initial auto-approve state
         if self._auto_approve:
             self._status_bar.set_auto_approve(enabled=True)
+
+        # Set git branch in status bar
+        self._status_bar.branch = _get_git_branch() or ""
 
         # Create session state
         self._session_state = TextualSessionState(

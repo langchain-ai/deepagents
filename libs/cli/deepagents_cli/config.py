@@ -117,6 +117,9 @@ class Glyphs:
     tree_last: str  # "└── " vs "`-- "
     tree_vertical: str  # "│   " vs "|   "
 
+    # Status bar
+    git_branch: str  # "↗" vs "git:"
+
 
 UNICODE_GLYPHS = Glyphs(
     tool_prefix="⏺",
@@ -143,6 +146,7 @@ UNICODE_GLYPHS = Glyphs(
     tree_branch="├── ",
     tree_last="└── ",
     tree_vertical="│   ",
+    git_branch="↗",
 )
 
 ASCII_GLYPHS = Glyphs(
@@ -170,6 +174,7 @@ ASCII_GLYPHS = Glyphs(
     tree_branch="+-- ",
     tree_last="`-- ",
     tree_vertical="|   ",
+    git_branch="git:",
 )
 
 _glyphs_cache: Glyphs | None = None

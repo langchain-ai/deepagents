@@ -8,6 +8,7 @@ import logging
 import sqlite3
 from typing import TYPE_CHECKING, ClassVar, cast
 
+from rich.cells import cell_len
 from rich.style import Style
 from rich.text import Text
 from textual.binding import Binding, BindingType
@@ -19,6 +20,8 @@ from textual.screen import ModalScreen
 from textual.widgets import Checkbox, Input, Static
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from textual.app import ComposeResult
     from textual.events import Click, Key
 
@@ -34,12 +37,13 @@ from deepagents_cli.widgets._links import open_style_link
 logger = logging.getLogger(__name__)
 
 _COL_TID = 10
-_COL_AGENT = 14
+_COL_AGENT = 12
 _COL_MSGS = 4
 _COL_BRANCH = 16
 _COL_TIMESTAMP = None
 _MAX_SEARCH_TEXT_LEN = 200
 _COL_PROMPT = None
+_AUTO_WIDTH_COLUMNS = {"agent_name", "created_at", "updated_at"}
 _COLUMN_ORDER = (
     "thread_id",
     "agent_name",
@@ -80,6 +84,24 @@ _RIGHT_ALIGNED_COLUMNS: set[str] = set()
 _SWITCH_ID_PREFIX = "thread-column-"
 _SORT_SWITCH_ID = "thread-sort-toggle"
 _RELATIVE_TIME_SWITCH_ID = "thread-relative-time"
+_CELL_PADDING_RIGHT = 1
+
+
+def _apply_column_width(
+    cell: Static, key: str, column_widths: Mapping[str, int | None]
+) -> None:
+    """Apply an explicit width to a table cell when one is configured.
+
+    Args:
+        cell: The cell widget to size.
+        key: Column key for the cell.
+        column_widths: Effective column widths for the current table state.
+    """
+    width = column_widths.get(key)
+    if width is not None:
+        cell.styles.width = width
+        if key in _AUTO_WIDTH_COLUMNS:
+            cell.styles.min_width = width
 
 
 def _active_sort_key(sort_by_updated: bool) -> str:
@@ -173,12 +195,25 @@ def _format_column_value(
     return _truncate_value(value, _COLUMN_WIDTHS[key])
 
 
-def _format_header_label(key: str, *, sort_key: str) -> str:
+def _format_header_label(key: str) -> str:
     """Return the rendered header label for a column."""
-    label = _COLUMN_LABELS[key]
+    return _truncate_value(_COLUMN_LABELS[key], _COLUMN_WIDTHS[key])
+
+
+def _header_cell_classes(key: str, *, sort_key: str) -> str:
+    """Return CSS classes for a header cell.
+
+    Args:
+        key: Column key for the header cell.
+        sort_key: Currently active sort column.
+
+    Returns:
+        Space-delimited classes for the header cell widget.
+    """
+    classes = f"thread-cell thread-cell-{key}"
     if key == sort_key:
-        label = f"{label} (v)"
-    return _truncate_value(label, _COLUMN_WIDTHS[key])
+        classes += " thread-cell-sorted"
+    return classes
 
 
 class ThreadOption(Horizontal):
@@ -190,6 +225,7 @@ class ThreadOption(Horizontal):
         index: int,
         *,
         columns: dict[str, bool],
+        column_widths: Mapping[str, int | None],
         selected: bool,
         current: bool,
         relative_time: bool = False,
@@ -201,6 +237,7 @@ class ThreadOption(Horizontal):
             thread: Thread metadata for the row.
             index: The index of this option in the filtered list.
             columns: Column visibility settings.
+            column_widths: Effective widths for the visible columns.
             selected: Whether the row is highlighted.
             current: Whether the row is the active thread.
             relative_time: Use relative timestamps.
@@ -211,6 +248,7 @@ class ThreadOption(Horizontal):
         self.thread_id = thread["thread_id"]
         self.index = index
         self._columns = dict(columns)
+        self._column_widths = dict(column_widths)
         self._selected = selected
         self._current = current
         self._relative_time = relative_time
@@ -241,7 +279,7 @@ class ThreadOption(Horizontal):
             markup=False,
         )
         for key in _visible_column_keys(self._columns):
-            yield Static(
+            cell = Static(
                 _format_column_value(
                     self.thread, key, relative_time=self._relative_time
                 ),
@@ -249,6 +287,8 @@ class ThreadOption(Horizontal):
                 expand=key == "initial_prompt",
                 markup=False,
             )
+            _apply_column_width(cell, key, self._column_widths)
+            yield cell
 
     def _cursor_text(self) -> str:
         """Return the cursor indicator for the row."""
@@ -452,6 +492,10 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         overflow-x: hidden;
     }
 
+    ThreadSelectorScreen .thread-list-header .thread-cell-sorted {
+        color: $primary;
+    }
+
     ThreadSelectorScreen .thread-list {
         height: 1fr;
         min-height: 5;
@@ -498,7 +542,10 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
     }
 
     ThreadSelectorScreen .thread-cell-agent_name {
-        width: 14;
+        width: auto;
+        overflow-x: hidden;
+        text-wrap: nowrap;
+        text-overflow: ellipsis;
     }
 
     ThreadSelectorScreen .thread-cell-messages {
@@ -511,11 +558,17 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
     }
 
     ThreadSelectorScreen .thread-cell-git_branch {
-        width: 16;
+        width: 17;
+        overflow-x: hidden;
+        text-wrap: nowrap;
+        text-overflow: ellipsis;
     }
 
     ThreadSelectorScreen .thread-cell-initial_prompt {
         width: 1fr;
+        min-width: 1;
+        overflow-x: hidden;
+        text-wrap: nowrap;
         text-overflow: ellipsis;
     }
 
@@ -575,6 +628,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         self._relative_time = load_thread_relative_time()
 
         self._sync_selected_index()
+        self._column_widths = self._compute_column_widths()
 
     @staticmethod
     def _switch_id(column_key: str) -> str:
@@ -671,12 +725,14 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                         yield Static("", classes="thread-cell thread-cell-cursor")
                         sort_key = _active_sort_key(self._sort_by_updated)
                         for key in _visible_column_keys(self._columns):
-                            yield Static(
-                                _format_header_label(key, sort_key=sort_key),
-                                classes=f"thread-cell thread-cell-{key}",
+                            cell = Static(
+                                _format_header_label(key),
+                                classes=_header_cell_classes(key, sort_key=sort_key),
                                 expand=key == "initial_prompt",
                                 markup=False,
                             )
+                            _apply_column_width(cell, key, self._column_widths)
+                            yield cell
 
                     with VerticalScroll(classes="thread-list"):
                         if self._has_initial_threads:
@@ -860,6 +916,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             self._filtered_threads = list(self._threads)
             self._apply_sort()
             self._sync_selected_index()
+            self._column_widths = self._compute_column_widths()
             return
 
         tokens = query.split()
@@ -880,6 +937,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             self._filtered_threads = list(self._threads)
             self._apply_sort()
             self._sync_selected_index()
+            self._column_widths = self._compute_column_widths()
             return
 
         sort_key = _active_sort_key(self._sort_by_updated)
@@ -897,6 +955,31 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             )
         ]
         self._selected_index = 0
+        self._column_widths = self._compute_column_widths()
+
+    def _compute_column_widths(self) -> dict[str, int | None]:
+        """Return effective widths for the current table state.
+
+        The auto-width columns stay dynamic, but they must share one width
+        across the header and all visible rows. Textual's `width: auto`
+        computes per-widget widths, so the screen computes those shared widths
+        from the visible data instead.
+        """
+        widths = dict(_COLUMN_WIDTHS)
+
+        for key in _AUTO_WIDTH_COLUMNS:
+            if not self._columns.get(key):
+                continue
+            labels = [_format_header_label(key)]
+            labels.extend(
+                _format_column_value(thread, key, relative_time=self._relative_time)
+                for thread in self._filtered_threads
+            )
+            widths[key] = max((cell_len(label) for label in labels), default=1) + (
+                _CELL_PADDING_RIGHT
+            )
+
+        return widths
 
     @staticmethod
     def _get_search_text(thread: ThreadInfo) -> str:
@@ -944,6 +1027,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             self._selected_index = 0
         else:
             self._sync_selected_index()
+        self._column_widths = self._compute_column_widths()
         await self._build_list()
 
     @staticmethod
@@ -1219,6 +1303,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             except NoMatches:
                 return
 
+            self._column_widths = self._compute_column_widths()
             with self.app.batch_update():
                 await scroll.remove_children()
                 self._update_help_widgets()
@@ -1262,6 +1347,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                 thread=thread,
                 index=i,
                 columns=self._columns,
+                column_widths=self._column_widths,
                 selected=is_selected,
                 current=is_current,
                 relative_time=self._relative_time,
@@ -1363,18 +1449,19 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         except NoMatches:
             return
         sort_key = _active_sort_key(self._sort_by_updated)
+        self._column_widths = self._compute_column_widths()
         with self.app.batch_update():
             await header.remove_children()
             cells: list[Static] = [Static("", classes="thread-cell thread-cell-cursor")]
-            cells.extend(
-                Static(
-                    _format_header_label(key, sort_key=sort_key),
-                    classes=f"thread-cell thread-cell-{key}",
+            for key in _visible_column_keys(self._columns):
+                cell = Static(
+                    _format_header_label(key),
+                    classes=_header_cell_classes(key, sort_key=sort_key),
                     expand=key == "initial_prompt",
                     markup=False,
                 )
-                for key in _visible_column_keys(self._columns)
-            )
+                _apply_column_width(cell, key, self._column_widths)
+                cells.append(cell)
             await header.mount(*cells)
 
     def _apply_sort(self) -> None:

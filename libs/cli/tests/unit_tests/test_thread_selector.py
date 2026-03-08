@@ -5,6 +5,7 @@ from typing import Any, ClassVar
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from rich.cells import cell_len
 from rich.style import Style
 from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
@@ -84,6 +85,20 @@ def _patch_columns(columns: dict[str, bool] | None = None) -> Any:  # noqa: ANN4
         "deepagents_cli.model_config.load_thread_columns",
         return_value=dict(cols),
     )
+
+
+def _style_scalar_value(value: object) -> int:
+    """Return the integer value from a Textual style scalar.
+
+    Args:
+        value: Style value that may be a scalar-like object.
+
+    Returns:
+        Integer scalar value.
+    """
+    scalar = getattr(value, "value", None)
+    assert isinstance(scalar, float)
+    return int(scalar)
 
 
 class ThreadSelectorTestApp(App):
@@ -346,7 +361,7 @@ class TestThreadSelectorTabSort:
     """Tests for sort toggling and focus traversal in the selector."""
 
     async def test_sort_switch_toggles_sort(self) -> None:
-        """The sort switch should toggle sort order between updated and created."""
+        """The sort switch should highlight the active header column."""
         with _patch_list_threads(), _patch_columns():
             app = ThreadSelectorTestApp()
             async with app.run_test() as pilot:
@@ -359,8 +374,11 @@ class TestThreadSelectorTabSort:
                 original_columns = dict(screen._columns)
                 header = screen.query_one("#thread-header", Horizontal)
                 updated_cell = header.query_one(".thread-cell-updated_at", Static)
+                created_cell = header.query_one(".thread-cell-created_at", Static)
                 sort_switch = screen.query_one("#thread-sort-toggle", Checkbox)
-                assert "Updated (v)" in str(updated_cell._Static__content)
+                assert str(updated_cell._Static__content) == "Updated"
+                assert updated_cell.has_class("thread-cell-sorted")
+                assert not created_cell.has_class("thread-cell-sorted")
                 assert sort_switch.value is True
                 assert "Sort by Updated" in str(sort_switch.label)
 
@@ -369,9 +387,32 @@ class TestThreadSelectorTabSort:
                 assert screen._sort_by_updated is False
                 assert screen._columns == original_columns
                 created_cell = header.query_one(".thread-cell-created_at", Static)
-                assert "Created (v)" in str(created_cell._Static__content)
+                updated_cell = header.query_one(".thread-cell-updated_at", Static)
+                assert str(created_cell._Static__content) == "Created"
+                assert created_cell.has_class("thread-cell-sorted")
+                assert not updated_cell.has_class("thread-cell-sorted")
                 assert sort_switch.value is False
                 assert "Sort by Created" in str(sort_switch.label)
+
+    async def test_sorted_header_column_is_highlighted(self) -> None:
+        """The active sort column should be highlighted without extra text."""
+        with _patch_list_threads(), _patch_columns():
+            app = ThreadSelectorTestApp()
+            async with app.run_test(size=(100, 24)) as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+
+                header = screen.query_one("#thread-header", Horizontal)
+                updated_cell = header.query_one(".thread-cell-updated_at", Static)
+                created_cell = header.query_one(".thread-cell-created_at", Static)
+
+                assert updated_cell.render_line(0).text.rstrip() == "Updated"
+                assert created_cell.render_line(0).text.rstrip() == "Created"
+                assert updated_cell.has_class("thread-cell-sorted")
+                assert not created_cell.has_class("thread-cell-sorted")
 
     async def test_tab_moves_focus_into_column_switches(self) -> None:
         """Tab should move focus from the search input into the controls."""
@@ -783,6 +824,8 @@ class TestThreadSelectorFormatLabel:
 
     def test_long_values_are_truncated(self) -> None:
         """Thread ID and agent name exceeding column width are truncated."""
+        from deepagents_cli.widgets.thread_selector import _format_column_value
+
         thread = ThreadInfo(
             thread_id="abcdef1234567890",
             agent_name="very-long-agent-name-here",
@@ -795,7 +838,7 @@ class TestThreadSelectorFormatLabel:
         assert "abcdef1234567890" not in label
         assert "abcdef123" in label
         assert "very-long-agent-name-here" not in label
-        assert "very-long-age" in label
+        assert _format_column_value(thread, "agent_name") in label
 
     def test_uuid_thread_id_display_omits_hyphen_separator(self) -> None:
         """UUID-style IDs should not show a dangling hyphen in the preview."""
@@ -984,11 +1027,10 @@ class TestThreadSelectorColumnHeader:
         """Column header labels should contain visible column names."""
         from deepagents_cli.widgets.thread_selector import _format_header_label
 
-        sort_key = "updated_at"
-        assert "Created" in _format_header_label("created_at", sort_key=sort_key)
-        assert "Msgs" in _format_header_label("messages", sort_key=sort_key)
-        assert "Updated (v)" in _format_header_label("updated_at", sort_key=sort_key)
-        assert "Prompt" in _format_header_label("initial_prompt", sort_key=sort_key)
+        assert "Created" in _format_header_label("created_at")
+        assert "Msgs" in _format_header_label("messages")
+        assert "Updated" in _format_header_label("updated_at")
+        assert "Prompt" in _format_header_label("initial_prompt")
 
     async def test_header_widget_is_mounted(self) -> None:
         """Column header widget should be present in the mounted screen."""
@@ -1015,6 +1057,181 @@ class TestThreadSelectorColumnHeader:
 
                 header = screen.query_one(".thread-list-header", Horizontal)
                 assert isinstance(header.parent, Vertical)
+
+    async def test_timestamp_columns_share_width_with_rows(self) -> None:
+        """Timestamp header cells should use the same width as row cells."""
+        from deepagents_cli.widgets.thread_selector import (
+            _format_column_value,
+            _format_header_label,
+        )
+
+        with _patch_list_threads(), _patch_columns():
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+
+                header = screen.query_one("#thread-header", Horizontal)
+                row = screen._option_widgets[0]
+
+                for key in ("created_at", "updated_at"):
+                    header_cell = header.query_one(f".thread-cell-{key}", Static)
+                    row_cell = row.query_one(f".thread-cell-{key}", Static)
+                    expected_width = (
+                        max(
+                            cell_len(_format_header_label(key)),
+                            *(
+                                cell_len(
+                                    _format_column_value(
+                                        thread,
+                                        key,
+                                        relative_time=screen._relative_time,
+                                    )
+                                )
+                                for thread in screen._filtered_threads
+                            ),
+                        )
+                        + 1
+                    )
+                    assert header_cell.size.width == row_cell.size.width
+                    assert (
+                        _style_scalar_value(header_cell.styles.width) == expected_width
+                    )
+                    assert _style_scalar_value(row_cell.styles.width) == expected_width
+
+
+class TestThreadSelectorPromptOverflow:
+    """Tests for prompt-cell overflow handling."""
+
+    async def test_prompt_cell_renders_ellipsis_when_constrained(self) -> None:
+        """Prompt cells should use ellipsis instead of hard clipping."""
+        columns = {
+            "thread_id": False,
+            "messages": False,
+            "created_at": False,
+            "updated_at": True,
+            "git_branch": False,
+            "initial_prompt": True,
+            "agent_name": False,
+        }
+        thread = ThreadInfo(**MOCK_THREADS[0])
+        thread["initial_prompt"] = (
+            "This is a very long prompt that should be truncated "
+            "with an ellipsis inside the prompt column"
+        )
+        threads: list[ThreadInfo] = [thread]
+
+        with _patch_list_threads(threads), _patch_columns(columns):
+            app = ThreadSelectorTestApp(current_thread=None)
+            async with app.run_test(size=(80, 24)) as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+
+                row = screen._option_widgets[0]
+                prompt_cell = row.query_one(".thread-cell-initial_prompt", Static)
+                rendered = prompt_cell.render_line(0).text.rstrip()
+
+                assert rendered.endswith("…")
+
+
+class TestThreadSelectorBranchOverflow:
+    """Tests for git-branch overflow handling."""
+
+    async def test_branch_cell_renders_ellipsis_when_truncated(self) -> None:
+        """Git branch cells should keep the ellipsis visible when clipped."""
+        columns = {
+            "thread_id": False,
+            "messages": False,
+            "created_at": False,
+            "updated_at": False,
+            "git_branch": True,
+            "initial_prompt": False,
+            "agent_name": False,
+        }
+        thread = ThreadInfo(**MOCK_THREADS[0])
+        thread["git_branch"] = "feature/very-long-branch-name"
+        threads: list[ThreadInfo] = [thread]
+
+        with _patch_list_threads(threads), _patch_columns(columns):
+            app = ThreadSelectorTestApp(current_thread=None)
+            async with app.run_test(size=(80, 24)) as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+
+                row = screen._option_widgets[0]
+                branch_cell = row.query_one(".thread-cell-git_branch", Static)
+                rendered = branch_cell.render_line(0).text.rstrip()
+
+                assert rendered.endswith("…")
+
+
+class TestThreadSelectorAutoWidthColumns:
+    """Tests for shared widths on auto-sized columns."""
+
+    async def test_agent_name_column_uses_shared_width_capped_at_twelve(self) -> None:
+        """Agent column should size to visible content up to the 12-char cap."""
+        from deepagents_cli.widgets.thread_selector import (
+            _format_column_value,
+            _format_header_label,
+        )
+
+        columns = {
+            "thread_id": False,
+            "messages": False,
+            "created_at": False,
+            "updated_at": False,
+            "git_branch": False,
+            "initial_prompt": False,
+            "agent_name": True,
+        }
+
+        with _patch_list_threads(), _patch_columns(columns):
+            app = ThreadSelectorTestApp(current_thread=None)
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+
+                header = screen.query_one("#thread-header", Horizontal)
+                row = screen._option_widgets[0]
+                header_cell = header.query_one(".thread-cell-agent_name", Static)
+                row_cell = row.query_one(".thread-cell-agent_name", Static)
+                expected_width = (
+                    max(
+                        cell_len(_format_header_label("agent_name")),
+                        *(
+                            cell_len(
+                                _format_column_value(
+                                    thread,
+                                    "agent_name",
+                                    relative_time=screen._relative_time,
+                                )
+                            )
+                            for thread in screen._filtered_threads
+                        ),
+                    )
+                    + 1
+                )
+
+                assert header_cell.size.width == row_cell.size.width
+                assert _style_scalar_value(header_cell.styles.width) == expected_width
+                assert _style_scalar_value(row_cell.styles.width) == expected_width
+                assert (
+                    _style_scalar_value(header_cell.styles.min_width) == expected_width
+                )
+                assert _style_scalar_value(row_cell.styles.min_width) == expected_width
+                assert expected_width <= 13
 
 
 class TestThreadSelectorErrorHandling:

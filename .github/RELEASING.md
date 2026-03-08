@@ -8,8 +8,7 @@ CLI releases are managed via release-please, which:
 
 1. Analyzes conventional commits on the `main` branch
 2. Creates/updates a release PR with changelog and version bump
-3. When merged, creates a draft GitHub release for review
-4. Publishing the draft triggers PyPI publication
+3. When merged, creates a GitHub release and publishes to PyPI
 
 ## How It Works
 
@@ -30,9 +29,11 @@ To release the CLI:
 1. Merge conventional commits to `main` (see [Commit Format](#commit-format))
 2. Wait for release-please to create/update the release PR
 3. Review the generated changelog in the PR
-4. Merge the release PR — this creates a **draft** GitHub release
-5. Review and edit the release notes in the GitHub UI
-6. Click "Publish release" — this triggers PyPI publication
+4. **Verify the SDK pin** — check that `deepagents==` in `libs/cli/pyproject.toml` is up to date. If the latest SDK version has been confirmed compatible, you should bump the pin on `main` and let release-please regenerate the PR before merging. See [Release Failed: CLI SDK Pin Mismatch](#release-failed-cli-sdk-pin-mismatch) for recovery if this is missed.
+5. Merge the release PR — this triggers the build, pre-release checks, PyPI publish, and GitHub release
+
+> [!IMPORTANT]
+> When developing CLI features that depend on new SDK functionality, bump the SDK pin as part of that work — don't defer it to release time. The pin should always reflect the minimum SDK version the CLI actually requires!
 
 ### Version Bumping
 
@@ -111,9 +112,8 @@ The release workflow (`.github/workflows/release.yml`) runs when a release PR is
 3. **Release Notes** - Extracts changelog or generates from git log
 4. **Test PyPI** - Publishes to test.pypi.org for validation
 5. **Pre-release Checks** - Runs tests against the built package
-6. **Mark Release** - Creates a **draft** GitHub release with the built artifacts
-
-When you publish the draft release, `.github/workflows/release-publish.yml` triggers and publishes to PyPI.
+6. **Publish** - Publishes to PyPI
+7. **Mark Release** - Creates a published GitHub release with the built artifacts
 
 ### Release PR Labels
 
@@ -254,9 +254,7 @@ This means the CLI's pinned `deepagents` dependency in `libs/cli/pyproject.toml`
    - Click **Run workflow**
    - Select `main` branch and `deepagents-cli` package
 
-3. **Publish the draft release** once the workflow completes
-
-4. **Fix the `autorelease: pending` label** if the original automated release left it on the merged release PR. The failed workflow skipped the `mark-release` job, so the label was never swapped. See [Release PR Stuck with "autorelease: pending" Label](#release-pr-stuck-with-autorelease-pending-label) for the fix. **If you skip this step, release-please will not create new release PRs.**
+3. **Fix the `autorelease: pending` label** if the original automated release left it on the merged release PR. The failed workflow skipped the `mark-release` job, so the label was never swapped. See [Release PR Stuck with "autorelease: pending" Label](#release-pr-stuck-with-autorelease-pending-label) for the fix. **If you skip this step, release-please will not create new release PRs.**
 
 ### Re-releasing a Version
 
@@ -264,7 +262,7 @@ PyPI does not allow re-uploading the same version. If a release failed partway:
 
 1. If already on PyPI: bump the version and release again
 2. If only on test PyPI: the workflow uses `skip-existing: true`, so re-running should work
-3. If the GitHub release exists but PyPI publish failed: delete the release/tag and re-run the workflow
+3. If the GitHub release exists but PyPI publish failed (e.g., from a manual re-run): delete the release/tag and re-run the workflow
 
 ### "Untagged, merged release PRs outstanding" Error
 
@@ -315,7 +313,7 @@ gh api -X PATCH repos/langchain-ai/deepagents/releases/$(gh api repos/langchain-
 After fixing, the next push to main should properly create new release PRs.
 
 > [!NOTE]
-> Moving a tag will put the associated GitHub release back into draft state. If the package was already published to PyPI, you can safely re-publish the draft — the publish workflow uses `skip-existing: true`, so it will succeed without re-uploading.
+> If the package was already published to PyPI and you need to re-run the workflow, it uses `skip-existing: true` on test PyPI, so it will succeed without re-uploading.
 
 ## References
 

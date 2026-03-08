@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import logging
 import os
 import time
 from typing import TYPE_CHECKING, Any
@@ -14,8 +15,11 @@ from deepagents.backends.protocol import (
     SandboxBackendProtocol,
 )
 from deepagents.backends.sandbox import BaseSandbox
+from langsmith.sandbox import ResourceNotFoundError, SandboxClientError
 
 from deepagents_cli.integrations.sandbox_provider import SandboxProvider
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from langsmith.sandbox import Sandbox, SandboxClient, SandboxTemplate
@@ -55,6 +59,8 @@ class LangSmithBackend(BaseSandbox):
             timeout: Maximum time in seconds to wait for the command to complete.
 
                 If None, uses the backend's default timeout.
+                A value of 0 disables the command timeout when the
+                `langsmith[sandbox]` extra is installed.
 
         Returns:
             ExecuteResponse with combined output, exit code, and truncation flag.
@@ -86,18 +92,22 @@ class LangSmithBackend(BaseSandbox):
         Returns:
             List of FileDownloadResponse objects, one per input path.
             Response order matches input order.
-
-        TODO: Map LangSmith API error strings to standardized FileOperationError codes.
-        Currently only implements happy path.
         """
         responses: list[FileDownloadResponse] = []
 
         for path in paths:
-            # Use LangSmith's native file read API (returns bytes)
-            content = self._sandbox.read(path)
-            responses.append(
-                FileDownloadResponse(path=path, content=content, error=None)
-            )
+            try:
+                # Use LangSmith's native file read API (returns bytes)
+                content = self._sandbox.read(path)
+                responses.append(
+                    FileDownloadResponse(path=path, content=content, error=None)
+                )
+            except ResourceNotFoundError:
+                responses.append(
+                    FileDownloadResponse(
+                        path=path, content=None, error="file_not_found"
+                    )
+                )
 
         return responses
 
@@ -114,16 +124,19 @@ class LangSmithBackend(BaseSandbox):
         Returns:
             List of FileUploadResponse objects, one per input file.
             Response order matches input order.
-
-        TODO: Map LangSmith API error strings to standardized FileOperationError codes.
-        Currently only implements happy path.
         """
         responses: list[FileUploadResponse] = []
 
         for path, content in files:
-            # Use LangSmith's native file write API
-            self._sandbox.write(path, content)
-            responses.append(FileUploadResponse(path=path, error=None))
+            try:
+                # Use LangSmith's native file write API
+                self._sandbox.write(path, content)
+                responses.append(FileUploadResponse(path=path, error=None))
+            except SandboxClientError as e:
+                logger.debug("Failed to upload %s: %s", path, e)
+                responses.append(
+                    FileUploadResponse(path=path, error="permission_denied")
+                )
 
         return responses
 
@@ -264,8 +277,6 @@ class LangSmithProvider(SandboxProvider):
         Raises:
             RuntimeError: If template check or creation fails
         """
-        from langsmith.sandbox import ResourceNotFoundError
-
         try:
             self._client.get_template(template_name)
         except ResourceNotFoundError as e:

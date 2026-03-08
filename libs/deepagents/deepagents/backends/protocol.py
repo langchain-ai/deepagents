@@ -467,8 +467,9 @@ class SandboxBackendProtocol(BackendProtocol):
 
                 If None, uses the backend's default timeout.
 
-                Callers should provide positive integer values for portable
-                behavior across backends.
+                Callers should provide non-negative integer values for portable
+                behavior across backends. A value of 0 may disable timeouts on
+                backends that support no-timeout execution.
 
         Returns:
             ExecuteResponse with combined output, exit code, and truncation flag.

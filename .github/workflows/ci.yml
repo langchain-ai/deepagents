@@ -41,6 +41,8 @@ jobs:
     steps:
       - name: "📋 Checkout Code"
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: "🔍 Check for changes"
         uses: dorny/paths-filter@v3
@@ -51,37 +53,48 @@ jobs:
           filters: |
             deepagents:
               - 'libs/deepagents/**'
+              - '!libs/deepagents/**/*.md'
+              - '!libs/deepagents/images/**'
               - '.github/workflows/ci.yml'
               - '.github/workflows/_lint.yml'
               - '.github/workflows/_test.yml'
               - '.github/actions/**'
             cli:
               - 'libs/cli/**'
+              - '!libs/cli/**/*.md'
+              - '!libs/cli/images/**'
               - 'libs/deepagents/**'
+              - '!libs/deepagents/**/*.md'
+              - '!libs/deepagents/images/**'
               - '.github/workflows/ci.yml'
               - '.github/workflows/_lint.yml'
               - '.github/workflows/_test.yml'
               - '.github/actions/**'
             harbor:
               - 'libs/harbor/**'
+              - '!libs/harbor/**/*.md'
+              - '!libs/harbor/images/**'
               - '.github/workflows/ci.yml'
               - '.github/workflows/_lint.yml'
               - '.github/workflows/_test.yml'
               - '.github/actions/**'
             daytona:
               - 'libs/partners/daytona/**'
+              - '!libs/partners/daytona/**/*.md'
               - '.github/workflows/ci.yml'
               - '.github/workflows/_lint.yml'
               - '.github/workflows/_test.yml'
               - '.github/actions/**'
             modal:
               - 'libs/partners/modal/**'
+              - '!libs/partners/modal/**/*.md'
               - '.github/workflows/ci.yml'
               - '.github/workflows/_lint.yml'
               - '.github/workflows/_test.yml'
               - '.github/actions/**'
             runloop:
               - 'libs/partners/runloop/**'
+              - '!libs/partners/runloop/**/*.md'
               - '.github/workflows/ci.yml'
               - '.github/workflows/_lint.yml'
               - '.github/workflows/_test.yml'

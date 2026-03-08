@@ -15,6 +15,8 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
+from deepagents_cli.project_utils import find_project_root
+
 
 def _get_git_executable() -> str | None:
     """Get full path to git executable using shutil.which().
@@ -92,23 +94,36 @@ class CompletionController(Protocol):
 # Slash Command Completion
 # ============================================================================
 
-SLASH_COMMANDS: list[tuple[str, str]] = [
-    ("/help", "Show help"),
-    ("/changelog", "Open changelog in browser"),
-    ("/clear", "Clear chat and start new thread"),
-    ("/docs", "Open documentation in browser"),
-    ("/feedback", "Submit a bug report or feature request"),
-    ("/model", "Switch model, show selector, or set default (--default)"),
-    ("/remember", "Update memory and skills from conversation"),
-    ("/quit", "Exit app"),
-    ("/tokens", "Token usage"),
-    ("/threads", "Browse and resume previous threads"),
-    ("/trace", "Open current thread in LangSmith"),
-    ("/version", "Show version"),
+SLASH_COMMANDS: list[tuple[str, str, str]] = [
+    ("/help", "Show help", ""),
+    ("/changelog", "Open changelog in browser", ""),
+    ("/clear", "Clear chat and start new thread", "reset"),
+    ("/compact", "Summarize conversation to reduce context usage", ""),
+    ("/docs", "Open documentation in browser", ""),
+    ("/feedback", "Submit a bug report or feature request", ""),
+    ("/mcp", "Show active MCP servers and tools", "servers"),
+    ("/model", "Switch or configure model (--model-params, --default)", ""),
+    ("/remember", "Update memory and skills from conversation", ""),
+    ("/quit", "Exit app", "close leave"),
+    ("/tokens", "Token usage", "cost"),
+    ("/threads", "Browse and resume previous threads", "continue history"),
+    ("/trace", "Open current thread in LangSmith", ""),
+    ("/version", "Show version", ""),
 ]
-"""Built-in slash commands with descriptions."""
+"""Built-in slash commands: (name, description, hidden_keywords).
+
+Hidden keywords are space-separated terms that participate in fuzzy matching
+but are never displayed to the user.
+"""
 
 MAX_SUGGESTIONS = 10
+"""UI cap so the completion popup doesn't get unwieldy."""
+
+_MIN_SLASH_FUZZY_SCORE = 25
+"""Minimum score for slash-command fuzzy matches."""
+
+_MIN_DESC_SEARCH_LEN = 2
+"""Minimum query length to search command descriptions (avoids single-char noise)."""
 
 
 class SlashCommandController:
@@ -116,14 +131,14 @@ class SlashCommandController:
 
     def __init__(
         self,
-        commands: list[tuple[str, str]],
+        commands: list[tuple[str, str, str]],
         view: CompletionView,
     ) -> None:
         """Initialize the slash command controller.
 
         Args:
-            commands: List of (command, description) tuples
-            view: View to render suggestions to
+            commands: List of `(command, description, hidden_keywords)` tuples.
+            view: View to render suggestions to.
         """
         self._commands = commands
         self._view = view
@@ -146,6 +161,47 @@ class SlashCommandController:
             self._selected_index = 0
             self._view.clear_completion_suggestions()
 
+    @staticmethod
+    def _score_command(search: str, cmd: str, desc: str, keywords: str = "") -> float:
+        """Score a command against a search string. Higher = better match.
+
+        Args:
+            search: Lowercase search string (without leading `/`).
+            cmd: Command name (e.g. `'/help'`).
+            desc: Command description text.
+            keywords: Space-separated hidden keywords for matching.
+
+        Returns:
+            Score value where higher indicates better match quality.
+        """
+        if not search:
+            return 0.0
+        name = cmd.lstrip("/").lower()
+        lower_desc = desc.lower()
+        # Prefix match on command name — highest priority
+        if name.startswith(search):
+            return 200.0
+        # Substring match on command name
+        if search in name:
+            return 150.0
+        # Hidden keyword match — treated like a word-boundary description match
+        if keywords and len(search) >= _MIN_DESC_SEARCH_LEN:
+            for kw in keywords.lower().split():
+                if kw.startswith(search) or search in kw:
+                    return 120.0
+        # Substring match on description (require ≥2 chars to avoid single-letter noise)
+        if len(search) >= _MIN_DESC_SEARCH_LEN and search in lower_desc:
+            idx = lower_desc.find(search)
+            # Word-boundary bonus: match at start of description or after a space
+            if idx == 0 or lower_desc[idx - 1] == " ":
+                return 110.0
+            return 90.0
+        # Fuzzy match via SequenceMatcher on name + desc
+        name_ratio = SequenceMatcher(None, search, name).ratio()
+        desc_ratio = SequenceMatcher(None, search, lower_desc).ratio()
+        best = max(name_ratio * 60, desc_ratio * 30)
+        return best if best >= _MIN_SLASH_FUZZY_SCORE else 0.0
+
     def on_text_changed(self, text: str, cursor_index: int) -> None:
         """Update suggestions when text changes."""
         if cursor_index < 0 or cursor_index > len(text):
@@ -159,12 +215,20 @@ class SlashCommandController:
         # Get the search string (text after /)
         search = text[1:cursor_index].lower()
 
-        # Filter commands that match
-        suggestions = [
-            (cmd, desc)
-            for cmd, desc in self._commands
-            if cmd.lower().startswith("/" + search)
-        ]
+        if not search:
+            # No search text — show all commands (display only cmd + desc)
+            suggestions = [(cmd, desc) for cmd, desc, _ in self._commands][
+                :MAX_SUGGESTIONS
+            ]
+        else:
+            # Score and filter commands using fuzzy matching
+            scored = [
+                (score, cmd, desc)
+                for cmd, desc, kw in self._commands
+                if (score := self._score_command(search, cmd, desc, kw)) > 0
+            ]
+            scored.sort(key=lambda x: -x[0])
+            suggestions = [(cmd, desc) for _, cmd, desc in scored[:MAX_SUGGESTIONS]]
 
         if suggestions:
             self._suggestions = suggestions
@@ -239,21 +303,13 @@ class SlashCommandController:
 
 # Constants for fuzzy file completion
 _MAX_FALLBACK_FILES = 1000
+"""Hard cap on files returned by the non-git glob fallback."""
+
+_MIN_FUZZY_SCORE = 15
+"""Minimum score to include in file-completion results."""
+
 _MIN_FUZZY_RATIO = 0.4
-_MIN_FUZZY_SCORE = 15  # Minimum score to include in results
-
-
-def _find_project_root(start_path: Path) -> Path:
-    """Find git root or return start_path.
-
-    Returns:
-        Path to git root directory, or start_path if not in a git repo.
-    """
-    current = start_path.resolve()
-    for parent in [current, *list(current.parents)]:
-        if (parent / ".git").exists():
-            return parent
-    return start_path
+"""SequenceMatcher threshold for filename-only fuzzy matches."""
 
 
 def _get_project_files(root: Path) -> list[str]:
@@ -416,7 +472,7 @@ class FuzzyFileController:
         """
         self._view = view
         self._cwd = cwd or Path.cwd()
-        self._project_root = _find_project_root(self._cwd)
+        self._project_root = find_project_root(self._cwd) or self._cwd
         self._suggestions: list[tuple[str, str]] = []
         self._selected_index = 0
         self._file_cache: list[str] | None = None

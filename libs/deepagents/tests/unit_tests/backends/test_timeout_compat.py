@@ -103,7 +103,6 @@ class TestExecuteAcceptsTimeout:
 
 
 class TestAexecuteTimeoutGuard:
-    @pytest.mark.asyncio
     async def test_modern_backend_forwards_timeout(self) -> None:
         class RecordingBackend(SandboxBackendProtocol):
             received_timeout: int | None = None
@@ -121,7 +120,6 @@ class TestAexecuteTimeoutGuard:
         await backend.aexecute("ls", timeout=42)
         assert backend.received_timeout == 42
 
-    @pytest.mark.asyncio
     async def test_legacy_backend_drops_timeout_silently(self) -> None:
         """Timeout is silently dropped for legacy backends (middleware handles user-facing errors)."""
         execute_accepts_timeout.cache_clear()
@@ -129,7 +127,6 @@ class TestAexecuteTimeoutGuard:
         result = await backend.aexecute("ls", timeout=30)
         assert result.output == "ls"
 
-    @pytest.mark.asyncio
     async def test_no_timeout_skips_check(self) -> None:
         execute_accepts_timeout.cache_clear()
         backend = ModernBackend()
@@ -170,7 +167,6 @@ class TestCompositeTimeoutGuard:
         result = comp.execute("ls", timeout=60)
         assert result.output == "ls"
 
-    @pytest.mark.asyncio
     async def test_aexecute_forwards_timeout_to_modern(self) -> None:
         class RecordingModern(SandboxBackendProtocol):
             received_timeout: int | None = None
@@ -188,7 +184,6 @@ class TestCompositeTimeoutGuard:
         await comp.aexecute("ls", timeout=60)
         assert inner.received_timeout == 60
 
-    @pytest.mark.asyncio
     async def test_aexecute_omits_timeout_for_legacy(self) -> None:
         inner = LegacyBackend()
         comp = CompositeBackend(default=inner, routes={})

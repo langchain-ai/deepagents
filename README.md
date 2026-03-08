@@ -1,9 +1,9 @@
 <div align="center">
   <a href="https://docs.langchain.com/oss/python/deepagents/overview#deep-agents-overview">
     <picture>
-      <source media="(prefers-color-scheme: light)" srcset=".github/images/logo-dark.svg">
-      <source media="(prefers-color-scheme: dark)" srcset=".github/images/logo-light.svg">
-      <img alt="Deep Agents Logo" src=".github/images/logo-dark.svg" width="80%">
+      <source media="(prefers-color-scheme: dark)" srcset=".github/images/logo-dark.svg">
+      <source media="(prefers-color-scheme: light)" srcset=".github/images/logo-light.svg">
+      <img alt="Deep Agents Logo" src=".github/images/logo-dark.svg" width="50%">
     </picture>
   </a>
 </div>
@@ -52,6 +52,9 @@ result = agent.invoke({"messages": [{"role": "user", "content": "Research LangGr
 
 The agent can plan, read/write files, and manage its own context. Add tools, customize prompts, or swap models as needed.
 
+> [!TIP]
+> For developing, debugging, and deploying AI agents and LLM applications, see [LangSmith](https://docs.langchain.com/langsmith/home).
+
 ## Customization
 
 Add your own tools, swap models, customize prompts, configure sub-agents, and more. See the [documentation](https://docs.langchain.com/oss/python/deepagents/overview) for full details.
@@ -70,14 +73,15 @@ MCP is supported via [`langchain-mcp-adapters`](https://github.com/langchain-ai/
 
 ## Deep Agents CLI
 
-Try Deep Agents instantly from the terminal:
+<p align="center">
+  <img src="libs/cli/images/cli.png" alt="Deep Agents CLI" width="600"/>
+</p>
 
 ```bash
-uv tool install deepagents-cli
-deepagents
+curl -LsSf https://raw.githubusercontent.com/langchain-ai/deepagents/main/libs/cli/scripts/install.sh | bash
 ```
 
-The CLI adds conversation resume, web search, remote sandboxes (Modal, Runloop, Daytona, & more), persistent memory, custom skills, headless mode, and human-in-the-loop approval. See the [CLI documentation](https://docs.langchain.com/oss/python/deepagents/cli) for more.
+Web search, remote sandboxes, persistent memory, human-in-the-loop approval, and more. See the [CLI README](libs/cli/) for the full feature set.
 
 ## LangGraph Native
 
@@ -88,10 +92,10 @@ The CLI adds conversation resume, web search, remote sandboxes (Modal, Runloop, 
 ### Why should I use this?
 
 - **100% open source** — MIT licensed, fully extensible
-- **Provider agnostic** — Works with Claude, OpenAI, Google, or any LangChain-compatible model
+- **Provider agnostic** — Works with any Large Language Model model that supports tool calling, including both frontier and open models
 - **Built on LangGraph** — Production-ready runtime with streaming, persistence, and checkpointing
 - **Batteries included** — Planning, file access, sub-agents, and context management work out of the box
-- **Get started in seconds** — `pip install deepagents` or `uv add deepagents` and you have a working agent
+- **Get started in seconds** — `uv add deepagents` and you have a working agent
 - **Customize in minutes** — Add tools, swap models, tune prompts when you need to
 
 ---
@@ -107,23 +111,8 @@ The CLI adds conversation resume, web search, remote sandboxes (Modal, Runloop, 
 ## Additional resources
 
 - **[Examples](examples/)** — Working agents and patterns
-- [API Reference](https://reference.langchain.com/python/deepagents/) – Detailed reference on navigating base packages and integrations for LangChain.
 - [Contributing Guide](https://docs.langchain.com/oss/python/contributing/overview) – Learn how to contribute to LangChain projects and find good first issues.
 - [Code of Conduct](https://github.com/langchain-ai/langchain/?tab=coc-ov-file) – Our community guidelines and standards for participation.
-
-## Packages
-
-This is a monorepo containing all Deep Agents packages:
-
-| Package | PyPI | Description |
-| ------- | ---- | ----------- |
-| [`deepagents`](libs/deepagents/) | [![Version](https://img.shields.io/pypi/v/deepagents?label=%20)](https://pypi.org/project/deepagents/) | Core SDK — `create_deep_agent`, middleware, backends |
-| [`deepagents-cli`](libs/cli/) | [![Version](https://img.shields.io/pypi/v/deepagents-cli?label=%20)](https://pypi.org/project/deepagents-cli/) | Interactive terminal interface with TUI, web search, and sandboxes |
-| [`deepagents-acp`](libs/acp/) | [![Version](https://img.shields.io/pypi/v/deepagents-acp?label=%20)](https://pypi.org/project/deepagents-acp/) | [Agent Client Protocol](https://agentclientprotocol.com) integration for editors like Zed |
-| [`deepagents-harbor`](libs/harbor/) | - | [Harbor](https://harborframework.com) evaluation and benchmark framework |
-| [`langchain-daytona`](libs/partners/daytona/) | [![Version](https://img.shields.io/pypi/v/langchain-daytona?label=%20)](https://pypi.org/project/langchain-daytona/) | Daytona sandbox integration |
-| [`langchain-modal`](libs/partners/modal/) | [![Version](https://img.shields.io/pypi/v/langchain-modal?label=%20)](https://pypi.org/project/langchain-modal/) | Modal sandbox integration |
-| [`langchain-runloop`](libs/partners/runloop/) | [![Version](https://img.shields.io/pypi/v/langchain-runloop?label=%20)](https://pypi.org/project/langchain-runloop/) | Runloop sandbox integration |
 
 ---
 
@@ -133,4 +122,4 @@ This project was primarily inspired by Claude Code, and initially was largely an
 
 ## Security
 
-Deep Agents follows a "trust the LLM" model. The agent can do anything its tools allow. Enforce boundaries at the tool/sandbox level, not by expecting the model to self-police.
+Deep Agents follows a "trust the LLM" model. The agent can do anything its tools allow. Enforce boundaries at the tool/sandbox level, not by expecting the model to self-police. See the [security policy](https://github.com/langchain-ai/deepagents?tab=security-ov-file) for more information.

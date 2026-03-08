@@ -1,6 +1,6 @@
 [project]
 name = "deepagents"
-version = "0.4.3"
+version = "0.4.7"
 
 description = "General purpose 'deep agent' with sub-agent spawning, todo list capabilities, and mock file system. Built on LangGraph."
 readme = "README.md"
@@ -52,6 +52,15 @@ test = [
   "langchain-openai",
   "twine",
   "build",
+]
+
+evals = [
+  "langchain-xai",
+  "langchain-mistralai",
+  "langchain-deepseek",
+  "langchain-groq",
+  "langchain-ollama",
+  "langchain-fireworks",
 ]
 
 [build-system]

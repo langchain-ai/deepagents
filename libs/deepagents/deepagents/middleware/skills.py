@@ -422,10 +422,8 @@ def _list_skills(backend: BackendProtocol, source_path: str) -> list[SkillMetada
     Returns:
         List of skill metadata from successfully parsed `SKILL.md` files
     """
-    base_path = source_path
-
     skills: list[SkillMetadata] = []
-    items = backend.ls_info(base_path)
+    items = backend.ls_info(source_path)
 
     # Find all skill directories (directories containing SKILL.md)
     skill_dirs = []
@@ -501,10 +499,8 @@ async def _alist_skills(backend: BackendProtocol, source_path: str) -> list[Skil
     Returns:
         List of skill metadata from successfully parsed `SKILL.md` files
     """
-    base_path = source_path
-
     skills: list[SkillMetadata] = []
-    items = await backend.als_info(base_path)
+    items = await backend.als_info(source_path)
 
     # Find all skill directories (directories containing SKILL.md)
     skill_dirs = []
@@ -668,7 +664,7 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
                 config=config,
                 tool_call_id=None,
             )
-            backend = self._backend(tool_runtime)  # ty: ignore[invalid-argument-type]
+            backend = self._backend(tool_runtime)  # ty: ignore[call-top-callable, invalid-argument-type]
             if backend is None:
                 msg = "SkillsMiddleware requires a valid backend instance"
                 raise AssertionError(msg)

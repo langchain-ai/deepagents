@@ -1,5 +1,6 @@
 """Harbor sandbox backend for executing commands in Harbor environments."""
 
+import asyncio
 import base64
 import json
 import shlex
@@ -23,9 +24,17 @@ _EXIT_MULTIPLE_MATCHES = 2
 _EXIT_FILE_MISSING = 3
 _EXIT_DECODE_FAILED = 4
 
-# Parsing constants
-_PIPE_FIELD_COUNT = 2  # expected number of pipe-separated fields in ls/glob output
-_GREP_FIELD_COUNT = 3  # minimum number of colon-separated fields in grep output
+DEFAULT_COMMAND_TIMEOUT_SEC = 300
+"""Default per-command timeout (5 minutes) to prevent stuck command hangs."""
+
+_PIPE_FIELD_COUNT = 2
+"""Expected number of pipe-separated fields in `ls`/`glob` output."""
+
+_GREP_FIELD_COUNT = 3
+"""Minimum number of colon-separated fields in `grep` output."""
+
+_COMMAND_PREVIEW_CHAR_LIMIT = 200
+"""Maximum chars included in timeout error command previews."""
 
 
 class HarborSandbox(SandboxBackendProtocol):
@@ -53,7 +62,28 @@ class HarborSandbox(SandboxBackendProtocol):
 
                 If None, uses the environment's default timeout.
         """
-        result = await self.environment.exec(command, timeout_sec=timeout)
+        timeout_sec = timeout if timeout is not None else DEFAULT_COMMAND_TIMEOUT_SEC
+        try:
+            if timeout_sec > 0:
+                result = await asyncio.wait_for(
+                    self.environment.exec(command),
+                    timeout=timeout_sec,
+                )
+            else:
+                result = await self.environment.exec(command)
+        except TimeoutError:
+            return ExecuteResponse(
+                output=f"ERROR: Command timed out after {timeout_sec} seconds.\n"
+                f"Command: {command[:_COMMAND_PREVIEW_CHAR_LIMIT]}"
+                f"{'...' if len(command) > _COMMAND_PREVIEW_CHAR_LIMIT else ''}\n\n"
+                f"SUGGESTION: This command is taking too long. Consider:\n"
+                f"- Breaking it into smaller steps\n"
+                f"- Using a shorter timeout with the timeout_sec parameter\n"
+                f"- For package installs: use --no-install-recommends ...\n"
+                f"- For long builds: run in background with nohup ...",
+                exit_code=124,
+                truncated=False,
+            )
 
         # These errors appear in harbor environments when running bash commands
         # in non-interactive/non-TTY contexts. They're harmless artifacts.

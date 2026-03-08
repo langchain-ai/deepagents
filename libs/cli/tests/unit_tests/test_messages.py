@@ -11,10 +11,14 @@ from deepagents_cli.config import COLORS
 from deepagents_cli.input import INPUT_HIGHLIGHT_PATTERN
 from deepagents_cli.widgets.messages import (
     AppMessage,
+    AssistantMessage,
+    DiffMessage,
     ErrorMessage,
     QueuedUserMessage,
+    SummarizationMessage,
     ToolCallMessage,
     UserMessage,
+    _show_timestamp_toast,
 )
 
 # Content that previously caused MarkupError crashes
@@ -78,6 +82,20 @@ class TestAppMessageMarkupSafety:
         assert msg is not None
 
 
+class TestSummarizationMessage:
+    """Tests for summarization notification widget."""
+
+    def test_summarization_message_instantiates(self) -> None:
+        """SummarizationMessage should instantiate with default content."""
+        msg = SummarizationMessage()
+        assert msg is not None
+
+    def test_summarization_message_is_app_message(self) -> None:
+        """SummarizationMessage should be treated like an AppMessage."""
+        msg = SummarizationMessage()
+        assert isinstance(msg, AppMessage)
+
+
 class TestToolCallMessageMarkupSafety:
     """Test ToolCallMessage handles output with brackets safely."""
 
@@ -103,7 +121,7 @@ class TestToolCallMessageMarkupSafety:
 
         # `task` has no inline args widget, so this validates the header markup.
         header = next(iter(msg.compose()))
-        content = header._Static__content  # type: ignore[attr-defined]
+        content = header._Static__content
         assert isinstance(content, str)
         rendered = render(content)
         assert "[/dim]" in rendered.plain
@@ -288,12 +306,12 @@ def _compose_text(widget: UserMessage | QueuedUserMessage) -> Text:
 class TestUserMessageModeRendering:
     """Test `UserMessage` renders mode-specific prefix indicators and colors."""
 
-    def test_bash_prefix_renders_bang_indicator(self) -> None:
-        """`UserMessage('!ls')` should render with `'! '` prefix and bash body."""
+    def test_shell_prefix_renders_bang_indicator(self) -> None:
+        """`UserMessage('!ls')` should render with `'! '` prefix and shell body."""
         text = _compose_text(UserMessage("!ls"))
         assert text.plain == "! ls"
         first_span = text._spans[0]
-        assert COLORS["mode_bash"] in str(first_span.style)
+        assert COLORS["mode_shell"] in str(first_span.style)
 
     def test_command_prefix_renders_slash_indicator(self) -> None:
         """`UserMessage('/help')` should render with `'/ '` prefix and body."""
@@ -318,7 +336,7 @@ class TestUserMessageModeRendering:
 class TestQueuedUserMessageModeRendering:
     """Test `QueuedUserMessage` renders mode-specific prefix indicators (dimmed)."""
 
-    def test_bash_prefix_renders_dimmed_bang(self) -> None:
+    def test_shell_prefix_renders_dimmed_bang(self) -> None:
         """`QueuedUserMessage('!ls')` should render dimmed `'! '` prefix."""
         text = _compose_text(QueuedUserMessage("!ls"))
         assert text.plain == "! ls"
@@ -387,3 +405,162 @@ class TestAppMessageOnClickOpensLink:
             msg.on_click(event)  # should not raise
 
         event.stop.assert_not_called()
+
+    def test_click_on_suspicious_url_is_blocked(self) -> None:
+        """Suspicious Unicode URL should not be opened."""
+        msg = AppMessage("test")
+        event = MagicMock()
+        event.style = Style(link="https://аpple.com")
+
+        with patch(_WEBBROWSER_OPEN) as mock_open:
+            msg.on_click(event)
+
+        mock_open.assert_not_called()
+        event.stop.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Timestamp toast tests
+# ---------------------------------------------------------------------------
+
+_MSG_STORE_PATH = "deepagents_cli.widgets.messages"
+
+
+class TestShowTimestampToast:
+    """Tests for `_show_timestamp_toast` helper."""
+
+    def test_noop_when_widget_not_mounted(self) -> None:
+        """Should not raise when widget has no app."""
+        widget = MagicMock(spec=["app", "id"])
+        # Simulate unmounted widget: .app property raises
+        type(widget).app = property(
+            lambda _: (_ for _ in ()).throw(RuntimeError("no app"))
+        )
+        widget.id = "msg-abc"
+        _show_timestamp_toast(widget)  # should not raise
+
+    def test_noop_when_widget_id_is_none(self) -> None:
+        """Should return early when widget.id is None."""
+        widget = MagicMock()
+        widget.id = None
+        widget.app = MagicMock()
+        _show_timestamp_toast(widget)
+        widget.app.notify.assert_not_called()
+
+    def test_noop_when_message_not_in_store(self) -> None:
+        """Should return early when message is not found in the store."""
+        widget = MagicMock()
+        widget.id = "msg-missing"
+        widget.app._message_store.get_message.return_value = None
+        _show_timestamp_toast(widget)
+        widget.app.notify.assert_not_called()
+
+    def test_shows_toast_with_formatted_timestamp(self) -> None:
+        """Should call notify with a human-readable timestamp."""
+        from deepagents_cli.widgets.message_store import MessageData, MessageType
+
+        data = MessageData(
+            type=MessageType.USER,
+            content="hello",
+            id="msg-test123",
+            timestamp=1709744055.0,  # 2024-03-06 17:14:15 UTC
+        )
+        widget = MagicMock()
+        widget.id = "msg-test123"
+        widget.app._message_store.get_message.return_value = data
+
+        _show_timestamp_toast(widget)
+
+        widget.app.notify.assert_called_once()
+        call_args = widget.app.notify.call_args
+        label = call_args[0][0]
+        # Should contain month abbreviation and time components
+        assert "Mar" in label
+        assert ":" in label
+        assert call_args[1]["timeout"] == 3
+
+
+class TestTimestampClickMixin:
+    """Tests for `_TimestampClickMixin` on message widgets."""
+
+    @pytest.mark.parametrize(
+        "cls",
+        [UserMessage, AssistantMessage, DiffMessage, ErrorMessage],
+        ids=["UserMessage", "AssistantMessage", "DiffMessage", "ErrorMessage"],
+    )
+    def test_mixin_classes_have_on_click(self, cls: type) -> None:
+        """Mixin widget classes should have an `on_click` handler."""
+        assert hasattr(cls, "on_click")
+
+    def test_tool_call_message_click_without_output_shows_toast(self) -> None:
+        """ToolCallMessage click with no output should show timestamp toast."""
+        msg = ToolCallMessage("test_tool", {})
+        msg._output = ""
+        event = MagicMock()
+
+        with patch(f"{_MSG_STORE_PATH}._show_timestamp_toast") as mock_toast:
+            msg.on_click(event)
+
+        event.stop.assert_called_once()
+        mock_toast.assert_called_once_with(msg)
+
+    def test_tool_call_message_click_with_output_toggles(self) -> None:
+        """ToolCallMessage click with output should toggle, not toast."""
+        msg = ToolCallMessage("test_tool", {})
+        msg._output = "some output"
+        event = MagicMock()
+
+        with (
+            patch.object(msg, "toggle_output") as mock_toggle,
+            patch(f"{_MSG_STORE_PATH}._show_timestamp_toast") as mock_toast,
+        ):
+            msg.on_click(event)
+
+        event.stop.assert_called_once()
+        mock_toggle.assert_called_once()
+        mock_toast.assert_not_called()
+
+    def test_app_message_click_shows_toast_alongside_link(self) -> None:
+        """AppMessage click should open link and show toast."""
+        msg = AppMessage("test")
+        event = MagicMock()
+        event.style = Style()
+
+        with (
+            patch(_WEBBROWSER_OPEN),
+            patch(f"{_MSG_STORE_PATH}._show_timestamp_toast") as mock_toast,
+        ):
+            msg.on_click(event)
+
+        mock_toast.assert_called_once_with(msg)
+
+
+class TestMountMessageIdSync:
+    """Tests for widget id sync in `_mount_message`."""
+
+    def test_widget_id_assigned_from_message_data(self) -> None:
+        """Widget with no id should get the MessageData id after from_widget."""
+        from deepagents_cli.widgets.message_store import MessageData
+
+        widget = UserMessage("hello")
+        assert widget.id is None
+
+        data = MessageData.from_widget(widget)
+        # Simulate what _mount_message does
+        if not widget.id:
+            widget.id = data.id
+
+        assert widget.id == data.id
+        assert widget.id is not None
+
+    def test_widget_with_existing_id_is_preserved(self) -> None:
+        """Widget with an explicit id should keep it."""
+        from deepagents_cli.widgets.message_store import MessageData
+
+        widget = UserMessage("hello", id="my-custom-id")
+        data = MessageData.from_widget(widget)
+
+        if not widget.id:
+            widget.id = data.id
+
+        assert widget.id == "my-custom-id"

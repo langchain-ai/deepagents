@@ -7,6 +7,7 @@ import shlex
 from deepagents.backends.protocol import (
     EditResult,
     ExecuteResponse,
+    FileDownloadResponse,
     FileInfo,
     GrepMatch,
     SandboxBackendProtocol,
@@ -351,7 +352,7 @@ done
         search_path = shlex.quote(path or ".")
 
         # Build grep command
-        grep_opts = "-rHn"  # recursive, with filename, with line number
+        grep_opts = "-rHnF"  # recursive, with filename, with line number, fixed-strings (literal)
 
         # Add glob pattern if specified
         glob_pattern = ""
@@ -445,4 +446,70 @@ done
 
     def glob_info(self, pattern: str, path: str = "/") -> list[FileInfo]:
         """Find files matching glob pattern using shell commands."""
+        raise NotImplementedError(_SYNC_NOT_SUPPORTED)
+
+    async def adownload_files(self, paths: list[str]) -> list[FileDownloadResponse]:
+        """Download multiple files from the Harbor environment.
+
+        Each file is read via ``base64`` in the sandbox shell and decoded
+        locally, avoiding encoding issues with raw binary content.
+
+        Args:
+            paths: List of file paths to download.
+
+        Returns:
+            List of FileDownloadResponse objects, one per input path.
+            Response order matches input order.
+        """
+        responses: list[FileDownloadResponse] = []
+        for path in paths:
+            safe_path = shlex.quote(path)
+
+            # Exit codes are local to this script:
+            #   1 = file does not exist
+            #   2 = path is a directory
+            cmd = f"""
+if [ ! -e {safe_path} ]; then
+    exit 1
+fi
+if [ -d {safe_path} ]; then
+    exit 2
+fi
+base64 {safe_path}
+"""
+            result = await self.aexecute(cmd)
+            if result.exit_code == 1:
+                responses.append(
+                    FileDownloadResponse(path=path, content=None, error="file_not_found")
+                )
+            elif result.exit_code == 2:  # noqa: PLR2004
+                responses.append(
+                    FileDownloadResponse(path=path, content=None, error="is_directory")
+                )
+            elif result.exit_code != 0:
+                responses.append(
+                    FileDownloadResponse(path=path, content=None, error="file_not_found")
+                )
+            else:
+                try:
+                    # Strip any stderr that aexecute may have appended.
+                    # aexecute formats it as "\n\n stderr: …" when stdout
+                    # is present, or "\n stderr: …" when stdout is empty.
+                    # Matching the shorter marker covers both cases and is
+                    # safe because base64 characters never include spaces.
+                    raw = result.output
+                    idx = raw.find("\n stderr: ")
+                    if idx != -1:
+                        raw = raw[:idx]
+                    content = base64.b64decode(raw.strip())
+                except Exception:  # noqa: BLE001
+                    responses.append(
+                        FileDownloadResponse(path=path, content=None, error="file_not_found")
+                    )
+                    continue
+                responses.append(FileDownloadResponse(path=path, content=content, error=None))
+        return responses
+
+    def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
+        """Download multiple files from the sandbox."""
         raise NotImplementedError(_SYNC_NOT_SUPPORTED)

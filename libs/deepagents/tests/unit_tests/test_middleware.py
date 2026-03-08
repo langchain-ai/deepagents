@@ -103,7 +103,7 @@ class TestFilesystemMiddleware:
         middleware = FilesystemMiddleware()
         assert callable(middleware.backend)
         assert middleware._custom_system_prompt is None
-        assert len(middleware.tools) == 7  # All tools including execute
+        assert len(middleware.tools) == 8  # All tools including execute and repl
 
     def test_init_with_composite_backend(self):
         def backend_factory(rt):
@@ -112,13 +112,13 @@ class TestFilesystemMiddleware:
         middleware = FilesystemMiddleware(backend=backend_factory)
         assert callable(middleware.backend)
         assert middleware._custom_system_prompt is None
-        assert len(middleware.tools) == 7  # All tools including execute
+        assert len(middleware.tools) == 8  # All tools including execute and repl
 
     def test_init_custom_system_prompt_default(self):
         middleware = FilesystemMiddleware(system_prompt="Custom system prompt")
         assert callable(middleware.backend)
         assert middleware._custom_system_prompt == "Custom system prompt"
-        assert len(middleware.tools) == 7  # All tools including execute
+        assert len(middleware.tools) == 8  # All tools including execute and repl
 
     def test_init_custom_system_prompt_with_composite(self):
         def backend_factory(rt):
@@ -127,7 +127,7 @@ class TestFilesystemMiddleware:
         middleware = FilesystemMiddleware(backend=backend_factory, system_prompt="Custom system prompt")
         assert callable(middleware.backend)
         assert middleware._custom_system_prompt == "Custom system prompt"
-        assert len(middleware.tools) == 7  # All tools including execute
+        assert len(middleware.tools) == 8  # All tools including execute and repl
 
     def test_init_custom_tool_descriptions_default(self):
         middleware = FilesystemMiddleware(custom_tool_descriptions={"ls": "Custom ls tool description"})

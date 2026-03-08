@@ -39,6 +39,7 @@ class TestFilesystemMiddlewareInit:
                         "ls": "Charmander",
                         "read_file": "Bulbasaur",
                         "edit_file": "Squirtle",
+                        "repl": "Pikachu",
                     },
                 )
             ],
@@ -52,6 +53,8 @@ class TestFilesystemMiddlewareInit:
         assert tools["write_file"].description == WRITE_FILE_TOOL_DESCRIPTION.rstrip()
         assert "edit_file" in tools
         assert tools["edit_file"].description == "Squirtle"
+        assert "repl" in tools
+        assert tools["repl"].description == "Pikachu"
 
     def test_filesystem_tool_prompt_override_with_longterm_memory(self) -> None:
         """Test that custom tool descriptions work with composite backends and longterm memory."""
@@ -64,6 +67,7 @@ class TestFilesystemMiddlewareInit:
                         "ls": "Charmander",
                         "read_file": "Bulbasaur",
                         "edit_file": "Squirtle",
+                        "repl": "Pikachu",
                     },
                 )
             ],
@@ -78,3 +82,5 @@ class TestFilesystemMiddlewareInit:
         assert tools["write_file"].description == WRITE_FILE_TOOL_DESCRIPTION.rstrip()
         assert "edit_file" in tools
         assert tools["edit_file"].description == "Squirtle"
+        assert "repl" in tools
+        assert tools["repl"].description == "Pikachu"

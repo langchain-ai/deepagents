@@ -28,6 +28,7 @@ class TestFilesystemToolSchemas:
             "glob": ["pattern", "path"],
             "grep": ["pattern", "path", "glob", "output_mode"],
             "execute": ["command"],
+            "repl": ["code"],
         }
 
         tool_map = {tool.name: tool for tool in tools}

@@ -1669,11 +1669,22 @@ class DeepAgentsApp(App):
                 await self._show_model_selector(extra_kwargs=extra_kwargs)
         elif cmd == "/reload":
             await self._mount_message(UserMessage(command))
-            changes = settings.reload_from_environment()
+            try:
+                changes = settings.reload_from_environment()
 
-            from deepagents_cli.model_config import clear_caches
+                from deepagents_cli.model_config import clear_caches
 
-            clear_caches()
+                clear_caches()
+            except Exception:
+                logger.exception("Failed to reload configuration")
+                await self._mount_message(
+                    AppMessage(
+                        "Failed to reload configuration. Check your .env "
+                        "file and environment variables for syntax errors, "
+                        "then try again."
+                    )
+                )
+                return
             if changes:
                 report = "Configuration reloaded. Changes:\n" + "\n".join(
                     f"  - {change}" for change in changes

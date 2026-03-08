@@ -104,7 +104,7 @@ SLASH_COMMANDS: list[tuple[str, str, str]] = [
     ("/mcp", "Show active MCP servers and tools", "servers"),
     ("/model", "Switch or configure model (--model-params, --default)", ""),
     ("/quit", "Exit app", "close leave"),
-    ("/reload", "Reload config from environment and config files", "refresh"),
+    ("/reload", "Reload config from environment variables and .env", "refresh"),
     ("/remember", "Update memory and skills from conversation", ""),
     ("/tokens", "Token usage", "cost"),
     ("/threads", "Browse and resume previous threads", "continue history"),

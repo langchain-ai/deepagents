@@ -57,11 +57,12 @@ class TestReloadFromEnvironment:
     def test_preserves_model_state(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        """Reload should preserve runtime model fields."""
+        """Reload should preserve runtime model fields and user project."""
         settings = Settings.from_environment(start_path=tmp_path)
         settings.model_name = "gpt-5"
         settings.model_provider = "openai"
         settings.model_context_limit = 200_000
+        settings.user_langchain_project = "my-project"
 
         monkeypatch.setenv("OPENAI_API_KEY", "sk-reloaded")
         settings.reload_from_environment(start_path=tmp_path)
@@ -69,6 +70,7 @@ class TestReloadFromEnvironment:
         assert settings.model_name == "gpt-5"
         assert settings.model_provider == "openai"
         assert settings.model_context_limit == 200_000
+        assert settings.user_langchain_project == "my-project"
 
     def test_no_changes_returns_empty(self, tmp_path: Path) -> None:
         """Reload should report no changes when environment is unchanged."""
@@ -93,6 +95,30 @@ class TestReloadFromEnvironment:
         assert key_changes == ["openai_api_key: set -> set"]
         assert "sk-old-secret" not in key_changes[0]
         assert "sk-new-secret" not in key_changes[0]
+
+    def test_api_key_removal_shows_unset(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Removing an API key should report `set -> unset`."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-secret")
+        settings = Settings.from_environment(start_path=tmp_path)
+
+        monkeypatch.delenv("ANTHROPIC_API_KEY")
+        changes = settings.reload_from_environment(start_path=tmp_path)
+
+        assert settings.anthropic_api_key is None
+        assert "anthropic_api_key: set -> unset" in changes
+
+    def test_empty_api_key_treated_as_none(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Empty-string API key should be normalized to `None`."""
+        monkeypatch.setenv("OPENAI_API_KEY", "")
+        settings = Settings.from_environment(start_path=tmp_path)
+        changes = settings.reload_from_environment(start_path=tmp_path)
+
+        assert settings.openai_api_key is None
+        assert changes == []
 
     def test_updates_shell_allow_list(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -119,6 +145,91 @@ class TestReloadFromEnvironment:
         settings.reload_from_environment(start_path=tmp_path)
 
         mock_load.assert_called_once_with(override=True)
+
+    def test_multiple_simultaneous_changes(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Reload should accumulate changes across multiple fields."""
+        settings = Settings.from_environment(start_path=tmp_path)
+
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-new")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant")
+        monkeypatch.setenv("DEEPAGENTS_SHELL_ALLOW_LIST", "ls")
+        changes = settings.reload_from_environment(start_path=tmp_path)
+
+        assert len(changes) == 3
+        fields = {c.split(":")[0] for c in changes}
+        assert fields == {"openai_api_key", "anthropic_api_key", "shell_allow_list"}
+
+
+class TestReloadErrorPaths:
+    """Tests for error handling during reload."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_reload_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Clear env vars used by reload tests."""
+        for key in _RELOAD_ENV_KEYS:
+            monkeypatch.delenv(key, raising=False)
+
+    @pytest.fixture(autouse=True)
+    def _stub_dotenv_load(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Disable real `.env` loading for deterministic tests."""
+
+        def _fake_load_dotenv(*_args: object, **_kwargs: object) -> bool:
+            return False
+
+        monkeypatch.setattr(
+            "deepagents_cli.config.dotenv.load_dotenv",
+            _fake_load_dotenv,
+        )
+
+    def test_invalid_shell_allow_list_keeps_previous(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Malformed shell allow-list should fall back to previous value."""
+        monkeypatch.setenv("DEEPAGENTS_SHELL_ALLOW_LIST", "ls,cat")
+        settings = Settings.from_environment(start_path=tmp_path)
+        assert settings.shell_allow_list == ["ls", "cat"]
+
+        monkeypatch.setenv("DEEPAGENTS_SHELL_ALLOW_LIST", "all,ls")
+        changes = settings.reload_from_environment(start_path=tmp_path)
+
+        assert settings.shell_allow_list == ["ls", "cat"]
+        assert not any(change.startswith("shell_allow_list:") for change in changes)
+
+    def test_deleted_cwd_keeps_previous_project_root(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Unreachable cwd should fall back to previous project root."""
+        settings = Settings.from_environment(start_path=tmp_path)
+        original_root = settings.project_root
+
+        def _raise_oserror(_start: Path | None = None) -> None:
+            msg = "No such file or directory"
+            raise FileNotFoundError(msg)
+
+        monkeypatch.setattr("deepagents_cli.config._find_project_root", _raise_oserror)
+        changes = settings.reload_from_environment(start_path=tmp_path)
+
+        assert settings.project_root == original_root
+        assert not any(change.startswith("project_root:") for change in changes)
+
+    def test_settings_consistent_after_partial_failure(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Settings should remain consistent when one field fails to reload."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-original")
+        monkeypatch.setenv("DEEPAGENTS_SHELL_ALLOW_LIST", "ls")
+        settings = Settings.from_environment(start_path=tmp_path)
+
+        # Change API key (succeeds) + break shell allow-list (falls back)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-updated")
+        monkeypatch.setenv("DEEPAGENTS_SHELL_ALLOW_LIST", "all,ls")
+        changes = settings.reload_from_environment(start_path=tmp_path)
+
+        assert settings.openai_api_key == "sk-updated"
+        assert settings.shell_allow_list == ["ls"]
+        assert any(c.startswith("openai_api_key:") for c in changes)
 
 
 class TestReloadInAutocomplete:

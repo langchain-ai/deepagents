@@ -124,6 +124,41 @@ class TestParseAnswers:
             in _extract_tool_message_content(cmd)
         )
 
+    def test_non_list_answers_payload_is_explicit_error(self) -> None:
+        cmd = _parse_answers(
+            {"answers": "Alice"},
+            [{"question": "Name?", "type": "text"}],
+            "tc-1",
+        )
+        assert (
+            "A: (error: invalid ask_user answers payload)"
+            in _extract_tool_message_content(cmd)
+        )
+
+    def test_unknown_status_is_explicit_error(self) -> None:
+        cmd = _parse_answers(
+            {"status": "unexpected", "answers": ["Alice"]},
+            [{"question": "Name?", "type": "text"}],
+            "tc-1",
+        )
+        assert (
+            "A: (error: invalid ask_user response status)"
+            in _extract_tool_message_content(cmd)
+        )
+
+    def test_answer_count_mismatch_falls_back_to_no_answer(self) -> None:
+        cmd = _parse_answers(
+            {"answers": ["Alice"]},
+            [
+                {"question": "Name?", "type": "text"},
+                {"question": "Color?", "type": "text"},
+            ],
+            "tc-1",
+        )
+        content = _extract_tool_message_content(cmd)
+        assert "Q: Name?\nA: Alice" in content
+        assert "Q: Color?\nA: (no answer)" in content
+
 
 class TestWrapModelCall:
     """Tests for ask_user prompt injection wrappers."""

@@ -350,8 +350,8 @@ class TestExecuteTaskTextualSummarizationFeedback:
 class TestExecuteTaskTextualAskUser:
     """Tests for ask_user interrupt handling in the Textual adapter."""
 
-    async def test_request_ask_user_returning_none_does_not_crash(self) -> None:
-        """A `None` callback result should map to protocol-level cancellation."""
+    async def test_request_ask_user_returning_none_is_reported_as_error(self) -> None:
+        """A `None` callback result should resume with explicit error status."""
 
         async def request_ask_user(
             _questions: list[Any],
@@ -393,7 +393,8 @@ class TestExecuteTaskTextualAskUser:
         assert isinstance(resume_cmd, Command)
         resume_payload = cast("dict[str, dict[str, Any]]", resume_cmd.resume)
         ask_user_resume = resume_payload["interrupt-1"]
-        assert ask_user_resume["status"] == "cancelled"
+        assert ask_user_resume["status"] == "error"
+        assert ask_user_resume["error"] == "ask_user callback returned no response"
         assert ask_user_resume["answers"] == [""]
 
     async def test_request_ask_user_mount_error_is_not_treated_as_cancel(self) -> None:
@@ -441,6 +442,45 @@ class TestExecuteTaskTextualAskUser:
         ask_user_resume = resume_payload["interrupt-1"]
         assert ask_user_resume["status"] == "error"
         assert ask_user_resume["error"] == "failed to display ask_user prompt"
+        assert ask_user_resume["answers"] == [""]
+
+    async def test_request_ask_user_missing_callback_is_reported_as_error(self) -> None:
+        """ask_user interrupts without a UI callback should resume with error."""
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    _ask_user_interrupt_chunk(
+                        {
+                            "type": "ask_user",
+                            "questions": [{"question": "Name?", "type": "text"}],
+                            "tool_call_id": "tool-1",
+                        }
+                    )
+                ],
+                [],
+            ]
+        )
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            request_ask_user=None,
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=agent,
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+        )
+
+        resume_cmd = agent.stream_inputs[1]
+        assert isinstance(resume_cmd, Command)
+        resume_payload = cast("dict[str, dict[str, Any]]", resume_cmd.resume)
+        ask_user_resume = resume_payload["interrupt-1"]
+        assert ask_user_resume["status"] == "error"
+        assert ask_user_resume["error"] == "ask_user not supported by this UI"
         assert ask_user_resume["answers"] == [""]
 
     async def test_invalid_ask_user_interrupt_payload_raises_validation_error(

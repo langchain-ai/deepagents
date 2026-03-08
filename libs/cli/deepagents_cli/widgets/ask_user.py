@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
+from rich.markup import escape as escape_markup
 from textual.binding import Binding, BindingType
 from textual.containers import Container, Vertical
 from textual.message import Message
@@ -270,12 +271,12 @@ class _QuestionWidget(Vertical):
     def compose(self) -> ComposeResult:
         q_text = self._question.get("question", "")
         suffix = " [dim](required)[/dim]" if self._required else ""
-        yield Static(f"[bold]{self._index + 1}. {q_text}[/bold]{suffix}")
+        yield Static(f"[bold]{self._index + 1}. {escape_markup(q_text)}[/bold]{suffix}")
 
         if self._q_type == "multiple_choice" and self._choices:
             glyphs = get_glyphs()
             for i, choice in enumerate(self._choices):
-                label = choice.get("value", str(choice))
+                label = escape_markup(choice.get("value", str(choice)))
                 prefix = f"{glyphs.cursor} " if i == 0 else "  "
                 cw = _ChoiceOption(f"{prefix}{label}", index=i)
                 if i == 0:

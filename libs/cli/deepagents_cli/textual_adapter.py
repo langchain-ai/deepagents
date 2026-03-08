@@ -10,7 +10,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -28,8 +28,8 @@ from langchain.agents.middleware.human_in_the_loop import (
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.types import Command, Interrupt
 from pydantic import TypeAdapter, ValidationError
-from typing_extensions import TypedDict
 
+from deepagents_cli.ask_user import AskUserRequest
 from deepagents_cli.config import settings
 from deepagents_cli.file_ops import FileOpTracker
 from deepagents_cli.hooks import dispatch_hook
@@ -217,22 +217,7 @@ def print_usage_table(
 HITLDecision = ApproveDecision | EditDecision | RejectDecision
 
 _HITL_REQUEST_ADAPTER = TypeAdapter(HITLRequest)
-
-
-class _AskUserInterruptPayload(TypedDict):
-    """Validated interrupt payload for `ask_user`."""
-
-    type: Literal["ask_user"]
-    """Discriminator tag, always `'ask_user'`."""
-
-    questions: list[dict[str, Any]]
-    """Question payloads forwarded to the ask-user UI callback."""
-
-    tool_call_id: str
-    """Tool call ID used to correlate answers with the originating tool call."""
-
-
-_ASK_USER_INTERRUPT_ADAPTER = TypeAdapter(_AskUserInterruptPayload)
+_ASK_USER_INTERRUPT_ADAPTER = TypeAdapter(AskUserRequest)
 """Validator for incoming `ask_user` interrupt payloads."""
 
 
@@ -572,7 +557,7 @@ async def execute_task_textual(
             interrupt_occurred = False
             suppress_resumed_output = False
             pending_interrupts: dict[str, HITLRequest] = {}
-            pending_ask_user: dict[str, _AskUserInterruptPayload] = {}
+            pending_ask_user: dict[str, AskUserRequest] = {}
 
             async for chunk in agent.astream(
                 stream_input,
@@ -949,12 +934,15 @@ async def execute_task_textual(
                 resume_payload: dict[str, Any] = {}
 
                 for interrupt_id, ask_req in list(pending_ask_user.items()):
-                    questions = cast("list[Question]", ask_req["questions"])
+                    questions = ask_req["questions"]
 
                     if adapter._request_ask_user:
                         if adapter._set_spinner:
                             await adapter._set_spinner(None)
-                        result: dict[str, Any] = {"type": "cancelled"}
+                        result: dict[str, Any] = {
+                            "type": "error",
+                            "error": "ask_user callback returned no response",
+                        }
                         try:
                             future = await adapter._request_ask_user(questions)
                         except Exception:
@@ -965,7 +953,12 @@ async def execute_task_textual(
                             }
                             future = None
 
-                        if future is not None:
+                        if future is None:
+                            logger.error(
+                                "ask_user callback returned no Future; "
+                                "reporting as error"
+                            )
+                        else:
                             try:
                                 future_result = await future
                                 if isinstance(future_result, dict):

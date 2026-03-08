@@ -535,6 +535,7 @@ class DeepAgentsApp(App):
         assistant_id: str | None = None,
         backend: CompositeBackend | None = None,
         auto_approve: bool = False,
+        enable_ask_user: bool = False,
         cwd: str | Path | None = None,
         thread_id: str | None = None,
         initial_prompt: str | None = None,
@@ -553,6 +554,8 @@ class DeepAgentsApp(App):
             assistant_id: Agent identifier for memory storage
             backend: Backend for file operations
             auto_approve: Whether to start with auto-approve enabled
+            enable_ask_user: Whether `ask_user` should stay enabled when
+                recreating agents (for example during model hot-swap)
             cwd: Current working directory to display
             thread_id: Optional thread ID for session persistence
             initial_prompt: Optional prompt to auto-submit when session starts
@@ -570,6 +573,7 @@ class DeepAgentsApp(App):
         self._assistant_id = assistant_id
         self._backend = backend
         self._auto_approve = auto_approve
+        self._enable_ask_user = enable_ask_user
         self._cwd = str(cwd) if cwd else str(Path.cwd())
         # Avoid collision with App._thread_id
         self._lc_thread_id = thread_id
@@ -3160,6 +3164,7 @@ class DeepAgentsApp(App):
                 sandbox=self._sandbox,
                 sandbox_type=self._sandbox_type,
                 auto_approve=self._auto_approve,
+                enable_ask_user=self._enable_ask_user,
                 checkpointer=self._checkpointer,
                 mcp_server_info=self._mcp_server_info,
             )
@@ -3282,6 +3287,7 @@ async def run_textual_app(
     assistant_id: str | None = None,
     backend: CompositeBackend | None = None,
     auto_approve: bool = False,
+    enable_ask_user: bool = False,
     cwd: str | Path | None = None,
     thread_id: str | None = None,
     initial_prompt: str | None = None,
@@ -3299,6 +3305,8 @@ async def run_textual_app(
         assistant_id: Agent identifier for memory storage
         backend: Backend for file operations
         auto_approve: Whether to start with auto-approve enabled
+        enable_ask_user: Whether `ask_user` should stay enabled when
+            recreating agents (for example during model hot-swap)
         cwd: Current working directory to display
         thread_id: Optional thread ID for session persistence
         initial_prompt: Optional prompt to auto-submit when session starts
@@ -3318,6 +3326,7 @@ async def run_textual_app(
         assistant_id=assistant_id,
         backend=backend,
         auto_approve=auto_approve,
+        enable_ask_user=enable_ask_user,
         cwd=cwd,
         thread_id=thread_id,
         initial_prompt=initial_prompt,

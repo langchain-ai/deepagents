@@ -80,24 +80,6 @@ class AskUserRequest(TypedDict):
     tool_call_id: str
 
 
-class AskUserResponse(TypedDict):
-    """Response payload from the user answering questions.
-
-    This models the resume payload consumed by `_parse_answers`, not the full
-    widget response (which includes a `type` discriminator handled by the
-    adapter before reaching the middleware).
-    """
-
-    answers: list[str]
-    """User answers, one entry per asked question."""
-
-    status: NotRequired[Literal["answered", "cancelled", "error"]]
-    """Optional adapter outcome status for the resumed interrupt payload."""
-
-    error: NotRequired[str]
-    """Optional error detail when `status` is `'error'`."""
-
-
 class AskUserAnswered(TypedDict):
     """Widget result when the user submits answers."""
 
@@ -155,6 +137,9 @@ When using `ask_user`:
 
 def _validate_questions(questions: list[Question]) -> None:
     """Validate ask_user question structure before interrupting.
+
+    Args:
+        questions: Question definitions provided to the `ask_user` tool.
 
     Raises:
         ValueError: If the questions list or an individual question is invalid.
@@ -324,6 +309,10 @@ class AskUserMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             tool_call_id: Annotated[str, InjectedToolCallId],
         ) -> Command[Any]:
             """Ask the user one or more questions.
+
+            Args:
+                questions: Questions to present to the user.
+                tool_call_id: Tool call identifier injected by LangChain.
 
             Returns:
                 `Command` containing the parsed user answers as a `ToolMessage`.

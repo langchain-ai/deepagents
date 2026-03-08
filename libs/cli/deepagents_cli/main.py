@@ -639,6 +639,7 @@ async def run_textual_cli_async(
                 assistant_id=assistant_id,
                 backend=composite_backend,
                 auto_approve=auto_approve,
+                enable_ask_user=enable_ask_user,
                 cwd=Path.cwd(),
                 thread_id=thread_id,
                 initial_prompt=initial_prompt,

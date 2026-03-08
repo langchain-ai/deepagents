@@ -880,7 +880,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
         filter_input.focus()
         filter_input.insert_text_at_cursor(character)
-        self.set_timer(0, self._collapse_search_selection)
+        self.set_timer(0.01, self._collapse_search_selection)
         event.stop()
 
     def _collapse_search_selection(self) -> None:

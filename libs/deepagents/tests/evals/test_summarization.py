@@ -17,11 +17,7 @@ from langsmith import Client
 
 from deepagents import create_deep_agent
 from deepagents.backends.filesystem import FilesystemBackend
-from deepagents.middleware.summarization import (
-    SummarizationMiddleware,
-    SummarizationToolMiddleware,
-    compute_summarization_defaults,
-)
+from deepagents.middleware.summarization import create_summarization_tool_middleware
 from tests.evals.utils import AgentTrajectory, run_agent
 
 # URL for a large file that will trigger summarization
@@ -87,16 +83,7 @@ def _setup_summarization_test(
 
     all_middleware: list[AgentMiddleware] = list(middleware)
     if include_compact_tool:
-        summarization_defaults = compute_summarization_defaults(model)
-        summarization_middleware = SummarizationMiddleware(
-            model=model,
-            backend=backend,
-            trigger=summarization_defaults["trigger"],
-            keep=summarization_defaults["keep"],
-            trim_tokens_to_summarize=None,
-            truncate_args_settings=summarization_defaults["truncate_args_settings"],
-        )
-        all_middleware.append(SummarizationToolMiddleware(summarization_middleware))
+        all_middleware.append(create_summarization_tool_middleware(model, backend))
 
     agent = create_deep_agent(
         model=model,

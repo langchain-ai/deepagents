@@ -714,14 +714,11 @@ def create_cli_agent(
     model = resolve_model(model)
 
     from deepagents.middleware.summarization import (
-        SummarizationToolMiddleware,
-        create_summarization_middleware,
+        create_summarization_tool_middleware,
     )
 
     agent_middleware.append(
-        SummarizationToolMiddleware(
-            create_summarization_middleware(model, composite_backend)
-        )
+        create_summarization_tool_middleware(model, composite_backend)
     )
 
     # Create the agent

@@ -1072,6 +1072,7 @@ THREAD_COLUMN_DEFAULTS: dict[str, bool] = {
     "created_at": True,
     "updated_at": True,
     "git_branch": False,
+    "cwd": False,
     "initial_prompt": True,
     "agent_name": False,
 }

@@ -105,6 +105,9 @@ class ThreadInfo(TypedDict):
     latest_checkpoint_id: NotRequired[str | None]
     """Most recent checkpoint ID for cache invalidation."""
 
+    cwd: NotRequired[str | None]
+    """Working directory where the thread was last used."""
+
 
 class _CheckpointSummary(NamedTuple):
     """Structured data extracted from a thread's latest checkpoint."""
@@ -187,6 +190,33 @@ def format_relative_timestamp(iso_timestamp: str | None) -> str:
     return f"{years}y ago"
 
 
+def format_path(path: str | None) -> str:
+    """Format a filesystem path for display.
+
+    Paths under the user's home directory are shown relative to `~`.
+    All other paths are returned as-is.
+
+    Args:
+        path: Absolute filesystem path, or `None`.
+
+    Returns:
+        Formatted path string or empty string if `None`.
+    """
+    if not path:
+        return ""
+    try:
+        home = str(Path.home())
+        if path == home:
+            return "~"
+        prefix = home + "/"
+        if path.startswith(prefix):
+            return "~/" + path[len(prefix) :]
+    except (RuntimeError, KeyError, OSError):
+        return path
+    else:
+        return path
+
+
 def get_db_path() -> Path:
     """Get path to global database.
 
@@ -237,7 +267,7 @@ async def list_threads(
     Returns:
         List of `ThreadInfo` dicts with `thread_id`, `agent_name`,
             `updated_at`, `created_at`, `latest_checkpoint_id`, `git_branch`,
-            and optionally `message_count`.
+            `cwd`, and optionally `message_count`.
 
     Raises:
         ValueError: If `sort_by` is not `"updated"` or `"created"`.
@@ -270,7 +300,8 @@ async def list_threads(
                    MAX(json_extract(metadata, '$.updated_at')) as updated_at,
                    MAX(checkpoint_id) as latest_checkpoint_id,
                    MIN(json_extract(metadata, '$.updated_at')) as created_at,
-                   MAX(json_extract(metadata, '$.git_branch')) as git_branch
+                   MAX(json_extract(metadata, '$.git_branch')) as git_branch,
+                   MAX(json_extract(metadata, '$.cwd')) as cwd
             FROM checkpoints
             {where_sql}
             GROUP BY thread_id
@@ -289,6 +320,7 @@ async def list_threads(
                     latest_checkpoint_id=r[3],
                     created_at=r[4],
                     git_branch=r[5],
+                    cwd=r[6],
                 )
                 for r in rows
             ]
@@ -1018,6 +1050,7 @@ async def list_threads_command(
     table.add_column("Updated" if sort_by == "updated" else "Last Used")
     if verbose:
         table.add_column("Branch")
+        table.add_column("Location")
         table.add_column("Prompt", max_width=40, no_wrap=True)
 
     prompt_max = 40
@@ -1032,11 +1065,16 @@ async def list_threads_command(
             row.append(fmt_ts(t.get("created_at")))
         row.append(fmt_ts(t.get("updated_at")))
         if verbose:
-            row.append(t.get("git_branch") or "")
             prompt = " ".join((t.get("initial_prompt") or "").split())
             if len(prompt) > prompt_max:
                 prompt = prompt[: prompt_max - 3] + "..."
-            row.append(prompt)
+            row.extend(
+                [
+                    t.get("git_branch") or "",
+                    format_path(t.get("cwd")),
+                    prompt,
+                ]
+            )
         table.add_row(*row)
 
     console.print()

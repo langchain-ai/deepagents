@@ -135,6 +135,7 @@ class TestThreadColumnPersistence:
             "created_at": True,
             "updated_at": False,
             "git_branch": True,
+            "cwd": False,
             "initial_prompt": False,
             "agent_name": True,
         }

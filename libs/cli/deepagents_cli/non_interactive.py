@@ -23,6 +23,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from langchain.agents.middleware.human_in_the_loop import ActionRequest, HITLRequest
@@ -742,11 +743,18 @@ async def run_non_interactive(
     result.apply_to_settings()
     thread_id = generate_thread_id()
 
+    try:
+        cwd = str(Path.cwd())
+    except OSError:
+        logger.warning("Could not determine working directory", exc_info=True)
+        cwd = ""
     metadata: dict[str, str] = {
         "assistant_id": assistant_id,
         "agent_name": assistant_id,
         "updated_at": datetime.now(UTC).isoformat(),
     }
+    if cwd:
+        metadata["cwd"] = cwd
     from deepagents_cli.textual_adapter import _get_git_branch
 
     branch = _get_git_branch()

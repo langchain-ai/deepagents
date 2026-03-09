@@ -228,3 +228,27 @@ class TestBackgroundRuntimeLifecycle:
             assert killed is False
         finally:
             await runtime.shutdown()
+
+    async def test_submit_before_start_raises(self) -> None:
+        runtime = BackgroundRuntime(require_hitl_for_shell=False)
+        with pytest.raises(RuntimeError, match="has not been started"):
+            await runtime.submit_shell_task("echo hi")
+
+    async def test_wait_unknown_task_raises(self) -> None:
+        runtime = BackgroundRuntime(require_hitl_for_shell=False)
+        await runtime.start()
+        try:
+            with pytest.raises(ValueError, match="Unknown background task"):
+                await runtime.wait_task("nonexistent")
+        finally:
+            await runtime.shutdown()
+
+    async def test_shutdown_with_active_task_completes(self) -> None:
+        runtime = BackgroundRuntime(require_hitl_for_shell=False)
+        await runtime.start()
+        await runtime.submit_shell_task("sleep 30")
+        await asyncio.wait_for(runtime.shutdown(), timeout=5)
+
+    async def test_unsupported_mode_raises(self) -> None:
+        with pytest.raises(ValueError, match="Unsupported background runtime mode"):
+            BackgroundRuntime(mode="distributed")  # type: ignore[arg-type]

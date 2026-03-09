@@ -204,7 +204,12 @@ def get_system_prompt(
             "- Do NOT ask clarifying questions — there is no human to answer "
             "them. Make reasonable assumptions and proceed.\n"
             "- If you encounter ambiguity, choose the most reasonable "
-            "interpretation and note your assumption briefly."
+            "interpretation and note your assumption briefly.\n"
+            "- Always use non-interactive command variants — no human is "
+            "available to respond to prompts. Examples: `npm init -y` not "
+            "`npm init`, `apt-get install -y` not `apt-get install`, "
+            "`yes |` or `--no-input`/`--non-interactive` flags where "
+            "available. Never run commands that block waiting for stdin."
         )
 
     # Build model identity section

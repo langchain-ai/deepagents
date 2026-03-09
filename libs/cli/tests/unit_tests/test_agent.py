@@ -465,6 +465,16 @@ class TestGetSystemPromptNonInteractive:
         assert "Do NOT ask clarifying questions" in prompt
         assert "reasonable assumptions" in prompt
 
+    def test_non_interactive_prompt_requires_non_interactive_commands(self) -> None:
+        mock_settings = Mock()
+        mock_settings.model_name = None
+
+        with patch("deepagents_cli.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent", interactive=False)
+
+        assert "non-interactive command variants" in prompt
+        assert "npm init -y" in prompt
+
     def test_default_is_interactive(self) -> None:
         mock_settings = Mock()
         mock_settings.model_name = None

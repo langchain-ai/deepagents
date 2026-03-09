@@ -81,7 +81,7 @@ _COLUMN_TOGGLE_LABELS = {
     "created_at": "Created At",
     "updated_at": "Updated At",
     "git_branch": "Git Branch",
-    "cwd": "Location",
+    "cwd": "Working Directory",
     "initial_prompt": "Initial Prompt",
 }
 # Reserved for future right-aligned columns (e.g., message counts).
@@ -175,7 +175,11 @@ def _format_column_value(
     Returns:
         Formatted display text for the column cell.
     """
-    from deepagents_cli.sessions import format_relative_timestamp, format_timestamp
+    from deepagents_cli.sessions import (
+        format_path,
+        format_relative_timestamp,
+        format_timestamp,
+    )
 
     fmt = format_relative_timestamp if relative_time else format_timestamp
 
@@ -196,8 +200,6 @@ def _format_column_value(
     elif key == "git_branch":
         value = thread.get("git_branch") or ""
     elif key == "cwd":
-        from deepagents_cli.sessions import format_path
-
         value = format_path(thread.get("cwd"))
     elif key == "initial_prompt":
         value = _collapse_whitespace(thread.get("initial_prompt") or "")

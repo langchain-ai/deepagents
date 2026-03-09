@@ -1035,6 +1035,7 @@ class TestThreadSelectorPromptOverflow:
             "created_at": False,
             "updated_at": True,
             "git_branch": False,
+            "cwd": False,
             "initial_prompt": True,
             "agent_name": False,
         }
@@ -1072,6 +1073,7 @@ class TestThreadSelectorBranchOverflow:
             "created_at": False,
             "updated_at": False,
             "git_branch": True,
+            "cwd": False,
             "initial_prompt": False,
             "agent_name": False,
         }
@@ -1111,6 +1113,7 @@ class TestThreadSelectorAutoWidthColumns:
             "created_at": False,
             "updated_at": False,
             "git_branch": False,
+            "cwd": False,
             "initial_prompt": False,
             "agent_name": True,
         }
@@ -1873,6 +1876,7 @@ class TestThreadSelectorColumnConfig:
             "created_at": True,
             "updated_at": True,
             "git_branch": True,
+            "cwd": False,
             "initial_prompt": False,
             "agent_name": True,
         }

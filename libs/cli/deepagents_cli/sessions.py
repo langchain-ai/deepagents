@@ -211,7 +211,7 @@ def format_path(path: str | None) -> str:
         prefix = home + "/"
         if path.startswith(prefix):
             return "~/" + path[len(prefix) :]
-    except (RuntimeError, KeyError):
+    except (RuntimeError, KeyError, OSError):
         return path
     else:
         return path
@@ -267,7 +267,7 @@ async def list_threads(
     Returns:
         List of `ThreadInfo` dicts with `thread_id`, `agent_name`,
             `updated_at`, `created_at`, `latest_checkpoint_id`, `git_branch`,
-            and optionally `message_count`.
+            `cwd`, and optionally `message_count`.
 
     Raises:
         ValueError: If `sort_by` is not `"updated"` or `"created"`.
@@ -301,7 +301,7 @@ async def list_threads(
                    MAX(checkpoint_id) as latest_checkpoint_id,
                    MIN(json_extract(metadata, '$.updated_at')) as created_at,
                    MAX(json_extract(metadata, '$.git_branch')) as git_branch,
-                   json_extract(metadata, '$.cwd') as cwd
+                   MAX(json_extract(metadata, '$.cwd')) as cwd
             FROM checkpoints
             {where_sql}
             GROUP BY thread_id

@@ -229,7 +229,10 @@ def _get_git_branch() -> str | None:
     """Return the current git branch name, or None if not in a repo."""
     import subprocess  # noqa: S404
 
-    cwd = str(Path.cwd())
+    try:
+        cwd = str(Path.cwd())
+    except OSError:
+        return None
     if cwd in _git_branch_cache:
         return _git_branch_cache[cwd]
 
@@ -268,7 +271,12 @@ def _build_stream_config(
     Returns:
         Config dict with `configurable` and `metadata` keys.
     """
-    metadata: dict[str, str] = {"cwd": str(Path.cwd())}
+    try:
+        cwd = str(Path.cwd())
+    except OSError:
+        logger.warning("Could not determine working directory", exc_info=True)
+        cwd = ""
+    metadata: dict[str, str] = {"cwd": cwd} if cwd else {}
     if assistant_id:
         metadata.update(
             {

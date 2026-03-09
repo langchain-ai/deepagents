@@ -743,12 +743,18 @@ async def run_non_interactive(
     result.apply_to_settings()
     thread_id = generate_thread_id()
 
+    try:
+        cwd = str(Path.cwd())
+    except OSError:
+        logger.warning("Could not determine working directory", exc_info=True)
+        cwd = ""
     metadata: dict[str, str] = {
         "assistant_id": assistant_id,
         "agent_name": assistant_id,
         "updated_at": datetime.now(UTC).isoformat(),
-        "cwd": str(Path.cwd()),
     }
+    if cwd:
+        metadata["cwd"] = cwd
     from deepagents_cli.textual_adapter import _get_git_branch
 
     branch = _get_git_branch()

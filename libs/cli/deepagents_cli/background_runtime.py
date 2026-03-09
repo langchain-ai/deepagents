@@ -5,8 +5,6 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import logging
-import os
-import signal
 import threading
 import uuid
 from collections import deque
@@ -18,6 +16,7 @@ from typing import TYPE_CHECKING, Any, Literal, Self, TypedDict
 from taskiq import InMemoryBroker
 
 if TYPE_CHECKING:
+    from deepagents.backends.protocol import SandboxBackendProtocol
     from taskiq.task import AsyncTaskiqTask
 
 logger = logging.getLogger(__name__)
@@ -162,6 +161,7 @@ class BackgroundRuntime:
         mode: Literal["inmemory"] = "inmemory",
         poll_interval_seconds: float = 0.1,
         require_hitl_for_shell: bool = True,
+        backend: SandboxBackendProtocol | None = None,
     ) -> None:
         """Initialize runtime internals.
 
@@ -169,6 +169,10 @@ class BackgroundRuntime:
             mode: Runtime mode. Currently only `inmemory` is supported.
             poll_interval_seconds: Poll interval used by UI bridge loops.
             require_hitl_for_shell: Whether shell tasks require approval.
+            backend: Execution backend for running commands.
+
+                When `None`, task submissions fail with a configuration error.
+                Can be set after init via the `backend` property.
 
         Raises:
             ValueError: If `mode` is unsupported.
@@ -184,6 +188,8 @@ class BackgroundRuntime:
         self._broker = InMemoryBroker()
         self._started = False
 
+        self._backend = backend
+
         # NOTE: This lock protects dict/deque/set state. The asyncio primitives
         # (_wait_events, _hitl_waiters, _hitl_idle_event) stored here are
         # manipulated only from the event loop thread. Do NOT acquire this lock
@@ -193,7 +199,6 @@ class BackgroundRuntime:
         self._task_handles: dict[str, AsyncTaskiqTask[Any]] = {}
         self._wait_events: dict[str, asyncio.Event] = {}
         self._monitor_tasks: dict[str, asyncio.Task[None]] = {}
-        self._processes: dict[str, asyncio.subprocess.Process] = {}
         self._killed: set[str] = set()
         self._pending_updates: deque[str] = deque()
         self._pending_tui_notifications: deque[str] = deque()
@@ -219,6 +224,20 @@ class BackgroundRuntime:
     def poll_interval_seconds(self) -> float:
         """Return the recommended poll interval for app loops."""
         return self._poll_interval_seconds
+
+    @property
+    def backend(self) -> SandboxBackendProtocol | None:
+        """Return the configured execution backend."""
+        return self._backend
+
+    def set_backend(self, backend: SandboxBackendProtocol | None) -> None:
+        """Set the execution backend for running commands.
+
+        Args:
+            backend: Backend to use for command execution, or `None`
+                to clear.
+        """
+        self._backend = backend
 
     async def start(self) -> None:
         """Start the underlying TaskIQ broker."""
@@ -365,6 +384,10 @@ class BackgroundRuntime:
     async def kill_task(self, task_id: str) -> bool:
         """Best-effort kill a background task.
 
+        Marks the task as killed so the runtime ignores its result. If the
+        command is already running via the backend, it may continue to
+        completion — cancellation is best-effort.
+
         Args:
             task_id: Task ID to kill.
 
@@ -385,7 +408,6 @@ class BackgroundRuntime:
             self._pending_updates.append(f"Task `{task_id}` marked as killed.")
             self._pending_tui_notifications.append(f"Background task {task_id} killed.")
             wait_event = self._wait_events.get(task_id)
-            process = self._processes.get(task_id)
             hitl_event_id = self._task_hitl_event_ids.get(task_id)
 
         if hitl_event_id is not None:
@@ -394,30 +416,6 @@ class BackgroundRuntime:
                 decision=BackgroundApprovalDecision.REJECT,
                 message="Task killed before approval",
             )
-
-        if process is not None and process.returncode is None:
-            try:
-                if os.name != "nt":
-                    os.killpg(os.getpgid(process.pid), signal.SIGTERM)
-                else:
-                    process.terminate()
-            except ProcessLookupError:
-                logger.debug(
-                    "Process for task %s already exited before kill signal",
-                    task_id,
-                )
-            except OSError:
-                logger.warning(
-                    "Failed to terminate process for task %s; "
-                    "the process may still be running",
-                    task_id,
-                    exc_info=True,
-                )
-                with self._lock:
-                    self._pending_tui_notifications.append(
-                        f"Warning: kill signal for task {task_id} may not "
-                        "have been delivered. The process might still be running."
-                    )
 
         if wait_event is not None:
             wait_event.set()
@@ -644,7 +642,11 @@ class BackgroundRuntime:
                 event.set()
 
     async def _run_shell_task(self, *, task_id: str, command: str) -> _ShellResult:
-        """TaskIQ task body for executing shell commands.
+        """TaskIQ task body for executing commands via the configured backend.
+
+        Delegates to `backend.aexecute()` so that background tasks run in the
+        same environment (local shell or remote sandbox) as regular
+        tool execution.
 
         Returns:
             Result payload containing `exit_code`, `stdout`, and `stderr`.
@@ -685,37 +687,39 @@ class BackgroundRuntime:
                     "stderr": "Killed before command execution",
                 }
 
+        if self._backend is None:
+            return {
+                "exit_code": 1,
+                "stdout": "",
+                "stderr": "No execution backend configured",
+            }
+
         try:
-            process = await asyncio.create_subprocess_shell(
-                command,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                start_new_session=(os.name != "nt"),
-            )
-        except OSError as exc:
+            response = await self._backend.aexecute(command)
+        except Exception as exc:  # noqa: BLE001
             logger.warning(
-                "Failed to create subprocess for task %s: %s",
+                "Backend execution failed for task %s: %s",
                 task_id,
                 exc,
             )
             return {
                 "exit_code": 1,
                 "stdout": "",
-                "stderr": f"Failed to start subprocess: {exc}",
+                "stderr": f"Execution failed: {exc}",
             }
-        with self._lock:
-            self._processes[task_id] = process
 
-        try:
-            stdout_bytes, stderr_bytes = await process.communicate()
-        finally:
-            with self._lock:
-                self._processes.pop(task_id, None)
+        output = response.output
+        if response.truncated:
+            output += "\n[output truncated]"
 
+        # aexecute() returns combined stdout+stderr. Route to the
+        # appropriate field based on exit code so the monitor logic
+        # populates result_text / stderr_text correctly.
+        failed = response.exit_code is not None and response.exit_code != 0
         return {
-            "exit_code": process.returncode,
-            "stdout": (stdout_bytes or b"").decode(errors="replace").strip(),
-            "stderr": (stderr_bytes or b"").decode(errors="replace").strip(),
+            "exit_code": response.exit_code,
+            "stdout": output if not failed else "",
+            "stderr": output if failed else "",
         }
 
     def _transition_status(

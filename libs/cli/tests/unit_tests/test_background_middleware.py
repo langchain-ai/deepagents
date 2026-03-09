@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
+from deepagents.backends import LocalShellBackend
 from langchain_core.messages import HumanMessage
 
 from deepagents_cli.background_middleware import BackgroundMiddleware
@@ -43,7 +44,9 @@ class TestBackgroundMiddleware:
         }
 
     async def test_submit_tool_returns_started_status(self) -> None:
-        runtime = BackgroundRuntime(require_hitl_for_shell=False)
+        runtime = BackgroundRuntime(
+            require_hitl_for_shell=False, backend=LocalShellBackend()
+        )
         await runtime.start()
         try:
             middleware = BackgroundMiddleware(runtime)

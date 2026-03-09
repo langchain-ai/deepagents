@@ -4,16 +4,24 @@ from __future__ import annotations
 
 import asyncio
 
+from deepagents.backends import LocalShellBackend
+
 from deepagents_cli.app import DeepAgentsApp
 from deepagents_cli.background_runtime import BackgroundRuntime, BackgroundTaskStatus
 from deepagents_cli.widgets.messages import AppMessage
+
+
+def _local_backend() -> LocalShellBackend:
+    return LocalShellBackend()
 
 
 class TestBackgroundHitlBridge:
     """Ensure background HITL approvals are bridged through existing app UI flow."""
 
     async def test_background_hitl_approve_flow(self) -> None:
-        runtime = BackgroundRuntime(require_hitl_for_shell=True)
+        runtime = BackgroundRuntime(
+            require_hitl_for_shell=True, backend=_local_backend()
+        )
         await runtime.start()
         try:
             app = DeepAgentsApp(background_runtime=runtime)
@@ -37,7 +45,9 @@ class TestBackgroundHitlBridge:
             await runtime.shutdown()
 
     async def test_background_hitl_reject_flow(self) -> None:
-        runtime = BackgroundRuntime(require_hitl_for_shell=True)
+        runtime = BackgroundRuntime(
+            require_hitl_for_shell=True, backend=_local_backend()
+        )
         await runtime.start()
         try:
             app = DeepAgentsApp(background_runtime=runtime)
@@ -67,7 +77,9 @@ class TestBackgroundHitlBridge:
             await runtime.shutdown()
 
     async def test_background_hitl_events_processed_serially(self) -> None:
-        runtime = BackgroundRuntime(require_hitl_for_shell=True)
+        runtime = BackgroundRuntime(
+            require_hitl_for_shell=True, backend=_local_backend()
+        )
         await runtime.start()
         try:
             app = DeepAgentsApp(background_runtime=runtime)
@@ -104,7 +116,9 @@ class TestBackgroundHitlBridge:
             await runtime.shutdown()
 
     async def test_completed_background_task_shows_tui_message(self) -> None:
-        runtime = BackgroundRuntime(require_hitl_for_shell=False)
+        runtime = BackgroundRuntime(
+            require_hitl_for_shell=False, backend=_local_backend()
+        )
         await runtime.start()
         try:
             app = DeepAgentsApp(background_runtime=runtime)
@@ -132,7 +146,9 @@ class TestBackgroundHitlBridge:
             await runtime.shutdown()
 
     async def test_bridge_resolves_pending_hitl_idle_wait(self) -> None:
-        runtime = BackgroundRuntime(require_hitl_for_shell=True)
+        runtime = BackgroundRuntime(
+            require_hitl_for_shell=True, backend=_local_backend()
+        )
         await runtime.start()
         try:
             app = DeepAgentsApp(background_runtime=runtime)

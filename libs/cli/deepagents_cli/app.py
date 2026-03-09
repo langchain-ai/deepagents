@@ -533,10 +533,10 @@ class DeepAgentsApp(App):
         Binding("enter", "approval_select", "Select", show=False),
         Binding("y", "approval_yes", "Yes", show=False),
         Binding("1", "approval_yes", "Yes", show=False),
-        Binding("n", "approval_no", "No", show=False),
-        Binding("2", "approval_no", "No", show=False),
+        Binding("2", "approval_auto", "Auto", show=False),
         Binding("a", "approval_auto", "Auto", show=False),
-        Binding("3", "approval_auto", "Auto", show=False),
+        Binding("3", "approval_no", "No", show=False),
+        Binding("n", "approval_no", "No", show=False),
     ]
 
     def __init__(
@@ -2857,15 +2857,15 @@ class DeepAgentsApp(App):
         if self._pending_approval_widget:
             self._pending_approval_widget.action_select_approve()
 
-    def action_approval_no(self) -> None:
-        """Handle no/2 in approval menu."""
-        if self._pending_approval_widget:
-            self._pending_approval_widget.action_select_reject()
-
     def action_approval_auto(self) -> None:
-        """Handle auto/3 in approval menu."""
+        """Handle auto/2 in approval menu."""
         if self._pending_approval_widget:
             self._pending_approval_widget.action_select_auto()
+
+    def action_approval_no(self) -> None:
+        """Handle no/3 in approval menu."""
+        if self._pending_approval_widget:
+            self._pending_approval_widget.action_select_reject()
 
     def action_approval_escape(self) -> None:
         """Handle escape in approval menu - reject."""

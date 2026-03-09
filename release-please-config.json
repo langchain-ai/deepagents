@@ -51,8 +51,8 @@
   ],
   "pull-request-title-pattern": "release(${component}): ${version}",
   "component-no-space": true,
-  "pull-request-header": "",
-  "pull-request-footer": "",
+  "pull-request-header": "> [!CAUTION]\n> Merging this PR will publish to **PyPI** and create a **GitHub release**.\n\n---\n\n_Everything below this line is the GitHub release body._\n",
+  "pull-request-footer": "\n---\n\n_Everything above this line is the GitHub release body._",
   "packages": {
     "libs/cli": {
       "release-type": "python",

@@ -5,7 +5,7 @@ from __future__ import annotations
 import importlib.util
 import os
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from deepagents.backends.protocol import (
     ExecuteResponse,
@@ -24,11 +24,118 @@ from deepagents_cli.integrations.sandbox_provider import (
 if TYPE_CHECKING:
     from e2b import Sandbox
 
+
+class _E2BSandboxClass(Protocol):
+    @staticmethod
+    def create(*args: object, **kwargs: object) -> Sandbox: ...
+
+    @staticmethod
+    def connect(*args: object, **kwargs: object) -> Sandbox: ...
+
+    @staticmethod
+    def kill(*args: object, **kwargs: object) -> None: ...
+
+
+class _E2BCommandExitLike(Protocol):
+    stdout: str | None
+    stderr: str | None
+    exit_code: int
+
+
 DEFAULT_SANDBOX_LIFETIME = 3600
 DEFAULT_STARTUP_TIMEOUT = 180
 DEFAULT_COMMAND_TIMEOUT = 30 * 60
+DEFAULT_TEMPLATE = "code-interpreter-v1"
 DEFAULT_WORKDIR = "/home/user"
 READINESS_POLL_INTERVAL = 2
+
+
+def _load_e2b_attr(module_name: str, attr_name: str) -> object:
+    """Load an attribute from the optional E2B SDK.
+
+    Args:
+        module_name: Fully qualified E2B module name.
+        attr_name: Attribute to fetch from the module.
+
+    Returns:
+        The requested SDK attribute.
+    """
+    _require_e2b()
+
+    module = __import__(module_name, fromlist=[attr_name])
+    return getattr(module, attr_name)
+
+
+def _load_e2b_sandbox_class() -> _E2BSandboxClass:
+    """Load the `e2b.Sandbox` class lazily.
+
+    Returns:
+        The E2B `Sandbox` class.
+    """
+    return cast("_E2BSandboxClass", _load_e2b_attr("e2b", "Sandbox"))
+
+
+def _load_e2b_not_found_exception() -> type[Exception]:
+    """Load the E2B not-found exception class lazily.
+
+    Returns:
+        The E2B `NotFoundException` class.
+    """
+    return cast(
+        "type[Exception]",
+        _load_e2b_attr("e2b.exceptions", "NotFoundException"),
+    )
+
+
+def _load_e2b_invalid_argument_exception() -> type[Exception]:
+    """Load the E2B invalid-argument exception class lazily.
+
+    Returns:
+        The E2B `InvalidArgumentException` class.
+    """
+    return cast(
+        "type[Exception]",
+        _load_e2b_attr("e2b.exceptions", "InvalidArgumentException"),
+    )
+
+
+def _load_e2b_timeout_exception() -> type[Exception]:
+    """Load the E2B timeout exception class lazily.
+
+    Returns:
+        The E2B `TimeoutException` class.
+    """
+    return cast(
+        "type[Exception]",
+        _load_e2b_attr("e2b.exceptions", "TimeoutException"),
+    )
+
+
+def _load_e2b_command_exit_exception() -> type[Exception]:
+    """Load the E2B command-exit exception class lazily.
+
+    Returns:
+        The E2B `CommandExitException` class.
+    """
+    return cast(
+        "type[Exception]",
+        _load_e2b_attr(
+            "e2b.sandbox.commands.command_handle",
+            "CommandExitException",
+        ),
+    )
+
+
+def _is_e2b_directory(file_type: object) -> bool:
+    """Return whether an E2B file info type represents a directory.
+
+    Args:
+        file_type: SDK-specific file type value.
+
+    Returns:
+        `True` if the value represents a directory.
+    """
+    return str(file_type).lower().endswith("dir")
 
 
 def _require_e2b() -> None:
@@ -141,8 +248,8 @@ class E2BBackend(BaseSandbox):
             msg = f"timeout must be non-negative, got {effective_timeout}"
             raise ValueError(msg)
 
-        from e2b.exceptions import TimeoutException
-        from e2b.sandbox.commands.command_handle import CommandExitException
+        timeout_exception = _load_e2b_timeout_exception()
+        command_exit_exception = _load_e2b_command_exit_exception()
 
         try:
             result = self._sandbox.commands.run(
@@ -150,13 +257,14 @@ class E2BBackend(BaseSandbox):
                 cwd=self._workdir,
                 timeout=effective_timeout,
             )
-        except CommandExitException as exc:
+        except command_exit_exception as exc:
+            command_error = cast("_E2BCommandExitLike", exc)
             return ExecuteResponse(
-                output=_combine_output(exc.stdout, exc.stderr),
-                exit_code=exc.exit_code,
+                output=_combine_output(command_error.stdout, command_error.stderr),
+                exit_code=command_error.exit_code,
                 truncated=False,
             )
-        except TimeoutException:
+        except timeout_exception:
             if timeout is not None:
                 msg = (
                     "Error: Command timed out after "
@@ -192,8 +300,8 @@ class E2BBackend(BaseSandbox):
         Returns:
             Download responses in the same order as `paths`.
         """
-        from e2b.exceptions import InvalidArgumentException, NotFoundException
-        from e2b.sandbox.filesystem.filesystem import FileType
+        invalid_argument_exception = _load_e2b_invalid_argument_exception()
+        not_found_exception = _load_e2b_not_found_exception()
 
         responses: list[FileDownloadResponse] = []
         for path in paths:
@@ -205,7 +313,7 @@ class E2BBackend(BaseSandbox):
 
             try:
                 info = self._sandbox.files.get_info(path)
-                if info.type == FileType.DIR:
+                if _is_e2b_directory(info.type):
                     responses.append(
                         FileDownloadResponse(
                             path=path,
@@ -215,7 +323,7 @@ class E2BBackend(BaseSandbox):
                     )
                     continue
                 content = bytes(self._sandbox.files.read(path, format="bytes"))
-            except NotFoundException:
+            except not_found_exception:
                 responses.append(
                     FileDownloadResponse(
                         path=path,
@@ -224,7 +332,7 @@ class E2BBackend(BaseSandbox):
                     )
                 )
                 continue
-            except InvalidArgumentException:
+            except invalid_argument_exception:
                 responses.append(
                     FileDownloadResponse(path=path, content=None, error="invalid_path")
                 )
@@ -263,8 +371,8 @@ class E2BBackend(BaseSandbox):
         Returns:
             Upload responses in the same order as `files`.
         """
-        from e2b.exceptions import InvalidArgumentException, NotFoundException
-        from e2b.sandbox.filesystem.filesystem import FileType
+        invalid_argument_exception = _load_e2b_invalid_argument_exception()
+        not_found_exception = _load_e2b_not_found_exception()
 
         responses: list[FileUploadResponse] = []
         for path, content in files:
@@ -274,9 +382,9 @@ class E2BBackend(BaseSandbox):
 
             try:
                 info = self._sandbox.files.get_info(path)
-            except NotFoundException:
+            except not_found_exception:
                 info = None
-            except InvalidArgumentException:
+            except invalid_argument_exception:
                 responses.append(FileUploadResponse(path=path, error="invalid_path"))
                 continue
             except PermissionError:
@@ -293,13 +401,13 @@ class E2BBackend(BaseSandbox):
                 )
                 continue
 
-            if info is not None and info.type == FileType.DIR:
+            if info is not None and _is_e2b_directory(info.type):
                 responses.append(FileUploadResponse(path=path, error="invalid_path"))
                 continue
 
             try:
                 self._sandbox.files.write(path, content)
-            except InvalidArgumentException:
+            except invalid_argument_exception:
                 responses.append(FileUploadResponse(path=path, error="invalid_path"))
                 continue
             except PermissionError:
@@ -352,6 +460,8 @@ class E2BProvider(SandboxProvider):
             sandbox_id: Existing sandbox ID to connect to.
             timeout: Startup/request timeout in seconds.
             **kwargs: Additional provider-specific parameters.
+                Supported keyword arguments:
+                - `template`: E2B template name used when creating a new sandbox.
 
         Returns:
             Connected E2B backend.
@@ -361,8 +471,9 @@ class E2BProvider(SandboxProvider):
             SandboxNotFoundError: If an existing sandbox ID cannot be resolved.
             TypeError: If unsupported keyword arguments are provided.
         """
-        from e2b import Sandbox
-        from e2b.exceptions import NotFoundException
+        sandbox_class = _load_e2b_sandbox_class()
+        not_found_exception = _load_e2b_not_found_exception()
+        template = kwargs.pop("template", DEFAULT_TEMPLATE)
 
         if kwargs:
             msg = f"Received unsupported arguments: {list(kwargs.keys())}"
@@ -370,20 +481,21 @@ class E2BProvider(SandboxProvider):
 
         if sandbox_id:
             try:
-                sandbox = Sandbox.connect(
+                sandbox = sandbox_class.connect(
                     sandbox_id,
                     timeout=DEFAULT_SANDBOX_LIFETIME,
                     request_timeout=timeout,
                     api_key=self._api_key,
                 )
-            except NotFoundException as exc:
+            except not_found_exception as exc:
                 raise SandboxNotFoundError(sandbox_id) from exc
             except Exception as exc:
                 msg = f"Failed to connect to E2B sandbox '{sandbox_id}': {exc}"
                 raise RuntimeError(msg) from exc
         else:
             try:
-                sandbox = Sandbox.create(
+                sandbox = sandbox_class.create(
+                    template=template,
                     timeout=DEFAULT_SANDBOX_LIFETIME,
                     request_timeout=timeout,
                     api_key=self._api_key,
@@ -407,12 +519,12 @@ class E2BProvider(SandboxProvider):
         Raises:
             SandboxNotFoundError: If the sandbox no longer exists.
         """
-        from e2b import Sandbox
-        from e2b.exceptions import NotFoundException
+        sandbox_class = _load_e2b_sandbox_class()
+        not_found_exception = _load_e2b_not_found_exception()
 
         try:
-            Sandbox.kill(sandbox_id, api_key=self._api_key)
-        except NotFoundException as exc:
+            sandbox_class.kill(sandbox_id, api_key=self._api_key)
+        except not_found_exception as exc:
             raise SandboxNotFoundError(sandbox_id) from exc
 
     @staticmethod

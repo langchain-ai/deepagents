@@ -10,7 +10,7 @@ Looking for the JS/TS version? Check out [LangChain.js](https://github.com/langc
 ## Quick Install
 
 ```bash
-pip install langchain_e2b
+pip install langchain-e2b
 ```
 
 ```python
@@ -18,24 +18,28 @@ from e2b import Sandbox
 
 from langchain_e2b import E2BSandbox
 
-sandbox = Sandbox.create()
+sandbox = Sandbox.create(template="code-interpreter-v1")
 backend = E2BSandbox(sandbox=sandbox)
 result = backend.execute("echo hello")
 print(result.output)
 ```
 
-## What is this?
+## 🤔 What is this?
 
 E2B sandbox integration for Deep Agents.
 
-This package uses the low-level `e2b` sandbox SDK, not `e2b-code-interpreter`,
-so it can support shell execution, file transfer, and sandbox lifecycle control.
+This package uses the low-level `e2b` sandbox SDK so it can support shell
+execution, file transfer, sandbox lifecycle control, and reconnect behavior
+required by the Deep Agents sandbox contract.
 
-## Releases & Versioning
+If you need a different E2B image, pass a different `template=` value when you
+create the sandbox.
+
+## 📕 Releases & Versioning
 
 See our [Releases](https://docs.langchain.com/oss/python/release-policy) and [Versioning](https://docs.langchain.com/oss/python/versioning) policies.
 
-## Contributing
+## 💁 Contributing
 
 As an open-source project in a rapidly developing field, we are extremely open to contributions, whether it be in the form of a new feature, improved infrastructure, or better documentation.
 

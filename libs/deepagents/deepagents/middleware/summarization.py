@@ -1,6 +1,6 @@
 """Summarization middleware for automatic and tool-based conversation compaction.
 
-This module provides two middleware classes:
+This module provides two middleware classes and a convenience factory:
 
 - `SummarizationMiddleware` — automatically compacts the conversation when token
     usage exceeds a configurable threshold.
@@ -13,6 +13,8 @@ This module provides two middleware classes:
 
     Composes with a `SummarizationMiddleware` instance and reuses its
     summarization engine.
+- `create_summarization_tool_middleware` — convenience factory that creates both
+    middleware layers with model-aware defaults.
 
 ## Usage
 
@@ -42,7 +44,7 @@ agent = create_deep_agent(middleware=[summ, tool_mw])
 Offloaded messages are stored as markdown at `/conversation_history/{thread_id}.md`.
 
 Each summarization event appends a new section to this file, creating a running
-lo of all evicted messages.
+log of all evicted messages.
 """
 
 from __future__ import annotations
@@ -1141,7 +1143,7 @@ def create_summarization_tool_middleware(
         )
         ```
 
-        Using a custom backend instance (e.g., Daytona Sandbox)
+        Using a custom backend instance (e.g., Daytona Sandbox):
 
         ```python
         from daytona import Daytona
@@ -1188,6 +1190,9 @@ class SummarizationToolMiddleware(AgentMiddleware):
 
     The tool and auto-summarization share the same `_summarization_event` state
     key, so they interoperate correctly.
+
+    For a simpler setup, use `create_summarization_tool_middleware` which
+    handles both steps.
 
     Example:
         ```python

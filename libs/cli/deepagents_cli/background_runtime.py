@@ -13,7 +13,7 @@ from collections import deque
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any, Literal, TypedDict
+from typing import TYPE_CHECKING, Any, Literal, Self, TypedDict
 
 from taskiq import InMemoryBroker
 
@@ -54,6 +54,21 @@ TERMINAL_STATUSES: frozenset[BackgroundTaskStatus] = frozenset(
     }
 )
 """States from which a task will never transition again."""
+
+_VALID_TRANSITIONS: dict[BackgroundTaskStatus, frozenset[BackgroundTaskStatus]] = {
+    BackgroundTaskStatus.QUEUED: frozenset(
+        {BackgroundTaskStatus.RUNNING, BackgroundTaskStatus.KILLED}
+    ),
+    BackgroundTaskStatus.RUNNING: frozenset(
+        {
+            BackgroundTaskStatus.SUCCEEDED,
+            BackgroundTaskStatus.FAILED,
+            BackgroundTaskStatus.KILLED,
+            BackgroundTaskStatus.REJECTED,
+        }
+    ),
+}
+"""Allowed status transitions. Terminal statuses have no outgoing edges."""
 
 
 class BackgroundApprovalDecision(StrEnum):
@@ -108,7 +123,20 @@ class BackgroundActionRequest(TypedDict):
     """Human-readable description shown in the approval UI."""
 
 
-@dataclass(slots=True)
+class _ShellResult(TypedDict):
+    """Internal result payload from shell task execution."""
+
+    exit_code: int | None
+    """Process exit code, or `None` if unavailable."""
+
+    stdout: str
+    """Captured standard output."""
+
+    stderr: str
+    """Captured standard error."""
+
+
+@dataclass(slots=True, frozen=True)
 class BackgroundHitlEvent:
     """HITL approval event emitted by background task execution."""
 
@@ -182,7 +210,7 @@ class BackgroundRuntime:
         async def _execute_background_shell(
             task_id: str,
             command: str,
-        ) -> dict[str, Any]:
+        ) -> _ShellResult:
             return await self._run_shell_task(task_id=task_id, command=command)
 
         self._execute_background_shell = _execute_background_shell
@@ -199,6 +227,19 @@ class BackgroundRuntime:
         await self._broker.startup()
         self._started = True
 
+    async def __aenter__(self) -> Self:
+        """Start runtime as an async context manager.
+
+        Returns:
+            The started runtime instance.
+        """
+        await self.start()
+        return self
+
+    async def __aexit__(self, *exc_info: object) -> None:
+        """Shutdown runtime on context exit."""
+        await self.shutdown()
+
     async def shutdown(self) -> None:
         """Shutdown broker and cancel active runtime tasks."""
         with self._lock:
@@ -206,7 +247,14 @@ class BackgroundRuntime:
             process_ids = list(self._records.keys())
 
         for task_id in process_ids:
-            await self.kill_task(task_id)
+            try:
+                await self.kill_task(task_id)
+            except Exception:
+                logger.warning(
+                    "Failed to kill task %s during shutdown",
+                    task_id,
+                    exc_info=True,
+                )
 
         for _, monitor in monitor_tasks:
             monitor.cancel()
@@ -223,12 +271,22 @@ class BackgroundRuntime:
                     exc_info=True,
                 )
 
-        for event_id in list(self._hitl_waiters.keys()):
-            self.resolve_hitl_event(
-                event_id,
-                decision=BackgroundApprovalDecision.REJECT,
-                message="Runtime shutdown",
-            )
+        with self._lock:
+            pending_event_ids = list(self._hitl_waiters.keys())
+
+        for event_id in pending_event_ids:
+            try:
+                self.resolve_hitl_event(
+                    event_id,
+                    decision=BackgroundApprovalDecision.REJECT,
+                    message="Runtime shutdown",
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to resolve HITL event %s during shutdown",
+                    event_id,
+                    exc_info=True,
+                )
 
         if self._started:
             await self._broker.shutdown()
@@ -242,12 +300,13 @@ class BackgroundRuntime:
     ) -> str:
         """Submit a shell command for background execution.
 
-        When `require_hitl_for_shell` is enabled, the task blocks on
-        approval before shell execution begins.
+        Returns immediately with a task ID. When `require_hitl_for_shell`
+        is enabled, the background worker blocks on approval before shell
+        execution begins.
 
         Args:
             command: Shell command to execute.
-            assistant_id: Optional assistant ID for approval display.
+            assistant_id: Reserved for future use; currently unused.
 
         Returns:
             Runtime task ID.
@@ -306,6 +365,9 @@ class BackgroundRuntime:
     async def kill_task(self, task_id: str) -> bool:
         """Best-effort kill a background task.
 
+        Args:
+            task_id: Task ID to kill.
+
         Returns:
             `True` if the task was transitioned to killed, else `False`.
         """
@@ -345,11 +407,17 @@ class BackgroundRuntime:
                     task_id,
                 )
             except OSError:
-                logger.debug(
-                    "Failed to terminate process for task %s",
+                logger.warning(
+                    "Failed to terminate process for task %s; "
+                    "the process may still be running",
                     task_id,
                     exc_info=True,
                 )
+                with self._lock:
+                    self._pending_tui_notifications.append(
+                        f"Warning: kill signal for task {task_id} may not "
+                        "have been delivered. The process might still be running."
+                    )
 
         if wait_event is not None:
             wait_event.set()
@@ -427,11 +495,30 @@ class BackgroundRuntime:
         decision: BackgroundApprovalDecision,
         message: str | None = None,
     ) -> None:
-        """Resolve a pending HITL event."""
+        """Resolve a pending HITL event.
+
+        Silently no-ops if the event is unknown or already resolved.
+
+        Args:
+            event_id: HITL event identifier to resolve.
+            decision: Approval or rejection decision.
+            message: Optional reason string forwarded to the waiting task.
+        """
         with self._lock:
             waiter = self._hitl_waiters.pop(event_id, None)
             self._sync_hitl_idle_event_locked()
-        if waiter is None or waiter.done():
+        if waiter is None:
+            logger.debug(
+                "resolve_hitl_event called for unknown event %s "
+                "(possibly already resolved or expired)",
+                event_id,
+            )
+            return
+        if waiter.done():
+            logger.debug(
+                "resolve_hitl_event called for already-resolved event %s",
+                event_id,
+            )
             return
         waiter.set_result((decision, message))
 
@@ -556,13 +643,18 @@ class BackgroundRuntime:
             if event is not None:
                 event.set()
 
-    async def _run_shell_task(self, *, task_id: str, command: str) -> dict[str, Any]:
+    async def _run_shell_task(self, *, task_id: str, command: str) -> _ShellResult:
         """TaskIQ task body for executing shell commands.
 
         Returns:
             Result payload containing `exit_code`, `stdout`, and `stderr`.
         """
-        await self._mark_running(task_id)
+        if not await self._mark_running(task_id):
+            return {
+                "exit_code": 1,
+                "stdout": "",
+                "stderr": "Task record missing; aborted",
+            }
 
         if self._require_hitl_for_shell:
             decision, reason = await self._request_shell_approval(task_id, command)
@@ -593,12 +685,24 @@ class BackgroundRuntime:
                     "stderr": "Killed before command execution",
                 }
 
-        process = await asyncio.create_subprocess_shell(
-            command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            start_new_session=(os.name != "nt"),
-        )
+        try:
+            process = await asyncio.create_subprocess_shell(
+                command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                start_new_session=(os.name != "nt"),
+            )
+        except OSError as exc:
+            logger.warning(
+                "Failed to create subprocess for task %s: %s",
+                task_id,
+                exc,
+            )
+            return {
+                "exit_code": 1,
+                "stdout": "",
+                "stderr": f"Failed to start subprocess: {exc}",
+            }
         with self._lock:
             self._processes[task_id] = process
 
@@ -614,20 +718,58 @@ class BackgroundRuntime:
             "stderr": (stderr_bytes or b"").decode(errors="replace").strip(),
         }
 
-    async def _mark_running(self, task_id: str) -> None:
+    def _transition_status(
+        self,
+        task_id: str,
+        new_status: BackgroundTaskStatus,
+    ) -> bool:
+        """Validate and apply a status transition.
+
+        Must be called with `_lock` held.
+
+        Args:
+            task_id: Task to transition.
+            new_status: Target status.
+
+        Returns:
+            `True` if the transition was applied, `False` otherwise.
+        """
+        record = self._records.get(task_id)
+        if record is None:
+            logger.warning(
+                "Cannot transition unknown task %s to %s",
+                task_id,
+                new_status,
+            )
+            return False
+        valid = _VALID_TRANSITIONS.get(record.status, frozenset())
+        if new_status not in valid:
+            logger.debug(
+                "Ignoring invalid transition %s -> %s for task %s",
+                record.status,
+                new_status,
+                task_id,
+            )
+            return False
+        record.status = new_status
+        record.updated_at = datetime.now(UTC)
+        return True
+
+    async def _mark_running(self, task_id: str) -> bool:
+        """Transition task from QUEUED to RUNNING.
+
+        Args:
+            task_id: Task to mark as running.
+
+        Returns:
+            `True` if the task was successfully marked, `False` if the
+            record is missing or not in QUEUED state.
+        """
         with self._lock:
-            record = self._records.get(task_id)
-            if record is None:
-                logger.warning(
-                    "Attempted to mark unknown task %s as running; "
-                    "possible internal state corruption",
-                    task_id,
-                )
-                return
-            if record.status == BackgroundTaskStatus.QUEUED:
-                record.status = BackgroundTaskStatus.RUNNING
-                record.updated_at = datetime.now(UTC)
-                self._pending_updates.append(f"Task `{task_id}` is running.")
+            if not self._transition_status(task_id, BackgroundTaskStatus.RUNNING):
+                return False
+            self._pending_updates.append(f"Task `{task_id}` is running.")
+            return True
 
     async def _request_shell_approval(
         self,
@@ -675,6 +817,7 @@ class BackgroundRuntime:
                 self._task_hitl_event_ids.pop(task_id, None)
 
     def _sync_hitl_idle_event_locked(self) -> None:
+        """Update idle event based on pending HITL waiters. Must hold `_lock`."""
         if self._hitl_waiters:
             self._hitl_idle_event.clear()
             return
@@ -682,12 +825,22 @@ class BackgroundRuntime:
 
 
 def _safe_str(value: object) -> str | None:
+    """Coerce a value to str, returning `None` for `None` input.
+
+    Returns:
+        String representation or `None`.
+    """
     if value is None:
         return None
     return str(value)
 
 
 def _safe_int(value: object) -> int | None:
+    """Coerce a value to int, returning `None` on failure.
+
+    Returns:
+        Integer value or `None`.
+    """
     if value is None:
         return None
     if isinstance(value, int):
@@ -698,5 +851,18 @@ def _safe_int(value: object) -> int | None:
         try:
             return int(value)
         except ValueError:
+            logger.warning("Could not parse exit code value %r as int", value)
             return None
+    logger.warning("Unexpected exit code type %s: %r", type(value).__name__, value)
     return None
+
+
+__all__ = [
+    "TERMINAL_STATUSES",
+    "BackgroundActionRequest",
+    "BackgroundApprovalDecision",
+    "BackgroundHitlEvent",
+    "BackgroundRuntime",
+    "BackgroundTaskRecord",
+    "BackgroundTaskStatus",
+]

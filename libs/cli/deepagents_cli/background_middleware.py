@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 
 class BackgroundMiddlewareState(AgentState):
-    """State schema placeholder for background middleware."""
+    """Empty state schema -- this middleware uses no custom state keys."""
 
 
 class BackgroundMiddleware(AgentMiddleware):
@@ -31,12 +31,12 @@ class BackgroundMiddleware(AgentMiddleware):
     def __init__(self, runtime: BackgroundRuntime) -> None:
         """Initialize middleware with a shared runtime instance."""
         self._runtime = runtime
-        self.tools: list[BaseTool] = [
+        self.tools: tuple[BaseTool, ...] = (
             self._build_submit_tool(),
             self._build_list_tool(),
             self._build_kill_tool(),
             self._build_wait_tool(),
-        ]
+        )
 
     def before_model(
         self,
@@ -71,7 +71,10 @@ class BackgroundMiddleware(AgentMiddleware):
 
     def _build_submit_tool(self) -> BaseTool:
         async def _submit_background_task(command: str) -> str:
-            task_id = await self._runtime.submit_shell_task(command)
+            try:
+                task_id = await self._runtime.submit_shell_task(command)
+            except RuntimeError as exc:
+                return f"Failed to submit background task: {exc}"
             return f"Background task submitted: task_id={task_id}, status=queued"
 
         return StructuredTool.from_function(

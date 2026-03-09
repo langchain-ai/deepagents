@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -1319,6 +1320,9 @@ class DeepAgentsApp(App):
         if self._background_runtime is None:
             return
 
+        max_consecutive_errors = 5
+        consecutive_errors = 0
+
         while True:
             try:
                 notifications = self._background_runtime.consume_tui_notifications()
@@ -1351,35 +1355,63 @@ class DeepAgentsApp(App):
                         reason = None
                 except asyncio.CancelledError:
                     raise
-                except Exception:
-                    logger.warning(
+                except Exception as exc:
+                    logger.exception(
                         "Background HITL approval failed for task %s (event %s); "
                         "rejecting as safety fallback",
                         event.task_id,
                         event.event_id,
-                        exc_info=True,
                     )
                     reason = "Approval failed due to internal error"
-                    await self._mount_message(
-                        AppMessage(
-                            f"Background task {event.task_id} approval failed "
-                            "due to an internal error; task was rejected."
+                    try:
+                        await self._mount_message(
+                            AppMessage(
+                                f"Background task {event.task_id} approval failed "
+                                f"({type(exc).__name__}); task was rejected."
+                            )
                         )
-                    )
+                    except Exception:
+                        logger.debug(
+                            "Failed to mount error message for task %s",
+                            event.task_id,
+                            exc_info=True,
+                        )
 
                 self._background_runtime.resolve_hitl_event(
                     event.event_id,
                     decision=decision,
                     message=reason,
                 )
+
+                # Reset on successful iteration
+                consecutive_errors = 0
             except asyncio.CancelledError:
                 break
             except Exception:
+                consecutive_errors += 1
                 logger.warning(
-                    "Unexpected error in background HITL bridge loop; "
-                    "retrying next poll cycle",
+                    "Unexpected error in background HITL bridge loop "
+                    "(attempt %d/%d); retrying next poll cycle",
+                    consecutive_errors,
+                    max_consecutive_errors,
                     exc_info=True,
                 )
+                if consecutive_errors >= max_consecutive_errors:
+                    logger.exception(
+                        "Background HITL bridge exceeded %d consecutive errors; "
+                        "stopping bridge. Background task approvals will no "
+                        "longer work.",
+                        max_consecutive_errors,
+                    )
+                    with contextlib.suppress(Exception):
+                        await self._mount_message(
+                            AppMessage(
+                                "Background task approval bridge stopped due to "
+                                "repeated errors. Restart the application to "
+                                "recover."
+                            )
+                        )
+                    break
                 await asyncio.sleep(self._background_runtime.poll_interval_seconds)
 
     async def _handle_shell_command(self, command: str) -> None:

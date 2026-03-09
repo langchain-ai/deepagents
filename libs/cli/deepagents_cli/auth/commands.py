@@ -195,9 +195,7 @@ def _handle_status(provider: str) -> None:
         if info.expires_at:
             import datetime
 
-            exp = datetime.datetime.fromtimestamp(
-                info.expires_at, tz=datetime.UTC
-            )
+            exp = datetime.datetime.fromtimestamp(info.expires_at, tz=datetime.UTC)
             console.print(f"  Token expires: {exp.isoformat()}")
     elif info.status == CodexAuthStatus.EXPIRED:
         console.print("[yellow]Codex: Session expired[/yellow]")

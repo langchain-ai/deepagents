@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import (
@@ -19,10 +19,12 @@ from deepagents_codex.client import CodexClient
 from deepagents_codex.response import collect_response_events, parse_stream_event
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator, Sequence
 
     from langchain_core.callbacks import CallbackManagerForLLMRun
     from langchain_core.outputs import ChatGenerationChunk, ChatResult
+    from langchain_core.runnables import Runnable
+    from langchain_core.tools import BaseTool
 
 logger = logging.getLogger(__name__)
 
@@ -201,7 +203,7 @@ class ChatCodexOAuth(BaseChatModel):
             if self.streaming and run_manager:
                 chunk = parse_stream_event(event)
                 if chunk and chunk.message.content:
-                    run_manager.on_llm_new_token(chunk.message.content)
+                    run_manager.on_llm_new_token(str(chunk.message.content))
 
         return collect_response_events(events)
 
@@ -227,14 +229,16 @@ class ChatCodexOAuth(BaseChatModel):
             chunk = parse_stream_event(event)
             if chunk is not None:
                 if run_manager and chunk.message.content:
-                    run_manager.on_llm_new_token(chunk.message.content)
+                    run_manager.on_llm_new_token(str(chunk.message.content))
                 yield chunk
 
     def bind_tools(
         self,
-        tools: list[Any],
+        tools: Sequence[dict[str, Any] | type | Callable[..., Any] | BaseTool],
+        *,
+        tool_choice: str | None = None,  # noqa: ARG002
         **kwargs: Any,  # noqa: ARG002
-    ) -> ChatCodexOAuth:
+    ) -> Runnable[Any, Any]:
         """Bind tools to this model for function calling.
 
         Converts tools to Responses API format (flat ``type/name/parameters``),
@@ -242,6 +246,7 @@ class ChatCodexOAuth(BaseChatModel):
 
         Args:
             tools: List of tools (LangChain tool format or raw dicts).
+            tool_choice: Ignored (Codex always uses auto).
             **kwargs: Additional binding kwargs.
 
         Returns:
@@ -249,12 +254,15 @@ class ChatCodexOAuth(BaseChatModel):
         """
         from langchain_core.utils.function_calling import convert_to_openai_tool
 
-        formatted_tools = []
+        formatted_tools: list[dict[str, Any]] = []
         for t in tools:
-            tool_dict = t if isinstance(t, dict) else convert_to_openai_tool(t)
+            if isinstance(t, dict):
+                tool_dict: dict[str, Any] = cast("dict[str, Any]", t)
+            else:
+                tool_dict = convert_to_openai_tool(t)
             # Convert from Chat Completions nested format to Responses flat format
             if "function" in tool_dict and "name" not in tool_dict:
-                func = tool_dict["function"]
+                func: dict[str, Any] = tool_dict["function"]
                 tool_dict = {
                     "type": "function",
                     "name": func["name"],

@@ -6,6 +6,7 @@ import json
 from typing import Any
 
 from langchain_core.messages import AIMessage, AIMessageChunk
+from langchain_core.messages.tool import ToolCallChunk
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 
 
@@ -153,18 +154,18 @@ def parse_stream_event(
             tool_calls = _parse_tool_calls_from_items([item])
             # Use tool_call_chunks for streaming so downstream consumers
             # can start processing tool calls incrementally.
-            tool_call_chunks = [
-                {
-                    "id": tc["id"],
-                    "name": tc["name"],
-                    "args": (
+            tool_call_chunks: list[ToolCallChunk] = [
+                ToolCallChunk(
+                    id=tc["id"],
+                    name=tc["name"],
+                    args=(
                         tc["args"]
                         if isinstance(tc["args"], str)
                         else json.dumps(tc["args"])
                     ),
-                    "index": i,
-                    "type": "tool_call_chunk",
-                }
+                    index=i,
+                    type="tool_call_chunk",
+                )
                 for i, tc in enumerate(tool_calls)
             ]
             chunk = AIMessageChunk(

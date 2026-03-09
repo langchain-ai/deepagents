@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 import os
 import signal
@@ -12,7 +13,7 @@ from collections import deque
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
 from taskiq import InMemoryBroker
 
@@ -26,18 +27,43 @@ class BackgroundTaskStatus(StrEnum):
     """Lifecycle status for a background task."""
 
     QUEUED = "queued"
+    """Task registered but not yet running."""
+
     RUNNING = "running"
+    """Task execution in progress."""
+
     SUCCEEDED = "succeeded"
+    """Task completed with exit code 0."""
+
     FAILED = "failed"
+    """Task completed with non-zero exit code or runtime error."""
+
     REJECTED = "rejected"
+    """Task rejected by user via HITL approval."""
+
     KILLED = "killed"
+    """Task cancelled by user (best-effort)."""
+
+
+TERMINAL_STATUSES: frozenset[BackgroundTaskStatus] = frozenset(
+    {
+        BackgroundTaskStatus.SUCCEEDED,
+        BackgroundTaskStatus.FAILED,
+        BackgroundTaskStatus.REJECTED,
+        BackgroundTaskStatus.KILLED,
+    }
+)
+"""States from which a task will never transition again."""
 
 
 class BackgroundApprovalDecision(StrEnum):
     """Approval decision values for background HITL events."""
 
     APPROVE = "approve"
+    """Allow the background task to proceed."""
+
     REJECT = "reject"
+    """Deny the background task; it transitions to `REJECTED`."""
 
 
 @dataclass(slots=True)
@@ -45,13 +71,41 @@ class BackgroundTaskRecord:
     """Runtime-visible task metadata and latest status."""
 
     task_id: str
+    """Unique 12-character hex identifier."""
+
     command: str
+    """Shell command submitted for execution."""
+
     status: BackgroundTaskStatus
+    """Current lifecycle status."""
+
     created_at: datetime
+    """Timestamp when the task was submitted."""
+
     updated_at: datetime
+    """Timestamp of the most recent status change."""
+
     result_text: str | None = None
-    error_text: str | None = None
+    """Captured stdout on completion."""
+
+    stderr_text: str | None = None
+    """Captured stderr, or descriptive message for non-success states."""
+
     exit_code: int | None = None
+    """Process exit code when available."""
+
+
+class BackgroundActionRequest(TypedDict):
+    """Typed structure for HITL action request payloads."""
+
+    name: str
+    """Tool name requiring approval (e.g. `execute`)."""
+
+    args: dict[str, Any]
+    """Tool arguments (e.g. `{"command": "ls"}`)."""
+
+    description: str
+    """Human-readable description shown in the approval UI."""
 
 
 @dataclass(slots=True)
@@ -59,9 +113,16 @@ class BackgroundHitlEvent:
     """HITL approval event emitted by background task execution."""
 
     event_id: str
+    """Unique 32-character hex identifier for this approval request."""
+
     task_id: str
-    action_requests: list[dict[str, Any]]
+    """Background task that triggered this event."""
+
+    action_requests: list[BackgroundActionRequest]
+    """Tool calls requiring user approval."""
+
     assistant_id: str | None = None
+    """Optional assistant context for the approval UI."""
 
 
 class BackgroundRuntime:
@@ -95,6 +156,10 @@ class BackgroundRuntime:
         self._broker = InMemoryBroker()
         self._started = False
 
+        # NOTE: This lock protects dict/deque/set state. The asyncio primitives
+        # (_wait_events, _hitl_waiters, _hitl_idle_event) stored here are
+        # manipulated only from the event loop thread. Do NOT acquire this lock
+        # from a non-event-loop thread if you intend to touch asyncio objects.
         self._lock = threading.RLock()
         self._records: dict[str, BackgroundTaskRecord] = {}
         self._task_handles: dict[str, AsyncTaskiqTask[Any]] = {}
@@ -137,23 +202,24 @@ class BackgroundRuntime:
     async def shutdown(self) -> None:
         """Shutdown broker and cancel active runtime tasks."""
         with self._lock:
-            monitor_tasks = list(self._monitor_tasks.values())
+            monitor_tasks = list(self._monitor_tasks.items())
             process_ids = list(self._records.keys())
 
         for task_id in process_ids:
             await self.kill_task(task_id)
 
-        for monitor in monitor_tasks:
+        for _, monitor in monitor_tasks:
             monitor.cancel()
 
-        for monitor in monitor_tasks:
+        for tid, monitor in monitor_tasks:
             try:
                 await monitor
             except asyncio.CancelledError:
                 continue
             except Exception:
-                logger.debug(
-                    "Background monitor task failed during shutdown",
+                logger.warning(
+                    "Background monitor task for %s failed during shutdown",
+                    tid,
                     exc_info=True,
                 )
 
@@ -172,9 +238,12 @@ class BackgroundRuntime:
         self,
         command: str,
         *,
-        assistant_id: str | None = None,
+        assistant_id: str | None = None,  # noqa: ARG002
     ) -> str:
         """Submit a shell command for background execution.
+
+        When `require_hitl_for_shell` is enabled, the task blocks on
+        approval before shell execution begins.
 
         Args:
             command: Shell command to execute.
@@ -182,7 +251,14 @@ class BackgroundRuntime:
 
         Returns:
             Runtime task ID.
+
+        Raises:
+            RuntimeError: If the runtime has not been started.
         """
+        if not self._started:
+            msg = "BackgroundRuntime has not been started; call start() first"
+            raise RuntimeError(msg)
+
         task_id = uuid.uuid4().hex[:12]
         now = datetime.now(UTC)
         record = BackgroundTaskRecord(
@@ -207,7 +283,7 @@ class BackgroundRuntime:
             self._task_handles[task_id] = task
 
         monitor = asyncio.create_task(
-            self._monitor_task_result(task_id, task, assistant_id),
+            self._monitor_task_result(task_id, task),
             name=f"background-monitor-{task_id}",
         )
         with self._lock:
@@ -218,13 +294,14 @@ class BackgroundRuntime:
     def list_tasks(self) -> list[BackgroundTaskRecord]:
         """Return snapshot of all background tasks."""
         with self._lock:
-            records = list(self._records.values())
+            records = [dataclasses.replace(r) for r in self._records.values()]
         return sorted(records, key=lambda item: item.created_at)
 
     def get_task(self, task_id: str) -> BackgroundTaskRecord | None:
         """Return a task snapshot by ID."""
         with self._lock:
-            return self._records.get(task_id)
+            record = self._records.get(task_id)
+            return dataclasses.replace(record) if record else None
 
     async def kill_task(self, task_id: str) -> bool:
         """Best-effort kill a background task.
@@ -236,18 +313,13 @@ class BackgroundRuntime:
             record = self._records.get(task_id)
             if record is None:
                 return False
-            if record.status in {
-                BackgroundTaskStatus.SUCCEEDED,
-                BackgroundTaskStatus.FAILED,
-                BackgroundTaskStatus.REJECTED,
-                BackgroundTaskStatus.KILLED,
-            }:
+            if record.status in TERMINAL_STATUSES:
                 return False
 
             self._killed.add(task_id)
             record.status = BackgroundTaskStatus.KILLED
             record.updated_at = datetime.now(UTC)
-            record.error_text = "Killed by user (best-effort cancellation)."
+            record.stderr_text = "Killed by user (best-effort cancellation)."
             self._pending_updates.append(f"Task `{task_id}` marked as killed.")
             self._pending_tui_notifications.append(f"Background task {task_id} killed.")
             wait_event = self._wait_events.get(task_id)
@@ -268,7 +340,10 @@ class BackgroundRuntime:
                 else:
                     process.terminate()
             except ProcessLookupError:
-                pass
+                logger.debug(
+                    "Process for task %s already exited before kill signal",
+                    task_id,
+                )
             except OSError:
                 logger.debug(
                     "Failed to terminate process for task %s",
@@ -296,6 +371,8 @@ class BackgroundRuntime:
 
         Raises:
             ValueError: If task ID is unknown.
+            TimeoutError: If `timeout_seconds` is not `None` and the task
+                does not reach a terminal state in time.
         """
         with self._lock:
             record = self._records.get(task_id)
@@ -303,22 +380,21 @@ class BackgroundRuntime:
             if record is None or event is None:
                 msg = f"Unknown background task: {task_id}"
                 raise ValueError(msg)
-            if record.status in {
-                BackgroundTaskStatus.SUCCEEDED,
-                BackgroundTaskStatus.FAILED,
-                BackgroundTaskStatus.REJECTED,
-                BackgroundTaskStatus.KILLED,
-            }:
-                return record
+            if record.status in TERMINAL_STATUSES:
+                return dataclasses.replace(record)
 
-        await asyncio.wait_for(event.wait(), timeout=timeout_seconds)
+        try:
+            await asyncio.wait_for(event.wait(), timeout=timeout_seconds)
+        except TimeoutError as exc:
+            msg = f"Task {task_id} did not complete within {timeout_seconds}s"
+            raise TimeoutError(msg) from exc
 
         with self._lock:
             final_record = self._records.get(task_id)
             if final_record is None:
                 msg = f"Unknown background task after wait: {task_id}"
                 raise ValueError(msg)
-            return final_record
+            return dataclasses.replace(final_record)
 
     def pop_hitl_event(self) -> BackgroundHitlEvent | None:
         """Pop one pending HITL event for foreground approval UI.
@@ -385,15 +461,12 @@ class BackgroundRuntime:
         self,
         task_id: str,
         task: AsyncTaskiqTask[Any],
-        assistant_id: str | None,
     ) -> None:
         """Await task completion and map TaskIQ result to runtime state.
 
         Raises:
             asyncio.CancelledError: If the monitor task is cancelled.
         """
-        del assistant_id  # reserved for future use
-
         try:
             result = await task.wait_result()
         except asyncio.CancelledError:
@@ -401,20 +474,17 @@ class BackgroundRuntime:
         except Exception as exc:  # noqa: BLE001
             with self._lock:
                 record = self._records.get(task_id)
-                if record and record.status not in {
-                    BackgroundTaskStatus.KILLED,
-                    BackgroundTaskStatus.REJECTED,
-                }:
+                if record and record.status not in TERMINAL_STATUSES:
                     record.status = BackgroundTaskStatus.FAILED
                     record.updated_at = datetime.now(UTC)
-                    record.error_text = str(exc)
+                    record.stderr_text = str(exc)
                     self._pending_updates.append(f"Task `{task_id}` failed: {exc}")
                     self._pending_tui_notifications.append(
                         f"Background task {task_id} failed: {exc}"
                     )
-                    event = self._wait_events.get(task_id)
-                    if event is not None:
-                        event.set()
+                event = self._wait_events.get(task_id)
+                if event is not None:
+                    event.set()
             return
         finally:
             with self._lock:
@@ -423,23 +493,27 @@ class BackgroundRuntime:
         with self._lock:
             record = self._records.get(task_id)
             if record is None:
+                logger.warning(
+                    "Task %s completed but record was unexpectedly removed",
+                    task_id,
+                )
+                event = self._wait_events.get(task_id)
+                if event is not None:
+                    event.set()
                 return
 
             event = self._wait_events.get(task_id)
-            if record.status in {
-                BackgroundTaskStatus.KILLED,
-                BackgroundTaskStatus.REJECTED,
-            }:
+            if record.status in TERMINAL_STATUSES:
                 if event is not None:
                     event.set()
                 return
 
             if result.is_err:
                 record.status = BackgroundTaskStatus.FAILED
-                record.error_text = str(result.error)
+                record.stderr_text = str(result.error)
                 record.updated_at = datetime.now(UTC)
                 self._pending_updates.append(
-                    f"Task `{task_id}` failed: {record.error_text}"
+                    f"Task `{task_id}` failed: {record.stderr_text}"
                 )
                 self._pending_tui_notifications.append(
                     f"Background task {task_id} failed."
@@ -453,14 +527,14 @@ class BackgroundRuntime:
                     if record.exit_code == 0:
                         record.status = BackgroundTaskStatus.SUCCEEDED
                         if stderr_text:
-                            record.error_text = stderr_text
+                            record.stderr_text = stderr_text
                         self._pending_updates.append(f"Task `{task_id}` succeeded.")
                         self._pending_tui_notifications.append(
                             f"Background task {task_id} completed."
                         )
                     else:
                         record.status = BackgroundTaskStatus.FAILED
-                        record.error_text = stderr_text or "Background command failed"
+                        record.stderr_text = stderr_text or "Background command failed"
                         self._pending_updates.append(
                             f"Task `{task_id}` failed with exit code "
                             f"{record.exit_code}."
@@ -500,7 +574,7 @@ class BackgroundRuntime:
                         and record.status != BackgroundTaskStatus.KILLED
                     ):
                         record.status = BackgroundTaskStatus.REJECTED
-                        record.error_text = reason or "Rejected by user"
+                        record.stderr_text = reason or "Rejected by user"
                         record.updated_at = datetime.now(UTC)
                         event = self._wait_events.get(task_id)
                         if event is not None:
@@ -544,6 +618,11 @@ class BackgroundRuntime:
         with self._lock:
             record = self._records.get(task_id)
             if record is None:
+                logger.warning(
+                    "Attempted to mark unknown task %s as running; "
+                    "possible internal state corruption",
+                    task_id,
+                )
                 return
             if record.status == BackgroundTaskStatus.QUEUED:
                 record.status = BackgroundTaskStatus.RUNNING

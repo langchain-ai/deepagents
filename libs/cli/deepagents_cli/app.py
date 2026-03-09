@@ -1313,11 +1313,7 @@ class DeepAgentsApp(App):
             self.call_after_refresh(self._chat_input.focus_input)
 
     async def _poll_background_hitl_events(self) -> None:
-        """Bridge background runtime HITL events into the existing approval UI.
-
-        Raises:
-            asyncio.CancelledError: If the background worker is cancelled.
-        """
+        """Bridge background runtime HITL events into the existing approval UI."""  # noqa: DOC501
         from deepagents_cli.background_runtime import BackgroundApprovalDecision
 
         if self._background_runtime is None:
@@ -1356,9 +1352,19 @@ class DeepAgentsApp(App):
                 except asyncio.CancelledError:
                     raise
                 except Exception:
-                    logger.debug(
-                        "Background HITL approval failed; rejecting by default",
+                    logger.warning(
+                        "Background HITL approval failed for task %s (event %s); "
+                        "rejecting as safety fallback",
+                        event.task_id,
+                        event.event_id,
                         exc_info=True,
+                    )
+                    reason = "Approval failed due to internal error"
+                    await self._mount_message(
+                        AppMessage(
+                            f"Background task {event.task_id} approval failed "
+                            "due to an internal error; task was rejected."
+                        )
                     )
 
                 self._background_runtime.resolve_hitl_event(
@@ -1368,6 +1374,13 @@ class DeepAgentsApp(App):
                 )
             except asyncio.CancelledError:
                 break
+            except Exception:
+                logger.warning(
+                    "Unexpected error in background HITL bridge loop; "
+                    "retrying next poll cycle",
+                    exc_info=True,
+                )
+                await asyncio.sleep(self._background_runtime.poll_interval_seconds)
 
     async def _handle_shell_command(self, command: str) -> None:
         """Handle a shell command (! prefix).

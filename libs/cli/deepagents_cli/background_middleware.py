@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any
 
 from langchain.agents.middleware import AgentMiddleware, AgentState
 from langchain_core.messages import HumanMessage
 from langchain_core.tools import BaseTool, StructuredTool
 
+from deepagents_cli.background_runtime import BackgroundTaskStatus
+
 if TYPE_CHECKING:
     from langgraph.runtime import Runtime
 
     from deepagents_cli.background_runtime import BackgroundRuntime
+
+logger = logging.getLogger(__name__)
 
 
 class BackgroundMiddlewareState(AgentState):
@@ -43,6 +48,11 @@ class BackgroundMiddleware(AgentMiddleware):
         Returns:
             Message update payload when updates are available, else `None`.
         """
+        if self._runtime.pending_hitl_count() > 0:
+            logger.warning(
+                "Sync before_model called while HITL events are pending; "
+                "use abefore_model for correct blocking behavior"
+            )
         return self._build_background_update_message()
 
     async def abefore_model(
@@ -62,7 +72,7 @@ class BackgroundMiddleware(AgentMiddleware):
     def _build_submit_tool(self) -> BaseTool:
         async def _submit_background_task(command: str) -> str:
             task_id = await self._runtime.submit_shell_task(command)
-            return f"Background task started: task_id={task_id}, status=started"
+            return f"Background task submitted: task_id={task_id}, status=queued"
 
         return StructuredTool.from_function(
             name="submit_background_task",
@@ -132,7 +142,7 @@ class BackgroundMiddleware(AgentMiddleware):
             except ValueError as exc:
                 return str(exc)
 
-            if str(record.status) == "rejected":
+            if record.status == BackgroundTaskStatus.REJECTED:
                 summary = [
                     (
                         f"Background task {record.task_id} was rejected by user "
@@ -140,8 +150,8 @@ class BackgroundMiddleware(AgentMiddleware):
                     ),
                     f"status={record.status}",
                 ]
-                if record.error_text:
-                    summary.append(f"reason:\n{record.error_text}")
+                if record.stderr_text:
+                    summary.append(f"reason:\n{record.stderr_text}")
                 return "\n".join(summary)
 
             summary = [f"Background task {record.task_id} completed."]
@@ -150,8 +160,8 @@ class BackgroundMiddleware(AgentMiddleware):
                 summary.append(f"exit_code={record.exit_code}")
             if record.result_text:
                 summary.append(f"stdout:\n{record.result_text}")
-            if record.error_text:
-                summary.append(f"stderr:\n{record.error_text}")
+            if record.stderr_text:
+                summary.append(f"stderr:\n{record.stderr_text}")
             return "\n".join(summary)
 
         return StructuredTool.from_function(

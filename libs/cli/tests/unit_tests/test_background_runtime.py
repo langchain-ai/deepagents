@@ -113,8 +113,8 @@ class TestBackgroundRuntimeLifecycle:
             )
             rejected = await runtime.wait_task(rejected_task, timeout_seconds=5)
             assert rejected.status == BackgroundTaskStatus.REJECTED
-            assert rejected.error_text is not None
-            assert "Rejected by test" in rejected.error_text
+            assert rejected.stderr_text is not None
+            assert "Rejected by test" in rejected.stderr_text
             assert not any(
                 "rejected by" in item.lower()
                 for item in runtime.consume_tui_notifications()

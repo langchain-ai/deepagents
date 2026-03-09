@@ -674,40 +674,41 @@ async def run_textual_cli_async(
                 mode = cast("Literal['inmemory']", background_runtime_mode)
                 background_runtime = BackgroundRuntime(mode=mode)
                 await background_runtime.start()
-            except Exception as e:  # noqa: BLE001  # Friendly startup error
+            except Exception as e:  # Friendly startup error
+                logger.warning("Background runtime startup failed", exc_info=True)
                 console.print()
                 console.print("[red]Background runtime startup failed[/red]")
                 console.print(Text(str(e), style="dim"))
                 sys.exit(1)
-
-        try:
-            agent, composite_backend = create_cli_agent(
-                model=model,
-                assistant_id=assistant_id,
-                tools=tools,
-                sandbox=sandbox_backend,
-                sandbox_type=sandbox_type if sandbox_type != "none" else None,
-                auto_approve=auto_approve,
-                enable_ask_user=enable_ask_user,
-                enable_background_tasks=enable_background_tasks,
-                background_runtime=background_runtime,
-                checkpointer=checkpointer,
-                mcp_server_info=mcp_server_info,
-            )
-        except Exception as e:  # broad catch for friendly CLI errors
-            logger.debug("Failed to create agent", exc_info=True)
-            error_text = Text("Failed to create agent: ", style="red")
-            error_text.append(str(e))
-            console.print(error_text)
-            if logger.isEnabledFor(logging.DEBUG):
-                console.print(Text(traceback.format_exc(), style="dim"))
-            sys.exit(1)
 
         # Run Textual app - errors propagate to caller
         from deepagents_cli.app import AppResult
 
         result = AppResult(return_code=1, thread_id=None)
         try:
+            try:
+                agent, composite_backend = create_cli_agent(
+                    model=model,
+                    assistant_id=assistant_id,
+                    tools=tools,
+                    sandbox=sandbox_backend,
+                    sandbox_type=sandbox_type if sandbox_type != "none" else None,
+                    auto_approve=auto_approve,
+                    enable_ask_user=enable_ask_user,
+                    enable_background_tasks=enable_background_tasks,
+                    background_runtime=background_runtime,
+                    checkpointer=checkpointer,
+                    mcp_server_info=mcp_server_info,
+                )
+            except Exception as e:  # broad catch for friendly CLI errors
+                logger.debug("Failed to create agent", exc_info=True)
+                error_text = Text("Failed to create agent: ", style="red")
+                error_text.append(str(e))
+                console.print(error_text)
+                if logger.isEnabledFor(logging.DEBUG):
+                    console.print(Text(traceback.format_exc(), style="dim"))
+                sys.exit(1)
+
             result = await run_textual_app(
                 agent=agent,
                 assistant_id=assistant_id,

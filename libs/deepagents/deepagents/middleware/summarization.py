@@ -1141,7 +1141,7 @@ def create_summarization_tool_middleware(
         )
         ```
 
-        Using a Daytona sandbox backend:
+        Using a custom backend instance (e.g., Daytona Sandbox)
 
         ```python
         from daytona import Daytona

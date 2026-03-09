@@ -17,9 +17,7 @@ from langsmith import Client
 
 from deepagents import create_deep_agent
 from deepagents.backends.filesystem import FilesystemBackend
-from deepagents.middleware.summarization import (
-    create_summarization_tool_middleware,
-)
+from deepagents.middleware.summarization import create_summarization_tool_middleware
 from tests.evals.utils import AgentTrajectory, run_agent
 
 # URL for a large file that will trigger summarization

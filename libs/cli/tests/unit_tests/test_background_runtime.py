@@ -1,8 +1,11 @@
 """Tests for TaskIQ-backed background runtime."""
 
 import asyncio
+from unittest.mock import AsyncMock
 
 import pytest
+from deepagents.backends import LocalShellBackend
+from deepagents.backends.protocol import ExecuteResponse
 
 from deepagents_cli.background_runtime import (
     BackgroundApprovalDecision,
@@ -11,22 +14,31 @@ from deepagents_cli.background_runtime import (
 )
 
 
+def _local_backend() -> LocalShellBackend:
+    return LocalShellBackend()
+
+
 class TestBackgroundRuntimeLifecycle:
     """Lifecycle and task-state tests for BackgroundRuntime."""
 
     async def test_start_and_shutdown(self) -> None:
-        runtime = BackgroundRuntime(require_hitl_for_shell=False)
+        runtime = BackgroundRuntime(
+            require_hitl_for_shell=False, backend=_local_backend()
+        )
         await runtime.start()
         await runtime.shutdown()
 
     async def test_submit_and_wait_success(self) -> None:
-        runtime = BackgroundRuntime(require_hitl_for_shell=False)
+        runtime = BackgroundRuntime(
+            require_hitl_for_shell=False, backend=_local_backend()
+        )
         await runtime.start()
         try:
             task_id = await runtime.submit_shell_task("printf hello")
             final = await runtime.wait_task(task_id, timeout_seconds=5)
             assert final.status == BackgroundTaskStatus.SUCCEEDED
-            assert final.result_text == "hello"
+            assert final.result_text is not None
+            assert "hello" in final.result_text
             assert final.exit_code == 0
             notices = runtime.consume_tui_notifications()
             assert any("completed" in item for item in notices)
@@ -34,7 +46,9 @@ class TestBackgroundRuntimeLifecycle:
             await runtime.shutdown()
 
     async def test_submit_failure(self) -> None:
-        runtime = BackgroundRuntime(require_hitl_for_shell=False)
+        runtime = BackgroundRuntime(
+            require_hitl_for_shell=False, backend=_local_backend()
+        )
         await runtime.start()
         try:
             task_id = await runtime.submit_shell_task("sh -c 'exit 3'")
@@ -45,10 +59,22 @@ class TestBackgroundRuntimeLifecycle:
             await runtime.shutdown()
 
     async def test_kill_running_task(self) -> None:
-        runtime = BackgroundRuntime(require_hitl_for_shell=False)
+        # Use async mock to avoid leaving threads running after kill
+        never_finish = asyncio.Event()
+
+        async def slow_execute(_command: str, **_kwargs: object) -> ExecuteResponse:
+            await never_finish.wait()
+            return ExecuteResponse(output="done", exit_code=0)
+
+        mock_backend = AsyncMock()
+        mock_backend.aexecute = slow_execute
+
+        runtime = BackgroundRuntime(require_hitl_for_shell=False, backend=mock_backend)
         await runtime.start()
         try:
             task_id = await runtime.submit_shell_task("sleep 10")
+            # Give the task time to reach RUNNING state
+            await asyncio.sleep(0.1)
             killed = await runtime.kill_task(task_id)
             assert killed is True
             final = await runtime.wait_task(task_id, timeout_seconds=5)
@@ -57,7 +83,9 @@ class TestBackgroundRuntimeLifecycle:
             await runtime.shutdown()
 
     async def test_kill_finished_task_returns_false(self) -> None:
-        runtime = BackgroundRuntime(require_hitl_for_shell=False)
+        runtime = BackgroundRuntime(
+            require_hitl_for_shell=False, backend=_local_backend()
+        )
         await runtime.start()
         try:
             task_id = await runtime.submit_shell_task("printf done")
@@ -68,7 +96,9 @@ class TestBackgroundRuntimeLifecycle:
             await runtime.shutdown()
 
     async def test_wait_timeout(self) -> None:
-        runtime = BackgroundRuntime(require_hitl_for_shell=True)
+        runtime = BackgroundRuntime(
+            require_hitl_for_shell=True, backend=_local_backend()
+        )
         await runtime.start()
         try:
             task_id = await runtime.submit_shell_task("printf never-runs")
@@ -78,7 +108,9 @@ class TestBackgroundRuntimeLifecycle:
             await runtime.shutdown()
 
     async def test_hitl_approval_and_rejection(self) -> None:
-        runtime = BackgroundRuntime(require_hitl_for_shell=True)
+        runtime = BackgroundRuntime(
+            require_hitl_for_shell=True, backend=_local_backend()
+        )
         await runtime.start()
         try:
             approved_task = await runtime.submit_shell_task("printf approve-ok")
@@ -127,7 +159,9 @@ class TestBackgroundRuntimeLifecycle:
             await runtime.shutdown()
 
     async def test_concurrent_submissions_are_stable(self) -> None:
-        runtime = BackgroundRuntime(require_hitl_for_shell=False)
+        runtime = BackgroundRuntime(
+            require_hitl_for_shell=False, backend=_local_backend()
+        )
         await runtime.start()
         try:
             task_ids = await asyncio.gather(
@@ -141,7 +175,9 @@ class TestBackgroundRuntimeLifecycle:
             await runtime.shutdown()
 
     async def test_wait_for_no_pending_hitl_returns_immediately_when_idle(self) -> None:
-        runtime = BackgroundRuntime(require_hitl_for_shell=True)
+        runtime = BackgroundRuntime(
+            require_hitl_for_shell=True, backend=_local_backend()
+        )
         await runtime.start()
         try:
             await asyncio.wait_for(runtime.wait_for_no_pending_hitl(), timeout=0.2)
@@ -150,7 +186,9 @@ class TestBackgroundRuntimeLifecycle:
             await runtime.shutdown()
 
     async def test_wait_for_no_pending_hitl_blocks_until_resolution(self) -> None:
-        runtime = BackgroundRuntime(require_hitl_for_shell=True)
+        runtime = BackgroundRuntime(
+            require_hitl_for_shell=True, backend=_local_backend()
+        )
         await runtime.start()
         try:
             task_id = await runtime.submit_shell_task("printf gated")
@@ -181,7 +219,9 @@ class TestBackgroundRuntimeLifecycle:
             await runtime.shutdown()
 
     async def test_kill_pending_approval_unblocks_hitl_idle_wait(self) -> None:
-        runtime = BackgroundRuntime(require_hitl_for_shell=True)
+        runtime = BackgroundRuntime(
+            require_hitl_for_shell=True, backend=_local_backend()
+        )
         await runtime.start()
         try:
             task_id = await runtime.submit_shell_task("printf never-approve")
@@ -207,7 +247,9 @@ class TestBackgroundRuntimeLifecycle:
             await runtime.shutdown()
 
     async def test_kill_rejected_task_returns_false(self) -> None:
-        runtime = BackgroundRuntime(require_hitl_for_shell=True)
+        runtime = BackgroundRuntime(
+            require_hitl_for_shell=True, backend=_local_backend()
+        )
         await runtime.start()
         try:
             task_id = await runtime.submit_shell_task("printf reject-no")
@@ -230,12 +272,16 @@ class TestBackgroundRuntimeLifecycle:
             await runtime.shutdown()
 
     async def test_submit_before_start_raises(self) -> None:
-        runtime = BackgroundRuntime(require_hitl_for_shell=False)
+        runtime = BackgroundRuntime(
+            require_hitl_for_shell=False, backend=_local_backend()
+        )
         with pytest.raises(RuntimeError, match="has not been started"):
             await runtime.submit_shell_task("echo hi")
 
     async def test_wait_unknown_task_raises(self) -> None:
-        runtime = BackgroundRuntime(require_hitl_for_shell=False)
+        runtime = BackgroundRuntime(
+            require_hitl_for_shell=False, backend=_local_backend()
+        )
         await runtime.start()
         try:
             with pytest.raises(ValueError, match="Unknown background task"):
@@ -244,7 +290,17 @@ class TestBackgroundRuntimeLifecycle:
             await runtime.shutdown()
 
     async def test_shutdown_with_active_task_completes(self) -> None:
-        runtime = BackgroundRuntime(require_hitl_for_shell=False)
+        # Use async mock to avoid leaving threads running after shutdown
+        never_finish = asyncio.Event()
+
+        async def slow_execute(_command: str, **_kwargs: object) -> ExecuteResponse:
+            await never_finish.wait()
+            return ExecuteResponse(output="done", exit_code=0)
+
+        mock_backend = AsyncMock()
+        mock_backend.aexecute = slow_execute
+
+        runtime = BackgroundRuntime(require_hitl_for_shell=False, backend=mock_backend)
         await runtime.start()
         await runtime.submit_shell_task("sleep 30")
         await asyncio.wait_for(runtime.shutdown(), timeout=5)
@@ -252,3 +308,28 @@ class TestBackgroundRuntimeLifecycle:
     async def test_unsupported_mode_raises(self) -> None:
         with pytest.raises(ValueError, match="Unsupported background runtime mode"):
             BackgroundRuntime(mode="distributed")  # type: ignore[arg-type]
+
+    async def test_submit_without_backend_fails(self) -> None:
+        runtime = BackgroundRuntime(require_hitl_for_shell=False)
+        await runtime.start()
+        try:
+            task_id = await runtime.submit_shell_task("echo hi")
+            final = await runtime.wait_task(task_id, timeout_seconds=5)
+            assert final.status == BackgroundTaskStatus.FAILED
+            assert final.stderr_text is not None
+            assert "No execution backend" in final.stderr_text
+        finally:
+            await runtime.shutdown()
+
+    async def test_backend_can_be_set_after_init(self) -> None:
+        runtime = BackgroundRuntime(require_hitl_for_shell=False)
+        runtime.set_backend(_local_backend())
+        await runtime.start()
+        try:
+            task_id = await runtime.submit_shell_task("printf deferred")
+            final = await runtime.wait_task(task_id, timeout_seconds=5)
+            assert final.status == BackgroundTaskStatus.SUCCEEDED
+            assert final.result_text is not None
+            assert "deferred" in final.result_text
+        finally:
+            await runtime.shutdown()

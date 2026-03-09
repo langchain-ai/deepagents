@@ -606,6 +606,10 @@ def create_cli_agent(
     if enable_background_tasks and background_runtime is not None:
         from deepagents_cli.background_middleware import BackgroundMiddleware
 
+        # Wire the active backend so background tasks execute in the same
+        # environment as regular commands (local shell or remote sandbox).
+        if isinstance(backend, _ExecutableBackend):
+            background_runtime.set_backend(backend)  # type: ignore[arg-type]  # _ExecutableBackend implies SandboxBackendProtocol here
         agent_middleware.append(BackgroundMiddleware(background_runtime))
 
     # Get or use custom system prompt

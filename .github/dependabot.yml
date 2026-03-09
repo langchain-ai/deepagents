@@ -17,6 +17,7 @@ updates:
       - "/libs/harbor"
       - "/libs/acp"
       - "/libs/partners/daytona"
+      - "/libs/partners/e2b"
       - "/examples/content-builder-agent"
       - "/examples/deep_research"
       - "/examples/text-to-sql-agent"

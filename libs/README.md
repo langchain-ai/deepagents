@@ -20,5 +20,6 @@ partners/            # Sandbox provider integrations (see below)
 The `partners/` directory contains sandbox provider integrations:
 
 * [Daytona](https://pypi.org/project/langchain-daytona/)
+* [E2B](https://pypi.org/project/langchain-e2b/)
 * [Modal](https://pypi.org/project/langchain-modal/)
 * [Runloop](https://pypi.org/project/langchain-runloop/)

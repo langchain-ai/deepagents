@@ -57,6 +57,7 @@ def _run_sandbox_setup(backend: SandboxBackendProtocol, setup_script_path: str) 
 
 
 _PROVIDER_TO_WORKING_DIR = {
+    "e2b": "/home/user",
     "daytona": "/home/daytona",
     "langsmith": "/tmp",  # noqa: S108  # LangSmith sandbox working directory
     "modal": "/workspace",
@@ -76,7 +77,7 @@ def create_sandbox(
     This is the unified interface for sandbox creation using the provider abstraction.
 
     Args:
-        provider: Sandbox provider ("daytona", "langsmith", "modal", "runloop")
+        provider: Sandbox provider ("daytona", "e2b", "langsmith", "modal", "runloop")
         sandbox_id: Optional existing sandbox ID to reuse
         setup_script_path: Optional path to setup script to run after sandbox starts
 
@@ -137,7 +138,8 @@ def get_default_working_dir(provider: str) -> str:
     """Get the default working directory for a given sandbox provider.
 
     Args:
-        provider: Sandbox provider name ("daytona", "langsmith", "modal", "runloop")
+        provider: Sandbox provider name (`daytona`, `e2b`, `langsmith`, `modal`,
+            or `runloop`)
 
     Returns:
         Default working directory path as string
@@ -155,7 +157,8 @@ def _get_provider(provider_name: str) -> SandboxProvider:
     """Get a SandboxProvider instance for the specified provider (internal).
 
     Args:
-        provider_name: Name of the provider ("daytona", "langsmith", "modal", "runloop")
+        provider_name: Name of the provider (`daytona`, `e2b`, `langsmith`,
+            `modal`, or `runloop`)
 
     Returns:
         SandboxProvider instance
@@ -167,6 +170,10 @@ def _get_provider(provider_name: str) -> SandboxProvider:
         from deepagents_cli.integrations.daytona import DaytonaProvider
 
         return DaytonaProvider()
+    if provider_name == "e2b":
+        from deepagents_cli.integrations.e2b import E2BProvider
+
+        return E2BProvider()
     if provider_name == "langsmith":
         from deepagents_cli.integrations.langsmith import LangSmithProvider
 

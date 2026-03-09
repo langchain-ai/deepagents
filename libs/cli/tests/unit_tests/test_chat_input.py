@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING
 
+import pytest
 from textual import events
 from textual.app import App, ComposeResult
 from textual.containers import Container
@@ -1905,8 +1907,7 @@ class TestBackslashEnterNewline:
             await pilot.press("a")
             await pilot.pause()
 
-            assert "\\" in ta.text
-            assert "a" in ta.text
+            assert ta.text == "\\a"
 
     async def test_backslash_enter_on_empty_prompt_does_not_submit(self) -> None:
         """Backslash + enter on empty prompt should not submit."""
@@ -1921,3 +1922,29 @@ class TestBackslashEnterNewline:
             await pilot.pause()
 
             assert len(app.submitted) == 0
+            assert "\\" not in ta.text
+            assert ta.text == "\n"
+
+    async def test_backslash_then_slow_enter_submits(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Backslash + enter beyond the timing gap should submit normally."""
+        # Set gap to 0 so any real delay exceeds it.
+        monkeypatch.setattr(chat_input_module, "_BACKSLASH_ENTER_GAP_SECONDS", 0.0)
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            ta.insert("hello")
+            await pilot.pause()
+
+            await pilot.press("backslash")
+            await asyncio.sleep(0.05)
+            await pilot.press("enter")
+            await pilot.pause()
+
+            # Should have submitted (backslash included in text)
+            assert len(app.submitted) == 1

@@ -51,7 +51,7 @@ _BACKSLASH_ENTER_GAP_SECONDS = 0.15
 pair as a terminal-emitted shift+enter sequence.
 
 Some terminals (e.g. VSCode's built-in terminal) send a literal backslash
-followed by carriage-return when the user presses shift+enter.  The gap is
+followed by enter when the user presses shift+enter.  The gap is
 generous (150 ms) because the terminal emits both characters nearly
 simultaneously; a human deliberately typing `\\` then pressing Enter would
 have a much larger gap."""
@@ -334,6 +334,7 @@ class ChatTextArea(TextArea):
         self._paste_burst_buffer = ""
         self._paste_burst_last_char_time: float | None = None
         self._paste_burst_timer: Timer | None = None
+        # See _BACKSLASH_ENTER_GAP_SECONDS for context.
         self._backslash_pending_time: float | None = None
 
     def set_app_focus(self, *, has_focus: bool) -> None:
@@ -343,6 +344,7 @@ class ChatTextArea(TextArea):
         so the cursor doesn't flash while waiting for a response.
         """
         self._app_has_focus = has_focus
+        self._backslash_pending_time = None
         self.cursor_blink = has_focus
         if has_focus and not self.has_focus:
             self.call_after_refresh(self.focus)
@@ -429,16 +431,29 @@ class ChatTextArea(TextArea):
 
         self.insert(payload)
 
-    def _delete_preceding_backslash(self) -> None:
-        """Delete the backslash character immediately before the cursor."""
+    def _delete_preceding_backslash(self) -> bool:
+        """Delete the backslash character immediately before the cursor.
+
+        Caller must ensure a backslash is expected at this position. The
+        method verifies the character before deleting it.
+
+        Returns:
+            `True` if a backslash was found and deleted, `False` otherwise.
+        """
         row, col = self.cursor_location
         if col > 0:
             start = (row, col - 1)
-            self.delete(start, self.cursor_location)
+            if self.document.get_text_range(start, self.cursor_location) == "\\":
+                self.delete(start, self.cursor_location)
+                return True
         elif row > 0:
             prev_line = self.document.get_line(row - 1)
-            start = (row - 1, len(prev_line))
-            self.delete(start, self.cursor_location)
+            start = (row - 1, len(prev_line) - 1)
+            end = (row - 1, len(prev_line))
+            if self.document.get_text_range(start, end) == "\\":
+                self.delete(start, self.cursor_location)
+                return True
+        return False
 
     async def _on_key(self, event: events.Key) -> None:
         """Handle key events."""
@@ -478,15 +493,16 @@ class ChatTextArea(TextArea):
         # after a backslash, delete the backslash and insert a newline.
         if (
             event.key == "enter"
+            and not self._completion_active
             and self._backslash_pending_time is not None
             and (now - self._backslash_pending_time) <= _BACKSLASH_ENTER_GAP_SECONDS
         ):
             self._backslash_pending_time = None
-            event.prevent_default()
-            event.stop()
-            self._delete_preceding_backslash()
-            self.insert("\n")
-            return
+            if self._delete_preceding_backslash():
+                event.prevent_default()
+                event.stop()
+                self.insert("\n")
+                return
         self._backslash_pending_time = None
 
         if event.key == "backslash" and event.character == "\\":

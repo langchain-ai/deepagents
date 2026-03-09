@@ -308,35 +308,12 @@ class TestBackgroundTaskArgs:
         with patch.object(sys, "argv", ["deepagents"]):
             args = parse_args()
         assert args.background_tasks is False
-        assert args.background_runtime_mode == "inmemory"
 
     def test_background_tasks_enabled(self) -> None:
         """Verify --background-tasks enables background tools."""
         with patch.object(sys, "argv", ["deepagents", "--background-tasks"]):
             args = parse_args()
         assert args.background_tasks is True
-
-    def test_background_tasks_explicitly_disabled(self) -> None:
-        """Verify --no-background-tasks disables background tools."""
-        with patch.object(sys, "argv", ["deepagents", "--no-background-tasks"]):
-            args = parse_args()
-        assert args.background_tasks is False
-
-    def test_background_runtime_mode_choice(self) -> None:
-        """Verify runtime mode argument is parsed."""
-        with patch.object(
-            sys,
-            "argv",
-            [
-                "deepagents",
-                "--background-tasks",
-                "--background-runtime-mode",
-                "inmemory",
-            ],
-        ):
-            args = parse_args()
-        assert args.background_tasks is True
-        assert args.background_runtime_mode == "inmemory"
 
 
 def test_default_agent_name_matches_canonical() -> None:

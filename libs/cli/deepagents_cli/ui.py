@@ -116,10 +116,6 @@ def show_help() -> None:
     console.print(
         "  --background-tasks         Enable background task tools in interactive mode"
     )
-    console.print(
-        "  --no-background-tasks      Disable background task tools (default)"
-    )
-    console.print("  --background-runtime-mode  Background runtime mode (inmemory)")
     console.print("  --default-model [MODEL]    Set, show, or manage the default model")
     console.print("  --clear-default-model      Clear the default model")
     console.print("  --acp                      Run as an ACP server over stdio")

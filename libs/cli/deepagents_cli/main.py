@@ -21,7 +21,7 @@ import sys
 import traceback
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from langchain_core.tools import BaseTool
@@ -433,15 +433,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--background-tasks",
-        action=argparse.BooleanOptionalAction,
+        action="store_true",
         default=False,
         help="Enable background task tools in interactive mode",
-    )
-    parser.add_argument(
-        "--background-runtime-mode",
-        choices=["inmemory"],
-        default="inmemory",
-        help="Background runtime mode (default: inmemory)",
     )
 
     try:
@@ -496,7 +490,6 @@ async def run_textual_cli_async(
     no_mcp: bool = False,
     trust_project_mcp: bool | None = None,
     enable_background_tasks: bool = False,
-    background_runtime_mode: str = "inmemory",
 ) -> "AppResult":
     """Run the Textual CLI interface (async version).
 
@@ -527,7 +520,6 @@ async def run_textual_cli_async(
 
             `True` to allow, `False` to deny, `None` to check trust store.
         enable_background_tasks: Enable background-task tools/runtime.
-        background_runtime_mode: Background runtime mode (`inmemory`).
 
     Returns:
         An `AppResult` with the return code and final thread ID.
@@ -629,8 +621,7 @@ async def run_textual_cli_async(
             from deepagents_cli.background_runtime import BackgroundRuntime
 
             try:
-                mode = cast("Literal['inmemory']", background_runtime_mode)
-                background_runtime = BackgroundRuntime(mode=mode)
+                background_runtime = BackgroundRuntime(mode="inmemory")
                 await background_runtime.start()
             except Exception as e:  # Friendly startup error
                 logger.warning("Background runtime startup failed", exc_info=True)
@@ -1399,7 +1390,6 @@ def cli_main() -> None:
                         no_mcp=getattr(args, "no_mcp", False),
                         trust_project_mcp=mcp_trust_decision,
                         enable_background_tasks=args.background_tasks,
-                        background_runtime_mode=args.background_runtime_mode,
                     )
                 )
                 return_code = result.return_code

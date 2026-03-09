@@ -295,7 +295,6 @@ class TestBackgroundRuntimeLifecycleHookup:
             await run_textual_cli_async(
                 assistant_id="agent",
                 enable_background_tasks=True,
-                background_runtime_mode="inmemory",
                 no_mcp=True,
             )
 

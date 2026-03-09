@@ -44,6 +44,7 @@ from deepagents.backends.utils import (
 from deepagents.middleware._utils import append_to_system_message
 
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
+DEFAULT_LARGE_TOOL_RESULTS_DIR = "/large_tool_results"
 GLOB_TIMEOUT = 20.0  # seconds
 LINE_NUMBER_WIDTH = 6
 DEFAULT_READ_OFFSET = 0
@@ -430,6 +431,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
             When exceeded, writes the result using the configured backend and replaces it
             with a truncated preview and file reference.
+        large_tool_results_dir: Directory path where evicted tool results are written.
+
+            Defaults to `DEFAULT_LARGE_TOOL_RESULTS_DIR` (`/large_tool_results`).
 
     Example:
         ```python
@@ -462,6 +466,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         custom_tool_descriptions: dict[str, str] | None = None,
         tool_token_limit_before_evict: int | None = 20000,
         max_execute_timeout: int = 3600,
+        large_tool_results_dir: str = DEFAULT_LARGE_TOOL_RESULTS_DIR,
     ) -> None:
         """Initialize the filesystem middleware.
 
@@ -476,13 +481,22 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
                 Defaults to 3600 seconds (1 hour). Any per-command timeout
                 exceeding this value will be rejected with an error message.
+            large_tool_results_dir: Directory path where evicted tool results are written.
+
+                Trailing slashes are normalised away. Must be an absolute path.
 
         Raises:
             ValueError: If `max_execute_timeout` is not positive.
+            ValueError: If `large_tool_results_dir` is not an absolute path.
         """
         if max_execute_timeout <= 0:
             msg = f"max_execute_timeout must be positive, got {max_execute_timeout}"
             raise ValueError(msg)
+        normalized_dir = large_tool_results_dir.rstrip("/")
+        if not normalized_dir.startswith("/"):
+            msg = f"large_tool_results_dir must be an absolute path, got {large_tool_results_dir!r}"
+            raise ValueError(msg)
+
         # Use provided backend or default to StateBackend factory
         self.backend = backend if backend is not None else (StateBackend)
 
@@ -491,6 +505,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         self._custom_tool_descriptions = custom_tool_descriptions or {}
         self._tool_token_limit_before_evict = tool_token_limit_before_evict
         self._max_execute_timeout = max_execute_timeout
+        self._large_tool_results_dir = normalized_dir
 
         self.tools = [
             self._create_ls_tool(),
@@ -1159,7 +1174,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
         # Write content to filesystem
         sanitized_id = sanitize_tool_call_id(message.tool_call_id)
-        file_path = f"/large_tool_results/{sanitized_id}"
+        file_path = f"{self._large_tool_results_dir}/{sanitized_id}"
         result = resolved_backend.write(file_path, content_str)
         if result.error:
             return message, None
@@ -1206,7 +1221,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
         # Write content to filesystem using async method
         sanitized_id = sanitize_tool_call_id(message.tool_call_id)
-        file_path = f"/large_tool_results/{sanitized_id}"
+        file_path = f"{self._large_tool_results_dir}/{sanitized_id}"
         result = await resolved_backend.awrite(file_path, content_str)
         if result.error:
             return message, None

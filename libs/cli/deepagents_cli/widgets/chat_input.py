@@ -457,6 +457,24 @@ class ChatTextArea(TextArea):
 
     async def _on_key(self, event: events.Key) -> None:
         """Handle key events."""
+        # VS Code 1.110 incorrectly sends space as a CSI u escape code
+        # (`\x1b[32u`) instead of a plain ` ` character.  Textual parses
+        # this as Key(key='space', character=None, is_printable=False), so
+        # the TextArea never inserts the space.  Per the kitty keyboard
+        # protocol spec, keys that generate text (like space) should NOT
+        # use CSI u encoding — VS Code is the outlier here.
+        #
+        # This workaround should be safe to keep indefinitely: once VS Code or
+        # Textual fixes the issue upstream, `character` will be `' '` and
+        # this branch simply won't match.
+        #
+        # Upstream: https://github.com/Textualize/textual/issues/6408
+        if event.key == "space" and event.character is None:
+            event.prevent_default()
+            event.stop()
+            self.insert(" ")
+            return
+
         now = time.monotonic()
         if self._paste_burst_buffer:
             if event.key == "enter":

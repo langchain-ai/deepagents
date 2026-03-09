@@ -5,7 +5,7 @@ import json
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, ClassVar, cast
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -1072,3 +1072,311 @@ class TestGetThreadLimit:
         """Returns 1 when DA_CLI_RECENT_THREADS is negative."""
         with patch.dict("os.environ", {"DA_CLI_RECENT_THREADS": "-5"}):
             assert get_thread_limit() == 1
+
+
+class TestListThreadsSortAndBranch:
+    """Tests for sort_by and branch params on list_threads."""
+
+    @pytest.fixture
+    def db_with_branches(self, tmp_path: Path) -> Path:
+        """Create a database with threads on different branches.
+
+        thread_a: created 2025-01-01, updated 2025-06-01 (on main)
+        thread_b: created 2025-03-01, updated 2025-05-15 (on feat)
+
+        sort_by="updated" → thread_a first (June > May)
+        sort_by="created" → thread_b first (March > January)
+        """
+        db_path = tmp_path / "branches.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("""
+            CREATE TABLE checkpoints (
+                thread_id TEXT NOT NULL,
+                checkpoint_ns TEXT NOT NULL DEFAULT '',
+                checkpoint_id TEXT NOT NULL,
+                metadata BLOB,
+                PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id)
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE writes (
+                thread_id TEXT NOT NULL,
+                checkpoint_ns TEXT NOT NULL DEFAULT '',
+                checkpoint_id TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                idx INTEGER NOT NULL,
+                channel TEXT NOT NULL,
+                type TEXT,
+                value BLOB,
+                PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id, task_id, idx)
+            )
+        """)
+
+        ins = (
+            "INSERT INTO checkpoints"
+            " (thread_id, checkpoint_ns, checkpoint_id, metadata)"
+            " VALUES (?, '', ?, ?)"
+        )
+
+        # thread_a: created 2025-01-01, updated 2025-06-01, on main
+        conn.execute(
+            ins,
+            (
+                "thread_a",
+                "cp1a",
+                json.dumps(
+                    {
+                        "agent_name": "bot",
+                        "updated_at": "2025-01-01T12:00:00+00:00",
+                        "git_branch": "main",
+                    }
+                ),
+            ),
+        )
+        # Second checkpoint for thread_a with a later updated_at
+        conn.execute(
+            ins,
+            (
+                "thread_a",
+                "cp1b",
+                json.dumps(
+                    {
+                        "agent_name": "bot",
+                        "updated_at": "2025-06-01T12:00:00+00:00",
+                        "git_branch": "main",
+                    }
+                ),
+            ),
+        )
+        # thread_b: created 2025-03-01, updated 2025-05-15, on feat
+        conn.execute(
+            ins,
+            (
+                "thread_b",
+                "cp2",
+                json.dumps(
+                    {
+                        "agent_name": "bot",
+                        "updated_at": "2025-03-01T12:00:00+00:00",
+                        "git_branch": "feat",
+                    }
+                ),
+            ),
+        )
+        # Second checkpoint for thread_b with a later updated_at
+        conn.execute(
+            ins,
+            (
+                "thread_b",
+                "cp2b",
+                json.dumps(
+                    {
+                        "agent_name": "bot",
+                        "updated_at": "2025-05-15T12:00:00+00:00",
+                        "git_branch": "feat",
+                    }
+                ),
+            ),
+        )
+        conn.commit()
+        conn.close()
+        return db_path
+
+    def test_sort_by_updated(self, db_with_branches: Path) -> None:
+        """Default sort returns most recently updated first."""
+        with patch.object(sessions, "get_db_path", return_value=db_with_branches):
+            threads = asyncio.run(sessions.list_threads(sort_by="updated"))
+            assert threads[0]["thread_id"] == "thread_a"
+
+    def test_sort_by_created(self, db_with_branches: Path) -> None:
+        """Most recently created first (thread_b: March > thread_a: Jan)."""
+        with patch.object(sessions, "get_db_path", return_value=db_with_branches):
+            threads = asyncio.run(sessions.list_threads(sort_by="created"))
+            assert threads[0]["thread_id"] == "thread_b"
+
+    def test_filter_by_branch(self, db_with_branches: Path) -> None:
+        """Branch filter returns only matching threads."""
+        with patch.object(sessions, "get_db_path", return_value=db_with_branches):
+            threads = asyncio.run(sessions.list_threads(branch="feat"))
+            assert len(threads) == 1
+            assert threads[0]["thread_id"] == "thread_b"
+            assert threads[0]["git_branch"] == "feat"
+
+    def test_filter_by_branch_no_match(self, db_with_branches: Path) -> None:
+        """Branch filter returns empty list when no match."""
+        with patch.object(sessions, "get_db_path", return_value=db_with_branches):
+            threads = asyncio.run(sessions.list_threads(branch="nonexistent"))
+            assert threads == []
+
+    def test_combined_agent_and_branch_filter(self, db_with_branches: Path) -> None:
+        """Agent + branch filters combine with AND."""
+        with patch.object(sessions, "get_db_path", return_value=db_with_branches):
+            threads = asyncio.run(
+                sessions.list_threads(agent_name="bot", branch="main")
+            )
+            assert len(threads) == 1
+            assert threads[0]["thread_id"] == "thread_a"
+
+
+class TestListThreadsCommandConfigDefaults:
+    """Tests for list_threads_command reading config defaults."""
+
+    _THREAD: ClassVar[dict[str, str | int]] = {
+        "thread_id": "abc123",
+        "agent_name": "bot",
+        "message_count": 2,
+        "updated_at": "2025-06-01T12:00:00+00:00",
+        "created_at": "2025-05-30T10:00:00+00:00",
+    }
+
+    def test_sort_reads_config_when_not_specified(self) -> None:
+        """sort_by=None falls back to config value."""
+        with (
+            patch(
+                "deepagents_cli.model_config.load_thread_sort_order",
+                return_value="created_at",
+            ),
+            patch(
+                "deepagents_cli.model_config.load_thread_relative_time",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_cli.sessions.list_threads",
+                new_callable=AsyncMock,
+                return_value=[self._THREAD],
+            ) as mock_list,
+            patch("deepagents_cli.sessions.format_timestamp", side_effect=str),
+            patch("deepagents_cli.config.console"),
+        ):
+            asyncio.run(sessions.list_threads_command())
+            mock_list.assert_called_once()
+            assert mock_list.call_args.kwargs["sort_by"] == "created"
+
+    def test_sort_flag_overrides_config(self) -> None:
+        """Explicit sort_by overrides config."""
+        with (
+            patch(
+                "deepagents_cli.model_config.load_thread_sort_order",
+                return_value="created_at",
+            ),
+            patch(
+                "deepagents_cli.model_config.load_thread_relative_time",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_cli.sessions.list_threads",
+                new_callable=AsyncMock,
+                return_value=[self._THREAD],
+            ) as mock_list,
+            patch("deepagents_cli.sessions.format_timestamp", side_effect=str),
+            patch("deepagents_cli.config.console"),
+        ):
+            asyncio.run(sessions.list_threads_command(sort_by="updated"))
+            mock_list.assert_called_once()
+            assert mock_list.call_args.kwargs["sort_by"] == "updated"
+
+    def test_relative_reads_config_when_not_specified(self) -> None:
+        """relative=None falls back to config value."""
+        with (
+            patch(
+                "deepagents_cli.model_config.load_thread_sort_order",
+                return_value="updated_at",
+            ),
+            patch(
+                "deepagents_cli.model_config.load_thread_relative_time",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_cli.sessions.list_threads",
+                new_callable=AsyncMock,
+                return_value=[self._THREAD],
+            ),
+            patch(
+                "deepagents_cli.sessions.format_relative_timestamp",
+                side_effect=str,
+            ) as mock_rel,
+            patch("deepagents_cli.sessions.format_timestamp") as mock_abs,
+            patch("deepagents_cli.config.console"),
+        ):
+            asyncio.run(sessions.list_threads_command())
+            assert mock_rel.call_count > 0
+            assert mock_abs.call_count == 0
+
+    def test_relative_flag_overrides_config(self) -> None:
+        """Explicit relative=False overrides config True."""
+        with (
+            patch(
+                "deepagents_cli.model_config.load_thread_sort_order",
+                return_value="updated_at",
+            ),
+            patch(
+                "deepagents_cli.model_config.load_thread_relative_time",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_cli.sessions.list_threads",
+                new_callable=AsyncMock,
+                return_value=[self._THREAD],
+            ),
+            patch(
+                "deepagents_cli.sessions.format_relative_timestamp",
+            ) as mock_rel,
+            patch(
+                "deepagents_cli.sessions.format_timestamp",
+                side_effect=str,
+            ) as mock_abs,
+            patch("deepagents_cli.config.console"),
+        ):
+            asyncio.run(sessions.list_threads_command(relative=False))
+            assert mock_abs.call_count > 0
+            assert mock_rel.call_count == 0
+
+    def test_branch_forwarded_to_list_threads(self) -> None:
+        """Branch parameter is passed through to list_threads."""
+        with (
+            patch(
+                "deepagents_cli.model_config.load_thread_sort_order",
+                return_value="updated_at",
+            ),
+            patch(
+                "deepagents_cli.model_config.load_thread_relative_time",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_cli.sessions.list_threads",
+                new_callable=AsyncMock,
+                return_value=[self._THREAD],
+            ) as mock_list,
+            patch("deepagents_cli.sessions.format_timestamp", side_effect=str),
+            patch("deepagents_cli.config.console"),
+        ):
+            asyncio.run(sessions.list_threads_command(branch="main"))
+            mock_list.assert_called_once()
+            assert mock_list.call_args.kwargs["branch"] == "main"
+
+    def test_verbose_calls_populate_details(self) -> None:
+        """verbose=True triggers populate_thread_checkpoint_details."""
+        with (
+            patch(
+                "deepagents_cli.model_config.load_thread_sort_order",
+                return_value="updated_at",
+            ),
+            patch(
+                "deepagents_cli.model_config.load_thread_relative_time",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_cli.sessions.list_threads",
+                new_callable=AsyncMock,
+                return_value=[{**self._THREAD, "git_branch": "main"}],
+            ),
+            patch(
+                "deepagents_cli.sessions.populate_thread_checkpoint_details",
+                new_callable=AsyncMock,
+            ) as mock_populate,
+            patch("deepagents_cli.sessions.format_timestamp", side_effect=str),
+            patch("deepagents_cli.config.console"),
+        ):
+            asyncio.run(sessions.list_threads_command(verbose=True))
+            mock_populate.assert_called_once()
+            assert mock_populate.call_args.kwargs["include_initial_prompt"] is True

@@ -1210,6 +1210,75 @@ def save_thread_relative_time(enabled: bool, config_path: Path | None = None) ->
     return True
 
 
+def load_thread_sort_order(config_path: Path | None = None) -> str:
+    """Load the sort order preference for the thread selector.
+
+    Args:
+        config_path: Path to config file.
+
+    Returns:
+        `"updated_at"` or `"created_at"`.
+    """
+    if config_path is None:
+        config_path = DEFAULT_CONFIG_PATH
+    try:
+        if not config_path.exists():
+            return "updated_at"
+        with config_path.open("rb") as f:
+            data = tomllib.load(f)
+        value = data.get("threads", {}).get("sort_order")
+        if value in {"updated_at", "created_at"}:
+            return value
+    except (OSError, tomllib.TOMLDecodeError):
+        logger.debug("Could not read thread sort_order config", exc_info=True)
+    return "updated_at"
+
+
+def save_thread_sort_order(sort_order: str, config_path: Path | None = None) -> bool:
+    """Save the sort order preference for the thread selector.
+
+    Args:
+        sort_order: `"updated_at"` or `"created_at"`.
+        config_path: Path to config file.
+
+    Returns:
+        True if save succeeded, False on I/O error.
+
+    Raises:
+        ValueError: If `sort_order` is not a recognised value.
+    """
+    if sort_order not in {"updated_at", "created_at"}:
+        msg = (
+            f"Invalid sort_order {sort_order!r}; expected 'updated_at' or 'created_at'"
+        )
+        raise ValueError(msg)
+    if config_path is None:
+        config_path = DEFAULT_CONFIG_PATH
+    try:
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        if config_path.exists():
+            with config_path.open("rb") as f:
+                data = tomllib.load(f)
+        else:
+            data = {}
+        if "threads" not in data:
+            data["threads"] = {}
+        data["threads"]["sort_order"] = sort_order
+        fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "wb") as f:
+                tomli_w.dump(data, f)
+            Path(tmp_path).replace(config_path)
+        except Exception:
+            with contextlib.suppress(OSError):
+                Path(tmp_path).unlink()
+            raise
+    except (OSError, tomllib.TOMLDecodeError):
+        logger.exception("Could not save thread sort_order preference")
+        return False
+    return True
+
+
 def save_recent_model(model_spec: str, config_path: Path | None = None) -> bool:
     """Update the recently used model in config file.
 

@@ -67,14 +67,28 @@ def _patch_list_threads(threads: list[ThreadInfo] | None = None) -> Any:  # noqa
 
 
 def _patch_columns(columns: dict[str, bool] | None = None) -> Any:  # noqa: ANN401
-    """Patch load_thread_columns to return given columns."""
+    """Patch load_thread_columns and load_thread_sort_order for tests."""
+    import contextlib
+
     from deepagents_cli.model_config import THREAD_COLUMN_DEFAULTS
 
     cols = columns if columns is not None else THREAD_COLUMN_DEFAULTS
-    return patch(
-        "deepagents_cli.model_config.load_thread_columns",
-        return_value=dict(cols),
-    )
+
+    @contextlib.contextmanager
+    def _ctx() -> Any:  # noqa: ANN401
+        with (
+            patch(
+                "deepagents_cli.model_config.load_thread_columns",
+                return_value=dict(cols),
+            ),
+            patch(
+                "deepagents_cli.model_config.load_thread_sort_order",
+                return_value="updated_at",
+            ),
+        ):
+            yield
+
+    return _ctx()
 
 
 def _style_scalar_value(value: object) -> int:

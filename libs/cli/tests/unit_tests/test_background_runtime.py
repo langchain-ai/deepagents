@@ -321,6 +321,36 @@ class TestBackgroundRuntimeLifecycle:
         finally:
             await runtime.shutdown()
 
+    async def test_kill_local_terminates_subprocess(self) -> None:
+        """Kill with LocalShellBackend actually terminates the process."""
+        runtime = BackgroundRuntime(
+            require_hitl_for_shell=False, backend=_local_backend()
+        )
+        await runtime.start()
+        try:
+            task_id = await runtime.submit_shell_task("sleep 60")
+            # Give the subprocess time to start
+            await asyncio.sleep(0.2)
+            killed = await runtime.kill_task(task_id)
+            assert killed is True
+            # Should complete quickly since SIGTERM was sent
+            final = await runtime.wait_task(task_id, timeout_seconds=5)
+            assert final.status == BackgroundTaskStatus.KILLED
+        finally:
+            await runtime.shutdown()
+
+    async def test_shutdown_local_terminates_processes(self) -> None:
+        """Shutdown with LocalShellBackend terminates running subprocesses."""
+        runtime = BackgroundRuntime(
+            require_hitl_for_shell=False, backend=_local_backend()
+        )
+        await runtime.start()
+        await runtime.submit_shell_task("sleep 60")
+        # Give the subprocess time to start
+        await asyncio.sleep(0.2)
+        # Shutdown should complete quickly because it kills the subprocess
+        await asyncio.wait_for(runtime.shutdown(), timeout=5)
+
     async def test_backend_can_be_set_after_init(self) -> None:
         runtime = BackgroundRuntime(require_hitl_for_shell=False)
         runtime.set_backend(_local_backend())

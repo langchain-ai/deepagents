@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import logging
+import os
+import signal
 import threading
 import uuid
 from collections import deque
@@ -152,6 +154,10 @@ class BackgroundHitlEvent:
     """Optional assistant context for the approval UI."""
 
 
+_BACKGROUND_TIMEOUT = 86400
+"""Timeout in seconds for background tasks via remote backends (24h)."""
+
+
 class BackgroundRuntime:
     """TaskIQ-backed runtime for CLI background shell tasks."""
 
@@ -199,6 +205,7 @@ class BackgroundRuntime:
         self._task_handles: dict[str, AsyncTaskiqTask[Any]] = {}
         self._wait_events: dict[str, asyncio.Event] = {}
         self._monitor_tasks: dict[str, asyncio.Task[None]] = {}
+        self._processes: dict[str, asyncio.subprocess.Process] = {}
         self._killed: set[str] = set()
         self._pending_updates: deque[str] = deque()
         self._pending_tui_notifications: deque[str] = deque()
@@ -384,9 +391,9 @@ class BackgroundRuntime:
     async def kill_task(self, task_id: str) -> bool:
         """Best-effort kill a background task.
 
-        Marks the task as killed so the runtime ignores its result. If the
-        command is already running via the backend, it may continue to
-        completion — cancellation is best-effort.
+        For local backends, terminates the subprocess group via SIGTERM.
+        For remote sandbox backends, only marks the task as killed — the
+        remote command may continue to completion.
 
         Args:
             task_id: Task ID to kill.
@@ -408,6 +415,7 @@ class BackgroundRuntime:
             self._pending_updates.append(f"Task `{task_id}` marked as killed.")
             self._pending_tui_notifications.append(f"Background task {task_id} killed.")
             wait_event = self._wait_events.get(task_id)
+            process = self._processes.get(task_id)
             hitl_event_id = self._task_hitl_event_ids.get(task_id)
 
         if hitl_event_id is not None:
@@ -416,6 +424,33 @@ class BackgroundRuntime:
                 decision=BackgroundApprovalDecision.REJECT,
                 message="Task killed before approval",
             )
+
+        # Terminate subprocess if running (local backend path only).
+        # For sandbox backends no process handle is stored, so this
+        # is skipped and kill is best-effort.
+        if process is not None and process.returncode is None:
+            try:
+                if os.name != "nt":
+                    os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+                else:
+                    process.terminate()
+            except ProcessLookupError:
+                logger.debug(
+                    "Process for task %s already exited before kill signal",
+                    task_id,
+                )
+            except OSError:
+                logger.warning(
+                    "Failed to terminate process for task %s; "
+                    "the process may still be running",
+                    task_id,
+                    exc_info=True,
+                )
+                with self._lock:
+                    self._pending_tui_notifications.append(
+                        f"Warning: kill signal for task {task_id} may not "
+                        "have been delivered. The process might still be running."
+                    )
 
         if wait_event is not None:
             wait_event.set()
@@ -644,9 +679,9 @@ class BackgroundRuntime:
     async def _run_shell_task(self, *, task_id: str, command: str) -> _ShellResult:
         """TaskIQ task body for executing commands via the configured backend.
 
-        Delegates to `backend.aexecute()` so that background tasks run in the
-        same environment (local shell or remote sandbox) as regular
-        tool execution.
+        Local backends use direct async subprocess for process-level kill
+        and no execution timeout. Remote sandbox backends delegate to
+        `backend.aexecute()`.
 
         Returns:
             Result payload containing `exit_code`, `stdout`, and `stderr`.
@@ -694,8 +729,90 @@ class BackgroundRuntime:
                 "stderr": "No execution backend configured",
             }
 
+        # Local backends use direct subprocess for process-level kill
+        # and no timeout. Remote backends delegate to aexecute().
+        from deepagents.backends import LocalShellBackend
+
+        if isinstance(self._backend, LocalShellBackend):
+            return await self._execute_local(task_id, command)
+        return await self._execute_via_backend(task_id, command)
+
+    async def _execute_local(
+        self,
+        task_id: str,
+        command: str,
+    ) -> _ShellResult:
+        """Execute via direct async subprocess for local backends.
+
+        Uses `asyncio.create_subprocess_shell` to preserve process handles
+        for kill support and avoid the backend's default execution timeout.
+
+        Returns:
+            Result payload containing `exit_code`, `stdout`, and `stderr`.
+        """
+        # Match the local backend's execution environment.
+        raw_cwd = getattr(self._backend, "cwd", None)
+        cwd = str(raw_cwd) if raw_cwd is not None else None
+        env: dict[str, str] | None = getattr(self._backend, "_env", None)
+
         try:
-            response = await self._backend.aexecute(command)
+            process = await asyncio.create_subprocess_shell(
+                command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                start_new_session=(os.name != "nt"),
+                cwd=cwd,
+                env=env,
+            )
+        except OSError as exc:
+            logger.warning(
+                "Failed to create subprocess for task %s: %s",
+                task_id,
+                exc,
+            )
+            return {
+                "exit_code": 1,
+                "stdout": "",
+                "stderr": f"Failed to start subprocess: {exc}",
+            }
+        with self._lock:
+            self._processes[task_id] = process
+
+        try:
+            stdout_bytes, stderr_bytes = await process.communicate()
+        finally:
+            with self._lock:
+                self._processes.pop(task_id, None)
+
+        return {
+            "exit_code": process.returncode,
+            "stdout": (stdout_bytes or b"").decode(errors="replace").strip(),
+            "stderr": (stderr_bytes or b"").decode(errors="replace").strip(),
+        }
+
+    async def _execute_via_backend(
+        self,
+        task_id: str,
+        command: str,
+    ) -> _ShellResult:
+        """Execute via `backend.aexecute()` for remote sandbox backends.
+
+        Uses a generous timeout to avoid the backend's default timeout,
+        which is typically tuned for foreground tool calls.
+
+        Returns:
+            Result payload containing `exit_code`, `stdout`, and `stderr`.
+        """
+        backend = self._backend
+        if backend is None:  # Defensive; caller checks
+            return {
+                "exit_code": 1,
+                "stdout": "",
+                "stderr": "No execution backend configured",
+            }
+
+        try:
+            response = await backend.aexecute(command, timeout=_BACKGROUND_TIMEOUT)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "Backend execution failed for task %s: %s",

@@ -5,7 +5,7 @@ from __future__ import annotations
 import importlib.util
 import os
 import time
-from typing import TYPE_CHECKING, Any, Protocol, cast
+from typing import Any, Protocol, cast
 
 from deepagents.backends.protocol import (
     ExecuteResponse,
@@ -21,25 +21,53 @@ from deepagents_cli.integrations.sandbox_provider import (
     SandboxProvider,
 )
 
-if TYPE_CHECKING:
-    from e2b import Sandbox
+
+class _E2BCommandResult(Protocol):
+    stdout: str | None
+    stderr: str | None
+    exit_code: int
+
+
+class _E2BFileInfo(Protocol):
+    type: object
+
+
+class _E2BCommands(Protocol):
+    def run(
+        self,
+        command: str,
+        *,
+        cwd: str,
+        timeout: int,
+        request_timeout: int | None = None,
+    ) -> _E2BCommandResult: ...
+
+
+class _E2BFiles(Protocol):
+    def get_info(self, path: str) -> _E2BFileInfo: ...
+
+    def read(self, path: str, *, format: str) -> bytes | bytearray: ...  # noqa: A002
+
+    def write(self, path: str, content: bytes) -> None: ...
+
+
+class _E2BSandboxInstance(Protocol):
+    sandbox_id: str
+    commands: _E2BCommands
+    files: _E2BFiles
+
+    def kill(self) -> None: ...
 
 
 class _E2BSandboxClass(Protocol):
     @staticmethod
-    def create(*args: object, **kwargs: object) -> Sandbox: ...
+    def create(*args: object, **kwargs: object) -> _E2BSandboxInstance: ...
 
     @staticmethod
-    def connect(*args: object, **kwargs: object) -> Sandbox: ...
+    def connect(*args: object, **kwargs: object) -> _E2BSandboxInstance: ...
 
     @staticmethod
     def kill(*args: object, **kwargs: object) -> None: ...
-
-
-class _E2BCommandExitLike(Protocol):
-    stdout: str | None
-    stderr: str | None
-    exit_code: int
 
 
 DEFAULT_SANDBOX_LIFETIME = 3600
@@ -197,7 +225,12 @@ def _map_error_message(
 class E2BBackend(BaseSandbox):
     """E2B backend implementation conforming to `SandboxBackendProtocol`."""
 
-    def __init__(self, sandbox: Sandbox, *, workdir: str = DEFAULT_WORKDIR) -> None:
+    def __init__(
+        self,
+        sandbox: _E2BSandboxInstance,
+        *,
+        workdir: str = DEFAULT_WORKDIR,
+    ) -> None:
         """Initialize the E2B backend with a connected sandbox.
 
         Args:
@@ -258,7 +291,7 @@ class E2BBackend(BaseSandbox):
                 timeout=effective_timeout,
             )
         except command_exit_exception as exc:
-            command_error = cast("_E2BCommandExitLike", exc)
+            command_error = cast("_E2BCommandResult", exc)
             return ExecuteResponse(
                 output=_combine_output(command_error.stdout, command_error.stderr),
                 exit_code=command_error.exit_code,
@@ -528,7 +561,7 @@ class E2BProvider(SandboxProvider):
             raise SandboxNotFoundError(sandbox_id) from exc
 
     @staticmethod
-    def _wait_until_ready(*, sandbox: Sandbox, timeout: int) -> None:
+    def _wait_until_ready(*, sandbox: _E2BSandboxInstance, timeout: int) -> None:
         """Poll the sandbox until it accepts commands.
 
         Args:
@@ -547,7 +580,8 @@ class E2BProvider(SandboxProvider):
                     timeout=5,
                     request_timeout=5,
                 )
-                if result.exit_code == 0 and result.stdout.strip() == "ready":
+                stdout = result.stdout or ""
+                if result.exit_code == 0 and stdout.strip() == "ready":
                     return
             except Exception:  # noqa: S110, BLE001  # Sandbox may still be starting up
                 pass

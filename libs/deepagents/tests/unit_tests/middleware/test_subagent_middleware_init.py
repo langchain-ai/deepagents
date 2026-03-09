@@ -11,6 +11,7 @@ from deepagents.middleware.subagents import (
     GENERAL_PURPOSE_SUBAGENT,
     TASK_SYSTEM_PROMPT,
     SubAgentMiddleware,
+    _build_task_tool,
 )
 
 
@@ -256,3 +257,64 @@ class TestSubagentMiddlewareInit:
         )
         # This would error if the middleware was accumulated incorrectly
         assert agent is not None
+
+    # ========== Tests for duplicate subagent names ==========
+
+    def test_duplicate_subagent_names_raises_runtime_error(self) -> None:
+        """Test that duplicate subagent names raise a RuntimeError instead of silently deduplicating.
+
+        MRE: When two subagents share the same name, _build_task_tool should
+        raise a RuntimeError rather than silently letting the last one win.
+        """
+        from unittest.mock import MagicMock
+
+        # Create two _SubagentSpec dicts with the same name
+        mock_runnable = MagicMock()
+        specs = [
+            {"name": "researcher", "description": "First researcher", "runnable": mock_runnable},
+            {"name": "researcher", "description": "Second researcher", "runnable": mock_runnable},
+        ]
+
+        with pytest.raises(RuntimeError, match="Duplicate subagent name 'researcher'"):
+            _build_task_tool(specs)
+
+    def test_unique_subagent_names_no_error(self) -> None:
+        """Test that unique subagent names do not raise any error."""
+        from unittest.mock import MagicMock
+
+        mock_runnable = MagicMock()
+        specs = [
+            {"name": "researcher", "description": "Research agent", "runnable": mock_runnable},
+            {"name": "coder", "description": "Coding agent", "runnable": mock_runnable},
+        ]
+
+        # Should not raise
+        tool = _build_task_tool(specs)
+        assert tool.name == "task"
+
+    def test_duplicate_subagent_names_via_middleware(self) -> None:
+        """Test that SubAgentMiddleware raises RuntimeError when subagents have duplicate names.
+
+        MRE: Creating SubAgentMiddleware with two subagents that share the
+        same 'name' should raise a RuntimeError at initialization time.
+        """
+        with pytest.raises(RuntimeError, match="Duplicate subagent name"):
+            SubAgentMiddleware(
+                backend=StateBackend,
+                subagents=[
+                    {
+                        "name": "weather",
+                        "description": "Weather subagent v1",
+                        "system_prompt": "Get weather v1.",
+                        "model": "gpt-4o-mini",
+                        "tools": [get_weather],
+                    },
+                    {
+                        "name": "weather",
+                        "description": "Weather subagent v2",
+                        "system_prompt": "Get weather v2.",
+                        "model": "gpt-4o-mini",
+                        "tools": [get_weather],
+                    },
+                ],
+            )

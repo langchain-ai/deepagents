@@ -387,10 +387,19 @@ def _build_task_tool(  # noqa: C901
     Returns:
         A StructuredTool that can invoke subagents by type.
     """
-    # Deduplicate by name (last one wins), keeping insertion order.
-    unique_subagent: dict[str, _SubagentSpec] = {spec["name"]: spec for spec in subagents}
-    subagent_graphs: dict[str, Runnable] = {name: spec["runnable"] for name, spec in unique_subagent.items()}
-    subagent_description_str = "\n".join(f"- {s['name']}: {s['description']}" for s in unique_subagent.values())
+    # Detect duplicate subagent names and raise an error.
+    seen_names: set[str] = set()
+    for spec in subagents:
+        if spec["name"] in seen_names:
+            msg = (
+                f"Duplicate subagent name '{spec['name']}'. "
+                f"Each subagent must have a unique name."
+            )
+            raise RuntimeError(msg)
+        seen_names.add(spec["name"])
+
+    subagent_graphs: dict[str, Runnable] = {spec["name"]: spec["runnable"] for spec in subagents}
+    subagent_description_str = "\n".join(f"- {s['name']}: {s['description']}" for s in subagents)
 
     # Use custom description if provided, otherwise use default template
     if task_description is None:

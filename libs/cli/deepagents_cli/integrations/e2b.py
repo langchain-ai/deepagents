@@ -7,10 +7,6 @@ import os
 import time
 from typing import TYPE_CHECKING, Any
 
-if importlib.util.find_spec("e2b") is None:
-    msg = "e2b package is required for E2BProvider. Install with `pip install e2b`."
-    raise ImportError(msg)
-
 from deepagents.backends.protocol import (
     ExecuteResponse,
     FileDownloadResponse,
@@ -33,6 +29,19 @@ DEFAULT_STARTUP_TIMEOUT = 180
 DEFAULT_COMMAND_TIMEOUT = 30 * 60
 DEFAULT_WORKDIR = "/home/user"
 READINESS_POLL_INTERVAL = 2
+
+
+def _require_e2b() -> None:
+    """Ensure the optional `e2b` dependency is installed before use.
+
+    Raises:
+        ImportError: If `e2b` is not installed.
+    """
+    if importlib.util.find_spec("e2b") is not None:
+        return
+
+    msg = "e2b package is required for E2BProvider. Install with `pip install e2b`."
+    raise ImportError(msg)
 
 
 def _combine_output(stdout: str | None, stderr: str | None) -> str:
@@ -324,6 +333,7 @@ class E2BProvider(SandboxProvider):
         Raises:
             ValueError: If `E2B_API_KEY` is not configured.
         """
+        _require_e2b()
         self._api_key = api_key or os.environ.get("E2B_API_KEY")
         if not self._api_key:
             msg = "E2B_API_KEY environment variable not set"

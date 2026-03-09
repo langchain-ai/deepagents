@@ -1948,3 +1948,44 @@ class TestBackslashEnterNewline:
 
             # Should have submitted (backslash included in text)
             assert len(app.submitted) == 1
+
+
+class TestVSCodeSpaceWorkaround:
+    """VS Code 1.110 sends space as CSI u (character=None, is_printable=False).
+
+    Our workaround in _on_key detects this and manually inserts a space.
+    See https://github.com/Textualize/textual/issues/6408.
+    """
+
+    async def test_space_with_none_character_inserts_space(self) -> None:
+        """A space key event with character=None should still insert a space."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            ta.insert("hello")
+            await pilot.pause()
+
+            # Simulate VS Code 1.110 CSI u space: key='space', character=None
+            await ta._on_key(events.Key("space", None))
+            await pilot.pause()
+
+            assert ta.text == "hello "
+
+    async def test_normal_space_still_works(self) -> None:
+        """A normal space key event (character=' ') should still work."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            ta.insert("hello")
+            await pilot.pause()
+
+            await pilot.press("space")
+            await pilot.pause()
+
+            assert ta.text == "hello "

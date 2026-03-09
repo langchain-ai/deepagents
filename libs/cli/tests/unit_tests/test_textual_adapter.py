@@ -212,6 +212,39 @@ class TestGetGitBranch:
         assert mock_run.call_count == 1
 
 
+class TestGetGitBranchOSError:
+    """Tests for _get_git_branch when Path.cwd() raises OSError."""
+
+    def setup_method(self) -> None:
+        """Clear the git-branch cache between tests."""
+        textual_adapter._git_branch_cache.clear()
+
+    def test_returns_none_on_cwd_oserror(self) -> None:
+        """_get_git_branch should return None when cwd is inaccessible."""
+        with patch(
+            "deepagents_cli.textual_adapter.Path.cwd",
+            side_effect=OSError("deleted"),
+        ):
+            assert textual_adapter._get_git_branch() is None
+
+
+class TestBuildStreamConfigOSError:
+    """Tests for _build_stream_config when Path.cwd() raises OSError."""
+
+    def setup_method(self) -> None:
+        """Clear the git-branch cache between tests."""
+        textual_adapter._git_branch_cache.clear()
+
+    def test_cwd_absent_on_oserror(self) -> None:
+        """Cwd should be absent from metadata when Path.cwd() raises."""
+        with patch(
+            "deepagents_cli.textual_adapter.Path.cwd",
+            side_effect=OSError("deleted"),
+        ):
+            config = _build_stream_config("t-err", assistant_id="agent")
+        assert "cwd" not in config["metadata"]
+
+
 class TestIsSummarizationChunk:
     """Tests for `_is_summarization_chunk` detection."""
 

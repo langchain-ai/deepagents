@@ -232,6 +232,7 @@ def _get_git_branch() -> str | None:
     try:
         cwd = str(Path.cwd())
     except OSError:
+        logger.debug("Could not determine cwd for git branch lookup", exc_info=True)
         return None
     if cwd in _git_branch_cache:
         return _git_branch_cache[cwd]
@@ -262,7 +263,8 @@ def _build_stream_config(
 
     The `thread_id` in `configurable` is automatically propagated as run
     metadata by LangGraph, so it can be used for LangSmith filtering without
-    a separate metadata key.
+    a separate metadata key. Includes the current working directory (`cwd`)
+    and git branch in metadata when available.
 
     Args:
         thread_id: The CLI session thread identifier.

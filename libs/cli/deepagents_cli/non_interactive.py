@@ -682,6 +682,10 @@ async def run_non_interactive(
 ) -> int:
     """Run a single task non-interactively and exit.
 
+    The agent is created with `interactive=False`, which tailors the system
+    prompt for autonomous headless execution (no clarification questions,
+    reasonable assumptions).
+
     Shell access and auto-approval are controlled by `--shell-allow-list`:
 
     - Not set → shell disabled, all other tools auto-approved.

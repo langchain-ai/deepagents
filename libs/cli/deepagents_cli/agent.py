@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 import os
+import re
 import shutil
 import tempfile
 from pathlib import Path
@@ -49,6 +51,8 @@ from deepagents_cli.unicode_security import (
     strip_dangerous_unicode,
     summarize_issues,
 )
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_AGENT_NAME = "agent"
 """The default agent name used when no `-a` flag is provided."""
@@ -144,7 +148,7 @@ def get_system_prompt(
 ) -> str:
     """Get the base system prompt for the agent.
 
-    Loads the immutable system prompt from `system_prompt.md` and
+    Loads the base system prompt template from `system_prompt.md` and
     interpolates dynamic sections (model identity, working directory,
     skills path, execution mode).
 
@@ -232,7 +236,14 @@ def get_system_prompt(
             f"- Use `{working_dir}` as your working directory for all operations\n\n"
         )
     else:
-        cwd = Path.cwd()
+        try:
+            cwd = Path.cwd()
+        except OSError:
+            logger.warning(
+                "Could not determine working directory for system prompt",
+                exc_info=True,
+            )
+            cwd = Path()
         working_dir_section = (
             f"### Current Working Directory\n\n"
             f"The filesystem backend is currently operating in: `{cwd}`\n\n"
@@ -245,7 +256,7 @@ def get_system_prompt(
             f"- Never use relative paths - always construct full absolute paths\n\n"
         )
 
-    return (
+    result = (
         template.replace("{mode_description}", mode_description)
         .replace("{interactive_preamble}", interactive_preamble)
         .replace("{ambiguity_guidance}", ambiguity_guidance)
@@ -253,6 +264,13 @@ def get_system_prompt(
         .replace("{working_dir_section}", working_dir_section)
         .replace("{skills_path}", skills_path)
     )
+
+    # Detect unreplaced placeholders (defense-in-depth for template typos)
+    unreplaced = re.findall(r"\{[a-z_]+\}", result)
+    if unreplaced:
+        logger.warning("System prompt contains unreplaced placeholders: %s", unreplaced)
+
+    return result
 
 
 def _format_write_file_description(

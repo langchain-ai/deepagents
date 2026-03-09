@@ -200,7 +200,7 @@ def format_path(path: str | None) -> str:
         path: Absolute filesystem path, or `None`.
 
     Returns:
-        Formatted path string or empty string if `None`.
+        Formatted path string, or empty string if path is falsy.
     """
     if not path:
         return ""
@@ -212,6 +212,9 @@ def format_path(path: str | None) -> str:
         if path.startswith(prefix):
             return "~/" + path[len(prefix) :]
     except (RuntimeError, KeyError, OSError):
+        logger.debug(
+            "Could not resolve home directory for path formatting", exc_info=True
+        )
         return path
     else:
         return path

@@ -49,7 +49,7 @@ class TestBackgroundMiddleware:
             middleware = BackgroundMiddleware(runtime)
             submit_tool = _find_tool(middleware, "submit_background_task")
             output = await submit_tool.ainvoke(cast("Any", {"command": "printf hi"}))
-            assert "status=started" in output
+            assert "status=queued" in output
             assert "task_id=" in output
             task_id = output.split("task_id=", maxsplit=1)[1].split(",", maxsplit=1)[0]
             await runtime.wait_task(task_id, timeout_seconds=5)
@@ -89,7 +89,7 @@ class TestBackgroundMiddleware:
                 status=BackgroundTaskStatus.REJECTED,
                 created_at=datetime.now(UTC),
                 updated_at=datetime.now(UTC),
-                error_text="Rejected by user",
+                stderr_text="Rejected by user",
             )
         )
         runtime.wait_task = wait_mock  # type: ignore[method-assign]

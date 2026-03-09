@@ -65,24 +65,30 @@ class CodexClient:
         """
         self._store = store or CodexAuthStore()
 
+    @staticmethod
+    def _build_headers(access_token: str) -> dict[str, str]:
+        """Build the standard set of headers for Codex API requests."""
+        headers: dict[str, str] = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream",
+            "OpenAI-Beta": "responses=experimental",
+            "originator": "codex_cli_rs",
+        }
+
+        account_id = _extract_account_id(access_token)
+        if account_id:
+            headers["ChatGPT-Account-Id"] = account_id
+
+        return headers
+
     def _get_headers(self) -> dict[str, str]:
         """Get authorization and required Codex headers."""
         creds = self._store.load()
         if creds is None:
             msg = "Not authenticated. Run 'deepagents auth login --provider codex'"
             raise CodexAuthError(msg)
-
-        headers = {
-            "Authorization": f"Bearer {creds.access_token}",
-            "Content-Type": "application/json",
-            "Accept": "text/event-stream",
-        }
-
-        account_id = _extract_account_id(creds.access_token)
-        if account_id:
-            headers["ChatGPT-Account-Id"] = account_id
-
-        return headers
+        return self._build_headers(creds.access_token)
 
     def _refresh_and_get_headers(self) -> dict[str, str]:
         """Refresh the access token and return new headers."""
@@ -93,19 +99,7 @@ class CodexClient:
             msg = "Not authenticated. Run 'deepagents auth login --provider codex'"
             raise CodexAuthError(msg)
         new_creds = refresh_access_token(creds, store=self._store)
-
-        headers = {
-            "Authorization": f"Bearer {new_creds.access_token}",
-            "Content-Type": "application/json",
-            "OpenAI-Beta": "responses=experimental",
-            "originator": "codex_cli_rs",
-        }
-
-        account_id = _extract_account_id(new_creds.access_token)
-        if account_id:
-            headers["chatgpt-account-id"] = account_id
-
-        return headers
+        return self._build_headers(new_creds.access_token)
 
     def _build_payload(
         self,
@@ -118,10 +112,13 @@ class CodexClient:
         **kwargs: Any,
     ) -> dict[str, Any]:
         """Build the Responses API request payload."""
+        cleaned_items = [
+            {k: v for k, v in item.items() if k != "id"} for item in input_items
+        ]
         payload: dict[str, Any] = {
             "model": model,
             "instructions": instructions,
-            "input": input_items,
+            "input": cleaned_items,
             "stream": stream,
             "store": False,
             "include": ["reasoning.encrypted_content"],
@@ -186,7 +183,17 @@ class CodexClient:
             tools=tools,
             **kwargs,
         )
-        headers = self._get_headers()
+
+        creds = self._store.load()
+        if creds is None:
+            msg = "Not authenticated. Run 'deepagents auth login --provider codex'"
+            raise CodexAuthError(msg)
+        if creds.is_expired:
+            logger.debug("Token expired, proactively refreshing")
+            headers = self._refresh_and_get_headers()
+        else:
+            headers = self._build_headers(creds.access_token)
+
         url = f"{_API_BASE}{_CODEX_RESPONSES_PATH}"
 
         with (
@@ -262,7 +269,17 @@ class CodexClient:
             tools=tools,
             **kwargs,
         )
-        headers = self._get_headers()
+
+        creds = self._store.load()
+        if creds is None:
+            msg = "Not authenticated. Run 'deepagents auth login --provider codex'"
+            raise CodexAuthError(msg)
+        if creds.is_expired:
+            logger.debug("Token expired, proactively refreshing")
+            headers = self._refresh_and_get_headers()
+        else:
+            headers = self._build_headers(creds.access_token)
+
         url = f"{_API_BASE}{_CODEX_RESPONSES_PATH}"
 
         async with (

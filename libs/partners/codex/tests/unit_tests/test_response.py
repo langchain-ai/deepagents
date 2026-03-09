@@ -52,6 +52,58 @@ class TestCollectResponseEvents:
         assert len(result.generations) == 1
         assert result.generations[0].message.content == ""
 
+    def test_response_done_treated_as_completed(self) -> None:
+        events = [
+            {"type": "response.output_text.delta", "delta": "Hi"},
+            {
+                "type": "response.done",
+                "response": {"model": "gpt-5.3-codex"},
+            },
+        ]
+        result = collect_response_events(events)
+        assert result.generations[0].message.content == "Hi"
+        assert (
+            result.generations[0].message.response_metadata["model"] == "gpt-5.3-codex"
+        )
+
+    def test_refusal_collected(self) -> None:
+        events = [
+            {"type": "response.refusal.delta", "delta": "I cannot "},
+            {"type": "response.refusal.delta", "delta": "do that."},
+            {"type": "response.completed", "response": {"model": "m"}},
+        ]
+        result = collect_response_events(events)
+        msg = result.generations[0].message
+        assert msg.response_metadata["refusal"] == "I cannot do that."
+
+    def test_reasoning_collected(self) -> None:
+        events = [
+            {"type": "response.reasoning.delta", "delta": "thinking..."},
+            {"type": "response.completed", "response": {"model": "m"}},
+        ]
+        result = collect_response_events(events)
+        msg = result.generations[0].message
+        assert msg.response_metadata["reasoning"] == "thinking..."
+
+    def test_reasoning_text_variant(self) -> None:
+        events = [
+            {"type": "response.reasoning_text.delta", "delta": "step1"},
+            {"type": "response.completed", "response": {"model": "m"}},
+        ]
+        result = collect_response_events(events)
+        assert result.generations[0].message.response_metadata["reasoning"] == "step1"
+
+    def test_reasoning_summary_collected(self) -> None:
+        events = [
+            {"type": "response.reasoning_summary.delta", "delta": "summary"},
+            {"type": "response.completed", "response": {"model": "m"}},
+        ]
+        result = collect_response_events(events)
+        assert (
+            result.generations[0].message.response_metadata["reasoning_summary"]
+            == "summary"
+        )
+
 
 class TestParseStreamEvent:
     def test_text_delta(self) -> None:
@@ -104,3 +156,31 @@ class TestParseStreamEvent:
         }
         chunk = parse_stream_event(event)
         assert chunk is None
+
+    def test_response_done_stream(self) -> None:
+        event = {
+            "type": "response.done",
+            "response": {"model": "gpt-5.3-codex"},
+        }
+        chunk = parse_stream_event(event)
+        assert chunk is not None
+        assert chunk.message.response_metadata["model"] == "gpt-5.3-codex"
+
+    def test_refusal_delta_stream(self) -> None:
+        event = {"type": "response.refusal.delta", "delta": "I refuse"}
+        chunk = parse_stream_event(event)
+        assert chunk is not None
+        assert chunk.message.content == ""
+        assert chunk.message.response_metadata["refusal"] == "I refuse"
+
+    def test_reasoning_delta_stream(self) -> None:
+        event = {"type": "response.reasoning.delta", "delta": "thinking"}
+        chunk = parse_stream_event(event)
+        assert chunk is not None
+        assert chunk.message.response_metadata["reasoning"] == "thinking"
+
+    def test_reasoning_summary_delta_stream(self) -> None:
+        event = {"type": "response.reasoning_summary.delta", "delta": "summary"}
+        chunk = parse_stream_event(event)
+        assert chunk is not None
+        assert chunk.message.response_metadata["reasoning_summary"] == "summary"

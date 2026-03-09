@@ -184,6 +184,8 @@ def login(
             "code_challenge": challenge,
             "code_challenge_method": "S256",
             "codex_cli_simplified_flow": "true",
+            "originator": "codex_cli_rs",
+            "id_token_add_organizations": "true",
         }
     )
 
@@ -347,7 +349,15 @@ def refresh_access_token(
             },
         )
         if resp.status_code != 200:  # noqa: PLR2004
-            msg = f"Token refresh failed: {resp.text}"
+            try:
+                error_data = resp.json()
+            except (ValueError, json.JSONDecodeError):
+                error_data = {}
+            error_code = error_data.get("error", "")
+            error_description = error_data.get("error_description", resp.text)
+            if error_code == "invalid_grant":
+                _store.delete()
+            msg = f"Token refresh failed: {error_description}"
             raise CodexAuthError(msg)
         data = resp.json()
 

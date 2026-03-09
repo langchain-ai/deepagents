@@ -102,3 +102,20 @@ class TestBuildPayload:
         payload = client._build_payload([], "gpt-5.3-codex", tools=[])
         assert "tools" not in payload
         assert "tool_choice" not in payload
+
+    def test_payload_strips_id_from_input_items(self) -> None:
+        """Input item IDs are stripped per official Codex CLI behavior."""
+        client = CodexClient.__new__(CodexClient)
+        items = [
+            {
+                "id": "msg_123",
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "hi"}],
+            },
+        ]
+        payload = client._build_payload(items, "gpt-5.3-codex")
+        # ID should be stripped from payload
+        assert "id" not in payload["input"][0]
+        # Original should not be mutated
+        assert items[0]["id"] == "msg_123"

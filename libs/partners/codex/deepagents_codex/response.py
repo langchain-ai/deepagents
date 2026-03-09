@@ -48,6 +48,30 @@ def _extract_usage(data: dict[str, Any]) -> dict[str, int] | None:
     }
 
 
+# Maps SSE delta event types to the metadata key they populate.
+_DELTA_EVENT_METADATA_KEY: dict[str, str] = {
+    "response.refusal.delta": "refusal",
+    "response.reasoning.delta": "reasoning",
+    "response.reasoning_text.delta": "reasoning",
+    "response.reasoning_summary.delta": "reasoning_summary",
+    "response.reasoning_summary_text.delta": "reasoning_summary",
+}
+
+_COMPLETION_EVENTS = frozenset({"response.completed", "response.done"})
+
+
+def _collect_deltas(
+    events: list[dict[str, Any]],
+) -> dict[str, list[str]]:
+    """Group delta text by metadata key for all mapped delta event types."""
+    buckets: dict[str, list[str]] = {}
+    for event in events:
+        key = _DELTA_EVENT_METADATA_KEY.get(event.get("type", ""))
+        if key is not None:
+            buckets.setdefault(key, []).append(event.get("delta", ""))
+    return buckets
+
+
 def collect_response_events(
     events: list[dict[str, Any]],
 ) -> ChatResult:
@@ -71,15 +95,14 @@ def collect_response_events(
         event_type = event.get("type", "")
 
         if event_type == "response.output_text.delta":
-            delta = event.get("delta", "")
-            text_parts.append(delta)
+            text_parts.append(event.get("delta", ""))
 
         elif event_type == "response.output_item.done":
             item = event.get("item", {})
             if item.get("type") == "function_call":
                 tool_call_items.append(item)
 
-        elif event_type == "response.completed":
+        elif event_type in _COMPLETION_EVENTS:
             usage = _extract_usage(event)
             model = event.get("response", {}).get("model", "")
 
@@ -92,6 +115,11 @@ def collect_response_events(
 
     message = AIMessage(content=content, **kwargs)
     message.response_metadata = {"model": model}
+
+    # Attach any collected delta metadata (refusal, reasoning, etc.).
+    for key, parts in _collect_deltas(events).items():
+        message.response_metadata[key] = "".join(parts)
+
     if usage:
         message.usage_metadata = usage  # type: ignore[assignment]
 
@@ -145,13 +173,21 @@ def parse_stream_event(
             )
             return ChatGenerationChunk(message=chunk)
 
-    if event_type == "response.completed":
+    if event_type in _COMPLETION_EVENTS:
         usage = _extract_usage(event)
         model = event.get("response", {}).get("model", "")
         chunk = AIMessageChunk(content="")
         chunk.response_metadata = {"model": model}
         if usage:
             chunk.usage_metadata = usage  # type: ignore[assignment]
+        return ChatGenerationChunk(message=chunk)
+
+    # Handle refusal / reasoning / reasoning_summary delta events.
+    metadata_key = _DELTA_EVENT_METADATA_KEY.get(event_type)
+    if metadata_key is not None:
+        delta = event.get("delta", "")
+        chunk = AIMessageChunk(content="")
+        chunk.response_metadata = {metadata_key: delta}
         return ChatGenerationChunk(message=chunk)
 
     return None

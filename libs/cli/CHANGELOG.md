@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.0.31](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.30...deepagents-cli==0.0.31) (2026-03-09)
+
+
+### Features
+
+* **cli:** `/reload` command for in-session config refresh ([#1722](https://github.com/langchain-ai/deepagents/issues/1722)) ([381aee6](https://github.com/langchain-ai/deepagents/commit/381aee6d223fe3d866bedfe3a534916f419a4435))
+* **cli:** add `-n` short flag for `threads list --limit` ([#1731](https://github.com/langchain-ai/deepagents/issues/1731)) ([8bbace9](https://github.com/langchain-ai/deepagents/commit/8bbace9facd1e33757521e835dcb291accd2fa91))
+* **cli:** add `ask_user` tool for interactive agent questions ([#1377](https://github.com/langchain-ai/deepagents/issues/1377)) ([de7068d](https://github.com/langchain-ai/deepagents/commit/de7068d21fd4b932c6e53f500b0ea3b02a04c0aa))
+* **cli:** add sort, branch filter, and verbose flags to threads list ([#1732](https://github.com/langchain-ai/deepagents/issues/1732)) ([11dc8e3](https://github.com/langchain-ai/deepagents/commit/11dc8e3397ef9e9dbe8b15578e9258544ed6b452))
+* **cli:** rearrange HITL option order in approval menu ([#1726](https://github.com/langchain-ai/deepagents/issues/1726)) ([0ca6cb2](https://github.com/langchain-ai/deepagents/commit/0ca6cb237b6da538bad2b4bf292942c8db72ec1f))
+* **cli:** rework `/thread` switcher with search, columns, delete, and sort toggle ([#1723](https://github.com/langchain-ai/deepagents/issues/1723)) ([8b21ddb](https://github.com/langchain-ai/deepagents/commit/8b21ddb2ff7f13d6b3ffcbf2fe605bfbadbc3d38))
+* **cli:** tailor system prompt for non-interactive mode ([#1727](https://github.com/langchain-ai/deepagents/issues/1727)) ([871e5cf](https://github.com/langchain-ai/deepagents/commit/871e5cf76b1a7e7cf7175b4415bb8e2206da39ec))
+* **cli:** track and display working directory per thread ([#1735](https://github.com/langchain-ai/deepagents/issues/1735)) ([0e4f25d](https://github.com/langchain-ai/deepagents/commit/0e4f25dfbc3e15653bc3f8a6d32a0a61ead4ba82))
+
+
+### Bug Fixes
+
+* **cli:** localize newline shortcut labels by platform ([#1721](https://github.com/langchain-ai/deepagents/issues/1721)) ([f35576b](https://github.com/langchain-ai/deepagents/commit/f35576bafac711d6c04f1f9dd40ec97a90e30060))
+* **cli:** prevent `shift+enter` from sending `backslash+enter` ([#1728](https://github.com/langchain-ai/deepagents/issues/1728)) ([81dceb0](https://github.com/langchain-ai/deepagents/commit/81dceb043097a47702bb5a0227a8f12e9055bd05))
+* **cli:** write files with langsmith sandbox ([#1714](https://github.com/langchain-ai/deepagents/issues/1714)) ([5933c9e](https://github.com/langchain-ai/deepagents/commit/5933c9e2995c422e43649c61981e086ac1eaf725))
+
 ## [0.0.30](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.29...deepagents-cli==0.0.30) (2026-03-07)
 
 ### Features

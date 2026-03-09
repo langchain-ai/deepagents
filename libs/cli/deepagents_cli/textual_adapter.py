@@ -268,7 +268,7 @@ def _build_stream_config(
     Returns:
         Config dict with `configurable` and `metadata` keys.
     """
-    metadata: dict[str, str] = {}
+    metadata: dict[str, str] = {"cwd": str(Path.cwd())}
     if assistant_id:
         metadata.update(
             {

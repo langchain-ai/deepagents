@@ -43,7 +43,7 @@ _COL_BRANCH = 16
 _COL_TIMESTAMP = None
 _MAX_SEARCH_TEXT_LEN = 200
 _COL_PROMPT = None
-_AUTO_WIDTH_COLUMNS = {"agent_name", "created_at", "updated_at"}
+_AUTO_WIDTH_COLUMNS = {"agent_name", "created_at", "updated_at", "cwd"}
 _COLUMN_ORDER = (
     "thread_id",
     "agent_name",
@@ -51,6 +51,7 @@ _COLUMN_ORDER = (
     "created_at",
     "updated_at",
     "git_branch",
+    "cwd",
     "initial_prompt",
 )
 _COLUMN_WIDTHS: dict[str, int | None] = {
@@ -60,6 +61,7 @@ _COLUMN_WIDTHS: dict[str, int | None] = {
     "created_at": _COL_TIMESTAMP,
     "updated_at": _COL_TIMESTAMP,
     "git_branch": _COL_BRANCH,
+    "cwd": None,
     "initial_prompt": _COL_PROMPT,
 }
 _COLUMN_LABELS = {
@@ -69,6 +71,7 @@ _COLUMN_LABELS = {
     "created_at": "Created",
     "updated_at": "Updated",
     "git_branch": "Branch",
+    "cwd": "Location",
     "initial_prompt": "Prompt",
 }
 _COLUMN_TOGGLE_LABELS = {
@@ -78,6 +81,7 @@ _COLUMN_TOGGLE_LABELS = {
     "created_at": "Created At",
     "updated_at": "Updated At",
     "git_branch": "Git Branch",
+    "cwd": "Location",
     "initial_prompt": "Initial Prompt",
 }
 # Reserved for future right-aligned columns (e.g., message counts).
@@ -191,6 +195,10 @@ def _format_column_value(
         value = fmt(thread.get("updated_at"))
     elif key == "git_branch":
         value = thread.get("git_branch") or ""
+    elif key == "cwd":
+        from deepagents_cli.sessions import format_path
+
+        value = format_path(thread.get("cwd"))
     elif key == "initial_prompt":
         value = _collapse_whitespace(thread.get("initial_prompt") or "")
     else:

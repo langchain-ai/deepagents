@@ -29,6 +29,7 @@ MOCK_THREADS: list[ThreadInfo] = [
         "message_count": 5,
         "created_at": "2025-01-15T09:00:00",
         "git_branch": "main",
+        "cwd": "/home/user/project-a",
         "initial_prompt": "Hello world",
     },
     {
@@ -38,6 +39,7 @@ MOCK_THREADS: list[ThreadInfo] = [
         "message_count": 12,
         "created_at": "2025-01-14T07:00:00",
         "git_branch": "feature-x",
+        "cwd": "/tmp/workspace",
         "initial_prompt": "Fix the bug",
     },
     {
@@ -47,6 +49,7 @@ MOCK_THREADS: list[ThreadInfo] = [
         "message_count": 3,
         "created_at": "2025-01-13T14:00:00",
         "git_branch": None,
+        "cwd": None,
         "initial_prompt": None,
     },
 ]

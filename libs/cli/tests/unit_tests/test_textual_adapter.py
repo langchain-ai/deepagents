@@ -136,6 +136,7 @@ class TestBuildStreamConfig:
         assert config["metadata"]["assistant_id"] == "my-agent"
         assert config["metadata"]["agent_name"] == "my-agent"
         assert "updated_at" in config["metadata"]
+        assert "cwd" in config["metadata"]
 
     def test_updated_at_is_valid_iso_timestamp(self) -> None:
         """`updated_at` should be a valid timezone-aware ISO 8601 timestamp."""
@@ -152,6 +153,7 @@ class TestBuildStreamConfig:
         assert "assistant_id" not in metadata
         assert "agent_name" not in metadata
         assert "updated_at" not in metadata
+        assert "cwd" in metadata
 
     def test_no_assistant_fields_when_empty_string(self) -> None:
         """Empty-string `assistant_id` should be treated as absent."""
@@ -160,6 +162,7 @@ class TestBuildStreamConfig:
         assert "assistant_id" not in metadata
         assert "agent_name" not in metadata
         assert "updated_at" not in metadata
+        assert "cwd" in metadata
 
     def test_git_branch_included_when_available(self) -> None:
         """Git branch should be included in metadata when in a git repo."""

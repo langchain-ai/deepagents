@@ -23,6 +23,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from langchain.agents.middleware.human_in_the_loop import ActionRequest, HITLRequest
@@ -746,6 +747,7 @@ async def run_non_interactive(
         "assistant_id": assistant_id,
         "agent_name": assistant_id,
         "updated_at": datetime.now(UTC).isoformat(),
+        "cwd": str(Path.cwd()),
     }
     from deepagents_cli.textual_adapter import _get_git_branch
 

@@ -25,8 +25,8 @@ class CodexCredentials:
 
     @property
     def is_expired(self) -> bool:
-        """Check if the access token has expired."""
-        return time.time() >= self.expires_at
+        """Check if the access token has expired (with 5-minute buffer)."""
+        return time.time() >= (self.expires_at - 300)
 
 
 class CodexAuthStore:

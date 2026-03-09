@@ -10,7 +10,9 @@ class TestCodexModels:
 
     def test_all_models_support_tool_calling(self) -> None:
         for model_id, profile in CODEX_MODELS.items():
-            assert profile["tool_calling"] is True, f"{model_id} must support tool_calling"
+            assert profile["tool_calling"] is True, (
+                f"{model_id} must support tool_calling"
+            )
 
     def test_get_available_returns_sorted(self) -> None:
         models = get_available_codex_models()
@@ -19,5 +21,6 @@ class TestCodexModels:
 
     def test_known_models_present(self) -> None:
         models = get_available_codex_models()
-        assert "gpt-4o" in models
-        assert "gpt-4o-mini" in models
+        assert "gpt-5.1-codex" in models
+        assert "gpt-5.1-codex-mini" in models
+        assert "codex-mini-latest" in models

@@ -23,14 +23,13 @@ from deepagents_codex.store import CodexAuthStore, CodexCredentials
 
 logger = logging.getLogger(__name__)
 
-# OpenAI Auth0 configuration (public client)
-_AUTH0_DOMAIN = "auth0.openai.com"
-_CLIENT_ID = "pdlLIX2Y72MIl2rhLhTE9VV9bN905kBh"
-_AUDIENCE = "https://api.openai.com/v1"
+# OpenAI Codex OAuth configuration (public client)
+_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
+_AUTHORIZE_URL = "https://auth.openai.com/oauth/authorize"
+_EXCHANGE_URL = "https://auth.openai.com/oauth/token"
 _SCOPES = "openid profile email offline_access"
-_CALLBACK_PORT_START = 8484
-_CALLBACK_PORT_END = 8584
-_CALLBACK_PATH = "/callback"
+_CALLBACK_PORT = 1455
+_CALLBACK_PATH = "/auth/callback"
 
 
 def _generate_pkce_pair() -> tuple[str, str]:
@@ -41,24 +40,43 @@ def _generate_pkce_pair() -> tuple[str, str]:
     return verifier, challenge
 
 
-def _find_available_port() -> int:
-    """Find an available port for the OAuth callback server."""
-    for port in range(_CALLBACK_PORT_START, _CALLBACK_PORT_END):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            try:
-                sock.bind(("localhost", port))
-            except OSError:
-                continue
-            else:
-                return port
-    msg = f"No available ports in range {_CALLBACK_PORT_START}-{_CALLBACK_PORT_END}"
-    raise CodexAuthError(msg)
+def _check_port_available(port: int) -> bool:
+    """Check if a port is available for binding."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        try:
+            sock.bind(("localhost", port))
+        except OSError:
+            return False
+        else:
+            return True
+
+
+def _decode_jwt_payload(token: str) -> dict[str, Any] | None:
+    """Decode the payload of a JWT without verification (best-effort).
+
+    Args:
+        token: A JWT string (header.payload.signature).
+
+    Returns:
+        The decoded payload as a dict, or None on any parse error.
+    """
+    try:
+        parts = token.split(".")
+        if len(parts) < 2:  # noqa: PLR2004
+            return None
+        payload = parts[1]
+        payload += "=" * (4 - len(payload) % 4)
+        return json.loads(base64.urlsafe_b64decode(payload))
+    except (ValueError, KeyError, UnicodeDecodeError, json.JSONDecodeError):
+        logger.debug("Could not decode JWT payload", exc_info=True)
+        return None
 
 
 class _OAuthCallbackHandler(http.server.BaseHTTPRequestHandler):
     """HTTP handler that captures the OAuth authorization code."""
 
     authorization_code: str | None = None
+    expected_state: str | None = None
     error: str | None = None
 
     def do_GET(self) -> None:
@@ -73,6 +91,16 @@ class _OAuthCallbackHandler(http.server.BaseHTTPRequestHandler):
 
         if "error" in params:
             _OAuthCallbackHandler.error = params["error"][0]
+            self._send_html("Authentication failed. You can close this tab.")
+            return
+
+        # Validate CSRF state parameter
+        returned_state = params.get("state", [None])[0]
+        if (
+            _OAuthCallbackHandler.expected_state
+            and returned_state != _OAuthCallbackHandler.expected_state
+        ):
+            _OAuthCallbackHandler.error = "State mismatch (possible CSRF)"
             self._send_html("Authentication failed. You can close this tab.")
             return
 
@@ -103,8 +131,8 @@ def _exchange_code_for_tokens(
     """Exchange authorization code for tokens."""
     with httpx.Client(timeout=30) as client:
         resp = client.post(
-            f"https://{_AUTH0_DOMAIN}/oauth/token",
-            json={
+            _EXCHANGE_URL,
+            data={
                 "grant_type": "authorization_code",
                 "client_id": _CLIENT_ID,
                 "code_verifier": verifier,
@@ -136,24 +164,32 @@ def login(
     _store = store or CodexAuthStore()
     verifier, challenge = _generate_pkce_pair()
 
-    port = _find_available_port()
+    port = _CALLBACK_PORT
+    if not _check_port_available(port):
+        msg = (
+            f"Port {port} is in use. The Codex OAuth callback "
+            "requires this specific port. Close the conflicting process."
+        )
+        raise CodexAuthError(msg)
     redirect_uri = f"http://localhost:{port}{_CALLBACK_PATH}"
+    state = secrets.token_urlsafe(32)
 
-    auth_url = (
-        f"https://{_AUTH0_DOMAIN}/authorize?"
-        + urllib.parse.urlencode({
+    auth_url = f"{_AUTHORIZE_URL}?" + urllib.parse.urlencode(
+        {
             "response_type": "code",
             "client_id": _CLIENT_ID,
             "redirect_uri": redirect_uri,
             "scope": _SCOPES,
-            "audience": _AUDIENCE,
+            "state": state,
             "code_challenge": challenge,
             "code_challenge_method": "S256",
-        })
+            "codex_cli_simplified_flow": "true",
+        }
     )
 
     # Reset handler state
     _OAuthCallbackHandler.authorization_code = None
+    _OAuthCallbackHandler.expected_state = state
     _OAuthCallbackHandler.error = None
 
     server = http.server.HTTPServer(("localhost", port), _OAuthCallbackHandler)
@@ -208,18 +244,31 @@ def _extract_email_from_id_token(id_token: str | None) -> str | None:
     """Best-effort extraction of email from JWT id_token (no verification)."""
     if not id_token:
         return None
+    data = _decode_jwt_payload(id_token)
+    if data is None:
+        return None
+    return data.get("email")
+
+
+def extract_account_id_from_token(access_token: str) -> str | None:
+    """Extract the chatgpt_account_id from an access token (no verification).
+
+    Decodes the JWT payload and reads the nested claim at
+    ``token["https://api.openai.com/auth"]["chatgpt_account_id"]``.
+
+    Args:
+        access_token: A JWT access token issued by OpenAI.
+
+    Returns:
+        The account ID string, or None if it cannot be extracted.
+    """
+    data = _decode_jwt_payload(access_token)
+    if data is None:
+        return None
     try:
-        # JWT is header.payload.signature -- we just need the payload
-        parts = id_token.split(".")
-        if len(parts) < 2:  # noqa: PLR2004
-            return None
-        # Add padding
-        payload = parts[1]
-        payload += "=" * (4 - len(payload) % 4)
-        data = json.loads(base64.urlsafe_b64decode(payload))
-        return data.get("email")
-    except (ValueError, KeyError, UnicodeDecodeError, json.JSONDecodeError):
-        logger.debug("Could not extract email from id_token", exc_info=True)
+        return data["https://api.openai.com/auth"]["chatgpt_account_id"]
+    except (KeyError, TypeError):
+        logger.debug("Could not extract chatgpt_account_id from access token")
         return None
 
 
@@ -290,8 +339,8 @@ def refresh_access_token(
     _store = store or CodexAuthStore()
     with httpx.Client(timeout=30) as client:
         resp = client.post(
-            f"https://{_AUTH0_DOMAIN}/oauth/token",
-            json={
+            _EXCHANGE_URL,
+            data={
                 "grant_type": "refresh_token",
                 "client_id": _CLIENT_ID,
                 "refresh_token": creds.refresh_token,

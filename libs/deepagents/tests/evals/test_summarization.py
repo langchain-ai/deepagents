@@ -230,7 +230,7 @@ def test_compact_tool_new_task(tmp_path: Path, model: BaseChatModel) -> None:
     assert _called_compact(trajectory)
 
 
-# @pytest.mark.skip(reason="Requires permissions to read ls_client.read_run")
+@pytest.mark.skip(reason="Requires permissions to read ls_client.read_run")
 @pytest.mark.langsmith
 def test_compact_tool_not_overly_sensitive(tmp_path: Path, model: BaseChatModel) -> None:
 

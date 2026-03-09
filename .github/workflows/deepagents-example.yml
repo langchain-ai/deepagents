@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       prompt:
-        description: 'Prompt for the agent'
+        description: "Prompt for the agent"
         required: true
 
 jobs:
@@ -37,6 +37,7 @@ jobs:
       - name: Resolve PR number
         if: github.event_name != 'workflow_dispatch'
         id: pr-info
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           # issue_comment uses event.issue.number; review_comment uses event.pull_request.number
@@ -47,21 +48,27 @@ jobs:
       - name: Acknowledge trigger
         if: github.event_name != 'workflow_dispatch'
         continue-on-error: true
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           COMMENT_ID: ${{ github.event.comment.id }}
+          EVENT_NAME: ${{ github.event_name }}
+          REPO: ${{ github.repository }}
         run: |
           # issue_comment reactions use issues/comments; review_comment uses pulls/comments
-          if [ "${{ github.event_name }}" = "pull_request_review_comment" ]; then
-            API_PATH="repos/${{ github.repository }}/pulls/comments/${COMMENT_ID}/reactions"
+          if [ "$EVENT_NAME" = "pull_request_review_comment" ]; then
+            API_PATH="repos/${REPO}/pulls/comments/${COMMENT_ID}/reactions"
           else
-            API_PATH="repos/${{ github.repository }}/issues/comments/${COMMENT_ID}/reactions"
+            API_PATH="repos/${REPO}/issues/comments/${COMMENT_ID}/reactions"
           fi
-          gh api --method POST "$API_PATH" -f content='rocket'
+          if ! gh api --method POST "$API_PATH" -f content='rocket'; then
+            echo "::warning::Failed to add reaction to comment ${COMMENT_ID} — comment may have been deleted or token may lack permissions"
+          fi
 
       - name: Get PR head SHA
         if: github.event_name != 'workflow_dispatch'
         id: pr-sha
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ steps.pr-info.outputs.number }}
@@ -69,10 +76,16 @@ jobs:
           PR_DATA=$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json headRefOid,headRefName)
           PR_SHA=$(echo "$PR_DATA" | jq -r '.headRefOid')
           PR_BRANCH=$(echo "$PR_DATA" | jq -r '.headRefName')
+
+          if [ -z "$PR_SHA" ] || [ "$PR_SHA" = "null" ] || [ -z "$PR_BRANCH" ] || [ "$PR_BRANCH" = "null" ]; then
+            echo "::error::Failed to resolve PR head for #${PR_NUMBER}. API response: ${PR_DATA}"
+            exit 1
+          fi
+
           echo "sha=$PR_SHA" >> "$GITHUB_OUTPUT"
           echo "branch=$PR_BRANCH" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           # Use the PR branch name so the agent can commit and push to the PR directly.
           ref: ${{ github.event_name != 'workflow_dispatch' && steps.pr-sha.outputs.branch || '' }}
@@ -80,6 +93,7 @@ jobs:
       - name: Build PR context prompt
         if: github.event_name != 'workflow_dispatch'
         id: build-prompt
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           TRIGGER_COMMENT_BODY: ${{ github.event.comment.body }}
@@ -87,34 +101,54 @@ jobs:
           PR_NUMBER: ${{ steps.pr-info.outputs.number }}
         run: |
           PROMPT_FILE=$(mktemp)
+          GH_STDERR=$(mktemp)
+          trap 'rm -f "$PROMPT_FILE" "$GH_STDERR"' EXIT
 
           # Fetch PR data
-          PR_DATA=$(gh pr view "$PR_NUMBER" --json title,body,author,state,headRefName,baseRefName)
-          PR_TITLE=$(echo "$PR_DATA" | jq -r '.title')
+          if ! PR_DATA=$(gh pr view "$PR_NUMBER" --json title,body,author,state,headRefName,baseRefName 2>"$GH_STDERR"); then
+            echo "::error::Failed to fetch PR #${PR_NUMBER} data: $(cat "$GH_STDERR"). Check that the PR exists and the token has 'pull-requests: read' permission."
+            exit 1
+          fi
+
+          PR_TITLE=$(echo "$PR_DATA" | jq -r '.title // "Untitled"')
           PR_BODY=$(echo "$PR_DATA" | jq -r '.body // "No description"')
-          PR_AUTHOR=$(echo "$PR_DATA" | jq -r '.author.login')
-          PR_STATE=$(echo "$PR_DATA" | jq -r '.state')
-          PR_HEAD=$(echo "$PR_DATA" | jq -r '.headRefName')
-          PR_BASE=$(echo "$PR_DATA" | jq -r '.baseRefName')
+          PR_AUTHOR=$(echo "$PR_DATA" | jq -r '.author.login // "unknown"')
+          PR_STATE=$(echo "$PR_DATA" | jq -r '.state // "unknown"')
+          PR_HEAD=$(echo "$PR_DATA" | jq -r '.headRefName // "unknown"')
+          PR_BASE=$(echo "$PR_DATA" | jq -r '.baseRefName // "unknown"')
 
-          # Fetch PR diff stats
-          DIFF_STAT=$(gh pr diff "$PR_NUMBER" --name-only 2>/dev/null || echo "Unable to fetch diff")
+          # Fetch PR diff stats (first page)
+          if ! DIFF_STAT=$(gh pr diff "$PR_NUMBER" --name-only 2>"$GH_STDERR"); then
+            echo "::warning::Failed to fetch PR diff: $(cat "$GH_STDERR")"
+            DIFF_STAT="[Error fetching diff — see workflow logs]"
+          fi
 
-          # Fetch PR comments (last 20)
-          PR_COMMENTS=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments?per_page=20" \
-            --jq '.[] | "<comment author=\"\(.user.login)\">\(.body)</comment>"' 2>/dev/null || echo "No comments")
+          # Fetch PR comments (first 20 — older ones omitted)
+          if ! PR_COMMENTS=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments?per_page=20" \
+            --jq '.[] | "<comment author=\"\(.user.login)\">\(.body)</comment>"' 2>"$GH_STDERR"); then
+            echo "::warning::Failed to fetch PR comments: $(cat "$GH_STDERR")"
+            PR_COMMENTS="[Error fetching comments — see workflow logs]"
+          fi
 
-          # Fetch PR reviews
-          PR_REVIEWS=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/reviews?per_page=10" \
-            --jq '.[] | "<review author=\"\(.user.login)\" state=\"\(.state)\">\(.body // "No review body")</review>"' 2>/dev/null || echo "No reviews")
+          # Fetch PR reviews (first 10)
+          if ! PR_REVIEWS=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/reviews?per_page=10" \
+            --jq '.[] | "<review author=\"\(.user.login)\" state=\"\(.state)\">\(.body // "No review body")</review>"' 2>"$GH_STDERR"); then
+            echo "::warning::Failed to fetch PR reviews: $(cat "$GH_STDERR")"
+            PR_REVIEWS="[Error fetching reviews — see workflow logs]"
+          fi
 
-          # Fetch review comments (inline code comments)
-          REVIEW_COMMENTS=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/comments?per_page=30" \
-            --jq '.[] | "<review-comment author=\"\(.user.login)\" path=\"\(.path)\" line=\"\(.line // .original_line)\">\(.body)</review-comment>"' 2>/dev/null || echo "No review comments")
+          # Fetch review comments / inline code comments (first 30)
+          if ! REVIEW_COMMENTS=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/comments?per_page=30" \
+            --jq '.[] | "<review-comment author=\"\(.user.login)\" path=\"\(.path)\" line=\"\(.line // .original_line)\">\(.body)</review-comment>"' 2>"$GH_STDERR"); then
+            echo "::warning::Failed to fetch review comments: $(cat "$GH_STDERR")"
+            REVIEW_COMMENTS="[Error fetching review comments — see workflow logs]"
+          fi
 
           cat > "$PROMPT_FILE" << 'PROMPT_HEADER'
           <instructions>
           The user has tagged @deepagents in a comment on this pull request. Your task is to resolve their request in the simplest way possible.
+
+          You have shell access with git and gh available. The repository is checked out on the PR branch.
 
           Determine whether the comment requires code changes, and if so implement them directly.
           - Make only the changes requested. Do not make unrelated changes.
@@ -134,57 +168,39 @@ jobs:
 
           PROMPT_HEADER
 
-          # Append structured context (random delimiter prevents user content from terminating the heredoc)
-          CONTEXT_DELIM="CONTEXT_$(openssl rand -hex 16)"
-          cat >> "$PROMPT_FILE" << $CONTEXT_DELIM
-          <pull-request>
-          <title>${PR_TITLE}</title>
-          <author>${PR_AUTHOR}</author>
-          <state>${PR_STATE}</state>
-          <base>${PR_BASE}</base>
-          <head>${PR_HEAD}</head>
-          <body>
-          ${PR_BODY}
-          </body>
-          </pull-request>
+          # Write PR context using printf to avoid shell expansion of user-controlled content
+          {
+            printf '<pull-request>\n'
+            printf '<title>%s</title>\n' "$PR_TITLE"
+            printf '<author>%s</author>\n' "$PR_AUTHOR"
+            printf '<state>%s</state>\n' "$PR_STATE"
+            printf '<base>%s</base>\n' "$PR_BASE"
+            printf '<head>%s</head>\n' "$PR_HEAD"
+            printf '<body>\n%s\n</body>\n' "$PR_BODY"
+            printf '</pull-request>\n\n'
 
-          <changed-files>
-          ${DIFF_STAT}
-          </changed-files>
+            printf '<changed-files>\n%s\n</changed-files>\n\n' "$DIFF_STAT"
+            printf '<pull-request-comments>\n%s\n</pull-request-comments>\n\n' "$PR_COMMENTS"
+            printf '<pull-request-reviews>\n%s\n</pull-request-reviews>\n\n' "$PR_REVIEWS"
+            printf '<review-comments>\n%s\n</review-comments>\n\n' "$REVIEW_COMMENTS"
 
-          <pull-request-comments>
-          ${PR_COMMENTS}
-          </pull-request-comments>
+            printf '<trigger-comment>\n'
+            printf 'This is the comment that triggered this workflow. Focus on resolving this request.\n'
+            printf '<author>%s</author>\n' "$TRIGGER_COMMENT_AUTHOR"
+            printf '<body>\n%s\n</body>\n' "$TRIGGER_COMMENT_BODY"
+            printf '</trigger-comment>\n\n'
 
-          <pull-request-reviews>
-          ${PR_REVIEWS}
-          </pull-request-reviews>
+            printf 'Given all of this context, resolve the trigger comment in the simplest way possible.\n'
+            printf 'IMPORTANT: The trigger comment takes precedence. Focus on what was asked, using the PR context to inform your approach.\n'
+          } >> "$PROMPT_FILE"
 
-          <review-comments>
-          ${REVIEW_COMMENTS}
-          </review-comments>
-
-          <trigger-comment>
-          This is the comment that triggered this workflow. Focus on resolving this request.
-          <author>${TRIGGER_COMMENT_AUTHOR}</author>
-          <body>
-          ${TRIGGER_COMMENT_BODY}
-          </body>
-          </trigger-comment>
-
-          Given all of this context, resolve the trigger comment in the simplest way possible.
-          IMPORTANT: The trigger comment takes precedence. Focus on what was asked, using the PR context to inform your approach.
-          $CONTEXT_DELIM
-
-          # Set output
+          # Set output using heredoc with random delimiter
           DELIMITER="PROMPT_$(openssl rand -hex 16)"
           {
             echo "prompt<<${DELIMITER}"
             cat "$PROMPT_FILE"
             echo "${DELIMITER}"
           } >> "$GITHUB_OUTPUT"
-
-          rm -f "$PROMPT_FILE"
 
       - name: Run Deep Agents
         uses: langchain-ai/deepagents@main
@@ -193,4 +209,5 @@ jobs:
           model: claude-sonnet-4-6
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           # Or: openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          # Or: google_api_key: ${{ secrets.GOOGLE_API_KEY }}
           skills_repo: langchain-ai/langchain-skills

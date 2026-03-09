@@ -317,6 +317,8 @@ def show_threads_help() -> None:
     console.print()
     console.print("[bold]Examples:[/bold]", style=COLORS["primary"])
     console.print("  deepagents threads list")
+    console.print("  deepagents threads list -n 10")
+    console.print("  deepagents threads list --agent mybot")
     console.print("  deepagents threads delete abc123")
     console.print()
 
@@ -342,12 +344,28 @@ def show_threads_list_help() -> None:
     console.print("  deepagents threads list [options]")
     console.print()
     console.print("[bold]Options:[/bold]", style=COLORS["primary"])
-    console.print("  --agent NAME      Filter by agent name")
-    console.print("  --limit N         Maximum threads to display (default: 20)")
-    console.print("  -h, --help        Show this help message")
+    console.print("  --agent NAME              Filter by agent name")
+    console.print("  --branch TEXT             Filter by git branch name")
+    console.print(
+        "  --sort {created,updated}  Sort order (default: from config, or updated)"
+    )
+    console.print(
+        "  -n, --limit N             Maximum threads to display (default: 20)"
+    )
+    console.print(
+        "  -v, --verbose             Show all columns (branch, created, prompt)"
+    )
+    console.print(
+        "  -r, --relative/--no-relative"
+        "  Show relative timestamps (default: from config)"
+    )
+    console.print("  -h, --help                Show this help message")
     console.print()
     console.print("[bold]Examples:[/bold]", style=COLORS["primary"])
     console.print("  deepagents threads list")
+    console.print("  deepagents threads list -n 10")
     console.print("  deepagents threads list --agent mybot")
-    console.print("  deepagents threads list --limit 50")
+    console.print("  deepagents threads list --branch main -v")
+    console.print("  deepagents threads list --sort created --limit 50")
+    console.print("  deepagents threads list -r")
     console.print()

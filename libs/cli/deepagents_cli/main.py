@@ -259,10 +259,36 @@ def parse_args() -> argparse.Namespace:
         "--agent", default=None, help="Filter by agent name (default: show all)"
     )
     threads_list.add_argument(
+        "-n",
         "--limit",
         type=int,
         default=None,
         help="Max number of threads to display (default: 20)",
+    )
+    threads_list.add_argument(
+        "--sort",
+        choices=["created", "updated"],
+        default=None,
+        help="Sort threads by timestamp (default: from config, or updated)",
+    )
+    threads_list.add_argument(
+        "--branch",
+        default=None,
+        help="Filter by git branch name",
+    )
+    threads_list.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        default=False,
+        help="Show all columns (branch, created, prompt)",
+    )
+    threads_list.add_argument(
+        "-r",
+        "--relative",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Show timestamps as relative time (default: from config, or absolute)",
     )
     threads_delete = threads_sub.add_parser(
         "delete",
@@ -1208,6 +1234,10 @@ def cli_main() -> None:
                     list_threads_command(
                         agent_name=getattr(args, "agent", None),
                         limit=getattr(args, "limit", None),
+                        sort_by=getattr(args, "sort", None),
+                        branch=getattr(args, "branch", None),
+                        verbose=getattr(args, "verbose", False),
+                        relative=getattr(args, "relative", None),
                     )
                 )
             elif args.threads_command == "delete":

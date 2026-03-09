@@ -71,6 +71,21 @@ MODE_PREFIXES: dict[str, str] = {
 }
 """Maps each non-normal mode to its trigger character."""
 
+MODE_DISPLAY_GLYPHS: dict[str, str] = {
+    "shell": "$",
+    "command": "/",
+}
+"""Maps each non-normal mode to its display glyph shown in the prompt/UI."""
+
+if MODE_PREFIXES.keys() != MODE_DISPLAY_GLYPHS.keys():
+    _only_prefixes = MODE_PREFIXES.keys() - MODE_DISPLAY_GLYPHS.keys()
+    _only_glyphs = MODE_DISPLAY_GLYPHS.keys() - MODE_PREFIXES.keys()
+    msg = (
+        "MODE_PREFIXES and MODE_DISPLAY_GLYPHS have mismatched keys: "
+        f"only in PREFIXES={_only_prefixes}, only in GLYPHS={_only_glyphs}"
+    )
+    raise ValueError(msg)
+
 PREFIX_TO_MODE: dict[str, str] = {v: k for k, v in MODE_PREFIXES.items()}
 """Reverse lookup: trigger character -> mode name."""
 
@@ -117,6 +132,9 @@ class Glyphs:
     tree_last: str  # "└── " vs "`-- "
     tree_vertical: str  # "│   " vs "|   "
 
+    # Status bar
+    git_branch: str  # "↗" vs "git:"
+
 
 UNICODE_GLYPHS = Glyphs(
     tool_prefix="⏺",
@@ -143,6 +161,7 @@ UNICODE_GLYPHS = Glyphs(
     tree_branch="├── ",
     tree_last="└── ",
     tree_vertical="│   ",
+    git_branch="↗",
 )
 
 ASCII_GLYPHS = Glyphs(
@@ -170,6 +189,7 @@ ASCII_GLYPHS = Glyphs(
     tree_branch="+-- ",
     tree_last="`-- ",
     tree_vertical="|   ",
+    git_branch="git:",
 )
 
 _glyphs_cache: Glyphs | None = None
@@ -601,7 +621,7 @@ class Settings:
         new_project = refreshed["deepagents_langchain_project"]
         if new_project:
             os.environ["LANGSMITH_PROJECT"] = new_project
-        elif _deepagents_project:
+        elif previous["deepagents_langchain_project"]:
             # Override was previously active but new value is unset; restore.
             if _original_langsmith_project:
                 os.environ["LANGSMITH_PROJECT"] = _original_langsmith_project

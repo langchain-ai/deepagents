@@ -43,6 +43,7 @@ from deepagents_cli.model_config import ModelSpec, save_recent_model
 from deepagents_cli.textual_adapter import (
     SessionStats,
     TextualUIAdapter,
+    _get_git_branch,
     execute_task_textual,
     format_token_count,
 )
@@ -66,7 +67,10 @@ from deepagents_cli.widgets.messages import (
 )
 from deepagents_cli.widgets.model_selector import ModelSelectorScreen
 from deepagents_cli.widgets.status import StatusBar
-from deepagents_cli.widgets.thread_selector import ThreadSelectorScreen
+from deepagents_cli.widgets.thread_selector import (
+    DeleteThreadConfirmScreen,
+    ThreadSelectorScreen,
+)
 from deepagents_cli.widgets.welcome import WelcomeBanner
 
 logger = logging.getLogger(__name__)
@@ -498,7 +502,13 @@ class DeepAgentsApp(App):
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "interrupt", "Interrupt", show=False, priority=True),
-        Binding("ctrl+c", "quit_or_interrupt", "Quit/Interrupt", show=False),
+        Binding(
+            "ctrl+c",
+            "quit_or_interrupt",
+            "Quit/Interrupt",
+            show=False,
+            priority=True,
+        ),
         Binding("ctrl+d", "quit_app", "Quit", show=False, priority=True),
         Binding("ctrl+t", "toggle_auto_approve", "Toggle Auto-Approve", show=False),
         Binding(
@@ -655,6 +665,9 @@ class DeepAgentsApp(App):
         # Set initial auto-approve state
         if self._auto_approve:
             self._status_bar.set_auto_approve(enabled=True)
+
+        # Set git branch in status bar
+        self._status_bar.branch = _get_git_branch() or ""
 
         # Create session state
         self._session_state = TextualSessionState(
@@ -1675,7 +1688,7 @@ class DeepAgentsApp(App):
                 from deepagents_cli.model_config import clear_caches
 
                 clear_caches()
-            except Exception:
+            except (OSError, ValueError):
                 logger.exception("Failed to reload configuration")
                 await self._mount_message(
                     AppMessage(
@@ -2644,10 +2657,18 @@ class DeepAgentsApp(App):
         if self._quit_pending:
             self.exit()
         else:
-            self._quit_pending = True
-            quit_timeout = 3
-            self.notify("Press Ctrl+C again to quit", timeout=quit_timeout)
-            self.set_timer(quit_timeout, lambda: setattr(self, "_quit_pending", False))
+            self._arm_quit_pending("Ctrl+C")
+
+    def _arm_quit_pending(self, shortcut: str) -> None:
+        """Set the pending-quit flag and show a matching hint.
+
+        Args:
+            shortcut: The key chord to show in the quit hint.
+        """
+        self._quit_pending = True
+        quit_timeout = 3
+        self.notify(f"Press {shortcut} again to quit", timeout=quit_timeout)
+        self.set_timer(quit_timeout, lambda: setattr(self, "_quit_pending", False))
 
     def action_interrupt(self) -> None:
         """Handle escape key.
@@ -2660,6 +2681,13 @@ class DeepAgentsApp(App):
         5. If approval menu is active, reject it
         6. If agent is running, interrupt it
         """
+        if (
+            isinstance(self.screen, ThreadSelectorScreen)
+            and self.screen.is_delete_confirmation_open
+        ):
+            self.screen.action_cancel()
+            return
+
         # If a modal screen is active, dismiss it
         if isinstance(self.screen, ModalScreen):
             self.screen.dismiss(None)
@@ -2698,6 +2726,15 @@ class DeepAgentsApp(App):
 
     def action_quit_app(self) -> None:
         """Handle quit action (Ctrl+D)."""
+        if isinstance(self.screen, ThreadSelectorScreen):
+            self.screen.action_delete_thread()
+            return
+        if isinstance(self.screen, DeleteThreadConfirmScreen):
+            if self._quit_pending:
+                self.exit()
+                return
+            self._arm_quit_pending("Ctrl+D")
+            return
         self.exit()
 
     def exit(
@@ -2751,6 +2788,9 @@ class DeepAgentsApp(App):
         web search, URL fetch) run without prompting. Updates the status
         bar indicator and session state.
         """
+        if isinstance(self.screen, ThreadSelectorScreen):
+            self.screen.action_focus_previous_filter()
+            return
         # shift+tab is reused for navigation inside modal screens (e.g.
         # ModelSelectorScreen); skip the toggle so it doesn't fire through.
         if isinstance(self.screen, ModalScreen):

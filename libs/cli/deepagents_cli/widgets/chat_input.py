@@ -17,6 +17,7 @@ from textual.widgets.text_area import Selection
 
 from deepagents_cli.config import (
     COLORS,
+    MODE_DISPLAY_GLYPHS,
     MODE_PREFIXES,
     PREFIX_TO_MODE,
     CharsetMode,
@@ -1456,13 +1457,20 @@ class ChatInput(Vertical):
         try:
             prompt = self.query_one("#prompt", Static)
         except NoMatches:
+            logger.warning("watch_mode: #prompt widget not found")
+            self.post_message(self.ModeChanged(mode))
             return
         self.remove_class("mode-shell", "mode-command")
-        prefix = MODE_PREFIXES.get(mode)
-        if prefix:
-            prompt.update(prefix)
+        glyph = MODE_DISPLAY_GLYPHS.get(mode)
+        if glyph:
+            prompt.update(glyph)
             self.add_class(f"mode-{mode}")
         else:
+            if mode != "normal":
+                logger.warning(
+                    "No display glyph for mode %r; falling back to '>'",
+                    mode,
+                )
             prompt.update(">")
         self.post_message(self.ModeChanged(mode))
 

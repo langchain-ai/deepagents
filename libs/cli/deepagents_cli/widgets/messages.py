@@ -18,6 +18,7 @@ from textual.widgets import Markdown, Static
 
 from deepagents_cli.config import (
     COLORS,
+    MODE_DISPLAY_GLYPHS,
     PREFIX_TO_MODE,
     CharsetMode,
     _detect_charset_mode,
@@ -181,10 +182,12 @@ class UserMessage(_TimestampClickMixin, Static):
         content = self._content
 
         # Use mode-specific prefix indicator when content starts with a
-        # mode trigger character (e.g. "!" for shell commands, "/" for commands).
+        # mode trigger character (e.g. "!" for shell, "/" for commands).
+        # The display glyph may differ from the trigger (e.g. "$" for shell).
         mode = PREFIX_TO_MODE.get(content[:1]) if content else None
         if mode:
-            text.append(f"{content[0]} ", style=f"bold {_mode_color(mode)}")
+            glyph = MODE_DISPLAY_GLYPHS.get(mode, content[0])
+            text.append(f"{glyph} ", style=f"bold {_mode_color(mode)}")
             content = content[1:]
         else:
             text.append("> ", style=f"bold {COLORS['primary']}")
@@ -263,7 +266,8 @@ class QueuedUserMessage(Static):
         content = self._content
         mode = PREFIX_TO_MODE.get(content[:1]) if content else None
         if mode:
-            text.append(f"{content[0]} ", style=f"bold {COLORS['dim']}")
+            glyph = MODE_DISPLAY_GLYPHS.get(mode, content[0])
+            text.append(f"{glyph} ", style=f"bold {COLORS['dim']}")
             content = content[1:]
         else:
             text.append("> ", style=f"bold {COLORS['dim']}")

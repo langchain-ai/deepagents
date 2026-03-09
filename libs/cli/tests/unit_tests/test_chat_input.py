@@ -273,7 +273,7 @@ class TestPromptIndicator:
 
             chat_input.mode = "shell"
             await pilot.pause()
-            assert _prompt_text(prompt) == "!"
+            assert _prompt_text(prompt) == "$"
             assert chat_input.has_class("mode-shell")
 
     async def test_prompt_shows_slash_in_command_mode(self) -> None:
@@ -297,7 +297,7 @@ class TestPromptIndicator:
 
             chat_input.mode = "shell"
             await pilot.pause()
-            assert _prompt_text(prompt) == "!"
+            assert _prompt_text(prompt) == "$"
             assert chat_input.has_class("mode-shell")
 
             chat_input.mode = "normal"

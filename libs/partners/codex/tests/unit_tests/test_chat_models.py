@@ -105,7 +105,7 @@ class TestChatCodexOAuth:
 
     def test_default_model(self) -> None:
         model = ChatCodexOAuth()
-        assert model.model == "gpt-5.3-codex"
+        assert model.model == "gpt-5.4"
 
     @patch.object(ChatCodexOAuth, "_get_client")
     def test_generate_collects_events(self, mock_get_client) -> None:

@@ -1,4 +1,8 @@
-from deepagents_codex.models import CODEX_MODELS, get_available_codex_models
+from deepagents_codex.models import (
+    CODEX_MODELS,
+    get_available_codex_models,
+    get_model_profile,
+)
 
 
 class TestCodexModels:
@@ -21,6 +25,17 @@ class TestCodexModels:
 
     def test_known_models_present(self) -> None:
         models = get_available_codex_models()
+        assert "gpt-5.4" in models
         assert "gpt-5.1-codex" in models
         assert "gpt-5.1-codex-mini" in models
         assert "codex-mini-latest" in models
+
+    def test_get_model_profile_known(self) -> None:
+        profile = get_model_profile("gpt-5.4")
+        assert profile["max_input_tokens"] == 400_000
+
+    def test_get_model_profile_unknown_returns_default(self) -> None:
+        """Unknown model IDs get a sensible default profile."""
+        profile = get_model_profile("gpt-99-codex-future")
+        assert profile["tool_calling"] is True
+        assert profile["max_input_tokens"] == 192_000

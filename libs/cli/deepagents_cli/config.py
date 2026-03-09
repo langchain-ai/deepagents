@@ -1346,7 +1346,7 @@ def _get_default_model_spec() -> str:
     if settings.has_nvidia:
         return "nvidia:nvidia/nemotron-3-nano-30b-a3b"
     if settings.has_codex:
-        return "codex:gpt-5.3-codex"
+        return "codex:gpt-5.4"
 
     msg = (
         "No credentials configured. Please set one of: "

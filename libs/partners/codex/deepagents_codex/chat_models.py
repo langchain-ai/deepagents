@@ -139,7 +139,7 @@ class ChatCodexOAuth(BaseChatModel):
             response = model.invoke("Hello!")
     """
 
-    model: str = "gpt-5.3-codex"
+    model: str = "gpt-5.4"
     """Model ID to use."""
 
     streaming: bool = True

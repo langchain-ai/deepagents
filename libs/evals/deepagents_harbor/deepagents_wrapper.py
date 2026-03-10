@@ -246,6 +246,8 @@ class DeepAgentsWrapper(BaseAgent):
         metadata = {
             "task_instruction": instruction,
             "model": self._model_name,
+            "model_name": self._model_name,
+            "sdk_version": importlib.metadata.version("deepagents"),
             # This is a harbor-specific session ID for the entire task run
             # It's different from the LangSmith experiment ID (called session_id)
             "harbor_session_id": environment.session_id,

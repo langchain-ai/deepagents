@@ -24,7 +24,8 @@ from deepagents_cli._version import __version__
 
 logger = logging.getLogger(__name__)
 
-dotenv.load_dotenv()
+dotenv.load_dotenv(Path.home() / ".deepagents" / ".env")
+dotenv.load_dotenv(override=True)
 
 # CRITICAL: Override LANGSMITH_PROJECT to route agent traces to separate project
 # LangSmith reads LANGSMITH_PROJECT at invocation time, so we override it here
@@ -557,6 +558,7 @@ class Settings:
         Returns:
             A list of human-readable change descriptions.
         """
+        dotenv.load_dotenv(Path.home() / ".deepagents" / ".env")
         dotenv.load_dotenv(override=True)
 
         api_key_fields = {

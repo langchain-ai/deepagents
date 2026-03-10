@@ -682,6 +682,10 @@ def create_cli_agent(
         # Full HITL for destructive operations
         interrupt_on = _add_interrupt_on()  # type: ignore[assignment]  # InterruptOnConfig is compatible at runtime
 
+    artifacts_path_prefix = "/artifacts"
+    large_tool_results_path_prefix = f"{artifacts_path_prefix}/large_tool_results"
+    conversation_history_path_prefix = f"{artifacts_path_prefix}/conversation_history"
+
     # Set up composite backend with routing
     # For local FilesystemBackend, route large tool results to /tmp to avoid polluting
     # the working directory. For sandbox backends, no special routing is needed.
@@ -716,7 +720,11 @@ def create_cli_agent(
     from deepagents.middleware.summarization import create_summarization_tool_middleware
 
     agent_middleware.append(
-        create_summarization_tool_middleware(model, composite_backend)
+        create_summarization_tool_middleware(
+            model,
+            composite_backend,
+            history_path_prefix=conversation_history_path_prefix,
+        )
     )
 
     # Create the agent
@@ -728,6 +736,7 @@ def create_cli_agent(
         tools=tools,
         backend=composite_backend,
         middleware=agent_middleware,
+        artifacts=artifacts_path_prefix,
         interrupt_on=interrupt_on,
         checkpointer=final_checkpointer,
         subagents=custom_subagents or None,

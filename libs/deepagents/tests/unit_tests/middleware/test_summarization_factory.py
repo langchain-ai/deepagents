@@ -42,6 +42,18 @@ def test_factory_uses_fallback_defaults_without_profile() -> None:
     assert middleware._truncate_args_keep == ("messages", 20)
 
 
+def test_factory_accepts_custom_history_path_prefix() -> None:
+    """Stores conversation history under a custom path prefix when configured."""
+    model = _make_model(with_profile_limit=120_000)
+    middleware = create_summarization_middleware(
+        model,
+        cast("Any", MagicMock()),
+        history_path_prefix="/artifacts/conversation_history",
+    )
+
+    assert middleware._history_path_prefix == "/artifacts/conversation_history"
+
+
 def test_factory_rejects_string_model() -> None:
     """Raises `TypeError` when called with a string model name."""
     with pytest.raises(TypeError, match="BaseChatModel"):

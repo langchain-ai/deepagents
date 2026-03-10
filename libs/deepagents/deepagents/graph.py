@@ -113,6 +113,7 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
     subagents: list[SubAgent | CompiledSubAgent] | None = None,
     skills: list[str] | None = None,
     memory: list[str] | None = None,
+    artifacts: str | None = None,
     response_format: ResponseFormat | None = None,
     context_schema: type[Any] | None = None,
     checkpointer: Checkpointer | None = None,
@@ -187,6 +188,22 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
             Display names are automatically derived from paths.
 
             Memory is loaded at agent startup and added into the system prompt.
+        artifacts: Optional parent directory for SDK-managed artifact files.
+
+            When provided, deep agent middleware writes SDK-managed artifacts under
+            this directory instead of the default root-level locations.
+
+            This includes:
+            - large tool results at `{artifacts}/large_tool_results/{tool_call_id}`
+            - summarization history at `{artifacts}/conversation_history/{thread_id}.md`
+
+            For example, `artifacts="/artifacts"` stores large tool results under
+            `/artifacts/large_tool_results/` and summarization history under
+            `/artifacts/conversation_history/`.
+
+            If `None`, the existing default paths are preserved:
+            - `/large_tool_results/...`
+            - `/conversation_history/...`
         response_format: A structured output response format to use for the agent.
         context_schema: The schema of the deep agent.
         checkpointer: Optional `Checkpointer` for persisting agent state between runs.
@@ -210,12 +227,26 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
     model = get_default_model() if model is None else resolve_model(model)
 
     backend = backend if backend is not None else (StateBackend)
+    normalized_artifacts = artifacts.rstrip("/") if artifacts and artifacts != "/" else artifacts
+    large_tool_results_path_prefix = (
+        f"{normalized_artifacts}/large_tool_results" if normalized_artifacts else "/large_tool_results"
+    )
+    conversation_history_path_prefix = (
+        f"{normalized_artifacts}/conversation_history" if normalized_artifacts else "/conversation_history"
+    )
 
     # Build general-purpose subagent with default middleware stack
     gp_middleware: list[AgentMiddleware[Any, Any, Any]] = [
         TodoListMiddleware(),
-        FilesystemMiddleware(backend=backend),
-        create_summarization_middleware(model, backend),
+        FilesystemMiddleware(
+            backend=backend,
+            large_tool_results_path_prefix=large_tool_results_path_prefix,
+        ),
+        create_summarization_middleware(
+            model,
+            backend,
+            history_path_prefix=conversation_history_path_prefix,
+        ),
         AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
         PatchToolCallsMiddleware(),
     ]
@@ -245,8 +276,15 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
             # Build middleware: base stack + skills (if specified) + user's middleware
             subagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
                 TodoListMiddleware(),
-                FilesystemMiddleware(backend=backend),
-                create_summarization_middleware(subagent_model, backend),
+                FilesystemMiddleware(
+                    backend=backend,
+                    large_tool_results_path_prefix=large_tool_results_path_prefix,
+                ),
+                create_summarization_middleware(
+                    subagent_model,
+                    backend,
+                    history_path_prefix=conversation_history_path_prefix,
+                ),
                 AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
                 PatchToolCallsMiddleware(),
             ]
@@ -276,12 +314,19 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
         deepagent_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
     deepagent_middleware.extend(
         [
-            FilesystemMiddleware(backend=backend),
+            FilesystemMiddleware(
+                backend=backend,
+                large_tool_results_path_prefix=large_tool_results_path_prefix,
+            ),
             SubAgentMiddleware(
                 backend=backend,
                 subagents=all_subagents,
             ),
-            create_summarization_middleware(model, backend),
+            create_summarization_middleware(
+                model,
+                backend,
+                history_path_prefix=conversation_history_path_prefix,
+            ),
             AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
             PatchToolCallsMiddleware(),
         ]

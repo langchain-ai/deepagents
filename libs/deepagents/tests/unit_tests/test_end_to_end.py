@@ -22,7 +22,8 @@ from deepagents.backends.state import StateBackend
 from deepagents.backends.store import StoreBackend
 from deepagents.backends.utils import TOOL_RESULT_TOKEN_LIMIT
 from deepagents.graph import create_deep_agent
-from deepagents.middleware.filesystem import NUM_CHARS_PER_TOKEN
+from deepagents.middleware.filesystem import NUM_CHARS_PER_TOKEN, FilesystemMiddleware
+from deepagents.middleware.summarization import create_summarization_middleware
 from tests.utils import SampleMiddlewareWithTools, SampleMiddlewareWithToolsAndState, assert_all_deepagent_qualities
 
 
@@ -1211,3 +1212,20 @@ class TestDeepAgentStructure:
         assert_all_deepagent_qualities(agent)
         assert "sample_tool" in agent.nodes["tools"].bound._tools_by_name
         assert "sample_input" in agent.stream_channels
+
+    def test_deep_agent_with_artifacts_path(self) -> None:
+        """Verifies that SDK-managed artifact paths can be configured from create_deep_agent."""
+        agent = create_deep_agent(artifacts="/artifacts")
+        assert_all_deepagent_qualities(agent)
+
+        filesystem_middleware = FilesystemMiddleware(
+            large_tool_results_path_prefix="/artifacts/large_tool_results"
+        )
+        summarization_middleware = create_summarization_middleware(
+            GenericFakeChatModel(messages=iter([AIMessage(content="ok")])),
+            StateBackend,
+            history_path_prefix="/artifacts/conversation_history",
+        )
+
+        assert filesystem_middleware._large_tool_results_path_prefix == "/artifacts/large_tool_results"
+        assert summarization_middleware._history_path_prefix == "/artifacts/conversation_history"

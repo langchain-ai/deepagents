@@ -948,6 +948,23 @@ class TestFilesystemMiddleware:
         assert "/large_tool_results/test_123" in result.update["files"]
         assert "Tool result too large" in result.update["messages"][0].content
 
+    def test_intercept_long_toolmessage_with_custom_artifacts_prefix(self):
+        """Test that large ToolMessages respect a custom artifacts parent path."""
+        middleware = FilesystemMiddleware(
+            tool_token_limit_before_evict=1000,
+            large_tool_results_path_prefix="/artifacts/large_tool_results",
+        )
+        state = FilesystemState(messages=[], files={})
+        runtime = ToolRuntime(state=state, context=None, tool_call_id="test_123", store=None, stream_writer=lambda _: None, config={})
+
+        large_content = "x" * 5000
+        tool_message = ToolMessage(content=large_content, tool_call_id="test_123")
+        result = middleware._intercept_large_tool_result(tool_message, runtime)
+
+        assert isinstance(result, Command)
+        assert "/artifacts/large_tool_results/test_123" in result.update["files"]
+        assert "/artifacts/large_tool_results/test_123" in result.update["messages"][0].content
+
     def test_intercept_long_toolmessage_preserves_name(self):
         """Test that ToolMessage name is preserved after eviction."""
         middleware = FilesystemMiddleware(tool_token_limit_before_evict=1000)

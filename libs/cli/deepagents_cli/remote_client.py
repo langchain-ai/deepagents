@@ -56,7 +56,7 @@ class RemoteAgent:
         if self._client is None:
             from langgraph_sdk import get_client
 
-            self._client = get_client(url=self._url)
+            self._client = get_client(url=self._url, api_key=None)
         return self._client
 
     async def astream(

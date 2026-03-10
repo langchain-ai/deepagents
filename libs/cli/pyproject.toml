@@ -30,6 +30,11 @@ dependencies = [
     "langchain>=1.2.10,<2.0.0",
     "langgraph-checkpoint-sqlite>=3.0.0,<4.0.0",
 
+    # Client-server architecture
+    "langgraph-sdk>=0.1.48",
+    "langgraph-cli[inmem]>=0.1.55",
+    "httpx>=0.27.0",
+
     # Require at least one integration package
     "langchain-openai>=1.1.8,<2.0.0",
 

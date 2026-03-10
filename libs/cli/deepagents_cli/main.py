@@ -24,8 +24,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from langchain_core.tools import BaseTool
-
     from deepagents_cli.app import AppResult
 
 # Suppress Pydantic v1 compatibility warnings from langchain on Python 3.14+
@@ -497,8 +495,8 @@ async def run_textual_cli_async(
     *,
     auto_approve: bool = False,
     sandbox_type: str = "none",  # str (not None) to match argparse choices
-    sandbox_id: str | None = None,
-    sandbox_setup: str | None = None,
+    sandbox_id: str | None = None,  # noqa: ARG001
+    sandbox_setup: str | None = None,  # noqa: ARG001
     model_name: str | None = None,
     model_params: dict[str, Any] | None = None,
     profile_override: dict[str, Any] | None = None,
@@ -511,6 +509,9 @@ async def run_textual_cli_async(
     trust_project_mcp: bool | None = None,
 ) -> "AppResult":
     """Run the Textual CLI interface (async version).
+
+    Starts a LangGraph server in a subprocess and connects the TUI to it
+    via the `langgraph-sdk` client.
 
     Args:
         assistant_id: Agent identifier for memory storage
@@ -544,12 +545,9 @@ async def run_textual_cli_async(
     """
     from rich.text import Text
 
-    from deepagents_cli.agent import create_cli_agent
     from deepagents_cli.app import run_textual_app
-    from deepagents_cli.config import console, create_model, settings
+    from deepagents_cli.config import console, create_model
     from deepagents_cli.model_config import ModelConfigError
-    from deepagents_cli.sessions import get_checkpointer
-    from deepagents_cli.tools import fetch_url, http_request, web_search
 
     try:
         result = create_model(
@@ -563,7 +561,6 @@ async def run_textual_cli_async(
         console.print(f"[bold red]Error:[/bold red] {e}")
         return AppResult(return_code=1, thread_id=None)
 
-    model = result.model
     result.apply_to_settings()
 
     # Show thread info
@@ -576,86 +573,26 @@ async def run_textual_cli_async(
         msg.append(str(thread_id), style="dim")
         console.print(msg)
 
-    # Use async context manager for checkpointer
-    async with get_checkpointer() as checkpointer:
-        # Create agent with conditional tools
-        tools: list[BaseTool | Callable[..., Any] | dict[str, Any]] = [
-            http_request,
-            fetch_url,
-        ]
-        if settings.has_tavily:
-            tools.append(web_search)
+    from deepagents_cli.server_manager import start_server_and_get_agent
 
-        # Load MCP tools (explicit config, auto-discovery, or disabled)
-        mcp_session_manager = None
-        mcp_server_info = None
-        try:
-            from deepagents_cli.mcp_tools import resolve_and_load_mcp_tools
+    server_proc = None
+    mcp_session_manager = None
+    try:
+        console.print("[dim]Starting LangGraph server...[/dim]")
+        agent, server_proc, mcp_session_manager = await start_server_and_get_agent(
+            assistant_id=assistant_id,
+            model_name=model_name,
+            model_params=model_params,
+            auto_approve=auto_approve,
+            sandbox_type=sandbox_type,
+            enable_ask_user=enable_ask_user,
+            mcp_config_path=mcp_config_path,
+            no_mcp=no_mcp,
+            trust_project_mcp=trust_project_mcp,
+            interactive=True,
+        )
+        console.print("[green]✓ Server ready[/green]")
 
-            (
-                mcp_tools,
-                mcp_session_manager,
-                mcp_server_info,
-            ) = await resolve_and_load_mcp_tools(
-                explicit_config_path=mcp_config_path,
-                no_mcp=no_mcp,
-                trust_project_mcp=trust_project_mcp,
-            )
-            tools.extend(mcp_tools)
-        except FileNotFoundError as e:
-            console.print(f"[red]✗ MCP config file not found: {e}[/red]")
-            sys.exit(1)
-        except RuntimeError as e:
-            console.print(f"[red]✗ Failed to load MCP tools: {e}[/red]")
-            sys.exit(1)
-
-        # Handle sandbox mode
-        sandbox_backend = None
-        sandbox_cm = None
-
-        if sandbox_type != "none":
-            # Deferred: sandbox_factory imports provider-specific SDKs,
-            # only needed when a sandbox is actually requested.
-            from deepagents_cli.integrations.sandbox_factory import (
-                create_sandbox,
-            )
-
-            try:
-                # Create sandbox context manager but keep it open
-                sandbox_cm = create_sandbox(
-                    sandbox_type,
-                    sandbox_id=sandbox_id,
-                    setup_script_path=sandbox_setup,
-                )
-                sandbox_backend = sandbox_cm.__enter__()  # noqa: PLC2801  # Context manager used without `with` for long-lived sandbox lifecycle
-            except (ImportError, ValueError, RuntimeError, NotImplementedError) as e:
-                console.print()
-                console.print("[red]Sandbox creation failed[/red]")
-                console.print(Text(str(e), style="dim"))
-                sys.exit(1)
-
-        try:
-            agent, composite_backend = create_cli_agent(
-                model=model,
-                assistant_id=assistant_id,
-                tools=tools,
-                sandbox=sandbox_backend,
-                sandbox_type=sandbox_type if sandbox_type != "none" else None,
-                auto_approve=auto_approve,
-                enable_ask_user=enable_ask_user,
-                checkpointer=checkpointer,
-                mcp_server_info=mcp_server_info,
-            )
-        except Exception as e:  # broad catch for friendly CLI errors
-            logger.debug("Failed to create agent", exc_info=True)
-            error_text = Text("Failed to create agent: ", style="red")
-            error_text.append(str(e))
-            console.print(error_text)
-            if logger.isEnabledFor(logging.DEBUG):
-                console.print(Text(traceback.format_exc(), style="dim"))
-            sys.exit(1)
-
-        # Run Textual app - errors propagate to caller
         from deepagents_cli.app import AppResult
 
         result = AppResult(return_code=1, thread_id=None)
@@ -663,34 +600,42 @@ async def run_textual_cli_async(
             result = await run_textual_app(
                 agent=agent,
                 assistant_id=assistant_id,
-                backend=composite_backend,
+                backend=None,
                 auto_approve=auto_approve,
                 enable_ask_user=enable_ask_user,
                 cwd=Path.cwd(),
                 thread_id=thread_id,
                 initial_prompt=initial_prompt,
-                checkpointer=checkpointer,
-                tools=tools,
-                sandbox=sandbox_backend,
+                checkpointer=None,
+                tools=[],
+                sandbox=None,
                 sandbox_type=sandbox_type if sandbox_type != "none" else None,
-                mcp_server_info=mcp_server_info,
+                mcp_server_info=None,
                 profile_override=profile_override,
             )
         finally:
-            # Clean up MCP session manager if initialized
-            if mcp_session_manager is not None:
-                try:
-                    await mcp_session_manager.cleanup()
-                except Exception:
-                    logger.warning("MCP session cleanup failed", exc_info=True)
+            pass
 
-            # Clean up sandbox after app exits (success or error)
-            if sandbox_cm is not None:
-                try:
-                    sandbox_cm.__exit__(None, None, None)
-                except Exception:
-                    logger.warning("Sandbox cleanup failed", exc_info=True)
+    except Exception as e:
+        logger.debug("Failed to start server or run app", exc_info=True)
+        from deepagents_cli.app import AppResult
+
+        error_text = Text("Failed to start server: ", style="red")
+        error_text.append(str(e))
+        console.print(error_text)
+        if logger.isEnabledFor(logging.DEBUG):
+            console.print(Text(traceback.format_exc(), style="dim"))
+        return AppResult(return_code=1, thread_id=None)
+    else:
         return result
+    finally:
+        if mcp_session_manager is not None:
+            try:
+                await mcp_session_manager.cleanup()
+            except Exception:
+                logger.warning("MCP session cleanup failed", exc_info=True)
+        if server_proc is not None:
+            server_proc.stop()
 
 
 async def _run_acp_cli_async(

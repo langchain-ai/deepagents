@@ -1764,7 +1764,7 @@ class DeepAgentsApp(App):
         `max_input_tokens`). Until that threshold is exceeded the user sees
         "Nothing to compact yet" plus the active compact limit.
         """
-        if not self._agent or not self._lc_thread_id or not self._backend:
+        if not self._agent or not self._lc_thread_id:
             await self._mount_message(
                 AppMessage("Nothing to compact \u2014 start a conversation first")
             )
@@ -1845,9 +1845,14 @@ class DeepAgentsApp(App):
                         model.profile = merged  # type: ignore[union-attr]
 
             defaults = compute_summarization_defaults(model)
+            compact_backend = self._backend
+            if compact_backend is None:
+                from deepagents.backends.filesystem import FilesystemBackend
+
+                compact_backend = FilesystemBackend()
             middleware = SummarizationMiddleware(
                 model=model,
-                backend=self._backend,
+                backend=compact_backend,
                 keep=defaults["keep"],
                 trim_tokens_to_summarize=None,
             )
@@ -3125,7 +3130,7 @@ class DeepAgentsApp(App):
         self,
         model_spec: str,
         *,
-        extra_kwargs: dict[str, Any] | None = None,
+        extra_kwargs: dict[str, Any] | None = None,  # noqa: ARG002
     ) -> None:
         """Switch to a new model, preserving conversation history.
 
@@ -3139,9 +3144,7 @@ class DeepAgentsApp(App):
         """
         logger.info("Switching model to %s", model_spec)
 
-        from deepagents_cli.agent import create_cli_agent
         from deepagents_cli.model_config import (
-            ModelConfigError,
             get_credential_env_var,
             has_provider_credentials,
         )
@@ -3198,76 +3201,25 @@ class DeepAgentsApp(App):
                 )
             return
 
-        try:
-            result = create_model(
-                model_spec,
-                extra_kwargs=extra_kwargs,
-                profile_overrides=self._profile_override,
-            )
-        except ModelConfigError as e:
-            await self._mount_message(ErrorMessage(str(e)))
-            return
-        except Exception as e:
-            logger.exception("Failed to create model from spec %s", model_spec)
-            await self._mount_message(ErrorMessage(f"Failed to create model: {e}"))
-            return
-
-        # When switching models, settings must be updated before
-        # create_cli_agent because it builds the system prompt from global
-        # settings (model name, provider, context limit). Otherwise the
-        # prompt would describe the old model to the new one.
-        #
-        # Save previous values for rollback if agent creation fails.
-        prev_name = settings.model_name
-        prev_provider = settings.model_provider
-        prev_context_limit = settings.model_context_limit
-        result.apply_to_settings()
-
-        try:
-            new_agent, new_backend = create_cli_agent(
-                model=result.model,
-                assistant_id=self._assistant_id or "default",
-                tools=self._tools,
-                sandbox=self._sandbox,
-                sandbox_type=self._sandbox_type,
-                auto_approve=self._auto_approve,
-                enable_ask_user=self._enable_ask_user,
-                checkpointer=self._checkpointer,
-                mcp_server_info=self._mcp_server_info,
-            )
-        except Exception as e:
-            # Roll back settings so the running agent isn't misrepresented.
-            settings.model_name = prev_name
-            settings.model_provider = prev_provider
-            settings.model_context_limit = prev_context_limit
-            logger.exception("Failed to create agent for model switch")
-            await self._mount_message(ErrorMessage(f"Model switch failed: {e}"))
-            return
-
-        # Swap agent
-        self._agent = new_agent
-        self._backend = new_backend
-
-        # Post-swap: update UI and save config
-        display = f"{settings.model_provider}:{settings.model_name}"
-        if self._status_bar:
-            self._status_bar.set_model(
-                provider=settings.model_provider or "",
-                model=settings.model_name or "",
-            )
-
-        config_saved = save_recent_model(display)
+        # In client-server mode, model switching requires a server restart.
+        # Save the preference and notify the user.
+        config_saved = save_recent_model(model_spec)
         if config_saved:
-            await self._mount_message(AppMessage(f"Switched to {display}"))
-        else:
             await self._mount_message(
                 AppMessage(
-                    f"Switched to {display} (preference not saved - "
-                    "check ~/.deepagents/ permissions)"
+                    f"Model preference set to {model_spec}. "
+                    "Restart the CLI for the change to take effect."
+                )
+            )
+        else:
+            await self._mount_message(
+                ErrorMessage(
+                    "Could not save model preference. "
+                    "Check permissions for ~/.deepagents/"
                 )
             )
 
-        logger.info("Model switched to %s", display)
+        logger.info("Model preference saved: %s", model_spec)
 
         # Scroll to bottom so the confirmation message is visible
         def _scroll_after_switch() -> None:
@@ -3350,7 +3302,7 @@ class AppResult:
 
 async def run_textual_app(
     *,
-    agent: Pregel | None = None,
+    agent: Any = None,  # noqa: ANN401
     assistant_id: str | None = None,
     backend: CompositeBackend | None = None,
     auto_approve: bool = False,

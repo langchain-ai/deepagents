@@ -1,0 +1,441 @@
+"""Remote agent client using the LangGraph SDK.
+
+Provides `RemoteAgent` which wraps the `langgraph-sdk` client to
+communicate with a LangGraph server over HTTP+SSE, matching the
+interface used by the CLI's streaming and state management code.
+"""
+
+from __future__ import annotations
+
+import logging
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
+logger = logging.getLogger(__name__)
+
+_STREAM_MODES = ["messages", "updates"]
+
+
+class RemoteAgent:
+    """Client that talks to a LangGraph server, mimicking the `Pregel` interface.
+
+    Wraps `langgraph-sdk`'s async client to provide `astream()`,
+    `aget_state()`, and `aupdate_state()` with signatures compatible
+    with the CLI's existing streaming code.
+    """
+
+    def __init__(
+        self,
+        url: str,
+        *,
+        assistant_id: str | None = None,
+        graph_name: str = "agent",
+    ) -> None:
+        """Initialize the remote agent client.
+
+        Args:
+            url: Base URL of the LangGraph server.
+            assistant_id: CLI assistant/agent identifier (used in metadata).
+            graph_name: Name of the graph on the server.
+        """
+        self._url = url
+        self._assistant_id = assistant_id
+        self._graph_name = graph_name
+        self._client: Any = None
+
+    def _get_client(self) -> Any:  # noqa: ANN401
+        """Lazily create the langgraph-sdk async client.
+
+        Returns:
+            The langgraph-sdk async client instance.
+        """
+        if self._client is None:
+            from langgraph_sdk import get_client
+
+            self._client = get_client(url=self._url)
+        return self._client
+
+    async def astream(
+        self,
+        input: dict | Any,  # noqa: A002, ANN401
+        *,
+        stream_mode: list[str] | None = None,
+        subgraphs: bool = False,
+        config: dict[str, Any] | None = None,
+        durability: str | None = None,  # noqa: ARG002
+    ) -> AsyncIterator[tuple[tuple[str, ...], str, Any]]:
+        """Stream agent execution, yielding tuples matching Pregel's format.
+
+        Translates LangGraph server SSE events into the 3-tuple format
+        `(namespace, stream_mode, data)` that `execute_task_textual` and
+        `_stream_agent` expect.
+
+        Args:
+            input: The input to send (messages dict or Command).
+            stream_mode: Stream modes to request.
+            subgraphs: Whether to stream subgraph events.
+            config: LangGraph config with `configurable.thread_id`, etc.
+            durability: Ignored (server manages durability).
+
+        Yields:
+            3-tuples of `(namespace, stream_mode, data)`.
+
+        Raises:
+            ValueError: If ``thread_id`` is not present in *config*.
+        """
+        client = self._get_client()
+        config = config or {}
+        configurable = config.get("configurable", {})
+        thread_id = configurable.get("thread_id")
+        metadata = config.get("metadata", {})
+
+        if thread_id is None:
+            msg = "thread_id is required in config.configurable"
+            raise ValueError(msg)
+
+        thread = await self._ensure_thread(thread_id, metadata)
+        actual_thread_id = thread["thread_id"]
+
+        modes = stream_mode or _STREAM_MODES
+
+        is_command = _is_command(input)
+        kwargs: dict[str, Any] = {
+            "thread_id": actual_thread_id,
+            "assistant_id": self._graph_name,
+            "stream_mode": modes,
+            "stream_subgraphs": subgraphs,
+            "metadata": metadata,
+        }
+        if is_command:
+            kwargs["command"] = _command_to_dict(input)
+        else:
+            kwargs["input"] = input
+
+        async for chunk in client.runs.stream(**kwargs):
+            for converted in _convert_stream_chunk(chunk, modes):
+                yield converted
+
+    async def aget_state(
+        self,
+        config: dict[str, Any],
+    ) -> Any:  # noqa: ANN401
+        """Get the current state of a thread.
+
+        Args:
+            config: Config with `configurable.thread_id`.
+
+        Returns:
+            Thread state object with `values` and `next` attributes.
+        """
+        client = self._get_client()
+        thread_id = config.get("configurable", {}).get("thread_id")
+        if thread_id is None:
+            return None
+
+        thread_id = await self._resolve_thread_id(thread_id)
+        if thread_id is None:
+            return None
+
+        try:
+            state = await client.threads.get_state(thread_id)
+            return _StateWrapper(state)
+        except Exception:
+            logger.debug("Failed to get state for thread %s", thread_id, exc_info=True)
+            return None
+
+    async def aupdate_state(
+        self,
+        config: dict[str, Any],
+        values: dict[str, Any],
+    ) -> None:
+        """Update the state of a thread.
+
+        Args:
+            config: Config with `configurable.thread_id`.
+            values: State values to update.
+        """
+        client = self._get_client()
+        thread_id = config.get("configurable", {}).get("thread_id")
+        if thread_id is None:
+            return
+
+        thread_id = await self._resolve_thread_id(thread_id)
+        if thread_id is None:
+            return
+
+        try:
+            await client.threads.update_state(thread_id, values)
+        except Exception:
+            logger.debug(
+                "Failed to update state for thread %s", thread_id, exc_info=True
+            )
+
+    async def _ensure_thread(
+        self,
+        thread_id: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Ensure a thread exists on the server, creating it if needed.
+
+        Args:
+            thread_id: Desired thread ID.
+            metadata: Optional metadata for the thread.
+
+        Returns:
+            Thread dict from the server.
+        """
+        client = self._get_client()
+
+        try:
+            return await client.threads.get(thread_id)
+        except Exception:  # noqa: BLE001
+            logger.debug("Thread %s not found, creating new one", thread_id)
+
+        thread_metadata = dict(metadata or {})
+        if self._assistant_id:
+            thread_metadata.setdefault("assistant_id", self._assistant_id)
+            thread_metadata.setdefault("agent_name", self._assistant_id)
+        thread_metadata.setdefault("updated_at", datetime.now(UTC).isoformat())
+
+        try:
+            cwd = str(Path.cwd())
+            thread_metadata.setdefault("cwd", cwd)
+        except OSError:
+            pass
+
+        return await client.threads.create(
+            thread_id=thread_id,
+            metadata=thread_metadata,
+        )
+
+    async def _resolve_thread_id(self, thread_id: str) -> str | None:
+        """Resolve a thread ID, returning None if the thread doesn't exist.
+
+        Args:
+            thread_id: Thread ID to resolve.
+
+        Returns:
+            The thread ID if it exists, None otherwise.
+        """
+        client = self._get_client()
+        try:
+            thread = await client.threads.get(thread_id)
+            return thread["thread_id"]
+        except (KeyError, OSError, ValueError):
+            return None
+
+    def with_config(self, config: dict[str, Any]) -> RemoteAgent:  # noqa: ARG002
+        """Return self (config is passed per-call, not stored).
+
+        Args:
+            config: Ignored.
+
+        Returns:
+            Self.
+        """
+        return self
+
+
+class _StateWrapper:
+    """Wraps a server thread state dict to provide attribute access.
+
+    Makes the server response compatible with code that accesses
+    `state.values`, `state.next`, etc.
+    """
+
+    def __init__(self, state: dict[str, Any]) -> None:
+        self._state = state
+
+    @property
+    def values(self) -> dict[str, Any]:
+        """State values dict."""
+        return self._state.get("values", {})
+
+    @property
+    def next(self) -> list[str]:
+        """Next nodes to execute."""
+        return self._state.get("next", [])
+
+    def __bool__(self) -> bool:
+        return bool(self._state)
+
+
+def _is_command(input: Any) -> bool:  # noqa: A002, ANN401
+    """Check if input is a LangGraph Command object.
+
+    Args:
+        input: The input to check.
+
+    Returns:
+        True if the input is a Command.
+    """
+    try:
+        from langgraph.types import Command
+
+        return isinstance(input, Command)
+    except ImportError:
+        return False
+
+
+def _command_to_dict(cmd: Any) -> dict[str, Any]:  # noqa: ANN401
+    """Convert a LangGraph Command to a dict for the server API.
+
+    Args:
+        cmd: A `Command` instance.
+
+    Returns:
+        Dict with `resume`, `goto`, and/or `update` keys.
+    """
+    result: dict[str, Any] = {}
+    if hasattr(cmd, "resume") and cmd.resume is not None:
+        result["resume"] = cmd.resume
+    if hasattr(cmd, "goto") and cmd.goto is not None:
+        result["goto"] = cmd.goto
+    if hasattr(cmd, "update") and cmd.update is not None:
+        result["update"] = cmd.update
+    return result
+
+
+def _convert_stream_chunk(
+    chunk: Any,  # noqa: ANN401
+    modes: list[str],  # noqa: ARG001
+) -> list[tuple[tuple[str, ...], str, Any]]:
+    """Convert a langgraph-sdk StreamPart into Pregel-compatible 3-tuples.
+
+    The server emits `StreamPart(event, data)` objects. We need to convert
+    these into `(namespace, stream_mode, data)` tuples that the CLI's
+    streaming code expects.
+
+    Args:
+        chunk: A `StreamPart` from `client.runs.stream()`.
+        modes: The requested stream modes.
+
+    Returns:
+        List of converted 3-tuples (may be empty for non-matching events).
+    """
+    event = chunk.event if hasattr(chunk, "event") else ""
+    data = chunk.data if hasattr(chunk, "data") else chunk
+
+    results: list[tuple[tuple[str, ...], str, Any]] = []
+    namespace: tuple[str, ...] = ()
+
+    if event in {"messages/partial", "messages/complete"}:
+        if isinstance(data, list):
+            for item in data:
+                msg_obj = _convert_message_data(item)
+                if msg_obj is not None:
+                    results.append((namespace, "messages", (msg_obj, {})))
+        elif isinstance(data, dict):
+            msg_obj = _convert_message_data(data)
+            if msg_obj is not None:
+                results.append((namespace, "messages", (msg_obj, {})))
+
+    elif event == "messages/metadata":
+        pass
+
+    elif event == "updates":
+        if isinstance(data, dict):
+            results.append((namespace, "updates", data))
+
+    elif event == "values":
+        if isinstance(data, dict) and "__interrupt__" in data:
+            results.append(
+                (namespace, "updates", {"__interrupt__": data["__interrupt__"]})
+            )
+
+    elif event in {"metadata", "end"}:
+        pass
+
+    elif event == "error":
+        logger.error("Server stream error: %s", data)
+
+    return results
+
+
+def _convert_message_data(data: dict[str, Any]) -> Any:  # noqa: ANN401
+    """Convert a server message dict into a LangChain message object.
+
+    Args:
+        data: Message dict from the server.
+
+    Returns:
+        A LangChain message object, or None if conversion fails.
+    """
+    from langchain_core.messages import (
+        AIMessageChunk,
+        HumanMessage,
+        ToolMessage,
+    )
+
+    msg_type = data.get("type", "")
+
+    if msg_type in {"ai", "AIMessage", "AIMessageChunk"}:
+        content = data.get("content", "")
+        tool_calls = data.get("tool_calls", [])
+        usage_metadata = data.get("usage_metadata")
+        response_metadata = data.get("response_metadata", {})
+
+        content_blocks = []
+        if isinstance(content, str) and content:
+            content_blocks.append({"type": "text", "text": content})
+        elif isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict):
+                    content_blocks.append(block)
+                elif isinstance(block, str):
+                    content_blocks.append({"type": "text", "text": block})
+
+        content_blocks.extend(
+            {
+                "type": "tool_call",
+                "id": tc.get("id"),
+                "name": tc.get("name"),
+                "args": tc.get("args", {}),
+            }
+            for tc in tool_calls
+        )
+
+        invalid_tool_calls = data.get("invalid_tool_calls", [])
+        content_blocks.extend(
+            {
+                "type": "tool_call_chunk",
+                "id": itc.get("id"),
+                "name": itc.get("name"),
+                "args": itc.get("args", ""),
+                "index": itc.get("index"),
+            }
+            for itc in invalid_tool_calls
+        )
+
+        chunk = AIMessageChunk(
+            content=content,
+            tool_calls=tool_calls,
+            id=data.get("id"),
+            response_metadata=response_metadata,
+        )
+        chunk.content_blocks = content_blocks  # type: ignore[attr-defined]
+        if usage_metadata:
+            chunk.usage_metadata = usage_metadata
+        return chunk
+
+    if msg_type in {"human", "HumanMessage"}:
+        return HumanMessage(
+            content=data.get("content", ""),
+            id=data.get("id"),
+        )
+
+    if msg_type in {"tool", "ToolMessage"}:
+        return ToolMessage(
+            content=data.get("content", ""),
+            tool_call_id=data.get("tool_call_id", ""),
+            name=data.get("name", ""),
+            id=data.get("id"),
+            status=data.get("status", "success"),
+        )
+
+    logger.debug("Unknown message type in stream: %s", msg_type)
+    return None

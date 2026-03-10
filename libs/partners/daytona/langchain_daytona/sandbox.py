@@ -89,8 +89,8 @@ class DaytonaSandbox(BaseSandbox):
 
         output = logs.stdout
 
-        if logs.stderr is not None:
-            output += f"\n<stderr>{logs.stderr}</stderr>"
+        if logs.stderr is not None and logs.stderr.strip():
+            output += f"\n<stderr>{logs.stderr.strip()}</stderr>"
 
         return ExecuteResponse(
             output=output,

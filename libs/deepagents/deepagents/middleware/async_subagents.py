@@ -30,6 +30,10 @@ class AsyncSubAgent(TypedDict):
     Async subagents connect to LangGraph deployments via the LangGraph SDK.
     They run as background jobs that the main agent can monitor and update.
 
+    Authentication is handled via environment variables (`LANGGRAPH_API_KEY`,
+    `LANGSMITH_API_KEY`, or `LANGCHAIN_API_KEY`), which the LangGraph SDK
+    reads automatically.
+
     Required fields:
         name: Unique identifier for the async subagent.
         description: What this subagent does. The main agent uses this to decide
@@ -38,7 +42,6 @@ class AsyncSubAgent(TypedDict):
         graph_id: The graph name or assistant ID on the remote server.
 
     Optional fields:
-        api_key: API key for authenticating with the remote server.
         headers: Additional headers to include in requests to the remote server.
     """
 
@@ -46,7 +49,6 @@ class AsyncSubAgent(TypedDict):
     description: str
     url: str
     graph_id: str
-    api_key: NotRequired[str]
     headers: NotRequired[dict[str, str]]
 
 
@@ -97,7 +99,6 @@ class _ClientCache:
             spec = self._agents[name]
             self._sync[name] = get_sync_client(
                 url=spec["url"],
-                api_key=spec.get("api_key"),
                 headers=spec.get("headers"),
             )
         return self._sync[name]
@@ -108,7 +109,6 @@ class _ClientCache:
             spec = self._agents[name]
             self._async[name] = get_client(
                 url=spec["url"],
-                api_key=spec.get("api_key"),
                 headers=spec.get("headers"),
             )
         return self._async[name]
@@ -317,7 +317,6 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
                     "description": "Research agent for deep analysis",
                     "url": "https://my-deployment.langsmith.dev",
                     "graph_id": "research_agent",
-                    "api_key": "my-api-key",
                 }
             ],
         )

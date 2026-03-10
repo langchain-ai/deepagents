@@ -158,8 +158,13 @@ class ServerProcess:
         for key in (
             "LANGGRAPH_AUTH",
             "LANGGRAPH_CLOUD_LICENSE_KEY",
+            "LANGSMITH_API_KEY",
             "LANGSMITH_CONTROL_PLANE_API_KEY",
+            "LANGSMITH_ENDPOINT",
             "LANGSMITH_TENANT_ID",
+            "LANGCHAIN_API_KEY",
+            "LANGCHAIN_ENDPOINT",
+            "LANGCHAIN_TRACING_V2",
         ):
             env.pop(key, None)
 

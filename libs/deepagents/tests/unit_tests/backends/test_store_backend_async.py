@@ -120,6 +120,28 @@ async def test_store_backend_als_trailing_slash():
     assert [fi["path"] for fi in listing1] == [fi["path"] for fi in listing2]
 
 
+async def test_store_backend_async_handles_legacy_store_keys_without_leading_slash():
+    rt = make_runtime()
+    await rt.store.aput(
+        ("filesystem",),
+        "test.md",
+        {"content": ["hello legacy"], "created_at": "2023-01-01T00:00:00Z", "modified_at": "2023-01-01T00:00:00Z"},
+    )
+    await rt.store.aput(
+        ("filesystem",),
+        "subdir/file.txt",
+        {"content": ["nested legacy"], "created_at": "2023-01-01T00:00:00Z", "modified_at": "2023-01-01T00:00:00Z"},
+    )
+    be = StoreBackend(rt, namespace=lambda _ctx: ("filesystem",))
+
+    root_paths = [fi["path"] for fi in await be.als_info("/")]
+    assert "/test.md" in root_paths
+    assert "/subdir/" in root_paths
+
+    content = await be.aread("/test.md")
+    assert "hello legacy" in content
+
+
 async def test_store_backend_async_errors():
     """Test async error handling."""
     rt = make_runtime()

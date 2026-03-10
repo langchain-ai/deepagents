@@ -53,6 +53,13 @@ NamespaceFactory = Callable[[BackendContext[Any, Any]], tuple[str, ...]]
 _NAMESPACE_COMPONENT_RE = re.compile(r"^[A-Za-z0-9\-_.@+:~]+$")
 
 
+def _normalize_store_path(path: str) -> str:
+    """Return a store path with a leading slash."""
+    if path.startswith("/"):
+        return path
+    return f"/{path}"
+
+
 def _validate_namespace(namespace: tuple[str, ...]) -> tuple[str, ...]:
     """Validate a namespace tuple returned by a NamespaceFactory.
 
@@ -198,6 +205,46 @@ class StoreBackend(BackendProtocol):
             return (assistant_id, namespace)
         return (namespace,)
 
+    def _get_store_item(
+        self,
+        store: BaseStore,
+        namespace: tuple[str, ...],
+        file_path: str,
+    ) -> tuple[str, Item | None]:
+        """Get a store item, tolerating legacy keys without a leading slash."""
+        normalized_path = _normalize_store_path(file_path)
+        item = store.get(namespace, normalized_path)
+        if item is not None:
+            return normalized_path, item
+
+        legacy_path = normalized_path.removeprefix("/")
+        if legacy_path:
+            item = store.get(namespace, legacy_path)
+            if item is not None:
+                return legacy_path, item
+
+        return normalized_path, None
+
+    async def _aget_store_item(
+        self,
+        store: BaseStore,
+        namespace: tuple[str, ...],
+        file_path: str,
+    ) -> tuple[str, Item | None]:
+        """Async version of `_get_store_item`."""
+        normalized_path = _normalize_store_path(file_path)
+        item = await store.aget(namespace, normalized_path)
+        if item is not None:
+            return normalized_path, item
+
+        legacy_path = normalized_path.removeprefix("/")
+        if legacy_path:
+            item = await store.aget(namespace, legacy_path)
+            if item is not None:
+                return legacy_path, item
+
+        return normalized_path, None
+
     def _convert_store_item_to_file_data(self, store_item: Item) -> dict[str, Any]:
         """Convert a store Item to FileData format.
 
@@ -305,17 +352,22 @@ class StoreBackend(BackendProtocol):
         items = self._search_store_paginated(store, namespace)
         infos: list[FileInfo] = []
         subdirs: set[str] = set()
+        seen_files: set[str] = set()
 
         # Normalize path to have trailing slash for proper prefix matching
-        normalized_path = path if path.endswith("/") else path + "/"
+        normalized_path = _normalize_store_path(path)
+        if not normalized_path.endswith("/"):
+            normalized_path += "/"
 
         for item in items:
+            item_path = _normalize_store_path(str(item.key))
+
             # Check if file is in the specified directory or a subdirectory
-            if not str(item.key).startswith(normalized_path):
+            if not item_path.startswith(normalized_path):
                 continue
 
             # Get the relative path after the directory
-            relative = str(item.key)[len(normalized_path) :]
+            relative = item_path[len(normalized_path) :]
 
             # If relative path contains '/', it's in a subdirectory
             if "/" in relative:
@@ -325,14 +377,19 @@ class StoreBackend(BackendProtocol):
                 continue
 
             # This is a file directly in the current directory
+            if item_path in seen_files:
+                continue
+
             try:
                 fd = self._convert_store_item_to_file_data(item)
             except ValueError:
                 continue
+
+            seen_files.add(item_path)
             size = len("\n".join(fd.get("content", [])))
             infos.append(
                 {
-                    "path": item.key,
+                    "path": item_path,
                     "is_dir": False,
                     "size": int(size),
                     "modified_at": fd.get("modified_at", ""),
@@ -363,10 +420,10 @@ class StoreBackend(BackendProtocol):
         """
         store = self._get_store()
         namespace = self._get_namespace()
-        item: Item | None = store.get(namespace, file_path)
+        normalized_path, item = self._get_store_item(store, namespace, file_path)
 
         if item is None:
-            return f"Error: File '{file_path}' not found"
+            return f"Error: File '{normalized_path}' not found"
 
         try:
             file_data = self._convert_store_item_to_file_data(item)
@@ -387,10 +444,10 @@ class StoreBackend(BackendProtocol):
         """
         store = self._get_store()
         namespace = self._get_namespace()
-        item: Item | None = await store.aget(namespace, file_path)
+        normalized_path, item = await self._aget_store_item(store, namespace, file_path)
 
         if item is None:
-            return f"Error: File '{file_path}' not found"
+            return f"Error: File '{normalized_path}' not found"
 
         try:
             file_data = self._convert_store_item_to_file_data(item)
@@ -536,7 +593,7 @@ class StoreBackend(BackendProtocol):
         files: dict[str, Any] = {}
         for item in items:
             try:
-                files[item.key] = self._convert_store_item_to_file_data(item)
+                files[_normalize_store_path(str(item.key))] = self._convert_store_item_to_file_data(item)
             except ValueError:
                 continue
         return grep_matches_from_files(files, pattern, path, glob)
@@ -549,7 +606,7 @@ class StoreBackend(BackendProtocol):
         files: dict[str, Any] = {}
         for item in items:
             try:
-                files[item.key] = self._convert_store_item_to_file_data(item)
+                files[_normalize_store_path(str(item.key))] = self._convert_store_item_to_file_data(item)
             except ValueError:
                 continue
         result = _glob_search_files(files, pattern, path)
@@ -611,7 +668,7 @@ class StoreBackend(BackendProtocol):
         responses: list[FileDownloadResponse] = []
 
         for path in paths:
-            item = store.get(namespace, path)
+            _, item = self._get_store_item(store, namespace, path)
 
             if item is None:
                 responses.append(FileDownloadResponse(path=path, content=None, error="file_not_found"))

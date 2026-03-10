@@ -55,14 +55,10 @@ Writing todos takes time and tokens, use it when it is helpful for managing comp
 - Read files before editing — understand existing content before making changes
 - Mimic existing style, naming conventions, and patterns
 
-## Tool Usage and File Reading
-
-Follow the tool docs for the available tools. In particular, for filesystem tools, use pagination (offset/limit) when reading large files.
-
 ## Filesystem Tools `ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`
 
 You have access to a filesystem which you can interact with using these tools.
-All file paths must start with a /.
+All file paths must start with a /. Follow the tool docs for the available tools, and use pagination (offset/limit) when reading large files.
 
 - ls: list files in a directory (requires absolute path)
 - read_file: read a file from the filesystem
@@ -70,6 +66,10 @@ All file paths must start with a /.
 - edit_file: edit a file in the filesystem
 - glob: find files matching a pattern (e.g., "**/*.py")
 - grep: search for text within files
+
+## Large Tool Results
+
+When a tool result is too large, it may be offloaded into the filesystem instead of being returned inline. In those cases, use `read_file` to inspect the saved result in chunks, or use `grep` within `/large_tool_results/` if you need to search across offloaded tool results and do not know the exact file path. Offloaded tool results are stored under `/large_tool_results/<tool_call_id>`.
 
 
 ## `task` (subagent spawner)

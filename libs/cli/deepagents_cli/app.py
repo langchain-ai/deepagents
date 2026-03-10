@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
-
-# S404: subprocess is required for user-initiated shell commands via ! prefix
-import subprocess  # noqa: S404
+import shlex
+import signal
+import sys
+import time
 import uuid
 import webbrowser
 from collections import deque
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
@@ -22,7 +24,6 @@ from textual.binding import Binding, BindingType
 from textual.containers import Container, VerticalScroll
 from textual.css.query import NoMatches
 from textual.screen import ModalScreen
-from textual.widgets import Static
 
 from deepagents_cli.clipboard import copy_selection_to_clipboard
 from deepagents_cli.config import (
@@ -34,11 +35,20 @@ from deepagents_cli.config import (
     create_model,
     detect_provider,
     is_shell_command_allowed,
+    newline_shortcut,
     settings,
 )
+from deepagents_cli.hooks import dispatch_hook
 from deepagents_cli.model_config import ModelSpec, save_recent_model
-from deepagents_cli.textual_adapter import TextualUIAdapter, execute_task_textual
+from deepagents_cli.textual_adapter import (
+    SessionStats,
+    TextualUIAdapter,
+    _get_git_branch,
+    execute_task_textual,
+    format_token_count,
+)
 from deepagents_cli.widgets.approval import ApprovalMenu
+from deepagents_cli.widgets.ask_user import AskUserMenu
 from deepagents_cli.widgets.chat_input import ChatInput
 from deepagents_cli.widgets.loading import LoadingWidget
 from deepagents_cli.widgets.message_store import (
@@ -57,10 +67,14 @@ from deepagents_cli.widgets.messages import (
 )
 from deepagents_cli.widgets.model_selector import ModelSelectorScreen
 from deepagents_cli.widgets.status import StatusBar
-from deepagents_cli.widgets.thread_selector import ThreadSelectorScreen
+from deepagents_cli.widgets.thread_selector import (
+    DeleteThreadConfirmScreen,
+    ThreadSelectorScreen,
+)
 from deepagents_cli.widgets.welcome import WelcomeBanner
 
 logger = logging.getLogger(__name__)
+_monotonic = time.monotonic
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -69,13 +83,18 @@ if TYPE_CHECKING:
     from deepagents.backends.sandbox import SandboxBackendProtocol
     from deepagents.middleware.summarization import SummarizationMiddleware
     from langchain_core.runnables import RunnableConfig
+    from langchain_core.tools import BaseTool
     from langgraph.checkpoint.base import BaseCheckpointSaver
     from langgraph.pregel import Pregel
     from textual.app import ComposeResult
-    from textual.events import Click, MouseUp, Paste, Resize
+    from textual.events import Click, MouseUp, Paste
     from textual.scrollbar import ScrollUp
     from textual.widget import Widget
+    from textual.widgets import Static
     from textual.worker import Worker
+
+    from deepagents_cli.ask_user import AskUserWidgetResult, Question
+    from deepagents_cli.mcp_tools import MCPServerInfo
 
 # iTerm2 Cursor Guide Workaround
 # ===============================
@@ -103,22 +122,6 @@ _ITERM_CURSOR_GUIDE_OFF = "\x1b]1337;HighlightCursorLine=no\x1b\\"
 _ITERM_CURSOR_GUIDE_ON = "\x1b]1337;HighlightCursorLine=yes\x1b\\"
 
 
-def _format_token_count(count: int) -> str:
-    """Format a token count into a human-readable short string.
-
-    Args:
-        count: Number of tokens.
-
-    Returns:
-        Formatted string like `"12.5K"`, `"1.2M"`, or `"500"`.
-    """
-    if count >= 1_000_000:  # noqa: PLR2004
-        return f"{count / 1_000_000:.1f}M"
-    if count >= 1000:  # noqa: PLR2004
-        return f"{count / 1000:.1f}K"
-    return str(count)
-
-
 def _format_compact_limit(
     keep: tuple[str, int | float], context_limit: int | None
 ) -> str:
@@ -139,15 +142,15 @@ def _format_compact_limit(
         return f"last {count} {noun}"
 
     if keep_type == "tokens":
-        return f"{_format_token_count(int(keep_value))} tokens"
+        return f"{format_token_count(int(keep_value))} tokens"
 
     if keep_type == "fraction":
         percent = float(keep_value) * 100
         if context_limit is not None:
             token_limit = max(1, int(context_limit * float(keep_value)))
             return (
-                f"{_format_token_count(token_limit)} tokens "
-                f"({percent:.0f}% of {_format_token_count(context_limit)})"
+                f"{format_token_count(token_limit)} tokens "
+                f"({percent:.0f}% of {format_token_count(context_limit)})"
             )
         return f"{percent:.0f}% of context window"
 
@@ -190,7 +193,100 @@ if _IS_ITERM:
     atexit.register(_restore_cursor_guide)
 
 
-InputMode = Literal["normal", "bash", "command"]
+def _extract_model_params_flag(raw_arg: str) -> tuple[str, dict[str, Any] | None]:
+    """Extract `--model-params` and its JSON value from a `/model` arg string.
+
+    Handles quoted (`'...'` / `"..."`) and bare `{...}` values with balanced
+    braces so that JSON containing spaces works without quoting.
+
+    Note:
+        The bare-brace mode counts `{` / `}` characters without awareness of
+        JSON string contents. Values that contain literal braces inside strings
+        (e.g., `{"stop": "end}here"}`) will mis-parse. Users should quote the
+        value in that case.
+
+    Args:
+        raw_arg: The argument string after `/model `.
+
+    Returns:
+        Tuple of `(remaining_args, parsed_dict | None)`. Returns `None` for the
+            dict when the flag is absent.
+
+    Raises:
+        ValueError: If the value is missing, has unclosed quotes,
+            unbalanced braces, or is not valid JSON.
+        TypeError: If the parsed JSON is not a dict.
+    """
+    flag = "--model-params"
+    idx = raw_arg.find(flag)
+    if idx == -1:
+        return raw_arg, None
+
+    before = raw_arg[:idx].rstrip()
+    after = raw_arg[idx + len(flag) :].lstrip()
+
+    if not after:
+        msg = "--model-params requires a JSON object value"
+        raise ValueError(msg)
+
+    # Determine the JSON string boundaries.
+    if after[0] in {"'", '"'}:
+        quote = after[0]
+        end = -1
+        backslash_count = 0
+        for i, ch in enumerate(after[1:], start=1):
+            if ch == "\\":
+                backslash_count += 1
+                continue
+            if ch == quote and backslash_count % 2 == 0:
+                end = i
+                break
+            backslash_count = 0
+        if end == -1:
+            msg = f"Unclosed {quote} in --model-params value"
+            raise ValueError(msg)
+        # Parse the quoted token with shlex so escaped quotes are unescaped.
+        json_str = shlex.split(after[: end + 1], posix=True)[0]
+        rest = after[end + 1 :].lstrip()
+    elif after[0] == "{":
+        # Walk forward to find the matching closing brace.
+        depth = 0
+        end = -1
+        for i, ch in enumerate(after):
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    end = i
+                    break
+        if end == -1:
+            msg = "Unbalanced braces in --model-params value"
+            raise ValueError(msg)
+        json_str = after[: end + 1]
+        rest = after[end + 1 :].lstrip()
+    else:
+        # Non-brace, non-quoted — take the next whitespace-delimited token.
+        parts = after.split(None, 1)
+        json_str = parts[0]
+        rest = parts[1] if len(parts) > 1 else ""
+
+    remaining = f"{before} {rest}".strip()
+    try:
+        params = json.loads(json_str)
+    except json.JSONDecodeError:
+        msg = (
+            f"Invalid JSON in --model-params: {json_str!r}. "
+            'Expected format: --model-params \'{"key": "value"}\''
+        )
+        raise ValueError(msg) from None
+    if not isinstance(params, dict):
+        msg = "--model-params must be a JSON object, got " + type(params).__name__
+        raise TypeError(msg)
+    return remaining, params
+
+
+InputMode = Literal["normal", "shell", "command"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -303,7 +399,7 @@ Scan the conversation for:
 
 For each best practice or learning, choose the right destination:
 
-### → Memory (AGENTS.md) for preferences and guidelines
+### -> Memory (AGENTS.md) for preferences and guidelines
 Use memory when the knowledge is:
 - A preference or guideline (not a multi-step process)
 - Something to always keep in mind
@@ -312,7 +408,7 @@ Use memory when the knowledge is:
 **Global** (`~/.deepagents/agent/AGENTS.md`): Universal preferences across all projects
 **Project** (`.deepagents/AGENTS.md`): Project-specific conventions and decisions
 
-### → Skill for reusable workflows and methodologies
+### -> Skill for reusable workflows and methodologies
 **Create a skill when** we developed:
 - A multi-step process worth reusing
 - A methodology for a specific type of task
@@ -406,7 +502,13 @@ class DeepAgentsApp(App):
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "interrupt", "Interrupt", show=False, priority=True),
-        Binding("ctrl+c", "quit_or_interrupt", "Quit/Interrupt", show=False),
+        Binding(
+            "ctrl+c",
+            "quit_or_interrupt",
+            "Quit/Interrupt",
+            show=False,
+            priority=True,
+        ),
         Binding("ctrl+d", "quit_app", "Quit", show=False, priority=True),
         Binding("ctrl+t", "toggle_auto_approve", "Toggle Auto-Approve", show=False),
         Binding(
@@ -431,10 +533,10 @@ class DeepAgentsApp(App):
         Binding("enter", "approval_select", "Select", show=False),
         Binding("y", "approval_yes", "Yes", show=False),
         Binding("1", "approval_yes", "Yes", show=False),
-        Binding("n", "approval_no", "No", show=False),
-        Binding("2", "approval_no", "No", show=False),
+        Binding("2", "approval_auto", "Auto", show=False),
         Binding("a", "approval_auto", "Auto", show=False),
-        Binding("3", "approval_auto", "Auto", show=False),
+        Binding("3", "approval_no", "No", show=False),
+        Binding("n", "approval_no", "No", show=False),
     ]
 
     def __init__(
@@ -444,13 +546,16 @@ class DeepAgentsApp(App):
         assistant_id: str | None = None,
         backend: CompositeBackend | None = None,
         auto_approve: bool = False,
+        enable_ask_user: bool = False,
         cwd: str | Path | None = None,
         thread_id: str | None = None,
         initial_prompt: str | None = None,
         checkpointer: BaseCheckpointSaver | None = None,
-        tools: list[Callable[..., Any] | dict[str, Any]] | None = None,
+        tools: list[BaseTool | Callable[..., Any] | dict[str, Any]] | None = None,
         sandbox: SandboxBackendProtocol | None = None,
         sandbox_type: str | None = None,
+        mcp_server_info: list[MCPServerInfo] | None = None,
+        profile_override: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> None:
         """Initialize the Deep Agents application.
@@ -460,6 +565,8 @@ class DeepAgentsApp(App):
             assistant_id: Agent identifier for memory storage
             backend: Backend for file operations
             auto_approve: Whether to start with auto-approve enabled
+            enable_ask_user: Whether `ask_user` should stay enabled when
+                recreating agents (for example during model hot-swap)
             cwd: Current working directory to display
             thread_id: Optional thread ID for session persistence
             initial_prompt: Optional prompt to auto-submit when session starts
@@ -467,6 +574,9 @@ class DeepAgentsApp(App):
             tools: Tools used to create the agent (for model hot-swap)
             sandbox: Sandbox backend (for model hot-swap)
             sandbox_type: Type of sandbox provider (for model hot-swap)
+            mcp_server_info: MCP server metadata for the `/mcp` viewer.
+            profile_override: Extra profile fields from `--profile-override`,
+                retained for model hot-swap and footer display.
             **kwargs: Additional arguments passed to parent
         """
         super().__init__(**kwargs)
@@ -474,6 +584,7 @@ class DeepAgentsApp(App):
         self._assistant_id = assistant_id
         self._backend = backend
         self._auto_approve = auto_approve
+        self._enable_ask_user = enable_ask_user
         self._cwd = str(cwd) if cwd else str(Path.cwd())
         # Avoid collision with App._thread_id
         self._lc_thread_id = thread_id
@@ -483,17 +594,27 @@ class DeepAgentsApp(App):
         self._tools = tools or []
         self._sandbox = sandbox
         self._sandbox_type = sandbox_type
+        self._mcp_server_info = mcp_server_info
+        self._profile_override = profile_override
+        self._mcp_tool_count = sum(len(s.tools) for s in (mcp_server_info or []))
         self._status_bar: StatusBar | None = None
         self._chat_input: ChatInput | None = None
         self._quit_pending = False
         self._session_state: TextualSessionState | None = None
         self._ui_adapter: TextualUIAdapter | None = None
-        self._pending_approval_widget: Any = None
+        self._pending_approval_widget: ApprovalMenu | None = None
+        self._pending_ask_user_widget: AskUserMenu | None = None
         # Agent task tracking for interruption
         self._agent_worker: Worker[None] | None = None
         self._agent_running = False
+        # Shell command process tracking for interruption (! commands)
+        self._shell_process: asyncio.subprocess.Process | None = None
+        self._shell_worker: Worker[None] | None = None
+        self._shell_running = False
         self._loading_widget: LoadingWidget | None = None
         self._token_tracker: TextualTokenTracker | None = None
+        # Cumulative usage stats across all turns in this session
+        self._session_stats: SessionStats = SessionStats()
         # User message queue for sequential processing
         self._pending_messages: deque[QueuedMessage] = deque()
         self._queued_widgets: deque[QueuedUserMessage] = deque()
@@ -503,9 +624,9 @@ class DeepAgentsApp(App):
         self._message_store = MessageStore()
         # Lazily imported here to avoid pulling image dependencies into
         # argument parsing paths.
-        from deepagents_cli.input import ImageTracker
+        from deepagents_cli.input import MediaTracker
 
-        self._image_tracker = ImageTracker()
+        self._image_tracker = MediaTracker()
 
     def compose(self) -> ComposeResult:
         """Compose the application layout.
@@ -516,15 +637,18 @@ class DeepAgentsApp(App):
         # Main chat area with scrollable messages
         # VerticalScroll tracks user scroll intent for better auto-scroll behavior
         with VerticalScroll(id="chat"):
-            yield WelcomeBanner(thread_id=self._lc_thread_id, id="welcome-banner")
+            yield WelcomeBanner(
+                thread_id=self._lc_thread_id,
+                mcp_tool_count=self._mcp_tool_count,
+                id="welcome-banner",
+            )
             yield Container(id="messages")
-            with Container(id="bottom-app-container"):
-                yield ChatInput(
-                    cwd=self._cwd,
-                    image_tracker=self._image_tracker,
-                    id="input-area",
-                )
-            yield Static(id="chat-spacer")  # Fills remaining space below input
+        with Container(id="bottom-app-container"):
+            yield ChatInput(
+                cwd=self._cwd,
+                image_tracker=self._image_tracker,
+                id="input-area",
+            )
 
         # Status bar at bottom
         yield StatusBar(cwd=self._cwd, id="status-bar")
@@ -541,6 +665,9 @@ class DeepAgentsApp(App):
         # Set initial auto-approve state
         if self._auto_approve:
             self._status_bar.set_auto_approve(enabled=True)
+
+        # Set git branch in status bar
+        self._status_bar.branch = _get_git_branch() or ""
 
         # Create session state
         self._session_state = TextualSessionState(
@@ -564,6 +691,7 @@ class DeepAgentsApp(App):
                 set_spinner=self._set_spinner,
                 set_active_message=self._set_active_message,
                 sync_message_content=self._sync_message_content,
+                request_ask_user=self._request_ask_user,
             )
             self._ui_adapter.set_token_tracker(self._token_tracker)
 
@@ -572,6 +700,14 @@ class DeepAgentsApp(App):
                 self._prewarm_threads_cache,
                 exclusive=True,
                 group="startup-thread-prewarm",
+            )
+
+        # Background update check (opt-out via DEEPAGENTS_NO_UPDATE_CHECK)
+        if not os.environ.get("DEEPAGENTS_NO_UPDATE_CHECK"):
+            self.run_worker(
+                self._check_for_updates,
+                exclusive=True,
+                group="startup-update-check",
             )
 
         # Focus the input (autocomplete is now built into ChatInput)
@@ -599,9 +735,6 @@ class DeepAgentsApp(App):
             except Exception:
                 logger.debug("Failed to check for optional tools", exc_info=True)
 
-        # Size the spacer to fill remaining viewport below input
-        self.call_after_refresh(self._size_initial_spacer)
-
         # Auto-submit initial prompt if provided via -m flag.
         # This check must come first because _lc_thread_id and _agent are
         # always set (even for brand-new sessions), so an elif after the
@@ -619,15 +752,6 @@ class DeepAgentsApp(App):
                 lambda: asyncio.create_task(self._load_thread_history())
             )
 
-    def on_resize(self, _event: Resize) -> None:
-        """Handle terminal resize to recalculate layout."""
-        try:
-            self.query_one("#chat-spacer", Static)
-            # Spacer exists, recalculate its height
-            self.call_after_refresh(self._size_initial_spacer)
-        except NoMatches:
-            pass  # Spacer already removed, no action needed
-
     async def _prewarm_threads_cache(self) -> None:  # noqa: PLR6301  # Worker hook kept as instance method
         """Prewarm thread selector cache without blocking app startup."""
         from deepagents_cli.sessions import (
@@ -636,6 +760,24 @@ class DeepAgentsApp(App):
         )
 
         await prewarm_thread_message_counts(limit=get_thread_limit())
+
+    async def _check_for_updates(self) -> None:
+        """Check PyPI for a newer deepagents-cli version and notify the user."""
+        try:
+            from deepagents_cli.update_check import is_update_available
+
+            available, latest = await asyncio.to_thread(is_update_available)
+            if available:
+                from deepagents_cli._version import __version__ as cli_version
+
+                self.notify(
+                    f"Update available: v{latest} (current: v{cli_version}). "
+                    "Run: uv tool upgrade deepagents-cli",
+                    severity="information",
+                    timeout=15,
+                )
+        except Exception:
+            logger.debug("Background update check failed", exc_info=True)
 
     def on_scroll_up(self, _event: ScrollUp) -> None:
         """Handle scroll up to check if we need to hydrate older messages."""
@@ -851,28 +993,6 @@ class DeepAgentsApp(App):
         # NOTE: Don't call _scroll_chat_to_bottom() here - it would re-anchor
         # and drag user back to bottom if they've scrolled away during streaming
 
-    def _size_initial_spacer(self) -> None:
-        """Size the spacer to fill remaining viewport below input."""
-        try:
-            chat = self.query_one("#chat", VerticalScroll)
-            welcome = self.query_one("#welcome-banner", WelcomeBanner)
-            input_container = self.query_one("#bottom-app-container", Container)
-            spacer = self.query_one("#chat-spacer", Static)
-            content_height = welcome.size.height + input_container.size.height + 4
-            spacer_height = chat.size.height - content_height
-            spacer.styles.height = max(0, spacer_height)
-        except NoMatches:
-            # Spacer may have been removed already (e.g., when resuming a session)
-            pass
-
-    async def _remove_spacer(self) -> None:
-        """Remove the initial spacer when first message is sent."""
-        try:
-            spacer = self.query_one("#chat-spacer", Static)
-            await spacer.remove()
-        except NoMatches:
-            pass
-
     async def _request_approval(
         self,
         action_requests: Any,  # noqa: ANN401  # ActionRequest uses dynamic typing
@@ -979,6 +1099,111 @@ class DeepAgentsApp(App):
         if self._session_state:
             self._session_state.auto_approve = True
 
+    async def _remove_ask_user_widget(  # noqa: PLR6301  # Shared helper used by ask_user event handlers
+        self,
+        widget: AskUserMenu,
+        *,
+        context: str,
+    ) -> None:
+        """Remove an ask_user widget without surfacing cleanup races.
+
+        Args:
+            widget: Ask-user widget instance to remove.
+            context: Short context string for diagnostics.
+        """
+        try:
+            await widget.remove()
+        except Exception:
+            logger.debug(
+                "Failed to remove ask-user widget during %s",
+                context,
+                exc_info=True,
+            )
+
+    async def _request_ask_user(
+        self,
+        questions: list[Question],
+    ) -> asyncio.Future[AskUserWidgetResult]:
+        """Display the ask_user widget and return a Future with user response.
+
+        Args:
+            questions: List of question dicts, each with `question`, `type`,
+                and optional `choices` and `required` keys.
+
+        Returns:
+            A Future that resolves to a dict with `'type'` (`'answered'` or
+                `'cancelled'`) and, when answered, an `'answers'` list.
+        """
+        loop = asyncio.get_running_loop()
+        result_future: asyncio.Future[AskUserWidgetResult] = loop.create_future()
+
+        if self._pending_ask_user_widget is not None:
+            deadline = _monotonic() + 30
+            while self._pending_ask_user_widget is not None:
+                if _monotonic() > deadline:
+                    logger.error(
+                        "Timed out waiting for previous ask-user widget to "
+                        "clear. Forcefully cleaning up."
+                    )
+                    old_widget = self._pending_ask_user_widget
+                    if old_widget is not None:
+                        old_widget.action_cancel()
+                        self._pending_ask_user_widget = None
+                        await self._remove_ask_user_widget(
+                            old_widget,
+                            context="ask-user timeout cleanup",
+                        )
+                    break
+                await asyncio.sleep(0.1)
+
+        unique_id = f"ask-user-menu-{uuid.uuid4().hex[:8]}"
+        menu = AskUserMenu(questions, id=unique_id)
+        menu.set_future(result_future)
+
+        self._pending_ask_user_widget = menu
+
+        try:
+            messages = self.query_one("#messages", Container)
+            await self._mount_before_queued(messages, menu)
+            self.call_after_refresh(menu.scroll_visible)
+            self.call_after_refresh(menu.focus_active)
+        except Exception as e:
+            logger.exception(
+                "Failed to mount ask-user menu (id=%s)",
+                unique_id,
+            )
+            self._pending_ask_user_widget = None
+            if not result_future.done():
+                result_future.set_exception(e)
+
+        return result_future
+
+    async def on_ask_user_menu_answered(
+        self,
+        event: Any,  # noqa: ARG002, ANN401
+    ) -> None:
+        """Handle ask_user menu answers - remove widget and refocus input."""
+        if self._pending_ask_user_widget:
+            widget = self._pending_ask_user_widget
+            self._pending_ask_user_widget = None
+            await self._remove_ask_user_widget(widget, context="ask-user answered")
+
+        if self._chat_input:
+            self.call_after_refresh(self._chat_input.focus_input)
+
+    async def on_ask_user_menu_cancelled(
+        self,
+        event: Any,  # noqa: ARG002, ANN401
+    ) -> None:
+        """Handle ask_user menu cancellation - remove widget and refocus input."""
+        if self._pending_ask_user_widget:
+            widget = self._pending_ask_user_widget
+            self._pending_ask_user_widget = None
+            await self._remove_ask_user_widget(widget, context="ask-user cancelled")
+
+        if self._chat_input:
+            self.call_after_refresh(self._chat_input.focus_input)
+
     async def _process_message(self, value: str, mode: InputMode) -> None:
         """Route a message to the appropriate handler based on mode.
 
@@ -986,8 +1211,8 @@ class DeepAgentsApp(App):
             value: The message text to process.
             mode: The input mode that determines message routing.
         """
-        if mode == "bash":
-            await self._handle_bash_command(value.removeprefix("!"))
+        if mode == "shell":
+            await self._handle_shell_command(value.removeprefix("!"))
         elif mode == "command":
             await self._handle_command(value)
         elif mode == "normal":
@@ -1004,6 +1229,8 @@ class DeepAgentsApp(App):
         # Reset quit pending state on any input
         self._quit_pending = False
 
+        await dispatch_hook("user.prompt", {})
+
         # Prevent message handling while a thread switch is in-flight.
         if self._thread_switching:
             self.notify(
@@ -1013,8 +1240,8 @@ class DeepAgentsApp(App):
             )
             return
 
-        # If agent is running, enqueue message instead of processing immediately
-        if self._agent_running:
+        # If agent or shell command is running, enqueue instead of processing
+        if self._agent_running or self._shell_running:
             self._pending_messages.append(QueuedMessage(text=value, mode=mode))
             queued_widget = QueuedUserMessage(value)
             self._queued_widgets.append(queued_widget)
@@ -1042,59 +1269,142 @@ class DeepAgentsApp(App):
         if self._chat_input:
             self.call_after_refresh(self._chat_input.focus_input)
 
-    async def _handle_bash_command(self, command: str) -> None:
-        """Handle a bash command (! prefix).
+    async def _handle_shell_command(self, command: str) -> None:
+        """Handle a shell command (! prefix).
+
+        Thin dispatcher that mounts the user message and spawns a worker
+        so the event loop stays free for key events (Esc/Ctrl+C).
 
         Args:
-            command: The bash command to execute
+            command: The shell command to execute.
         """
-        # Mount user message showing the bash command
         await self._mount_message(UserMessage(f"!{command}"))
+        self._shell_running = True
 
-        # Execute bash command (user explicitly requested via ! prefix)
-        # S604: shell=True is intentional - user requested shell execution via ! prefix
+        if self._chat_input:
+            self._chat_input.set_cursor_active(active=False)
+
+        self._shell_worker = self.run_worker(
+            self._run_shell_task(command),
+            exclusive=False,
+        )
+
+    async def _run_shell_task(self, command: str) -> None:
+        """Run a shell command in a background worker.
+
+        This mirrors `_run_agent_task`: running in a worker keeps the event
+        loop free so Esc/Ctrl+C can cancel the worker -> raise
+        `CancelledError` -> kill the process.
+
+        Args:
+            command: The shell command to execute.
+
+        Raises:
+            CancelledError: If the command is interrupted by the user.
+        """
         try:
-            result = await asyncio.to_thread(  # noqa: S604
-                subprocess.run,
+            proc = await asyncio.create_subprocess_shell(
                 command,
-                shell=True,
-                capture_output=True,
-                text=True,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
                 cwd=self._cwd,
-                timeout=60,
+                start_new_session=(sys.platform != "win32"),
             )
-            # text=True ensures stdout/stderr are str, not bytes
-            stdout = result.stdout
-            stderr = result.stderr
-            if not isinstance(stdout, str):
-                stdout = stdout.decode() if stdout else ""
-            output = stdout.strip()
-            if stderr:
-                if not isinstance(stderr, str):
-                    stderr = stderr.decode() if stderr else ""
-                output += f"\n[stderr]\n{stderr.strip()}"
+            self._shell_process = proc
+
+            try:
+                stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                    proc.communicate(), timeout=60
+                )
+            except TimeoutError:
+                await self._kill_shell_process()
+                await self._mount_message(ErrorMessage("Command timed out (60s limit)"))
+                return
+            except asyncio.CancelledError:
+                await self._kill_shell_process()
+                raise
+
+            output = (stdout_bytes or b"").decode(errors="replace").strip()
+            stderr_text = (stderr_bytes or b"").decode(errors="replace").strip()
+            if stderr_text:
+                output += f"\n[stderr]\n{stderr_text}"
 
             if output:
-                # Display output as assistant message (uses markdown for code blocks)
                 msg = AssistantMessage(f"```\n{output}\n```")
                 await self._mount_message(msg)
                 await msg.write_initial_content()
             else:
                 await self._mount_message(AppMessage("Command completed (no output)"))
 
-            if result.returncode != 0:
-                await self._mount_message(
-                    ErrorMessage(f"Exit code: {result.returncode}")
-                )
+            if proc.returncode and proc.returncode != 0:
+                await self._mount_message(ErrorMessage(f"Exit code: {proc.returncode}"))
 
             # Scroll to show the output (user-initiated command, so scroll is expected)
             chat = self.query_one("#chat", VerticalScroll)
             chat.scroll_end(animate=False)
 
-        except subprocess.TimeoutExpired:
-            await self._mount_message(ErrorMessage("Command timed out (60s limit)"))
         except OSError as e:
-            await self._mount_message(ErrorMessage(str(e)))
+            logger.exception("Failed to execute shell command: %s", command)
+            err_msg = f"Failed to run command: {e}"
+            await self._mount_message(ErrorMessage(err_msg))
+        finally:
+            await self._cleanup_shell_task()
+
+    async def _cleanup_shell_task(self) -> None:
+        """Clean up after shell command task completes or is cancelled."""
+        was_interrupted = self._shell_process is not None and (
+            self._shell_worker is not None and self._shell_worker.is_cancelled
+        )
+        self._shell_process = None
+        self._shell_running = False
+        self._shell_worker = None
+        if was_interrupted:
+            await self._mount_message(AppMessage("Command interrupted"))
+        if self._chat_input:
+            self._chat_input.set_cursor_active(active=True)
+        await self._process_next_from_queue()
+
+    async def _kill_shell_process(self) -> None:
+        """Terminate the running shell command process.
+
+        On POSIX, sends SIGTERM to the entire process group (killing children).
+        On Windows, terminates only the root process. No-op if the process has
+        already exited. Waits up to 5s for clean shutdown, then escalates
+        to SIGKILL.
+        """
+        proc = self._shell_process
+        if proc is None or proc.returncode is not None:
+            return
+
+        try:
+            if sys.platform != "win32":
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            else:
+                proc.terminate()
+        except ProcessLookupError:
+            return
+        except OSError:
+            logger.warning(
+                "Failed to terminate shell process (pid=%s)", proc.pid, exc_info=True
+            )
+            return
+
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=5)
+        except TimeoutError:
+            logger.warning(
+                "Shell process (pid=%s) did not exit after SIGTERM; sending SIGKILL",
+                proc.pid,
+            )
+            with suppress(ProcessLookupError, OSError):
+                if sys.platform != "win32":
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                else:
+                    proc.kill()
+            with suppress(ProcessLookupError, OSError):
+                await proc.wait()
+        except (ProcessLookupError, OSError):
+            pass
 
     async def _open_url_command(self, command: str, cmd: str) -> None:
         """Open a URL in the browser and display a clickable link.
@@ -1192,15 +1502,16 @@ class DeepAgentsApp(App):
         elif cmd == "/help":
             await self._mount_message(UserMessage(command))
             help_text = Text(
-                "Commands: /quit, /clear, /compact, /model [--default], /remember, "
+                "Commands: /quit, /clear, /compact, /mcp, "
+                "/model [--model-params JSON] [--default], /reload, /remember, "
                 "/tokens, /threads, /trace, /changelog, /docs, /feedback, /help\n\n"
                 "Interactive Features:\n"
                 "  Enter           Submit your message\n"
-                "  Ctrl+J          Insert newline\n"
+                f"  {newline_shortcut():<15} Insert newline\n"
                 "  Shift+Tab       Toggle auto-approve mode\n"
                 "  @filename       Auto-complete files and inject content\n"
                 "  /command        Slash commands (/help, /clear, /quit)\n"
-                "  !command        Run bash commands directly\n\n"
+                "  !command        Run shell commands directly\n\n"
                 f"Docs: {DOCS_URL}",
                 style="dim italic",
             )
@@ -1269,23 +1580,41 @@ class DeepAgentsApp(App):
             await self._mount_message(UserMessage(command))
             if self._token_tracker and self._token_tracker.current_context > 0:
                 count = self._token_tracker.current_context
-                formatted = _format_token_count(count)
+                formatted = format_token_count(count)
 
                 model_name = settings.model_name
                 context_limit = settings.model_context_limit
 
                 if context_limit is not None:
-                    limit_str = _format_token_count(context_limit)
+                    limit_str = format_token_count(context_limit)
                     pct = count / context_limit * 100
-                    usage = f"{formatted} / {limit_str} tokens ({pct:.0f}%)"
+                    usage = (
+                        f"{formatted} / {limit_str} tokens "
+                        f"({pct:.0f}%, includes system prompt + tools)"
+                    )
                 else:
-                    usage = f"{formatted} tokens used"
+                    usage = f"{formatted} tokens used (includes system prompt + tools)"
 
                 msg = f"{usage} · {model_name}" if model_name else usage
 
+                # Append conversation-only token count when available
+                conv_line = await self._get_conversation_token_line()
+                if conv_line:
+                    msg = f"{msg}\n{conv_line}"
+
                 await self._mount_message(AppMessage(msg))
             else:
-                await self._mount_message(AppMessage("No token usage yet"))
+                model_name = settings.model_name
+                context_limit = settings.model_context_limit
+
+                parts: list[str] = ["No token usage yet"]
+                if context_limit is not None:
+                    limit_str = format_token_count(context_limit)
+                    parts.append(f"{limit_str} context window")
+                if model_name:
+                    parts.append(model_name)
+
+                await self._mount_message(AppMessage(" · ".join(parts)))
         elif cmd == "/remember" or cmd.startswith("/remember "):
             # Extract any additional context after /remember
             additional_context = ""
@@ -1304,20 +1633,37 @@ class DeepAgentsApp(App):
             # Send as a user message to the agent
             await self._handle_user_message(final_prompt)
             return  # _handle_user_message already mounts the message
+        elif cmd == "/mcp":
+            await self._show_mcp_viewer()
         elif cmd == "/model" or cmd.startswith("/model "):
             model_arg = None
             set_default = False
+            extra_kwargs: dict[str, Any] | None = None
             if cmd.startswith("/model "):
                 raw_arg = command.strip()[len("/model ") :].strip()
+                try:
+                    raw_arg, extra_kwargs = _extract_model_params_flag(raw_arg)
+                except (ValueError, TypeError) as exc:
+                    await self._mount_message(UserMessage(command))
+                    await self._mount_message(ErrorMessage(str(exc)))
+                    return
                 if raw_arg.startswith("--default"):
                     set_default = True
                     model_arg = raw_arg[len("--default") :].strip() or None
                 else:
-                    model_arg = raw_arg
+                    model_arg = raw_arg or None
 
             if set_default:
                 await self._mount_message(UserMessage(command))
-                if model_arg == "--clear":
+                if extra_kwargs:
+                    await self._mount_message(
+                        ErrorMessage(
+                            "--model-params cannot be used with --default. "
+                            "Model params are applied per-session, not "
+                            "persisted."
+                        )
+                    )
+                elif model_arg == "--clear":
                     await self._clear_default_model()
                 elif model_arg:
                     await self._set_default_model(model_arg)
@@ -1331,9 +1677,35 @@ class DeepAgentsApp(App):
             elif model_arg:
                 # Direct switch: /model claude-sonnet-4-5
                 await self._mount_message(UserMessage(command))
-                await self._switch_model(model_arg)
+                await self._switch_model(model_arg, extra_kwargs=extra_kwargs)
             else:
-                await self._show_model_selector()
+                await self._show_model_selector(extra_kwargs=extra_kwargs)
+        elif cmd == "/reload":
+            await self._mount_message(UserMessage(command))
+            try:
+                changes = settings.reload_from_environment()
+
+                from deepagents_cli.model_config import clear_caches
+
+                clear_caches()
+            except (OSError, ValueError):
+                logger.exception("Failed to reload configuration")
+                await self._mount_message(
+                    AppMessage(
+                        "Failed to reload configuration. Check your .env "
+                        "file and environment variables for syntax errors, "
+                        "then try again."
+                    )
+                )
+                return
+            if changes:
+                report = "Configuration reloaded. Changes:\n" + "\n".join(
+                    f"  - {change}" for change in changes
+                )
+            else:
+                report = "Configuration reloaded. No changes detected."
+            report += "\nModel config caches cleared."
+            await self._mount_message(AppMessage(report))
         else:
             await self._mount_message(UserMessage(command))
             await self._mount_message(AppMessage(f"Unknown command: {cmd}"))
@@ -1350,6 +1722,34 @@ class DeepAgentsApp(App):
                 pass
 
         self.call_after_refresh(_scroll_after_command)
+
+    async def _get_conversation_token_line(self) -> str | None:
+        """Return a short string with the conversation-only token count.
+
+        Returns:
+            Formatted line like `"Conversation only: ~18 tokens"`, or
+            `None` if state is unavailable.
+        """
+        if not self._agent:
+            return None
+        try:
+            from langchain_core.messages.utils import (
+                count_tokens_approximately,
+            )
+
+            config: RunnableConfig = {
+                "configurable": {"thread_id": self._lc_thread_id},
+            }
+            state = await self._agent.aget_state(config)
+            if not state or not state.values:
+                return None
+            messages = state.values.get("messages", [])
+            if not messages:
+                return None
+            conv_tokens = count_tokens_approximately(messages)
+            return f"Conversation only: ~{format_token_count(conv_tokens)} tokens"
+        except Exception:  # noqa: BLE001
+            return None
 
     async def _handle_compact(self) -> None:
         """Compact the conversation by summarizing old messages.
@@ -1397,6 +1797,7 @@ class DeepAgentsApp(App):
         # Prevent concurrent user input while compaction modifies state
         self._agent_running = True
         try:
+            await dispatch_hook("context.compact", {})
             await self._set_spinner("Compacting")
 
             from deepagents.middleware.summarization import (
@@ -1407,7 +1808,10 @@ class DeepAgentsApp(App):
 
             try:
                 model_spec = f"{settings.model_provider}:{settings.model_name}"
-                result = create_model(model_spec)
+                result = create_model(
+                    model_spec,
+                    profile_overrides=self._profile_override,
+                )
                 model = result.model
             except Exception as exc:  # noqa: BLE001  # surface model config errors to user
                 await self._mount_message(
@@ -1416,6 +1820,29 @@ class DeepAgentsApp(App):
                     )
                 )
                 return
+
+            # create_model() receives --profile-override via self._profile_override,
+            # but settings.model_context_limit may have been set by additional
+            # runtime logic. Patch it into the fresh model when it differs from
+            # the profile value.
+            ctx = settings.model_context_limit
+            if ctx is not None:
+                # Guard against models that lack a profile dict
+                # (custom/non-standard providers)
+                profile = getattr(model, "profile", None)
+                native = (
+                    profile.get("max_input_tokens")
+                    if isinstance(profile, dict)
+                    else None
+                )
+                if native != ctx:
+                    merged = (
+                        {**profile, "max_input_tokens": ctx}
+                        if isinstance(profile, dict)
+                        else {"max_input_tokens": ctx}
+                    )
+                    with suppress(AttributeError, TypeError, ValueError):
+                        model.profile = merged  # type: ignore[union-attr]
 
             defaults = compute_summarization_defaults(model)
             middleware = SummarizationMiddleware(
@@ -1437,13 +1864,41 @@ class DeepAgentsApp(App):
             )
 
             if cutoff == 0:
-                await self._mount_message(
-                    AppMessage(
-                        "Nothing to compact yet \u2014 conversation is within "
-                        "the token budget.\n"
-                        f"Configured retention budget: {compact_limit}"
-                    )
+                conv_tokens = count_tokens_approximately(effective)
+                conv_str = format_token_count(conv_tokens)
+                total_context = (
+                    self._token_tracker.current_context if self._token_tracker else 0
                 )
+                context_limit = settings.model_context_limit
+
+                if (
+                    total_context > 0
+                    and context_limit is not None
+                    and total_context > context_limit
+                ):
+                    # Case A: overhead-dominated — total context exceeds
+                    # limit but conversation itself is small
+                    total_str = format_token_count(total_context)
+                    await self._mount_message(
+                        AppMessage(
+                            f"Nothing to compact \u2014 conversation is only "
+                            f"~{conv_str} tokens.\n"
+                            f"Total context ({total_str}) is mostly system "
+                            f"prompt and tool overhead, which compaction "
+                            f"cannot reduce.\n"
+                            f"Retention budget: {compact_limit}"
+                        )
+                    )
+                else:
+                    # Case B: genuinely within budget
+                    await self._mount_message(
+                        AppMessage(
+                            "Nothing to compact yet \u2014 conversation is "
+                            "within the retention budget.\n"
+                            f"Conversation: ~{conv_str} tokens \u00b7 "
+                            f"Retention budget: {compact_limit}"
+                        )
+                    )
                 return
 
             to_summarize, to_keep = middleware._partition_messages(effective, cutoff)
@@ -1477,15 +1932,15 @@ class DeepAgentsApp(App):
             # model is aware of how much context was reclaimed.
             tokens_summary = count_tokens_approximately([summary_msg])
             tokens_after = tokens_summary + tokens_kept
-            before = _format_token_count(tokens_before)
-            after = _format_token_count(tokens_after)
+            before = format_token_count(tokens_before)
+            after = format_token_count(tokens_after)
             pct = (
                 round((tokens_before - tokens_after) / tokens_before * 100)
                 if tokens_before > 0
                 else 0
             )
-            summarized_before = _format_token_count(tokens_summarized)
-            summarized_after = _format_token_count(tokens_summary)
+            summarized_before = format_token_count(tokens_summarized)
+            summarized_after = format_token_count(tokens_summary)
             savings_note = (
                 f"\n\n{len(to_summarize)} messages were compacted "
                 f"({summarized_before} \u2192 {summarized_after} tokens). "
@@ -1665,8 +2120,9 @@ class DeepAgentsApp(App):
         # Caller ensures _ui_adapter is set (checked in _handle_user_message)
         if self._ui_adapter is None:
             return
+        turn_stats: SessionStats | None = None
         try:
-            await execute_task_textual(
+            turn_stats = await execute_task_textual(
                 user_input=message,
                 agent=self._agent,
                 assistant_id=self._assistant_id,
@@ -1684,6 +2140,10 @@ class DeepAgentsApp(App):
         finally:
             # Clean up loading widget and agent state
             await self._cleanup_agent_task()
+
+        # Accumulate stats across all turns; printed once at session end
+        if isinstance(turn_stats, SessionStats):
+            self._session_stats.merge(turn_stats)
 
     async def _process_next_from_queue(self) -> None:
         """Process the next message from the queue if any exist.
@@ -1712,10 +2172,11 @@ class DeepAgentsApp(App):
         finally:
             self._processing_pending = False
 
-        # Bash/command mode messages complete synchronously without spawning
-        # a worker, so _cleanup_agent_task won't fire again. Continue
-        # draining the queue if no worker was started.
-        if not self._agent_running and self._pending_messages:
+        # Command mode messages complete synchronously without spawning
+        # a worker, so cleanup won't fire again. Continue draining the
+        # queue if no worker was started.
+        busy = self._agent_running or self._shell_running
+        if not busy and self._pending_messages:
             await self._process_next_from_queue()
 
     async def _cleanup_agent_task(self) -> None:
@@ -1965,9 +2426,6 @@ class DeepAgentsApp(App):
             # 3. Bulk load into store (sets visible window)
             _archived, visible = self._message_store.bulk_load(all_data)
 
-            # 4. Remove spacer once
-            await self._remove_spacer()
-
             # 5. Cache container ref (single query)
             try:
                 messages_container = self.query_one("#messages", Container)
@@ -2037,8 +2495,6 @@ class DeepAgentsApp(App):
         Args:
             widget: The message widget to mount
         """
-        await self._remove_spacer()
-
         try:
             messages = self.query_one("#messages", Container)
         except NoMatches:
@@ -2046,6 +2502,10 @@ class DeepAgentsApp(App):
 
         # Store message data for virtualization
         message_data = MessageData.from_widget(widget)
+        # Ensure the widget's DOM id matches the store id so that
+        # features like click-to-show-timestamp can look it up.
+        if not widget.id:
+            widget.id = message_data.id
         self._message_store.append(message_data)
 
         # Queued-message widgets must always stay at the bottom so they
@@ -2138,28 +2598,58 @@ class DeepAgentsApp(App):
                 "UI may be out of sync with message store"
             )
 
+    def _discard_queue(self) -> None:
+        """Clear pending messages and remove queued widgets from the DOM."""
+        self._pending_messages.clear()
+        for w in self._queued_widgets:
+            w.remove()
+        self._queued_widgets.clear()
+
+    def _cancel_worker(self, worker: Worker[None] | None) -> None:
+        """Discard the message queue and cancel an active worker.
+
+        Args:
+            worker: The worker to cancel.
+        """
+        self._discard_queue()
+        if worker is not None:
+            worker.cancel()
+
     def action_quit_or_interrupt(self) -> None:
         """Handle Ctrl+C - interrupt agent, reject approval, or quit on double press.
 
         Priority order:
-        1. If agent is running, interrupt it (preserve input)
+        1. If shell command is running, kill it
         2. If approval menu is active, reject it
-        3. If double press (quit_pending), quit
-        4. Otherwise show quit hint
+        3. If agent is running, interrupt it (preserve input)
+        4. If double press (quit_pending), quit
+        5. Otherwise show quit hint
         """
-        # If agent is running, interrupt it and discard queued messages
-        if self._agent_running and self._agent_worker:
-            self._pending_messages.clear()
-            for w in self._queued_widgets:
-                w.remove()
-            self._queued_widgets.clear()
-            self._agent_worker.cancel()
+        # If shell command is running, cancel the worker
+        if self._shell_running and self._shell_worker:
+            self._cancel_worker(self._shell_worker)
             self._quit_pending = False
             return
 
-        # If approval menu is active, reject it
+        # If approval menu is active, reject it before cancelling the agent worker.
+        # During HITL the agent worker remains active while awaiting approval,
+        # so this must be checked before the worker cancellation branch to
+        # avoid leaving a stale approval widget interactive after interruption.
         if self._pending_approval_widget:
             self._pending_approval_widget.action_select_reject()
+            self._quit_pending = False
+            return
+
+        # If ask_user menu is active, cancel it before cancelling the agent
+        # worker, following the same pattern as the approval widget above.
+        if self._pending_ask_user_widget:
+            self._pending_ask_user_widget.action_cancel()
+            self._quit_pending = False
+            return
+
+        # If agent is running, interrupt it and discard queued messages
+        if self._agent_running and self._agent_worker:
+            self._cancel_worker(self._agent_worker)
             self._quit_pending = False
             return
 
@@ -2167,40 +2657,84 @@ class DeepAgentsApp(App):
         if self._quit_pending:
             self.exit()
         else:
-            self._quit_pending = True
-            self.notify("Press Ctrl+C again to quit", timeout=3)
+            self._arm_quit_pending("Ctrl+C")
+
+    def _arm_quit_pending(self, shortcut: str) -> None:
+        """Set the pending-quit flag and show a matching hint.
+
+        Args:
+            shortcut: The key chord to show in the quit hint.
+        """
+        self._quit_pending = True
+        quit_timeout = 3
+        self.notify(f"Press {shortcut} again to quit", timeout=quit_timeout)
+        self.set_timer(quit_timeout, lambda: setattr(self, "_quit_pending", False))
 
     def action_interrupt(self) -> None:
         """Handle escape key.
 
-        Dismiss completion popup, dismiss modal, interrupt agent,
-        or reject approval. This is the primary way to stop a
-        running agent.
+        Priority order:
+        1. If modal screen is active, dismiss it
+        2. If completion popup is open, dismiss it
+        3. If input is in command/shell mode, exit to normal mode
+        4. If shell command is running, kill it
+        5. If approval menu is active, reject it
+        6. If agent is running, interrupt it
         """
+        if (
+            isinstance(self.screen, ThreadSelectorScreen)
+            and self.screen.is_delete_confirmation_open
+        ):
+            self.screen.action_cancel()
+            return
+
         # If a modal screen is active, dismiss it
         if isinstance(self.screen, ModalScreen):
             self.screen.dismiss(None)
             return
 
-        # Close completion popup before interrupting the agent
-        if self._chat_input and self._chat_input.dismiss_completion():
+        # Close completion popup or exit slash/shell command mode
+        if self._chat_input:
+            if self._chat_input.dismiss_completion():
+                return
+            if self._chat_input.exit_mode():
+                return
+
+        # If shell command is running, cancel the worker
+        if self._shell_running and self._shell_worker:
+            self._cancel_worker(self._shell_worker)
+            return
+
+        # If approval menu is active, reject it before cancelling the agent worker.
+        # During HITL the agent worker remains active while awaiting approval,
+        # so this must be checked before the worker cancellation branch to
+        # avoid leaving a stale approval widget interactive after interruption.
+        if self._pending_approval_widget:
+            self._pending_approval_widget.action_select_reject()
+            return
+
+        # If ask_user menu is active, cancel it before cancelling the agent
+        # worker, following the same pattern as the approval widget above.
+        if self._pending_ask_user_widget:
+            self._pending_ask_user_widget.action_cancel()
             return
 
         # If agent is running, interrupt it and discard queued messages
         if self._agent_running and self._agent_worker:
-            self._pending_messages.clear()
-            for w in self._queued_widgets:
-                w.remove()
-            self._queued_widgets.clear()
-            self._agent_worker.cancel()
+            self._cancel_worker(self._agent_worker)
             return
-
-        # If approval menu is active, reject it
-        if self._pending_approval_widget:
-            self._pending_approval_widget.action_select_reject()
 
     def action_quit_app(self) -> None:
         """Handle quit action (Ctrl+D)."""
+        if isinstance(self.screen, ThreadSelectorScreen):
+            self.screen.action_delete_thread()
+            return
+        if isinstance(self.screen, DeleteThreadConfirmScreen):
+            if self._quit_pending:
+                self.exit()
+                return
+            self._arm_quit_pending("Ctrl+D")
+            return
         self.exit()
 
     def exit(
@@ -2221,11 +2755,28 @@ class DeepAgentsApp(App):
             message: Optional message to display on exit.
         """
         # Discard queued messages so _cleanup_agent_task won't try to
-        # process them after the event loop is torn down.
-        self._pending_messages.clear()
-        for w in self._queued_widgets:
-            w.remove()
-        self._queued_widgets.clear()
+        # process them after the event loop is torn down, and cancel
+        # active workers so their subprocesses are terminated
+        # (SIGTERM → SIGKILL) instead of being orphaned.
+        self._discard_queue()
+        if self._shell_running and self._shell_worker:
+            self._shell_worker.cancel()
+        if self._agent_running and self._agent_worker:
+            self._agent_worker.cancel()
+
+        # Dispatch synchronously — the event loop is about to be torn down by
+        # super().exit(), so an async task would never complete.
+        from deepagents_cli.hooks import _dispatch_hook_sync, _load_hooks
+
+        hooks = _load_hooks()
+        if hooks:
+            payload = json.dumps(
+                {
+                    "event": "session.end",
+                    "thread_id": getattr(self, "_lc_thread_id", ""),
+                }
+            ).encode()
+            _dispatch_hook_sync("session.end", payload, hooks)
 
         _write_iterm_escape(_ITERM_CURSOR_GUIDE_ON)
         super().exit(result=result, return_code=return_code, message=message)
@@ -2237,6 +2788,17 @@ class DeepAgentsApp(App):
         web search, URL fetch) run without prompting. Updates the status
         bar indicator and session state.
         """
+        if isinstance(self.screen, ThreadSelectorScreen):
+            self.screen.action_focus_previous_filter()
+            return
+        # shift+tab is reused for navigation inside modal screens (e.g.
+        # ModelSelectorScreen); skip the toggle so it doesn't fire through.
+        if isinstance(self.screen, ModalScreen):
+            return
+        # Delegate shift+tab to ask_user navigation when interview is active.
+        if self._pending_ask_user_widget is not None:
+            self._pending_ask_user_widget.action_previous_question()
+            return
         self._auto_approve = not self._auto_approve
         if self._status_bar:
             self._status_bar.set_auto_approve(enabled=self._auto_approve)
@@ -2295,15 +2857,15 @@ class DeepAgentsApp(App):
         if self._pending_approval_widget:
             self._pending_approval_widget.action_select_approve()
 
-    def action_approval_no(self) -> None:
-        """Handle no/2 in approval menu."""
-        if self._pending_approval_widget:
-            self._pending_approval_widget.action_select_reject()
-
     def action_approval_auto(self) -> None:
-        """Handle auto/3 in approval menu."""
+        """Handle auto/2 in approval menu."""
         if self._pending_approval_widget:
             self._pending_approval_widget.action_select_auto()
+
+    def action_approval_no(self) -> None:
+        """Handle no/3 in approval menu."""
+        if self._pending_approval_widget:
+            self._pending_approval_widget.action_select_reject()
 
     def action_approval_escape(self) -> None:
         """Handle escape in approval menu - reject."""
@@ -2314,7 +2876,11 @@ class DeepAgentsApp(App):
         """Route unfocused paste events to chat input for drag/drop reliability."""
         if not self._chat_input:
             return
-        if self._pending_approval_widget or self._is_input_focused():
+        if (
+            self._pending_approval_widget
+            or self._pending_ask_user_widget
+            or self._is_input_focused()
+        ):
             return
         if self._chat_input.handle_external_paste(event.text):
             event.prevent_default()
@@ -2332,7 +2898,7 @@ class DeepAgentsApp(App):
             return
         if isinstance(self.screen, ModalScreen):
             return
-        if self._pending_approval_widget:
+        if self._pending_approval_widget or self._pending_ask_user_widget:
             return
         self._chat_input.focus_input()
 
@@ -2340,8 +2906,8 @@ class DeepAgentsApp(App):
         """Handle clicks anywhere in the terminal to focus on the command line."""
         if not self._chat_input:
             return
-        # Don't steal focus from approval widget
-        if self._pending_approval_widget:
+        # Don't steal focus from approval or ask_user widgets
+        if self._pending_approval_widget or self._pending_ask_user_widget:
             return
         self.call_after_refresh(self._chat_input.focus_input)
 
@@ -2353,14 +2919,29 @@ class DeepAgentsApp(App):
     # Model Switching
     # =========================================================================
 
-    async def _show_model_selector(self) -> None:
-        """Show interactive model selector as a modal screen."""
+    async def _show_model_selector(
+        self,
+        *,
+        extra_kwargs: dict[str, Any] | None = None,
+    ) -> None:
+        """Show interactive model selector as a modal screen.
+
+        Args:
+            extra_kwargs: Extra constructor kwargs from `--model-params`.
+        """
+        from functools import partial
 
         def handle_result(result: tuple[str, str] | None) -> None:
             """Handle the model selector result."""
             if result is not None:
                 model_spec, _ = result
-                self.call_later(self._switch_model, model_spec)
+                self.call_later(
+                    partial(
+                        self._switch_model,
+                        model_spec,
+                        extra_kwargs=extra_kwargs,
+                    )
+                )
             # Refocus input after modal closes
             if self._chat_input:
                 self._chat_input.focus_input()
@@ -2368,7 +2949,20 @@ class DeepAgentsApp(App):
         screen = ModelSelectorScreen(
             current_model=settings.model_name,
             current_provider=settings.model_provider,
+            cli_profile_override=self._profile_override,
         )
+        self.push_screen(screen, handle_result)
+
+    async def _show_mcp_viewer(self) -> None:
+        """Show read-only MCP server/tool viewer as a modal screen."""
+        from deepagents_cli.widgets.mcp_viewer import MCPViewerScreen
+
+        screen = MCPViewerScreen(server_info=self._mcp_server_info or [])
+
+        def handle_result(result: None) -> None:  # noqa: ARG001
+            if self._chat_input:
+                self._chat_input.focus_input()
+
         self.push_screen(screen, handle_result)
 
     async def _show_thread_selector(self) -> None:
@@ -2527,7 +3121,12 @@ class DeepAgentsApp(App):
             if self._chat_input:
                 self._chat_input.set_cursor_active(active=not self._agent_running)
 
-    async def _switch_model(self, model_spec: str) -> None:
+    async def _switch_model(
+        self,
+        model_spec: str,
+        *,
+        extra_kwargs: dict[str, Any] | None = None,
+    ) -> None:
         """Switch to a new model, preserving conversation history.
 
         Args:
@@ -2536,6 +3135,7 @@ class DeepAgentsApp(App):
                 Can be in `provider:model` format
                 (e.g., `'anthropic:claude-sonnet-4-5'`) or just the model name
                 for auto-detection.
+            extra_kwargs: Extra constructor kwargs from `--model-params`.
         """
         logger.info("Switching model to %s", model_spec)
 
@@ -2599,7 +3199,11 @@ class DeepAgentsApp(App):
             return
 
         try:
-            result = create_model(model_spec)
+            result = create_model(
+                model_spec,
+                extra_kwargs=extra_kwargs,
+                profile_overrides=self._profile_override,
+            )
         except ModelConfigError as e:
             await self._mount_message(ErrorMessage(str(e)))
             return
@@ -2627,7 +3231,9 @@ class DeepAgentsApp(App):
                 sandbox=self._sandbox,
                 sandbox_type=self._sandbox_type,
                 auto_approve=self._auto_approve,
+                enable_ask_user=self._enable_ask_user,
                 checkpointer=self._checkpointer,
+                mcp_server_info=self._mcp_server_info,
             )
         except Exception as e:
             # Roll back settings so the running agent isn't misrepresented.
@@ -2645,7 +3251,10 @@ class DeepAgentsApp(App):
         # Post-swap: update UI and save config
         display = f"{settings.model_provider}:{settings.model_name}"
         if self._status_bar:
-            self._status_bar.set_model(display)
+            self._status_bar.set_model(
+                provider=settings.model_provider or "",
+                model=settings.model_name or "",
+            )
 
         config_saved = save_recent_model(display)
         if config_saved:
@@ -2731,10 +3340,12 @@ class AppResult:
         return_code: Exit code (0 for success, non-zero for error).
         thread_id: The final thread ID at shutdown. May differ from the
             initial thread ID if the user switched threads via `/threads`.
+        session_stats: Cumulative usage stats across all turns in the session.
     """
 
     return_code: int
     thread_id: str | None
+    session_stats: SessionStats = field(default_factory=SessionStats)
 
 
 async def run_textual_app(
@@ -2743,13 +3354,16 @@ async def run_textual_app(
     assistant_id: str | None = None,
     backend: CompositeBackend | None = None,
     auto_approve: bool = False,
+    enable_ask_user: bool = False,
     cwd: str | Path | None = None,
     thread_id: str | None = None,
     initial_prompt: str | None = None,
     checkpointer: BaseCheckpointSaver | None = None,
-    tools: list[Callable[..., Any] | dict[str, Any]] | None = None,
+    tools: list[BaseTool | Callable[..., Any] | dict[str, Any]] | None = None,
     sandbox: SandboxBackendProtocol | None = None,
     sandbox_type: str | None = None,
+    mcp_server_info: list[MCPServerInfo] | None = None,
+    profile_override: dict[str, Any] | None = None,
 ) -> AppResult:
     """Run the Textual application.
 
@@ -2758,6 +3372,8 @@ async def run_textual_app(
         assistant_id: Agent identifier for memory storage
         backend: Backend for file operations
         auto_approve: Whether to start with auto-approve enabled
+        enable_ask_user: Whether `ask_user` should stay enabled when
+            recreating agents (for example during model hot-swap)
         cwd: Current working directory to display
         thread_id: Optional thread ID for session persistence
         initial_prompt: Optional prompt to auto-submit when session starts
@@ -2765,6 +3381,9 @@ async def run_textual_app(
         tools: Tools used to create the agent (for model hot-swap)
         sandbox: Sandbox backend (for model hot-swap)
         sandbox_type: Type of sandbox provider (for model hot-swap)
+        mcp_server_info: MCP server metadata for the `/mcp` viewer.
+        profile_override: Extra profile fields from `--profile-override`,
+            retained for model hot-swap and footer display.
 
     Returns:
         An `AppResult` with the return code and final thread ID.
@@ -2774,6 +3393,7 @@ async def run_textual_app(
         assistant_id=assistant_id,
         backend=backend,
         auto_approve=auto_approve,
+        enable_ask_user=enable_ask_user,
         cwd=cwd,
         thread_id=thread_id,
         initial_prompt=initial_prompt,
@@ -2781,11 +3401,14 @@ async def run_textual_app(
         tools=tools,
         sandbox=sandbox,
         sandbox_type=sandbox_type,
+        mcp_server_info=mcp_server_info,
+        profile_override=profile_override,
     )
     await app.run_async()
     return AppResult(
         return_code=app.return_code or 0,
         thread_id=app._lc_thread_id,
+        session_stats=app._session_stats,
     )
 
 

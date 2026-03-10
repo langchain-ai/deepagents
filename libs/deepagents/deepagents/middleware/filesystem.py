@@ -19,7 +19,7 @@ from langchain.agents.middleware.types import (
 from langchain.tools import ToolRuntime
 from langchain.tools.tool_node import ToolCallRequest
 from langchain_core.messages import ToolMessage
-from langchain_core.messages.content import create_image_block
+from langchain_core.messages.content import ContentBlock, create_image_block
 from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.types import Command
 from typing_extensions import TypedDict
@@ -246,21 +246,21 @@ FILESYSTEM_SYSTEM_PROMPT = """## Following Conventions
 - Read files before editing — understand existing content before making changes
 - Mimic existing style, naming conventions, and patterns
 
-## Tool Usage and File Reading
-
-Follow the tool docs for the available tools. In particular, for filesystem tools, use pagination (offset/limit) when reading large files.
-
 ## Filesystem Tools `ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`
 
 You have access to a filesystem which you can interact with using these tools.
-All file paths must start with a /.
+All file paths must start with a /. Follow the tool docs for the available tools, and use pagination (offset/limit) when reading large files.
 
 - ls: list files in a directory (requires absolute path)
 - read_file: read a file from the filesystem
 - write_file: write to a file in the filesystem
 - edit_file: edit a file in the filesystem
 - glob: find files matching a pattern (e.g., "**/*.py")
-- grep: search for text within files"""
+- grep: search for text within files
+
+## Large Tool Results
+
+When a tool result is too large, it may be offloaded into the filesystem instead of being returned inline. In those cases, use `read_file` to inspect the saved result in chunks, or use `grep` within `/large_tool_results/` if you need to search across offloaded tool results and do not know the exact file path. Offloaded tool results are stored under `/large_tool_results/<tool_call_id>`."""
 
 EXECUTION_SYSTEM_PROMPT = """## Execute Tool `execute`
 
@@ -360,6 +360,45 @@ def _create_content_preview(content_str: str, *, head_lines: int = 5, tail_lines
     tail_sample = format_content_with_line_numbers(tail, start_line=len(lines) - tail_lines + 1)
 
     return head_sample + truncation_notice + tail_sample
+
+
+def _extract_text_from_message(message: ToolMessage) -> str:
+    """Extract text from a ToolMessage using its `content_blocks` property.
+
+    Joins all text content blocks and ignores non-text blocks (images, audio, etc.)
+    so that binary payloads don't inflate the size measurement.
+
+    Args:
+        message: The ToolMessage to extract text from.
+
+    Returns:
+        Joined text from all text content blocks, or stringified content as fallback.
+    """
+    texts = [block["text"] for block in message.content_blocks if block["type"] == "text"]
+    return "\n".join(texts)
+
+
+def _build_evicted_content(message: ToolMessage, replacement_text: str) -> str | list[ContentBlock]:
+    """Build replacement content for an evicted message, preserving non-text blocks.
+
+    For plain string content, returns the replacement text directly. For list content
+    with mixed block types (e.g., text + image), replaces all text blocks with a single
+    text block containing the replacement text while keeping non-text blocks intact.
+
+    Args:
+        message: The original ToolMessage being evicted.
+        replacement_text: The truncation notice and preview text.
+
+    Returns:
+        Replacement content: a string or list of content blocks.
+    """
+    if isinstance(message.content, str):
+        return replacement_text
+    media_blocks = [block for block in message.content_blocks if block["type"] != "text"]
+    if not media_blocks:
+        # All content is text, so a plain string replacement is sufficient.
+        return replacement_text
+    return [cast("ContentBlock", {"type": "text", "text": replacement_text}), *media_blocks]
 
 
 class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]):
@@ -1103,33 +1142,16 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             - files_update: Dict of file updates to apply to state, or None if eviction failed
 
         Note:
-            The entire content is converted to string, written to /large_tool_results/{tool_call_id},
-            and replaced with a truncated preview plus file reference. The replacement is always
-            returned as a plain string for consistency, regardless of original content type.
-
-            ToolMessage supports multimodal content blocks (images, audio, etc.), but these are
-            uncommon in tool results. For simplicity, all content is stringified and evicted.
-            The model can recover by reading the offloaded file from the backend.
+            Text is extracted from all text content blocks, joined, and used for both the
+            size check and eviction. Non-text blocks (images, audio, etc.) are preserved in
+            the replacement message so multimodal context is not lost. The model can recover
+            the full text by reading the offloaded file from the backend.
         """
         # Early exit if eviction not configured
         if not self._tool_token_limit_before_evict:
             return message, None
 
-        # Convert content to string once for both size check and eviction
-        # Special case: single text block - extract text directly for readability
-        if (
-            isinstance(message.content, list)
-            and len(message.content) == 1
-            and isinstance(message.content[0], dict)
-            and message.content[0].get("type") == "text"
-            and "text" in message.content[0]
-        ):
-            content_str = str(message.content[0]["text"])
-        elif isinstance(message.content, str):
-            content_str = message.content
-        else:
-            # Multiple blocks or non-text content - stringify entire structure
-            content_str = str(message.content)
+        content_str = _extract_text_from_message(message)
 
         # Check if content exceeds eviction threshold
         if len(content_str) <= NUM_CHARS_PER_TOKEN * self._tool_token_limit_before_evict:
@@ -1150,9 +1172,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             content_sample=content_sample,
         )
 
-        # Always return as plain string after eviction
+        evicted = _build_evicted_content(message, replacement_text)
         processed_message = ToolMessage(
-            content=replacement_text,
+            content=cast("str | list[str | dict]", evicted),
             tool_call_id=message.tool_call_id,
             name=message.name,
             id=message.id,
@@ -1177,21 +1199,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         if not self._tool_token_limit_before_evict:
             return message, None
 
-        # Convert content to string once for both size check and eviction
-        # Special case: single text block - extract text directly for readability
-        if (
-            isinstance(message.content, list)
-            and len(message.content) == 1
-            and isinstance(message.content[0], dict)
-            and message.content[0].get("type") == "text"
-            and "text" in message.content[0]
-        ):
-            content_str = str(message.content[0]["text"])
-        elif isinstance(message.content, str):
-            content_str = message.content
-        else:
-            # Multiple blocks or non-text content - stringify entire structure
-            content_str = str(message.content)
+        content_str = _extract_text_from_message(message)
 
         if len(content_str) <= NUM_CHARS_PER_TOKEN * self._tool_token_limit_before_evict:
             return message, None
@@ -1211,9 +1219,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             content_sample=content_sample,
         )
 
-        # Always return as plain string after eviction
+        evicted = _build_evicted_content(message, replacement_text)
         processed_message = ToolMessage(
-            content=replacement_text,
+            content=cast("str | list[str | dict]", evicted),
             tool_call_id=message.tool_call_id,
             name=message.name,
             id=message.id,

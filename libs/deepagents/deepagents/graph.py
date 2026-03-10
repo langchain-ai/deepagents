@@ -71,11 +71,10 @@ def get_default_model() -> ChatAnthropic:
     """Get the default model for deep agents.
 
     Returns:
-        `ChatAnthropic` instance configured with Claude Sonnet 4.5.
+        `ChatAnthropic` instance configured with Claude Sonnet 4.6.
     """
     return ChatAnthropic(
-        model_name="claude-sonnet-4-5-20250929",
-        max_tokens=20000,
+        model_name="claude-sonnet-4-6",
     )
 
 
@@ -141,7 +140,7 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
     Args:
         model: The model to use.
 
-            Defaults to `claude-sonnet-4-5-20250929`.
+            Defaults to `claude-sonnet-4-6`.
 
             Use the `provider:model` format (e.g., `openai:gpt-5`) to quickly switch between models.
 

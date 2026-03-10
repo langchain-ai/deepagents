@@ -18,7 +18,8 @@ from textual.widgets import Markdown, Static
 
 from deepagents_cli.config import (
     COLORS,
-    MODE_PREFIXES,
+    MODE_DISPLAY_GLYPHS,
+    PREFIX_TO_MODE,
     CharsetMode,
     _detect_charset_mode,
     get_glyphs,
@@ -36,15 +37,52 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_PREFIX_TO_MODE: dict[str, str] = {v: k for k, v in MODE_PREFIXES.items()}
-"""Reverse lookup: trigger character -> mode name."""
+
+def _show_timestamp_toast(widget: Static | Vertical) -> None:
+    """Show a toast with the message's creation timestamp.
+
+    No-ops silently if the widget is not mounted or has no associated message
+    data in the store.
+
+    Args:
+        widget: The message widget whose timestamp to display.
+    """
+    from datetime import UTC, datetime
+
+    try:
+        app = widget.app
+    except Exception:  # noqa: BLE001  # Textual raises when widget has no app
+        return
+    if not widget.id:
+        return
+    store = app._message_store  # type: ignore[attr-defined]
+    data = store.get_message(widget.id)
+    if not data:
+        return
+    dt = datetime.fromtimestamp(data.timestamp, tz=UTC).astimezone()
+    label = f"{dt:%b} {dt.day}, {dt.hour % 12 or 12}:{dt:%M:%S} {dt:%p}"
+    app.notify(label, timeout=3)
+
+
+class _TimestampClickMixin:
+    """Mixin that shows a timestamp toast on click.
+
+    Add to any message widget that should display its creation timestamp when
+    clicked. Widgets needing additional click behavior (e.g. `ToolCallMessage`,
+    `AppMessage`) should override `on_click` and call `_show_timestamp_toast`
+    directly instead.
+    """
+
+    def on_click(self, event: Click) -> None:  # noqa: ARG002  # Textual event handler
+        """Show timestamp toast on click."""
+        _show_timestamp_toast(self)  # type: ignore[arg-type]
 
 
 def _mode_color(mode: str | None) -> str:
     """Return the color string for a mode, falling back to primary.
 
     Args:
-        mode: Mode name (e.g. `'bash'`, `'command'`) or `None`.
+        mode: Mode name (e.g. `'shell'`, `'command'`) or `None`.
 
     Returns:
         Hex color string from `COLORS`.
@@ -104,7 +142,7 @@ _TOOLS_WITH_HEADER_INFO: set[str] = {
 }
 
 
-class UserMessage(Static):
+class UserMessage(_TimestampClickMixin, Static):
     """Widget displaying a user message."""
 
     DEFAULT_CSS = """
@@ -129,7 +167,7 @@ class UserMessage(Static):
 
     def on_mount(self) -> None:
         """Set border style based on charset mode and content prefix."""
-        mode = _PREFIX_TO_MODE.get(self._content[:1]) if self._content else None
+        mode = PREFIX_TO_MODE.get(self._content[:1]) if self._content else None
         color = _mode_color(mode)
         border_type = "ascii" if _detect_charset_mode() == CharsetMode.ASCII else "wide"
         self.styles.border_left = (border_type, color)
@@ -144,10 +182,12 @@ class UserMessage(Static):
         content = self._content
 
         # Use mode-specific prefix indicator when content starts with a
-        # mode trigger character (e.g. "!" for bash, "/" for commands).
-        mode = _PREFIX_TO_MODE.get(content[:1]) if content else None
+        # mode trigger character (e.g. "!" for shell, "/" for commands).
+        # The display glyph may differ from the trigger (e.g. "$" for shell).
+        mode = PREFIX_TO_MODE.get(content[:1]) if content else None
         if mode:
-            text.append(f"{content[0]} ", style=f"bold {_mode_color(mode)}")
+            glyph = MODE_DISPLAY_GLYPHS.get(mode, content[0])
+            text.append(f"{glyph} ", style=f"bold {_mode_color(mode)}")
             content = content[1:]
         else:
             text.append("> ", style=f"bold {COLORS['primary']}")
@@ -224,9 +264,10 @@ class QueuedUserMessage(Static):
         """
         text = Text()
         content = self._content
-        mode = _PREFIX_TO_MODE.get(content[:1]) if content else None
+        mode = PREFIX_TO_MODE.get(content[:1]) if content else None
         if mode:
-            text.append(f"{content[0]} ", style=f"bold {COLORS['dim']}")
+            glyph = MODE_DISPLAY_GLYPHS.get(mode, content[0])
+            text.append(f"{glyph} ", style=f"bold {COLORS['dim']}")
             content = content[1:]
         else:
             text.append("> ", style=f"bold {COLORS['dim']}")
@@ -234,7 +275,7 @@ class QueuedUserMessage(Static):
         yield Static(text)
 
 
-class AssistantMessage(Vertical):
+class AssistantMessage(_TimestampClickMixin, Vertical):
     """Widget displaying an assistant message with markdown support.
 
     Uses MarkdownStream for smoother streaming instead of re-rendering
@@ -655,9 +696,12 @@ class ToolCallMessage(Vertical):
         self._update_output_display()
 
     def on_click(self, event: Click) -> None:
-        """Handle click to toggle output expansion."""
+        """Toggle output expansion, or show timestamp if no output."""
         event.stop()  # Prevent click from bubbling up and scrolling
-        self.toggle_output()
+        if self._output:
+            self.toggle_output()
+        else:
+            _show_timestamp_toast(self)
 
     def _format_output(
         self, output: str, *, is_preview: bool = False
@@ -1171,7 +1215,7 @@ class ToolCallMessage(Vertical):
         return filtered
 
 
-class DiffMessage(Static):
+class DiffMessage(_TimestampClickMixin, Static):
     """Widget displaying a diff with syntax highlighting."""
 
     DEFAULT_CSS = """
@@ -1242,7 +1286,7 @@ class DiffMessage(Static):
             self.styles.border = ("ascii", "cyan")
 
 
-class ErrorMessage(Static):
+class ErrorMessage(_TimestampClickMixin, Static):
     """Widget displaying an error message."""
 
     DEFAULT_CSS = """
@@ -1252,7 +1296,7 @@ class ErrorMessage(Static):
         margin: 1 0;
         background: #7f1d1d;
         color: white;
-        border-left: thick $error;
+        border-left: wide $error;
     }
     """
 
@@ -1310,6 +1354,42 @@ class AppMessage(Static):
         )
         super().__init__(content, **kwargs)
 
-    def on_click(self, event: Click) -> None:  # noqa: PLR6301  # Textual event handler
-        """Open Rich-style hyperlinks on single click."""
+    def on_click(self, event: Click) -> None:
+        """Open Rich-style hyperlinks on single click and show timestamp."""
         open_style_link(event)
+        _show_timestamp_toast(self)
+
+
+class SummarizationMessage(AppMessage):
+    """Widget displaying a summarization completion notification."""
+
+    DEFAULT_CSS = """
+    SummarizationMessage {
+        height: auto;
+        padding: 0 1;
+        margin: 1 0;
+        color: $primary;
+        background: $surface;
+        border-left: wide $primary;
+        text-style: bold;
+    }
+    """
+
+    def __init__(self, message: str | Text | None = None, **kwargs: Any) -> None:
+        """Initialize a summarization notification message.
+
+        Args:
+            message: Optional message override used when rehydrating from the
+                message store.
+
+                Defaults to the standard summary notification.
+            **kwargs: Additional arguments passed to parent.
+        """
+        content: Text
+        if message is None:
+            content = Text("✓ Summarized conversation", style="bold cyan")
+        elif isinstance(message, Text):
+            content = message
+        else:
+            content = Text(message, style="bold cyan")
+        super().__init__(content, **kwargs)

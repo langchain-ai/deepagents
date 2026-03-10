@@ -127,7 +127,7 @@ def test_composite_backend_store_to_store():
 
     # Write to routed store
     res2 = comp.write("/memories/important.txt", "routed store content")
-    assert isinstance(res2, WriteResult) and res2.error is None and res2.path == "/important.txt"
+    assert isinstance(res2, WriteResult) and res2.error is None and res2.path == "/memories/important.txt"
 
     # Read from both
     content1 = comp.read("/notes.txt")
@@ -172,17 +172,17 @@ def test_composite_backend_multiple_routes():
     # Write to /memories/ route
     res_mem = comp.write("/memories/important.md", "long-term memory")
     assert res_mem.files_update is None  # Store backend doesn't return files_update
-    assert res_mem.path == "/important.md"
+    assert res_mem.path == "/memories/important.md"
 
     # Write to /archive/ route
     res_arch = comp.write("/archive/old.log", "archived log")
     assert res_arch.files_update is None
-    assert res_arch.path == "/old.log"
+    assert res_arch.path == "/archive/old.log"
 
     # Write to /cache/ route
     res_cache = comp.write("/cache/session.json", "cached session")
     assert res_cache.files_update is None
-    assert res_cache.path == "/session.json"
+    assert res_cache.path == "/cache/session.json"
 
     # ls_info at root should aggregate all
     infos = comp.ls_info("/")
@@ -215,6 +215,7 @@ def test_composite_backend_multiple_routes():
     edit_res = comp.edit("/memories/important.md", "long-term", "persistent", replace_all=False)
     assert edit_res.error is None
     assert edit_res.occurrences == 1
+    assert edit_res.path == "/memories/important.md"
 
     updated_content = comp.read("/memories/important.md")
     assert "persistent memory" in updated_content
@@ -1249,3 +1250,83 @@ def test_route_for_path_edge_cases() -> None:
         "/memories2/file.txt",
         None,
     )
+
+
+def test_route_for_path_no_trailing_slash_boundary() -> None:
+    """Route without trailing slash must not match at non-boundary positions.
+
+    Regression test for https://github.com/langchain-ai/deepagents/issues/1654.
+    """
+    rt = make_runtime("t_route_boundary")
+    default = StateBackend(rt)
+    store = StoreBackend(rt)
+
+    sorted_routes = [("/abcd", store)]
+
+    # /abcde/file.txt must NOT match /abcd (different path segment)
+    assert _route_for_path(default=default, sorted_routes=sorted_routes, path="/abcde/file.txt") == (
+        default,
+        "/abcde/file.txt",
+        None,
+    )
+
+    # /abcd/file.txt SHOULD match /abcd and strip correctly
+    assert _route_for_path(default=default, sorted_routes=sorted_routes, path="/abcd/file.txt") == (
+        store,
+        "/file.txt",
+        "/abcd",
+    )
+
+    # Exact match still works
+    assert _route_for_path(default=default, sorted_routes=sorted_routes, path="/abcd") == (
+        store,
+        "/",
+        "/abcd",
+    )
+
+    # Same boundary issue with a more realistic prefix
+    sorted_routes_mem = [("/memories", store)]
+
+    assert _route_for_path(default=default, sorted_routes=sorted_routes_mem, path="/memories-backup/file.txt") == (
+        default,
+        "/memories-backup/file.txt",
+        None,
+    )
+
+    assert _route_for_path(default=default, sorted_routes=sorted_routes_mem, path="/memories/file.txt") == (
+        store,
+        "/file.txt",
+        "/memories",
+    )
+
+    # Trailing-slash route should already work correctly
+    sorted_routes_slash = [("/abcd/", store)]
+
+    assert _route_for_path(default=default, sorted_routes=sorted_routes_slash, path="/abcde/file.txt") == (
+        default,
+        "/abcde/file.txt",
+        None,
+    )
+
+
+def test_write_result_path_restored_to_full_routed_path():
+    """CompositeBackend.write should return the full path, not the stripped key."""
+    rt = make_runtime()
+    comp = build_composite_state_backend(rt, routes={"/memories/": StoreBackend})
+
+    res = comp.write("/memories/site_context.md", "content")
+
+    assert res.error is None
+    assert res.path == "/memories/site_context.md"  # not "/site_context.md"
+
+
+def test_edit_result_path_restored_to_full_routed_path():
+    """CompositeBackend.edit should return the full path, not the stripped key."""
+    rt = make_runtime()
+    comp = build_composite_state_backend(rt, routes={"/memories/": StoreBackend})
+    comp.write("/memories/notes.md", "hello world")
+
+    res = comp.edit("/memories/notes.md", "hello", "goodbye")
+
+    assert res.error is None
+    assert res.path == "/memories/notes.md"  # not "/notes.md"

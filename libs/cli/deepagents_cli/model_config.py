@@ -104,6 +104,20 @@ class ModelSpec:
         return f"{self.provider}:{self.model}"
 
 
+class ModelProfileEntry(TypedDict):
+    """Profile data for a model with override tracking."""
+
+    profile: dict[str, Any]
+    """Merged profile dict (upstream defaults + config.toml overrides).
+
+    Keys vary by provider (e.g., `max_input_tokens`, `tool_calling`).
+    """
+
+    overridden_keys: frozenset[str]
+    """Keys in `profile` whose values came from config.toml rather than the
+    upstream provider package."""
+
+
 class ProviderConfig(TypedDict, total=False):
     """Configuration for a model provider.
 
@@ -142,6 +156,14 @@ class ProviderConfig(TypedDict, total=False):
     every model from this provider. Model-keyed sub-tables (e.g.,
     `[params."qwen3:4b"]`) override individual values for that model only;
     the merge is shallow (model wins on conflict).
+    """
+
+    profile: dict[str, Any]
+    """Overrides merged into the model's runtime profile dict.
+
+    Flat keys (e.g., `max_input_tokens = 4096`) are provider-wide defaults.
+    Model-keyed sub-tables (e.g., `[profile."claude-sonnet-4-5"]`) override
+    individual values for that model only; the merge is shallow.
     """
 
 
@@ -186,17 +208,19 @@ registry fallback.
 _available_models_cache: dict[str, list[str]] | None = None
 _builtin_providers_cache: dict[str, Any] | None = None
 _default_config_cache: ModelConfig | None = None
+_profiles_cache: Mapping[str, ModelProfileEntry] | None = None
 
 
 def clear_caches() -> None:
     """Reset module-level caches so the next call recomputes from scratch.
 
-    Intended for tests and for a hypothetical "refresh models" UI action.
+    Intended for tests and for the `/reload` command.
     """
-    global _available_models_cache, _builtin_providers_cache, _default_config_cache  # noqa: PLW0603  # Module-level caches require global statement
+    global _available_models_cache, _builtin_providers_cache, _default_config_cache, _profiles_cache  # noqa: PLW0603, E501  # Module-level caches require global statement
     _available_models_cache = None
     _builtin_providers_cache = None
     _default_config_cache = None
+    _profiles_cache = None
 
 
 def _get_builtin_providers() -> dict[str, Any]:
@@ -374,6 +398,111 @@ def get_available_models() -> dict[str, list[str]]:
 
     _available_models_cache = available
     return available
+
+
+def _build_entry(
+    base: dict[str, Any],
+    overrides: dict[str, Any],
+    cli_override: dict[str, Any] | None,
+) -> ModelProfileEntry:
+    """Build a profile entry by merging base, overrides, and CLI override.
+
+    Args:
+        base: Upstream profile dict (empty for config-only models).
+        overrides: `config.toml` profile overrides.
+        cli_override: Extra fields from `--profile-override`.
+
+    Returns:
+        Profile entry with merged data and override tracking.
+    """
+    merged = {**base, **overrides}
+    overridden_keys = set(overrides)
+    if cli_override:
+        merged = {**merged, **cli_override}
+        overridden_keys |= set(cli_override)
+    return ModelProfileEntry(
+        profile=merged,
+        overridden_keys=frozenset(overridden_keys),
+    )
+
+
+def get_model_profiles(
+    *,
+    cli_override: dict[str, Any] | None = None,
+) -> Mapping[str, ModelProfileEntry]:
+    """Load upstream profiles merged with config.toml overrides.
+
+    Keyed by `provider:model` spec string. Each entry contains the
+    merged profile dict and the set of keys overridden by config.toml.
+
+    Unlike `get_available_models()`, this includes all models from upstream
+    profiles regardless of capability filters (tool calling, text I/O).
+
+    Results are cached when `cli_override` is None; use `clear_caches()`
+    to reset. When `cli_override` is provided the cache is bypassed
+    because CLI overrides are session-specific.
+
+    Args:
+        cli_override: Extra profile fields from `--profile-override`.
+
+            When provided, these are merged on top of every profile entry
+            (after upstream + config.toml) and their keys are added to
+            `overridden_keys`.
+
+    Returns:
+        Read-only mapping of spec strings to profile entries.
+    """
+    global _profiles_cache  # noqa: PLW0603  # Module-level cache requires global statement
+    if cli_override is None and _profiles_cache is not None:
+        return _profiles_cache
+
+    result: dict[str, ModelProfileEntry] = {}
+    config = ModelConfig.load()
+
+    # Collect upstream profiles from provider packages.
+    seen_specs: set[str] = set()
+    provider_modules = _get_provider_profile_modules()
+    for provider, module_path in provider_modules:
+        try:
+            profiles = _load_provider_profiles(module_path)
+        except ImportError:
+            logger.debug(
+                "Could not import profiles from %s for provider '%s'",
+                module_path,
+                provider,
+            )
+            continue
+        except Exception:
+            logger.warning(
+                "Failed to load profiles from %s for provider '%s'",
+                module_path,
+                provider,
+                exc_info=True,
+            )
+            continue
+
+        for model_name, upstream_profile in profiles.items():
+            spec = f"{provider}:{model_name}"
+            seen_specs.add(spec)
+            overrides = config.get_profile_overrides(provider, model_name=model_name)
+            result[spec] = _build_entry(upstream_profile, overrides, cli_override)
+
+    # Add config-only models that have no upstream profile.
+    for provider_name, provider_config in config.providers.items():
+        config_models = provider_config.get("models", [])
+        for model_name in config_models:
+            spec = f"{provider_name}:{model_name}"
+            if spec not in seen_specs:
+                overrides = config.get_profile_overrides(
+                    provider_name, model_name=model_name
+                )
+                result[spec] = _build_entry({}, overrides, cli_override)
+
+    frozen = MappingProxyType(result)
+    # Only populate cache for the static (no CLI override) path.
+    if cli_override is None:
+        _profiles_cache = frozen
+    return frozen
 
 
 def _is_langchain_supported_provider(provider: str) -> bool:
@@ -569,8 +698,9 @@ class ModelConfig:
                     class_path,
                 )
 
-            params = provider.get("params", {})
             models = set(provider.get("models", []))
+
+            params = provider.get("params", {})
             for key, value in params.items():
                 if isinstance(value, dict) and key not in models:
                     logger.warning(
@@ -686,10 +816,36 @@ class ModelConfig:
         if not provider:
             return {}
         params = provider.get("params", {})
-        # Flat keys are provider-wide defaults; dict values are per-model overrides
         result = {k: v for k, v in params.items() if not isinstance(v, dict)}
         if model_name:
             overrides = params.get(model_name)
+            if isinstance(overrides, dict):
+                result.update(overrides)
+        return result
+
+    def get_profile_overrides(
+        self, provider_name: str, *, model_name: str | None = None
+    ) -> dict[str, Any]:
+        """Get profile overrides for a provider.
+
+        Reads the `profile` table from the provider config. Flat keys are
+        provider-wide defaults; model-keyed sub-tables are per-model overrides
+        that shallow-merge on top (model wins on conflict).
+
+        Args:
+            provider_name: The provider to look up.
+            model_name: Optional model name for per-model overrides.
+
+        Returns:
+            Dictionary of profile overrides (empty if none configured).
+        """
+        provider = self.providers.get(provider_name)
+        if not provider:
+            return {}
+        profile = provider.get("profile", {})
+        result = {k: v for k, v in profile.items() if not isinstance(v, dict)}
+        if model_name:
+            overrides = profile.get(model_name)
             if isinstance(overrides, dict):
                 result.update(overrides)
         return result
@@ -906,6 +1062,220 @@ def suppress_warning(key: str, config_path: Path | None = None) -> bool:
             raise
     except (OSError, tomllib.TOMLDecodeError):
         logger.exception("Could not save warning suppression for '%s'", key)
+        return False
+    return True
+
+
+THREAD_COLUMN_DEFAULTS: dict[str, bool] = {
+    "thread_id": False,
+    "messages": True,
+    "created_at": True,
+    "updated_at": True,
+    "git_branch": False,
+    "cwd": False,
+    "initial_prompt": True,
+    "agent_name": False,
+}
+"""Default visibility for thread selector columns."""
+
+
+def load_thread_columns(config_path: Path | None = None) -> dict[str, bool]:
+    """Load thread column visibility from config file.
+
+    Args:
+        config_path: Path to config file.
+
+    Returns:
+        Dict mapping column names to visibility booleans.
+    """
+    if config_path is None:
+        config_path = DEFAULT_CONFIG_PATH
+
+    result = dict(THREAD_COLUMN_DEFAULTS)
+    try:
+        if not config_path.exists():
+            return result
+        with config_path.open("rb") as f:
+            data = tomllib.load(f)
+        columns = data.get("threads", {}).get("columns", {})
+        if isinstance(columns, dict):
+            for key in result:
+                if key in columns and isinstance(columns[key], bool):
+                    result[key] = columns[key]
+    except (OSError, tomllib.TOMLDecodeError):
+        logger.debug("Could not read thread column config", exc_info=True)
+    return result
+
+
+def save_thread_columns(
+    columns: dict[str, bool], config_path: Path | None = None
+) -> bool:
+    """Save thread column visibility to config file.
+
+    Args:
+        columns: Dict mapping column names to visibility booleans.
+        config_path: Path to config file.
+
+    Returns:
+        True if save succeeded, False on I/O error.
+    """
+    if config_path is None:
+        config_path = DEFAULT_CONFIG_PATH
+
+    try:
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if config_path.exists():
+            with config_path.open("rb") as f:
+                data = tomllib.load(f)
+        else:
+            data = {}
+
+        if "threads" not in data:
+            data["threads"] = {}
+        data["threads"]["columns"] = columns
+
+        fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "wb") as f:
+                tomli_w.dump(data, f)
+            Path(tmp_path).replace(config_path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                Path(tmp_path).unlink()
+            raise
+    except (OSError, tomllib.TOMLDecodeError):
+        logger.exception("Could not save thread column preferences")
+        return False
+    return True
+
+
+def load_thread_relative_time(config_path: Path | None = None) -> bool:
+    """Load the relative-time display preference for thread timestamps.
+
+    Args:
+        config_path: Path to config file.
+
+    Returns:
+        True if timestamps should display as relative time.
+    """
+    if config_path is None:
+        config_path = DEFAULT_CONFIG_PATH
+    try:
+        if not config_path.exists():
+            return True
+        with config_path.open("rb") as f:
+            data = tomllib.load(f)
+        value = data.get("threads", {}).get("relative_time")
+        if isinstance(value, bool):
+            return value
+    except (OSError, tomllib.TOMLDecodeError):
+        logger.debug("Could not read thread relative_time config", exc_info=True)
+    return True
+
+
+def save_thread_relative_time(enabled: bool, config_path: Path | None = None) -> bool:
+    """Save the relative-time display preference for thread timestamps.
+
+    Args:
+        enabled: Whether to display relative timestamps.
+        config_path: Path to config file.
+
+    Returns:
+        True if save succeeded, False on I/O error.
+    """
+    if config_path is None:
+        config_path = DEFAULT_CONFIG_PATH
+    try:
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        if config_path.exists():
+            with config_path.open("rb") as f:
+                data = tomllib.load(f)
+        else:
+            data = {}
+        if "threads" not in data:
+            data["threads"] = {}
+        data["threads"]["relative_time"] = enabled
+        fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "wb") as f:
+                tomli_w.dump(data, f)
+            Path(tmp_path).replace(config_path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                Path(tmp_path).unlink()
+            raise
+    except (OSError, tomllib.TOMLDecodeError):
+        logger.exception("Could not save thread relative_time preference")
+        return False
+    return True
+
+
+def load_thread_sort_order(config_path: Path | None = None) -> str:
+    """Load the sort order preference for the thread selector.
+
+    Args:
+        config_path: Path to config file.
+
+    Returns:
+        `"updated_at"` or `"created_at"`.
+    """
+    if config_path is None:
+        config_path = DEFAULT_CONFIG_PATH
+    try:
+        if not config_path.exists():
+            return "updated_at"
+        with config_path.open("rb") as f:
+            data = tomllib.load(f)
+        value = data.get("threads", {}).get("sort_order")
+        if value in {"updated_at", "created_at"}:
+            return value
+    except (OSError, tomllib.TOMLDecodeError):
+        logger.debug("Could not read thread sort_order config", exc_info=True)
+    return "updated_at"
+
+
+def save_thread_sort_order(sort_order: str, config_path: Path | None = None) -> bool:
+    """Save the sort order preference for the thread selector.
+
+    Args:
+        sort_order: `"updated_at"` or `"created_at"`.
+        config_path: Path to config file.
+
+    Returns:
+        True if save succeeded, False on I/O error.
+
+    Raises:
+        ValueError: If `sort_order` is not a recognised value.
+    """
+    if sort_order not in {"updated_at", "created_at"}:
+        msg = (
+            f"Invalid sort_order {sort_order!r}; expected 'updated_at' or 'created_at'"
+        )
+        raise ValueError(msg)
+    if config_path is None:
+        config_path = DEFAULT_CONFIG_PATH
+    try:
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        if config_path.exists():
+            with config_path.open("rb") as f:
+                data = tomllib.load(f)
+        else:
+            data = {}
+        if "threads" not in data:
+            data["threads"] = {}
+        data["threads"]["sort_order"] = sort_order
+        fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "wb") as f:
+                tomli_w.dump(data, f)
+            Path(tmp_path).replace(config_path)
+        except Exception:
+            with contextlib.suppress(OSError):
+                Path(tmp_path).unlink()
+            raise
+    except (OSError, tomllib.TOMLDecodeError):
+        logger.exception("Could not save thread sort_order preference")
         return False
     return True
 

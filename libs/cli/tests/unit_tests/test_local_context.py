@@ -12,9 +12,11 @@ if TYPE_CHECKING:
 import pytest
 
 from deepagents_cli.local_context import (
+    _TOOL_NAME_DISPLAY_LIMIT,
     DETECT_CONTEXT_SCRIPT,
     LocalContextMiddleware,
     LocalContextState,
+    _build_mcp_context,
     _ExecutableBackend,
     _section_files,
     _section_git,
@@ -27,6 +29,7 @@ from deepagents_cli.local_context import (
     _section_tree,
     build_detect_script,
 )
+from deepagents_cli.mcp_tools import MCPServerInfo, MCPToolInfo
 
 
 def _make_backend(output: str = "", exit_code: int = 0) -> Mock:
@@ -223,7 +226,6 @@ class TestLocalContextMiddleware:
         handler.assert_called_once_with(request)
         assert result == "response"
 
-    @pytest.mark.asyncio
     async def test_awrap_model_call_with_local_context(self) -> None:
         """Test that awrap_model_call appends local context to system prompt."""
         backend = _make_backend()
@@ -249,7 +251,6 @@ class TestLocalContextMiddleware:
         handler.assert_called_once_with(overridden_request)
         assert result == "async response"
 
-    @pytest.mark.asyncio
     async def test_awrap_model_call_without_local_context(self) -> None:
         """Test that awrap_model_call passes through when no local context."""
         backend = _make_backend()
@@ -913,3 +914,142 @@ class TestSectionGitExtended:
         out = _run_section(_section_git(), tmp_path, with_header=True)
         assert "`main`" in out
         assert "`master`" in out
+
+
+# ---------------------------------------------------------------------------
+# MCP context tests
+# ---------------------------------------------------------------------------
+
+
+def _make_server(
+    name: str, transport: str = "stdio", tool_names: list[str] | None = None
+) -> MCPServerInfo:
+    """Create an MCPServerInfo with the given tool names."""
+    tools = [MCPToolInfo(name=n, description=f"desc-{n}") for n in (tool_names or [])]
+    return MCPServerInfo(name=name, transport=transport, tools=tools)
+
+
+class TestBuildMcpContext:
+    """Tests for _build_mcp_context."""
+
+    def test_empty_servers(self) -> None:
+        assert _build_mcp_context([]) == ""
+
+    def test_single_server_with_tools(self) -> None:
+        server = _make_server("fs", "stdio", ["read_file", "write_file"])
+        result = _build_mcp_context([server])
+        assert "**MCP Servers** (1 servers, 2 tools):" in result
+        assert "- **fs** (stdio): read_file, write_file" in result
+
+    def test_multiple_servers(self) -> None:
+        servers = [
+            _make_server("fs", "stdio", ["read_file"]),
+            _make_server("docs", "http", ["search", "get_page", "list"]),
+        ]
+        result = _build_mcp_context(servers)
+        assert "(2 servers, 4 tools)" in result
+        assert "**fs** (stdio): read_file" in result
+        assert "**docs** (http): search, get_page, list" in result
+
+    def test_server_zero_tools(self) -> None:
+        server = _make_server("empty", "sse", [])
+        result = _build_mcp_context([server])
+        assert "(1 servers, 0 tools)" in result
+        assert "**empty** (sse): (no tools)" in result
+
+    def test_long_tool_list_truncated(self) -> None:
+        names = [f"tool_{i}" for i in range(15)]
+        server = _make_server("big", "stdio", names)
+        result = _build_mcp_context([server])
+        assert f"tool_{_TOOL_NAME_DISPLAY_LIMIT - 1}" in result
+        assert f"tool_{_TOOL_NAME_DISPLAY_LIMIT}" not in result
+        assert "and 5 more" in result
+
+
+class TestMcpContextInMiddleware:
+    """Tests for MCP context integration in LocalContextMiddleware."""
+
+    def test_mcp_context_appended_to_prompt(self) -> None:
+        """MCP info appears in system prompt via wrap_model_call."""
+        backend = _make_backend()
+        server = _make_server("myserver", "stdio", ["my_tool"])
+        middleware = LocalContextMiddleware(backend=backend, mcp_server_info=[server])
+
+        request = Mock()
+        request.system_prompt = "Base prompt"
+        request.state = {"local_context": SAMPLE_CONTEXT}
+
+        overridden = Mock()
+        request.override.return_value = overridden
+        handler = Mock(return_value="response")
+
+        middleware.wrap_model_call(request, handler)
+
+        call_args = request.override.call_args[1]
+        prompt = call_args["system_prompt"]
+        assert "Base prompt" in prompt
+        assert "## Local Context" in prompt
+        assert "**MCP Servers**" in prompt
+        assert "**myserver** (stdio): my_tool" in prompt
+
+    def test_no_mcp_context_when_none(self) -> None:
+        """No MCP section when mcp_server_info is None."""
+        backend = _make_backend()
+        middleware = LocalContextMiddleware(backend=backend, mcp_server_info=None)
+
+        request = Mock()
+        request.system_prompt = "Base prompt"
+        request.state = {"local_context": SAMPLE_CONTEXT}
+
+        overridden = Mock()
+        request.override.return_value = overridden
+        handler = Mock(return_value="response")
+
+        middleware.wrap_model_call(request, handler)
+
+        call_args = request.override.call_args[1]
+        prompt = call_args["system_prompt"]
+        assert "**MCP Servers**" not in prompt
+        assert "## Local Context" in prompt
+
+    def test_both_contexts_combined(self) -> None:
+        """Both bash context and MCP context appear in system prompt."""
+        backend = _make_backend()
+        server = _make_server("docs", "http", ["search"])
+        middleware = LocalContextMiddleware(backend=backend, mcp_server_info=[server])
+
+        request = Mock()
+        request.system_prompt = "Base"
+        request.state = {"local_context": SAMPLE_CONTEXT}
+
+        overridden = Mock()
+        request.override.return_value = overridden
+        handler = Mock(return_value="response")
+
+        middleware.wrap_model_call(request, handler)
+
+        call_args = request.override.call_args[1]
+        prompt = call_args["system_prompt"]
+        assert "## Local Context" in prompt
+        assert "**MCP Servers**" in prompt
+
+    def test_mcp_context_alone(self) -> None:
+        """MCP context still appended when no bash context is available."""
+        backend = _make_backend()
+        server = _make_server("fs", "stdio", ["read"])
+        middleware = LocalContextMiddleware(backend=backend, mcp_server_info=[server])
+
+        request = Mock()
+        request.system_prompt = "Base"
+        request.state = {}  # no local_context
+
+        overridden = Mock()
+        request.override.return_value = overridden
+        handler = Mock(return_value="response")
+
+        middleware.wrap_model_call(request, handler)
+
+        call_args = request.override.call_args[1]
+        prompt = call_args["system_prompt"]
+        assert "**MCP Servers**" in prompt
+        assert "**fs** (stdio): read" in prompt

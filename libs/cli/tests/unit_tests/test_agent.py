@@ -295,13 +295,65 @@ def test_format_execute_description():
     assert "Working Directory:" in description
 
 
+def test_format_execute_description_with_hidden_unicode():
+    """Hidden Unicode in command should trigger warning and marker display."""
+    tool_call = cast(
+        "ToolCall",
+        {
+            "name": "execute",
+            "args": {"command": "echo a\u202eb"},
+            "id": "call-13",
+        },
+    )
+    description = _format_execute_description(
+        tool_call, cast("AgentState[Any]", None), cast("Runtime[Any]", None)
+    )
+    assert "Execute Command: echo ab" in description
+    assert "Hidden Unicode detected" in description
+    assert "U+202E" in description
+    assert "Raw:" in description
+
+
+def test_format_fetch_url_description_with_suspicious_url():
+    """Suspicious URL should trigger warning lines in fetch_url description."""
+    tool_call = cast(
+        "ToolCall",
+        {
+            "name": "fetch_url",
+            "args": {"url": "https://аpple.com"},
+            "id": "call-14",
+        },
+    )
+    description = _format_fetch_url_description(
+        tool_call, cast("AgentState[Any]", None), cast("Runtime[Any]", None)
+    )
+    assert "URL warning" in description
+
+
+def test_format_fetch_url_description_with_hidden_unicode_in_url():
+    """Hidden Unicode in URL should be stripped from display."""
+    tool_call = cast(
+        "ToolCall",
+        {
+            "name": "fetch_url",
+            "args": {"url": "https://exa\u200bmple.com"},
+            "id": "call-15",
+        },
+    )
+    description = _format_fetch_url_description(
+        tool_call, cast("AgentState[Any]", None), cast("Runtime[Any]", None)
+    )
+    assert "URL: https://example.com" in description
+    assert "\u200b" not in description
+
+
 class TestGetSystemPromptModelIdentity:
     """Tests for model identity section in get_system_prompt."""
 
     def test_includes_model_identity_when_all_settings_present(self) -> None:
         """Test that model identity section is included when all settings are set."""
         mock_settings = Mock()
-        mock_settings.model_name = "claude-sonnet-4-5-20250929"
+        mock_settings.model_name = "claude-sonnet-4-6"
         mock_settings.model_provider = "anthropic"
         mock_settings.model_context_limit = 200000
 
@@ -309,7 +361,7 @@ class TestGetSystemPromptModelIdentity:
             prompt = get_system_prompt("test-agent")
 
         assert "### Model Identity" in prompt
-        assert "claude-sonnet-4-5-20250929" in prompt
+        assert "claude-sonnet-4-6" in prompt
         assert "(provider: anthropic)" in prompt
         assert "Your context window is 200,000 tokens." in prompt
 
@@ -369,6 +421,221 @@ class TestGetSystemPromptModelIdentity:
         assert "You are running as model `test-model`." in prompt
         assert "(provider:" not in prompt
         assert "context window" not in prompt
+
+
+class TestGetSystemPromptNonInteractive:
+    """Tests for interactive vs non-interactive system prompt."""
+
+    def test_interactive_prompt_mentions_interactive_cli(self) -> None:
+        mock_settings = Mock()
+        mock_settings.model_name = None
+
+        with patch("deepagents_cli.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent", interactive=True)
+
+        assert "interactive CLI" in prompt
+        assert "ask questions before acting" in prompt
+
+    def test_non_interactive_prompt_mentions_headless(self) -> None:
+        mock_settings = Mock()
+        mock_settings.model_name = None
+
+        with patch("deepagents_cli.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent", interactive=False)
+
+        assert "non-interactive" in prompt
+        assert "no human" in prompt.lower()
+
+    def test_non_interactive_prompt_does_not_ask_questions(self) -> None:
+        mock_settings = Mock()
+        mock_settings.model_name = None
+
+        with patch("deepagents_cli.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent", interactive=False)
+
+        assert "ask questions before acting" not in prompt
+
+    def test_non_interactive_prompt_instructs_autonomous_execution(self) -> None:
+        mock_settings = Mock()
+        mock_settings.model_name = None
+
+        with patch("deepagents_cli.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent", interactive=False)
+
+        assert "Do NOT ask clarifying questions" in prompt
+        assert "reasonable assumptions" in prompt
+
+    def test_non_interactive_prompt_requires_non_interactive_commands(self) -> None:
+        mock_settings = Mock()
+        mock_settings.model_name = None
+
+        with patch("deepagents_cli.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent", interactive=False)
+
+        assert "non-interactive command variants" in prompt
+        assert "npm init -y" in prompt
+
+    def test_default_is_interactive(self) -> None:
+        mock_settings = Mock()
+        mock_settings.model_name = None
+
+        with patch("deepagents_cli.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent")
+
+        assert "interactive CLI" in prompt
+
+
+class TestGetSystemPromptCwdOSError:
+    """Tests for Path.cwd() OSError handling in get_system_prompt."""
+
+    def test_falls_back_on_cwd_oserror(self) -> None:
+        """get_system_prompt should not crash when Path.cwd() raises OSError."""
+        mock_settings = Mock()
+        mock_settings.model_name = None
+
+        with (
+            patch("deepagents_cli.agent.settings", mock_settings),
+            patch("deepagents_cli.agent.Path.cwd", side_effect=OSError("deleted")),
+        ):
+            prompt = get_system_prompt("test-agent")
+
+        assert "Current Working Directory" in prompt
+
+
+class TestGetSystemPromptPlaceholderValidation:
+    """Tests for unreplaced placeholder detection."""
+
+    def test_no_unreplaced_placeholders_in_interactive(self) -> None:
+        mock_settings = Mock()
+        mock_settings.model_name = None
+
+        with patch("deepagents_cli.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent", interactive=True)
+
+        # No raw {placeholder} patterns should remain
+        import re
+
+        assert not re.findall(r"\{[a-z_]+\}", prompt)
+
+    def test_no_unreplaced_placeholders_in_non_interactive(self) -> None:
+        mock_settings = Mock()
+        mock_settings.model_name = None
+
+        with patch("deepagents_cli.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent", interactive=False)
+
+        import re
+
+        assert not re.findall(r"\{[a-z_]+\}", prompt)
+
+
+class TestCreateCliAgentInteractiveForwarding:
+    """Tests for interactive parameter forwarding in create_cli_agent."""
+
+    def test_forwards_interactive_false_to_get_system_prompt(
+        self, tmp_path: Path
+    ) -> None:
+        """create_cli_agent should forward interactive=False to get_system_prompt."""
+        agent_dir = tmp_path / "agent"
+        agent_dir.mkdir()
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+
+        mock_settings = Mock()
+        mock_settings.ensure_agent_dir.return_value = agent_dir
+        mock_settings.ensure_user_skills_dir.return_value = skills_dir
+        mock_settings.get_project_skills_dir.return_value = None
+        mock_settings.get_built_in_skills_dir.return_value = (
+            Settings.get_built_in_skills_dir()
+        )
+        mock_settings.get_user_agent_md_path.return_value = agent_dir / "AGENTS.md"
+        mock_settings.get_project_agent_md_path.return_value = []
+        mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
+        mock_settings.get_project_agents_dir.return_value = None
+        mock_settings.model_name = None
+        mock_settings.model_provider = None
+        mock_settings.model_context_limit = None
+        mock_settings.project_root = None
+
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+
+        fake_model = _make_fake_chat_model()
+        with (
+            patch("deepagents_cli.agent.settings", mock_settings),
+            patch("deepagents_cli.agent.SkillsMiddleware"),
+            patch("deepagents_cli.agent.MemoryMiddleware"),
+            patch("deepagents_cli.agent.create_deep_agent", return_value=mock_agent),
+            patch(
+                "deepagents.graph.init_chat_model",
+                return_value=fake_model,
+            ),
+            patch("deepagents_cli.agent.get_system_prompt") as mock_get_prompt,
+        ):
+            mock_get_prompt.return_value = "mocked prompt"
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=False,
+                interactive=False,
+            )
+
+        mock_get_prompt.assert_called_once()
+        _, kwargs = mock_get_prompt.call_args
+        assert kwargs["interactive"] is False
+
+    def test_explicit_system_prompt_ignores_interactive(self, tmp_path: Path) -> None:
+        """Explicit system_prompt should be used verbatim, ignoring interactive."""
+        agent_dir = tmp_path / "agent"
+        agent_dir.mkdir()
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+
+        mock_settings = Mock()
+        mock_settings.ensure_agent_dir.return_value = agent_dir
+        mock_settings.ensure_user_skills_dir.return_value = skills_dir
+        mock_settings.get_project_skills_dir.return_value = None
+        mock_settings.get_built_in_skills_dir.return_value = (
+            Settings.get_built_in_skills_dir()
+        )
+        mock_settings.get_user_agent_md_path.return_value = agent_dir / "AGENTS.md"
+        mock_settings.get_project_agent_md_path.return_value = []
+        mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
+        mock_settings.get_project_agents_dir.return_value = None
+        mock_settings.model_name = None
+        mock_settings.model_provider = None
+        mock_settings.model_context_limit = None
+        mock_settings.project_root = None
+
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+
+        fake_model = _make_fake_chat_model()
+        with (
+            patch("deepagents_cli.agent.settings", mock_settings),
+            patch("deepagents_cli.agent.SkillsMiddleware"),
+            patch("deepagents_cli.agent.MemoryMiddleware"),
+            patch("deepagents_cli.agent.create_deep_agent", return_value=mock_agent),
+            patch(
+                "deepagents.graph.init_chat_model",
+                return_value=fake_model,
+            ),
+            patch("deepagents_cli.agent.get_system_prompt") as mock_get_prompt,
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=False,
+                system_prompt="custom prompt",
+                interactive=False,
+            )
+
+        # get_system_prompt should NOT be called when system_prompt is provided
+        mock_get_prompt.assert_not_called()
 
 
 class TestDefaultAgentName:

@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from deepagents_cli.widgets.autocomplete import (
+    MAX_SUGGESTIONS,
     SLASH_COMMANDS,
     CompletionController,
     FuzzyFileController,
@@ -203,7 +204,7 @@ class TestSlashCommandController:
 
         mock_view.render_completion_suggestions.assert_called()
         suggestions = mock_view.render_completion_suggestions.call_args[0][0]
-        assert len(suggestions) == len(SLASH_COMMANDS)
+        assert len(suggestions) == min(len(SLASH_COMMANDS), MAX_SUGGESTIONS)
 
     def test_clears_on_no_match(self, controller, mock_view):
         """Clears suggestions when no commands match after having suggestions."""
@@ -234,7 +235,64 @@ class TestSlashCommandController:
         controller.on_text_changed("/", 1)
         mock_view.render_completion_suggestions.assert_called()
         suggestions = mock_view.render_completion_suggestions.call_args[0][0]
-        assert len(suggestions) == len(SLASH_COMMANDS)
+        assert len(suggestions) == min(len(SLASH_COMMANDS), MAX_SUGGESTIONS)
+
+    def test_hidden_keyword_match_continue(self, controller, mock_view):
+        """Typing 'continue' surfaces /threads via hidden keyword."""
+        controller.on_text_changed("/continue", 9)
+
+        mock_view.render_completion_suggestions.assert_called()
+        suggestions = mock_view.render_completion_suggestions.call_args[0][0]
+        assert any("/threads" in s[0] for s in suggestions)
+
+    def test_substring_description_match_exit(self, controller, mock_view):
+        """Typing 'exit' surfaces /quit via substring match on 'Exit app'."""
+        controller.on_text_changed("/exit", 5)
+
+        mock_view.render_completion_suggestions.assert_called()
+        suggestions = mock_view.render_completion_suggestions.call_args[0][0]
+        assert any("/quit" in s[0] for s in suggestions)
+
+    def test_substring_description_match_new(self, controller, mock_view):
+        """Typing 'new' surfaces /clear via substring on 'start new thread'."""
+        controller.on_text_changed("/new", 4)
+
+        mock_view.render_completion_suggestions.assert_called()
+        suggestions = mock_view.render_completion_suggestions.call_args[0][0]
+        assert any("/clear" in s[0] for s in suggestions)
+
+    def test_substring_name_match(self, controller, mock_view):
+        """Substring of command name (not prefix) surfaces the command."""
+        controller.on_text_changed("/omp", 4)
+
+        mock_view.render_completion_suggestions.assert_called()
+        suggestions = mock_view.render_completion_suggestions.call_args[0][0]
+        assert any("/compact" in s[0] for s in suggestions)
+
+    def test_true_fuzzy_match_via_misspelling(self, controller, mock_view):
+        """Misspelled command surfaces via SequenceMatcher ratio."""
+        controller.on_text_changed("/hlep", 5)
+
+        mock_view.render_completion_suggestions.assert_called()
+        suggestions = mock_view.render_completion_suggestions.call_args[0][0]
+        assert any("/help" in s[0] for s in suggestions)
+
+    def test_prefix_match_ranks_first(self, controller, mock_view):
+        """Prefix matches on command name rank above description matches."""
+        controller.on_text_changed("/he", 3)
+
+        mock_view.render_completion_suggestions.assert_called()
+        suggestions = mock_view.render_completion_suggestions.call_args[0][0]
+        # /help is a prefix match — should be first
+        assert suggestions[0][0] == "/help"
+
+    def test_no_match_clears(self, controller, mock_view):
+        """Completely unrelated input clears suggestions."""
+        controller.on_text_changed("/h", 2)
+        mock_view.render_completion_suggestions.assert_called()
+
+        controller.on_text_changed("/zzzzzzzzz", 10)
+        mock_view.clear_completion_suggestions.assert_called()
 
     @pytest.mark.usefixtures("mock_view")
     def test_double_reset_is_safe(self, controller):
@@ -243,6 +301,63 @@ class TestSlashCommandController:
         controller.reset()
         # Second reset should be a no-op (suggestions already empty)
         controller.reset()
+
+
+class TestScoreCommand:
+    """Direct unit tests for SlashCommandController._score_command."""
+
+    @staticmethod
+    def score(search: str, cmd: str, desc: str, keywords: str = "") -> float:
+        """Proxy score helper with explicit type signature for static analysis."""
+        return SlashCommandController._score_command(search, cmd, desc, keywords)
+
+    def test_prefix_returns_200(self):
+        assert self.score("hel", "/help", "Show help") == 200
+
+    def test_substring_name_returns_150(self):
+        assert self.score("omp", "/compact", "Summarize conversation") == 150
+
+    def test_substring_desc_word_boundary_returns_110(self):
+        assert self.score("exit", "/quit", "Exit app") == 110
+
+    def test_substring_desc_mid_word_returns_90(self):
+        desc = "Summarize conversation to reduce context usage"
+        assert self.score("ex", "/compact", desc) == 90
+
+    def test_no_match_returns_zero(self):
+        assert self.score("zzzzz", "/help", "Show help") == 0
+
+    def test_fuzzy_above_threshold(self):
+        score = self.score("hlep", "/help", "Show help")
+        assert 0 < score < 100  # fuzzy tier, not substring/prefix
+
+    def test_hidden_keyword_prefix_match(self):
+        assert (
+            self.score("cont", "/threads", "Browse threads", "continue history") == 120
+        )
+
+    def test_hidden_keyword_substring_match(self):
+        assert (
+            self.score("hist", "/threads", "Browse threads", "continue history") == 120
+        )
+
+    def test_hidden_keyword_ignored_when_empty(self):
+        assert self.score("cont", "/threads", "Browse threads", "") == 0
+
+    def test_hidden_keyword_requires_min_length(self):
+        """Single-char queries do not match hidden keywords."""
+        assert self.score("c", "/threads", "Browse threads", "continue") == 0
+
+    def test_tiers_ordering(self):
+        """Prefix > substring-name > keyword > substring-desc > fuzzy."""
+        prefix = self.score("hel", "/help", "Show help")
+        substr_name = self.score("omp", "/compact", "Summarize conversation")
+        keyword = self.score("cont", "/threads", "Browse threads", "continue")
+        desc_boundary = self.score("exit", "/quit", "Exit app")
+        compact_desc = "Summarize conversation to reduce context usage"
+        desc_mid = self.score("ex", "/compact", compact_desc)
+        fuzzy = self.score("hlep", "/help", "Show help")
+        assert prefix > substr_name > keyword > desc_boundary > desc_mid > fuzzy > 0
 
 
 class TestFuzzyFileControllerCanHandle:

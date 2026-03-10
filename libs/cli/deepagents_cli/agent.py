@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 import os
+import re
 import shutil
 import tempfile
 from pathlib import Path
@@ -28,6 +30,8 @@ if TYPE_CHECKING:
     from langgraph.pregel import Pregel
     from langgraph.runtime import Runtime
 
+    from deepagents_cli.mcp_tools import MCPServerInfo
+
 from deepagents_cli.config import (
     COLORS,
     config,
@@ -39,6 +43,16 @@ from deepagents_cli.config import (
 from deepagents_cli.integrations.sandbox_factory import get_default_working_dir
 from deepagents_cli.local_context import LocalContextMiddleware, _ExecutableBackend
 from deepagents_cli.subagents import list_subagents
+from deepagents_cli.unicode_security import (
+    check_url_safety,
+    detect_dangerous_unicode,
+    format_warning_detail,
+    render_with_unicode_markers,
+    strip_dangerous_unicode,
+    summarize_issues,
+)
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_AGENT_NAME = "agent"
 """The default agent name used when no `-a` flag is provided."""
@@ -126,12 +140,17 @@ def reset_agent(agent_name: str, source_agent: str | None = None) -> None:
     console.print(f"Location: {agent_dir}\n", style=COLORS["dim"])
 
 
-def get_system_prompt(assistant_id: str, sandbox_type: str | None = None) -> str:
+def get_system_prompt(
+    assistant_id: str,
+    sandbox_type: str | None = None,
+    *,
+    interactive: bool = True,
+) -> str:
     """Get the base system prompt for the agent.
 
-    Loads the immutable system prompt from `system_prompt.md` and
+    Loads the base system prompt template from `system_prompt.md` and
     interpolates dynamic sections (model identity, working directory,
-    skills path).
+    skills path, execution mode).
 
     Args:
         assistant_id: The agent identifier for path references
@@ -139,6 +158,8 @@ def get_system_prompt(assistant_id: str, sandbox_type: str | None = None) -> str
             (`'daytona'`, `'langsmith'`, `'modal'`, `'runloop'`).
 
             If `None`, agent is operating in local mode.
+        interactive: When `False`, the prompt is tailored for headless
+            non-interactive execution (no human in the loop).
 
     Returns:
         The system prompt string
@@ -155,6 +176,41 @@ def get_system_prompt(assistant_id: str, sandbox_type: str | None = None) -> str
     template = (Path(__file__).parent / "system_prompt.md").read_text()
 
     skills_path = f"~/.deepagents/{assistant_id}/skills/"
+
+    if interactive:
+        mode_description = "an interactive CLI on the user's computer"
+        interactive_preamble = (
+            "The user sends you messages and you respond with text and tool "
+            "calls. Your tools run on the user's machine. The user can see "
+            "your responses and tool outputs in real time, so keep them "
+            "informed — but don't over-explain."
+        )
+        ambiguity_guidance = (
+            "- If the request is ambiguous, ask questions before acting.\n"
+            "- If asked how to approach something, explain first, then act."
+        )
+    else:
+        mode_description = (
+            "non-interactive (headless) mode — there is no human operator "
+            "monitoring your output in real time"
+        )
+        interactive_preamble = (
+            "You received a single task and must complete it fully and "
+            "autonomously. There is no human available to answer follow-up "
+            "questions, so do NOT ask for clarification — make reasonable "
+            "assumptions and proceed."
+        )
+        ambiguity_guidance = (
+            "- Do NOT ask clarifying questions — there is no human to answer "
+            "them. Make reasonable assumptions and proceed.\n"
+            "- If you encounter ambiguity, choose the most reasonable "
+            "interpretation and note your assumption briefly.\n"
+            "- Always use non-interactive command variants — no human is "
+            "available to respond to prompts. Examples: `npm init -y` not "
+            "`npm init`, `apt-get install -y` not `apt-get install`, "
+            "`yes |` or `--no-input`/`--non-interactive` flags where "
+            "available. Never run commands that block waiting for stdin."
+        )
 
     # Build model identity section
     model_identity_section = ""
@@ -185,7 +241,14 @@ def get_system_prompt(assistant_id: str, sandbox_type: str | None = None) -> str
             f"- Use `{working_dir}` as your working directory for all operations\n\n"
         )
     else:
-        cwd = Path.cwd()
+        try:
+            cwd = Path.cwd()
+        except OSError:
+            logger.warning(
+                "Could not determine working directory for system prompt",
+                exc_info=True,
+            )
+            cwd = Path()
         working_dir_section = (
             f"### Current Working Directory\n\n"
             f"The filesystem backend is currently operating in: `{cwd}`\n\n"
@@ -198,11 +261,21 @@ def get_system_prompt(assistant_id: str, sandbox_type: str | None = None) -> str
             f"- Never use relative paths - always construct full absolute paths\n\n"
         )
 
-    return (
-        template.replace("{model_identity_section}", model_identity_section)
+    result = (
+        template.replace("{mode_description}", mode_description)
+        .replace("{interactive_preamble}", interactive_preamble)
+        .replace("{ambiguity_guidance}", ambiguity_guidance)
+        .replace("{model_identity_section}", model_identity_section)
         .replace("{working_dir_section}", working_dir_section)
         .replace("{skills_path}", skills_path)
     )
+
+    # Detect unreplaced placeholders (defense-in-depth for template typos)
+    unreplaced = re.findall(r"\{[a-z_]+\}", result)
+    if unreplaced:
+        logger.warning("System prompt contains unreplaced placeholders: %s", unreplaced)
+
+    return result
 
 
 def _format_write_file_description(
@@ -266,12 +339,28 @@ def _format_fetch_url_description(
         Formatted description string for the fetch_url tool call.
     """
     args = tool_call["args"]
-    url = args.get("url", "unknown")
+    url = str(args.get("url", "unknown"))
+    display_url = strip_dangerous_unicode(url)
     timeout = args.get("timeout", 30)
+    safety = check_url_safety(url)
+
+    warning_lines: list[str] = []
+    if not safety.safe:
+        detail = format_warning_detail(safety.warnings)
+        warning_lines.append(f"{get_glyphs().warning}  URL warning: {detail}")
+    if safety.decoded_domain:
+        warning_lines.append(
+            f"{get_glyphs().warning}  Decoded domain: {safety.decoded_domain}"
+        )
+
+    warning_block = "\n".join(warning_lines)
+    if warning_block:
+        warning_block = f"\n{warning_block}"
 
     return (
-        f"URL: {url}\nTimeout: {timeout}s\n\n"
+        f"URL: {display_url}\nTimeout: {timeout}s\n\n"
         f"{get_glyphs().warning}  Will fetch and convert web content to markdown"
+        f"{warning_block}"
     )
 
 
@@ -317,8 +406,20 @@ def _format_execute_description(
         Formatted description string for the execute tool call.
     """
     args = tool_call["args"]
-    command = args.get("command", "N/A")
-    return f"Execute Command: {command}\nWorking Directory: {Path.cwd()}"
+    command_raw = str(args.get("command", "N/A"))
+    command = strip_dangerous_unicode(command_raw)
+    lines = [f"Execute Command: {command}", f"Working Directory: {Path.cwd()}"]
+
+    issues = detect_dangerous_unicode(command_raw)
+    if issues:
+        summary = summarize_issues(issues)
+        lines.append(f"{get_glyphs().warning}  Hidden Unicode detected: {summary}")
+        raw_marked = render_with_unicode_markers(command_raw)
+        if len(raw_marked) > 220:  # noqa: PLR2004  # UI display truncation threshold
+            raw_marked = raw_marked[:220] + "..."
+        lines.append(f"Raw: {raw_marked}")
+
+    return "\n".join(lines)
 
 
 def _add_interrupt_on() -> dict[str, InterruptOnConfig]:
@@ -393,11 +494,14 @@ def create_cli_agent(
     sandbox: SandboxBackendProtocol | None = None,
     sandbox_type: str | None = None,
     system_prompt: str | None = None,
+    interactive: bool = True,
     auto_approve: bool = False,
     enable_memory: bool = True,
     enable_skills: bool = True,
     enable_shell: bool = True,
+    enable_ask_user: bool = False,
     checkpointer: BaseCheckpointSaver | None = None,
+    mcp_server_info: list[MCPServerInfo] | None = None,
 ) -> tuple[Pregel, CompositeBackend]:
     """Create a CLI-configured agent with flexible options.
 
@@ -405,7 +509,7 @@ def create_cli_agent(
     both internally and from external code (e.g., benchmarking frameworks).
 
     Args:
-        model: LLM model to use (e.g., `'anthropic:claude-sonnet-4-5-20250929'`)
+        model: LLM model to use (e.g., `'anthropic:claude-sonnet-4-6'`)
         assistant_id: Agent identifier for memory/state storage
         tools: Additional tools to provide to agent
         sandbox: Optional sandbox backend for remote execution
@@ -417,7 +521,11 @@ def create_cli_agent(
             Used for system prompt generation.
         system_prompt: Override the default system prompt.
 
-            If `None`, generates one based on `sandbox_type` and `assistant_id`.
+            If `None`, generates one based on `sandbox_type`, `assistant_id`,
+            and `interactive`.
+        interactive: When `False`, the auto-generated system prompt is
+            tailored for headless non-interactive execution. Ignored when
+            `system_prompt` is provided explicitly.
         auto_approve: If `True`, no tools trigger human-in-the-loop
             interrupts — all calls (shell execution, file writes/edits,
             web search, URL fetch) run automatically.
@@ -428,10 +536,12 @@ def create_cli_agent(
         enable_skills: Enable `SkillsMiddleware` for custom agent skills
         enable_shell: Enable shell execution via `LocalShellBackend`
             (only in local mode). When enabled, the `execute` tool is available.
+        enable_ask_user: Enable the `ask_user` tool for interactive questioning.
         checkpointer: Optional checkpointer for session persistence.
 
             If `None`, uses `InMemorySaver` (no persistence across
             CLI invocations).
+        mcp_server_info: MCP server metadata to surface in the system prompt.
 
     Returns:
         2-tuple of `(agent_graph, backend)`
@@ -482,6 +592,12 @@ def create_cli_agent(
 
     # Build middleware stack based on enabled features
     agent_middleware = []
+
+    # Add ask_user middleware (must be early so its tool is available)
+    if enable_ask_user:
+        from deepagents_cli.ask_user import AskUserMiddleware
+
+        agent_middleware.append(AskUserMiddleware())
 
     # Add memory middleware
     if enable_memory:
@@ -545,12 +661,16 @@ def create_cli_agent(
     # Uses backend.execute() so it works in both local shell and remote sandbox modes.
     # Only enabled when the backend supports shell execution.
     if isinstance(backend, _ExecutableBackend):
-        agent_middleware.append(LocalContextMiddleware(backend=backend))
+        agent_middleware.append(
+            LocalContextMiddleware(backend=backend, mcp_server_info=mcp_server_info)
+        )
 
     # Get or use custom system prompt
     if system_prompt is None:
         system_prompt = get_system_prompt(
-            assistant_id=assistant_id, sandbox_type=sandbox_type
+            assistant_id=assistant_id,
+            sandbox_type=sandbox_type,
+            interactive=interactive,
         )
 
     # Configure interrupt_on based on auto_approve setting
@@ -593,15 +713,10 @@ def create_cli_agent(
 
     model = resolve_model(model)
 
-    from deepagents.middleware.summarization import (
-        SummarizationToolMiddleware,
-        create_summarization_middleware,
-    )
+    from deepagents.middleware.summarization import create_summarization_tool_middleware
 
     agent_middleware.append(
-        SummarizationToolMiddleware(
-            create_summarization_middleware(model, composite_backend)
-        )
+        create_summarization_tool_middleware(model, composite_backend)
     )
 
     # Create the agent

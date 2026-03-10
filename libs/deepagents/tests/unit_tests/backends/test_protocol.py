@@ -74,47 +74,38 @@ class TestSandboxBackendProtocolRaisesNotImplemented:
 class TestAsyncMethodsPropagateNotImplemented:
     """Async wrappers delegate to sync methods, so NotImplementedError propagates."""
 
-    @pytest.mark.asyncio
     async def test_als_info(self, backend: BareBackend) -> None:
         with pytest.raises(NotImplementedError):
             await backend.als_info("/")
 
-    @pytest.mark.asyncio
     async def test_aread(self, backend: BareBackend) -> None:
         with pytest.raises(NotImplementedError):
             await backend.aread("/file.txt")
 
-    @pytest.mark.asyncio
     async def test_agrep_raw(self, backend: BareBackend) -> None:
         with pytest.raises(NotImplementedError):
             await backend.agrep_raw("pattern")
 
-    @pytest.mark.asyncio
     async def test_aglob_info(self, backend: BareBackend) -> None:
         with pytest.raises(NotImplementedError):
             await backend.aglob_info("*.py")
 
-    @pytest.mark.asyncio
     async def test_awrite(self, backend: BareBackend) -> None:
         with pytest.raises(NotImplementedError):
             await backend.awrite("/file.txt", "content")
 
-    @pytest.mark.asyncio
     async def test_aedit(self, backend: BareBackend) -> None:
         with pytest.raises(NotImplementedError):
             await backend.aedit("/file.txt", "old", "new")
 
-    @pytest.mark.asyncio
     async def test_aupload_files(self, backend: BareBackend) -> None:
         with pytest.raises(NotImplementedError):
             await backend.aupload_files([("/file.txt", b"data")])
 
-    @pytest.mark.asyncio
     async def test_adownload_files(self, backend: BareBackend) -> None:
         with pytest.raises(NotImplementedError):
             await backend.adownload_files(["/file.txt"])
 
-    @pytest.mark.asyncio
     async def test_aexecute(self, sandbox_backend: BareSandboxBackend) -> None:
         with pytest.raises(NotImplementedError):
             await sandbox_backend.aexecute("ls")

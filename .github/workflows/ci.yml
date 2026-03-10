@@ -41,6 +41,8 @@ jobs:
     steps:
       - name: "📋 Checkout Code"
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: "🔍 Check for changes"
         uses: dorny/paths-filter@v3
@@ -48,6 +50,13 @@ jobs:
         with:
           # Each package filter includes workflow/action paths so that CI
           # infrastructure changes are validated against all packages.
+          #
+          # NOTE: Do NOT add negation patterns (e.g. '!libs/foo/**/*.md')
+          # here. dorny/paths-filter evaluates patterns with OR logic, so a
+          # negation like '!libs/deepagents/**/*.md' becomes "match anything
+          # NOT in that glob" — causing unrelated files (e.g. .github/
+          # templates) to match every filter and trigger full CI.
+          # See: https://github.com/dorny/paths-filter/issues/97
           filters: |
             deepagents:
               - 'libs/deepagents/**'

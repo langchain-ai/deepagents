@@ -665,6 +665,18 @@ class Settings:
         return self.nvidia_api_key is not None
 
     @property
+    def has_codex(self) -> bool:
+        """Check if Codex OAuth credentials are available."""
+        try:
+            from deepagents_codex.auth import get_auth_status
+            from deepagents_codex.status import CodexAuthStatus
+        except ImportError:
+            return False
+        else:
+            info = get_auth_status()
+            return info.status == CodexAuthStatus.AUTHENTICATED
+
+    @property
     def has_vertex_ai(self) -> bool:
         """Check if VertexAI is available (Google Cloud project set, no API key).
 
@@ -1333,11 +1345,14 @@ def _get_default_model_spec() -> str:
         return "google_vertexai:gemini-3.1-pro-preview"
     if settings.has_nvidia:
         return "nvidia:nvidia/nemotron-3-nano-30b-a3b"
+    if settings.has_codex:
+        return "codex:gpt-5.4"
 
     msg = (
         "No credentials configured. Please set one of: "
         "ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY, "
-        "GOOGLE_CLOUD_PROJECT, or NVIDIA_API_KEY"
+        "GOOGLE_CLOUD_PROJECT, or NVIDIA_API_KEY, "
+        "or run 'deepagents auth login --provider codex'"
     )
     raise ModelConfigError(msg)
 
@@ -1675,12 +1690,25 @@ def create_model(
 
     # Check if this provider uses a custom BaseChatModel class
     config = ModelConfig.load()
-    class_path = config.get_class_path(provider) if provider else None
 
-    if class_path:
-        model = _create_model_from_class(class_path, model_name, provider, kwargs)
+    # Codex uses its own BaseChatModel with OAuth authentication
+    if provider == "codex":
+        try:
+            from deepagents_codex.chat_models import ChatCodexOAuth
+        except ImportError:
+            msg = (
+                "Codex provider requires deepagents-codex. "
+                "Install: pip install 'deepagents-cli[codex]'"
+            )
+            raise ModelConfigError(msg) from None
+        model = ChatCodexOAuth(model=model_name, **kwargs)
     else:
-        model = _create_model_via_init(model_name, provider, kwargs)
+        class_path = config.get_class_path(provider) if provider else None
+
+        if class_path:
+            model = _create_model_from_class(class_path, model_name, provider, kwargs)
+        else:
+            model = _create_model_via_init(model_name, provider, kwargs)
 
     resolved_provider = provider or getattr(model, "_model_provider", provider)
 

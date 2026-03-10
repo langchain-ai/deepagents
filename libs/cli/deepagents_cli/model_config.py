@@ -396,6 +396,16 @@ def get_available_models() -> dict[str, list[str]]:
                 if model not in existing:
                     available[provider_name].append(model)
 
+    # Add Codex models if the package is installed
+    try:
+        from deepagents_codex.models import get_available_codex_models
+
+        codex_models = get_available_codex_models()
+        if codex_models:
+            available["codex"] = codex_models
+    except ImportError:
+        pass
+
     _available_models_cache = available
     return available
 
@@ -543,6 +553,17 @@ def has_provider_credentials(provider: str) -> bool | None:
         if result is not None:
             return result
         # No api_key_env in config — fall through to hardcoded map.
+
+    # Codex uses OAuth, not env vars
+    if provider == "codex":
+        try:
+            from deepagents_codex import get_auth_status
+            from deepagents_codex.status import CodexAuthStatus
+        except ImportError:
+            return False
+        else:
+            info = get_auth_status()
+            return info.status == CodexAuthStatus.AUTHENTICATED
 
     # Fall back to hardcoded well-known providers.
     env_var = PROVIDER_API_KEY_ENV.get(provider)

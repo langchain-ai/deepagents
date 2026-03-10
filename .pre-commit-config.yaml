@@ -8,6 +8,7 @@ repos:
         args: ["--unsafe"] # allow custom tags
       - id: check-toml # validate TOML syntax
       - id: end-of-file-fixer # ensure files end with a newline
+        exclude: /snapshots/
       - id: trailing-whitespace # remove trailing whitespace from lines
         exclude: \.ambr$
 

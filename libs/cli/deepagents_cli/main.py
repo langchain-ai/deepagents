@@ -141,6 +141,7 @@ def parse_args() -> argparse.Namespace:
     Returns:
         Parsed arguments namespace.
     """
+    from deepagents_cli.auth import setup_auth_parser
     from deepagents_cli.skills import setup_skills_parser
     from deepagents_cli.ui import (
         build_help_parent,
@@ -239,6 +240,7 @@ def parse_args() -> argparse.Namespace:
     )
 
     setup_skills_parser(subparsers, make_help_action=_make_help_action)
+    setup_auth_parser(subparsers, make_help_action=_make_help_action)
 
     threads_parser = subparsers.add_parser(
         "threads",
@@ -1220,6 +1222,10 @@ def cli_main() -> None:
             from deepagents_cli.skills import execute_skills_command
 
             execute_skills_command(args)
+        elif args.command == "auth":
+            from deepagents_cli.auth import execute_auth_command
+
+            execute_auth_command(args)
         elif args.command == "threads":
             from deepagents_cli.sessions import (
                 delete_thread_command,

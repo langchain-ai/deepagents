@@ -1,6 +1,7 @@
 """Unit tests for LocalShellBackend per-command timeout features."""
 
 import subprocess
+import time
 from unittest.mock import patch
 
 import pytest
@@ -73,6 +74,22 @@ class TestPerCommandTimeout:
         backend = LocalShellBackend(inherit_env=True)
         with pytest.raises(ValueError, match="timeout must be positive"):
             backend.execute("echo hello", timeout=-5)
+
+
+class TestStdinBehavior:
+    """Tests for stdin behavior in execute()."""
+
+    def test_command_blocking_on_stdin_does_not_hang(self) -> None:
+        """Commands that block on stdin should not hang until timeout."""
+        backend = LocalShellBackend(timeout=60, inherit_env=True)
+        start = time.time()
+        # 'python' without arguments would normally hang waiting for stdin.
+        # With stdin=DEVNULL, it should exit immediately.
+        result = backend.execute("python", timeout=2)
+        elapsed = time.time() - start
+        # Should complete in well under 2 seconds
+        assert elapsed < 1
+        assert result.exit_code == 0
 
 
 class TestTimeoutErrorMessage:

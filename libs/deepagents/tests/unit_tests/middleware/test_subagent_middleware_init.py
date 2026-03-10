@@ -1,6 +1,7 @@
 """Unit tests for SubAgentMiddleware initialization and configuration."""
 
 import warnings
+from unittest.mock import MagicMock
 
 import pytest
 from langchain.agents import create_agent
@@ -266,8 +267,6 @@ class TestSubagentMiddlewareInit:
         MRE: When two subagents share the same name, _build_task_tool should
         raise a RuntimeError rather than silently letting the last one win.
         """
-        from unittest.mock import MagicMock
-
         # Create two _SubagentSpec dicts with the same name
         mock_runnable = MagicMock()
         specs = [
@@ -275,13 +274,11 @@ class TestSubagentMiddlewareInit:
             {"name": "researcher", "description": "Second researcher", "runnable": mock_runnable},
         ]
 
-        with pytest.raises(RuntimeError, match="Duplicate subagent name 'researcher'"):
+        with pytest.raises(RuntimeError, match="Duplicate subagent name\\(s\\): researcher"):
             _build_task_tool(specs)
 
     def test_unique_subagent_names_no_error(self) -> None:
         """Test that unique subagent names do not raise any error."""
-        from unittest.mock import MagicMock
-
         mock_runnable = MagicMock()
         specs = [
             {"name": "researcher", "description": "Research agent", "runnable": mock_runnable},
@@ -298,7 +295,7 @@ class TestSubagentMiddlewareInit:
         MRE: Creating SubAgentMiddleware with two subagents that share the
         same 'name' should raise a RuntimeError at initialization time.
         """
-        with pytest.raises(RuntimeError, match="Duplicate subagent name"):
+        with pytest.raises(RuntimeError, match="Duplicate subagent name\\(s\\)"):
             SubAgentMiddleware(
                 backend=StateBackend,
                 subagents=[

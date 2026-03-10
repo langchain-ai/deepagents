@@ -389,14 +389,15 @@ def _build_task_tool(  # noqa: C901
     """
     # Detect duplicate subagent names and raise an error.
     seen_names: set[str] = set()
+    duplicate_names: set[str] = set()
     for spec in subagents:
         if spec["name"] in seen_names:
-            msg = (
-                f"Duplicate subagent name '{spec['name']}'. "
-                f"Each subagent must have a unique name."
-            )
-            raise RuntimeError(msg)
+            duplicate_names.add(spec["name"])
         seen_names.add(spec["name"])
+    if duplicate_names:
+        names = ", ".join(sorted(duplicate_names))
+        msg = f"Duplicate subagent name(s): {names}. Each subagent must have a unique name."
+        raise RuntimeError(msg)
 
     subagent_graphs: dict[str, Runnable] = {spec["name"]: spec["runnable"] for spec in subagents}
     subagent_description_str = "\n".join(f"- {s['name']}: {s['description']}" for s in subagents)

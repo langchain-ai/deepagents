@@ -277,7 +277,7 @@ def _format_content_block(block: dict) -> str:
         mime = block.get("mime_type", "file")
         return f"[File: {mime}, ~{size_kb}KB]"
     try:
-        return json.dumps(block)
+        return json.dumps(block, ensure_ascii=False)
     except (TypeError, ValueError):
         return str(block)
 
@@ -299,7 +299,7 @@ def format_tool_message_content(content: Any) -> str:  # noqa: ANN401  # Content
                 parts.append(_format_content_block(item))
             else:
                 try:
-                    parts.append(json.dumps(item))
+                    parts.append(json.dumps(item, ensure_ascii=False))
                 except (TypeError, ValueError):
                     parts.append(str(item))
         return "\n".join(parts)

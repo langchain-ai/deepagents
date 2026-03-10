@@ -533,6 +533,12 @@ class ChatTextArea(TextArea):
             self.insert("\n")
             return
 
+        if event.key == "ctrl+u":
+            event.prevent_default()
+            event.stop()
+            self.clear_text()
+            return
+
         if event.key == "backspace" and self._delete_image_placeholder(backwards=True):
             event.prevent_default()
             event.stop()

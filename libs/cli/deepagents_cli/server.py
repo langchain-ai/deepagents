@@ -153,7 +153,14 @@ class ServerProcess:
 
         env = os.environ.copy()
         env["PYTHONDONTWRITEBYTECODE"] = "1"
-        env.setdefault("LANGGRAPH_AUTH_TYPE", "noop")
+        env["LANGGRAPH_AUTH_TYPE"] = "noop"
+        for key in (
+            "LANGGRAPH_AUTH",
+            "LANGGRAPH_CLOUD_LICENSE_KEY",
+            "LANGSMITH_CONTROL_PLANE_API_KEY",
+            "LANGSMITH_TENANT_ID",
+        ):
+            env.pop(key, None)
 
         logger.info("Starting langgraph dev server: %s", " ".join(cmd))
         self._process = subprocess.Popen(  # noqa: S603, ASYNC220

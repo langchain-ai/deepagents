@@ -68,7 +68,7 @@ RESEARCHER_INSTRUCTIONS = """You are a research assistant conducting research on
 
 <Task>
 Your job is to use tools to gather information about the user's input topic.
-You can use any of the research tools provided to you to find resources that can help answer the research question. 
+You can use any of the research tools provided to you to find resources that can help answer the research question.
 You can call these tools in series or in parallel, your research is conducted in a tool-calling loop.
 </Task>
 

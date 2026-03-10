@@ -44,7 +44,7 @@ research_sub_agent = {
     "tools": [tavily_search, think_tool],
 }
 
-# Model Gemini 3 
+# Model Gemini 3
 # model = ChatGoogleGenerativeAI(model="gemini-3-pro-preview", temperature=0.0)
 
 # Model Claude 4.5

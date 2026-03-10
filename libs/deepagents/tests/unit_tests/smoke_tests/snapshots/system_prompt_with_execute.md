@@ -57,6 +57,10 @@ Writing todos takes time and tokens, use it when it is helpful for managing comp
 
 Follow the tool docs for the available tools. In particular, for filesystem tools, use pagination (offset/limit) when reading large files.
 
+## Large Tool Results
+
+When a tool result is too large, it may be offloaded into the filesystem instead of being returned inline. In those cases, use `read_file` to inspect the saved result in chunks, or use `grep` within `/large_tool_results/` if you need to search across offloaded tool results and do not know the exact file path. Offloaded tool results are stored under `/large_tool_results/<tool_call_id>` with the tool call ID sanitized for the filename.
+
 ## Filesystem Tools `ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`
 
 You have access to a filesystem which you can interact with using these tools.

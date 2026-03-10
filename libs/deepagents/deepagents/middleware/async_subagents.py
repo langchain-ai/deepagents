@@ -85,6 +85,14 @@ You have access to async subagent tools that launch background jobs on remote La
 - When you want to run multiple tasks concurrently and collect results later"""
 
 
+def _resolve_headers(spec: AsyncSubAgent) -> dict[str, str]:
+    """Build headers for a remote LangGraph server, including auth scheme."""
+    headers: dict[str, str] = dict(spec.get("headers") or {})
+    if "x-auth-scheme" not in headers:
+        headers["x-auth-scheme"] = "langsmith"
+    return headers
+
+
 class _ClientCache:
     """Lazily-created, cached LangGraph SDK clients keyed by agent name."""
 
@@ -99,7 +107,7 @@ class _ClientCache:
             spec = self._agents[name]
             self._sync[name] = get_sync_client(
                 url=spec["url"],
-                headers=spec.get("headers"),
+                headers=_resolve_headers(spec),
             )
         return self._sync[name]
 
@@ -109,7 +117,7 @@ class _ClientCache:
             spec = self._agents[name]
             self._async[name] = get_client(
                 url=spec["url"],
-                headers=spec.get("headers"),
+                headers=_resolve_headers(spec),
             )
         return self._async[name]
 

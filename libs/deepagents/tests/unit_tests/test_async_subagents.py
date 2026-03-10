@@ -10,6 +10,7 @@ from deepagents.middleware.async_subagents import (
     AsyncSubAgent,
     AsyncSubAgentMiddleware,
     _build_async_subagent_tools,
+    _resolve_headers,
 )
 
 
@@ -51,6 +52,24 @@ class TestAsyncSubAgentMiddleware:
         assert mw.system_prompt is None
 
 
+class TestResolveHeaders:
+    def test_adds_auth_scheme_by_default(self) -> None:
+        spec = _make_spec()
+        headers = _resolve_headers(spec)
+        assert headers["x-auth-scheme"] == "langsmith"
+
+    def test_preserves_custom_headers(self) -> None:
+        spec = _make_spec(headers={"X-Custom": "value"})
+        headers = _resolve_headers(spec)
+        assert headers["x-auth-scheme"] == "langsmith"
+        assert headers["X-Custom"] == "value"
+
+    def test_does_not_override_explicit_auth_scheme(self) -> None:
+        spec = _make_spec(headers={"x-auth-scheme": "custom"})
+        headers = _resolve_headers(spec)
+        assert headers["x-auth-scheme"] == "custom"
+
+
 class TestBuildAsyncSubagentTools:
     def test_returns_three_tools(self) -> None:
         tools = _build_async_subagent_tools([_make_spec()])
@@ -83,6 +102,11 @@ class TestLaunchTool:
         tools = _build_async_subagent_tools([_make_spec("alpha")])
         launch = tools[0]
         result = launch.invoke({"description": "analyze data", "subagent_type": "alpha"})
+
+        mock_get_client.assert_called_once_with(
+            url="http://localhost:8123",
+            headers={"x-auth-scheme": "langsmith"},
+        )
 
         parsed = json.loads(result)
         assert parsed["thread_id"] == "thread_abc"

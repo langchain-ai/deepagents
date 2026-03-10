@@ -59,7 +59,7 @@ class DaytonaSandbox(BaseSandbox):
         timeout: int,
     ) -> ExecuteResponse:
         """Execute a command through a session and poll logs until completion."""
-        session_id = f"deepagents-{uuid4()}"
+        session_id = str(uuid4())
         self._sandbox.process.create_session(session_id)
         try:
             started_at = time.monotonic()

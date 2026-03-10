@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import time
+from uuid import uuid4
+
 import daytona
-from daytona import FileDownloadRequest, FileUpload
+from daytona import FileDownloadRequest, FileUpload, SessionExecuteRequest
 from deepagents.backends.protocol import (
     ExecuteResponse,
     FileDownloadResponse,
@@ -47,11 +50,51 @@ class DaytonaSandbox(BaseSandbox):
                 "wait indefinitely".
         """
         effective_timeout = timeout if timeout is not None else self._default_timeout
-        result = self._sandbox.process.exec(command, timeout=effective_timeout)
+        return self._execute_via_session_logs(command, timeout=effective_timeout)
+
+    def _execute_via_session_logs(
+        self,
+        command: str,
+        *,
+        timeout: int,
+    ) -> ExecuteResponse:
+        """Execute a command through a session and poll logs until completion."""
+        session_id = f"deepagents-{uuid4()}"
+        self._sandbox.process.create_session(session_id)
+        try:
+            started_at = time.monotonic()
+            result = self._sandbox.process.execute_session_command(
+                session_id,
+                SessionExecuteRequest(command=command, run_async=True),
+                timeout=timeout,
+            )
+            while True:
+                if timeout != 0 and time.monotonic() - started_at >= timeout:
+                    msg = f"Command timed out after {timeout} seconds"
+                    raise TimeoutError(msg)
+                command_result = self._sandbox.process.get_session_command(
+                    session_id,
+                    result.cmd_id,
+                )
+                if command_result.exit_code is not None:
+                    break
+                # sleep for 100 ms
+                time.sleep(0.1)
+            logs = self._sandbox.process.get_session_command_logs(
+                session_id,
+                result.cmd_id,
+            )
+        finally:
+            self._sandbox.process.delete_session(session_id)
+
+        output = logs.stdout
+
+        if logs.stderr is not None:
+            output += f"\n<stderr>{logs.stderr}</stderr>"
 
         return ExecuteResponse(
-            output=result.result,
-            exit_code=result.exit_code,
+            output=output,
+            exit_code=command_result.exit_code,
             truncated=False,
         )
 

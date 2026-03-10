@@ -79,7 +79,6 @@ def _convert_messages(
                 }
             )
         elif isinstance(msg, AIMessage):
-            # P1-fix: prior assistant text uses input_text, not output_text
             if msg.content:
                 input_items.append(
                     {
@@ -87,7 +86,7 @@ def _convert_messages(
                         "role": "assistant",
                         "content": [
                             {
-                                "type": "input_text",
+                                "type": "output_text",
                                 "text": _content_to_text(msg.content),
                             },
                         ],

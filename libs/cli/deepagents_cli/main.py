@@ -396,6 +396,22 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--output-format",
+        choices=["text", "json"],
+        default="text",
+        dest="output_format",
+        help="Output format for subcommands: text (default) or json",
+    )
+
+    parser.add_argument(
+        "-J",
+        dest="output_format",
+        action="store_const",
+        const="json",
+        help="Shorthand for --output-format json",
+    )
+
+    parser.add_argument(
         "--auto-approve",
         action="store_true",
         help=(
@@ -1204,6 +1220,8 @@ def cli_main() -> None:
                 sys.exit(1)
             sys.exit(0)
 
+        output_format = getattr(args, "output_format", "text")
+
         if args.command == "help":
             from deepagents_cli.ui import show_help
 
@@ -1211,11 +1229,11 @@ def cli_main() -> None:
         elif args.command == "list":
             from deepagents_cli.agent import list_agents
 
-            list_agents()
+            list_agents(output_format=output_format)
         elif args.command == "reset":
             from deepagents_cli.agent import reset_agent
 
-            reset_agent(args.agent, args.source_agent)
+            reset_agent(args.agent, args.source_agent, output_format=output_format)
         elif args.command == "skills":
             from deepagents_cli.skills import execute_skills_command
 
@@ -1238,10 +1256,13 @@ def cli_main() -> None:
                         branch=getattr(args, "branch", None),
                         verbose=getattr(args, "verbose", False),
                         relative=getattr(args, "relative", None),
+                        output_format=output_format,
                     )
                 )
             elif args.threads_command == "delete":
-                asyncio.run(delete_thread_command(args.thread_id))
+                asyncio.run(
+                    delete_thread_command(args.thread_id, output_format=output_format)
+                )
             else:
                 # No subcommand provided, show threads help screen
                 show_threads_help()

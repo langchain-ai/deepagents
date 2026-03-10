@@ -724,6 +724,100 @@ class TestListAgents:
         assert "(default)" not in joined
 
 
+class TestListAgentsJson:
+    """Tests for list_agents JSON output."""
+
+    def test_json_output_with_agents(self, tmp_path: Path) -> None:
+        """JSON output returns array of agent dicts."""
+        import json
+        from io import StringIO
+
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+
+        default_dir = agents_dir / DEFAULT_AGENT_NAME
+        default_dir.mkdir()
+        (default_dir / "AGENTS.md").touch()
+
+        other_dir = agents_dir / "researcher"
+        other_dir.mkdir()
+
+        mock_settings = Mock()
+        mock_settings.user_deepagents_dir = agents_dir
+
+        buf = StringIO()
+        with (
+            patch("deepagents_cli.agent.settings", mock_settings),
+            patch("sys.stdout", buf),
+        ):
+            list_agents(output_format="json")
+
+        result = json.loads(buf.getvalue())
+        assert result["version"] == 1
+        assert result["command"] == "list"
+        agents = result["data"]
+        assert len(agents) == 2
+
+        default = next(a for a in agents if a["name"] == DEFAULT_AGENT_NAME)
+        assert default["is_default"] is True
+        assert default["has_agents_md"] is True
+
+        researcher = next(a for a in agents if a["name"] == "researcher")
+        assert researcher["is_default"] is False
+        assert researcher["has_agents_md"] is False
+
+    def test_json_output_empty(self, tmp_path: Path) -> None:
+        """JSON output returns empty array when no agents exist."""
+        import json
+        from io import StringIO
+
+        agents_dir = tmp_path / "empty"
+        agents_dir.mkdir()
+
+        mock_settings = Mock()
+        mock_settings.user_deepagents_dir = agents_dir
+
+        buf = StringIO()
+        with (
+            patch("deepagents_cli.agent.settings", mock_settings),
+            patch("sys.stdout", buf),
+        ):
+            list_agents(output_format="json")
+
+        result = json.loads(buf.getvalue())
+        assert result["data"] == []
+
+
+class TestResetAgentJson:
+    """Tests for reset_agent JSON output."""
+
+    def test_json_output_default_reset(self, tmp_path: Path) -> None:
+        """JSON output after resetting to default."""
+        import json
+        from io import StringIO
+
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+
+        mock_settings = Mock()
+        mock_settings.user_deepagents_dir = agents_dir
+
+        buf = StringIO()
+        with (
+            patch("deepagents_cli.agent.settings", mock_settings),
+            patch("sys.stdout", buf),
+        ):
+            from deepagents_cli.agent import reset_agent
+
+            reset_agent("coder", output_format="json")
+
+        result = json.loads(buf.getvalue())
+        assert result["command"] == "reset"
+        assert result["data"]["agent"] == "coder"
+        assert result["data"]["reset_to"] == "default"
+        assert "path" in result["data"]
+
+
 class TestCreateCliAgentSkillsSources:
     """Test that `create_cli_agent` wires skills sources in precedence order."""
 

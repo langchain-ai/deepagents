@@ -1420,3 +1420,115 @@ class TestListThreadsCommandConfigDefaults:
             asyncio.run(sessions.list_threads_command(verbose=True))
             mock_populate.assert_called_once()
             assert mock_populate.call_args.kwargs["include_initial_prompt"] is True
+
+
+class TestListThreadsCommandJson:
+    """Tests for list_threads_command JSON output."""
+
+    _THREAD: ClassVar[dict] = {
+        "thread_id": "abc12345",
+        "agent_name": "agent",
+        "updated_at": "2025-01-01T12:00:00",
+        "created_at": "2025-01-01T11:00:00",
+        "latest_checkpoint_id": "cp1",
+        "git_branch": None,
+        "cwd": "/tmp",
+        "message_count": 5,
+    }
+
+    def test_json_outputs_threads(self) -> None:
+        """JSON mode writes thread data to stdout."""
+        import io
+
+        buf = io.StringIO()
+        with (
+            patch(
+                "deepagents_cli.model_config.load_thread_sort_order",
+                return_value="updated_at",
+            ),
+            patch(
+                "deepagents_cli.model_config.load_thread_relative_time",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_cli.sessions.list_threads",
+                new_callable=AsyncMock,
+                return_value=[self._THREAD],
+            ),
+            patch("sys.stdout", buf),
+        ):
+            asyncio.run(sessions.list_threads_command(output_format="json"))
+
+        result = json.loads(buf.getvalue())
+        assert result["version"] == 1
+        assert result["command"] == "threads list"
+        assert len(result["data"]) == 1
+        assert result["data"][0]["thread_id"] == "abc12345"
+
+    def test_json_empty_threads(self) -> None:
+        """JSON mode returns empty array when no threads exist."""
+        import io
+
+        buf = io.StringIO()
+        with (
+            patch(
+                "deepagents_cli.model_config.load_thread_sort_order",
+                return_value="updated_at",
+            ),
+            patch(
+                "deepagents_cli.model_config.load_thread_relative_time",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_cli.sessions.list_threads",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+            patch("sys.stdout", buf),
+        ):
+            asyncio.run(sessions.list_threads_command(output_format="json"))
+
+        result = json.loads(buf.getvalue())
+        assert result["data"] == []
+
+
+class TestDeleteThreadCommandJson:
+    """Tests for delete_thread_command JSON output."""
+
+    def test_json_deleted(self) -> None:
+        """JSON mode reports successful deletion."""
+        import io
+
+        buf = io.StringIO()
+        with (
+            patch(
+                "deepagents_cli.sessions.delete_thread",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch("sys.stdout", buf),
+        ):
+            asyncio.run(sessions.delete_thread_command("abc123", output_format="json"))
+
+        result = json.loads(buf.getvalue())
+        assert result["command"] == "threads delete"
+        assert result["data"]["thread_id"] == "abc123"
+        assert result["data"]["deleted"] is True
+
+    def test_json_not_found(self) -> None:
+        """JSON mode reports thread not found."""
+        import io
+
+        buf = io.StringIO()
+        with (
+            patch(
+                "deepagents_cli.sessions.delete_thread",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch("sys.stdout", buf),
+        ):
+            asyncio.run(sessions.delete_thread_command("missing", output_format="json"))
+
+        result = json.loads(buf.getvalue())
+        assert result["data"]["deleted"] is False

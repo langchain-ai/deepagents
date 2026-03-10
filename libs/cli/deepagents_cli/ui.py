@@ -110,6 +110,8 @@ def show_help() -> None:
     console.print(
         "  --no-stream                Buffer full response instead of streaming"
     )
+    console.print("  --output-format FORMAT     Output format: text (default) or json")
+    console.print("  -J                         Shorthand for --output-format json")
     console.print(
         "  --shell-allow-list CMDS    Comma-separated commands, 'recommended', or 'all'"
     )

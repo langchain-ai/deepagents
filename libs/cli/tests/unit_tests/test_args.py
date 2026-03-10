@@ -378,3 +378,47 @@ class TestHelpScreenDrift:
             f"Flags in argparse but missing from show_threads_list_help(): {missing}\n"
             "Add them to the Options section in ui.show_threads_list_help()."
         )
+
+
+class TestOutputFormatArg:
+    """Tests for --output-format and -J argument parsing."""
+
+    def test_default_text(self) -> None:
+        """Verify output_format defaults to text."""
+        with patch.object(sys, "argv", ["deepagents"]):
+            args = parse_args()
+        assert args.output_format == "text"
+
+    def test_long_flag_json(self) -> None:
+        """Verify --output-format json sets output_format."""
+        with patch.object(sys, "argv", ["deepagents", "--output-format", "json"]):
+            args = parse_args()
+        assert args.output_format == "json"
+
+    def test_long_flag_text(self) -> None:
+        """Verify --output-format text sets output_format."""
+        with patch.object(sys, "argv", ["deepagents", "--output-format", "text"]):
+            args = parse_args()
+        assert args.output_format == "text"
+
+    def test_short_flag_j(self) -> None:
+        """Verify -J sets output_format to json."""
+        with patch.object(sys, "argv", ["deepagents", "-J"]):
+            args = parse_args()
+        assert args.output_format == "json"
+
+    def test_j_with_subcommand(self) -> None:
+        """Verify -J works with subcommands (flag before subcommand)."""
+        with patch.object(sys, "argv", ["deepagents", "-J", "list"]):
+            args = parse_args()
+        assert args.command == "list"
+        assert args.output_format == "json"
+
+    def test_invalid_format_exits(self) -> None:
+        """Verify invalid format exits with error."""
+        with (
+            patch.object(sys, "argv", ["deepagents", "--output-format", "xml"]),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            parse_args()
+        assert exc_info.value.code == 2

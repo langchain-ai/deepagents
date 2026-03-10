@@ -136,11 +136,10 @@ class RemoteAgent:
         if thread_id is None:
             return None
 
-        thread_id = await self._resolve_thread_id(thread_id)
-        if thread_id is None:
-            return None
-
         try:
+            thread_id = await self._resolve_thread_id(thread_id)
+            if thread_id is None:
+                return None
             state = await client.threads.get_state(thread_id)
             return _StateWrapper(state)
         except Exception:
@@ -163,11 +162,10 @@ class RemoteAgent:
         if thread_id is None:
             return
 
-        thread_id = await self._resolve_thread_id(thread_id)
-        if thread_id is None:
-            return
-
         try:
+            thread_id = await self._resolve_thread_id(thread_id)
+            if thread_id is None:
+                return
             await client.threads.update_state(thread_id, values)
         except Exception:
             logger.debug(
@@ -225,7 +223,7 @@ class RemoteAgent:
         try:
             thread = await client.threads.get(thread_id)
             return thread["thread_id"]
-        except (KeyError, OSError, ValueError):
+        except Exception:  # noqa: BLE001
             return None
 
     def with_config(self, config: dict[str, Any]) -> RemoteAgent:  # noqa: ARG002

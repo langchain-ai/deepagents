@@ -133,7 +133,7 @@ deepagents-codex = { path = "../partners/codex", editable = true }
 
 [tool.ty.environment]
 python-version = "3.11"
-extra-paths = ["../deepagents"]
+extra-paths = ["../deepagents", "../partners/codex"]
 
 [tool.ty.rules]
 # https://docs.astral.sh/ty/rules/

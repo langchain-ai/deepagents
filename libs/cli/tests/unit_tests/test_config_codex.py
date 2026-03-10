@@ -2,6 +2,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+pytest.importorskip("deepagents_codex")
+
 from deepagents_cli.model_config import ModelConfigError
 
 

@@ -3,6 +3,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+pytest.importorskip("deepagents_codex")
+
 
 class TestHasProviderCredentialsCodex:
     @patch("deepagents_cli.model_config.ModelConfig.load")

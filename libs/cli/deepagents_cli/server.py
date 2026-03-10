@@ -154,6 +154,7 @@ class ServerProcess:
         env = os.environ.copy()
         env["PYTHONDONTWRITEBYTECODE"] = "1"
         env["LANGGRAPH_AUTH_TYPE"] = "noop"
+        env["LANGSMITH_TRACING"] = "false"
         for key in (
             "LANGGRAPH_AUTH",
             "LANGGRAPH_CLOUD_LICENSE_KEY",

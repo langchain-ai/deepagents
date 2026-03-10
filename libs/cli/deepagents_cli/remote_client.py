@@ -314,6 +314,9 @@ def _convert_stream_chunk(
 
     Returns:
         List of converted 3-tuples (may be empty for non-matching events).
+
+    Raises:
+        RuntimeError: If the server sends an SSE error event.
     """
     event = chunk.event if hasattr(chunk, "event") else ""
     data = chunk.data if hasattr(chunk, "data") else chunk
@@ -349,7 +352,9 @@ def _convert_stream_chunk(
         pass
 
     elif event == "error":
-        logger.error("Server stream error: %s", data)
+        detail = data.get("message", data) if isinstance(data, dict) else data
+        msg = f"Server stream error: {detail}"
+        raise RuntimeError(msg)
 
     return results
 

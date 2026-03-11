@@ -746,6 +746,10 @@ async def _run_acp_cli_async(
         sys.stderr.flush()
         return 1
 
+    from deepagents_cli.agent import load_async_subagents
+
+    async_subagents = load_async_subagents() or None
+
     try:
         from langgraph.checkpoint.memory import InMemorySaver
 
@@ -755,6 +759,7 @@ async def _run_acp_cli_async(
             tools=tools,
             mcp_server_info=mcp_server_info,
             checkpointer=InMemorySaver(),
+            async_subagents=async_subagents,
         )
     except Exception as exc:
         sys.stderr.write(f"Error: failed to create agent: {exc}\n")

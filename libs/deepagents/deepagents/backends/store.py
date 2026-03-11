@@ -23,6 +23,7 @@ from deepagents.backends.protocol import (
     FileInfo,
     FileUploadResponse,
     GrepMatch,
+    ReadResult,
     WriteResult,
 )
 from deepagents.backends.utils import (
@@ -390,7 +391,7 @@ class StoreBackend(BackendProtocol):
         file_path: str,
         offset: int = 0,
         limit: int = 2000,
-    ) -> str:
+    ) -> ReadResult:
         """Read file content with line numbers.
 
         Args:
@@ -399,7 +400,7 @@ class StoreBackend(BackendProtocol):
             limit: Maximum number of lines to read.
 
         Returns:
-            Formatted file content with line numbers, or error message.
+            ReadResult
         """
         store = self._get_store()
         namespace = self._get_namespace()
@@ -420,7 +421,7 @@ class StoreBackend(BackendProtocol):
         file_path: str,
         offset: int = 0,
         limit: int = 2000,
-    ) -> str:
+    ) -> ReadResult:
         """Async version of read using native store async methods.
 
         This avoids sync calls in async context by using store.aget directly.

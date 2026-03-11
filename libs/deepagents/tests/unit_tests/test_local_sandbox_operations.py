@@ -127,7 +127,7 @@ class LocalSubprocessSandbox(BaseSandbox):
             entry["path"] = self._to_virtual_path(entry["path"])
         return results
 
-    def read(self, file_path: str, offset: int = 0, limit: int = 2000) -> str:
+    def read(self, file_path: str, offset: int = 0, limit: int = 2000) -> ReadResult:
         """Read file content from the mapped real path."""
         output = super().read(self._to_real_path(file_path), offset=offset, limit=limit)
         return self._to_virtual_path(output)
@@ -1211,3 +1211,4 @@ class TestLocalSandboxOperations:
         # Grep for a pattern
         grep_result = sandbox.grep_raw("file", path=base_dir)
         assert len(grep_result) >= 3  # At least 3 matches
+ches

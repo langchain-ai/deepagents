@@ -21,6 +21,7 @@ from deepagents.backends.protocol import (
     FileInfo,
     FileUploadResponse,
     GrepMatch,
+    ReadResult,
     SandboxBackendProtocol,
     WriteResult,
 )
@@ -270,7 +271,7 @@ except PermissionError:
         file_path: str,
         offset: int = 0,
         limit: int = 2000,
-    ) -> str:
+    ) -> ReadResult:
         """Read file content with line numbers using a single shell command."""
         payload = json.dumps(
             {

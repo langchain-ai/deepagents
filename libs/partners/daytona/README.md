@@ -19,7 +19,11 @@ from daytona import Daytona
 from langchain_daytona import DaytonaSandbox
 
 sandbox = Daytona().create()
-backend = DaytonaSandbox(sandbox)
+backend = DaytonaSandbox(
+    sandbox=sandbox,
+    timeout=300,
+    sync_polling_interval=0.25,
+)
 result = backend.execute("echo hello")
 print(result.output)
 ```

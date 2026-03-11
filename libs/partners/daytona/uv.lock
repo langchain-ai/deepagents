@@ -631,7 +631,7 @@ wheels = [
 
 [[package]]
 name = "deepagents"
-version = "0.4.9"
+version = "0.4.10"
 source = { editable = "../../deepagents" }
 dependencies = [
     { name = "langchain" },
@@ -1114,7 +1114,7 @@ wheels = [
 
 [[package]]
 name = "langchain-daytona"
-version = "0.0.3"
+version = "0.0.4"
 source = { editable = "." }
 dependencies = [
     { name = "daytona" },

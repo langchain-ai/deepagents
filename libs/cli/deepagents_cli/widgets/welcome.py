@@ -150,15 +150,26 @@ class WelcomeBanner(Static):
             label = "MCP tool" if self._mcp_tool_count == 1 else "MCP tools"
             banner.append(f"Loaded {self._mcp_tool_count} {label}\n")
 
-        banner.append(
-            "Ready to code! What would you like to build?\n", style=COLORS["primary"]
-        )
-        bullet = get_glyphs().bullet
-        banner.append(
-            (
-                f"Enter send {bullet} {newline_shortcut()} newline "
-                f"{bullet} @ files {bullet} / commands"
-            ),
-            style="dim",
-        )
+        banner.append_text(build_welcome_footer())
         return banner
+
+
+def build_welcome_footer() -> Text:
+    """Build the two-line footer shown at the bottom of the welcome banner.
+
+    Returns:
+        Rich Text with the ready prompt and keyboard shortcut help line.
+    """
+    footer = Text()
+    footer.append(
+        "\nReady to code! What would you like to build?\n", style=COLORS["primary"]
+    )
+    bullet = get_glyphs().bullet
+    footer.append(
+        (
+            f"Enter send {bullet} {newline_shortcut()} newline "
+            f"{bullet} @ files {bullet} / commands"
+        ),
+        style="dim",
+    )
+    return footer

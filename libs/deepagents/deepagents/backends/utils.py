@@ -18,6 +18,49 @@ import wcmatch.glob as wcglob
 from deepagents.backends.protocol import FileData, FileInfo as _FileInfo, GrepMatch as _GrepMatch
 
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
+
+FileType = Literal["text", "image", "audio", "video", "file"]
+"""Classification of a file by extension."""
+
+_EXTENSION_TO_FILE_TYPE: dict[str, FileType] = {
+    # Images (https://ai.google.dev/gemini-api/docs/image-understanding)
+    ".png": "image",
+    ".jpeg": "image",
+    ".jpg": "image",
+    ".webp": "image",
+    ".heic": "image",
+    ".heif": "image",
+    # Video (https://ai.google.dev/gemini-api/docs/video-understanding)
+    ".mp4": "video",
+    ".mpeg": "video",
+    ".mov": "video",
+    ".avi": "video",
+    ".flv": "video",
+    ".mpg": "video",
+    ".webm": "video",
+    ".wmv": "video",
+    ".3gpp": "video",
+    # Audio (https://ai.google.dev/gemini-api/docs/audio)
+    ".wav": "audio",
+    ".mp3": "audio",
+    ".aiff": "audio",
+    ".aac": "audio",
+    ".ogg": "audio",
+    ".flac": "audio",
+    # Files
+    ".pdf": "file",
+    ".ppt": "file",
+    ".pptx": "file",
+}
+"""Extension-to-type mapping for non-text files.
+
+Derived from Google's multimodal API supported formats:
+
+- Images: https://ai.google.dev/gemini-api/docs/image-understanding
+- Video: https://ai.google.dev/gemini-api/docs/video-understanding
+- Audio: https://ai.google.dev/gemini-api/docs/audio
+"""
+
 MAX_LINE_LENGTH = 5000
 LINE_NUMBER_WIDTH = 6
 TOOL_RESULT_TOKEN_LIMIT = 20000  # Same threshold as eviction
@@ -118,6 +161,19 @@ def check_empty_content(content: str) -> str | None:
     if not content or content.strip() == "":
         return EMPTY_CONTENT_WARNING
     return None
+
+
+def _get_file_type(path: str) -> FileType:
+    """Classify a file by its extension.
+
+    Args:
+        path: File path to classify.
+
+    Returns:
+        One of `"text"`, `"image"`, `"audio"`, `"video"`, or `"file"`.
+        Defaults to `"text"` for unrecognized extensions.
+    """
+    return _EXTENSION_TO_FILE_TYPE.get(PurePosixPath(path).suffix.lower(), "text")
 
 
 def _to_legacy_file_data(file_data: FileData) -> dict[str, Any]:

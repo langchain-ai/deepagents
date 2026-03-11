@@ -224,12 +224,11 @@ def show_skills_help() -> None:
         style=COLORS["primary"],
     )
     console.print(
-        "[dim]  1. .agents/skills/                 project skills\n"
+        "  1. .agents/skills/                 project skills\n"
         "  2. .deepagents/skills/             project skills (alias)\n"
         "  3. ~/.agents/skills/               user skills\n"
         "  4. ~/.deepagents/<agent>/skills/   user skills (alias)\n"
-        "  5. <package>/built_in_skills/      built-in skills[/dim]",
-        style=COLORS["dim"],
+        "  5. <package>/built_in_skills/      built-in skills",
     )
     console.print()
 

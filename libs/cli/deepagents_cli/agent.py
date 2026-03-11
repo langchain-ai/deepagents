@@ -228,7 +228,7 @@ def get_system_prompt(
     """
     template = (Path(__file__).parent / "system_prompt.md").read_text()
 
-    skills_path = f"~/.deepagents/{assistant_id}/skills/"
+    skills_path = f"~/.deepagents/{assistant_id}/skills"
 
     if interactive:
         mode_description = "an interactive CLI on the user's computer"

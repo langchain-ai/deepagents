@@ -35,6 +35,9 @@ if os.environ.get("DEEPAGENTS_DEBUG"):
 _STREAM_MODES = ["messages", "updates"]
 
 
+_THREAD_UUID_NAMESPACE = uuid.UUID("a1b2c3d4-e5f6-7890-abcd-ef1234567890")
+
+
 def _to_uuid(short_id: str) -> str:
     """Convert a short hex thread ID to a valid UUID string.
 
@@ -47,8 +50,7 @@ def _to_uuid(short_id: str) -> str:
     try:
         return str(uuid.UUID(short_id))
     except ValueError:
-        padded = short_id.ljust(32, "0")
-        return str(uuid.UUID(padded[:32]))
+        return str(uuid.uuid5(_THREAD_UUID_NAMESPACE, short_id))
 
 
 class RemoteAgent:

@@ -57,7 +57,7 @@ class TestToUuid:
     def test_short_id_becomes_valid_uuid(self) -> None:
         result = _to_uuid("461bc7c2")
         uuid.UUID(result)
-        assert result == "461bc7c2-0000-0000-0000-000000000000"
+        assert "0000-0000-0000-000000000000" not in result
 
     def test_full_uuid_passthrough(self) -> None:
         full = str(uuid.uuid4())

@@ -598,12 +598,15 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 evals = [
+    { name = "datasets", specifier = ">=3.0.0" },
     { name = "langchain-deepseek" },
     { name = "langchain-fireworks" },
     { name = "langchain-groq" },
     { name = "langchain-mistralai" },
     { name = "langchain-ollama" },
     { name = "langchain-xai" },
+    { name = "nltk", specifier = ">=3.9.0" },
+    { name = "tiktoken", specifier = ">=0.8.0" },
 ]
 test = [
     { name = "build" },

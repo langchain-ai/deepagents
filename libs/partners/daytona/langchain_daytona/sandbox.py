@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
+from typing import cast
 from uuid import uuid4
 
 import daytona
@@ -13,6 +15,9 @@ from deepagents.backends.protocol import (
     FileUploadResponse,
 )
 from deepagents.backends.sandbox import BaseSandbox
+
+SyncPollingInterval = float | Callable[[float], float]
+PollingStrategy = Callable[[float], float]
 
 
 class DaytonaSandbox(BaseSandbox):
@@ -27,7 +32,7 @@ class DaytonaSandbox(BaseSandbox):
         *,
         sandbox: daytona.Sandbox,
         timeout: int = 30 * 60,
-        polling_interval: float = 0.1,
+        sync_polling_interval: SyncPollingInterval = 0.1,
     ) -> None:
         """Create a backend wrapping an existing Daytona sandbox.
 
@@ -35,12 +40,23 @@ class DaytonaSandbox(BaseSandbox):
             sandbox: Existing Daytona sandbox instance to wrap.
             timeout: Default command timeout in seconds used when `execute()` is
                 called without an explicit `timeout`.
-            polling_interval: Delay in seconds between polling Daytona for
-                command completion.
+            sync_polling_interval: Delay in seconds between polling Daytona for
+                command completion on the sync execution path, or a callable
+                that receives elapsed execution time in seconds and returns the
+                next polling delay. This will eventually only appear on the
+                sync path once an optimized async implementation is available.
         """
         self._sandbox = sandbox
         self._default_timeout = timeout
-        self._polling_interval = polling_interval
+        polling_strategy: PollingStrategy
+        if callable(sync_polling_interval):
+            polling_strategy = cast("PollingStrategy", sync_polling_interval)
+        else:
+
+            def polling_strategy(_elapsed: float) -> float:
+                return sync_polling_interval
+
+        self._sync_polling_interval = polling_strategy
 
     @property
     def id(self) -> str:
@@ -97,7 +113,8 @@ class DaytonaSandbox(BaseSandbox):
                 )
                 if command_result.exit_code is not None:
                     break
-                time.sleep(self._polling_interval)
+                elapsed = time.monotonic() - started_at
+                time.sleep(self._sync_polling_interval(elapsed))
             logs = self._sandbox.process.get_session_command_logs(
                 session_id,
                 result.cmd_id,

@@ -239,3 +239,83 @@ class TestStreamConverterDelta:
         )
         results2 = converter.convert(chunk2, modes=[])
         assert results2 == []
+
+    def test_updates_event_extracts_tool_call_messages(self) -> None:
+        converter = _StreamConverter()
+        chunk = StreamPart(
+            event="updates",
+            data={
+                "agent": {
+                    "messages": [
+                        {
+                            "id": "m1",
+                            "type": "ai",
+                            "content": "",
+                            "tool_calls": [
+                                {"id": "tc1", "name": "search", "args": {"q": "test"}}
+                            ],
+                            "response_metadata": {},
+                        }
+                    ]
+                }
+            },
+        )
+        results = converter.convert(chunk, modes=[])
+        updates = [r for r in results if r[1] == "updates"]
+        messages = [r for r in results if r[1] == "messages"]
+        assert len(updates) == 1
+        assert len(messages) == 1
+        msg = messages[0][2][0]
+        assert msg.tool_calls[0]["name"] == "search"
+
+    def test_updates_event_extracts_tool_result(self) -> None:
+        converter = _StreamConverter()
+        chunk = StreamPart(
+            event="updates",
+            data={
+                "tools": {
+                    "messages": [
+                        {
+                            "id": "m2",
+                            "type": "tool",
+                            "content": "Sunny",
+                            "tool_call_id": "tc1",
+                            "name": "search",
+                        }
+                    ]
+                }
+            },
+        )
+        results = converter.convert(chunk, modes=[])
+        messages = [r for r in results if r[1] == "messages"]
+        assert len(messages) == 1
+        from langchain_core.messages import ToolMessage
+
+        assert isinstance(messages[0][2][0], ToolMessage)
+
+    def test_updates_no_duplicate_with_partial(self) -> None:
+        converter = _StreamConverter()
+        partial = StreamPart(
+            event="messages/partial",
+            data=[{"id": "m1", "type": "AIMessageChunk", "content": "Hi", "tool_calls": []}],
+        )
+        converter.convert(partial, modes=[])
+        update = StreamPart(
+            event="updates",
+            data={
+                "agent": {
+                    "messages": [
+                        {
+                            "id": "m1",
+                            "type": "ai",
+                            "content": "Hi",
+                            "tool_calls": [],
+                            "response_metadata": {},
+                        }
+                    ]
+                }
+            },
+        )
+        results = converter.convert(update, modes=[])
+        messages = [r for r in results if r[1] == "messages"]
+        assert len(messages) == 0

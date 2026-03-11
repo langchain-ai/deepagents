@@ -344,6 +344,7 @@ class _StreamConverter:
     def __init__(self) -> None:
         self._seen_text: dict[str | None, str] = {}
         self._seen_tool_call_ids: set[str] = set()
+        self._seen_msg_ids: set[str] = set()
 
     def convert(
         self,
@@ -377,6 +378,9 @@ class _StreamConverter:
                 else []
             )
             for item in items:
+                msg_id = item.get("id") if isinstance(item, dict) else None
+                if msg_id:
+                    self._seen_msg_ids.add(msg_id)
                 if event == "messages/complete":
                     msg_obj = _convert_message_data(item)
                     if msg_obj is not None:
@@ -392,6 +396,10 @@ class _StreamConverter:
         elif event == "updates":
             if isinstance(data, dict):
                 results.append((namespace, "updates", data))
+                results.extend(
+                    (namespace, "messages", (msg_obj, {}))
+                    for msg_obj in self._extract_messages_from_update(data)
+                )
 
         elif event == "values":
             if isinstance(data, dict) and "__interrupt__" in data:
@@ -454,6 +462,40 @@ class _StreamConverter:
             return None
 
         return _convert_message_data(delta_data)
+
+    def _extract_messages_from_update(self, data: dict[str, Any]) -> list[Any]:
+        """Extract messages from an `updates` event as a fallback.
+
+        The `updates` event contains node outputs like
+        `{"agent": {"messages": [...]}}`. This extracts any messages
+        that haven't already been seen via `messages/partial` or
+        `messages/complete` events.
+
+        Args:
+            data: The `updates` event data dict.
+
+        Returns:
+            List of converted message objects.
+        """
+        results = []
+        for node_output in data.values():
+            if not isinstance(node_output, dict):
+                continue
+            messages = node_output.get("messages", [])
+            if not isinstance(messages, list):
+                continue
+            for msg_data in messages:
+                if not isinstance(msg_data, dict):
+                    continue
+                msg_id = msg_data.get("id")
+                if msg_id and msg_id in self._seen_msg_ids:
+                    continue
+                if msg_id:
+                    self._seen_msg_ids.add(msg_id)
+                msg_obj = _convert_message_data(msg_data)
+                if msg_obj is not None:
+                    results.append(msg_obj)
+        return results
 
 
 def _extract_text(content: str | list | Any) -> str:  # noqa: ANN401

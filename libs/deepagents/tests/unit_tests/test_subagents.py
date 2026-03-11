@@ -5,6 +5,7 @@ are invoked, how they return results, and how state is managed between parent
 and child agents.
 """
 
+import json
 import warnings
 from pathlib import Path
 from typing import Any, TypedDict
@@ -685,19 +686,15 @@ class TestSubAgents:
         )
 
         # Verify the exact content of the ToolMessages
-        # When a subagent uses ToolStrategy for structured output, the default tool message
-        # content shows the structured response using the Pydantic model's string representation
+        # When a subagent produces a structured_response, it is JSON-serialized
+        # as the ToolMessage content for predictable, parseable data
         weather_tool_message = tool_messages_by_id["call_weather"]
-        expected_weather_content = "Returning structured response: city='Tokyo' temperature_celsius=22.5 humidity_percent=65"
-        assert weather_tool_message.content == expected_weather_content, (
-            f"Expected weather ToolMessage content:\n{expected_weather_content}\nGot:\n{weather_tool_message.content}"
-        )
+        weather_parsed = json.loads(weather_tool_message.content)
+        assert weather_parsed == {"city": "Tokyo", "temperature_celsius": 22.5, "humidity_percent": 65}
 
         population_tool_message = tool_messages_by_id["call_population"]
-        expected_population_content = "Returning structured response: city='Tokyo' population=14000000 metro_area_population=37400000"
-        assert population_tool_message.content == expected_population_content, (
-            f"Expected population ToolMessage content:\n{expected_population_content}\nGot:\n{population_tool_message.content}"
-        )
+        population_parsed = json.loads(population_tool_message.content)
+        assert population_parsed == {"city": "Tokyo", "population": 14000000, "metro_area_population": 37400000}
 
     def test_lc_agent_name_and_tags_in_streaming_metadata(self) -> None:
         """Test that lc_agent_name and tags are correctly set in streaming metadata.
@@ -1549,6 +1546,234 @@ class TestSubAgents:
         # Verify skills_metadata is NOT in the subagent state
         subagent_state = captured_subagent_states[0]
         assert "skills_metadata" not in subagent_state, "Subagent without skills parameter should NOT have skills_metadata"
+
+    def test_subagent_structured_response_serialized_as_json(self) -> None:
+        """Test that a subagent's structured_response is JSON-serialized as ToolMessage content.
+
+        When a subagent produces a `structured_response` (via `response_format`),
+        the middleware should JSON-serialize it as the ToolMessage content instead
+        of extracting the last message text. This gives the supervisor predictable,
+        parseable data.
+        """
+
+        class AnalysisResult(BaseModel):
+            findings: str = Field(description="Analysis findings")
+            confidence: float = Field(description="Confidence score")
+            sources: int = Field(description="Number of sources")
+
+        subagent_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "AnalysisResult",
+                                "args": {
+                                    "findings": "Renewable energy adoption is accelerating",
+                                    "confidence": 0.92,
+                                    "sources": 3,
+                                },
+                                "id": "call_analysis",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                ]
+            )
+        )
+
+        subagent = create_agent(
+            model=subagent_model,
+            response_format=ToolStrategy(schema=AnalysisResult),
+        )
+
+        parent_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {
+                                    "description": "Analyze renewable energy trends",
+                                    "subagent_type": "analyzer",
+                                },
+                                "id": "call_task",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done"),
+                ]
+            )
+        )
+
+        parent_agent = create_deep_agent(
+            model=parent_model,
+            checkpointer=InMemorySaver(),
+            subagents=[
+                CompiledSubAgent(
+                    name="analyzer",
+                    description="An analysis agent",
+                    runnable=subagent,
+                )
+            ],
+        )
+
+        result = parent_agent.invoke(
+            {"messages": [HumanMessage(content="Analyze renewable energy")]},
+            config={"configurable": {"thread_id": "test_structured_json"}},
+        )
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert len(tool_messages) == 1
+        parsed = json.loads(tool_messages[0].content)
+        assert parsed == {
+            "findings": "Renewable energy adoption is accelerating",
+            "confidence": 0.92,
+            "sources": 3,
+        }
+
+    def test_subagent_falls_back_to_last_message_without_structured_response(self) -> None:
+        """Test that without structured_response, the last message text is used.
+
+        When a subagent does NOT produce a `structured_response`, the middleware
+        should fall back to extracting the last message text as the ToolMessage content.
+        """
+        subagent_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(content="Plain text result without structured response"),
+                ]
+            )
+        )
+
+        subagent = create_agent(model=subagent_model)
+
+        parent_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {
+                                    "description": "Do work",
+                                    "subagent_type": "worker",
+                                },
+                                "id": "call_task",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done"),
+                ]
+            )
+        )
+
+        parent_agent = create_deep_agent(
+            model=parent_model,
+            checkpointer=InMemorySaver(),
+            subagents=[
+                CompiledSubAgent(
+                    name="worker",
+                    description="A worker agent",
+                    runnable=subagent,
+                )
+            ],
+        )
+
+        result = parent_agent.invoke(
+            {"messages": [HumanMessage(content="Test")]},
+            config={"configurable": {"thread_id": "test_no_structured"}},
+        )
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert len(tool_messages) == 1
+        assert tool_messages[0].content == "Plain text result without structured response"
+
+    def test_subagent_spec_with_response_format(self) -> None:
+        """Test that SubAgent spec with response_format produces JSON-serialized output.
+
+        When a SubAgent (not CompiledSubAgent) specifies `response_format`, the
+        subagent should be created with structured output support and the
+        structured_response should be JSON-serialized in the ToolMessage.
+        """
+
+        class TaskResult(BaseModel):
+            summary: str = Field(description="Task summary")
+            status: str = Field(description="Task status")
+
+        subagent_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "TaskResult",
+                                "args": {
+                                    "summary": "Completed analysis",
+                                    "status": "success",
+                                },
+                                "id": "call_result",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                ]
+            )
+        )
+
+        parent_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {
+                                    "description": "Analyze data",
+                                    "subagent_type": "structured-worker",
+                                },
+                                "id": "call_task",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done"),
+                ]
+            )
+        )
+
+        parent_agent = create_deep_agent(
+            model=parent_model,
+            checkpointer=InMemorySaver(),
+            subagents=[
+                SubAgent(
+                    name="structured-worker",
+                    description="A worker that returns structured output",
+                    system_prompt="Return structured results.",
+                    model=subagent_model,
+                    tools=[],
+                    response_format=ToolStrategy(schema=TaskResult),
+                )
+            ],
+        )
+
+        result = parent_agent.invoke(
+            {"messages": [HumanMessage(content="Analyze")]},
+            config={"configurable": {"thread_id": "test_subagent_spec_response_format"}},
+        )
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert len(tool_messages) == 1
+        parsed = json.loads(tool_messages[0].content)
+        assert parsed == {"summary": "Completed analysis", "status": "success"}
 
 
 class TestSubAgentMiddlewareValidation:

@@ -87,7 +87,7 @@ class DaytonaSandbox(BaseSandbox):
         finally:
             self._sandbox.process.delete_session(session_id)
 
-        output = logs.stdout
+        output = logs.stdout or ""
 
         if logs.stderr is not None and logs.stderr.strip():
             output += f"\n<stderr>{logs.stderr.strip()}</stderr>"

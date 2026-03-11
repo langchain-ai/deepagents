@@ -1,3 +1,3 @@
 """Version information for `deepagents` (SDK)."""
 
-__version__ = "0.4.9"
+__version__ = "0.4.10"

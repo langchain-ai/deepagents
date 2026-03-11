@@ -415,11 +415,6 @@ def print_summary(trials: list[Trial]) -> None:
         if complete_trials > 0:
             mde = min_detectable_effect(complete_trials)
             print(f"\nMin detectable effect (vs another run): {mde * 100:.1f}pp")
-            if mde > 0.03:  # noqa: PLR2004  # 3pp skepticism threshold from Anthropic research
-                print(
-                    "  Note: differences below 3pp deserve skepticism until eval "
-                    "configuration is documented and matched"
-                )
 
     # Failure classification breakdown
     failed_trials = [t for t in trials if t.status == TrialStatus.FAILED]

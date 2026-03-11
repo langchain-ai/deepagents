@@ -1,0 +1,192 @@
+# Daily evaluation workflow for Deep Agents
+#
+# Runs tests/evals on a cron schedule (once per day).
+# Single job; model/provider is selected via workflow input `model`.
+#
+# Required secrets:
+#   LANGSMITH_API_KEY  — used for tracing
+#   ANTHROPIC_API_KEY  — needed for Anthropic models
+#   OPENAI_API_KEY     — needed for OpenAI models
+#   GOOGLE_API_KEY     — needed for Google models
+#   XAI_API_KEY        — needed for xAI/Grok models
+#   MISTRAL_API_KEY    — needed for Mistral models
+#   DEEPSEEK_API_KEY   — needed for DeepSeek models
+#   GROQ_API_KEY       — needed for Groq-hosted models
+#   OLLAMA_API_KEY     — needed for Ollama Cloud models
+#   OLLAMA_HOST        — set to https://ollama.com for cloud inference
+#   BASETEN_API_KEY    — needed for Baseten-hosted models
+#   FIREWORKS_API_KEY  — needed for Fireworks-hosted models
+
+name: "📊 Evals"
+
+on:
+  schedule:
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+    inputs:
+      models:
+        description: "Preset model selection"
+        required: true
+        default: "all"
+        type: choice
+        options:
+          - all
+          - set0
+          - set1
+          - set2
+          - "anthropic:claude-haiku-4-5-20251001"
+          - "anthropic:claude-sonnet-4-20250514"
+          - "anthropic:claude-sonnet-4-5-20250929"
+          - "anthropic:claude-sonnet-4-6"
+          - "anthropic:claude-opus-4-1"
+          - "anthropic:claude-opus-4-5-20251101"
+          - "anthropic:claude-opus-4-6"
+          - "openai:gpt-4o"
+          - "openai:gpt-4o-mini"
+          - "openai:gpt-4.1"
+          - "openai:o3"
+          - "openai:o4-mini"
+          - "openai:gpt-5.1-codex"
+          - "openai:gpt-5.2-codex"
+          - "openai:gpt-5.4"
+          - "google_genai:gemini-2.5-flash"
+          - "google_genai:gemini-2.5-pro"
+          - "google_genai:gemini-3-flash-preview"
+          - "google_genai:gemini-3.1-pro-preview"
+          - "xai:grok-4"
+          - "xai:grok-3-mini-fast"
+          - "groq:openai/gpt-oss-120b"
+          - "groq:qwen/qwen3-32b"
+          - "groq:moonshotai/kimi-k2-instruct"
+          - "ollama:glm-5"
+          - "ollama:minimax-m2.5"
+          - "ollama:nemotron-3-nano:30b"
+          - "ollama:cogito-2.1:671b"
+          - "ollama:devstral-2:123b"
+          - "ollama:ministral-3:14b"
+          - "ollama:qwen3-next:80b"
+          - "ollama:qwen3-coder:480b-cloud"
+          - "ollama:qwen3.5:397b-cloud"
+          - "ollama:deepseek-v3.2:cloud"
+          - "baseten:zai-org/GLM-5"
+          - "baseten:MiniMaxAI/MiniMax-M2.5"
+          - "baseten:moonshotai/Kimi-K2.5"
+          - "baseten:deepseek-ai/DeepSeek-V3.2"
+          - "baseten:Qwen/Qwen3-Coder-480B-A35B-Instruct"
+          - "fireworks:fireworks/qwen3-vl-235b-a22b-thinking"
+          - "fireworks:fireworks/deepseek-v3-0324"
+          - "fireworks:fireworks/minimax-m2p1"
+          - "fireworks:fireworks/kimi-k2p5"
+          - "fireworks:fireworks/glm-5"
+          - "fireworks:fireworks/minimax-m2p5"
+      models_override:
+        description: "Override: comma-separated models (e.g. 'openai:gpt-4.1,openai:o3'). Takes priority over dropdown when non-empty."
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  UV_NO_SYNC: "true"
+
+jobs:
+  prep:
+    name: "🔧 Prepare matrix"
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: "📋 Checkout Code"
+        uses: actions/checkout@v6
+
+      - name: "🐍 Compute eval matrix"
+        id: set-matrix
+        run: python .github/scripts/get_eval_models.py
+        env:
+          EVAL_MODELS: ${{ inputs.models_override || inputs.models || 'all' }}
+
+  eval:
+    name: "📊 Eval (${{ matrix.model }})"
+    needs: prep
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.prep.outputs.matrix) }}
+
+    defaults:
+      run:
+        working-directory: libs/deepagents
+    env:
+      PYTEST_ADDOPTS: "--model ${{ matrix.model }} --evals-report-file evals_report.json"
+      LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+      LANGSMITH_TRACING_V2: "true"
+      LANGSMITH_EXPERIMENT: ${{ matrix.model }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+      XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
+      MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
+      OLLAMA_HOST: "https://ollama.com"
+      BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
+      FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
+    steps:
+      - name: "📋 Checkout Code"
+        uses: actions/checkout@v6
+
+      - name: "🐍 Set up Python + UV"
+        uses: "./.github/actions/uv_setup"
+        with:
+          python-version: "3.11"
+          cache-suffix: evals
+          working-directory: libs/deepagents
+
+      - name: "📦 Install Dependencies"
+        run: uv sync --group test --group evals --locked
+
+      - name: "📊 Run Evals"
+        run: make evals
+
+      - name: "📤 Upload eval report"
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: evals-report-${{ strategy.job-index }}
+          path: libs/deepagents/evals_report.json
+          if-no-files-found: error
+
+  aggregate:
+    name: "📋 Aggregate evals"
+    runs-on: ubuntu-latest
+    needs: [eval]
+    if: always()
+    steps:
+      - name: "📋 Checkout Code"
+        uses: actions/checkout@v6
+
+      - name: "📥 Download eval artifacts"
+        uses: actions/download-artifact@v8
+        with:
+          path: evals_artifacts
+
+      - name: "🐍 Set up Python + UV"
+        uses: "./.github/actions/uv_setup"
+        with:
+          python-version: "3.11"
+          cache-suffix: evals-aggregate
+          working-directory: libs/deepagents
+
+      - name: "🧾 Write summary"
+        run: uv run --with tabulate python .github/scripts/aggregate_evals.py
+
+      - name: "📤 Upload JSON summary"
+        uses: actions/upload-artifact@v7
+        with:
+          name: evals-summary
+          path: evals_summary.json
+          if-no-files-found: warn

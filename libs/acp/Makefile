@@ -1,4 +1,4 @@
-.PHONY: lint format test help test_watch toad
+.PHONY: lint format type typecheck test help test_watch toad
 
 .DEFAULT_GOAL := help
 
@@ -31,6 +31,10 @@ lint: ## Run linters and type checker
 lint lint_diff:
 	[ "$(PYTHON_FILES)" = "" ] ||	uv run --group test ruff format $(PYTHON_FILES) --diff
 	[ "$(PYTHON_FILES)" = "" ] ||	uv run --group test ruff check $(PYTHON_FILES)
+	$(MAKE) type
+
+type: ## Run type checker
+type typecheck:
 	uv run --group test ty check deepagents_acp
 
 format: ## Run code formatters

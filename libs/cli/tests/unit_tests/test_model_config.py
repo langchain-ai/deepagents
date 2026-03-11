@@ -11,8 +11,10 @@ import pytest
 from deepagents_cli import model_config
 from deepagents_cli.model_config import (
     PROVIDER_API_KEY_ENV,
+    THREAD_COLUMN_DEFAULTS,
     ModelConfig,
     ModelConfigError,
+    ModelProfileEntry,
     ModelSpec,
     _get_builtin_providers,
     _get_provider_profile_modules,
@@ -20,9 +22,12 @@ from deepagents_cli.model_config import (
     clear_caches,
     clear_default_model,
     get_available_models,
+    get_model_profiles,
     has_provider_credentials,
     is_warning_suppressed,
+    load_thread_columns,
     save_recent_model,
+    save_thread_columns,
     suppress_warning,
 )
 
@@ -116,6 +121,134 @@ class TestHasProviderCredentials:
         """Returns False when provider env var is not set."""
         with patch.dict("os.environ", {}, clear=True):
             assert has_provider_credentials("anthropic") is False
+
+
+class TestThreadColumnPersistence:
+    """Tests for thread selector column visibility persistence."""
+
+    def test_save_and_load_round_trip(self, tmp_path):
+        """Saved thread column choices should load back on the next session."""
+        config_path = tmp_path / "config.toml"
+        columns = {
+            "thread_id": True,
+            "messages": False,
+            "created_at": True,
+            "updated_at": False,
+            "git_branch": True,
+            "cwd": False,
+            "initial_prompt": False,
+            "agent_name": True,
+        }
+
+        assert save_thread_columns(columns, config_path) is True
+        assert load_thread_columns(config_path) == columns
+
+    def test_load_merges_partial_config_with_defaults(self, tmp_path):
+        """Missing thread column keys should fall back to defaults."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            """
+[threads.columns]
+thread_id = true
+updated_at = false
+"""
+        )
+
+        assert load_thread_columns(config_path) == {
+            **THREAD_COLUMN_DEFAULTS,
+            "thread_id": True,
+            "updated_at": False,
+        }
+
+
+class TestThreadRelativeTimePersistence:
+    """Tests for thread relative-time preference persistence."""
+
+    def test_save_and_load_round_trip(self, tmp_path: Path) -> None:
+        """Saved relative-time preference should load back on the next session."""
+        from deepagents_cli.model_config import (
+            load_thread_relative_time,
+            save_thread_relative_time,
+        )
+
+        config_path = tmp_path / "config.toml"
+        assert save_thread_relative_time(False, config_path) is True
+        assert load_thread_relative_time(config_path) is False
+
+        assert save_thread_relative_time(True, config_path) is True
+        assert load_thread_relative_time(config_path) is True
+
+    def test_default_is_true(self, tmp_path: Path) -> None:
+        """When no config file exists, relative time defaults to True."""
+        from deepagents_cli.model_config import load_thread_relative_time
+
+        config_path = tmp_path / "config.toml"
+        assert load_thread_relative_time(config_path) is True
+
+    def test_preserves_other_config_sections(self, tmp_path: Path) -> None:
+        """Saving relative-time should not clobber other config sections."""
+        from deepagents_cli.model_config import save_thread_relative_time
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[models]\ndefault = "anthropic:claude-sonnet-4-5"\n')
+
+        save_thread_relative_time(False, config_path)
+
+        import tomllib
+
+        with config_path.open("rb") as f:
+            data = tomllib.load(f)
+        assert data["models"]["default"] == "anthropic:claude-sonnet-4-5"
+        assert data["threads"]["relative_time"] is False
+
+
+class TestThreadSortOrderPersistence:
+    """Tests for thread sort-order preference persistence."""
+
+    def test_save_and_load_round_trip(self, tmp_path: Path) -> None:
+        """Saved sort order should load back on the next session."""
+        from deepagents_cli.model_config import (
+            load_thread_sort_order,
+            save_thread_sort_order,
+        )
+
+        config_path = tmp_path / "config.toml"
+        assert save_thread_sort_order("created_at", config_path) is True
+        assert load_thread_sort_order(config_path) == "created_at"
+
+        assert save_thread_sort_order("updated_at", config_path) is True
+        assert load_thread_sort_order(config_path) == "updated_at"
+
+    def test_default_is_updated_at(self, tmp_path: Path) -> None:
+        """When no config file exists, sort order defaults to updated_at."""
+        from deepagents_cli.model_config import load_thread_sort_order
+
+        config_path = tmp_path / "config.toml"
+        assert load_thread_sort_order(config_path) == "updated_at"
+
+    def test_invalid_value_falls_back_to_default(self, tmp_path: Path) -> None:
+        """An unrecognized sort_order value should fall back to updated_at."""
+        from deepagents_cli.model_config import load_thread_sort_order
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[threads]\nsort_order = "bogus"\n')
+        assert load_thread_sort_order(config_path) == "updated_at"
+
+    def test_preserves_other_config_sections(self, tmp_path: Path) -> None:
+        """Saving sort order should not clobber other config sections."""
+        from deepagents_cli.model_config import save_thread_sort_order
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[models]\ndefault = "anthropic:claude-sonnet-4-5"\n')
+
+        save_thread_sort_order("created_at", config_path)
+
+        import tomllib
+
+        with config_path.open("rb") as f:
+            data = tomllib.load(f)
+        assert data["models"]["default"] == "anthropic:claude-sonnet-4-5"
+        assert data["threads"]["sort_order"] == "created_at"
 
 
 class TestProviderApiKeyEnv:
@@ -1013,6 +1146,114 @@ temperature = 0.5
         assert kwargs == {"temperature": 0.5}
 
 
+class TestModelConfigGetProfileOverrides:
+    """Tests for ModelConfig.get_profile_overrides() method."""
+
+    def test_returns_empty_for_unknown_provider(self):
+        """Returns empty dict for unknown provider."""
+        config = ModelConfig()
+        assert config.get_profile_overrides("unknown") == {}
+
+    def test_returns_empty_when_no_profile(self, tmp_path):
+        """Returns empty dict when profile not in config."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.custom]
+models = ["my-model"]
+""")
+        config = ModelConfig.load(config_path)
+        assert config.get_profile_overrides("custom") == {}
+
+    def test_returns_provider_wide_overrides(self, tmp_path):
+        """Returns flat profile overrides."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.anthropic]
+models = ["claude-sonnet-4-5"]
+
+[models.providers.anthropic.profile]
+max_input_tokens = 4096
+""")
+        config = ModelConfig.load(config_path)
+        overrides = config.get_profile_overrides("anthropic")
+        assert overrides == {"max_input_tokens": 4096}
+
+    def test_per_model_override_takes_precedence(self, tmp_path):
+        """Per-model sub-table overrides provider-wide value."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.anthropic]
+models = ["claude-sonnet-4-5", "claude-opus-4-6"]
+
+[models.providers.anthropic.profile]
+max_input_tokens = 4096
+
+[models.providers.anthropic.profile."claude-sonnet-4-5"]
+max_input_tokens = 8192
+""")
+        config = ModelConfig.load(config_path)
+        overrides = config.get_profile_overrides(
+            "anthropic", model_name="claude-sonnet-4-5"
+        )
+        assert overrides == {"max_input_tokens": 8192}
+
+    def test_model_without_subtable_gets_provider_defaults(self, tmp_path):
+        """Model not in sub-table gets provider-level profile only."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.anthropic]
+models = ["claude-sonnet-4-5", "claude-opus-4-6"]
+
+[models.providers.anthropic.profile]
+max_input_tokens = 4096
+
+[models.providers.anthropic.profile."claude-sonnet-4-5"]
+max_input_tokens = 8192
+""")
+        config = ModelConfig.load(config_path)
+        overrides = config.get_profile_overrides(
+            "anthropic", model_name="claude-opus-4-6"
+        )
+        assert overrides == {"max_input_tokens": 4096}
+
+    def test_none_model_name_returns_provider_defaults(self, tmp_path):
+        """model_name=None returns provider-wide profile only."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.anthropic]
+models = ["claude-sonnet-4-5"]
+
+[models.providers.anthropic.profile]
+max_input_tokens = 4096
+
+[models.providers.anthropic.profile."claude-sonnet-4-5"]
+max_input_tokens = 8192
+""")
+        config = ModelConfig.load(config_path)
+        overrides = config.get_profile_overrides("anthropic", model_name=None)
+        assert overrides == {"max_input_tokens": 4096}
+
+    def test_multiple_flat_keys_with_model_subtable(self, tmp_path):
+        """Multiple flat keys returned; model sub-table merges on top."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.anthropic]
+models = ["claude-sonnet-4-5"]
+
+[models.providers.anthropic.profile]
+max_input_tokens = 4096
+supports_thinking = true
+
+[models.providers.anthropic.profile."claude-sonnet-4-5"]
+max_input_tokens = 8192
+""")
+        config = ModelConfig.load(config_path)
+        overrides = config.get_profile_overrides(
+            "anthropic", model_name="claude-sonnet-4-5"
+        )
+        assert overrides == {"max_input_tokens": 8192, "supports_thinking": True}
+
+
 class TestModelConfigValidateParams:
     """Tests for _validate() params warnings."""
 
@@ -1561,7 +1802,7 @@ recent = "openai:gpt-5.2"
         ):
             result = _get_default_model_spec()
 
-        assert result == "anthropic:claude-sonnet-4-5-20250929"
+        assert result == "anthropic:claude-sonnet-4-6"
 
 
 class TestIsWarningSuppressed:
@@ -1652,3 +1893,227 @@ class TestSuppressWarning:
             data = tomllib.load(f)
         assert data["models"]["default"] == "some:model"
         assert "ripgrep" in data["warnings"]["suppress"]
+
+
+class TestGetModelProfiles:
+    """Tests for get_model_profiles() function."""
+
+    def test_returns_upstream_profiles(self) -> None:
+        """Returns profiles keyed by provider:model spec."""
+        fake_profiles = {
+            "claude-sonnet-4-5": {
+                "tool_calling": True,
+                "max_input_tokens": 200000,
+                "max_output_tokens": 64000,
+            },
+        }
+
+        def mock_load(module_path: str) -> dict[str, Any]:
+            if module_path == "langchain_anthropic.data._profiles":
+                return fake_profiles
+            msg = "not installed"
+            raise ImportError(msg)
+
+        with patch(
+            "deepagents_cli.model_config._load_provider_profiles",
+            side_effect=mock_load,
+        ):
+            profiles = get_model_profiles()
+
+        assert "anthropic:claude-sonnet-4-5" in profiles
+        entry = profiles["anthropic:claude-sonnet-4-5"]
+        assert entry["profile"]["max_input_tokens"] == 200000
+        assert entry["profile"]["tool_calling"] is True
+        assert entry["overridden_keys"] == frozenset()
+
+    def test_merges_config_overrides(self, tmp_path: Path) -> None:
+        """Config.toml profile overrides are merged and tracked."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.anthropic]
+[models.providers.anthropic.profile]
+max_input_tokens = 100000
+""")
+        fake_profiles = {
+            "claude-sonnet-4-5": {
+                "tool_calling": True,
+                "max_input_tokens": 200000,
+                "max_output_tokens": 64000,
+            },
+        }
+
+        def mock_load(module_path: str) -> dict[str, Any]:
+            if module_path == "langchain_anthropic.data._profiles":
+                return fake_profiles
+            msg = "not installed"
+            raise ImportError(msg)
+
+        with (
+            patch(
+                "deepagents_cli.model_config._load_provider_profiles",
+                side_effect=mock_load,
+            ),
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+        ):
+            profiles = get_model_profiles()
+
+        entry = profiles["anthropic:claude-sonnet-4-5"]
+        assert entry["profile"]["max_input_tokens"] == 100000
+        assert entry["profile"]["max_output_tokens"] == 64000
+        assert "max_input_tokens" in entry["overridden_keys"]
+        assert "max_output_tokens" not in entry["overridden_keys"]
+
+    def test_config_only_model_no_upstream(self, tmp_path: Path) -> None:
+        """Config-only model with no upstream profile creates an entry."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.custom]
+models = ["my-model"]
+[models.providers.custom.profile]
+max_input_tokens = 4096
+""")
+
+        with (
+            patch(
+                "deepagents_cli.model_config._load_provider_profiles",
+                side_effect=ImportError("not installed"),
+            ),
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+        ):
+            profiles = get_model_profiles()
+
+        assert "custom:my-model" in profiles
+        entry = profiles["custom:my-model"]
+        assert entry["profile"]["max_input_tokens"] == 4096
+        assert "max_input_tokens" in entry["overridden_keys"]
+
+    def test_cache_cleared(self) -> None:
+        """clear_caches() resets the profiles cache."""
+        fake_profiles = {
+            "test-model": {"tool_calling": True},
+        }
+
+        def mock_load(module_path: str) -> dict[str, Any]:
+            if module_path == "langchain_anthropic.data._profiles":
+                return fake_profiles
+            msg = "not installed"
+            raise ImportError(msg)
+
+        with patch(
+            "deepagents_cli.model_config._load_provider_profiles",
+            side_effect=mock_load,
+        ):
+            get_model_profiles()
+
+        assert model_config._profiles_cache is not None
+        clear_caches()
+        assert model_config._profiles_cache is None
+
+    def test_overridden_keys_subset_of_profile(self, tmp_path: Path) -> None:
+        """overridden_keys is always a subset of profile keys."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.anthropic]
+[models.providers.anthropic.profile]
+max_input_tokens = 100000
+""")
+        fake_profiles = {
+            "claude-sonnet-4-5": {
+                "tool_calling": True,
+                "max_input_tokens": 200000,
+                "max_output_tokens": 64000,
+            },
+        }
+
+        def mock_load(module_path: str) -> dict[str, Any]:
+            if module_path == "langchain_anthropic.data._profiles":
+                return fake_profiles
+            msg = "not installed"
+            raise ImportError(msg)
+
+        with (
+            patch(
+                "deepagents_cli.model_config._load_provider_profiles",
+                side_effect=mock_load,
+            ),
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+        ):
+            profiles = get_model_profiles()
+
+        for spec, entry in profiles.items():
+            assert entry["overridden_keys"] <= entry["profile"].keys(), (
+                f"{spec}: overridden_keys {entry['overridden_keys']} "
+                f"not a subset of profile keys {set(entry['profile'].keys())}"
+            )
+
+    def test_cli_override_merged_on_top(self) -> None:
+        """CLI override is merged on top of upstream + config.toml."""
+        fake_profiles = {
+            "claude-sonnet-4-5": {
+                "tool_calling": True,
+                "max_input_tokens": 200000,
+                "max_output_tokens": 64000,
+            },
+        }
+
+        def mock_load(module_path: str) -> dict[str, Any]:
+            if module_path == "langchain_anthropic.data._profiles":
+                return fake_profiles
+            msg = "not installed"
+            raise ImportError(msg)
+
+        with patch(
+            "deepagents_cli.model_config._load_provider_profiles",
+            side_effect=mock_load,
+        ):
+            profiles = get_model_profiles(cli_override={"max_input_tokens": 4096})
+
+        entry = profiles["anthropic:claude-sonnet-4-5"]
+        assert entry["profile"]["max_input_tokens"] == 4096
+        assert entry["profile"]["max_output_tokens"] == 64000
+        assert "max_input_tokens" in entry["overridden_keys"]
+
+    def test_cli_override_skips_cache(self) -> None:
+        """cli_override path does not populate module-level cache."""
+        fake_profiles = {
+            "test-model": {"tool_calling": True},
+        }
+
+        def mock_load(module_path: str) -> dict[str, Any]:
+            if module_path == "langchain_anthropic.data._profiles":
+                return fake_profiles
+            msg = "not installed"
+            raise ImportError(msg)
+
+        with patch(
+            "deepagents_cli.model_config._load_provider_profiles",
+            side_effect=mock_load,
+        ):
+            get_model_profiles(cli_override={"max_input_tokens": 4096})
+
+        assert model_config._profiles_cache is None
+
+    def test_cli_override_on_config_only_model(self, tmp_path: Path) -> None:
+        """CLI override applies to config-only models with no upstream profile."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.custom]
+models = ["my-model"]
+[models.providers.custom.profile]
+max_input_tokens = 8192
+""")
+
+        with (
+            patch(
+                "deepagents_cli.model_config._load_provider_profiles",
+                side_effect=ImportError("not installed"),
+            ),
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+        ):
+            profiles = get_model_profiles(cli_override={"max_output_tokens": 2048})
+
+        entry = profiles["custom:my-model"]
+        assert entry["profile"]["max_input_tokens"] == 8192
+        assert entry["profile"]["max_output_tokens"] == 2048
+        assert "max_output_tokens" in entry["overridden_keys"]
+        assert "max_input_tokens" in entry["overridden_keys"]

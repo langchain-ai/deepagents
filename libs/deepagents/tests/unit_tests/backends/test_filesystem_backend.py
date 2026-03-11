@@ -47,12 +47,14 @@ def test_filesystem_backend_normal_mode(tmp_path: Path):
     assert any(i["path"] == str(f2) for i in g)
 
 
-def test_filesystem_backend_virtual_mode(tmp_path: Path):
+def test_filesystem_backend_virtual_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     root = tmp_path
     f1 = root / "a.txt"
     f2 = root / "dir" / "b.md"
     write_file(f1, "hello virtual")
     write_file(f2, "content")
+
+    monkeypatch.setattr(FilesystemBackend, "_ripgrep_search", lambda *_args, **_kwargs: None)
 
     be = FilesystemBackend(root_dir=str(root), virtual_mode=True)
 

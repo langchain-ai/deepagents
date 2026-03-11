@@ -113,6 +113,17 @@ async def test_composite_backend_filesystem_plus_store_async(tmp_path: Path):
     infos_mem = await comp.als_info("/memories/")
     assert any(i["path"] == "/memories/notes.md" for i in infos_mem)
 
+    infos_mem_no_slash = await comp.als_info("/memories")
+    assert any(i["path"] == "/memories/notes.md" for i in infos_mem_no_slash)
+
+    # agrep_raw route targeting should accept /memories as the route root
+    gm_mem = await comp.agrep_raw("note", path="/memories")
+    assert any(m["path"] == "/memories/notes.md" for m in gm_mem)
+
+    # aglob_info route targeting should accept /memories as the route root
+    gl_mem = await comp.aglob_info("*.md", path="/memories")
+    assert any(i["path"] == "/memories/notes.md" for i in gl_mem)
+
     # agrep_raw merges
     gm = await comp.agrep_raw("hello", path="/")
     assert any(m["path"] == "/hello.txt" for m in gm)
@@ -140,7 +151,7 @@ async def test_composite_backend_store_to_store_async():
 
     # Write to routed store
     res2 = await comp.awrite("/memories/important.txt", "routed store content")
-    assert isinstance(res2, WriteResult) and res2.error is None and res2.path == "/important.txt"
+    assert isinstance(res2, WriteResult) and res2.error is None and res2.path == "/memories/important.txt"
 
     # Read from both
     content1 = await comp.aread("/notes.txt")
@@ -184,17 +195,17 @@ async def test_composite_backend_multiple_routes_async():
     # Write to /memories/ route
     res_mem = await comp.awrite("/memories/important.md", "long-term memory")
     assert res_mem.files_update is None
-    assert res_mem.path == "/important.md"
+    assert res_mem.path == "/memories/important.md"
 
     # Write to /archive/ route
     res_arch = await comp.awrite("/archive/old.log", "archived log")
     assert res_arch.files_update is None
-    assert res_arch.path == "/old.log"
+    assert res_arch.path == "/archive/old.log"
 
     # Write to /cache/ route
     res_cache = await comp.awrite("/cache/session.json", "cached session")
     assert res_cache.files_update is None
-    assert res_cache.path == "/session.json"
+    assert res_cache.path == "/cache/session.json"
 
     # als_info at root should aggregate all
     infos = await comp.als_info("/")
@@ -227,6 +238,7 @@ async def test_composite_backend_multiple_routes_async():
     edit_res = await comp.aedit("/memories/important.md", "long-term", "persistent", replace_all=False)
     assert edit_res.error is None
     assert edit_res.occurrences == 1
+    assert edit_res.path == "/memories/important.md"
 
     updated_content = await comp.aread("/memories/important.md")
     assert "persistent memory" in updated_content
@@ -1023,3 +1035,26 @@ async def test_composite_aglob_info_nested_path_in_route_async() -> None:
     result_paths = sorted([fi["path"] for fi in results])
 
     assert result_paths == ["/archive/2024/feb.log", "/archive/2024/jan.log"]
+
+
+async def test_awrite_result_path_restored_to_full_routed_path():
+    """CompositeBackend.awrite should return the full path, not the stripped key."""
+    rt = make_runtime()
+    comp = build_composite_state_backend(rt, routes={"/memories/": StoreBackend})
+
+    res = await comp.awrite("/memories/site_context.md", "content")
+
+    assert res.error is None
+    assert res.path == "/memories/site_context.md"  # not "/site_context.md"
+
+
+async def test_aedit_result_path_restored_to_full_routed_path():
+    """CompositeBackend.aedit should return the full path, not the stripped key."""
+    rt = make_runtime()
+    comp = build_composite_state_backend(rt, routes={"/memories/": StoreBackend})
+    await comp.awrite("/memories/notes.md", "hello world")
+
+    res = await comp.aedit("/memories/notes.md", "hello", "goodbye")
+
+    assert res.error is None
+    assert res.path == "/memories/notes.md"  # not "/notes.md"

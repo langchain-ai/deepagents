@@ -1,5 +1,7 @@
 """Tests for config module including project discovery utilities."""
 
+import logging
+import time
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -8,23 +10,27 @@ import pytest
 from deepagents_cli import model_config
 from deepagents_cli.config import (
     RECOMMENDED_SAFE_SHELL_COMMANDS,
+    SHELL_ALLOW_ALL,
     ModelResult,
     Settings,
     _create_model_from_class,
-    _find_project_agent_md,
-    _find_project_root,
     _get_provider_kwargs,
     build_langsmith_thread_url,
     create_model,
     detect_provider,
     fetch_langsmith_project_url,
     get_langsmith_project_name,
+    newline_shortcut,
     parse_shell_allow_list,
     reset_langsmith_url_cache,
     settings,
     validate_model_capabilities,
 )
 from deepagents_cli.model_config import ModelConfigError, clear_caches
+from deepagents_cli.project_utils import (
+    find_project_agent_md as _find_project_agent_md,
+    find_project_root as _find_project_root,
+)
 
 
 class TestProjectRootDetection:
@@ -183,6 +189,20 @@ class TestSettingsGetProjectAgentMdPath:
         s = Settings.__new__(Settings)
         s.project_root = tmp_path
         assert s.get_project_agent_md_path() == []
+
+
+class TestNewlineShortcut:
+    """Tests for platform-specific newline shortcut labels."""
+
+    def test_returns_option_enter_on_macos(self) -> None:
+        """Should show Option+Enter on darwin."""
+        with patch("deepagents_cli.config.sys.platform", "darwin"):
+            assert newline_shortcut() == "Option+Enter"
+
+    def test_returns_ctrl_j_on_non_macos(self) -> None:
+        """Should show Ctrl+J on non-darwin platforms."""
+        with patch("deepagents_cli.config.sys.platform", "linux"):
+            assert newline_shortcut() == "Ctrl+J"
 
 
 class TestValidateModelCapabilities:
@@ -413,6 +433,275 @@ class TestCreateModelProfileExtraction:
         assert result.context_limit is None
 
 
+class TestCreateModelProfileOverrides:
+    """Tests for profile overrides from config.toml in create_model."""
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_profile_override_sets_context_limit(
+        self, mock_init_chat_model: Mock, tmp_path: Path
+    ) -> None:
+        """Profile override for max_input_tokens flows to context_limit."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.anthropic.profile]
+max_input_tokens = 4096
+""")
+        mock_model = Mock()
+        mock_model.profile = {"max_input_tokens": 200000, "tool_calling": True}
+        mock_init_chat_model.return_value = mock_model
+
+        clear_caches()
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            result = create_model("anthropic:claude-sonnet-4-5")
+
+        assert result.context_limit == 4096
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_per_model_profile_override_takes_precedence(
+        self, mock_init_chat_model: Mock, tmp_path: Path
+    ) -> None:
+        """Per-model profile override wins over provider-wide default."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.anthropic.profile]
+max_input_tokens = 4096
+
+[models.providers.anthropic.profile."claude-sonnet-4-5"]
+max_input_tokens = 8192
+""")
+        mock_model = Mock()
+        mock_model.profile = {"max_input_tokens": 200000, "tool_calling": True}
+        mock_init_chat_model.return_value = mock_model
+
+        clear_caches()
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            result = create_model("anthropic:claude-sonnet-4-5")
+
+        assert result.context_limit == 8192
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_no_profile_override_preserves_original(
+        self, mock_init_chat_model: Mock, tmp_path: Path
+    ) -> None:
+        """Without config overrides, original profile value is used."""
+        config_path = tmp_path / "config.toml"  # Does not exist — empty config
+        mock_model = Mock()
+        mock_model.profile = {"max_input_tokens": 200000, "tool_calling": True}
+        mock_init_chat_model.return_value = mock_model
+
+        clear_caches()
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            result = create_model("anthropic:claude-sonnet-4-5")
+        assert result.context_limit == 200000
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_profile_override_on_model_without_profile(
+        self, mock_init_chat_model: Mock, tmp_path: Path
+    ) -> None:
+        """Profile override is applied even when model has no profile attr."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.anthropic.profile]
+max_input_tokens = 4096
+""")
+        mock_model = Mock(spec=["invoke"])  # No profile attribute
+        mock_init_chat_model.return_value = mock_model
+
+        clear_caches()
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            result = create_model("anthropic:claude-sonnet-4-5")
+
+        assert result.context_limit == 4096
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_profile_override_preserves_non_overridden_keys(
+        self, mock_init_chat_model: Mock, tmp_path: Path
+    ) -> None:
+        """Override merges into existing profile without dropping other keys."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.anthropic.profile]
+max_input_tokens = 4096
+""")
+        mock_model = Mock()
+        mock_model.profile = {"max_input_tokens": 200000, "tool_calling": True}
+        mock_init_chat_model.return_value = mock_model
+
+        clear_caches()
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            create_model("anthropic:claude-sonnet-4-5")
+
+        assert mock_model.profile == {"max_input_tokens": 4096, "tool_calling": True}
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_profile_override_when_profile_is_none(
+        self, mock_init_chat_model: Mock, tmp_path: Path
+    ) -> None:
+        """Override is applied when model.profile is explicitly None."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.anthropic.profile]
+max_input_tokens = 4096
+""")
+        mock_model = Mock()
+        mock_model.profile = None
+        mock_init_chat_model.return_value = mock_model
+
+        clear_caches()
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            result = create_model("anthropic:claude-sonnet-4-5")
+
+        assert result.context_limit == 4096
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_profile_override_logs_warning_on_frozen_model(
+        self,
+        mock_init_chat_model: Mock,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Graceful warning when model rejects attribute assignment."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.anthropic.profile]
+max_input_tokens = 4096
+""")
+        mock_model = Mock()
+        # Make .profile read return a dict but assignment raises
+        type(mock_model).profile = property(
+            fget=lambda _: {"max_input_tokens": 200000},
+            fset=lambda _, __: (_ for _ in ()).throw(AttributeError("frozen")),
+        )
+        mock_init_chat_model.return_value = mock_model
+
+        clear_caches()
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            caplog.at_level(logging.WARNING, logger="deepagents_cli.config"),
+        ):
+            result = create_model("anthropic:claude-sonnet-4-5")
+
+        assert any(
+            "Could not apply" in r.message and "profile overrides" in r.message
+            for r in caplog.records
+        )
+        # Falls back to original profile extraction
+        assert result.context_limit == 200000
+
+
+class TestCreateModelCLIProfileOverrides:
+    """Tests for CLI --profile-override in create_model."""
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_cli_profile_override_sets_context_limit(
+        self, mock_init_chat_model: Mock, tmp_path: Path
+    ) -> None:
+        """CLI profile override for max_input_tokens flows to context_limit."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("")  # empty config
+        mock_model = Mock()
+        mock_model.profile = {"max_input_tokens": 200000, "tool_calling": True}
+        mock_init_chat_model.return_value = mock_model
+
+        clear_caches()
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            result = create_model(
+                "anthropic:claude-sonnet-4-5",
+                profile_overrides={"max_input_tokens": 4096},
+            )
+
+        assert result.context_limit == 4096
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_cli_profile_override_beats_config_toml(
+        self, mock_init_chat_model: Mock, tmp_path: Path
+    ) -> None:
+        """CLI --profile-override wins over config.toml profile."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.anthropic.profile]
+max_input_tokens = 8192
+""")
+        mock_model = Mock()
+        mock_model.profile = {"max_input_tokens": 200000, "tool_calling": True}
+        mock_init_chat_model.return_value = mock_model
+
+        clear_caches()
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            result = create_model(
+                "anthropic:claude-sonnet-4-5",
+                profile_overrides={"max_input_tokens": 4096},
+            )
+
+        # CLI (4096) beats config.toml (8192)
+        assert result.context_limit == 4096
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_cli_profile_override_preserves_other_keys(
+        self, mock_init_chat_model: Mock, tmp_path: Path
+    ) -> None:
+        """CLI override merges into profile without dropping other keys."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("")
+        mock_model = Mock()
+        mock_model.profile = {"max_input_tokens": 200000, "tool_calling": True}
+        mock_init_chat_model.return_value = mock_model
+
+        clear_caches()
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            create_model(
+                "anthropic:claude-sonnet-4-5",
+                profile_overrides={"max_input_tokens": 4096},
+            )
+
+        assert mock_model.profile == {"max_input_tokens": 4096, "tool_calling": True}
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_cli_profile_override_on_model_without_profile(
+        self, mock_init_chat_model: Mock, tmp_path: Path
+    ) -> None:
+        """CLI override applied even when model has no profile attr."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("")
+        mock_model = Mock(spec=["invoke"])
+        mock_init_chat_model.return_value = mock_model
+
+        clear_caches()
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            result = create_model(
+                "anthropic:claude-sonnet-4-5",
+                profile_overrides={"max_input_tokens": 4096},
+            )
+
+        assert result.context_limit == 4096
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_cli_profile_override_raises_on_frozen_model(
+        self,
+        mock_init_chat_model: Mock,
+        tmp_path: Path,
+    ) -> None:
+        """CLI --profile-override raises when model rejects assignment."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("")
+        mock_model = Mock()
+        type(mock_model).profile = property(
+            fget=lambda _: {"max_input_tokens": 200000},
+            fset=lambda _, __: (_ for _ in ()).throw(AttributeError("frozen")),
+        )
+        mock_init_chat_model.return_value = mock_model
+
+        clear_caches()
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            pytest.raises(ModelConfigError, match="Could not apply CLI"),
+        ):
+            create_model(
+                "anthropic:claude-sonnet-4-5",
+                profile_overrides={"max_input_tokens": 4096},
+            )
+
+
 class TestParseShellAllowList:
     """Test parsing shell allow-list strings."""
 
@@ -480,6 +769,27 @@ class TestParseShellAllowList:
         # Total should be: 1 (ls) + len(recommended) - 1 (duplicate ls) + 1 (mycmd)
         # Which simplifies to: len(recommended) + 1
         assert len(result) == len(RECOMMENDED_SAFE_SHELL_COMMANDS) + 1
+
+    def test_all_returns_sentinel(self) -> None:
+        """Test that 'all' returns SHELL_ALLOW_ALL sentinel."""
+        result = parse_shell_allow_list("all")
+        assert result is SHELL_ALLOW_ALL
+
+    def test_all_case_insensitive(self) -> None:
+        """Test that 'ALL', 'All', etc. all return sentinel."""
+        for variant in ["ALL", "All", "aLl", "  all  "]:
+            result = parse_shell_allow_list(variant)
+            assert result is SHELL_ALLOW_ALL
+
+    def test_all_mixed_with_commands_raises(self) -> None:
+        """Combining 'all' with other commands should raise ValueError."""
+        with pytest.raises(ValueError, match="Cannot combine 'all'"):
+            parse_shell_allow_list("all,ls")
+
+    def test_all_mixed_case_insensitive_raises(self) -> None:
+        """Combining 'ALL' with other commands should also raise."""
+        with pytest.raises(ValueError, match="Cannot combine 'all'"):
+            parse_shell_allow_list("ls,ALL,cat")
 
     def test_empty_commands_ignored(self) -> None:
         """Test that empty strings from split are ignored."""
@@ -593,6 +903,44 @@ class TestFetchLangsmithProjectUrl:
 
         assert result is None
 
+    def test_returns_none_on_project_not_found(self) -> None:
+        """Should return None when the project does not exist yet."""
+        from langsmith.utils import LangSmithNotFoundError
+
+        with patch("langsmith.Client") as mock_client_cls:
+            mock_client_cls.return_value.read_project.side_effect = (
+                LangSmithNotFoundError("Project angus-dacli not found")
+            )
+            result = fetch_langsmith_project_url("angus-dacli")
+
+        assert result is None
+
+    def test_returns_none_on_unexpected_exception(self) -> None:
+        """Should return None on unexpected SDK exceptions."""
+        with patch("langsmith.Client") as mock_client_cls:
+            mock_client_cls.return_value.read_project.side_effect = TypeError(
+                "unexpected SDK type error"
+            )
+            result = fetch_langsmith_project_url("my-project")
+
+        assert result is None
+
+    def test_returns_none_when_lookup_times_out(self) -> None:
+        """Should return None when LangSmith lookup exceeds timeout."""
+        with (
+            patch(
+                "deepagents_cli.config._LANGSMITH_URL_LOOKUP_TIMEOUT_SECONDS",
+                0.01,
+            ),
+            patch("langsmith.Client") as mock_client_cls,
+        ):
+            mock_client_cls.return_value.read_project.side_effect = lambda **_kwargs: (
+                time.sleep(0.1)
+            )
+            result = fetch_langsmith_project_url("my-project")
+
+        assert result is None
+
     def test_returns_none_when_url_is_none(self) -> None:
         """Should return None when the project has no URL."""
 
@@ -620,8 +968,8 @@ class TestFetchLangsmithProjectUrl:
         assert second == first
         mock_client_cls.assert_called_once()
 
-    def test_caches_none_on_failure(self) -> None:
-        """Should cache None on failure so retries don't make network calls."""
+    def test_retries_after_failure(self) -> None:
+        """Should retry after failure instead of caching None."""
         with patch("langsmith.Client") as mock_client_cls:
             mock_client_cls.return_value.read_project.side_effect = OSError("timeout")
             first = fetch_langsmith_project_url("my-project")
@@ -629,7 +977,22 @@ class TestFetchLangsmithProjectUrl:
 
         assert first is None
         assert second is None
-        mock_client_cls.assert_called_once()
+        assert mock_client_cls.return_value.read_project.call_count == 2
+
+    def test_retries_when_url_is_none(self) -> None:
+        """Should retry when the project URL is missing instead of caching None."""
+
+        class FakeProject:
+            url = None
+
+        with patch("langsmith.Client") as mock_client_cls:
+            mock_client_cls.return_value.read_project.return_value = FakeProject()
+            first = fetch_langsmith_project_url("my-project")
+            second = fetch_langsmith_project_url("my-project")
+
+        assert first is None
+        assert second is None
+        assert mock_client_cls.return_value.read_project.call_count == 2
 
     def test_different_project_name_fetches_again(self) -> None:
         """Should fetch again when called with a different project name."""
@@ -840,7 +1203,7 @@ num_ctx = 4000
         with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
             kwargs = _get_provider_kwargs("ollama", model_name="qwen3:4b")
 
-        assert kwargs["temperature"] == 0.5
+        assert kwargs["temperature"] == pytest.approx(0.5)
         assert kwargs["num_ctx"] == 4000
 
     def test_model_name_none_uses_provider_params(self, tmp_path: Path) -> None:
@@ -881,6 +1244,46 @@ base_url = "https://wrong-url.com"
 
         # Explicit base_url field should win over kwargs.base_url
         assert kwargs["base_url"] == "https://correct-url.com"
+
+
+class TestOpenRouterHeaders:
+    """Tests for OpenRouter default attribution headers."""
+
+    def setup_method(self) -> None:
+        """Clear model config cache before each test."""
+        clear_caches()
+
+    def test_injects_attribution_kwargs(self) -> None:
+        """Injects app_url and app_title for openrouter provider."""
+        kwargs = _get_provider_kwargs("openrouter")
+
+        assert kwargs["app_url"] == "https://github.com/langchain-ai/deepagents"
+        assert kwargs["app_title"] == "Deep Agents CLI"
+
+    def test_per_model_attribution_overrides_defaults(self, tmp_path: Path) -> None:
+        """Per-model app_title overrides built-in default."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.openrouter]
+models = ["deepseek/deepseek-chat"]
+
+[models.providers.openrouter.params."deepseek/deepseek-chat"]
+app_title = "My Custom App"
+""")
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            kwargs = _get_provider_kwargs(
+                "openrouter", model_name="deepseek/deepseek-chat"
+            )
+
+        assert kwargs["app_title"] == "My Custom App"
+        # Built-in app_url should still be present
+        assert kwargs["app_url"] == "https://github.com/langchain-ai/deepagents"
+
+    def test_no_attribution_for_other_providers(self) -> None:
+        """Other providers do not get OpenRouter attribution kwargs."""
+        kwargs = _get_provider_kwargs("openai")
+        assert "app_url" not in kwargs
+        assert "app_title" not in kwargs
 
 
 class TestCreateModelFromClass:
@@ -1074,7 +1477,7 @@ class TestCreateModelExtraKwargs:
         create_model("anthropic:claude-sonnet-4-5", extra_kwargs={"temperature": 0.7})
 
         _, call_kwargs = mock_init_chat_model.call_args
-        assert call_kwargs["temperature"] == 0.7
+        assert call_kwargs["temperature"] == pytest.approx(0.7)
 
     @patch("langchain.chat_models.init_chat_model")
     def test_extra_kwargs_override_config(
@@ -1103,7 +1506,7 @@ max_tokens = 1024
 
         _, call_kwargs = mock_init_chat_model.call_args
         # CLI kwarg wins over config
-        assert call_kwargs["temperature"] == 0.9
+        assert call_kwargs["temperature"] == pytest.approx(0.9)
         # Config kwarg preserved when not overridden
         assert call_kwargs["max_tokens"] == 1024
 
@@ -1182,7 +1585,9 @@ class TestDetectProvider:
             ("o4-mini", "openai"),
             ("claude-sonnet-4-5", "anthropic"),
             ("claude-opus-4-5", "anthropic"),
-            ("gemini-3-pro-preview", "google_genai"),
+            ("gemini-3.1-pro-preview", "google_genai"),
+            ("nemotron-3-nano-30b-a3b", "nvidia"),
+            ("nvidia/nemotron-3-nano-30b-a3b", "nvidia"),
             ("llama3", None),
             ("mistral-large", None),
             ("some-unknown-model", None),

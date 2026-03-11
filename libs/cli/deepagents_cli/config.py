@@ -9,6 +9,7 @@ import os
 import re
 import shlex
 import sys
+import threading
 import uuid
 from dataclasses import dataclass
 from enum import StrEnum
@@ -39,6 +40,10 @@ from deepagents_cli.model_config import (  # noqa: E402  # Import after os.envir
     ModelConfigError,
     ModelSpec,
 )
+from deepagents_cli.project_utils import (  # noqa: E402
+    find_project_agent_md as _find_project_agent_md,
+    find_project_root as _find_project_root,
+)
 
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
@@ -55,19 +60,36 @@ COLORS = {
     "agent": "#10b981",
     "thinking": "#34d399",
     "tool": "#fbbf24",
-    "mode_bash": "#ff1493",
+    "mode_shell": "#ff1493",
     "mode_command": "#8b5cf6",
 }
 """App color scheme."""
 
 MODE_PREFIXES: dict[str, str] = {
-    "bash": "!",
+    "shell": "!",
     "command": "/",
 }
 """Maps each non-normal mode to its trigger character."""
 
+MODE_DISPLAY_GLYPHS: dict[str, str] = {
+    "shell": "$",
+    "command": "/",
+}
+"""Maps each non-normal mode to its display glyph shown in the prompt/UI."""
 
-# Charset mode configuration
+if MODE_PREFIXES.keys() != MODE_DISPLAY_GLYPHS.keys():
+    _only_prefixes = MODE_PREFIXES.keys() - MODE_DISPLAY_GLYPHS.keys()
+    _only_glyphs = MODE_DISPLAY_GLYPHS.keys() - MODE_PREFIXES.keys()
+    msg = (
+        "MODE_PREFIXES and MODE_DISPLAY_GLYPHS have mismatched keys: "
+        f"only in PREFIXES={_only_prefixes}, only in GLYPHS={_only_glyphs}"
+    )
+    raise ValueError(msg)
+
+PREFIX_TO_MODE: dict[str, str] = {v: k for k, v in MODE_PREFIXES.items()}
+"""Reverse lookup: trigger character -> mode name."""
+
+
 class CharsetMode(StrEnum):
     """Character set mode for TUI display."""
 
@@ -110,6 +132,9 @@ class Glyphs:
     tree_last: str  # "└── " vs "`-- "
     tree_vertical: str  # "│   " vs "|   "
 
+    # Status bar
+    git_branch: str  # "↗" vs "git:"
+
 
 UNICODE_GLYPHS = Glyphs(
     tool_prefix="⏺",
@@ -136,6 +161,7 @@ UNICODE_GLYPHS = Glyphs(
     tree_branch="├── ",
     tree_last="└── ",
     tree_vertical="│   ",
+    git_branch="↗",
 )
 
 ASCII_GLYPHS = Glyphs(
@@ -163,16 +189,23 @@ ASCII_GLYPHS = Glyphs(
     tree_branch="+-- ",
     tree_last="`-- ",
     tree_vertical="|   ",
+    git_branch="git:",
 )
 
-# Module-level cache for detected glyphs
 _glyphs_cache: Glyphs | None = None
+"""Module-level cache for detected glyphs."""
 
-# Module-level cache for editable install detection
 _editable_cache: bool | None = None
+"""Module-level cache for editable install detection."""
 
-# Module-level cache for LangSmith project URL (None means "not yet fetched")
-_langsmith_url_cache: tuple[str, str | None] | None = None
+_langsmith_url_cache: tuple[str, str] | None = None
+"""Module-level cache for successful LangSmith project URL lookups."""
+
+_LANGSMITH_URL_LOOKUP_TIMEOUT_SECONDS = 2.0
+"""Max seconds to wait for LangSmith project URL lookup.
+
+Kept short so tracing metadata can never stall CLI flows.
+"""
 
 
 def _is_editable_install() -> bool:
@@ -242,6 +275,18 @@ def reset_glyphs_cache() -> None:
     """Reset the glyphs cache (for testing)."""
     global _glyphs_cache  # noqa: PLW0603  # Module-level cache requires global statement
     _glyphs_cache = None
+
+
+def newline_shortcut() -> str:
+    """Return the platform-native label for the newline keyboard shortcut.
+
+    macOS labels the modifier "Option" while other platforms use Ctrl+J
+    as the most reliable cross-terminal shortcut.
+
+    Returns:
+        A human-readable shortcut string, e.g. `'Option+Enter'` or `'Ctrl+J'`.
+    """
+    return "Option+Enter" if sys.platform == "darwin" else "Ctrl+J"
 
 
 # Text art banners (Unicode and ASCII variants)
@@ -319,83 +364,60 @@ config: RunnableConfig = {"recursion_limit": 1000}
 console = Console(highlight=False)
 
 
-def _find_project_root(start_path: Path | None = None) -> Path | None:
-    """Find the project root by looking for .git directory.
+class _ShellAllowAll(list):  # noqa: FURB189  # sentinel type, not a general-purpose list subclass
+    """Sentinel subclass for unrestricted shell access.
 
-    Walks up the directory tree from start_path (or cwd) looking for a .git
-    directory, which indicates the project root.
-
-    Args:
-        start_path: Directory to start searching from.
-            Defaults to current working directory.
-
-    Returns:
-        Path to the project root if found, None otherwise.
+    Using a dedicated type instead of a plain list lets consumers use
+    `isinstance` checks, which survive serialization/copy unlike identity
+    checks (`is`).
     """
-    current = Path(start_path or Path.cwd()).resolve()
-
-    # Walk up the directory tree
-    for parent in [current, *list(current.parents)]:
-        git_dir = parent / ".git"
-        if git_dir.exists():
-            return parent
-
-    return None
 
 
-def _find_project_agent_md(project_root: Path) -> list[Path]:
-    """Find project-specific AGENTS.md file(s).
-
-    Checks two locations and returns ALL that exist:
-    1. project_root/.deepagents/AGENTS.md
-    2. project_root/AGENTS.md
-
-    Both files will be loaded and combined if both exist.
-
-    Args:
-        project_root: Path to the project root directory.
-
-    Returns:
-        Existing AGENTS.md paths.
-
-            Empty if neither file exists, one entry if only one is present, or
-            two entries if both locations have the file.
-    """
-    candidates = [
-        project_root / ".deepagents" / "AGENTS.md",
-        project_root / "AGENTS.md",
-    ]
-    paths: list[Path] = []
-    for candidate in candidates:
-        try:
-            if candidate.exists():
-                paths.append(candidate)
-        except OSError:
-            pass
-    return paths
+SHELL_ALLOW_ALL: list[str] = _ShellAllowAll(["__ALL__"])
+"""Sentinel value returned by `parse_shell_allow_list` for `--shell-allow-list=all`."""
 
 
 def parse_shell_allow_list(allow_list_str: str | None) -> list[str] | None:
     """Parse shell allow-list from string.
 
     Args:
-        allow_list_str: Comma-separated list of commands, or "recommended" for
-            safe defaults.
+        allow_list_str: Comma-separated list of commands, `'recommended'` for
+            safe defaults, or `'all'` to allow any command.
 
-            Can also include "recommended" in the list to merge with custom commands.
+            `'all'` must be the sole value — it is not recognized inside a
+            comma-separated list (unlike `'recommended'`).
+
+            Can also include `'recommended'` in the list to merge with custom
+            commands.
 
     Returns:
-        List of allowed commands, or None if no allow-list configured.
+        List of allowed commands, `SHELL_ALLOW_ALL` if `'all'` was specified,
+            or `None` if no allow-list configured.
+
+    Raises:
+        ValueError: If `'all'` is combined with other commands.
     """
     if not allow_list_str:
         return None
 
-    # Special value "recommended" uses our curated safe list
+    # Special value 'all' allows any shell command
+    if allow_list_str.strip().lower() == "all":
+        return SHELL_ALLOW_ALL
+
+    # Special value 'recommended' uses our curated safe list
     if allow_list_str.strip().lower() == "recommended":
         return list(RECOMMENDED_SAFE_SHELL_COMMANDS)
 
     # Split by comma and strip whitespace
     commands = [cmd.strip() for cmd in allow_list_str.split(",") if cmd.strip()]
+
+    # Reject ambiguous input: 'all' mixed with other commands
+    if any(cmd.lower() == "all" for cmd in commands):
+        msg = (
+            "Cannot combine 'all' with other commands in --shell-allow-list. "
+            "Use '--shell-allow-list all' alone to allow any command."
+        )
+        raise ValueError(msg)
 
     # If "recommended" is in the list, merge with recommended commands
     result = []
@@ -429,6 +451,7 @@ class Settings:
         openai_api_key: OpenAI API key if available.
         anthropic_api_key: Anthropic API key if available.
         google_api_key: Google API key if available.
+        nvidia_api_key: NVIDIA API key if available.
         tavily_api_key: Tavily API key if available.
         google_cloud_project: Google Cloud project ID for VertexAI
             authentication.
@@ -447,6 +470,7 @@ class Settings:
     openai_api_key: str | None
     anthropic_api_key: str | None
     google_api_key: str | None
+    nvidia_api_key: str | None
     tavily_api_key: str | None
 
     # Google Cloud configuration (for VertexAI)
@@ -477,11 +501,12 @@ class Settings:
         Returns:
             Settings instance with detected configuration
         """
-        # Detect API keys
-        openai_key = os.environ.get("OPENAI_API_KEY")
-        anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
-        google_key = os.environ.get("GOOGLE_API_KEY")
-        tavily_key = os.environ.get("TAVILY_API_KEY")
+        # Detect API keys (normalize empty strings to None)
+        openai_key = os.environ.get("OPENAI_API_KEY") or None
+        anthropic_key = os.environ.get("ANTHROPIC_API_KEY") or None
+        google_key = os.environ.get("GOOGLE_API_KEY") or None
+        nvidia_key = os.environ.get("NVIDIA_API_KEY") or None
+        tavily_key = os.environ.get("TAVILY_API_KEY") or None
         google_cloud_project = os.environ.get("GOOGLE_CLOUD_PROJECT")
 
         # Detect LangSmith configuration
@@ -505,6 +530,7 @@ class Settings:
             openai_api_key=openai_key,
             anthropic_api_key=anthropic_key,
             google_api_key=google_key,
+            nvidia_api_key=nvidia_key,
             tavily_api_key=tavily_key,
             google_cloud_project=google_cloud_project,
             deepagents_langchain_project=deepagents_langchain_project,
@@ -512,6 +538,111 @@ class Settings:
             project_root=project_root,
             shell_allow_list=shell_allow_list,
         )
+
+    def reload_from_environment(self, *, start_path: Path | None = None) -> list[str]:
+        """Reload selected settings from environment variables and project files.
+
+        This refreshes only fields that are expected to change at runtime
+        (API keys, Google Cloud project, project root, shell allow-list, and
+        LangSmith tracing project).
+
+        Runtime model state (`model_name`, `model_provider`,
+        `model_context_limit`) and the original user LangSmith project
+        (`user_langchain_project`) are intentionally preserved -- they are
+        not in `reloadable_fields` and are never touched by this method.
+
+        Args:
+            start_path: Directory to start project detection from (defaults to cwd).
+
+        Returns:
+            A list of human-readable change descriptions.
+        """
+        dotenv.load_dotenv(override=True)
+
+        api_key_fields = {
+            "openai_api_key",
+            "anthropic_api_key",
+            "google_api_key",
+            "nvidia_api_key",
+            "tavily_api_key",
+        }
+        reloadable_fields = (
+            "openai_api_key",
+            "anthropic_api_key",
+            "google_api_key",
+            "nvidia_api_key",
+            "tavily_api_key",
+            "google_cloud_project",
+            "deepagents_langchain_project",
+            "project_root",
+            "shell_allow_list",
+        )
+
+        previous = {field: getattr(self, field) for field in reloadable_fields}
+
+        try:
+            shell_allow_list = parse_shell_allow_list(
+                os.environ.get("DEEPAGENTS_SHELL_ALLOW_LIST")
+            )
+        except ValueError:
+            logger.warning(
+                "Invalid DEEPAGENTS_SHELL_ALLOW_LIST during reload; "
+                "keeping previous value"
+            )
+            shell_allow_list = previous["shell_allow_list"]
+
+        try:
+            project_root = _find_project_root(start_path)
+        except OSError:
+            logger.warning(
+                "Could not detect project root during reload; keeping previous value"
+            )
+            project_root = previous["project_root"]
+
+        refreshed = {
+            "openai_api_key": os.environ.get("OPENAI_API_KEY") or None,
+            "anthropic_api_key": os.environ.get("ANTHROPIC_API_KEY") or None,
+            "google_api_key": os.environ.get("GOOGLE_API_KEY") or None,
+            "nvidia_api_key": os.environ.get("NVIDIA_API_KEY") or None,
+            "tavily_api_key": os.environ.get("TAVILY_API_KEY") or None,
+            "google_cloud_project": os.environ.get("GOOGLE_CLOUD_PROJECT"),
+            "deepagents_langchain_project": os.environ.get(
+                "DEEPAGENTS_LANGSMITH_PROJECT"
+            ),
+            "project_root": project_root,
+            "shell_allow_list": shell_allow_list,
+        }
+
+        for field, value in refreshed.items():
+            setattr(self, field, value)
+
+        # Sync the LANGSMITH_PROJECT env var so LangSmith tracing picks up
+        # the change
+        new_project = refreshed["deepagents_langchain_project"]
+        if new_project:
+            os.environ["LANGSMITH_PROJECT"] = new_project
+        elif previous["deepagents_langchain_project"]:
+            # Override was previously active but new value is unset; restore.
+            if _original_langsmith_project:
+                os.environ["LANGSMITH_PROJECT"] = _original_langsmith_project
+            else:
+                os.environ.pop("LANGSMITH_PROJECT", None)
+
+        def _display(field: str, value: object) -> str:
+            if field in api_key_fields:
+                return "set" if value else "unset"
+            return str(value)
+
+        changes: list[str] = []
+        for field in reloadable_fields:
+            old_value = previous[field]
+            new_value = refreshed[field]
+            if old_value != new_value:
+                changes.append(
+                    f"{field}: {_display(field, old_value)} -> "
+                    f"{_display(field, new_value)}"
+                )
+        return changes
 
     @property
     def has_openai(self) -> bool:
@@ -527,6 +658,11 @@ class Settings:
     def has_google(self) -> bool:
         """Check if Google API key is configured."""
         return self.google_api_key is not None
+
+    @property
+    def has_nvidia(self) -> bool:
+        """Check if NVIDIA API key is configured."""
+        return self.nvidia_api_key is not None
 
     @property
     def has_vertex_ai(self) -> bool:
@@ -908,22 +1044,32 @@ def contains_dangerous_patterns(command: str) -> bool:
 def is_shell_command_allowed(command: str, allow_list: list[str] | None) -> bool:
     """Check if a shell command is in the allow-list.
 
-    The allow-list matches against the first token of the command (the executable name).
-    This allows read-only commands like ls, cat, grep, etc. to be auto-approved.
+    The allow-list matches against the first token of the command (the executable
+    name). This allows read-only commands like ls, cat, grep, etc. to be
+    auto-approved.
 
-    SECURITY: This function rejects commands containing dangerous shell patterns
-    (command substitution, redirects, process substitution, etc.) BEFORE parsing,
-    to prevent injection attacks that could bypass the allow-list.
+    When `allow_list` is the `SHELL_ALLOW_ALL` sentinel, all non-empty commands
+    are approved unconditionally — dangerous pattern checks are skipped.
+
+    SECURITY: For regular allow-lists, this function rejects commands containing
+    dangerous shell patterns (command substitution, redirects, process
+    substitution, etc.) BEFORE parsing, to prevent injection attacks that could
+    bypass the allow-list.
 
     Args:
-        command: The full shell command to check
-        allow_list: List of allowed command names (e.g., ["ls", "cat", "grep"])
+        command: The full shell command to check.
+        allow_list: List of allowed command names (e.g., `["ls", "cat", "grep"]`),
+            the `SHELL_ALLOW_ALL` sentinel to allow any command, or `None`.
 
     Returns:
-        True if the command is allowed, False otherwise.
+        `True` if the command is allowed, `False` otherwise.
     """
     if not allow_list or not command or not command.strip():
         return False
+
+    # SHELL_ALLOW_ALL sentinel — skip pattern and token checks
+    if isinstance(allow_list, _ShellAllowAll):
+        return True
 
     # SECURITY: Check for dangerous patterns BEFORE any parsing
     # This prevents injection attacks like: ls "$(rm -rf /)"
@@ -995,15 +1141,16 @@ def get_langsmith_project_name() -> str | None:
 def fetch_langsmith_project_url(project_name: str) -> str | None:
     """Fetch the LangSmith project URL via the LangSmith client.
 
-    Results are cached at module level so repeated calls do not make additional
-    network requests. Failed lookups are also cached to avoid retries.
+    Successful results are cached at module level so repeated calls do not
+    make additional network requests.
 
-    This is a blocking network call on the first invocation. In async
-    contexts, run it in a thread (e.g. via `asyncio.to_thread`).
+    The network call runs in a daemon thread with a hard timeout of
+    `_LANGSMITH_URL_LOOKUP_TIMEOUT_SECONDS`, so this function blocks the
+    calling thread for at most that duration even if LangSmith is unreachable.
 
-    Returns None (with a debug log) on any expected failure: missing
-    `langsmith` package, network errors, invalid project names, or client
-    initialization issues.
+    Returns None (with a debug log) on any failure: missing `langsmith` package,
+    network errors, invalid project names, client initialization issues,
+    or timeouts.
 
     Args:
         project_name: LangSmith project name to look up.
@@ -1021,20 +1168,54 @@ def fetch_langsmith_project_url(project_name: str) -> str | None:
 
     try:
         from langsmith import Client
-
-        project = Client().read_project(project_name=project_name)
-    except (ImportError, OSError, ValueError, RuntimeError):
+    except ImportError:
         logger.debug(
             "Could not fetch LangSmith project URL for '%s'",
             project_name,
             exc_info=True,
         )
-        _langsmith_url_cache = (project_name, None)
         return None
-    else:
-        url = project.url or None
-        _langsmith_url_cache = (project_name, url)
-        return url
+
+    result: str | None = None
+    lookup_error: Exception | None = None
+    done = threading.Event()
+
+    def _lookup_url() -> None:
+        nonlocal result, lookup_error
+        try:
+            project = Client().read_project(project_name=project_name)
+            result = project.url or None
+        except Exception as exc:  # noqa: BLE001  # LangSmith SDK error types are not stable
+            lookup_error = exc
+        finally:
+            done.set()
+
+    thread = threading.Thread(target=_lookup_url, daemon=True)
+    thread.start()
+
+    if not done.wait(_LANGSMITH_URL_LOOKUP_TIMEOUT_SECONDS):
+        logger.debug(
+            "Timed out fetching LangSmith project URL for '%s' after %.1fs",
+            project_name,
+            _LANGSMITH_URL_LOOKUP_TIMEOUT_SECONDS,
+        )
+        return None
+
+    if lookup_error is not None:
+        logger.debug(
+            "Could not fetch LangSmith project URL for '%s'",
+            project_name,
+            exc_info=(
+                type(lookup_error),
+                lookup_error,
+                lookup_error.__traceback__,
+            ),
+        )
+        return None
+
+    if result is not None:
+        _langsmith_url_cache = (project_name, result)
+    return result
 
 
 def build_langsmith_thread_url(thread_id: str) -> str | None:
@@ -1095,8 +1276,9 @@ def detect_provider(model_name: str) -> str | None:
         model_name: Model name to detect provider from.
 
     Returns:
-        Provider name (openai, anthropic, google_genai, google_vertexai) or
-            `None` if the provider cannot be determined from the name alone.
+        Provider name (openai, anthropic, google_genai, google_vertexai,
+            nvidia) or `None` if the provider cannot be determined from the
+            name alone.
     """
     model_lower = model_name.lower()
 
@@ -1112,6 +1294,9 @@ def detect_provider(model_name: str) -> str | None:
         if settings.has_vertex_ai and not settings.has_google:
             return "google_vertexai"
         return "google_genai"
+
+    if model_lower.startswith(("nemotron", "nvidia/")):
+        return "nvidia"
 
     return None
 
@@ -1139,24 +1324,61 @@ def _get_default_model_spec() -> str:
         return config.recent_model
 
     if settings.has_openai:
-        model = os.environ.get("OPENAI_MODEL", "gpt-5.2")
-        return f"openai:{model}"
+        return "openai:gpt-5.2"
     if settings.has_anthropic:
-        model = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-5-20250929")
-        return f"anthropic:{model}"
+        return "anthropic:claude-sonnet-4-6"
     if settings.has_google:
-        model = os.environ.get("GOOGLE_MODEL", "gemini-3-pro-preview")
-        return f"google_genai:{model}"
+        return "google_genai:gemini-3.1-pro-preview"
     if settings.has_vertex_ai:
-        model = os.environ.get("VERTEX_AI_MODEL", "gemini-3-pro-preview")
-        return f"google_vertexai:{model}"
+        return "google_vertexai:gemini-3.1-pro-preview"
+    if settings.has_nvidia:
+        return "nvidia:nvidia/nemotron-3-nano-30b-a3b"
 
     msg = (
         "No credentials configured. Please set one of: "
         "ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY, "
-        "or GOOGLE_CLOUD_PROJECT"
+        "GOOGLE_CLOUD_PROJECT, or NVIDIA_API_KEY"
     )
     raise ModelConfigError(msg)
+
+
+_OPENROUTER_APP_URL = "https://github.com/langchain-ai/deepagents"
+"""Default `app_url` (maps to `HTTP-Referer`) for OpenRouter attribution.
+
+See https://openrouter.ai/docs/app-attribution for details.
+"""
+
+_OPENROUTER_APP_TITLE = "Deep Agents CLI"
+"""Default `app_title` (maps to `X-Title`) for OpenRouter attribution."""
+
+
+def _apply_openrouter_defaults(kwargs: dict[str, Any]) -> None:
+    """Inject default OpenRouter attribution kwargs.
+
+    Sets `app_url` and `app_title` via `setdefault` so that user-supplied
+    values in config take precedence. These map to the `HTTP-Referer` and
+    `X-Title` headers that `ChatOpenRouter` sends for app attribution
+    (see https://openrouter.ai/docs/app-attribution).
+
+    Users can override either value provider-wide or per-model in
+    `~/.deepagents/config.toml`:
+
+    ```toml
+    # Provider-wide
+    [models.providers.openrouter.params]
+    app_url = "https://myapp.com"
+    app_title = "My App"
+
+    # Per-model (shallow-merges on top of provider-wide)
+    [models.providers.openrouter.params."openai/gpt-oss-120b"]
+    app_title = "My App (GPT)"
+    ```
+
+    Args:
+        kwargs: Mutable kwargs dict to update in place.
+    """
+    kwargs.setdefault("app_url", _OPENROUTER_APP_URL)
+    kwargs.setdefault("app_title", _OPENROUTER_APP_TITLE)
 
 
 def _get_provider_kwargs(
@@ -1187,6 +1409,10 @@ def _get_provider_kwargs(
         api_key = os.environ.get(api_key_env)
         if api_key:
             result["api_key"] = api_key
+
+    if provider == "openrouter":
+        _apply_openrouter_defaults(result)
+
     return result
 
 
@@ -1281,6 +1507,7 @@ def _create_model_via_init(
             "openai": "langchain-openai",
             "google_genai": "langchain-google-genai",
             "google_vertexai": "langchain-google-vertexai",
+            "nvidia": "langchain-nvidia-ai-endpoints",
         }
         package = package_map.get(provider, f"langchain-{provider}")
         msg = (
@@ -1323,10 +1550,58 @@ class ModelResult:
         settings.model_context_limit = self.context_limit
 
 
+def _apply_profile_overrides(
+    model: BaseChatModel,
+    overrides: dict[str, Any],
+    model_name: str,
+    *,
+    label: str,
+    raise_on_failure: bool = False,
+) -> None:
+    """Merge `overrides` into `model.profile`.
+
+    If the model already has a dict profile, overrides are layered on top
+    so existing keys (e.g., `tool_calling`) are preserved unchanged.
+
+    Args:
+        model: The chat model whose profile will be updated.
+        overrides: Key/value pairs to merge into the profile.
+        model_name: Model name used in log/error messages.
+        label: Human-readable source label for messages
+            (e.g., `"config.toml"`, `"CLI --profile-override"`).
+        raise_on_failure: When `True`, raise `ModelConfigError` instead
+            of logging a warning if assignment fails.
+
+    Raises:
+        ModelConfigError: If `raise_on_failure` is `True` and the model
+            rejects profile assignment.
+    """
+    logger.debug("Applying %s profile overrides: %s", label, overrides)
+    profile = getattr(model, "profile", None)
+    merged = {**profile, **overrides} if isinstance(profile, dict) else overrides
+    try:
+        model.profile = merged  # type: ignore[union-attr]
+    except (AttributeError, TypeError, ValueError) as exc:
+        if raise_on_failure:
+            msg = (
+                f"Could not apply {label} to model '{model_name}': {exc}. "
+                f"The model may not support profile assignment."
+            )
+            raise ModelConfigError(msg) from exc
+        logger.warning(
+            "Could not apply %s profile overrides to model '%s': %s. "
+            "Overrides will be ignored.",
+            label,
+            model_name,
+            exc,
+        )
+
+
 def create_model(
     model_spec: str | None = None,
     *,
     extra_kwargs: dict[str, Any] | None = None,
+    profile_overrides: dict[str, Any] | None = None,
 ) -> ModelResult:
     """Create a chat model.
 
@@ -1345,6 +1620,9 @@ def create_model(
         extra_kwargs: Additional kwargs to pass to the model constructor.
 
             These take highest priority, overriding values from the config file.
+        profile_overrides: Extra profile fields from `--profile-override`.
+
+            Merged on top of config file profile overrides (CLI wins).
 
     Returns:
         A `ModelResult` containing the model and its metadata.
@@ -1405,6 +1683,29 @@ def create_model(
         model = _create_model_via_init(model_name, provider, kwargs)
 
     resolved_provider = provider or getattr(model, "_model_provider", provider)
+
+    # Apply profile overrides from config.toml (e.g., max_input_tokens)
+    if provider:
+        config_profile_overrides = config.get_profile_overrides(
+            provider, model_name=model_name
+        )
+        if config_profile_overrides:
+            _apply_profile_overrides(
+                model,
+                config_profile_overrides,
+                model_name,
+                label=f"config.toml (provider '{provider}')",
+            )
+
+    # CLI --profile-override takes highest priority (on top of config.toml)
+    if profile_overrides:
+        _apply_profile_overrides(
+            model,
+            profile_overrides,
+            model_name,
+            label="CLI --profile-override",
+            raise_on_failure=True,
+        )
 
     # Extract context limit from model profile (if available)
     context_limit: int | None = None

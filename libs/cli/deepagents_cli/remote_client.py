@@ -136,8 +136,9 @@ class RemoteAgent:
         else:
             kwargs["input"] = input
 
+        converter = _StreamConverter()
         async for chunk in client.runs.stream(**kwargs):
-            for converted in _convert_stream_chunk(chunk, modes):
+            for converted in converter.convert(chunk, modes):
                 yield converted
 
     async def aget_state(
@@ -321,65 +322,152 @@ def _command_to_dict(cmd: Any) -> dict[str, Any]:  # noqa: ANN401
     return result
 
 
+class _StreamConverter:
+    """Stateful converter that turns server SSE events into Pregel 3-tuples.
+
+    Tracks accumulated text per message ID so `messages/partial` events
+    (which contain the full text so far) are converted to incremental deltas.
+    """
+
+    def __init__(self) -> None:
+        self._seen_text: dict[str | None, str] = {}
+
+    def convert(
+        self,
+        chunk: Any,  # noqa: ANN401
+        modes: list[str],  # noqa: ARG002
+    ) -> list[tuple[tuple[str, ...], str, Any]]:
+        """Convert a server StreamPart into Pregel-compatible 3-tuples.
+
+        Args:
+            chunk: A `StreamPart` from `client.runs.stream()`.
+            modes: The requested stream modes.
+
+        Returns:
+            List of converted 3-tuples (may be empty for non-matching events).
+
+        Raises:
+            RuntimeError: If the server sends an SSE error event.
+        """
+        event = chunk.event if hasattr(chunk, "event") else ""
+        data = chunk.data if hasattr(chunk, "data") else chunk
+
+        results: list[tuple[tuple[str, ...], str, Any]] = []
+        namespace: tuple[str, ...] = ()
+
+        if event in {"messages/partial", "messages/complete"}:
+            items = (
+                data
+                if isinstance(data, list)
+                else [data]
+                if isinstance(data, dict)
+                else []
+            )
+            for item in items:
+                delta = self._to_delta(item)
+                if delta is not None:
+                    results.append((namespace, "messages", (delta, {})))
+
+        elif event == "messages/metadata":
+            pass
+
+        elif event == "updates":
+            if isinstance(data, dict):
+                results.append((namespace, "updates", data))
+
+        elif event == "values":
+            if isinstance(data, dict) and "__interrupt__" in data:
+                results.append(
+                    (namespace, "updates", {"__interrupt__": data["__interrupt__"]})
+                )
+
+        elif event in {"metadata", "end"}:
+            pass
+
+        elif event == "error":
+            detail = data.get("message", data) if isinstance(data, dict) else data
+            msg = f"Server stream error: {detail}"
+            raise RuntimeError(msg)
+
+        return results
+
+    def _to_delta(self, data: dict[str, Any]) -> Any:  # noqa: ANN401
+        """Convert an accumulated message dict to a delta AIMessageChunk.
+
+        Computes the text delta by comparing against the previously seen
+        text for this message ID.
+
+        Returns:
+            A delta message chunk, or None if there is no new content.
+        """
+        msg_id = data.get("id")
+        content = data.get("content", "")
+
+        full_text = _extract_text(content)
+        prev_text = self._seen_text.get(msg_id, "")
+
+        if full_text.startswith(prev_text):
+            delta_text = full_text[len(prev_text) :]
+        else:
+            delta_text = full_text
+        self._seen_text[msg_id] = full_text
+
+        delta_data = dict(data)
+        if isinstance(content, str):
+            delta_data["content"] = delta_text
+        elif isinstance(content, list):
+            delta_data["content"] = (
+                [{"type": "text", "text": delta_text}] if delta_text else []
+            )
+        else:
+            delta_data["content"] = delta_text
+
+        if (
+            not delta_text
+            and not data.get("tool_calls")
+            and not data.get("invalid_tool_calls")
+        ):
+            return None
+
+        return _convert_message_data(delta_data)
+
+
+def _extract_text(content: str | list | Any) -> str:  # noqa: ANN401
+    """Extract plain text from message content.
+
+    Args:
+        content: String content or list of content blocks.
+
+    Returns:
+        Concatenated text string.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict) and block.get("type") == "text":
+                parts.append(block.get("text", ""))
+        return "".join(parts)
+    return ""
+
+
 def _convert_stream_chunk(
     chunk: Any,  # noqa: ANN401
-    modes: list[str],  # noqa: ARG001
+    modes: list[str],
 ) -> list[tuple[tuple[str, ...], str, Any]]:
-    """Convert a langgraph-sdk StreamPart into Pregel-compatible 3-tuples.
-
-    The server emits `StreamPart(event, data)` objects. We need to convert
-    these into `(namespace, stream_mode, data)` tuples that the CLI's
-    streaming code expects.
+    """Stateless conversion for backward compatibility (used in tests).
 
     Args:
         chunk: A `StreamPart` from `client.runs.stream()`.
         modes: The requested stream modes.
 
     Returns:
-        List of converted 3-tuples (may be empty for non-matching events).
-
-    Raises:
-        RuntimeError: If the server sends an SSE error event.
+        List of converted 3-tuples.
     """
-    event = chunk.event if hasattr(chunk, "event") else ""
-    data = chunk.data if hasattr(chunk, "data") else chunk
-
-    results: list[tuple[tuple[str, ...], str, Any]] = []
-    namespace: tuple[str, ...] = ()
-
-    if event in {"messages/partial", "messages/complete"}:
-        if isinstance(data, list):
-            for item in data:
-                msg_obj = _convert_message_data(item)
-                if msg_obj is not None:
-                    results.append((namespace, "messages", (msg_obj, {})))
-        elif isinstance(data, dict):
-            msg_obj = _convert_message_data(data)
-            if msg_obj is not None:
-                results.append((namespace, "messages", (msg_obj, {})))
-
-    elif event == "messages/metadata":
-        pass
-
-    elif event == "updates":
-        if isinstance(data, dict):
-            results.append((namespace, "updates", data))
-
-    elif event == "values":
-        if isinstance(data, dict) and "__interrupt__" in data:
-            results.append(
-                (namespace, "updates", {"__interrupt__": data["__interrupt__"]})
-            )
-
-    elif event in {"metadata", "end"}:
-        pass
-
-    elif event == "error":
-        detail = data.get("message", data) if isinstance(data, dict) else data
-        msg = f"Server stream error: {detail}"
-        raise RuntimeError(msg)
-
-    return results
+    return _StreamConverter().convert(chunk, modes)
 
 
 def _convert_message_data(data: dict[str, Any]) -> Any:  # noqa: ANN401

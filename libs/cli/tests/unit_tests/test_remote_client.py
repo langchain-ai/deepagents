@@ -297,7 +297,14 @@ class TestStreamConverterDelta:
         converter = _StreamConverter()
         partial = StreamPart(
             event="messages/partial",
-            data=[{"id": "m1", "type": "AIMessageChunk", "content": "Hi", "tool_calls": []}],
+            data=[
+                {
+                    "id": "m1",
+                    "type": "AIMessageChunk",
+                    "content": "Hi",
+                    "tool_calls": [],
+                }
+            ],
         )
         converter.convert(partial, modes=[])
         update = StreamPart(
@@ -319,3 +326,68 @@ class TestStreamConverterDelta:
         results = converter.convert(update, modes=[])
         messages = [r for r in results if r[1] == "messages"]
         assert len(messages) == 0
+
+    def test_full_tool_call_sequence(self) -> None:
+        """Simulate the full SSE event sequence for an agent with tool calls."""
+        from langchain_core.messages import ToolMessage as LCToolMessage
+
+        converter = _StreamConverter()
+        ai_msg = {
+            "content": "Let me search.",
+            "type": "ai",
+            "id": "msg-1",
+            "tool_calls": [
+                {
+                    "name": "search",
+                    "args": {"q": "weather"},
+                    "id": "tc1",
+                    "type": "tool_call",
+                }
+            ],
+            "response_metadata": {},
+            "invalid_tool_calls": [],
+        }
+        tool_msg = {
+            "content": "Sunny",
+            "type": "tool",
+            "tool_call_id": "tc1",
+            "id": "msg-2",
+            "name": "search",
+        }
+        events = [
+            StreamPart("messages/partial", [{**ai_msg, "content": "Let me "}]),
+            StreamPart("messages/partial", [ai_msg]),
+            StreamPart("messages/complete", [ai_msg]),
+            StreamPart("updates", {"agent": {"messages": [ai_msg]}}),
+            StreamPart("messages/complete", [tool_msg]),
+            StreamPart("updates", {"tools": {"messages": [tool_msg]}}),
+        ]
+
+        all_msgs = []
+        for ev in events:
+            for _, mode, data in converter.convert(ev, modes=[]):
+                if mode == "messages":
+                    all_msgs.append(data[0])
+
+        ai_chunks = [m for m in all_msgs if not isinstance(m, LCToolMessage)]
+        tool_msgs = [m for m in all_msgs if isinstance(m, LCToolMessage)]
+
+        assert len(tool_msgs) == 1
+        assert tool_msgs[0].content == "Sunny"
+
+        tc_blocks = [
+            b
+            for m in ai_chunks
+            for b in m.content_blocks
+            if b.get("type") == "tool_call"
+        ]
+        assert len(tc_blocks) == 1
+        assert tc_blocks[0]["name"] == "search"
+
+        text = "".join(
+            b.get("text", "")
+            for m in ai_chunks
+            for b in m.content_blocks
+            if b.get("type") == "text"
+        )
+        assert text == "Let me search."

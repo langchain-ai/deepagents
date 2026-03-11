@@ -382,6 +382,8 @@ class _StreamConverter:
                 if msg_id:
                     self._seen_msg_ids.add(msg_id)
                 if event == "messages/complete":
+                    if msg_id and msg_id in self._seen_text:
+                        continue
                     msg_obj = _convert_message_data(item)
                     if msg_obj is not None:
                         results.append((namespace, "messages", (msg_obj, {})))

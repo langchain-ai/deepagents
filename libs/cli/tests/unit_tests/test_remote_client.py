@@ -689,3 +689,69 @@ class TestStreamConverterDelta:
         joined = "".join(all_args_parts)
         parsed = json.loads(joined)
         assert parsed == {"path": "/private"}
+
+
+class TestInterruptConversion:
+    """Verify interrupt dicts from the server are converted to Interrupt objects."""
+
+    def test_values_event_converts_interrupt_dicts(self) -> None:
+        from langgraph.types import Interrupt
+
+        converter = _StreamConverter()
+        chunk = StreamPart(
+            event="values",
+            data={
+                "__interrupt__": [
+                    {
+                        "value": {"type": "ask_user", "question": "Approve?"},
+                        "id": "int-1",
+                    }
+                ]
+            },
+        )
+        results = converter.convert(chunk, modes=[])
+        assert len(results) == 1
+        _, mode, data = results[0]
+        assert mode == "updates"
+        interrupts = data["__interrupt__"]
+        assert len(interrupts) == 1
+        assert isinstance(interrupts[0], Interrupt)
+        assert interrupts[0].value == {"type": "ask_user", "question": "Approve?"}
+        assert interrupts[0].id == "int-1"
+
+    def test_updates_event_converts_interrupt_dicts(self) -> None:
+        from langgraph.types import Interrupt
+
+        converter = _StreamConverter()
+        chunk = StreamPart(
+            event="updates",
+            data={
+                "__interrupt__": [
+                    {
+                        "value": {"type": "ask_user", "question": "OK?"},
+                        "id": "int-2",
+                    }
+                ]
+            },
+        )
+        results = converter.convert(chunk, modes=[])
+        updates = [r for r in results if r[1] == "updates"]
+        assert len(updates) == 1
+        interrupts = updates[0][2]["__interrupt__"]
+        assert len(interrupts) == 1
+        assert isinstance(interrupts[0], Interrupt)
+        assert interrupts[0].value == {"type": "ask_user", "question": "OK?"}
+
+    def test_interrupt_objects_passed_through(self) -> None:
+        from langgraph.types import Interrupt
+
+        interrupt = Interrupt(value={"type": "ask_user"}, id="int-3")
+        converter = _StreamConverter()
+        chunk = StreamPart(
+            event="values",
+            data={"__interrupt__": [interrupt]},
+        )
+        results = converter.convert(chunk, modes=[])
+        assert len(results) == 1
+        interrupts = results[0][2]["__interrupt__"]
+        assert interrupts[0] is interrupt

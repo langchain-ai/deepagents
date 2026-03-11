@@ -411,7 +411,11 @@ class _StreamConverter:
 
         elif event == "updates":
             if isinstance(data, dict):
-                results.append((namespace, "updates", data))
+                update_data = data
+                if "__interrupt__" in data:
+                    interrupts = _convert_interrupts(data["__interrupt__"])
+                    update_data = {**data, "__interrupt__": interrupts}
+                results.append((namespace, "updates", update_data))
                 results.extend(
                     (namespace, "messages", (msg_obj, {}))
                     for msg_obj in self._extract_messages_from_update(data)
@@ -419,9 +423,11 @@ class _StreamConverter:
 
         elif event == "values":
             if isinstance(data, dict) and "__interrupt__" in data:
-                results.append(
-                    (namespace, "updates", {"__interrupt__": data["__interrupt__"]})
-                )
+                interrupts = _convert_interrupts(data["__interrupt__"])
+                if interrupts:
+                    results.append(
+                        (namespace, "updates", {"__interrupt__": interrupts})
+                    )
 
         elif event in {"metadata", "end"}:
             pass
@@ -523,6 +529,30 @@ class _StreamConverter:
                 if msg_obj is not None:
                     results.append(msg_obj)
         return results
+
+
+def _convert_interrupts(raw: Any) -> list[Any]:  # noqa: ANN401
+    """Convert interrupt dicts from the server into Interrupt objects.
+
+    Args:
+        raw: List of interrupt dicts or Interrupt objects from the server.
+
+    Returns:
+        List of Interrupt objects.
+    """
+    from langgraph.types import Interrupt
+
+    if not isinstance(raw, list):
+        return []
+    results = []
+    for item in raw:
+        if isinstance(item, Interrupt):
+            results.append(item)
+        elif isinstance(item, dict) and "value" in item:
+            results.append(Interrupt(value=item["value"], id=item.get("id", "")))
+        else:
+            results.append(item)
+    return results
 
 
 def _compute_tool_call_deltas(

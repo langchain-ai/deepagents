@@ -64,6 +64,23 @@ def _find_free_port(host: str) -> int:
         return s.getsockname()[1]
 
 
+def _read_process_output(proc: subprocess.Popen) -> str:
+    """Read combined stdout and stderr from a finished subprocess.
+
+    Args:
+        proc: Completed subprocess.
+
+    Returns:
+        Combined output string (may be empty).
+    """
+    parts: list[str] = []
+    if proc.stdout:
+        parts.append(proc.stdout.read().decode(errors="replace"))
+    if proc.stderr:
+        parts.append(proc.stderr.read().decode(errors="replace"))
+    return "\n".join(p for p in parts if p.strip())
+
+
 def get_server_url(host: str = _DEFAULT_HOST, port: int = _DEFAULT_PORT) -> str:
     """Build the server base URL.
 
@@ -236,12 +253,10 @@ class ServerProcess:
 
         while time.monotonic() < deadline:
             if self._process and self._process.poll() is not None:
-                stderr = ""
-                if self._process.stderr:
-                    stderr = self._process.stderr.read().decode(errors="replace")
+                output = _read_process_output(self._process)
                 msg = f"Server process exited with code {self._process.returncode}"
-                if stderr:
-                    msg += f": {stderr[:500]}"
+                if output:
+                    msg += f"\n{output[:2000]}"
                 raise RuntimeError(msg)
 
             try:

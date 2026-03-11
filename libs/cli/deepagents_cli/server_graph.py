@@ -82,6 +82,7 @@ def make_graph() -> Any:  # noqa: ANN401
     )
     interactive_str = os.environ.get(f"{_ENV_PREFIX}INTERACTIVE", "true")
     interactive = interactive_str.lower() == "true"
+    cwd = os.environ.get(f"{_ENV_PREFIX}CWD")
 
     result = create_model(model_spec)
     model = result.model
@@ -121,6 +122,7 @@ def make_graph() -> Any:  # noqa: ANN401
         enable_ask_user=enable_ask_user,
         checkpointer=False,
         mcp_server_info=mcp_server_info,
+        cwd=cwd,
     )
     return agent
 

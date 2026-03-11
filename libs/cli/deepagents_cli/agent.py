@@ -145,6 +145,7 @@ def get_system_prompt(
     sandbox_type: str | None = None,
     *,
     interactive: bool = True,
+    cwd: str | Path | None = None,
 ) -> str:
     """Get the base system prompt for the agent.
 
@@ -160,6 +161,7 @@ def get_system_prompt(
             If `None`, agent is operating in local mode.
         interactive: When `False`, the prompt is tailored for headless
             non-interactive execution (no human in the loop).
+        cwd: Override the working directory shown in the prompt.
 
     Returns:
         The system prompt string
@@ -241,14 +243,18 @@ def get_system_prompt(
             f"- Use `{working_dir}` as your working directory for all operations\n\n"
         )
     else:
-        try:
-            cwd = Path.cwd()
-        except OSError:
-            logger.warning(
-                "Could not determine working directory for system prompt",
-                exc_info=True,
-            )
-            cwd = Path()
+        if cwd is not None:
+            resolved_cwd = Path(cwd)
+        else:
+            try:
+                resolved_cwd = Path.cwd()
+            except OSError:
+                logger.warning(
+                    "Could not determine working directory for system prompt",
+                    exc_info=True,
+                )
+                resolved_cwd = Path()
+        cwd = resolved_cwd
         working_dir_section = (
             f"### Current Working Directory\n\n"
             f"The filesystem backend is currently operating in: `{cwd}`\n\n"
@@ -408,7 +414,8 @@ def _format_execute_description(
     args = tool_call["args"]
     command_raw = str(args.get("command", "N/A"))
     command = strip_dangerous_unicode(command_raw)
-    lines = [f"Execute Command: {command}", f"Working Directory: {Path.cwd()}"]
+    effective_cwd = os.environ.get("DA_SERVER_CWD") or str(Path.cwd())
+    lines = [f"Execute Command: {command}", f"Working Directory: {effective_cwd}"]
 
     issues = detect_dangerous_unicode(command_raw)
     if issues:
@@ -502,6 +509,7 @@ def create_cli_agent(
     enable_ask_user: bool = False,
     checkpointer: BaseCheckpointSaver | bool | None = None,
     mcp_server_info: list[MCPServerInfo] | None = None,
+    cwd: str | Path | None = None,
 ) -> tuple[Pregel, CompositeBackend]:
     """Create a CLI-configured agent with flexible options.
 
@@ -543,6 +551,8 @@ def create_cli_agent(
             without any checkpointer (e.g., when the platform manages
             persistence).
         mcp_server_info: MCP server metadata to surface in the system prompt.
+        cwd: Override the working directory for the agent's filesystem
+            backend and system prompt.
 
     Returns:
         2-tuple of `(agent_graph, backend)`
@@ -644,8 +654,9 @@ def create_cli_agent(
             # Use LocalShellBackend for filesystem + shell execution.
             # The SDK's FilesystemMiddleware exposes per-command timeout
             # on the execute tool natively.
+            root_dir = Path(cwd) if cwd is not None else Path.cwd()
             backend = LocalShellBackend(
-                root_dir=Path.cwd(),
+                root_dir=root_dir,
                 inherit_env=True,
                 env=shell_env,
             )
@@ -672,6 +683,7 @@ def create_cli_agent(
             assistant_id=assistant_id,
             sandbox_type=sandbox_type,
             interactive=interactive,
+            cwd=cwd,
         )
 
     # Configure interrupt_on based on auto_approve setting

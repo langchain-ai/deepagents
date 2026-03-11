@@ -10,6 +10,7 @@ Provides `start_server_and_get_agent` which handles the full flow of:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -137,6 +138,9 @@ def _set_server_env(
         os.environ[f"{_ENV_PREFIX}MCP_CONFIG_PATH"] = mcp_config_path
     if model_params:
         os.environ[f"{_ENV_PREFIX}MODEL_PARAMS"] = json.dumps(model_params)
+
+    with contextlib.suppress(OSError):
+        os.environ[f"{_ENV_PREFIX}CWD"] = str(Path.cwd())
 
 
 def _write_pyproject(work_dir: Path) -> None:

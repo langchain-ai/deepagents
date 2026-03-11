@@ -119,6 +119,7 @@ def make_graph() -> Any:  # noqa: ANN401
         enable_skills=enable_skills,
         enable_shell=enable_shell,
         enable_ask_user=enable_ask_user,
+        checkpointer=False,
         mcp_server_info=mcp_server_info,
     )
     return agent

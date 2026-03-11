@@ -500,7 +500,7 @@ def create_cli_agent(
     enable_skills: bool = True,
     enable_shell: bool = True,
     enable_ask_user: bool = False,
-    checkpointer: BaseCheckpointSaver | None = None,
+    checkpointer: BaseCheckpointSaver | bool | None = None,
     mcp_server_info: list[MCPServerInfo] | None = None,
 ) -> tuple[Pregel, CompositeBackend]:
     """Create a CLI-configured agent with flexible options.
@@ -539,8 +539,9 @@ def create_cli_agent(
         enable_ask_user: Enable the `ask_user` tool for interactive questioning.
         checkpointer: Optional checkpointer for session persistence.
 
-            If `None`, uses `InMemorySaver` (no persistence across
-            CLI invocations).
+            If `None`, uses `InMemorySaver`. Pass `False` to compile
+            without any checkpointer (e.g., when the platform manages
+            persistence).
         mcp_server_info: MCP server metadata to surface in the system prompt.
 
     Returns:
@@ -720,8 +721,12 @@ def create_cli_agent(
     )
 
     # Create the agent
-    # Use provided checkpointer or fallback to InMemorySaver
-    final_checkpointer = checkpointer if checkpointer is not None else InMemorySaver()
+    if checkpointer is False:
+        final_checkpointer = None
+    elif checkpointer is not None:
+        final_checkpointer = checkpointer
+    else:
+        final_checkpointer = InMemorySaver()
     agent = create_deep_agent(
         model=model,
         system_prompt=system_prompt,

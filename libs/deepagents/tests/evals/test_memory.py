@@ -11,7 +11,9 @@ from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
 from tests.evals.utils import (
     TrajectoryScorer,
     file_contains,
+    file_excludes,
     final_text_contains,
+    final_text_excludes,
     run_agent,
     tool_call,
 )
@@ -194,6 +196,81 @@ def test_memory_prevents_unnecessary_file_reads(model: BaseChatModel) -> None:
             .success(
                 final_text_contains("/users", case_insensitive=True),
                 final_text_contains("GET", case_insensitive=True),
+            )
+        ),
+    )
+
+
+@pytest.mark.langsmith
+def test_memory_does_not_persist_transient_info(model: BaseChatModel) -> None:
+    """Agent should not write temporary status updates into durable memory."""
+    agent = create_deep_agent(
+        model=model,
+        memory=["/project/AGENTS.md"],
+    )
+    run_agent(
+        agent,
+        model=model,
+        initial_files={
+            "/project/AGENTS.md": "# Project Memory\n\nStable preferences and project facts live here.\n",
+        },
+        query="I'm at a coffee shop right now. What's 2 + 2?",
+        scorer=(
+            TrajectoryScorer()
+            .expect(agent_steps=1, tool_call_requests=0)
+            .success(
+                final_text_contains("4"),
+                file_excludes("/project/AGENTS.md", "coffee shop"),
+            )
+        ),
+    )
+
+
+@pytest.mark.langsmith
+def test_memory_updates_user_formatting_preference(model: BaseChatModel) -> None:
+    """Agent writes durable formatting preferences into memory."""
+    agent = create_deep_agent(
+        model=model,
+        memory=["/project/AGENTS.md"],
+    )
+    run_agent(
+        agent,
+        model=model,
+        initial_files={
+            "/project/AGENTS.md": "# Project Memory\n\nCurrent preferences:\n- Use clear technical writing.\n",
+        },
+        query="For future responses, I prefer bullet points over paragraphs.",
+        scorer=(
+            TrajectoryScorer()
+            .success(
+                file_contains("/project/AGENTS.md", "bullet points"),
+                final_text_contains("bullet", case_insensitive=True),
+            )
+            .expect(
+                tool_call_requests=1,
+                tool_calls=[tool_call(name="edit_file", args_contains={"file_path": "/project/AGENTS.md"})],
+            )
+        ),
+    )
+
+
+@pytest.mark.langsmith
+def test_memory_missing_file_graceful_without_claiming_context(model: BaseChatModel) -> None:
+    """Agent handles a missing memory file without inventing its contents."""
+    agent = create_deep_agent(
+        model=model,
+        memory=["/missing/AGENTS.md"],
+    )
+    run_agent(
+        agent,
+        model=model,
+        query="What coding preferences are saved in memory? If none are available, say so briefly.",
+        scorer=(
+            TrajectoryScorer()
+            .expect(agent_steps=1, tool_call_requests=0)
+            .success(
+                final_text_excludes("snake_case", case_insensitive=True),
+                final_text_excludes("pytest", case_insensitive=True),
             )
         ),
     )

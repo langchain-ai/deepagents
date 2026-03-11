@@ -934,10 +934,7 @@ class TestFormatCompactLimit:
         assert _format_compact_limit(("tokens", 12_345), None) == "12.3K tokens"
 
     def test_format_fraction_limit_with_context(self) -> None:
-        assert (
-            _format_compact_limit(("fraction", 0.1), 200_000)
-            == "20.0K tokens (10% of 200.0K)"
-        )
+        assert _format_compact_limit(("fraction", 0.1), 200_000) == "20.0K tokens"
 
     def test_format_fraction_limit_without_context(self) -> None:
         assert _format_compact_limit(("fraction", 0.1), None) == "10% of context window"

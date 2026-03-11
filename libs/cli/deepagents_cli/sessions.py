@@ -18,6 +18,8 @@ if TYPE_CHECKING:
     from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
     from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
+    from deepagents_cli.output import OutputFormat
+
 logger = logging.getLogger(__name__)
 
 _aiosqlite_patched = False
@@ -964,6 +966,8 @@ async def list_threads_command(
     branch: str | None = None,
     verbose: bool = False,
     relative: bool | None = None,
+    *,
+    output_format: OutputFormat = "text",
 ) -> None:
     """CLI handler for `deepagents threads list`.
 
@@ -986,10 +990,8 @@ async def list_threads_command(
         relative: Show timestamps as relative time (e.g., '5m ago').
 
             When `None`, reads from config (`~/.deepagents/config.toml`).
+        output_format: Output format — `'text'` (Rich) or `'json'`.
     """
-    from rich.table import Table
-
-    from deepagents_cli.config import COLORS, console
     from deepagents_cli.model_config import (
         load_thread_relative_time,
         load_thread_sort_order,
@@ -1017,6 +1019,16 @@ async def list_threads_command(
         await populate_thread_checkpoint_details(
             threads, include_message_count=False, include_initial_prompt=True
         )
+
+    if output_format == "json":
+        from deepagents_cli.output import write_json
+
+        write_json("threads list", list(threads))
+        return
+
+    from rich.table import Table
+
+    from deepagents_cli.config import COLORS, console
 
     if not threads:
         filters = []
@@ -1090,11 +1102,24 @@ async def list_threads_command(
     console.print()
 
 
-async def delete_thread_command(thread_id: str) -> None:
-    """CLI handler for: deepagents threads delete."""
-    from deepagents_cli.config import console
+async def delete_thread_command(
+    thread_id: str, *, output_format: OutputFormat = "text"
+) -> None:
+    """CLI handler for: deepagents threads delete.
 
+    Args:
+        thread_id: ID of the thread to delete.
+        output_format: Output format — `'text'` (Rich) or `'json'`.
+    """
     deleted = await delete_thread(thread_id)
+
+    if output_format == "json":
+        from deepagents_cli.output import write_json
+
+        write_json("threads delete", {"thread_id": thread_id, "deleted": deleted})
+        return
+
+    from deepagents_cli.config import console
 
     if deleted:
         console.print(f"[green]Thread '{thread_id}' deleted.[/green]")

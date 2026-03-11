@@ -141,6 +141,7 @@ def parse_args() -> argparse.Namespace:
     Returns:
         Parsed arguments namespace.
     """
+    from deepagents_cli.output import add_json_output_arg
     from deepagents_cli.skills import setup_skills_parser
     from deepagents_cli.ui import (
         build_help_parent,
@@ -226,6 +227,7 @@ def parse_args() -> argparse.Namespace:
         add_help=False,
         parents=help_parent(show_list_help),
     )
+    add_json_output_arg(subparsers.choices["list"])
 
     reset_parser = subparsers.add_parser(
         "reset",
@@ -233,12 +235,17 @@ def parse_args() -> argparse.Namespace:
         add_help=False,
         parents=help_parent(show_reset_help),
     )
+    add_json_output_arg(reset_parser)
     reset_parser.add_argument("--agent", required=True, help="Name of agent to reset")
     reset_parser.add_argument(
         "--target", dest="source_agent", help="Copy prompt from another agent"
     )
 
-    setup_skills_parser(subparsers, make_help_action=_make_help_action)
+    setup_skills_parser(
+        subparsers,
+        make_help_action=_make_help_action,
+        add_output_args=add_json_output_arg,
+    )
 
     threads_parser = subparsers.add_parser(
         "threads",
@@ -246,6 +253,7 @@ def parse_args() -> argparse.Namespace:
         add_help=False,
         parents=help_parent(show_threads_help),
     )
+    add_json_output_arg(threads_parser)
     threads_sub = threads_parser.add_subparsers(dest="threads_command")
 
     threads_list = threads_sub.add_parser(
@@ -255,6 +263,7 @@ def parse_args() -> argparse.Namespace:
         add_help=False,
         parents=help_parent(show_threads_list_help),
     )
+    add_json_output_arg(threads_list)
     threads_list.add_argument(
         "--agent", default=None, help="Filter by agent name (default: show all)"
     )
@@ -296,6 +305,7 @@ def parse_args() -> argparse.Namespace:
         add_help=False,
         parents=help_parent(show_threads_delete_help),
     )
+    add_json_output_arg(threads_delete)
     threads_delete.add_argument("thread_id", help="Thread ID to delete")
 
     # Default interactive mode — argument order here determines the
@@ -394,6 +404,8 @@ def parse_args() -> argparse.Namespace:
         help="Buffer the full response and write it to stdout at once "
         "instead of streaming token-by-token. Requires -n or piped stdin.",
     )
+
+    add_json_output_arg(parser, default="text")
 
     parser.add_argument(
         "--auto-approve",
@@ -1204,6 +1216,8 @@ def cli_main() -> None:
                 sys.exit(1)
             sys.exit(0)
 
+        output_format = getattr(args, "output_format", "text")
+
         if args.command == "help":
             from deepagents_cli.ui import show_help
 
@@ -1211,11 +1225,11 @@ def cli_main() -> None:
         elif args.command == "list":
             from deepagents_cli.agent import list_agents
 
-            list_agents()
+            list_agents(output_format=output_format)
         elif args.command == "reset":
             from deepagents_cli.agent import reset_agent
 
-            reset_agent(args.agent, args.source_agent)
+            reset_agent(args.agent, args.source_agent, output_format=output_format)
         elif args.command == "skills":
             from deepagents_cli.skills import execute_skills_command
 
@@ -1238,10 +1252,13 @@ def cli_main() -> None:
                         branch=getattr(args, "branch", None),
                         verbose=getattr(args, "verbose", False),
                         relative=getattr(args, "relative", None),
+                        output_format=output_format,
                     )
                 )
             elif args.threads_command == "delete":
-                asyncio.run(delete_thread_command(args.thread_id))
+                asyncio.run(
+                    delete_thread_command(args.thread_id, output_format=output_format)
+                )
             else:
                 # No subcommand provided, show threads help screen
                 show_threads_help()

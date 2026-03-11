@@ -13,7 +13,9 @@ from collections import deque
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any, Literal, Self, TypedDict
+from typing import TYPE_CHECKING, Any, Literal, Self
+
+from typing_extensions import TypedDict
 
 from taskiq import InMemoryBroker
 

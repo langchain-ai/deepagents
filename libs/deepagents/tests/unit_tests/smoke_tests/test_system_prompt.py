@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from deepagents.backends import FilesystemBackend, LocalShellBackend
 from deepagents.backends.utils import create_file_data
 from deepagents.graph import create_deep_agent
+from deepagents.middleware.summarization import SummarizationMiddleware
 from tests.unit_tests.chat_model import GenericFakeChatModel
 
 
@@ -171,3 +173,25 @@ description: Systematic code review process following best practices and style g
         _system_message_as_text(system_messages[0]),
         update_snapshots=update_snapshots,
     )
+
+
+def test_summary_prompt_forwarded_to_middleware() -> None:
+    """Verify that `summary_prompt` is forwarded to all SummarizationMiddleware instances."""
+    model = GenericFakeChatModel(messages=iter([AIMessage(content="hello!")]))
+    custom_prompt = "Summarize focusing on key decisions and code changes only."
+
+    init_calls: list[dict] = []
+    original_init = SummarizationMiddleware.__init__
+
+    def tracking_init(self: SummarizationMiddleware, *args: object, **kwargs: object) -> None:
+        init_calls.append(dict(kwargs))
+        original_init(self, *args, **kwargs)
+
+    with patch.object(SummarizationMiddleware, "__init__", tracking_init):
+        create_deep_agent(model=model, summary_prompt=custom_prompt)
+
+    # There should be at least 2 SummarizationMiddleware instances:
+    # one for the main agent and one for the general-purpose subagent
+    assert len(init_calls) >= 2
+    for call_kwargs in init_calls:
+        assert call_kwargs.get("summary_prompt") == custom_prompt

@@ -138,7 +138,19 @@ class RemoteAgent:
 
         converter = _StreamConverter()
         async for chunk in client.runs.stream(**kwargs):
-            for converted in converter.convert(chunk, modes):
+            event = chunk.event if hasattr(chunk, "event") else ""
+            data = chunk.data if hasattr(chunk, "data") else chunk
+            logger.debug(
+                "SSE event=%s data_type=%s data=%s",
+                event,
+                type(data).__name__,
+                repr(data)[:500],
+            )
+            converted_list = converter.convert(chunk, modes)
+            logger.debug(
+                "Converted %d tuples from event=%s", len(converted_list), event
+            )
+            for converted in converted_list:
                 yield converted
 
     async def aget_state(
@@ -428,13 +440,14 @@ class _StreamConverter:
         else:
             delta_data["content"] = delta_text
 
-        new_tool_calls = [
-            tc
-            for tc in data.get("tool_calls", [])
-            if tc.get("id") and tc["id"] not in self._seen_tool_call_ids
-        ]
-        for tc in new_tool_calls:
-            self._seen_tool_call_ids.add(tc["id"])
+        new_tool_calls = []
+        for tc in data.get("tool_calls", []):
+            tc_id = tc.get("id")
+            if tc_id and tc_id in self._seen_tool_call_ids:
+                continue
+            if tc_id:
+                self._seen_tool_call_ids.add(tc_id)
+            new_tool_calls.append(tc)
         delta_data["tool_calls"] = new_tool_calls
 
         if not delta_text and not new_tool_calls and not data.get("invalid_tool_calls"):

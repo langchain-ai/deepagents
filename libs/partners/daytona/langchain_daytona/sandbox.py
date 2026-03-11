@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import time
+from uuid import uuid4
+
 import daytona
-from daytona import FileDownloadRequest, FileUpload
+from daytona import FileDownloadRequest, FileUpload, SessionExecuteRequest
 from deepagents.backends.protocol import (
     ExecuteResponse,
     FileDownloadResponse,
@@ -19,10 +22,25 @@ class DaytonaSandbox(BaseSandbox):
     and only implements the execute() method using Daytona's API.
     """
 
-    def __init__(self, *, sandbox: daytona.Sandbox) -> None:
-        """Create a backend wrapping an existing Daytona sandbox."""
+    def __init__(
+        self,
+        *,
+        sandbox: daytona.Sandbox,
+        timeout: int = 30 * 60,
+        polling_interval: float = 0.1,
+    ) -> None:
+        """Create a backend wrapping an existing Daytona sandbox.
+
+        Args:
+            sandbox: Existing Daytona sandbox instance to wrap.
+            timeout: Default command timeout in seconds used when `execute()` is
+                called without an explicit `timeout`.
+            polling_interval: Delay in seconds between polling Daytona for
+                command completion.
+        """
         self._sandbox = sandbox
-        self._default_timeout: int = 30 * 60
+        self._default_timeout = timeout
+        self._polling_interval = polling_interval
 
     @property
     def id(self) -> str:
@@ -47,11 +65,54 @@ class DaytonaSandbox(BaseSandbox):
                 "wait indefinitely".
         """
         effective_timeout = timeout if timeout is not None else self._default_timeout
-        result = self._sandbox.process.exec(command, timeout=effective_timeout)
+        return self._execute_via_session_logs(command, timeout=effective_timeout)
+
+    def _execute_via_session_logs(
+        self,
+        command: str,
+        *,
+        timeout: int,
+    ) -> ExecuteResponse:
+        """Execute a command through a session and poll logs until completion."""
+        session_id = str(uuid4())
+        self._sandbox.process.create_session(session_id)
+        try:
+            started_at = time.monotonic()
+            result = self._sandbox.process.execute_session_command(
+                session_id,
+                SessionExecuteRequest(command=command, run_async=True),
+                timeout=timeout,
+            )
+            while True:
+                if timeout != 0 and time.monotonic() - started_at >= timeout:
+                    msg = f"Command timed out after {timeout} seconds"
+                    return ExecuteResponse(
+                        output=msg,
+                        exit_code=124,
+                        truncated=False,
+                    )
+                command_result = self._sandbox.process.get_session_command(
+                    session_id,
+                    result.cmd_id,
+                )
+                if command_result.exit_code is not None:
+                    break
+                time.sleep(self._polling_interval)
+            logs = self._sandbox.process.get_session_command_logs(
+                session_id,
+                result.cmd_id,
+            )
+        finally:
+            self._sandbox.process.delete_session(session_id)
+
+        output = logs.stdout or ""
+
+        if logs.stderr is not None and logs.stderr.strip():
+            output += f"\n<stderr>{logs.stderr.strip()}</stderr>"
 
         return ExecuteResponse(
-            output=result.result,
-            exit_code=result.exit_code,
+            output=output,
+            exit_code=command_result.exit_code,
             truncated=False,
         )
 

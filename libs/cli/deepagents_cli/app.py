@@ -148,10 +148,7 @@ def _format_compact_limit(
         percent = float(keep_value) * 100
         if context_limit is not None:
             token_limit = max(1, int(context_limit * float(keep_value)))
-            return (
-                f"{format_token_count(token_limit)} tokens "
-                f"({percent:.0f}% of {format_token_count(context_limit)})"
-            )
+            return f"{format_token_count(token_limit)} tokens"
         return f"{percent:.0f}% of context window"
 
     return "current retention threshold"
@@ -1588,19 +1585,25 @@ class DeepAgentsApp(App):
                 if context_limit is not None:
                     limit_str = format_token_count(context_limit)
                     pct = count / context_limit * 100
-                    usage = (
-                        f"{formatted} / {limit_str} tokens "
-                        f"({pct:.0f}%, includes system prompt + tools)"
-                    )
+                    usage = f"{formatted} / {limit_str} tokens ({pct:.0f}%)"
                 else:
-                    usage = f"{formatted} tokens used (includes system prompt + tools)"
+                    usage = f"{formatted} tokens used"
 
-                msg = f"{usage} · {model_name}" if model_name else usage
+                msg = f"{usage} \u00b7 {model_name}" if model_name else usage
 
-                # Append conversation-only token count when available
-                conv_line = await self._get_conversation_token_line()
-                if conv_line:
-                    msg = f"{msg}\n{conv_line}"
+                conv_tokens = await self._get_conversation_token_count()
+                if conv_tokens is not None:
+                    overhead = max(0, count - conv_tokens)
+                    overhead_str = format_token_count(overhead)
+                    conv_str = format_token_count(conv_tokens)
+
+                    overhead_unit = " tokens" if overhead < 1000 else ""  # noqa: PLR2004  # not bothersome, cosmetic
+                    conv_unit = " tokens" if conv_tokens < 1000 else ""  # noqa: PLR2004  # not bothersome, cosmetic
+
+                    msg += (
+                        f"\n\u251c System prompt + tools: ~{overhead_str}{overhead_unit} (fixed)"  # noqa: E501
+                        f"\n\u2514 Conversation: ~{conv_str}{conv_unit}"
+                    )
 
                 await self._mount_message(AppMessage(msg))
             else:
@@ -1610,7 +1613,7 @@ class DeepAgentsApp(App):
                 parts: list[str] = ["No token usage yet"]
                 if context_limit is not None:
                     limit_str = format_token_count(context_limit)
-                    parts.append(f"{limit_str} context window")
+                    parts.append(f"{limit_str} token context window")
                 if model_name:
                     parts.append(model_name)
 
@@ -1723,12 +1726,11 @@ class DeepAgentsApp(App):
 
         self.call_after_refresh(_scroll_after_command)
 
-    async def _get_conversation_token_line(self) -> str | None:
-        """Return a short string with the conversation-only token count.
+    async def _get_conversation_token_count(self) -> int | None:
+        """Return the approximate conversation-only token count.
 
         Returns:
-            Formatted line like `"Conversation only: ~18 tokens"`, or
-            `None` if state is unavailable.
+            Token count as an integer, or `None` if state is unavailable.
         """
         if not self._agent:
             return None
@@ -1746,9 +1748,38 @@ class DeepAgentsApp(App):
             messages = state.values.get("messages", [])
             if not messages:
                 return None
-            conv_tokens = count_tokens_approximately(messages)
-            return f"Conversation only: ~{format_token_count(conv_tokens)} tokens"
-        except Exception:  # noqa: BLE001
+            return count_tokens_approximately(messages)
+        except Exception:  # best-effort for /tokens display
+            logger.debug("Failed to retrieve conversation token count", exc_info=True)
+            return None
+
+    def _resolve_compact_budget_str(self) -> str | None:
+        """Resolve the compaction retention budget as a human-readable string.
+
+        Instantiates a model and computes summarization defaults, so this is
+        not a trivial accessor.
+
+        Returns:
+            A string like `"20.0K (10% of 200.0K)"` or
+            `"last 6 messages"`, or `None` if the budget cannot be determined.
+        """
+        try:
+            from deepagents.middleware.summarization import (
+                compute_summarization_defaults,
+            )
+
+            model_spec = f"{settings.model_provider}:{settings.model_name}"
+            result = create_model(
+                model_spec,
+                profile_overrides=self._profile_override,
+            )
+            defaults = compute_summarization_defaults(result.model)
+            return _format_compact_limit(
+                defaults["keep"],
+                settings.model_context_limit,
+            )
+        except Exception:  # best-effort for /tokens display
+            logger.debug("Failed to compute compaction budget string", exc_info=True)
             return None
 
     async def _handle_compact(self) -> None:
@@ -1760,9 +1791,9 @@ class DeepAgentsApp(App):
         instead of the full history.
 
         Compaction is a no-op when the conversation's total token count is
-        within the `keep` budget (by default 10% of the model's
-        `max_input_tokens`). Until that threshold is exceeded the user sees
-        "Nothing to compact yet" plus the active compact limit.
+        within the `keep` budget. Until that threshold is exceeded the user
+        sees "Nothing to compact" with the retention budget and a pointer to
+        `/tokens` for a full breakdown.
         """
         if not self._agent or not self._lc_thread_id:
             await self._mount_message(
@@ -1881,27 +1912,29 @@ class DeepAgentsApp(App):
                     and context_limit is not None
                     and total_context > context_limit
                 ):
-                    # Case A: overhead-dominated — total context exceeds
-                    # limit but conversation itself is small
+                    # Case A: total context exceeds model limit but
+                    # conversation is within keep budget — excess is
+                    # system prompt + tool overhead that compaction
+                    # cannot reduce
                     total_str = format_token_count(total_context)
                     await self._mount_message(
                         AppMessage(
                             f"Nothing to compact \u2014 conversation is only "
-                            f"~{conv_str} tokens.\n"
-                            f"Total context ({total_str}) is mostly system "
-                            f"prompt and tool overhead, which compaction "
-                            f"cannot reduce.\n"
-                            f"Retention budget: {compact_limit}"
+                            f"~{conv_str} tokens.\n\n"
+                            f"Total context ({total_str} tokens) is mostly "
+                            f"system prompt and tool overhead, which "
+                            f"compaction cannot reduce.\n\n"
+                            f"Use /tokens for a full breakdown."
                         )
                     )
                 else:
                     # Case B: genuinely within budget
                     await self._mount_message(
                         AppMessage(
-                            "Nothing to compact yet \u2014 conversation is "
-                            "within the retention budget.\n"
-                            f"Conversation: ~{conv_str} tokens \u00b7 "
-                            f"Retention budget: {compact_limit}"
+                            f"Nothing to compact \u2014 conversation "
+                            f"(~{conv_str} tokens) is within the "
+                            f"retention budget ({compact_limit}).\n\n"
+                            f"Use /tokens for a full breakdown."
                         )
                     )
                 return

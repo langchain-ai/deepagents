@@ -769,10 +769,9 @@ async def run_non_interactive(
     thread_url_lookup: ThreadUrlLookupState | None = None
     if not quiet:
         thread_url_lookup = _start_langsmith_thread_url_lookup(thread_id)
-        console.print("[dim]Running task non-interactively...[/dim]")
+        console.print("[dim]Running task non-interactively...[/dim]", highlight=False)
         header = _build_non_interactive_header(assistant_id, thread_id)
         console.print(header)
-        console.print()
 
     from deepagents_cli.server_manager import start_server_and_get_agent
 

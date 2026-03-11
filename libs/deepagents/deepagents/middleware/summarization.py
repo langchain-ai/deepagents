@@ -1077,6 +1077,8 @@ SummarizationMiddleware = _DeepAgentsSummarizationMiddleware
 def create_summarization_middleware(
     model: BaseChatModel,
     backend: BACKEND_TYPES,
+    *,
+    summary_prompt: str | None = None,
 ) -> _DeepAgentsSummarizationMiddleware:
     """Create a `SummarizationMiddleware` with model-aware defaults.
 
@@ -1086,6 +1088,10 @@ def create_summarization_middleware(
     Args:
         model: Resolved chat model instance.
         backend: Backend instance or factory for persisting conversation history.
+        summary_prompt: Custom prompt template for generating conversation summaries.
+
+            Controls how evicted messages are summarized. If `None`, uses the
+            default summary prompt from LangChain.
 
     Returns:
         Configured `SummarizationMiddleware` instance.
@@ -1097,6 +1103,7 @@ def create_summarization_middleware(
         raise TypeError(msg)
 
     defaults = compute_summarization_defaults(model)
+    resolved_summary_prompt = summary_prompt if summary_prompt is not None else DEFAULT_SUMMARY_PROMPT
     return SummarizationMiddleware(
         model=model,
         backend=backend,
@@ -1104,6 +1111,7 @@ def create_summarization_middleware(
         keep=defaults["keep"],
         trim_tokens_to_summarize=None,
         truncate_args_settings=defaults["truncate_args_settings"],
+        summary_prompt=resolved_summary_prompt,
     )
 
 

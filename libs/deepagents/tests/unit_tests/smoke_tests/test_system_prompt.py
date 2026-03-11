@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
+from deepagents import graph as graph_module
 from deepagents.backends import FilesystemBackend, LocalShellBackend
 from deepagents.backends.utils import create_file_data
 from deepagents.graph import create_deep_agent
@@ -171,3 +173,24 @@ description: Systematic code review process following best practices and style g
         _system_message_as_text(system_messages[0]),
         update_snapshots=update_snapshots,
     )
+
+
+def test_summary_prompt_forwarded_to_factory() -> None:
+    """Verify that `summary_prompt` is forwarded to all `create_summarization_middleware` calls."""
+    model = GenericFakeChatModel(messages=iter([AIMessage(content="hello!")]))
+    custom_prompt = "Summarize focusing on key decisions and code changes only."
+
+    factory_calls: list[dict] = []
+    original_factory = graph_module.create_summarization_middleware
+
+    def tracking_factory(*args: object, **kwargs: object) -> object:
+        factory_calls.append(dict(kwargs))
+        return original_factory(*args, **kwargs)
+
+    with patch.object(graph_module, "create_summarization_middleware", tracking_factory):
+        create_deep_agent(model=model, summary_prompt=custom_prompt)
+
+    # At least 2 calls: one for the main agent and one for the general-purpose subagent
+    assert len(factory_calls) >= 2
+    for call_kwargs in factory_calls:
+        assert call_kwargs.get("summary_prompt") == custom_prompt

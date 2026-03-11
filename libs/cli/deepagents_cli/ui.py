@@ -77,14 +77,12 @@ def show_help() -> None:
 
     console.print("[bold]Options:[/bold]", style=COLORS["primary"])
     console.print(
-        "  -r, --resume [ID]          Resume thread: -r for most recent, "
-        "-r ID for specific"
+        "  -r, --resume [ID]          Resume thread: -r for most recent, -r ID for specific"  # noqa: E501
     )
     console.print("  -a, --agent NAME           Agent to use (e.g., coder, researcher)")
     console.print("  -M, --model MODEL          Model to use (e.g., gpt-4o)")
     console.print(
-        "  --model-params JSON        Extra model kwargs "
-        "(e.g., '{\"temperature\": 0.7}')"
+        "  --model-params JSON        Extra model kwargs (e.g., '{\"temperature\": 0.7}')"  # noqa: E501
     )
     console.print("  --profile-override JSON    Override model profile fields as JSON")
     console.print("  -m, --message TEXT         Initial prompt to auto-submit on start")
@@ -128,8 +126,7 @@ def show_help() -> None:
         style=COLORS["dim"],
     )
     console.print(
-        "  deepagents -n 'List files' --shell-allow-list recommended  "
-        "# Use safe commands",
+        "  deepagents -n 'List files' --shell-allow-list recommended  # Use safe commands",  # noqa: E501
         style=COLORS["dim"],
     )
     console.print(

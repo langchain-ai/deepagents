@@ -2,7 +2,7 @@
 # Install deepagents-cli via uv.
 #
 # Usage:
-#   curl -LsSf https://raw.githubusercontent.com/langchain-ai/deepagents/main/scripts/install.sh | bash
+#   curl -LsSf https://raw.githubusercontent.com/langchain-ai/deepagents/main/libs/cli/scripts/install.sh | bash
 #
 # Environment variables:
 #   DEEPAGENTS_EXTRAS  — comma-separated pip extras, e.g. "anthropic" or "anthropic,groq"

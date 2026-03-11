@@ -393,10 +393,28 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             self._update_footer()
             return
 
-        # Group by provider
-        by_provider: dict[str, list[str]] = {}
+        # Group by provider, preserving insertion order so models from the
+        # same provider cluster together in the visual list.
+        by_provider: dict[str, list[tuple[str, str]]] = {}
         for model_spec, provider in self._filtered_models:
-            by_provider.setdefault(provider, []).append(model_spec)
+            by_provider.setdefault(provider, []).append((model_spec, provider))
+
+        # Rebuild _filtered_models to match the provider-grouped display
+        # order. Without this, _filtered_models stays in score-sorted order
+        # while _option_widgets follow provider-grouped order, causing
+        # _update_footer to look up the wrong model for the highlighted
+        # index.
+        grouped_order: list[tuple[str, str]] = []
+        for entries in by_provider.values():
+            grouped_order.extend(entries)
+
+        # Remap selected_index so the same model stays highlighted.
+        old_spec = self._filtered_models[self._selected_index][0]
+        self._filtered_models = grouped_order
+        self._selected_index = next(
+            (i for i, (s, _) in enumerate(grouped_order) if s == old_spec),
+            0,
+        )
 
         glyphs = get_glyphs()
         flat_index = 0
@@ -411,7 +429,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         # individual DOM mutations per widget
         all_widgets: list[Static] = []
 
-        for provider, model_specs in by_provider.items():
+        for provider, model_entries in by_provider.items():
             # Provider header with credential indicator
             has_creds = has_provider_credentials(provider)
             if has_creds is True:
@@ -427,7 +445,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 )
             )
 
-            for model_spec in model_specs:
+            for model_spec, _prov in model_entries:
                 is_current = model_spec == current_spec
                 is_selected = flat_index == self._selected_index
 
@@ -523,8 +541,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         """
         from deepagents_cli.textual_adapter import format_token_count
 
-        if profile_entry is None:
-            return "[dim]No profile data available[/dim]\n\n\n"
+        if profile_entry is None or not profile_entry["profile"]:
+            return "[dim]Model profile not available :([/dim]\n\n\n"
 
         profile = profile_entry["profile"]
         overridden = profile_entry["overridden_keys"]
@@ -568,11 +586,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         token_keys = [("max_input_tokens", "in"), ("max_output_tokens", "out")]
         ctx_parts = [p for k, s in token_keys if (p := _format_token(k, s)) is not None]
         sep = f" {glyphs.bullet} "
-        line1 = (
-            f"Context: {sep.join(ctx_parts)}"
-            if ctx_parts
-            else "[dim]Context: unknown[/dim]"
-        )
+        line1 = f"Context: {sep.join(ctx_parts)}" if ctx_parts else ""
 
         # Line 2: Input modalities
         modality_keys = [

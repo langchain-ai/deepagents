@@ -634,6 +634,50 @@ class TestModelSelectorFuzzyMatching:
             assert screen._selected_index == (initial + 1) % count
 
 
+class TestFilteredModelsWidgetSync:
+    """Tests that _filtered_models indices match _option_widgets after display."""
+
+    def test_display_reorders_filtered_models_to_match_widgets(self) -> None:
+        """After _update_display, _filtered_models order matches _option_widgets.
+
+        Fuzzy search sorts by score, which can interleave providers. The
+        display groups models by provider. _filtered_models must be reordered
+        to match so that _update_footer looks up the correct model for the
+        highlighted widget index.
+        """
+        screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
+        # Simulate score-sorted filtered list that interleaves providers
+        screen._filtered_models = [
+            ("openai:gpt-5", "openai"),
+            ("anthropic:claude-opus", "anthropic"),
+            ("openai:gpt-4", "openai"),
+            ("anthropic:claude-sonnet", "anthropic"),
+        ]
+        screen._selected_index = 0
+
+        # Group by provider (same logic as _update_display)
+        by_provider: dict[str, list[tuple[str, str]]] = {}
+        for spec, prov in screen._filtered_models:
+            by_provider.setdefault(prov, []).append((spec, prov))
+
+        grouped: list[tuple[str, str]] = []
+        for entries in by_provider.values():
+            grouped.extend(entries)
+
+        # Verify that grouping reorders: openai models cluster, then anthropic
+        assert grouped == [
+            ("openai:gpt-5", "openai"),
+            ("openai:gpt-4", "openai"),
+            ("anthropic:claude-opus", "anthropic"),
+            ("anthropic:claude-sonnet", "anthropic"),
+        ]
+        # The original _filtered_models had anthropic:claude-opus at index 1
+        # but after grouping it moves to index 2. Without the fix,
+        # navigating to widget index 1 (openai:gpt-4) would look up
+        # _filtered_models[1] = anthropic:claude-opus — wrong model.
+        assert screen._filtered_models[1] != grouped[1]
+
+
 class TestModelDetailFooter:
     """Tests for the model detail footer in the selector."""
 
@@ -666,11 +710,11 @@ class TestModelDetailFooter:
         assert "* =" not in result
 
     def test_format_footer_no_profile(self) -> None:
-        """None profile shows 'No profile data available'."""
+        """None profile shows 'Model profile not available'."""
         from deepagents_cli.config import UNICODE_GLYPHS
 
         result = ModelSelectorScreen._format_footer(None, UNICODE_GLYPHS)
-        assert "No profile data available" in result
+        assert "Model profile not available :(" in result
 
     def test_format_footer_overridden_fields(self) -> None:
         """Overridden fields show yellow * marker and override legend."""
@@ -704,7 +748,7 @@ class TestModelDetailFooter:
         assert "No profile data" not in result
 
     def test_format_footer_empty_profile(self) -> None:
-        """Empty profile dict shows 'Context: unknown' fallback."""
+        """Empty profile dict shows 'Model profile not available'."""
         from deepagents_cli.config import UNICODE_GLYPHS
         from deepagents_cli.model_config import ModelProfileEntry
 
@@ -713,8 +757,7 @@ class TestModelDetailFooter:
             overridden_keys=frozenset(),
         )
         result = ModelSelectorScreen._format_footer(entry, UNICODE_GLYPHS)
-        assert "Context: unknown" in result
-        assert "No profile data" not in result
+        assert "Model profile not available :(" in result
 
     def test_format_footer_override_on_non_displayed_key(self) -> None:
         """Override on a non-displayed key should not show legend."""

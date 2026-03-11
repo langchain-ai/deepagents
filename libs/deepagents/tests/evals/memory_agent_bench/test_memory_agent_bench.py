@@ -52,7 +52,7 @@ _langsmith_mark = pytest.mark.langsmith if _LANGSMITH_CONFIGURED else lambda f: 
 
 def _log_feedback(*, key: str, value: object) -> None:
     """Log feedback to LangSmith when available, silently no-op otherwise."""
-    with contextlib.suppress(ValueError, Exception):  # noqa: BLE001, S110
+    with contextlib.suppress(ValueError, Exception):
         t.log_feedback(key=key, value=value)
 
 

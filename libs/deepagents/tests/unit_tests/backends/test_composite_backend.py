@@ -10,6 +10,7 @@ from deepagents.backends.composite import CompositeBackend, _route_for_path
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.protocol import (
     ExecuteResponse,
+    ReadResult,
     SandboxBackendProtocol,
     WriteResult,
 )
@@ -131,10 +132,12 @@ def test_composite_backend_store_to_store():
 
     # Read from both
     content1 = comp.read("/notes.txt")
-    assert "default store content" in content1
+    assert content1.file_data is not None
+    assert "default store content" in content1.file_data["content"]
 
     content2 = comp.read("/memories/important.txt")
-    assert "routed store content" in content2
+    assert content2.file_data is not None
+    assert "routed store content" in content2.file_data["content"]
 
     # ls_info at root should show both
     infos = comp.ls_info("/")
@@ -218,7 +221,8 @@ def test_composite_backend_multiple_routes():
     assert edit_res.path == "/memories/important.md"
 
     updated_content = comp.read("/memories/important.md")
-    assert "persistent memory" in updated_content
+    assert updated_content.file_data is not None
+    assert "persistent memory" in updated_content.file_data["content"]
 
 
 def test_composite_backend_grep_path_isolation():
@@ -515,8 +519,12 @@ def test_composite_backend_execute_with_routed_backends():
     assert result.output == "Executed: echo test"
 
     # File operations should still work
-    assert "local content" in comp.read("/local.txt")
-    assert "persistent content" in comp.read("/memories/persistent.txt")
+    local_result = comp.read("/local.txt")
+    assert local_result.file_data is not None
+    assert "local content" in local_result.file_data["content"]
+    persistent_result = comp.read("/memories/persistent.txt")
+    assert persistent_result.file_data is not None
+    assert "persistent content" in persistent_result.file_data["content"]
 
 
 def test_composite_upload_routing(tmp_path: Path):
@@ -551,7 +559,8 @@ def test_composite_upload_routing(tmp_path: Path):
 
     # Verify files are accessible in store
     content1 = comp.read("/memories/note1.txt")
-    assert "Memory content 1" in content1
+    assert content1.file_data is not None
+    assert "Memory content 1" in content1.file_data["content"]
 
 
 def test_composite_download_routing(tmp_path: Path):

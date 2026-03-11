@@ -26,7 +26,7 @@ from pathlib import Path
 
 import pytest
 
-from deepagents.backends.protocol import EditResult, ExecuteResponse, FileInfo, GrepMatch, WriteResult
+from deepagents.backends.protocol import EditResult, ExecuteResponse, FileInfo, GrepMatch, ReadResult, WriteResult
 from deepagents.backends.sandbox import BaseSandbox
 
 # Skip all tests in this module unless RUN_SANDBOX_TESTS=true
@@ -129,8 +129,12 @@ class LocalSubprocessSandbox(BaseSandbox):
 
     def read(self, file_path: str, offset: int = 0, limit: int = 2000) -> ReadResult:
         """Read file content from the mapped real path."""
-        output = super().read(self._to_real_path(file_path), offset=offset, limit=limit)
-        return self._to_virtual_path(output)
+        result = super().read(self._to_real_path(file_path), offset=offset, limit=limit)
+        if result.error is not None:
+            result.error = self._to_virtual_path(result.error)
+        if result.file_data is not None:
+            result.file_data = {**result.file_data, "content": self._to_virtual_path(result.file_data["content"])}
+        return result
 
     def write(self, file_path: str, content: str) -> WriteResult:
         """Write file content to the mapped real path."""
@@ -1211,4 +1215,3 @@ class TestLocalSandboxOperations:
         # Grep for a pattern
         grep_result = sandbox.grep_raw("file", path=base_dir)
         assert len(grep_result) >= 3  # At least 3 matches
-ches

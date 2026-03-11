@@ -12,7 +12,7 @@ from langchain.agents.middleware.types import ExtendedModelResponse, ModelReques
 from langchain_core.exceptions import ContextOverflowError
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 
-from deepagents.backends.protocol import BackendProtocol, EditResult, FileDownloadResponse, WriteResult
+from deepagents.backends.protocol import BackendProtocol, EditResult, FileDownloadResponse, ReadResult, WriteResult
 from deepagents.middleware.summarization import SummarizationMiddleware
 
 if TYPE_CHECKING:
@@ -114,8 +114,8 @@ class MockBackend(BackendProtocol):
     def read(self, path: str, offset: int = 0, limit: int = 2000) -> ReadResult:
         self.read_calls.append(path)
         if self.existing_content is not None:
-            return self.existing_content
-        return ""
+            return ReadResult(file_data={"content": self.existing_content, "encoding": "utf-8", "created_at": "", "modified_at": ""})
+        return ReadResult(file_data={"content": "", "encoding": "utf-8", "created_at": "", "modified_at": ""})
 
     async def aread(self, path: str, offset: int = 0, limit: int = 2000) -> ReadResult:
         return self.read(path, offset, limit)

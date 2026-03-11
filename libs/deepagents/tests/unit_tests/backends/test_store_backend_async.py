@@ -4,7 +4,7 @@ from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
 from langgraph.store.memory import InMemoryStore
 
-from deepagents.backends.protocol import EditResult, WriteResult
+from deepagents.backends.protocol import EditResult, ReadResult, WriteResult
 from deepagents.backends.store import StoreBackend
 from deepagents.middleware.filesystem import FilesystemMiddleware
 
@@ -30,8 +30,9 @@ async def test_store_backend_async_crud_and_search():
     assert isinstance(msg, WriteResult) and msg.error is None and msg.path == "/docs/readme.md"
 
     # aread
-    txt = await be.aread("/docs/readme.md")
-    assert "hello store" in txt
+    read_result = await be.aread("/docs/readme.md")
+    assert isinstance(read_result, ReadResult) and read_result.file_data is not None
+    assert "hello store" in read_result.file_data["content"]
 
     # aedit
     msg2 = await be.aedit("/docs/readme.md", "hello", "hi", replace_all=False)
@@ -130,8 +131,8 @@ async def test_store_backend_async_errors():
     assert isinstance(err, EditResult) and err.error and "not found" in err.error
 
     # aread missing file
-    content = await be.aread("/nonexistent.txt")
-    assert "Error" in content or "not found" in content.lower()
+    read_result = await be.aread("/nonexistent.txt")
+    assert isinstance(read_result, ReadResult) and read_result.error is not None
 
 
 async def test_store_backend_aedit_replace_all():
@@ -153,16 +154,18 @@ async def test_store_backend_aedit_replace_all():
     assert res3.error is None
     assert res3.occurrences == 2
 
-    content = await be.aread("/test.txt")
-    assert "qux bar qux baz" in content
+    read_result = await be.aread("/test.txt")
+    assert read_result.file_data is not None
+    assert "qux bar qux baz" in read_result.file_data["content"]
 
     # Now test replace_all=False with unique string (should succeed)
     res4 = await be.aedit("/test.txt", "bar", "xyz", replace_all=False)
     assert res4.error is None
     assert res4.occurrences == 1
 
-    content2 = await be.aread("/test.txt")
-    assert "qux xyz qux baz" in content2
+    read_result2 = await be.aread("/test.txt")
+    assert read_result2.file_data is not None
+    assert "qux xyz qux baz" in read_result2.file_data["content"]
 
 
 async def test_store_backend_aread_with_offset_and_limit():
@@ -176,7 +179,9 @@ async def test_store_backend_aread_with_offset_and_limit():
     assert res.error is None
 
     # Read with offset
-    content_offset = await be.aread("/multi.txt", offset=2, limit=3)
+    read_result = await be.aread("/multi.txt", offset=2, limit=3)
+    assert read_result.file_data is not None
+    content_offset = read_result.file_data["content"]
     assert "Line 3" in content_offset
     assert "Line 4" in content_offset
     assert "Line 5" in content_offset

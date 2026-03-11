@@ -10,6 +10,7 @@ from deepagents.backends.composite import CompositeBackend
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.protocol import (
     ExecuteResponse,
+    ReadResult,
     SandboxBackendProtocol,
     WriteResult,
 )
@@ -155,10 +156,12 @@ async def test_composite_backend_store_to_store_async():
 
     # Read from both
     content1 = await comp.aread("/notes.txt")
-    assert "default store content" in content1
+    assert content1.file_data is not None
+    assert "default store content" in content1.file_data["content"]
 
     content2 = await comp.aread("/memories/important.txt")
-    assert "routed store content" in content2
+    assert content2.file_data is not None
+    assert "routed store content" in content2.file_data["content"]
 
     # als_info at root should show both
     infos = await comp.als_info("/")
@@ -241,7 +244,8 @@ async def test_composite_backend_multiple_routes_async():
     assert edit_res.path == "/memories/important.md"
 
     updated_content = await comp.aread("/memories/important.md")
-    assert "persistent memory" in updated_content
+    assert updated_content.file_data is not None
+    assert "persistent memory" in updated_content.file_data["content"]
 
 
 async def test_composite_backend_als_nested_directories_async(tmp_path: Path):
@@ -437,8 +441,12 @@ async def test_composite_backend_aexecute_with_routed_backends_async():
     assert result.output == "Async Executed: echo test"
 
     # File operations should still work
-    assert "local content" in await comp.aread("/local.txt")
-    assert "persistent content" in await comp.aread("/memories/persistent.txt")
+    local_result = await comp.aread("/local.txt")
+    assert local_result.file_data is not None
+    assert "local content" in local_result.file_data["content"]
+    persistent_result = await comp.aread("/memories/persistent.txt")
+    assert persistent_result.file_data is not None
+    assert "persistent content" in persistent_result.file_data["content"]
 
 
 async def test_composite_aupload_routing_async(tmp_path: Path):
@@ -473,7 +481,8 @@ async def test_composite_aupload_routing_async(tmp_path: Path):
 
     # Verify files are accessible in store
     content1 = await comp.aread("/memories/note1.txt")
-    assert "Memory content 1" in content1
+    assert content1.file_data is not None
+    assert "Memory content 1" in content1.file_data["content"]
 
 
 async def test_composite_adownload_routing_async(tmp_path: Path):

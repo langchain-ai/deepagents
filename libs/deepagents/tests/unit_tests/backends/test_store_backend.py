@@ -7,7 +7,7 @@ from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
 from langgraph.store.memory import InMemoryStore
 
-from deepagents.backends.protocol import EditResult, WriteResult
+from deepagents.backends.protocol import EditResult, ReadResult, WriteResult
 from deepagents.backends.store import BackendContext, StoreBackend, _validate_namespace
 from deepagents.middleware.filesystem import FilesystemMiddleware
 
@@ -32,8 +32,9 @@ def test_store_backend_crud_and_search():
     assert isinstance(msg, WriteResult) and msg.error is None and msg.path == "/docs/readme.md"
 
     # read
-    txt = be.read("/docs/readme.md")
-    assert "hello store" in txt
+    read_result = be.read("/docs/readme.md")
+    assert isinstance(read_result, ReadResult) and read_result.file_data is not None
+    assert "hello store" in read_result.file_data["content"]
 
     # edit
     msg2 = be.edit("/docs/readme.md", "hello", "hi", replace_all=False)
@@ -169,8 +170,9 @@ def test_store_backend_namespace_user_scoped() -> None:
     assert items[0].key == "/test.txt"
 
     # Read it back
-    content = be.read("/test.txt")
-    assert "hello alice" in content
+    read_result = be.read("/test.txt")
+    assert read_result.file_data is not None
+    assert "hello alice" in read_result.file_data["content"]
 
 
 def test_store_backend_namespace_multi_level() -> None:
@@ -235,11 +237,13 @@ def test_store_backend_namespace_isolation() -> None:
     be_bob.write("/notes.txt", "bob notes")
 
     # Verify isolation
-    alice_content = be_alice.read("/notes.txt")
-    assert "alice notes" in alice_content
+    alice_result = be_alice.read("/notes.txt")
+    assert alice_result.file_data is not None
+    assert "alice notes" in alice_result.file_data["content"]
 
-    bob_content = be_bob.read("/notes.txt")
-    assert "bob notes" in bob_content
+    bob_result = be_bob.read("/notes.txt")
+    assert bob_result.file_data is not None
+    assert "bob notes" in bob_result.file_data["content"]
 
     # Verify they're in different namespaces
     alice_items = store.search(("filesystem", "alice"))

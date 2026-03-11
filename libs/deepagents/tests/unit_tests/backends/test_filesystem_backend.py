@@ -5,7 +5,7 @@ from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
 
 from deepagents.backends.filesystem import FilesystemBackend
-from deepagents.backends.protocol import EditResult, WriteResult
+from deepagents.backends.protocol import EditResult, ReadResult, WriteResult
 from deepagents.middleware.filesystem import FilesystemMiddleware
 
 
@@ -31,8 +31,9 @@ def test_filesystem_backend_normal_mode(tmp_path: Path):
     assert (str(root) + "/dir/") in paths  # Directory should be listed
 
     # read, edit, write
-    txt = be.read(str(f1))
-    assert "hello fs" in txt
+    read_result = be.read(str(f1))
+    assert isinstance(read_result, ReadResult) and read_result.file_data is not None
+    assert "hello fs" in read_result.file_data["content"]
     msg = be.edit(str(f1), "fs", "filesystem", replace_all=False)
     assert isinstance(msg, EditResult) and msg.error is None and msg.occurrences == 1
     msg2 = be.write(str(root / "new.txt"), "new content")
@@ -66,8 +67,9 @@ def test_filesystem_backend_virtual_mode(tmp_path: Path, monkeypatch: pytest.Mon
     assert "/dir/" in paths  # Directory should be listed
 
     # read and edit via virtual path
-    txt = be.read("/a.txt")
-    assert "hello virtual" in txt
+    read_result = be.read("/a.txt")
+    assert isinstance(read_result, ReadResult) and read_result.file_data is not None
+    assert "hello virtual" in read_result.file_data["content"]
     msg = be.edit("/a.txt", "virtual", "virt", replace_all=False)
     assert isinstance(msg, EditResult) and msg.error is None and msg.occurrences == 1
 

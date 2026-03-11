@@ -13,6 +13,7 @@ import warnings
 from langchain.tools import ToolRuntime
 from langgraph.store.memory import InMemoryStore
 
+from deepagents.backends.protocol import ReadResult
 from deepagents.backends.state import StateBackend
 from deepagents.backends.store import StoreBackend
 from deepagents.backends.utils import _to_legacy_file_data, create_file_data
@@ -71,8 +72,10 @@ class TestV1StyleWritesStateBackend:
         be2 = StateBackend(rt2, file_format="v1")
 
         read_result = be2.read("/project/main.py")
-        assert "import os" in read_result
-        assert "print('hello')" in read_result
+        assert isinstance(read_result, ReadResult)
+        assert read_result.file_data is not None
+        assert "import os" in read_result.file_data["content"]
+        assert "print('hello')" in read_result.file_data["content"]
 
     def test_write_edit_read_lifecycle(self):
         """Write → edit → read cycle works entirely in v1 mode."""
@@ -100,8 +103,10 @@ class TestV1StyleWritesStateBackend:
         be3 = StateBackend(rt3, file_format="v1")
 
         read_result = be3.read("/app.py")
-        assert "'hello'" in read_result
-        assert "'hi'" not in read_result
+        assert isinstance(read_result, ReadResult)
+        assert read_result.file_data is not None
+        assert "'hello'" in read_result.file_data["content"]
+        assert "'hi'" not in read_result.file_data["content"]
 
     def test_grep_works_with_v1_data(self):
         """Grep can search through v1-formatted file data."""
@@ -199,8 +204,10 @@ class TestV1StyleWritesStoreBackend:
             warnings.simplefilter("always")
             read_result = be.read("/project/main.py")
 
-        assert "import os" in read_result
-        assert "print('hello')" in read_result
+        assert isinstance(read_result, ReadResult)
+        assert read_result.file_data is not None
+        assert "import os" in read_result.file_data["content"]
+        assert "print('hello')" in read_result.file_data["content"]
 
     def test_write_edit_read_lifecycle(self):
         """Write → edit → read cycle works entirely in v1 mode."""
@@ -222,8 +229,10 @@ class TestV1StyleWritesStoreBackend:
             warnings.simplefilter("always")
             read_result = be.read("/app.py")
 
-        assert "'hello'" in read_result
-        assert "'hi'" not in read_result
+        assert isinstance(read_result, ReadResult)
+        assert read_result.file_data is not None
+        assert "'hello'" in read_result.file_data["content"]
+        assert "'hi'" not in read_result.file_data["content"]
 
     def test_grep_works_with_v1_data(self):
         """Grep can search through v1-formatted store data."""
@@ -279,8 +288,10 @@ class TestV2LoadsV1CheckpointStateBackend:
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
             result = be.read("/old/file.txt")
-            assert "hello" in result
-            assert "world" in result
+            assert isinstance(result, ReadResult)
+            assert result.file_data is not None
+            assert "hello" in result.file_data["content"]
+            assert "world" in result.file_data["content"]
             deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
             assert len(deprecation_warnings) >= 1
 
@@ -395,8 +406,10 @@ class TestV2LoadsV1CheckpointStateBackend:
         with warnings.catch_warnings(record=True):
             warnings.simplefilter("always")
             config_content = be.read("/config.env")
-        assert "DB_HOST=localhost" in config_content
-        assert "DB_PORT=5432" in config_content
+        assert isinstance(config_content, ReadResult)
+        assert config_content.file_data is not None
+        assert "DB_HOST=localhost" in config_content.file_data["content"]
+        assert "DB_PORT=5432" in config_content.file_data["content"]
 
         # Step 3: Edit v1 data (result upgrades to v2)
         with warnings.catch_warnings(record=True):
@@ -421,17 +434,23 @@ class TestV2LoadsV1CheckpointStateBackend:
         with warnings.catch_warnings(record=True):
             warnings.simplefilter("always")
             edited = be2.read("/config.env")
-        assert "prod.example.com" in edited
+        assert isinstance(edited, ReadResult)
+        assert edited.file_data is not None
+        assert "prod.example.com" in edited.file_data["content"]
 
         # Untouched v1 file still readable
         with warnings.catch_warnings(record=True):
             warnings.simplefilter("always")
             code = be2.read("/src/db.py")
-        assert "def connect():" in code
+        assert isinstance(code, ReadResult)
+        assert code.file_data is not None
+        assert "def connect():" in code.file_data["content"]
 
         # New v2 file readable
         new_file = be2.read("/src/migrations.py")
-        assert "migration scripts" in new_file
+        assert isinstance(new_file, ReadResult)
+        assert new_file.file_data is not None
+        assert "migration scripts" in new_file.file_data["content"]
 
 
 class TestV2LoadsV1CheckpointStoreBackend:
@@ -457,8 +476,10 @@ class TestV2LoadsV1CheckpointStoreBackend:
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
             result = be.read("/old/file.txt")
-            assert "hello" in result
-            assert "world" in result
+            assert isinstance(result, ReadResult)
+            assert result.file_data is not None
+            assert "hello" in result.file_data["content"]
+            assert "world" in result.file_data["content"]
             deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
             assert len(deprecation_warnings) >= 1
 
@@ -532,7 +553,9 @@ class TestV2LoadsV1CheckpointStoreBackend:
         with warnings.catch_warnings(record=True):
             warnings.simplefilter("always")
             config = be.read("/config.env")
-        assert "DB_HOST=localhost" in config
+        assert isinstance(config, ReadResult)
+        assert config.file_data is not None
+        assert "DB_HOST=localhost" in config.file_data["content"]
 
         # Edit v1 data (upgrades to v2 in store)
         with warnings.catch_warnings(record=True):
@@ -553,11 +576,15 @@ class TestV2LoadsV1CheckpointStoreBackend:
         with warnings.catch_warnings(record=True):
             warnings.simplefilter("always")
             code = be.read("/src/db.py")
-        assert "def connect():" in code
+        assert isinstance(code, ReadResult)
+        assert code.file_data is not None
+        assert "def connect():" in code.file_data["content"]
 
         # Verify new file
         new = be.read("/src/migrations.py")
-        assert "migration scripts" in new
+        assert isinstance(new, ReadResult)
+        assert new.file_data is not None
+        assert "migration scripts" in new.file_data["content"]
 
 
 # ===================================================================
@@ -585,9 +612,11 @@ class TestBareV1DataNoEncodingField:
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
             result = be.read("/legacy.txt")
-            assert "line1" in result
-            assert "line2" in result
-            assert "line3" in result
+            assert isinstance(result, ReadResult)
+            assert result.file_data is not None
+            assert "line1" in result.file_data["content"]
+            assert "line2" in result.file_data["content"]
+            assert "line3" in result.file_data["content"]
             deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
             assert len(deprecation_warnings) >= 1
 
@@ -612,8 +641,10 @@ class TestBareV1DataNoEncodingField:
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
             result = be.read("/legacy.txt")
-            assert "line1" in result
-            assert "line2" in result
+            assert isinstance(result, ReadResult)
+            assert result.file_data is not None
+            assert "line1" in result.file_data["content"]
+            assert "line2" in result.file_data["content"]
             deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
             assert len(deprecation_warnings) >= 1
 

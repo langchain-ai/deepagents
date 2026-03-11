@@ -419,7 +419,14 @@ class StoreBackend(BackendProtocol):
             return ReadResult(file_data=file_data)
 
         formatted = format_read_response(file_data, offset, limit)
-        return ReadResult(file_data={**file_data, "content": formatted})
+        return ReadResult(
+            file_data=FileData(
+                content=formatted,
+                encoding=file_data.get("encoding", "utf-8"),
+                created_at=file_data.get("created_at", ""),
+                modified_at=file_data.get("modified_at", ""),
+            )
+        )
 
     async def aread(
         self,
@@ -447,7 +454,14 @@ class StoreBackend(BackendProtocol):
             return ReadResult(file_data=file_data)
 
         formatted = format_read_response(file_data, offset, limit)
-        return ReadResult(file_data={**file_data, "content": formatted})
+        return ReadResult(
+            file_data=FileData(
+                content=formatted,
+                encoding=file_data.get("encoding", "utf-8"),
+                created_at=file_data.get("created_at", ""),
+                modified_at=file_data.get("modified_at", ""),
+            )
+        )
 
     def write(
         self,

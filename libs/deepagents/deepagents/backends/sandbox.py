@@ -309,11 +309,7 @@ except PermissionError:
         if "error" in data:
             return ReadResult(error=data["error"])
 
-        return ReadResult(
-            file_data=create_file_data(
-                data["content"], encoding=data.get("encoding", "utf-8")
-            )
-        )
+        return ReadResult(file_data=create_file_data(data["content"], encoding=data.get("encoding", "utf-8")))
 
     def write(
         self,

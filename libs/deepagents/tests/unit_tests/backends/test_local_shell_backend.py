@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from deepagents.backends.local_shell import LocalShellBackend
-from deepagents.backends.protocol import ExecuteResponse, ReadResult
+from deepagents.backends.protocol import ExecuteResponse
 
 
 def test_local_shell_backend_initialization() -> None:

@@ -10,7 +10,6 @@ from deepagents.backends.composite import CompositeBackend, _route_for_path
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.protocol import (
     ExecuteResponse,
-    ReadResult,
     SandboxBackendProtocol,
     WriteResult,
 )

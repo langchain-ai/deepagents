@@ -543,11 +543,14 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         def _handle_read_result(
             read_result: ReadResult,
             validated_path: str,
-            tool_call_id: str,
+            tool_call_id: str | None,
             limit: int,
         ) -> ToolMessage | str:
             if read_result.error:
                 return f"Error: {read_result.error}"
+
+            if read_result.file_data is None:
+                return f"Error: no data returned for '{validated_path}'"
 
             file_type = _get_file_type(validated_path)
             content = read_result.file_data["content"]
@@ -555,7 +558,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             if file_type != "text":
                 mime_type = mimetypes.guess_type("file" + Path(validated_path).suffix)[0] or "application/octet-stream"
                 return ToolMessage(
-                    content_blocks=[{"type": file_type, "base64": content, "mime_type": mime_type}],
+                    content_blocks=cast("list[ContentBlock]", [{"type": file_type, "base64": content, "mime_type": mime_type}]),
                     name="read_file",
                     tool_call_id=tool_call_id,
                     additional_kwargs={"read_file_path": validated_path, "read_file_media_type": mime_type},

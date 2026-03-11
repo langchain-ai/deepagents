@@ -321,9 +321,7 @@ class FilesystemBackend(BackendProtocol):
                 with os.fdopen(fd, "rb") as f:
                     raw = f.read()
                 encoded = base64.standard_b64encode(raw).decode("ascii")
-                return ReadResult(
-                    file_data=create_file_data(encoded, encoding="base64")
-                )
+                return ReadResult(file_data=create_file_data(encoded, encoding="base64"))
 
             with os.fdopen(fd, "r", encoding="utf-8") as f:
                 content = f.read()
@@ -337,15 +335,10 @@ class FilesystemBackend(BackendProtocol):
             end_idx = min(start_idx + limit, len(lines))
 
             if start_idx >= len(lines):
-                return ReadResult(
-                    error=f"Line offset {offset} exceeds file length"
-                    f" ({len(lines)} lines)"
-                )
+                return ReadResult(error=f"Line offset {offset} exceeds file length ({len(lines)} lines)")
 
             selected_lines = lines[start_idx:end_idx]
-            formatted = format_content_with_line_numbers(
-                selected_lines, start_line=start_idx + 1
-            )
+            formatted = format_content_with_line_numbers(selected_lines, start_line=start_idx + 1)
             return ReadResult(file_data=create_file_data(formatted))
         except OSError as e:
             return ReadResult(error=f"Error reading file '{file_path}': {e}")

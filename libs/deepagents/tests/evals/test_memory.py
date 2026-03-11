@@ -11,6 +11,7 @@ from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
 from tests.evals.utils import (
     TrajectoryScorer,
     file_contains,
+    file_excludes,
     final_text_contains,
     final_text_excludes,
     run_agent,

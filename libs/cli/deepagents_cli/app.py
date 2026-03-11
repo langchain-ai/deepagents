@@ -2136,7 +2136,8 @@ class DeepAgentsApp(App):
                 backend=self._backend,
                 image_tracker=self._image_tracker,
             )
-        except Exception as e:  # noqa: BLE001  # Resilient tool rendering
+        except Exception as e:  # Resilient tool rendering
+            logger.exception("Agent execution failed")
             # Ensure any in-flight tool calls don't remain stuck in "Running..."
             # when streaming aborts before tool results arrive.
             if self._ui_adapter:

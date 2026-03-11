@@ -27,6 +27,43 @@ _HEALTH_TIMEOUT = 60
 _SHUTDOWN_TIMEOUT = 5
 
 
+def _port_in_use(host: str, port: int) -> bool:
+    """Check if a port is already in use.
+
+    Args:
+        host: Host to check.
+        port: Port to check.
+
+    Returns:
+        `True` if the port is in use.
+    """
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        try:
+            s.bind((host, port))
+        except OSError:
+            return True
+        else:
+            return False
+
+
+def _find_free_port(host: str) -> int:
+    """Find a free port on the given host.
+
+    Args:
+        host: Host to bind to.
+
+    Returns:
+        An available port number.
+    """
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind((host, 0))
+        return s.getsockname()[1]
+
+
 def get_server_url(host: str = _DEFAULT_HOST, port: int = _DEFAULT_PORT) -> str:
     """Build the server base URL.
 
@@ -135,6 +172,10 @@ class ServerProcess:
                 "Call generate_langgraph_json() first."
             )
             raise RuntimeError(msg)
+
+        if _port_in_use(self.host, self.port):
+            self.port = _find_free_port(self.host)
+            logger.info("Default port in use, using port %d instead", self.port)
 
         cmd = [
             sys.executable,

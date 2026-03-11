@@ -97,7 +97,11 @@ class RemoteAgent:
             msg = "thread_id is required in config.configurable"
             raise ValueError(msg)
 
-        thread = await self._ensure_thread(thread_id, metadata)
+        try:
+            thread = await self._ensure_thread(thread_id, metadata)
+        except Exception:
+            logger.exception("Failed to ensure thread %s", thread_id)
+            raise
         actual_thread_id = thread["thread_id"]
 
         modes = stream_mode or _STREAM_MODES

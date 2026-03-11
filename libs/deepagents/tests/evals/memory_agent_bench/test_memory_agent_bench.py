@@ -15,6 +15,7 @@ Usage:
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import uuid
@@ -51,10 +52,8 @@ _langsmith_mark = pytest.mark.langsmith if _LANGSMITH_CONFIGURED else lambda f: 
 
 def _log_feedback(*, key: str, value: object) -> None:
     """Log feedback to LangSmith when available, silently no-op otherwise."""
-    try:
+    with contextlib.suppress(ValueError, Exception):  # noqa: BLE001, S110
         t.log_feedback(key=key, value=value)
-    except (ValueError, Exception):  # noqa: BLE001
-        pass
 
 
 def _require_memory_agent_bench_dependencies() -> None:

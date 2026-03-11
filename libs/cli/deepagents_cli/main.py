@@ -559,7 +559,7 @@ async def run_textual_cli_async(
     from deepagents_cli.agent import create_cli_agent
     from deepagents_cli.app import run_textual_app
     from deepagents_cli.config import console, create_model, settings
-    from deepagents_cli.model_config import ModelConfigError
+    from deepagents_cli.model_config import ModelConfigError, save_recent_model
     from deepagents_cli.sessions import get_checkpointer
     from deepagents_cli.tools import fetch_url, http_request, web_search
 
@@ -577,6 +577,10 @@ async def run_textual_cli_async(
 
     model = result.model
     result.apply_to_settings()
+
+    # Persist the resolved model so [models].recent is always populated,
+    # not only after an explicit /model switch.
+    save_recent_model(f"{result.provider}:{result.model_name}")
 
     # Show thread info
     if is_resumed:
@@ -735,7 +739,7 @@ async def _run_acp_cli_async(
     """
     from deepagents_cli.agent import create_cli_agent
     from deepagents_cli.config import create_model, settings
-    from deepagents_cli.model_config import ModelConfigError
+    from deepagents_cli.model_config import ModelConfigError, save_recent_model
     from deepagents_cli.tools import fetch_url, http_request, web_search
 
     try:
@@ -749,6 +753,9 @@ async def _run_acp_cli_async(
         sys.stderr.flush()
         return 1
     model_result.apply_to_settings()
+
+    # Persist the resolved model so [models].recent is always populated.
+    save_recent_model(f"{model_result.provider}:{model_result.model_name}")
 
     tools: list[Any] = [http_request, fetch_url]
     if settings.has_tavily:

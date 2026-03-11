@@ -27,6 +27,7 @@ from deepagents.backends.protocol import (
     WriteResult,
 )
 from deepagents.backends.utils import (
+    _get_file_type,
     _glob_search_files,
     _to_legacy_file_data,
     create_file_data,
@@ -407,14 +408,18 @@ class StoreBackend(BackendProtocol):
         item: Item | None = store.get(namespace, file_path)
 
         if item is None:
-            return f"Error: File '{file_path}' not found"
+            return ReadResult(error=f"File '{file_path}' not found")
 
         try:
             file_data = self._convert_store_item_to_file_data(item)
         except ValueError as e:
-            return f"Error: {e}"
+            return ReadResult(error=str(e))
 
-        return format_read_response(file_data, offset, limit)
+        if _get_file_type(file_path) != "text":
+            return ReadResult(file_data=file_data)
+
+        formatted = format_read_response(file_data, offset, limit)
+        return ReadResult(file_data={**file_data, "content": formatted})
 
     async def aread(
         self,
@@ -431,14 +436,18 @@ class StoreBackend(BackendProtocol):
         item: Item | None = await store.aget(namespace, file_path)
 
         if item is None:
-            return f"Error: File '{file_path}' not found"
+            return ReadResult(error=f"File '{file_path}' not found")
 
         try:
             file_data = self._convert_store_item_to_file_data(item)
         except ValueError as e:
-            return f"Error: {e}"
+            return ReadResult(error=str(e))
 
-        return format_read_response(file_data, offset, limit)
+        if _get_file_type(file_path) != "text":
+            return ReadResult(file_data=file_data)
+
+        formatted = format_read_response(file_data, offset, limit)
+        return ReadResult(file_data={**file_data, "content": formatted})
 
     def write(
         self,

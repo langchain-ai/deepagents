@@ -1,5 +1,6 @@
 """`FilesystemBackend`: Read and write files directly from the filesystem."""
 
+import base64
 import json
 import logging
 import os
@@ -22,7 +23,9 @@ from deepagents.backends.protocol import (
     WriteResult,
 )
 from deepagents.backends.utils import (
+    _get_file_type,
     check_empty_content,
+    create_file_data,
     format_content_with_line_numbers,
     perform_string_replacement,
 )
@@ -310,29 +313,42 @@ class FilesystemBackend(BackendProtocol):
         resolved_path = self._resolve_path(file_path)
 
         if not resolved_path.exists() or not resolved_path.is_file():
-            return f"Error: File '{file_path}' not found"
+            return ReadResult(error=f"File '{file_path}' not found")
 
         try:
-            # Open with O_NOFOLLOW where available to avoid symlink traversal
             fd = os.open(resolved_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            if _get_file_type(file_path) != "text":
+                with os.fdopen(fd, "rb") as f:
+                    raw = f.read()
+                encoded = base64.standard_b64encode(raw).decode("ascii")
+                return ReadResult(
+                    file_data=create_file_data(encoded, encoding="base64")
+                )
+
             with os.fdopen(fd, "r", encoding="utf-8") as f:
                 content = f.read()
 
             empty_msg = check_empty_content(content)
             if empty_msg:
-                return empty_msg
+                return ReadResult(file_data=create_file_data(empty_msg))
 
             lines = content.splitlines()
             start_idx = offset
             end_idx = min(start_idx + limit, len(lines))
 
             if start_idx >= len(lines):
-                return f"Error: Line offset {offset} exceeds file length ({len(lines)} lines)"
+                return ReadResult(
+                    error=f"Line offset {offset} exceeds file length"
+                    f" ({len(lines)} lines)"
+                )
 
             selected_lines = lines[start_idx:end_idx]
-            return format_content_with_line_numbers(selected_lines, start_line=start_idx + 1)
-        except (OSError, UnicodeDecodeError) as e:
-            return f"Error reading file '{file_path}': {e}"
+            formatted = format_content_with_line_numbers(
+                selected_lines, start_line=start_idx + 1
+            )
+            return ReadResult(file_data=create_file_data(formatted))
+        except OSError as e:
+            return ReadResult(error=f"Error reading file '{file_path}': {e}")
 
     def write(
         self,

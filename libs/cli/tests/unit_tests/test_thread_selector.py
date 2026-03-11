@@ -1203,7 +1203,11 @@ class TestThreadSelectorLimit:
                 app.show_selector()
                 await pilot.pause()
 
-                mock_lt.assert_awaited_once_with(limit=5, include_message_count=False)
+                mock_lt.assert_awaited_once()
+                call_kwargs = mock_lt.await_args.kwargs
+                assert call_kwargs["limit"] == 5
+                assert call_kwargs["include_message_count"] is False
+                assert call_kwargs["sort_by"] in {"updated", "created"}
 
     async def test_checkpoint_details_are_loaded_for_initial_render(self) -> None:
         """Visible checkpoint fields should be loaded before first non-cached render."""
@@ -1252,7 +1256,9 @@ class TestThreadSelectorLimit:
                         break
                     await pilot.pause(0.05)
 
-                mock_lt.assert_awaited_once_with(limit=20, include_message_count=False)
+                mock_lt.assert_awaited_once_with(
+                    limit=20, include_message_count=False, sort_by="updated"
+                )
                 mock_populate.assert_awaited_once()
 
                 screen = app.screen
@@ -1399,10 +1405,11 @@ class TestThreadSelectorPrefetchedRows:
                         break
                     await pilot.pause(0.05)
 
-                mock_list_threads.assert_awaited_once_with(
-                    limit=20,
-                    include_message_count=False,
-                )
+                mock_list_threads.assert_awaited_once()
+                kw = mock_list_threads.await_args.kwargs
+                assert kw["limit"] == 20
+                assert kw["include_message_count"] is False
+                assert kw["sort_by"] in {"updated", "created"}
                 assert len(screen._threads) == 2
                 assert screen._threads[0]["thread_id"] == "new12345"
 
@@ -1490,12 +1497,89 @@ class TestThreadSelectorPrefetchedRows:
                         break
                     await pilot.pause(0.05)
 
-                mock_list_threads.assert_awaited_once_with(
-                    limit=20,
-                    include_message_count=False,
-                )
+                mock_list_threads.assert_awaited_once()
+                kw = mock_list_threads.await_args.kwargs
+                assert kw["limit"] == 20
+                assert kw["include_message_count"] is False
+                assert kw["sort_by"] in {"updated", "created"}
                 assert len(screen._threads) == 1
                 assert screen._threads[0]["thread_id"] == "new12345"
+
+
+class TestThreadSelectorInitialSortOrder:
+    """Tests for initial sort order applied to prefetched rows."""
+
+    async def test_initial_threads_sorted_by_created_at_preference(self) -> None:
+        """Prefetched rows should respect the user's sort preference on first render."""
+        # Threads ordered by updated_at (default cache order from list_threads)
+        prefetched: list[ThreadInfo] = [
+            {
+                "thread_id": "newer-updated",
+                "agent_name": "agent",
+                "updated_at": "2025-01-16T12:00:00",
+                "created_at": "2025-01-10T08:00:00",
+            },
+            {
+                "thread_id": "older-updated",
+                "agent_name": "agent",
+                "updated_at": "2025-01-14T08:00:00",
+                "created_at": "2025-01-15T10:00:00",
+            },
+        ]
+
+        import contextlib
+
+        from deepagents_cli.model_config import THREAD_COLUMN_DEFAULTS
+
+        @contextlib.contextmanager
+        def _patch_sort_created() -> Any:  # noqa: ANN401
+            with (
+                patch(
+                    "deepagents_cli.model_config.load_thread_columns",
+                    return_value=dict(THREAD_COLUMN_DEFAULTS),
+                ),
+                patch(
+                    "deepagents_cli.model_config.load_thread_sort_order",
+                    return_value="created_at",
+                ),
+            ):
+                yield
+
+        gate = asyncio.Event()
+
+        async def _list_threads(*_a: object, **_kw: object) -> list[ThreadInfo]:
+            await gate.wait()
+            return prefetched
+
+        with (
+            patch(
+                "deepagents_cli.sessions.list_threads",
+                new_callable=AsyncMock,
+                side_effect=_list_threads,
+            ),
+            _patch_sort_created(),
+        ):
+            app = ThreadSelectorTestApp(current_thread=None)
+            async with app.run_test() as pilot:
+                app.push_screen(
+                    ThreadSelectorScreen(
+                        current_thread=None,
+                        thread_limit=20,
+                        initial_threads=prefetched,
+                    )
+                )
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+
+                # With sort by created_at, "older-updated" (created 2025-01-15)
+                # should come before "newer-updated" (created 2025-01-10)
+                assert len(screen._option_widgets) == 2
+                assert screen._option_widgets[0].thread_id == "older-updated"
+                assert screen._option_widgets[1].thread_id == "newer-updated"
+
+                gate.set()
 
 
 class TestThreadSelectorSearch:

@@ -51,8 +51,8 @@
   ],
   "pull-request-title-pattern": "release(${component}): ${version}",
   "component-no-space": true,
-  "pull-request-header": "> [!CAUTION]\n> Merging this PR will automatically publish to **PyPI** and create a **GitHub release**.\n\n---\n\n_Everything below this line is the GitHub release body._\n",
-  "pull-request-footer": "\n_Everything above this line is the GitHub release body._",
+  "pull-request-header": "> [!CAUTION]\n> Merging this PR will automatically publish to **PyPI** and create a **GitHub release**.\n\nFor the full release process, see [`.github/RELEASING.md`](https://github.com/langchain-ai/deepagents/blob/main/.github/RELEASING.md).\n\n---\n\n_Everything below this line will be the GitHub release body._\n",
+  "pull-request-footer": "\n_Everything above this line will be the GitHub release body._\n\n---\n\n> [!NOTE]\n> A **New Contributors** section is appended to the GitHub release notes automatically at publish time (see [Release Pipeline](https://github.com/langchain-ai/deepagents/blob/main/.github/RELEASING.md#release-pipeline), step 2).",
   "packages": {
     "libs/cli": {
       "release-type": "python",

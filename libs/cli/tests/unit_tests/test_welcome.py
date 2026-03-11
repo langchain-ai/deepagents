@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 from rich.style import Style
 from rich.text import Text
 
-from deepagents_cli.widgets.welcome import WelcomeBanner
+from deepagents_cli.widgets.welcome import WelcomeBanner, build_welcome_footer
 
 
 def _extract_links(banner: Text, text_start: int, text_end: int) -> list[str]:
@@ -223,3 +223,107 @@ class TestOnClickOpensLink:
             widget.on_click(event)  # should not raise
 
         event.stop.assert_not_called()
+
+
+class TestBuildWelcomeFooter:
+    """Tests for the `build_welcome_footer` standalone function."""
+
+    def test_returns_rich_text(self) -> None:
+        """Footer should return a `rich.text.Text` object."""
+        assert isinstance(build_welcome_footer(), Text)
+
+    def test_contains_ready_prompt(self) -> None:
+        """Footer should include the ready-to-code prompt."""
+        assert (
+            "Ready to code! What would you like to build?"
+            in build_welcome_footer().plain
+        )
+
+    def test_contains_shortcut_hints(self) -> None:
+        """Footer should include all keyboard shortcut hints."""
+        plain = build_welcome_footer().plain
+        assert "Enter send" in plain
+        assert "newline" in plain
+        assert "@ files" in plain
+        assert "/ commands" in plain
+
+    def test_ready_line_is_second_to_last(self) -> None:
+        """The ready prompt must be the second-to-last line."""
+        lines = build_welcome_footer().plain.strip().splitlines()
+        assert lines[-2].strip() == "Ready to code! What would you like to build?"
+
+    def test_shortcut_line_is_last(self) -> None:
+        """The shortcut help line must be the very last line."""
+        lines = build_welcome_footer().plain.strip().splitlines()
+        last = lines[-1].strip()
+        assert last.startswith("Enter send")
+        assert last.endswith("/ commands")
+
+    def test_blank_line_precedes_ready_prompt(self) -> None:
+        """A blank line must precede the ready prompt (leading newline)."""
+        raw = build_welcome_footer().plain
+        assert raw.startswith("\n")
+
+    def test_exactly_three_lines_with_leading_blank(self) -> None:
+        """Footer text should be: blank line, ready prompt, shortcut help."""
+        lines = build_welcome_footer().plain.split("\n")
+        # Leading \n produces ['', 'Ready to code...', 'Enter send...']
+        assert lines[0] == ""
+        assert lines[1].startswith("Ready to code")
+        assert lines[2].startswith("Enter send")
+        assert len(lines) == 3
+
+
+class TestBannerFooterPosition:
+    """Tests that the footer is always the last content in the full banner."""
+
+    def test_footer_is_last_in_minimal_banner(self) -> None:
+        """With no thread/project/MCP, footer lines are still last."""
+        widget = _make_banner()
+        lines = widget._build_banner().plain.strip().splitlines()
+        assert "Ready to code" in lines[-2]
+        assert lines[-1].strip().startswith("Enter send")
+
+    def test_footer_is_last_with_thread_id(self) -> None:
+        """Footer remains last when a thread ID is displayed."""
+        widget = _make_banner(thread_id="tid-123")
+        lines = widget._build_banner().plain.strip().splitlines()
+        assert "Ready to code" in lines[-2]
+        assert lines[-1].strip().startswith("Enter send")
+
+    def test_footer_is_last_with_langsmith_project(self) -> None:
+        """Footer remains last when LangSmith project info is shown."""
+        widget = _make_banner(project_name="my-proj")
+        lines = widget._build_banner().plain.strip().splitlines()
+        assert "Ready to code" in lines[-2]
+        assert lines[-1].strip().startswith("Enter send")
+
+    def test_footer_is_last_with_mcp_tools(self) -> None:
+        """Footer remains last when MCP tools are loaded."""
+        with patch.dict("os.environ", {}, clear=True):
+            widget = WelcomeBanner(mcp_tool_count=5)
+        lines = widget._build_banner().plain.strip().splitlines()
+        assert "Ready to code" in lines[-2]
+        assert lines[-1].strip().startswith("Enter send")
+
+    def test_footer_is_last_with_all_info(self) -> None:
+        """Footer remains last when all info lines are present."""
+        env = {
+            "LANGSMITH_API_KEY": "fake-key",
+            "LANGSMITH_TRACING": "true",
+            "LANGSMITH_PROJECT": "proj",
+        }
+        with patch.dict("os.environ", env, clear=True):
+            widget = WelcomeBanner(thread_id="t-1", mcp_tool_count=3)
+        lines = widget._build_banner().plain.strip().splitlines()
+        assert "Ready to code" in lines[-2]
+        assert lines[-1].strip().startswith("Enter send")
+
+    def test_blank_line_separates_info_from_footer(self) -> None:
+        """A blank line should appear between info lines and footer."""
+        widget = _make_banner(thread_id="tid")
+        plain = widget._build_banner().plain
+        # The ready prompt should be preceded by a double newline
+        idx = plain.index("Ready to code")
+        assert plain[idx - 1] == "\n"
+        assert plain[idx - 2] == "\n"

@@ -773,10 +773,9 @@ async def run_non_interactive(
     thread_url_lookup: ThreadUrlLookupState | None = None
     if not quiet:
         thread_url_lookup = _start_langsmith_thread_url_lookup(thread_id)
-        console.print("[dim]Running task non-interactively...[/dim]")
+        console.print("[dim]Running task non-interactively...[/dim]", highlight=False)
         header = _build_non_interactive_header(assistant_id, thread_id)
         console.print(header)
-        console.print()
 
     sandbox_backend = None
     exit_stack = contextlib.ExitStack()
@@ -868,6 +867,9 @@ async def run_non_interactive(
             file_op_tracker = FileOpTracker(
                 assistant_id=assistant_id, backend=composite_backend
             )
+
+            if not quiet:
+                console.print()
 
             await _run_agent_loop(
                 agent,

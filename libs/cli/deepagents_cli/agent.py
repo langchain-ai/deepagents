@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from langgraph.runtime import Runtime
 
     from deepagents_cli.mcp_tools import MCPServerInfo
+    from deepagents_cli.output import OutputFormat
 
 from deepagents_cli.config import (
     COLORS,
@@ -61,17 +62,44 @@ REQUIRE_COMPACT_TOOL_APPROVAL: bool = True
 """When `True`, `compact_conversation` requires HITL approval like other gated tools."""
 
 
-def list_agents() -> None:
-    """List all available agents."""
+def list_agents(*, output_format: OutputFormat = "text") -> None:
+    """List all available agents.
+
+    Args:
+        output_format: Output format — `'text'` (Rich) or `'json'`.
+    """
     agents_dir = settings.user_deepagents_dir
 
     if not agents_dir.exists() or not any(agents_dir.iterdir()):
+        if output_format == "json":
+            from deepagents_cli.output import write_json
+
+            write_json("list", [])
+            return
         console.print("[yellow]No agents found.[/yellow]")
         console.print(
             "[dim]Agents will be created in ~/.deepagents/ "
             "when you first use them.[/dim]",
             style=COLORS["dim"],
         )
+        return
+
+    if output_format == "json":
+        from deepagents_cli.output import write_json
+
+        agents = []
+        for agent_path in sorted(agents_dir.iterdir()):
+            if agent_path.is_dir():
+                agent_name = agent_path.name
+                agents.append(
+                    {
+                        "name": agent_name,
+                        "path": str(agent_path),
+                        "has_agents_md": (agent_path / "AGENTS.md").exists(),
+                        "is_default": agent_name == DEFAULT_AGENT_NAME,
+                    }
+                )
+        write_json("list", agents)
         return
 
     console.print("\n[bold]Available Agents:[/bold]\n", style=COLORS["primary"])
@@ -101,8 +129,19 @@ def list_agents() -> None:
     console.print()
 
 
-def reset_agent(agent_name: str, source_agent: str | None = None) -> None:
-    """Reset an agent to default or copy from another agent."""
+def reset_agent(
+    agent_name: str,
+    source_agent: str | None = None,
+    *,
+    output_format: OutputFormat = "text",
+) -> None:
+    """Reset an agent to default or copy from another agent.
+
+    Args:
+        agent_name: Name of the agent to reset.
+        source_agent: Copy AGENTS.md from this agent instead of default.
+        output_format: Output format — `'text'` (Rich) or `'json'`.
+    """
     agents_dir = settings.user_deepagents_dir
     agent_dir = agents_dir / agent_name
 
@@ -125,13 +164,27 @@ def reset_agent(agent_name: str, source_agent: str | None = None) -> None:
 
     if agent_dir.exists():
         shutil.rmtree(agent_dir)
-        console.print(
-            f"Removed existing agent directory: {agent_dir}", style=COLORS["tool"]
-        )
+        if output_format != "json":
+            console.print(
+                f"Removed existing agent directory: {agent_dir}", style=COLORS["tool"]
+            )
 
     agent_dir.mkdir(parents=True, exist_ok=True)
     agent_md = agent_dir / "AGENTS.md"
     agent_md.write_text(source_content)
+
+    if output_format == "json":
+        from deepagents_cli.output import write_json
+
+        write_json(
+            "reset",
+            {
+                "agent": agent_name,
+                "reset_to": source_agent or "default",
+                "path": str(agent_dir),
+            },
+        )
+        return
 
     console.print(
         f"{get_glyphs().checkmark} Agent '{agent_name}' reset to {action_desc}",
@@ -713,15 +766,10 @@ def create_cli_agent(
 
     model = resolve_model(model)
 
-    from deepagents.middleware.summarization import (
-        SummarizationToolMiddleware,
-        create_summarization_middleware,
-    )
+    from deepagents.middleware.summarization import create_summarization_tool_middleware
 
     agent_middleware.append(
-        SummarizationToolMiddleware(
-            create_summarization_middleware(model, composite_backend)
-        )
+        create_summarization_tool_middleware(model, composite_backend)
     )
 
     # Create the agent

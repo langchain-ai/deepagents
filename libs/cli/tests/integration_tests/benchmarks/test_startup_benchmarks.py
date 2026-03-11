@@ -194,20 +194,19 @@ class TestCLIStartupTime:
         return float(result.stdout.strip())
 
     def test_help_under_threshold(self) -> None:
-        """`deepagents --help` should complete well under 10 s.
+        """`deepagents --help` should complete well under 1 s.
 
-        A generous threshold to avoid flaky CI; the real goal is catching
-        regressions where a heavy import is accidentally re-added at
+        Catches regressions where a heavy import is accidentally re-added at
         module level.
         """
         elapsed = self._time_cli_command("--help")
-        assert elapsed < 10, f"`deepagents --help` took {elapsed:.2f}s — expected < 10s"
+        assert elapsed < 1, f"`deepagents --help` took {elapsed:.2f}s — expected < 1s"
 
     def test_version_under_threshold(self) -> None:
-        """`deepagents --version` should complete well under 10 s."""
+        """`deepagents --version` should complete well under 1 s."""
         elapsed = self._time_cli_command("--version")
-        assert elapsed < 10, (
-            f"`deepagents --version` took {elapsed:.2f}s — expected < 10s"
+        assert elapsed < 1, (
+            f"`deepagents --version` took {elapsed:.2f}s — expected < 1s"
         )
 
 
@@ -222,8 +221,8 @@ class TestCLIStartupTime:
 class TestImportTiming:
     """Catch order-of-magnitude import regressions in key modules.
 
-    The 10 s threshold is generous to avoid CI flakiness; the real value
-    is that `pytest --durations` surfaces the numbers for trend analysis.
+    The 1 s threshold catches meaningful regressions while
+    `pytest --durations` surfaces the numbers for trend analysis.
     """
 
     @pytest.mark.parametrize(
@@ -259,9 +258,7 @@ class TestImportTiming:
         result = _run_python(code)
         assert result.returncode == 0, f"Failed to import {module}:\n{result.stderr}"
         elapsed = float(result.stdout.strip())
-        # 10 s is generous; the point is to catch order-of-magnitude
-        # regressions, not enforce a tight budget.
-        assert elapsed < 10, f"Importing {module} took {elapsed:.2f}s — expected < 10s"
+        assert elapsed < 1, f"Importing {module} took {elapsed:.2f}s — expected < 1s"
 
 
 # ---------------------------------------------------------------------------

@@ -1,6 +1,7 @@
 """Tests for TaskIQ-backed background runtime."""
 
 import asyncio
+import logging
 from unittest.mock import AsyncMock
 
 import pytest
@@ -350,6 +351,83 @@ class TestBackgroundRuntimeLifecycle:
         await asyncio.sleep(0.2)
         # Shutdown should complete quickly because it kills the subprocess
         await asyncio.wait_for(runtime.shutdown(), timeout=5)
+
+    async def test_shutdown_drains_broker_tasks_before_shutdown(self) -> None:
+        """Shutdown waits briefly for in-flight broker tasks to settle."""
+        runtime = BackgroundRuntime(
+            require_hitl_for_shell=False, backend=_local_backend()
+        )
+        await runtime.start()
+
+        events: list[str] = []
+
+        async def wait_all() -> None:
+            await asyncio.sleep(0)
+            events.append("wait_all")
+
+        async def broker_shutdown() -> None:
+            await asyncio.sleep(0)
+            events.append("shutdown")
+
+        runtime._broker.wait_all = wait_all  # type: ignore[method-assign]
+        runtime._broker.shutdown = broker_shutdown  # type: ignore[method-assign]
+
+        await runtime.shutdown()
+
+        assert events == ["wait_all", "shutdown"]
+
+    async def test_shutdown_suppresses_remote_backend_warning_for_killed_task(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Remote backend errors after kill are downgraded during shutdown."""
+        release = asyncio.Event()
+
+        async def slow_fail(_command: str, **_kwargs: object) -> ExecuteResponse:
+            await release.wait()
+            msg = "Failed to execute command:"
+            raise RuntimeError(msg)
+
+        mock_backend = AsyncMock()
+        mock_backend.aexecute = slow_fail
+
+        runtime = BackgroundRuntime(require_hitl_for_shell=False, backend=mock_backend)
+        await runtime.start()
+
+        task_id = await runtime.submit_shell_task("echo hi")
+        await asyncio.sleep(0.1)
+
+        with caplog.at_level(logging.WARNING):
+            await runtime.kill_task(task_id)
+            release.set()
+            await asyncio.wait_for(runtime.shutdown(), timeout=5)
+
+        assert "Backend execution failed for task" not in caplog.text
+
+    async def test_shutdown_suppresses_taskiq_cancelled_error_logging(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Task cancellation during shutdown does not leak TaskIQ error logs."""
+        release = asyncio.Event()
+
+        async def slow_execute(_command: str, **_kwargs: object) -> ExecuteResponse:
+            await release.wait()
+            raise asyncio.CancelledError
+
+        mock_backend = AsyncMock()
+        mock_backend.aexecute = slow_execute
+
+        runtime = BackgroundRuntime(require_hitl_for_shell=False, backend=mock_backend)
+        await runtime.start()
+
+        task_id = await runtime.submit_shell_task("echo hi")
+        await asyncio.sleep(0.1)
+
+        with caplog.at_level(logging.ERROR, logger="taskiq.receiver.receiver"):
+            await runtime.kill_task(task_id)
+            release.set()
+            await asyncio.wait_for(runtime.shutdown(), timeout=5)
+
+        assert "Exception found while executing function" not in caplog.text
 
     async def test_backend_can_be_set_after_init(self) -> None:
         runtime = BackgroundRuntime(require_hitl_for_shell=False)

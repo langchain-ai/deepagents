@@ -15,9 +15,8 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Literal, Self
 
-from typing_extensions import TypedDict
-
 from taskiq import InMemoryBroker
+from typing_extensions import TypedDict
 
 if TYPE_CHECKING:
     from deepagents.backends.protocol import SandboxBackendProtocol
@@ -159,6 +158,9 @@ class BackgroundHitlEvent:
 _BACKGROUND_TIMEOUT = 86400
 """Timeout in seconds for background tasks via remote backends (24h)."""
 
+_SHUTDOWN_DRAIN_TIMEOUT = 2.0
+"""Best-effort time budget for draining in-flight broker tasks on shutdown."""
+
 
 class BackgroundRuntime:
     """TaskIQ-backed runtime for CLI background shell tasks."""
@@ -195,6 +197,7 @@ class BackgroundRuntime:
 
         self._broker = InMemoryBroker()
         self._started = False
+        self._shutting_down = False
 
         self._backend = backend
 
@@ -225,7 +228,22 @@ class BackgroundRuntime:
             task_id: str,
             command: str,
         ) -> _ShellResult:
-            return await self._run_shell_task(task_id=task_id, command=command)
+            try:
+                return await self._run_shell_task(task_id=task_id, command=command)
+            except asyncio.CancelledError:
+                with self._lock:
+                    record = self._records.get(task_id)
+                    task_was_killed = (
+                        record is not None
+                        and record.status == BackgroundTaskStatus.KILLED
+                    )
+                if self._shutting_down or task_was_killed:
+                    return {
+                        "exit_code": 1,
+                        "stdout": "",
+                        "stderr": "Task cancelled during shutdown",
+                    }
+                raise
 
         self._execute_background_shell = _execute_background_shell
 
@@ -252,6 +270,7 @@ class BackgroundRuntime:
         """Start the underlying TaskIQ broker."""
         if self._started:
             return
+        self._shutting_down = False
         await self._broker.startup()
         self._started = True
 
@@ -270,6 +289,7 @@ class BackgroundRuntime:
 
     async def shutdown(self) -> None:
         """Shutdown broker and cancel active runtime tasks."""
+        self._shutting_down = True
         with self._lock:
             monitor_tasks = list(self._monitor_tasks.items())
             process_ids = list(self._records.keys())
@@ -317,6 +337,17 @@ class BackgroundRuntime:
                 )
 
         if self._started:
+            try:
+                await asyncio.wait_for(
+                    self._broker.wait_all(),
+                    timeout=_SHUTDOWN_DRAIN_TIMEOUT,
+                )
+            except TimeoutError:
+                logger.debug(
+                    "Timed out draining in-flight background broker tasks during "
+                    "shutdown after %.1fs",
+                    _SHUTDOWN_DRAIN_TIMEOUT,
+                )
             await self._broker.shutdown()
             self._started = False
 
@@ -816,11 +847,24 @@ class BackgroundRuntime:
         try:
             response = await backend.aexecute(command, timeout=_BACKGROUND_TIMEOUT)
         except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "Backend execution failed for task %s: %s",
-                task_id,
-                exc,
-            )
+            with self._lock:
+                record = self._records.get(task_id)
+                task_was_killed = (
+                    record is not None and record.status == BackgroundTaskStatus.KILLED
+                )
+            if self._shutting_down or task_was_killed:
+                logger.debug(
+                    "Ignoring backend execution failure for task %s during shutdown: "
+                    "%s",
+                    task_id,
+                    exc,
+                )
+            else:
+                logger.warning(
+                    "Backend execution failed for task %s: %s",
+                    task_id,
+                    exc,
+                )
             return {
                 "exit_code": 1,
                 "stdout": "",

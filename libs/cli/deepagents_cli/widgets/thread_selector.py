@@ -644,6 +644,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         self._relative_time = load_thread_relative_time()
         self._sort_by_updated = load_thread_sort_order() == "updated_at"
 
+        self._apply_sort()
         self._sync_selected_index()
         self._column_widths = self._compute_column_widths()
 
@@ -1212,7 +1213,10 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                 from deepagents_cli.sessions import get_thread_limit
 
                 limit = get_thread_limit()
-            self._threads = await list_threads(limit=limit, include_message_count=False)
+            sort_by = "updated" if self._sort_by_updated else "created"
+            self._threads = await list_threads(
+                limit=limit, include_message_count=False, sort_by=sort_by
+            )
         except (OSError, sqlite3.Error) as exc:
             logger.exception("Failed to load threads for thread selector")
             await self._show_mount_error(str(exc))

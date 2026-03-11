@@ -150,6 +150,7 @@ class ServerProcess:
         self.config_dir = Path(config_dir) if config_dir else None
         self._process: subprocess.Popen | None = None
         self._temp_dir: tempfile.TemporaryDirectory | None = None
+        self._log_file: tempfile.NamedTemporaryFile | None = None  # type: ignore[type-arg]
 
     @property
     def url(self) -> str:
@@ -160,6 +161,22 @@ class ServerProcess:
     def running(self) -> bool:
         """Whether the server process is running."""
         return self._process is not None and self._process.poll() is None
+
+    def _read_log_file(self) -> str:
+        """Read the server log file contents.
+
+        Returns:
+            Log file contents as a string (may be empty).
+        """
+        if self._log_file is None:
+            return ""
+        try:
+            self._log_file.flush()
+            return Path(self._log_file.name).read_text(
+                encoding="utf-8", errors="replace"
+            )
+        except OSError:
+            return ""
 
     async def start(
         self,
@@ -227,12 +244,19 @@ class ServerProcess:
             env.pop(key, None)
 
         logger.info("Starting langgraph dev server: %s", " ".join(cmd))
+        self._log_file = tempfile.NamedTemporaryFile(  # noqa: SIM115
+            prefix="deepagents_server_log_",
+            suffix=".txt",
+            delete=False,
+            mode="w",
+            encoding="utf-8",
+        )
         self._process = subprocess.Popen(  # noqa: S603, ASYNC220
             cmd,
             cwd=str(work_dir),
             env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stdout=self._log_file,
+            stderr=subprocess.STDOUT,
         )
 
         await self._wait_for_healthy(timeout)
@@ -253,7 +277,7 @@ class ServerProcess:
 
         while time.monotonic() < deadline:
             if self._process and self._process.poll() is not None:
-                output = _read_process_output(self._process)
+                output = self._read_log_file()
                 msg = f"Server process exited with code {self._process.returncode}"
                 if output:
                     msg += f"\n{output[-3000:]}"
@@ -291,6 +315,14 @@ class ServerProcess:
                 logger.debug("Error stopping server", exc_info=True)
 
         self._process = None
+
+        if self._log_file is not None:
+            try:
+                self._log_file.close()
+                Path(self._log_file.name).unlink()
+            except OSError:
+                pass
+            self._log_file = None
 
         if self._temp_dir is not None:
             try:

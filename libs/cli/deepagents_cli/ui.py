@@ -84,7 +84,7 @@ def show_help() -> None:
     console.print("  -M, --model MODEL          Model to use (e.g., gpt-4o)")
     console.print(
         "  --model-params JSON        Extra model kwargs "
-        '(e.g., \'{"temperature": 0.7}\')'
+        "(e.g., '{\"temperature\": 0.7}')"
     )
     console.print("  --profile-override JSON    Override model profile fields as JSON")
     console.print("  -m, --message TEXT         Initial prompt to auto-submit on start")

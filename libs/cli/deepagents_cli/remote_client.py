@@ -438,12 +438,11 @@ def _convert_message_data(data: dict[str, Any]) -> Any:  # noqa: ANN401
         )
 
         chunk = AIMessageChunk(
-            content=content,
+            content=content_blocks or content,
             tool_calls=tool_calls,
             id=data.get("id"),
             response_metadata=response_metadata,
         )
-        chunk.content_blocks = content_blocks  # type: ignore[attr-defined]
         if usage_metadata:
             chunk.usage_metadata = usage_metadata
         return chunk

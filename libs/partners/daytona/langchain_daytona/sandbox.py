@@ -22,10 +22,25 @@ class DaytonaSandbox(BaseSandbox):
     and only implements the execute() method using Daytona's API.
     """
 
-    def __init__(self, *, sandbox: daytona.Sandbox) -> None:
-        """Create a backend wrapping an existing Daytona sandbox."""
+    def __init__(
+        self,
+        *,
+        sandbox: daytona.Sandbox,
+        timeout: int = 30 * 60,
+        polling_interval: float = 0.1,
+    ) -> None:
+        """Create a backend wrapping an existing Daytona sandbox.
+
+        Args:
+            sandbox: Existing Daytona sandbox instance to wrap.
+            timeout: Default command timeout in seconds used when `execute()` is
+                called without an explicit `timeout`.
+            polling_interval: Delay in seconds between polling Daytona for
+                command completion.
+        """
         self._sandbox = sandbox
-        self._default_timeout: int = 30 * 60
+        self._default_timeout = timeout
+        self._polling_interval = polling_interval
 
     @property
     def id(self) -> str:
@@ -71,15 +86,18 @@ class DaytonaSandbox(BaseSandbox):
             while True:
                 if timeout != 0 and time.monotonic() - started_at >= timeout:
                     msg = f"Command timed out after {timeout} seconds"
-                    raise TimeoutError(msg)
+                    return ExecuteResponse(
+                        output=msg,
+                        exit_code=124,
+                        truncated=False,
+                    )
                 command_result = self._sandbox.process.get_session_command(
                     session_id,
                     result.cmd_id,
                 )
                 if command_result.exit_code is not None:
                     break
-                # sleep for 100 ms
-                time.sleep(0.1)
+                time.sleep(self._polling_interval)
             logs = self._sandbox.process.get_session_command_logs(
                 session_id,
                 result.cmd_id,

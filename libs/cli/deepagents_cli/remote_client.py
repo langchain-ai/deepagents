@@ -357,8 +357,8 @@ class _StreamConverter:
 
     def __init__(self) -> None:
         self._seen_text: dict[str | None, str] = {}
-        self._seen_tool_call_ids: set[str] = set()
         self._seen_msg_ids: set[str] = set()
+        self._seen_tool_args: dict[str, str] = {}
 
     def convert(
         self,
@@ -402,9 +402,9 @@ class _StreamConverter:
                     if msg_obj is not None:
                         results.append((namespace, "messages", (msg_obj, {})))
                 else:
-                    delta = self._to_delta(item)
-                    if delta is not None:
-                        results.append((namespace, "messages", (delta, {})))
+                    results.extend(
+                        (namespace, "messages", (d, {})) for d in self._to_delta(item)
+                    )
 
         elif event == "messages/metadata":
             pass
@@ -433,17 +433,19 @@ class _StreamConverter:
 
         return results
 
-    def _to_delta(self, data: dict[str, Any]) -> Any:  # noqa: ANN401
-        """Convert an accumulated message dict to a delta AIMessageChunk.
+    def _to_delta(self, data: dict[str, Any]) -> list[Any]:
+        """Convert an accumulated message dict to delta AIMessageChunks.
 
-        Computes the text delta by comparing against the previously seen
-        text for this message ID.
+        Computes the text delta and tool call args deltas separately.
+        Returns them as separate messages so `content_blocks` produces
+        `tool_call_chunk` entries (which requires empty content).
 
         Returns:
-            A delta message chunk, or None if there is no new content.
+            List of delta message chunks (may be empty).
         """
         msg_id = data.get("id")
         content = data.get("content", "")
+        tool_calls = data.get("tool_calls", [])
 
         full_text = _extract_text(content)
         prev_text = self._seen_text.get(msg_id, "")
@@ -454,30 +456,39 @@ class _StreamConverter:
             delta_text = full_text
         self._seen_text[msg_id] = full_text
 
-        delta_data = dict(data)
-        if isinstance(content, str):
-            delta_data["content"] = delta_text
-        elif isinstance(content, list):
-            delta_data["content"] = (
-                [{"type": "text", "text": delta_text}] if delta_text else []
-            )
-        else:
-            delta_data["content"] = delta_text
+        delta_tool_calls = _compute_tool_call_deltas(
+            tool_calls, content, self._seen_tool_args
+        )
 
-        new_tool_calls = []
-        for tc in data.get("tool_calls", []):
-            tc_id = tc.get("id")
-            if tc_id and tc_id in self._seen_tool_call_ids:
-                continue
-            if tc_id:
-                self._seen_tool_call_ids.add(tc_id)
-            new_tool_calls.append(tc)
-        delta_data["tool_calls"] = new_tool_calls
+        if not delta_text and not delta_tool_calls:
+            return []
 
-        if not delta_text and not new_tool_calls and not data.get("invalid_tool_calls"):
-            return None
+        clean_meta = {
+            k: v
+            for k, v in data.get("response_metadata", {}).items()
+            if k != "model_provider"
+        }
+        results: list[Any] = []
 
-        return _convert_message_data(delta_data)
+        if delta_text:
+            text_data = dict(data)
+            text_data["content"] = delta_text
+            text_data["tool_calls"] = []
+            text_data["response_metadata"] = clean_meta
+            msg = _convert_message_data(text_data)
+            if msg is not None:
+                results.append(msg)
+
+        if delta_tool_calls:
+            tc_data = dict(data)
+            tc_data["content"] = ""
+            tc_data["tool_calls"] = delta_tool_calls
+            tc_data["response_metadata"] = clean_meta
+            msg = _convert_message_data(tc_data)
+            if msg is not None:
+                results.append(msg)
+
+        return results
 
     def _extract_messages_from_update(self, data: dict[str, Any]) -> list[Any]:
         """Extract messages from an `updates` event as a fallback.
@@ -512,6 +523,57 @@ class _StreamConverter:
                 if msg_obj is not None:
                     results.append(msg_obj)
         return results
+
+
+def _compute_tool_call_deltas(
+    tool_calls: list[dict[str, Any]],
+    content: str | list[Any] | Any,  # noqa: ANN401
+    seen_args: dict[str, str],
+) -> list[dict[str, Any]]:
+    """Compute incremental tool call deltas from accumulated server data.
+
+    Uses `partial_json` from provider-specific content blocks (e.g.,
+    Anthropic `tool_use`) when available, falling back to serialized
+    `tool_calls.args`. Computes string deltas so the textual adapter
+    receives incremental fragments for `tool_call_chunk` processing.
+
+    Args:
+        tool_calls: Accumulated tool calls from the server.
+        content: Message content (may contain `tool_use` blocks).
+        seen_args: Mutable dict tracking accumulated args per tool ID.
+
+    Returns:
+        List of tool call dicts with delta args strings.
+    """
+    import json as _json
+
+    pj_by_id: dict[str, str] = {}
+    if isinstance(content, list):
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "tool_use":
+                tc_id = block.get("id", "")
+                pj = block.get("partial_json")
+                if tc_id and pj is not None:
+                    pj_by_id[tc_id] = pj
+
+    deltas = []
+    for tc in tool_calls:
+        tc_id = tc.get("id", "")
+        if tc_id in pj_by_id:
+            args_str = pj_by_id[tc_id]
+        else:
+            args = tc.get("args")
+            args_str = _json.dumps(args, separators=(",", ":")) if args else ""
+        first_seen = tc_id not in seen_args
+        prev = seen_args.get(tc_id, "")
+        if not first_seen and args_str == prev:
+            continue
+        delta_str = args_str.removeprefix(prev)
+        seen_args[tc_id] = args_str
+        delta_tc = dict(tc)
+        delta_tc["args"] = delta_str
+        deltas.append(delta_tc)
+    return deltas
 
 
 def _extract_text(content: str | list | Any) -> str:  # noqa: ANN401
@@ -575,44 +637,26 @@ def _convert_message_data(data: dict[str, Any]) -> Any:  # noqa: ANN401
         usage_metadata = data.get("usage_metadata")
         response_metadata = data.get("response_metadata", {})
 
-        content_blocks = []
-        if isinstance(content, str) and content:
-            content_blocks.append({"type": "text", "text": content})
-        elif isinstance(content, list):
-            for block in content:
-                if isinstance(block, dict):
-                    content_blocks.append(block)
-                elif isinstance(block, str):
-                    content_blocks.append({"type": "text", "text": block})
+        has_str_args = any(isinstance(tc.get("args"), str) for tc in tool_calls)
+        kwargs: dict[str, Any] = {
+            "content": content,
+            "id": data.get("id"),
+            "response_metadata": response_metadata,
+        }
+        if has_str_args:
+            kwargs["tool_call_chunks"] = [
+                {
+                    "name": tc.get("name"),
+                    "args": tc.get("args", ""),
+                    "id": tc.get("id"),
+                    "index": i,
+                }
+                for i, tc in enumerate(tool_calls)
+            ]
+        else:
+            kwargs["tool_calls"] = tool_calls
 
-        content_blocks.extend(
-            {
-                "type": "tool_call",
-                "id": tc.get("id"),
-                "name": tc.get("name"),
-                "args": tc.get("args", {}),
-            }
-            for tc in tool_calls
-        )
-
-        invalid_tool_calls = data.get("invalid_tool_calls", [])
-        content_blocks.extend(
-            {
-                "type": "tool_call_chunk",
-                "id": itc.get("id"),
-                "name": itc.get("name"),
-                "args": itc.get("args", ""),
-                "index": itc.get("index"),
-            }
-            for itc in invalid_tool_calls
-        )
-
-        chunk = AIMessageChunk(
-            content=content_blocks or content,
-            tool_calls=tool_calls,
-            id=data.get("id"),
-            response_metadata=response_metadata,
-        )
+        chunk = AIMessageChunk(**kwargs)
         if usage_metadata:
             chunk.usage_metadata = usage_metadata
         return chunk

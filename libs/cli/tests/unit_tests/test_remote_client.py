@@ -160,10 +160,7 @@ class TestStreamConverterDelta:
         results = converter.convert(chunk2, modes=[])
         assert len(results) == 1
         _, _, (msg, _) = results[0]
-        text_blocks = [
-            b for b in msg.content if isinstance(b, dict) and b.get("type") == "text"
-        ]
-        assert text_blocks[0]["text"] == "! How"
+        assert self._get_text(msg) == "! How"
 
     def test_complete_event_passes_through_tool_message(self) -> None:
         converter = _StreamConverter()
@@ -206,7 +203,7 @@ class TestStreamConverterDelta:
         results = converter.convert(chunk, modes=[])
         assert len(results) == 1
 
-    def test_repeated_tool_call_id_not_re_emitted(self) -> None:
+    def test_repeated_tool_call_same_args_not_re_emitted(self) -> None:
         converter = _StreamConverter()
         chunk1 = StreamPart(
             event="messages/partial",
@@ -224,6 +221,26 @@ class TestStreamConverterDelta:
         results1 = converter.convert(chunk1, modes=[])
         assert len(results1) == 1
 
+        results2 = converter.convert(chunk1, modes=[])
+        assert results2 == []
+
+    def test_tool_call_args_change_emits_delta(self) -> None:
+        converter = _StreamConverter()
+        chunk1 = StreamPart(
+            event="messages/partial",
+            data=[
+                {
+                    "id": "m1",
+                    "type": "AIMessageChunk",
+                    "content": "",
+                    "tool_calls": [
+                        {"id": "tc1", "name": "search", "args": {"q": "test"}}
+                    ],
+                }
+            ],
+        )
+        converter.convert(chunk1, modes=[])
+
         chunk2 = StreamPart(
             event="messages/partial",
             data=[
@@ -238,7 +255,7 @@ class TestStreamConverterDelta:
             ],
         )
         results2 = converter.convert(chunk2, modes=[])
-        assert results2 == []
+        assert len(results2) == 1
 
     def test_updates_event_extracts_tool_call_messages(self) -> None:
         converter = _StreamConverter()
@@ -370,18 +387,18 @@ class TestStreamConverterDelta:
                     all_msgs.append(data[0])
 
         ai_chunks = [m for m in all_msgs if not isinstance(m, LCToolMessage)]
-        tool_msgs = [m for m in all_msgs if isinstance(m, LCToolMessage)]
+        tool_results = [m for m in all_msgs if isinstance(m, LCToolMessage)]
 
-        assert len(tool_msgs) == 1
-        assert tool_msgs[0].content == "Sunny"
+        assert len(tool_results) == 1
+        assert tool_results[0].content == "Sunny"
 
         tc_blocks = [
             b
             for m in ai_chunks
             for b in m.content_blocks
-            if b.get("type") == "tool_call"
+            if b.get("type") in ("tool_call", "tool_call_chunk")
         ]
-        assert len(tc_blocks) == 1
+        assert len(tc_blocks) >= 1
         assert tc_blocks[0]["name"] == "search"
 
         text = "".join(
@@ -393,7 +410,7 @@ class TestStreamConverterDelta:
         assert text == "Let me search."
 
     def test_content_blocks_format_for_textual_adapter(self) -> None:
-        """Verify content_blocks have the exact format textual_adapter expects."""
+        """Verify content_blocks produce tool_call_chunk with string args."""
         converter = _StreamConverter()
         chunk = StreamPart(
             event="messages/partial",
@@ -427,14 +444,14 @@ class TestStreamConverterDelta:
         ]
         assert len(tc_blocks) == 1
         tc = tc_blocks[0]
-        assert tc["type"] == "tool_call"
+        assert tc["type"] == "tool_call_chunk"
         assert tc["name"] == "web_search"
         assert tc["id"] == "call_abc123"
-        assert isinstance(tc["args"], dict)
-        assert tc["args"]["query"] == "weather NYC"
+        assert isinstance(tc["args"], str)
+        assert "weather NYC" in tc["args"]
 
-    def test_text_then_tool_call_produces_both_blocks(self) -> None:
-        """When text precedes a tool call, both appear in content_blocks."""
+    def test_text_then_tool_call_produces_separate_messages(self) -> None:
+        """Text and tool call split into separate messages."""
         converter = _StreamConverter()
         converter.convert(
             StreamPart(
@@ -443,7 +460,7 @@ class TestStreamConverterDelta:
                     {
                         "id": "m1",
                         "type": "ai",
-                        "content": "Let me check.",
+                        "content": "Let me ",
                         "tool_calls": [],
                     }
                 ],
@@ -471,10 +488,17 @@ class TestStreamConverterDelta:
             ),
             modes=[],
         )
-        assert len(results) == 1
-        msg = results[0][2][0]
-        block_types = [b.get("type") for b in msg.content_blocks]
-        assert "tool_call" in block_types
+        assert len(results) == 2
+        text_msg = results[0][2][0]
+        tc_msg = results[1][2][0]
+        assert self._get_text(text_msg) == "check."
+        tc_blocks = [
+            b
+            for b in tc_msg.content_blocks
+            if b.get("type") in ("tool_call", "tool_call_chunk")
+        ]
+        assert len(tc_blocks) == 1
+        assert tc_blocks[0]["name"] == "search"
 
     def test_messages_partial_data_as_single_dict(self) -> None:
         """Server may send messages/partial data as a single dict (not list)."""
@@ -515,3 +539,153 @@ class TestStreamConverterDelta:
             modes=[],
         )
         assert len(results) == 0
+
+    def test_anthropic_tool_call_streaming(self) -> None:
+        """Anthropic tool_use blocks with partial_json produce incremental chunks."""
+        import json
+
+        converter = _StreamConverter()
+        msg_id = "msg-1"
+        tc_id = "toolu_01WUnPp2tqBtg5kqA1vGNGPu"
+        meta = {"model_name": "claude-opus-4-6", "model_provider": "anthropic"}
+
+        events = [
+            StreamPart(
+                "messages/partial",
+                [
+                    {
+                        "content": [],
+                        "response_metadata": meta,
+                        "type": "ai",
+                        "id": msg_id,
+                        "tool_calls": [],
+                    }
+                ],
+            ),
+            StreamPart(
+                "messages/partial",
+                [
+                    {
+                        "content": [
+                            {
+                                "id": tc_id,
+                                "input": {},
+                                "name": "ls",
+                                "type": "tool_use",
+                                "index": 0,
+                            }
+                        ],
+                        "response_metadata": meta,
+                        "type": "ai",
+                        "id": msg_id,
+                        "tool_calls": [
+                            {
+                                "name": "ls",
+                                "args": {},
+                                "id": tc_id,
+                                "type": "tool_call",
+                            }
+                        ],
+                    }
+                ],
+            ),
+            StreamPart(
+                "messages/partial",
+                [
+                    {
+                        "content": [
+                            {
+                                "id": tc_id,
+                                "input": {},
+                                "name": "ls",
+                                "type": "tool_use",
+                                "index": 0,
+                                "partial_json": "",
+                            }
+                        ],
+                        "response_metadata": meta,
+                        "type": "ai",
+                        "id": msg_id,
+                        "tool_calls": [
+                            {
+                                "name": "ls",
+                                "args": {},
+                                "id": tc_id,
+                                "type": "tool_call",
+                            }
+                        ],
+                    }
+                ],
+            ),
+            StreamPart(
+                "messages/partial",
+                [
+                    {
+                        "content": [
+                            {
+                                "id": tc_id,
+                                "input": {},
+                                "name": "ls",
+                                "type": "tool_use",
+                                "index": 0,
+                                "partial_json": '{"path": "/priv',
+                            }
+                        ],
+                        "response_metadata": meta,
+                        "type": "ai",
+                        "id": msg_id,
+                        "tool_calls": [
+                            {
+                                "name": "ls",
+                                "args": {"path": "/priv"},
+                                "id": tc_id,
+                                "type": "tool_call",
+                            }
+                        ],
+                    }
+                ],
+            ),
+            StreamPart(
+                "messages/partial",
+                [
+                    {
+                        "content": [
+                            {
+                                "id": tc_id,
+                                "input": {"path": "/private"},
+                                "name": "ls",
+                                "type": "tool_use",
+                                "index": 0,
+                                "partial_json": '{"path": "/private"}',
+                            }
+                        ],
+                        "response_metadata": meta,
+                        "type": "ai",
+                        "id": msg_id,
+                        "tool_calls": [
+                            {
+                                "name": "ls",
+                                "args": {"path": "/private"},
+                                "id": tc_id,
+                                "type": "tool_call",
+                            }
+                        ],
+                    }
+                ],
+            ),
+        ]
+
+        all_args_parts: list[str] = []
+        for ev in events:
+            for _, mode, (msg, _) in converter.convert(ev, modes=[]):
+                if mode != "messages":
+                    continue
+                for block in msg.content_blocks:
+                    if block.get("type") == "tool_call_chunk":
+                        args = block.get("args", "")
+                        if args:
+                            all_args_parts.append(args)
+
+        joined = "".join(all_args_parts)
+        parsed = json.loads(joined)
+        assert parsed == {"path": "/private"}

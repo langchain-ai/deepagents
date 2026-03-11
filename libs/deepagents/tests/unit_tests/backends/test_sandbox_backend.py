@@ -96,6 +96,21 @@ def test_read_command_template_format() -> None:
     assert "__DEEPAGENTS_EOF__" in cmd
 
 
+def test_heredoc_command_templates_end_with_newline() -> None:
+    """Test that heredoc-based command templates terminate with a trailing newline."""
+    payload = json.dumps({"path": "/test/file.txt", "offset": 0, "limit": 100})
+    payload_b64 = base64.b64encode(payload.encode("utf-8")).decode("ascii")
+
+    write_cmd = _WRITE_COMMAND_TEMPLATE.format(payload_b64=payload_b64)
+    edit_cmd = _EDIT_COMMAND_TEMPLATE.format(payload_b64=payload_b64, replace_all=False)
+    read_cmd = _READ_COMMAND_TEMPLATE.format(payload_b64=payload_b64)
+
+    assert write_cmd.endswith("\n")
+    assert edit_cmd.endswith("\n")
+    assert read_cmd.endswith("\n")
+
+
+
 def test_sandbox_read_uses_payload() -> None:
     """Test that read() bundles all params into a single base64 payload."""
     sandbox = MockSandbox()

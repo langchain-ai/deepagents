@@ -197,7 +197,7 @@ class ServerProcess:
         cmd = [
             sys.executable,
             "-m",
-            "langgraph_cli.cli",
+            "langgraph_cli",
             "dev",
             "--host",
             self.host,
@@ -205,7 +205,7 @@ class ServerProcess:
             str(self.port),
             "--no-browser",
             "--no-reload",
-            "-c",
+            "--config",
             str(config_path),
         ]
 

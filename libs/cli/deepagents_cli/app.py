@@ -148,10 +148,7 @@ def _format_compact_limit(
         percent = float(keep_value) * 100
         if context_limit is not None:
             token_limit = max(1, int(context_limit * float(keep_value)))
-            return (
-                f"{format_token_count(token_limit)} tokens "
-                f"({percent:.0f}% of {format_token_count(context_limit)})"
-            )
+            return f"{format_token_count(token_limit)} tokens"
         return f"{percent:.0f}% of context window"
 
     return "current retention threshold"
@@ -1600,15 +1597,12 @@ class DeepAgentsApp(App):
                     overhead_str = format_token_count(overhead)
                     conv_str = format_token_count(conv_tokens)
 
-                    compact_limit = self._resolve_compact_budget_str()
-
-                    conv_line = f"~{conv_str} tokens"
-                    if compact_limit:
-                        conv_line += f" · retention budget: {compact_limit}"
+                    overhead_unit = " tokens" if overhead < 1000 else ""  # noqa: PLR2004  # not bothersome, cosmetic
+                    conv_unit = " tokens" if conv_tokens < 1000 else ""  # noqa: PLR2004  # not bothersome, cosmetic
 
                     msg += (
-                        f"\n\u251c System + tools: ~{overhead_str} tokens (fixed)"
-                        f"\n\u2514 Conversation: {conv_line}"
+                        f"\n\u251c System prompt + tools: ~{overhead_str}{overhead_unit} (fixed)"  # noqa: E501
+                        f"\n\u2514 Conversation: ~{conv_str}{conv_unit}"
                     )
 
                 await self._mount_message(AppMessage(msg))
@@ -1619,7 +1613,7 @@ class DeepAgentsApp(App):
                 parts: list[str] = ["No token usage yet"]
                 if context_limit is not None:
                     limit_str = format_token_count(context_limit)
-                    parts.append(f"{limit_str} context window")
+                    parts.append(f"{limit_str} token context window")
                 if model_name:
                     parts.append(model_name)
 
@@ -1766,7 +1760,7 @@ class DeepAgentsApp(App):
         not a trivial accessor.
 
         Returns:
-            A string like `"20.0K tokens (10% of 200.0K)"` or
+            A string like `"20.0K (10% of 200.0K)"` or
             `"last 6 messages"`, or `None` if the budget cannot be determined.
         """
         try:
@@ -1921,10 +1915,10 @@ class DeepAgentsApp(App):
                     await self._mount_message(
                         AppMessage(
                             f"Nothing to compact \u2014 conversation is only "
-                            f"~{conv_str} tokens.\n"
+                            f"~{conv_str} tokens.\n\n"
                             f"Total context ({total_str} tokens) is mostly "
                             f"system prompt and tool overhead, which "
-                            f"compaction cannot reduce.\n"
+                            f"compaction cannot reduce.\n\n"
                             f"Use /tokens for a full breakdown."
                         )
                     )
@@ -1934,7 +1928,7 @@ class DeepAgentsApp(App):
                         AppMessage(
                             f"Nothing to compact \u2014 conversation "
                             f"(~{conv_str} tokens) is within the "
-                            f"retention budget ({compact_limit}).\n"
+                            f"retention budget ({compact_limit}).\n\n"
                             f"Use /tokens for a full breakdown."
                         )
                     )

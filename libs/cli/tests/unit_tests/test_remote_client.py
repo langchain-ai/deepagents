@@ -1,10 +1,11 @@
-"""Tests for _convert_stream_chunk in deepagents_cli.remote_client."""
+"""Tests for _convert_stream_chunk and _to_uuid in deepagents_cli.remote_client."""
 
+import uuid
 from typing import Any, NamedTuple
 
 import pytest
 
-from deepagents_cli.remote_client import _convert_stream_chunk
+from deepagents_cli.remote_client import _convert_stream_chunk, _to_uuid
 
 
 class StreamPart(NamedTuple):
@@ -46,3 +47,17 @@ def test_updates_event() -> None:
     chunk = StreamPart(event="updates", data=data)
     result = _convert_stream_chunk(chunk, modes=["updates"])
     assert result == [((), "updates", data)]
+
+
+class TestToUuid:
+    def test_short_id_becomes_valid_uuid(self) -> None:
+        result = _to_uuid("461bc7c2")
+        uuid.UUID(result)
+        assert result == "461bc7c2-0000-0000-0000-000000000000"
+
+    def test_full_uuid_passthrough(self) -> None:
+        full = str(uuid.uuid4())
+        assert _to_uuid(full) == full
+
+    def test_deterministic(self) -> None:
+        assert _to_uuid("abcd1234") == _to_uuid("abcd1234")

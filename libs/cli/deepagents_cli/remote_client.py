@@ -8,6 +8,7 @@ interface used by the CLI's streaming and state management code.
 from __future__ import annotations
 
 import logging
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -18,6 +19,22 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _STREAM_MODES = ["messages", "updates"]
+
+
+def _to_uuid(short_id: str) -> str:
+    """Convert a short hex thread ID to a valid UUID string.
+
+    Args:
+        short_id: Hex string (e.g., 8-char from `generate_thread_id`).
+
+    Returns:
+        Valid UUID string. Already-valid UUIDs are returned as-is.
+    """
+    try:
+        return str(uuid.UUID(short_id))
+    except ValueError:
+        padded = short_id.ljust(32, "0")
+        return str(uuid.UUID(padded[:32]))
 
 
 class RemoteAgent:
@@ -192,8 +209,10 @@ class RemoteAgent:
         """
         client = self._get_client()
 
+        server_tid = _to_uuid(thread_id)
+
         try:
-            return await client.threads.get(thread_id)
+            return await client.threads.get(server_tid)
         except Exception:  # noqa: BLE001
             logger.debug("Thread %s not found, creating new one", thread_id)
 
@@ -210,7 +229,7 @@ class RemoteAgent:
             pass
 
         return await client.threads.create(
-            thread_id=thread_id,
+            thread_id=server_tid,
             metadata=thread_metadata,
         )
 
@@ -225,7 +244,7 @@ class RemoteAgent:
         """
         client = self._get_client()
         try:
-            thread = await client.threads.get(thread_id)
+            thread = await client.threads.get(_to_uuid(thread_id))
             return thread["thread_id"]
         except Exception:  # noqa: BLE001
             return None

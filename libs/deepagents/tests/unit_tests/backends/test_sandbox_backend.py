@@ -110,7 +110,6 @@ def test_heredoc_command_templates_end_with_newline() -> None:
     assert read_cmd.endswith("\n")
 
 
-
 def test_sandbox_read_uses_payload() -> None:
     """Test that read() bundles all params into a single base64 payload."""
     sandbox = MockSandbox()

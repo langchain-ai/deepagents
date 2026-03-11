@@ -331,6 +331,7 @@ class _StreamConverter:
 
     def __init__(self) -> None:
         self._seen_text: dict[str | None, str] = {}
+        self._seen_tool_call_ids: set[str] = set()
 
     def convert(
         self,
@@ -364,9 +365,14 @@ class _StreamConverter:
                 else []
             )
             for item in items:
-                delta = self._to_delta(item)
-                if delta is not None:
-                    results.append((namespace, "messages", (delta, {})))
+                if event == "messages/complete":
+                    msg_obj = _convert_message_data(item)
+                    if msg_obj is not None:
+                        results.append((namespace, "messages", (msg_obj, {})))
+                else:
+                    delta = self._to_delta(item)
+                    if delta is not None:
+                        results.append((namespace, "messages", (delta, {})))
 
         elif event == "messages/metadata":
             pass
@@ -422,11 +428,16 @@ class _StreamConverter:
         else:
             delta_data["content"] = delta_text
 
-        if (
-            not delta_text
-            and not data.get("tool_calls")
-            and not data.get("invalid_tool_calls")
-        ):
+        new_tool_calls = [
+            tc
+            for tc in data.get("tool_calls", [])
+            if tc.get("id") and tc["id"] not in self._seen_tool_call_ids
+        ]
+        for tc in new_tool_calls:
+            self._seen_tool_call_ids.add(tc["id"])
+        delta_data["tool_calls"] = new_tool_calls
+
+        if not delta_text and not new_tool_calls and not data.get("invalid_tool_calls"):
             return None
 
         return _convert_message_data(delta_data)

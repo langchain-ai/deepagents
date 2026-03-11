@@ -164,3 +164,78 @@ class TestStreamConverterDelta:
             b for b in msg.content if isinstance(b, dict) and b.get("type") == "text"
         ]
         assert text_blocks[0]["text"] == "! How"
+
+    def test_complete_event_passes_through_tool_message(self) -> None:
+        converter = _StreamConverter()
+        chunk = StreamPart(
+            event="messages/complete",
+            data=[
+                {
+                    "id": "m2",
+                    "type": "tool",
+                    "content": "Sunny, 75F",
+                    "tool_call_id": "tc1",
+                    "name": "search",
+                }
+            ],
+        )
+        results = converter.convert(chunk, modes=[])
+        assert len(results) == 1
+        _, mode, (msg, _) = results[0]
+        assert mode == "messages"
+        from langchain_core.messages import ToolMessage
+
+        assert isinstance(msg, ToolMessage)
+        assert msg.content == "Sunny, 75F"
+        assert msg.tool_call_id == "tc1"
+
+    def test_complete_event_empty_content_not_dropped(self) -> None:
+        converter = _StreamConverter()
+        chunk = StreamPart(
+            event="messages/complete",
+            data=[
+                {
+                    "id": "m2",
+                    "type": "tool",
+                    "content": "",
+                    "tool_call_id": "tc1",
+                    "name": "search",
+                }
+            ],
+        )
+        results = converter.convert(chunk, modes=[])
+        assert len(results) == 1
+
+    def test_repeated_tool_call_id_not_re_emitted(self) -> None:
+        converter = _StreamConverter()
+        chunk1 = StreamPart(
+            event="messages/partial",
+            data=[
+                {
+                    "id": "m1",
+                    "type": "AIMessageChunk",
+                    "content": "",
+                    "tool_calls": [
+                        {"id": "tc1", "name": "search", "args": {"q": "test"}}
+                    ],
+                }
+            ],
+        )
+        results1 = converter.convert(chunk1, modes=[])
+        assert len(results1) == 1
+
+        chunk2 = StreamPart(
+            event="messages/partial",
+            data=[
+                {
+                    "id": "m1",
+                    "type": "AIMessageChunk",
+                    "content": "",
+                    "tool_calls": [
+                        {"id": "tc1", "name": "search", "args": {"q": "test query"}}
+                    ],
+                }
+            ],
+        )
+        results2 = converter.convert(chunk2, modes=[])
+        assert results2 == []

@@ -1,5 +1,6 @@
 """Middleware for providing subagents to an agent via a `task` tool."""
 
+import json
 import warnings
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Annotated, Any, NotRequired, TypedDict, Unpack, cast
@@ -7,6 +8,7 @@ from typing import Annotated, Any, NotRequired, TypedDict, Unpack, cast
 from langchain.agents import create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig
 from langchain.agents.middleware.types import AgentMiddleware, ContextT, ModelRequest, ModelResponse, ResponseT
+from langchain.agents.structured_output import ResponseFormat
 from langchain.chat_models import init_chat_model
 from langchain.tools import BaseTool, ToolRuntime
 from langchain_core.language_models import BaseChatModel
@@ -14,6 +16,7 @@ from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_core.runnables import Runnable
 from langchain_core.tools import StructuredTool
 from langgraph.types import Command
+from pydantic import BaseModel
 
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
 from deepagents.middleware._utils import append_to_system_message
@@ -76,6 +79,34 @@ class SubAgent(TypedDict):
 
     skills: NotRequired[list[str]]
     """Skill source paths for SkillsMiddleware."""
+
+    response_format: NotRequired[ResponseFormat]
+    """Structured output response format for the subagent.
+
+    When specified, the subagent will produce a `structured_response` conforming to the
+    given schema. The structured response is JSON-serialized and returned as the
+    ToolMessage content to the parent agent, replacing the default last-message extraction.
+
+    Accepts any format supported by `create_agent`: Pydantic models,
+    `ToolStrategy(schema=...)`, `ProviderStrategy(schema=...)`, etc.
+
+    Example:
+        ```python
+        from pydantic import BaseModel
+        from langchain.agents.structured_output import ToolStrategy
+
+        class AnalysisResult(BaseModel):
+            findings: str
+            confidence: float
+
+        analyzer: SubAgent = {
+            "name": "analyzer",
+            "description": "Analyzes data and returns structured findings",
+            "system_prompt": "Analyze the data and return your findings.",
+            "response_format": ToolStrategy(schema=AnalysisResult),
+        }
+        ```
+    """
 
 
 class CompiledSubAgent(TypedDict):
@@ -354,21 +385,55 @@ def _get_subagents_legacy(
         if interrupt_on:
             _middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
 
+        create_agent_kwargs: dict[str, Any] = {
+            "system_prompt": agent_["system_prompt"],
+            "tools": _tools,
+            "middleware": _middleware,
+            "name": agent_["name"],
+        }
+        if agent_.get("response_format") is not None:
+            create_agent_kwargs["response_format"] = agent_["response_format"]
+
         specs.append(
             {
                 "name": agent_["name"],
                 "description": agent_["description"],
-                "runnable": create_agent(
-                    subagent_model,
-                    system_prompt=agent_["system_prompt"],
-                    tools=_tools,
-                    middleware=_middleware,
-                    name=agent_["name"],
-                ),
+                "runnable": create_agent(subagent_model, **create_agent_kwargs),
             }
         )
 
     return specs
+
+
+def _serialize_structured_response(response: BaseModel | dict | list | str | float) -> str:
+    """Serialize a structured response to JSON string.
+
+    Args:
+        response: The structured response, typically a Pydantic model or dict.
+
+    Returns:
+        JSON string representation of the response.
+    """
+    if isinstance(response, BaseModel):
+        return response.model_dump_json()
+    return json.dumps(response)
+
+
+def _extract_subagent_content(result: dict) -> str:
+    """Extract content from a subagent result, preferring structured_response.
+
+    When a subagent produces a `structured_response`, it is JSON-serialized and
+    returned as the content. Otherwise, falls back to the last message text.
+
+    Args:
+        result: The subagent invocation result dict.
+
+    Returns:
+        String content for the ToolMessage.
+    """
+    if result.get("structured_response") is not None:
+        return _serialize_structured_response(result["structured_response"])
+    return result["messages"][-1].text.rstrip() if result["messages"][-1].text else ""
 
 
 def _build_task_tool(  # noqa: C901
@@ -410,12 +475,12 @@ def _build_task_tool(  # noqa: C901
             raise ValueError(error_msg)
 
         state_update = {k: v for k, v in result.items() if k not in _EXCLUDED_STATE_KEYS}
-        # Strip trailing whitespace to prevent API errors with Anthropic
-        message_text = result["messages"][-1].text.rstrip() if result["messages"][-1].text else ""
+
+        content = _extract_subagent_content(result)
         return Command(
             update={
                 **state_update,
-                "messages": [ToolMessage(message_text, tool_call_id=tool_call_id)],
+                "messages": [ToolMessage(content, tool_call_id=tool_call_id)],
             }
         )
 
@@ -653,17 +718,20 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             if interrupt_on:
                 middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
 
+            create_agent_kwargs: dict[str, Any] = {
+                "system_prompt": spec["system_prompt"],
+                "tools": spec["tools"],
+                "middleware": middleware,
+                "name": spec["name"],
+            }
+            if spec.get("response_format") is not None:
+                create_agent_kwargs["response_format"] = spec["response_format"]
+
             specs.append(
                 {
                     "name": spec["name"],
                     "description": spec["description"],
-                    "runnable": create_agent(
-                        model,
-                        system_prompt=spec["system_prompt"],
-                        tools=spec["tools"],
-                        middleware=middleware,
-                        name=spec["name"],
-                    ),
+                    "runnable": create_agent(model, **create_agent_kwargs),
                 }
             )
 

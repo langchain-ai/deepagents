@@ -391,3 +391,127 @@ class TestStreamConverterDelta:
             if b.get("type") == "text"
         )
         assert text == "Let me search."
+
+    def test_content_blocks_format_for_textual_adapter(self) -> None:
+        """Verify content_blocks have the exact format textual_adapter expects."""
+        converter = _StreamConverter()
+        chunk = StreamPart(
+            event="messages/partial",
+            data=[
+                {
+                    "id": "m1",
+                    "type": "ai",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "name": "web_search",
+                            "args": {"query": "weather NYC"},
+                            "id": "call_abc123",
+                            "type": "tool_call",
+                        }
+                    ],
+                    "response_metadata": {},
+                    "invalid_tool_calls": [],
+                    "usage_metadata": None,
+                }
+            ],
+        )
+        results = converter.convert(chunk, modes=[])
+        assert len(results) == 1
+        _, mode, (msg, _meta) = results[0]
+        assert mode == "messages"
+
+        blocks = msg.content_blocks
+        tc_blocks = [
+            b for b in blocks if b.get("type") in ("tool_call", "tool_call_chunk")
+        ]
+        assert len(tc_blocks) == 1
+        tc = tc_blocks[0]
+        assert tc["type"] == "tool_call"
+        assert tc["name"] == "web_search"
+        assert tc["id"] == "call_abc123"
+        assert isinstance(tc["args"], dict)
+        assert tc["args"]["query"] == "weather NYC"
+
+    def test_text_then_tool_call_produces_both_blocks(self) -> None:
+        """When text precedes a tool call, both appear in content_blocks."""
+        converter = _StreamConverter()
+        converter.convert(
+            StreamPart(
+                "messages/partial",
+                [
+                    {
+                        "id": "m1",
+                        "type": "ai",
+                        "content": "Let me check.",
+                        "tool_calls": [],
+                    }
+                ],
+            ),
+            modes=[],
+        )
+        results = converter.convert(
+            StreamPart(
+                "messages/partial",
+                [
+                    {
+                        "id": "m1",
+                        "type": "ai",
+                        "content": "Let me check.",
+                        "tool_calls": [
+                            {
+                                "name": "search",
+                                "args": {"q": "test"},
+                                "id": "tc1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    }
+                ],
+            ),
+            modes=[],
+        )
+        assert len(results) == 1
+        msg = results[0][2][0]
+        block_types = [b.get("type") for b in msg.content_blocks]
+        assert "tool_call" in block_types
+
+    def test_messages_partial_data_as_single_dict(self) -> None:
+        """Server may send messages/partial data as a single dict (not list)."""
+        converter = _StreamConverter()
+        chunk = StreamPart(
+            event="messages/partial",
+            data={
+                "id": "m1",
+                "type": "ai",
+                "content": "Hello",
+                "tool_calls": [],
+                "response_metadata": {},
+            },
+        )
+        results = converter.convert(chunk, modes=[])
+        assert len(results) == 1
+        msg = results[0][2][0]
+        text = "".join(
+            b.get("text", "") for b in msg.content_blocks if b.get("type") == "text"
+        )
+        assert text == "Hello"
+
+    def test_complete_ai_message_skipped_if_seen_in_partial(self) -> None:
+        """AI messages/complete are skipped if already seen via partial."""
+        converter = _StreamConverter()
+        converter.convert(
+            StreamPart(
+                "messages/partial",
+                [{"id": "m1", "type": "ai", "content": "Hi", "tool_calls": []}],
+            ),
+            modes=[],
+        )
+        results = converter.convert(
+            StreamPart(
+                "messages/complete",
+                [{"id": "m1", "type": "ai", "content": "Hi", "tool_calls": []}],
+            ),
+            modes=[],
+        )
+        assert len(results) == 0

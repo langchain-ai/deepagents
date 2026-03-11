@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -46,6 +47,19 @@ from deepagents_cli.widgets.messages import (
 )
 
 logger = logging.getLogger(__name__)
+
+if os.environ.get("DEEPAGENTS_DEBUG"):
+    _debug_path = Path(
+        os.environ.get(
+            "DEEPAGENTS_DEBUG_FILE",
+            "/tmp/deepagents_debug.log",  # noqa: S108
+        )
+    )
+    _fh = logging.FileHandler(str(_debug_path), mode="a")
+    _fh.setLevel(logging.DEBUG)
+    _fh.setFormatter(logging.Formatter("%(asctime)s %(name)s %(message)s"))
+    logger.addHandler(_fh)
+    logger.setLevel(logging.DEBUG)
 
 _git_branch_cache: dict[str, str | None] = {}
 """Cache git-branch lookups by current working directory."""
@@ -610,6 +624,7 @@ async def execute_task_textual(
                 durability="exit",
             ):
                 if not isinstance(chunk, tuple) or len(chunk) != 3:  # noqa: PLR2004  # stream chunk is a 3-tuple (namespace, mode, data)
+                    logger.debug("Skipping non-3-tuple chunk: %s", type(chunk).__name__)
                     continue
 
                 namespace, current_stream_mode, data = chunk
@@ -679,12 +694,23 @@ async def execute_task_textual(
                 elif current_stream_mode == "messages":
                     # Skip subagent outputs - only render main agent content in chat
                     if not is_main_agent:
+                        logger.debug("Skipping subagent message ns=%s", ns_key)
                         continue
 
                     if not isinstance(data, tuple) or len(data) != 2:  # noqa: PLR2004  # message stream data is a 2-tuple (message, metadata)
+                        logger.debug(
+                            "Skipping non-2-tuple message data: type=%s",
+                            type(data).__name__,
+                        )
                         continue
 
                     message, metadata = data
+                    logger.debug(
+                        "Processing message: type=%s id=%s has_content_blocks=%s",
+                        type(message).__name__,
+                        getattr(message, "id", None),
+                        hasattr(message, "content_blocks"),
+                    )
 
                     # Filter out summarization model output, but keep UI feedback.
                     # The summarization model streams AIMessage chunks tagged
@@ -795,10 +821,20 @@ async def execute_task_textual(
 
                     # Check if this is an AIMessageChunk with content
                     if not hasattr(message, "content_blocks"):
+                        logger.debug(
+                            "Message has no content_blocks: type=%s",
+                            type(message).__name__,
+                        )
                         continue
 
                     # Process content blocks
-                    for block in message.content_blocks:
+                    blocks = message.content_blocks
+                    logger.debug(
+                        "content_blocks count=%d blocks=%s",
+                        len(blocks),
+                        repr(blocks)[:500],
+                    )
+                    for block in blocks:
                         block_type = block.get("type")
 
                         if block_type == "text":
@@ -912,6 +948,12 @@ async def execute_task_textual(
                                 pending_text_by_namespace[ns_key] = ""
                                 assistant_message_by_namespace.pop(ns_key, None)
 
+                            logger.debug(
+                                "Tool call buffer: name=%s id=%s args=%s",
+                                buffer_name,
+                                buffer_id,
+                                repr(parsed_args)[:200],
+                            )
                             if (
                                 buffer_id is not None
                                 and buffer_id not in displayed_tool_ids
@@ -926,6 +968,11 @@ async def execute_task_textual(
                                     await adapter._set_spinner(None)
 
                                 # Mount tool call message
+                                logger.debug(
+                                    "Mounting ToolCallMessage: %s(%s)",
+                                    buffer_name,
+                                    repr(parsed_args)[:200],
+                                )
                                 tool_msg = ToolCallMessage(buffer_name, parsed_args)
                                 await adapter._mount_message(tool_msg)
                                 adapter._current_tool_messages[buffer_id] = tool_msg

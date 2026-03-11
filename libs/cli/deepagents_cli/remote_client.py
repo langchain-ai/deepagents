@@ -8,6 +8,7 @@ interface used by the CLI's streaming and state management code.
 from __future__ import annotations
 
 import logging
+import os
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -17,6 +18,19 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
 logger = logging.getLogger(__name__)
+
+if os.environ.get("DEEPAGENTS_DEBUG"):
+    _debug_path = Path(
+        os.environ.get(
+            "DEEPAGENTS_DEBUG_FILE",
+            "/tmp/deepagents_debug.log",  # noqa: S108
+        )
+    )
+    _fh = logging.FileHandler(str(_debug_path), mode="a")
+    _fh.setLevel(logging.DEBUG)
+    _fh.setFormatter(logging.Formatter("%(asctime)s %(name)s %(message)s"))
+    logger.addHandler(_fh)
+    logger.setLevel(logging.DEBUG)
 
 _STREAM_MODES = ["messages", "updates"]
 

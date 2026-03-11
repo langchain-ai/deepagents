@@ -380,8 +380,8 @@ class TestHelpScreenDrift:
         )
 
 
-class TestOutputFormatArg:
-    """Tests for --output-format and -J argument parsing."""
+class TestJsonArg:
+    """Tests for `--json` argument parsing."""
 
     def test_default_text(self) -> None:
         """Verify output_format defaults to text."""
@@ -389,36 +389,39 @@ class TestOutputFormatArg:
             args = parse_args()
         assert args.output_format == "text"
 
-    def test_long_flag_json(self) -> None:
-        """Verify --output-format json sets output_format."""
-        with patch.object(sys, "argv", ["deepagents", "--output-format", "json"]):
+    def test_json_shortcut(self) -> None:
+        """Verify --json sets output_format to json."""
+        with patch.object(sys, "argv", ["deepagents", "--json"]):
             args = parse_args()
         assert args.output_format == "json"
 
-    def test_long_flag_text(self) -> None:
-        """Verify --output-format text sets output_format."""
-        with patch.object(sys, "argv", ["deepagents", "--output-format", "text"]):
-            args = parse_args()
-        assert args.output_format == "text"
-
-    def test_short_flag_j(self) -> None:
-        """Verify -J sets output_format to json."""
-        with patch.object(sys, "argv", ["deepagents", "-J"]):
-            args = parse_args()
-        assert args.output_format == "json"
-
-    def test_j_with_subcommand(self) -> None:
-        """Verify -J works with subcommands (flag before subcommand)."""
-        with patch.object(sys, "argv", ["deepagents", "-J", "list"]):
+    def test_json_before_subcommand(self) -> None:
+        """Verify --json works before a subcommand."""
+        with patch.object(sys, "argv", ["deepagents", "--json", "list"]):
             args = parse_args()
         assert args.command == "list"
         assert args.output_format == "json"
 
-    def test_invalid_format_exits(self) -> None:
-        """Verify invalid format exits with error."""
+    def test_json_after_subcommand(self) -> None:
+        """Verify --json works after a subcommand."""
+        with patch.object(sys, "argv", ["deepagents", "list", "--json"]):
+            args = parse_args()
+        assert args.command == "list"
+        assert args.output_format == "json"
+
+    def test_output_format_flag_removed(self) -> None:
+        """Verify --output-format is no longer accepted."""
         with (
-            patch.object(sys, "argv", ["deepagents", "--output-format", "xml"]),
+            patch.object(sys, "argv", ["deepagents", "--output-format", "json"]),
             pytest.raises(SystemExit) as exc_info,
         ):
             parse_args()
         assert exc_info.value.code == 2
+
+    def test_json_after_nested_subcommand(self) -> None:
+        """Verify --json works after nested subcommands."""
+        with patch.object(sys, "argv", ["deepagents", "skills", "list", "--json"]):
+            args = parse_args()
+        assert args.command == "skills"
+        assert args.skills_command == "list"
+        assert args.output_format == "json"

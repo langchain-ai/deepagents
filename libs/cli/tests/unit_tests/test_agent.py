@@ -753,7 +753,7 @@ class TestListAgentsJson:
             list_agents(output_format="json")
 
         result = json.loads(buf.getvalue())
-        assert result["version"] == 1
+        assert result["schema_version"] == 1
         assert result["command"] == "list"
         agents = result["data"]
         assert len(agents) == 2

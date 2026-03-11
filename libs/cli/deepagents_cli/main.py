@@ -141,6 +141,7 @@ def parse_args() -> argparse.Namespace:
     Returns:
         Parsed arguments namespace.
     """
+    from deepagents_cli.output import add_json_output_arg
     from deepagents_cli.skills import setup_skills_parser
     from deepagents_cli.ui import (
         build_help_parent,
@@ -226,6 +227,7 @@ def parse_args() -> argparse.Namespace:
         add_help=False,
         parents=help_parent(show_list_help),
     )
+    add_json_output_arg(subparsers.choices["list"])
 
     reset_parser = subparsers.add_parser(
         "reset",
@@ -233,12 +235,17 @@ def parse_args() -> argparse.Namespace:
         add_help=False,
         parents=help_parent(show_reset_help),
     )
+    add_json_output_arg(reset_parser)
     reset_parser.add_argument("--agent", required=True, help="Name of agent to reset")
     reset_parser.add_argument(
         "--target", dest="source_agent", help="Copy prompt from another agent"
     )
 
-    setup_skills_parser(subparsers, make_help_action=_make_help_action)
+    setup_skills_parser(
+        subparsers,
+        make_help_action=_make_help_action,
+        add_output_args=add_json_output_arg,
+    )
 
     threads_parser = subparsers.add_parser(
         "threads",
@@ -246,6 +253,7 @@ def parse_args() -> argparse.Namespace:
         add_help=False,
         parents=help_parent(show_threads_help),
     )
+    add_json_output_arg(threads_parser)
     threads_sub = threads_parser.add_subparsers(dest="threads_command")
 
     threads_list = threads_sub.add_parser(
@@ -255,6 +263,7 @@ def parse_args() -> argparse.Namespace:
         add_help=False,
         parents=help_parent(show_threads_list_help),
     )
+    add_json_output_arg(threads_list)
     threads_list.add_argument(
         "--agent", default=None, help="Filter by agent name (default: show all)"
     )
@@ -296,6 +305,7 @@ def parse_args() -> argparse.Namespace:
         add_help=False,
         parents=help_parent(show_threads_delete_help),
     )
+    add_json_output_arg(threads_delete)
     threads_delete.add_argument("thread_id", help="Thread ID to delete")
 
     # Default interactive mode — argument order here determines the
@@ -395,21 +405,7 @@ def parse_args() -> argparse.Namespace:
         "instead of streaming token-by-token. Requires -n or piped stdin.",
     )
 
-    parser.add_argument(
-        "--output-format",
-        choices=["text", "json"],
-        default="text",
-        dest="output_format",
-        help="Output format for subcommands: text (default) or json",
-    )
-
-    parser.add_argument(
-        "-J",
-        dest="output_format",
-        action="store_const",
-        const="json",
-        help="Shorthand for --output-format json",
-    )
+    add_json_output_arg(parser, default="text")
 
     parser.add_argument(
         "--auto-approve",

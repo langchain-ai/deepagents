@@ -812,6 +812,7 @@ def setup_skills_parser(
     subparsers: Any,  # noqa: ANN401  # argparse subparsers uses dynamic typing
     *,
     make_help_action: Callable[[Callable[[], None]], type[argparse.Action]],
+    add_output_args: Callable[[argparse.ArgumentParser], None] | None = None,
 ) -> argparse.ArgumentParser:
     """Setup the skills subcommand parser with all its subcommands.
 
@@ -823,6 +824,7 @@ def setup_skills_parser(
         subparsers: The parent subparsers object to add the skills parser to.
         make_help_action: Factory that accepts a zero-argument help
             callable and returns an argparse Action class wired to it.
+        add_output_args: Optional hook to add a shared `--json` flag.
 
     Returns:
         The skills subparser for argument handling.
@@ -838,6 +840,8 @@ def setup_skills_parser(
         add_help=False,
         parents=help_parent(show_skills_help),
     )
+    if add_output_args is not None:
+        add_output_args(skills_parser)
     skills_subparsers = skills_parser.add_subparsers(
         dest="skills_command", help="Skills command"
     )
@@ -854,6 +858,8 @@ def setup_skills_parser(
         add_help=False,
         parents=help_parent(show_skills_list_help),
     )
+    if add_output_args is not None:
+        add_output_args(list_parser)
     list_parser.add_argument(
         "--agent",
         default="agent",
@@ -879,6 +885,8 @@ def setup_skills_parser(
         add_help=False,
         parents=help_parent(show_skills_create_help),
     )
+    if add_output_args is not None:
+        add_output_args(create_parser)
     create_parser.add_argument(
         "name",
         help="Name of the skill to create (e.g., web-research)",
@@ -902,6 +910,8 @@ def setup_skills_parser(
         add_help=False,
         parents=help_parent(show_skills_info_help),
     )
+    if add_output_args is not None:
+        add_output_args(info_parser)
     info_parser.add_argument("name", help="Name of the skill to show info for")
     info_parser.add_argument(
         "--agent",
@@ -922,6 +932,8 @@ def setup_skills_parser(
         add_help=False,
         parents=help_parent(show_skills_delete_help),
     )
+    if add_output_args is not None:
+        add_output_args(delete_parser)
     delete_parser.add_argument("name", help="Name of the skill to delete")
     delete_parser.add_argument(
         "--agent",

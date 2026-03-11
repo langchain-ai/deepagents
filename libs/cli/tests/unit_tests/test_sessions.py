@@ -1460,7 +1460,7 @@ class TestListThreadsCommandJson:
             asyncio.run(sessions.list_threads_command(output_format="json"))
 
         result = json.loads(buf.getvalue())
-        assert result["version"] == 1
+        assert result["schema_version"] == 1
         assert result["command"] == "threads list"
         assert len(result["data"]) == 1
         assert result["data"][0]["thread_id"] == "abc12345"

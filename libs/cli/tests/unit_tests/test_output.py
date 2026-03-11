@@ -12,12 +12,12 @@ class TestWriteJson:
     """Tests for write_json envelope format."""
 
     def test_envelope_structure(self) -> None:
-        """Output has version, command, and data keys."""
+        """Output has schema_version, command, and data keys."""
         buf = StringIO()
         with patch("sys.stdout", buf):
             write_json("list", [])
         result = json.loads(buf.getvalue())
-        assert result == {"version": 1, "command": "list", "data": []}
+        assert result == {"schema_version": 1, "command": "list", "data": []}
 
     def test_list_data(self) -> None:
         """Array data is serialized correctly."""

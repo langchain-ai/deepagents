@@ -256,7 +256,7 @@ class ServerProcess:
                 output = _read_process_output(self._process)
                 msg = f"Server process exited with code {self._process.returncode}"
                 if output:
-                    msg += f"\n{output[:2000]}"
+                    msg += f"\n{output[-3000:]}"
                 raise RuntimeError(msg)
 
             try:

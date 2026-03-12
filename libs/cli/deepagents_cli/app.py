@@ -2075,12 +2075,6 @@ class DeepAgentsApp(App):
 
                 compact_backend = FilesystemBackend()
                 logger.info("Using local FilesystemBackend for compaction")
-                await self._mount_message(
-                    AppMessage(
-                        "No backend configured — using local filesystem for "
-                        "compaction. File diffs may not reflect server-side changes."
-                    )
-                )
             middleware = SummarizationMiddleware(
                 model=model,
                 backend=compact_backend,

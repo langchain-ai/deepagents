@@ -33,6 +33,7 @@ from pydantic import TypeAdapter, ValidationError
 from deepagents_cli._debug import configure_debug_logging
 from deepagents_cli.ask_user import AskUserRequest
 from deepagents_cli.config import settings
+from deepagents_cli.configurable_model import CLIContext
 from deepagents_cli.file_ops import FileOpTracker
 from deepagents_cli.hooks import dispatch_hook
 from deepagents_cli.input import MediaTracker, parse_file_mentions
@@ -260,9 +261,6 @@ def _get_git_branch() -> str | None:
 def _build_stream_config(
     thread_id: str,
     assistant_id: str | None,
-    *,
-    model_override: str | None = None,
-    model_params: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the LangGraph stream config dict.
 
@@ -274,11 +272,6 @@ def _build_stream_config(
     Args:
         thread_id: The CLI session thread identifier.
         assistant_id: The agent/assistant identifier, if any.
-        model_override: Model spec to pass via `configurable` for
-            `ConfigurableModelMiddleware` to swap at runtime.
-        model_params: Invocation params (e.g., `temperature`, `max_tokens`)
-            to pass via `configurable["model_params"]` for
-            `ConfigurableModelMiddleware` to merge into `model_settings`.
 
     Returns:
         Config dict with `configurable` and `metadata` keys.
@@ -300,13 +293,8 @@ def _build_stream_config(
     branch = _get_git_branch()
     if branch:
         metadata["git_branch"] = branch
-    configurable: dict[str, Any] = {"thread_id": thread_id}
-    if model_override:
-        configurable["model"] = model_override
-    if model_params:
-        configurable["model_params"] = model_params
     return {
-        "configurable": configurable,
+        "configurable": {"thread_id": thread_id},
         "metadata": metadata,
     }
 
@@ -502,8 +490,7 @@ async def execute_task_textual(
     adapter: TextualUIAdapter,
     backend: Any = None,  # noqa: ANN401  # Dynamic backend type
     image_tracker: MediaTracker | None = None,
-    model_override: str | None = None,
-    model_params: dict[str, Any] | None = None,
+    context: CLIContext | None = None,
 ) -> SessionStats:
     """Execute a task with output directed to Textual UI.
 
@@ -518,10 +505,8 @@ async def execute_task_textual(
         adapter: The TextualUIAdapter for UI operations
         backend: Optional backend for file operations
         image_tracker: Optional tracker for images
-        model_override: Model spec to pass via `configurable` for runtime
-            model switching (e.g., `"openai:gpt-4o"`).
-        model_params: Invocation params (e.g., `temperature`, `max_tokens`)
-            forwarded to `ConfigurableModelMiddleware` via the stream config.
+        context: Optional ``CLIContext`` with model override and params,
+            passed to the graph via ``context=``.
 
     Returns:
         Stats accumulated over this turn (request count, token counts,
@@ -579,12 +564,7 @@ async def execute_task_textual(
         message_content = final_input
 
     thread_id = session_state.thread_id
-    config = _build_stream_config(
-        thread_id,
-        assistant_id,
-        model_override=model_override,
-        model_params=model_params,
-    )
+    config = _build_stream_config(thread_id, assistant_id)
 
     await dispatch_hook("session.start", {"thread_id": thread_id})
 
@@ -633,6 +613,7 @@ async def execute_task_textual(
                 stream_mode=["messages", "updates"],
                 subgraphs=True,
                 config=config,
+                context=context,
                 durability="exit",
             ):
                 if not isinstance(chunk, tuple) or len(chunk) != 3:  # noqa: PLR2004  # stream chunk is a 3-tuple (namespace, mode, data)

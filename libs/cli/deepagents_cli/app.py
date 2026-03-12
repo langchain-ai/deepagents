@@ -27,6 +27,7 @@ from textual.message import Message
 from textual.screen import ModalScreen
 
 from deepagents_cli.clipboard import copy_selection_to_clipboard
+from deepagents_cli.configurable_model import CLIContext
 from deepagents_cli.config import (
     DOCS_URL,
     SHELL_TOOL_NAMES,
@@ -2384,8 +2385,10 @@ class DeepAgentsApp(App):
                 adapter=self._ui_adapter,
                 backend=self._backend,
                 image_tracker=self._image_tracker,
-                model_override=self._model_override,
-                model_params=self._model_params_override,
+                context=CLIContext(
+                    model=self._model_override,
+                    model_params=self._model_params_override or {},
+                ),
             )
         except Exception as e:  # Resilient tool rendering
             logger.exception("Agent execution failed")
@@ -3583,8 +3586,8 @@ class DeepAgentsApp(App):
                 return
 
             # Set the model override for ConfigurableModelMiddleware.
-            # The next stream call will pass this in config["configurable"]["model"],
-            # and the middleware swaps the model per-invocation — no server restart.
+            # The next stream call passes CLIContext via context= and the
+            # middleware swaps the model per-invocation — no graph recreation.
             self._model_override = display
             self._model_params_override = extra_kwargs
 

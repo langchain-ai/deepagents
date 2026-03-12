@@ -3,8 +3,15 @@
 from typing import Any
 
 import pytest
+from langchain_core.messages.content import ContentBlock
+from pydantic import TypeAdapter
 
-from deepagents.backends.utils import _glob_search_files, validate_path
+from deepagents.backends.utils import (
+    _EXTENSION_TO_FILE_TYPE,
+    _get_file_type,
+    _glob_search_files,
+    validate_path,
+)
 
 
 class TestValidatePath:
@@ -132,3 +139,19 @@ class TestGlobSearchFiles:
         """Test that path traversal in path parameter is rejected."""
         result = _glob_search_files(sample_files, "*.py", "../etc/")
         assert result == "No files found"
+
+
+_content_block_adapter = TypeAdapter(ContentBlock)
+
+
+def test_get_file_type_returns_text_for_unknown_extensions() -> None:
+    assert _get_file_type("/foo/bar.txt") == "text"
+    assert _get_file_type("/foo/bar.py") == "text"
+    assert _get_file_type("/foo/bar") == "text"
+
+
+def test_get_file_type_non_text_values_are_valid_content_block_types() -> None:
+    """Every non-text file type must be accepted as a ContentBlock `type`."""
+    for ext, file_type in _EXTENSION_TO_FILE_TYPE.items():
+        block = {"type": file_type, "base64": "dGVzdA==", "mime_type": "application/octet-stream"}
+        _content_block_adapter.validate_python(block)

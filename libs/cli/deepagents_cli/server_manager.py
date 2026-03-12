@@ -273,7 +273,6 @@ version = "0.0.1"
 requires-python = ">=3.11"
 dependencies = [
     "deepagents-cli @ file://{cli_dir}",
-    "langgraph-cli[inmem]>=0.1.55",
 ]
 
 [build-system]

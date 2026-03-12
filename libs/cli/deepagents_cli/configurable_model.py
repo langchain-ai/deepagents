@@ -1,6 +1,6 @@
-"""Middleware for runtime model selection via LangGraph config.
+"""CLI middleware for runtime model selection via LangGraph config.
 
-Allows switching the model per-invocation by passing the model spec
+Allows switching the model per invocation by passing the model spec
 in `config["configurable"]["model"]` without recompiling the graph.
 
 Per-invocation model settings can be merged from
@@ -12,14 +12,13 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any, Protocol, TypedDict, cast
 
+from deepagents._models import model_matches_spec, resolve_model  # noqa: PLC2701
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     ModelRequest,
     ModelResponse,
 )
 from langgraph.config import get_config
-
-from deepagents._models import model_matches_spec, resolve_model
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -45,41 +44,9 @@ class _ConfigurableModelConfig(TypedDict, total=False):
 
 
 class ConfigurableModelMiddleware(AgentMiddleware):
-    """Swap the model or per-call settings from `config["configurable"]`.
+    """Swap the model or per-call settings from `config["configurable"]`."""
 
-    When the configurable key is absent, the graph's original model and request
-    settings are used.
-
-    Supported keys:
-
-    - `model`: provider-prefixed model spec, resolved with the same rules as
-        `create_deep_agent()`
-    - `model_params`: per-invocation settings merged into
-        `ModelRequest.model_settings`
-
-    This middleware should be placed early in the middleware stack so that
-    downstream middleware (e.g., prompt caching, summarization) sees the
-    correct model.
-
-    Example:
-        ```python
-        agent = create_deep_agent(model="anthropic:claude-sonnet-4-6", ...)
-
-        # Switch model and tune per-call settings at runtime:
-        agent.ainvoke(
-            {"messages": [...]},
-            config={
-                "configurable": {
-                    "model": "openai:gpt-4o",
-                    "model_params": {"temperature": 0.2, "max_tokens": 1024},
-                }
-            },
-        )
-        ```
-
-    `model_params` are merged into the request's `model_settings`, so the
-    supported keys depend on the selected provider and model.
-    """
+    _deepagents_prepend = True
 
     @staticmethod
     def _get_runnable_config(request: ModelRequest) -> RunnableConfig:
@@ -145,6 +112,9 @@ class ConfigurableModelMiddleware(AgentMiddleware):
 
         Returns:
             A resolved `BaseChatModel` if an override is specified, else `None`.
+
+        Raises:
+            TypeError: If `config["configurable"]["model"]` is not a string.
         """
         configurable = self._get_configurable(request)
         raw_model_spec = configurable.get("model")

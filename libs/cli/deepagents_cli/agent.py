@@ -41,6 +41,7 @@ from deepagents_cli.config import (
     get_glyphs,
     settings,
 )
+from deepagents_cli.configurable_model import ConfigurableModelMiddleware
 from deepagents_cli.integrations.sandbox_factory import get_default_working_dir
 from deepagents_cli.local_context import LocalContextMiddleware, _ExecutableBackend
 from deepagents_cli.project_utils import ProjectContext, get_server_project_context
@@ -684,6 +685,7 @@ def create_cli_agent(
 
     # Build middleware stack based on enabled features
     agent_middleware = []
+    agent_middleware.append(ConfigurableModelMiddleware())
 
     # Add ask_user middleware (must be early so its tool is available)
     if enable_ask_user:

@@ -8,7 +8,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from deepagents_cli._server_constants import ENV_PREFIX
 from deepagents_cli.project_utils import ProjectContext
-from deepagents_cli.server_manager import _set_server_env, start_server_and_get_agent
+from deepagents_cli.server_manager import (
+    _set_server_env,
+    _write_pyproject,
+    start_server_and_get_agent,
+)
 
 
 class TestSetServerEnv:
@@ -108,3 +112,18 @@ class TestStartServerAndGetAgent:
         assert Path(checkpointer_path).is_absolute()
         assert Path(graph_path).parent == work_dir
         assert Path(checkpointer_path).parent == work_dir
+
+
+class TestWritePyproject:
+    """Tests for the generated runtime pyproject."""
+
+    def test_runtime_pyproject_relies_on_cli_dependency_only(
+        self, tmp_path: Path
+    ) -> None:
+        """The runtime should inherit `langgraph-cli` from `deepagents-cli`."""
+        _write_pyproject(tmp_path)
+
+        content = (tmp_path / "pyproject.toml").read_text()
+
+        assert '"deepagents-cli @ file://' in content
+        assert "langgraph-cli[inmem]" not in content

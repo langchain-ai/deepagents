@@ -636,17 +636,12 @@ def _extract_text(content: str | list | Any) -> str:  # noqa: ANN401
     Returns:
         Concatenated text string.
     """
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts = []
-        for block in content:
-            if isinstance(block, str):
-                parts.append(block)
-            elif isinstance(block, dict) and block.get("type") == "text":
-                parts.append(block.get("text", ""))
-        return "".join(parts)
-    return ""
+    if not isinstance(content, (str, list)):
+        return ""
+
+    from langchain_core.messages import AIMessageChunk
+
+    return str(AIMessageChunk(content=content).text)
 
 
 def _convert_stream_chunk(

@@ -137,14 +137,25 @@ class TestReloadFromEnvironment:
     def test_calls_dotenv_load(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        """Reload should call dotenv with override enabled."""
+        """Reload should load global ~/.deepagents/.env then CWD .env with override."""
         settings = Settings.from_environment(start_path=tmp_path)
-        mock_load = MagicMock(return_value=False)
-        monkeypatch.setattr("deepagents_cli.config.dotenv.load_dotenv", mock_load)
+        calls: list[tuple[object, ...]] = []
+
+        def _capture_load(*args: object, **kwargs: object) -> bool:
+            calls.append((args, kwargs))
+            return False
+
+        monkeypatch.setattr("deepagents_cli.config.dotenv.load_dotenv", _capture_load)
 
         settings.reload_from_environment(start_path=tmp_path)
 
-        mock_load.assert_called_once_with(override=True)
+        assert len(calls) == 2
+        global_args, global_kwargs = calls[0][0], calls[0][1]
+        cwd_args, cwd_kwargs = calls[1][0], calls[1][1]
+        assert Path(global_args[0]) == Path.home() / ".deepagents" / ".env"
+        assert global_kwargs == {}
+        assert cwd_args == ()
+        assert cwd_kwargs == {"override": True}
 
     def test_multiple_simultaneous_changes(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -160,6 +171,25 @@ class TestReloadFromEnvironment:
         assert len(changes) == 3
         fields = {c.split(":")[0] for c in changes}
         assert fields == {"openai_api_key", "anthropic_api_key", "shell_allow_list"}
+
+    def test_global_env_loaded_before_cwd(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Global ~/.deepagents/.env is loaded before CWD .env (lower priority)."""
+        settings = Settings.from_environment(start_path=tmp_path)
+        load_order: list[str] = []
+
+        def _track_load(*args: object, **_kwargs: object) -> bool:
+            if args and ".deepagents" in str(args[0]):
+                load_order.append("global")
+            else:
+                load_order.append("cwd")
+            return False
+
+        monkeypatch.setattr("deepagents_cli.config.dotenv.load_dotenv", _track_load)
+        settings.reload_from_environment(start_path=tmp_path)
+
+        assert load_order == ["global", "cwd"]
 
 
 class TestReloadErrorPaths:

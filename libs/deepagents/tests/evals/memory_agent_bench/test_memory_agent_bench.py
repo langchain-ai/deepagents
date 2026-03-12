@@ -156,27 +156,24 @@ def _run_benchmark_sample(
     return results
 
 
-def _assert_results(
+def _log_results(
     results: list[dict[str, object]],
     *,
     metric: str = "f1",
-    pass_threshold: float = 0.5,
 ) -> None:
-    """Assert that a majority of questions were answered correctly.
+    """Log per-sample metrics to LangSmith for trend tracking.
 
-    Uses token-level F1 as the gate metric and requires more than half the
-    questions to score above zero. Logs graduated correctness
-    (``passed / total``) to LangSmith for trend tracking.
+    Computes token-level F1 stats and logs them as feedback. Does **not**
+    fail the test — the evals are tracking-only so regressions surface in
+    dashboards rather than blocking CI.
 
     Args:
         results: Per-question result dicts from `_run_benchmark_sample`.
-        metric: Which metric to check for the per-question pass gate.
-        pass_threshold: Fraction of questions that must score > 0 to pass
-            the test overall.
+        metric: Which metric to aggregate.
     """
     if not results:
         _log_feedback(key="correctness", value=0)
-        pytest.fail("MemoryAgentBench eval produced zero question results.")
+        return
 
     scores = [float(r[metric]) for r in results]
     avg_score = sum(scores) / len(scores)
@@ -188,13 +185,6 @@ def _assert_results(
     _log_feedback(key="questions_passed", value=passed)
     _log_feedback(key="questions_total", value=len(scores))
     _log_feedback(key="correctness", value=ratio)
-
-    if ratio < pass_threshold:
-        pytest.fail(
-            f"MemoryAgentBench eval failed: {passed}/{len(scores)} questions passed "
-            f"by {metric!r} ({ratio:.0%} < {pass_threshold:.0%} threshold, "
-            f"avg_{metric}={avg_score:.3f})."
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -232,7 +222,7 @@ def test_conflict_resolution(model: BaseChatModel, config: DatasetConfig) -> Non
 
     for sample in samples:
         results = _run_benchmark_sample(sample, config, model)
-        _assert_results(results)
+        _log_results(results)
 
 
 # ---------------------------------------------------------------------------
@@ -259,7 +249,7 @@ def test_time_learning(model: BaseChatModel, config: DatasetConfig) -> None:
 
     for sample in samples:
         results = _run_benchmark_sample(sample, config, model)
-        _assert_results(results)
+        _log_results(results)
 
 
 # ---------------------------------------------------------------------------
@@ -286,4 +276,4 @@ def test_memory_agent_bench_ci(model: BaseChatModel, config: DatasetConfig) -> N
 
     for sample in samples:
         results = _run_benchmark_sample(sample, config, model)
-        _assert_results(results)
+        _log_results(results)

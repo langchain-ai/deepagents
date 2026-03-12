@@ -300,6 +300,22 @@ class TestNoMcpArg:
         assert exc_info.value.code == 2
 
 
+class TestBackgroundTaskArgs:
+    """Tests for background-task CLI arguments."""
+
+    def test_background_tasks_default_disabled(self) -> None:
+        """Verify background tasks are disabled by default."""
+        with patch.object(sys, "argv", ["deepagents"]):
+            args = parse_args()
+        assert args.background_tasks is False
+
+    def test_background_tasks_enabled(self) -> None:
+        """Verify --background-tasks enables background tools."""
+        with patch.object(sys, "argv", ["deepagents", "--background-tasks"]):
+            args = parse_args()
+        assert args.background_tasks is True
+
+
 def test_default_agent_name_matches_canonical() -> None:
     """Ensure the duplicated constant in main.py stays in sync with agent.py."""
     assert _DEFAULT_AGENT_NAME == DEFAULT_AGENT_NAME

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -94,6 +95,7 @@ if TYPE_CHECKING:
     from textual.worker import Worker
 
     from deepagents_cli.ask_user import AskUserWidgetResult, Question
+    from deepagents_cli.background_runtime import BackgroundRuntime
     from deepagents_cli.mcp_tools import MCPServerInfo
 
 # iTerm2 Cursor Guide Workaround
@@ -564,6 +566,7 @@ class DeepAgentsApp(App):
         sandbox_type: str | None = None,
         mcp_server_info: list[MCPServerInfo] | None = None,
         profile_override: dict[str, Any] | None = None,
+        background_runtime: BackgroundRuntime | None = None,
         **kwargs: Any,
     ) -> None:
         """Initialize the Deep Agents application.
@@ -585,6 +588,7 @@ class DeepAgentsApp(App):
             mcp_server_info: MCP server metadata for the `/mcp` viewer.
             profile_override: Extra profile fields from `--profile-override`,
                 retained for model hot-swap and footer display.
+            background_runtime: Optional background task runtime.
             **kwargs: Additional arguments passed to parent
         """
         super().__init__(**kwargs)
@@ -605,6 +609,7 @@ class DeepAgentsApp(App):
         self._mcp_server_info = mcp_server_info
         self._profile_override = profile_override
         self._mcp_tool_count = sum(len(s.tools) for s in (mcp_server_info or []))
+        self._background_runtime = background_runtime
         self._status_bar: StatusBar | None = None
         self._chat_input: ChatInput | None = None
         self._quit_pending = False
@@ -629,6 +634,7 @@ class DeepAgentsApp(App):
         self._processing_pending = False
         self._thread_switching = False
         self._model_switching = False
+        self._background_hitl_worker: Worker[Any] | None = None
         # Message virtualization store
         self._message_store = MessageStore()
         # Lazily imported here to avoid pulling image dependencies into
@@ -724,6 +730,13 @@ class DeepAgentsApp(App):
                 self._check_for_updates,
                 exclusive=True,
                 group="startup-update-check",
+            )
+
+        if self._background_runtime is not None:
+            self._background_hitl_worker = self.run_worker(
+                self._poll_background_hitl_events,
+                exclusive=True,
+                group="background-hitl",
             )
 
         # Focus the input (autocomplete is now built into ChatInput)
@@ -1299,6 +1312,107 @@ class DeepAgentsApp(App):
         # Refocus the chat input
         if self._chat_input:
             self.call_after_refresh(self._chat_input.focus_input)
+
+    async def _poll_background_hitl_events(self) -> None:
+        """Bridge background runtime HITL events into the existing approval UI."""  # noqa: DOC501
+        from deepagents_cli.background_runtime import BackgroundApprovalDecision
+
+        if self._background_runtime is None:
+            return
+
+        max_consecutive_errors = 5
+        consecutive_errors = 0
+
+        while True:
+            try:
+                notifications = self._background_runtime.consume_tui_notifications()
+                for note in notifications:
+                    await self._mount_message(AppMessage(note))
+
+                if self._pending_approval_widget is not None:
+                    await asyncio.sleep(self._background_runtime.poll_interval_seconds)
+                    continue
+
+                event = self._background_runtime.pop_hitl_event()
+                if event is None:
+                    await asyncio.sleep(self._background_runtime.poll_interval_seconds)
+                    continue
+
+                decision: BackgroundApprovalDecision = BackgroundApprovalDecision.REJECT
+                reason: str | None = "Rejected by user"
+
+                try:
+                    future = await self._request_approval(
+                        event.action_requests,
+                        self._assistant_id,
+                    )
+                    response = await future
+                    if isinstance(response, dict) and response.get("type") in {
+                        "approve",
+                        "auto_approve_all",
+                    }:
+                        decision = BackgroundApprovalDecision.APPROVE
+                        reason = None
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.exception(
+                        "Background HITL approval failed for task %s (event %s); "
+                        "rejecting as safety fallback",
+                        event.task_id,
+                        event.event_id,
+                    )
+                    reason = "Approval failed due to internal error"
+                    try:
+                        await self._mount_message(
+                            AppMessage(
+                                f"Background task {event.task_id} approval failed "
+                                f"({type(exc).__name__}); task was rejected."
+                            )
+                        )
+                    except Exception:
+                        logger.debug(
+                            "Failed to mount error message for task %s",
+                            event.task_id,
+                            exc_info=True,
+                        )
+
+                self._background_runtime.resolve_hitl_event(
+                    event.event_id,
+                    decision=decision,
+                    message=reason,
+                )
+
+                # Reset on successful iteration
+                consecutive_errors = 0
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                consecutive_errors += 1
+                logger.warning(
+                    "Unexpected error in background HITL bridge loop "
+                    "(attempt %d/%d); retrying next poll cycle",
+                    consecutive_errors,
+                    max_consecutive_errors,
+                    exc_info=True,
+                )
+                if consecutive_errors >= max_consecutive_errors:
+                    logger.exception(
+                        "Background HITL bridge exceeded %d consecutive errors; "
+                        "stopping bridge. Background task approvals will no "
+                        "longer work.",
+                        max_consecutive_errors,
+                    )
+                    with contextlib.suppress(Exception):
+                        await self._mount_message(
+                            AppMessage(
+                                "Background task approval bridge stopped due to "
+                                "repeated errors. Restart the application to "
+                                "recover."
+                            )
+                        )
+                    break
+                await asyncio.sleep(self._background_runtime.poll_interval_seconds)
 
     async def _handle_shell_command(self, command: str) -> None:
         """Handle a shell command (! prefix).
@@ -2830,6 +2944,8 @@ class DeepAgentsApp(App):
             self._shell_worker.cancel()
         if self._agent_running and self._agent_worker:
             self._agent_worker.cancel()
+        if self._background_hitl_worker:
+            self._background_hitl_worker.cancel()
 
         # Dispatch synchronously — the event loop is about to be torn down by
         # super().exit(), so an async task would never complete.
@@ -3317,6 +3433,8 @@ class DeepAgentsApp(App):
                     sandbox_type=self._sandbox_type,
                     auto_approve=self._auto_approve,
                     enable_ask_user=self._enable_ask_user,
+                    enable_background_tasks=self._background_runtime is not None,
+                    background_runtime=self._background_runtime,
                     checkpointer=self._checkpointer,
                     mcp_server_info=self._mcp_server_info,
                 )
@@ -3456,6 +3574,7 @@ async def run_textual_app(
     sandbox_type: str | None = None,
     mcp_server_info: list[MCPServerInfo] | None = None,
     profile_override: dict[str, Any] | None = None,
+    background_runtime: BackgroundRuntime | None = None,
 ) -> AppResult:
     """Run the Textual application.
 
@@ -3476,6 +3595,7 @@ async def run_textual_app(
         mcp_server_info: MCP server metadata for the `/mcp` viewer.
         profile_override: Extra profile fields from `--profile-override`,
             retained for model hot-swap and footer display.
+        background_runtime: Optional background task runtime.
 
     Returns:
         An `AppResult` with the return code and final thread ID.
@@ -3495,6 +3615,7 @@ async def run_textual_app(
         sandbox_type=sandbox_type,
         mcp_server_info=mcp_server_info,
         profile_override=profile_override,
+        background_runtime=background_runtime,
     )
     await app.run_async()
     return AppResult(

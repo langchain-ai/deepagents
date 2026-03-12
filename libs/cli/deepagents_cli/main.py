@@ -469,6 +469,12 @@ def parse_args() -> argparse.Namespace:
         help="Trust project-level MCP configs with stdio servers "
         "(skip interactive approval prompt)",
     )
+    parser.add_argument(
+        "--background-tasks",
+        action="store_true",
+        default=False,
+        help="Enable background task tools in interactive mode",
+    )
 
     try:
         from importlib.metadata import (
@@ -521,6 +527,7 @@ async def run_textual_cli_async(
     mcp_config_path: str | None = None,
     no_mcp: bool = False,
     trust_project_mcp: bool | None = None,
+    enable_background_tasks: bool = False,
 ) -> "AppResult":
     """Run the Textual CLI interface (async version).
 
@@ -550,6 +557,7 @@ async def run_textual_cli_async(
         trust_project_mcp: Controls project-level stdio server trust.
 
             `True` to allow, `False` to deny, `None` to check trust store.
+        enable_background_tasks: Enable background-task tools/runtime.
 
     Returns:
         An `AppResult` with the return code and final thread ID.
@@ -628,6 +636,7 @@ async def run_textual_cli_async(
         # Handle sandbox mode
         sandbox_backend = None
         sandbox_cm = None
+        background_runtime = None
 
         if sandbox_type != "none":
             # Deferred: sandbox_factory imports provider-specific SDKs,
@@ -650,32 +659,47 @@ async def run_textual_cli_async(
                 console.print(Text(str(e), style="dim"))
                 sys.exit(1)
 
-        try:
-            agent, composite_backend = create_cli_agent(
-                model=model,
-                assistant_id=assistant_id,
-                tools=tools,
-                sandbox=sandbox_backend,
-                sandbox_type=sandbox_type if sandbox_type != "none" else None,
-                auto_approve=auto_approve,
-                enable_ask_user=enable_ask_user,
-                checkpointer=checkpointer,
-                mcp_server_info=mcp_server_info,
-            )
-        except Exception as e:  # broad catch for friendly CLI errors
-            logger.debug("Failed to create agent", exc_info=True)
-            error_text = Text("Failed to create agent: ", style="red")
-            error_text.append(str(e))
-            console.print(error_text)
-            if logger.isEnabledFor(logging.DEBUG):
-                console.print(Text(traceback.format_exc(), style="dim"))
-            sys.exit(1)
+        if enable_background_tasks:
+            from deepagents_cli.background_runtime import BackgroundRuntime
+
+            try:
+                background_runtime = BackgroundRuntime(mode="inmemory")
+                await background_runtime.start()
+            except Exception as e:  # Friendly startup error
+                logger.warning("Background runtime startup failed", exc_info=True)
+                console.print()
+                console.print("[red]Background runtime startup failed[/red]")
+                console.print(Text(str(e), style="dim"))
+                sys.exit(1)
 
         # Run Textual app - errors propagate to caller
         from deepagents_cli.app import AppResult
 
         result = AppResult(return_code=1, thread_id=None)
         try:
+            try:
+                agent, composite_backend = create_cli_agent(
+                    model=model,
+                    assistant_id=assistant_id,
+                    tools=tools,
+                    sandbox=sandbox_backend,
+                    sandbox_type=sandbox_type if sandbox_type != "none" else None,
+                    auto_approve=auto_approve,
+                    enable_ask_user=enable_ask_user,
+                    enable_background_tasks=enable_background_tasks,
+                    background_runtime=background_runtime,
+                    checkpointer=checkpointer,
+                    mcp_server_info=mcp_server_info,
+                )
+            except Exception as e:  # broad catch for friendly CLI errors
+                logger.debug("Failed to create agent", exc_info=True)
+                error_text = Text("Failed to create agent: ", style="red")
+                error_text.append(str(e))
+                console.print(error_text)
+                if logger.isEnabledFor(logging.DEBUG):
+                    console.print(Text(traceback.format_exc(), style="dim"))
+                sys.exit(1)
+
             result = await run_textual_app(
                 agent=agent,
                 assistant_id=assistant_id,
@@ -691,6 +715,7 @@ async def run_textual_cli_async(
                 sandbox_type=sandbox_type if sandbox_type != "none" else None,
                 mcp_server_info=mcp_server_info,
                 profile_override=profile_override,
+                background_runtime=background_runtime,
             )
         finally:
             # Clean up MCP session manager if initialized
@@ -701,6 +726,11 @@ async def run_textual_cli_async(
                     logger.warning("MCP session cleanup failed", exc_info=True)
 
             # Clean up sandbox after app exits (success or error)
+            if background_runtime is not None:
+                try:
+                    await background_runtime.shutdown()
+                except Exception:
+                    logger.warning("Background runtime cleanup failed", exc_info=True)
             if sandbox_cm is not None:
                 try:
                     sandbox_cm.__exit__(None, None, None)
@@ -1413,6 +1443,7 @@ def cli_main() -> None:
                         mcp_config_path=getattr(args, "mcp_config", None),
                         no_mcp=getattr(args, "no_mcp", False),
                         trust_project_mcp=mcp_trust_decision,
+                        enable_background_tasks=args.background_tasks,
                     )
                 )
                 return_code = result.return_code

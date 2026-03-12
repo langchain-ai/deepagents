@@ -3356,7 +3356,13 @@ class DeepAgentsApp(App):
                     model=settings.model_name or "",
                 )
 
-            await asyncio.to_thread(save_recent_model, display)
+            if not await asyncio.to_thread(save_recent_model, display):
+                await self._mount_message(
+                    ErrorMessage(
+                        "Model switched for this session, but could not save "
+                        "preference. Check permissions for ~/.deepagents/"
+                    )
+                )
             await self._mount_message(AppMessage(f"Switched to {display}"))
             logger.info("Model switched to %s (via configurable middleware)", display)
 

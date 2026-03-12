@@ -114,6 +114,49 @@ class TestModelSwitchErrorHandling:
         assert "ANTHROPIC_API_KEY" in captured_errors[0]
         assert app._model_switching is False
 
+    async def test_save_recent_model_failure_shows_warning(self) -> None:
+        """Permission error saving recent model shows warning but still switches."""
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app._agent = _make_remote_agent()
+
+        settings.model_name = "gpt-4o"
+        settings.model_provider = "openai"
+
+        captured_errors: list[str] = []
+        original_err_init = ErrorMessage.__init__
+
+        def capture_err(self: ErrorMessage, message: str, **kwargs: object) -> None:
+            captured_errors.append(message)
+            original_err_init(self, message, **kwargs)
+
+        captured_messages: list[str] = []
+        original_app_init = AppMessage.__init__
+
+        def capture_app(self: AppMessage, message: str, **kwargs: object) -> None:
+            captured_messages.append(message)
+            original_app_init(self, message, **kwargs)
+
+        with (
+            patch(
+                "deepagents_cli.model_config.has_provider_credentials",
+                return_value=True,
+            ),
+            patch("deepagents_cli.app.save_recent_model", return_value=False),
+            patch.object(ErrorMessage, "__init__", capture_err),
+            patch.object(AppMessage, "__init__", capture_app),
+        ):
+            await app._switch_model("anthropic:claude-sonnet-4-5")
+
+        # Should warn about save failure
+        assert len(captured_errors) == 1
+        assert "could not save" in captured_errors[0].lower()
+        assert "~/.deepagents/" in captured_errors[0]
+
+        # Should still confirm the switch happened
+        assert any("Switched to" in m for m in captured_messages)
+        assert app._model_override == "anthropic:claude-sonnet-4-5"
+
     async def test_remote_agent_sets_model_override(self) -> None:
         """With remote agent, sets model override for ConfigurableModelMiddleware."""
         app = DeepAgentsApp()

@@ -11,8 +11,11 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Annotated, Any, NotRequired, TypedDict
 
-from langchain.agents.middleware.types import AgentMiddleware, ContextT, ModelResponse, ResponseT
+from langchain.agents.middleware.types import AgentMiddleware, AgentState, ContextT, ModelResponse, ResponseT
+from langchain.tools import ToolRuntime  # noqa: TC002
+from langchain_core.messages import ToolMessage
 from langchain_core.tools import StructuredTool
+from langgraph.types import Command
 from langgraph_sdk import get_client, get_sync_client
 
 from deepagents.middleware._utils import append_to_system_message
@@ -50,6 +53,32 @@ class AsyncSubAgent(TypedDict):
     url: str
     graph_id: str
     headers: NotRequired[dict[str, str]]
+
+
+class AsyncSubAgentJob(TypedDict):
+    """A tracked async subagent job persisted in agent state."""
+
+    job_id: str
+    agent_name: str
+    thread_id: str
+    run_id: str
+    status: str
+
+
+def _jobs_reducer(
+    existing: dict[str, AsyncSubAgentJob] | None,
+    update: dict[str, AsyncSubAgentJob],
+) -> dict[str, AsyncSubAgentJob]:
+    """Merge job updates into the existing jobs dict."""
+    merged = dict(existing or {})
+    merged.update(update)
+    return merged
+
+
+class AsyncSubAgentState(AgentState):
+    """State extension for async subagent job tracking."""
+
+    async_subagent_jobs: Annotated[NotRequired[dict[str, AsyncSubAgentJob]], _jobs_reducer]
 
 
 ASYNC_TASK_TOOL_DESCRIPTION = """Launch an async subagent on a remote LangGraph server. The subagent runs in the background and returns a job ID immediately.
@@ -178,7 +207,8 @@ def _build_launch_tool(
     def launch_async_subagent(
         description: Annotated[str, "A detailed description of the task for the async subagent to perform."],
         subagent_type: Annotated[str, "The type of async subagent to use. Must be one of the available types."],
-    ) -> str:
+        runtime: ToolRuntime,
+    ) -> str | Command:
         error = _validate_agent_type(agent_map, subagent_type)
         if error:
             return error
@@ -191,12 +221,26 @@ def _build_launch_tool(
             input={"messages": [{"role": "user", "content": description}]},
         )
         job_id = _format_job_id(subagent_type, thread["thread_id"], run["run_id"])
-        return f"Launched async subagent. job_id: {job_id}"
+        job: AsyncSubAgentJob = {
+            "job_id": job_id,
+            "agent_name": subagent_type,
+            "thread_id": thread["thread_id"],
+            "run_id": run["run_id"],
+            "status": "running",
+        }
+        msg = f"Launched async subagent. job_id: {job_id}"
+        return Command(
+            update={
+                "messages": [ToolMessage(msg, tool_call_id=runtime.tool_call_id)],
+                "async_subagent_jobs": {job_id: job},
+            }
+        )
 
     async def alaunch_async_subagent(
         description: Annotated[str, "A detailed description of the task for the async subagent to perform."],
         subagent_type: Annotated[str, "The type of async subagent to use. Must be one of the available types."],
-    ) -> str:
+        runtime: ToolRuntime,
+    ) -> str | Command:
         error = _validate_agent_type(agent_map, subagent_type)
         if error:
             return error
@@ -209,7 +253,20 @@ def _build_launch_tool(
             input={"messages": [{"role": "user", "content": description}]},
         )
         job_id = _format_job_id(subagent_type, thread["thread_id"], run["run_id"])
-        return f"Launched async subagent. job_id: {job_id}"
+        job: AsyncSubAgentJob = {
+            "job_id": job_id,
+            "agent_name": subagent_type,
+            "thread_id": thread["thread_id"],
+            "run_id": run["run_id"],
+            "status": "running",
+        }
+        msg = f"Launched async subagent. job_id: {job_id}"
+        return Command(
+            update={
+                "messages": [ToolMessage(msg, tool_call_id=runtime.tool_call_id)],
+                "async_subagent_jobs": {job_id: job},
+            }
+        )
 
     return StructuredTool.from_function(
         name="launch_async_subagent",
@@ -234,9 +291,11 @@ def _build_check_tool(
 
     def check_async_subagent(
         job_id: Annotated[str, "The exact job_id string returned by launch_async_subagent. Pass it verbatim."],
-    ) -> str:
+        runtime: ToolRuntime,
+    ) -> Command:
         agent_name, thread_id, run_id = _parse_job_id(job_id)
-        client = clients.sync(_resolve_client_name(agent_name, agent_map))
+        name = _resolve_client_name(agent_name, agent_map)
+        client = clients.sync(name)
         run = client.runs.get(thread_id=thread_id, run_id=run_id)
         result: dict[str, Any] = {"status": run["status"], "run_id": run["run_id"], "thread_id": thread_id}
         if run["status"] == "success":
@@ -248,13 +307,28 @@ def _build_check_tool(
                 result["result"] = last.get("content", "") if isinstance(last, dict) else str(last)
         elif run["status"] == "error":
             result["error"] = "The async subagent encountered an error."
-        return json.dumps(result)
+        canonical = _format_job_id(name, thread_id, run_id)
+        job: AsyncSubAgentJob = {
+            "job_id": canonical,
+            "agent_name": name,
+            "thread_id": thread_id,
+            "run_id": run_id,
+            "status": run["status"],
+        }
+        return Command(
+            update={
+                "messages": [ToolMessage(json.dumps(result), tool_call_id=runtime.tool_call_id)],
+                "async_subagent_jobs": {canonical: job},
+            }
+        )
 
     async def acheck_async_subagent(
         job_id: Annotated[str, "The exact job_id string returned by launch_async_subagent. Pass it verbatim."],
-    ) -> str:
+        runtime: ToolRuntime,
+    ) -> Command:
         agent_name, thread_id, run_id = _parse_job_id(job_id)
-        client = clients.async_(_resolve_client_name(agent_name, agent_map))
+        name = _resolve_client_name(agent_name, agent_map)
+        client = clients.async_(name)
         run = await client.runs.get(thread_id=thread_id, run_id=run_id)
         result: dict[str, Any] = {"status": run["status"], "run_id": run["run_id"], "thread_id": thread_id}
         if run["status"] == "success":
@@ -266,7 +340,20 @@ def _build_check_tool(
                 result["result"] = last.get("content", "") if isinstance(last, dict) else str(last)
         elif run["status"] == "error":
             result["error"] = "The async subagent encountered an error."
-        return json.dumps(result)
+        canonical = _format_job_id(name, thread_id, run_id)
+        job: AsyncSubAgentJob = {
+            "job_id": canonical,
+            "agent_name": name,
+            "thread_id": thread_id,
+            "run_id": run_id,
+            "status": run["status"],
+        }
+        return Command(
+            update={
+                "messages": [ToolMessage(json.dumps(result), tool_call_id=runtime.tool_call_id)],
+                "async_subagent_jobs": {canonical: job},
+            }
+        )
 
     return StructuredTool.from_function(
         name="check_async_subagent",
@@ -291,7 +378,8 @@ def _build_update_tool(
     def update_async_subagent(
         job_id: Annotated[str, "The exact job_id string returned by launch_async_subagent or a previous update. Pass it verbatim."],
         message: Annotated[str, "Follow-up instructions or context to send to the subagent."],
-    ) -> str:
+        runtime: ToolRuntime,
+    ) -> str | Command:
         agent_name, thread_id, _run_id = _parse_job_id(job_id)
         name = _resolve_client_name(agent_name, agent_map)
         spec = agent_map[name]
@@ -303,12 +391,26 @@ def _build_update_tool(
             multitask_strategy="interrupt",
         )
         new_job_id = _format_job_id(name, thread_id, run["run_id"])
-        return f"Follow-up sent. New job_id: {new_job_id}"
+        job: AsyncSubAgentJob = {
+            "job_id": new_job_id,
+            "agent_name": name,
+            "thread_id": thread_id,
+            "run_id": run["run_id"],
+            "status": "running",
+        }
+        msg = f"Follow-up sent. New job_id: {new_job_id}"
+        return Command(
+            update={
+                "messages": [ToolMessage(msg, tool_call_id=runtime.tool_call_id)],
+                "async_subagent_jobs": {new_job_id: job},
+            }
+        )
 
     async def aupdate_async_subagent(
         job_id: Annotated[str, "The exact job_id string returned by launch_async_subagent or a previous update. Pass it verbatim."],
         message: Annotated[str, "Follow-up instructions or context to send to the subagent."],
-    ) -> str:
+        runtime: ToolRuntime,
+    ) -> str | Command:
         agent_name, thread_id, _run_id = _parse_job_id(job_id)
         name = _resolve_client_name(agent_name, agent_map)
         spec = agent_map[name]
@@ -320,7 +422,20 @@ def _build_update_tool(
             multitask_strategy="interrupt",
         )
         new_job_id = _format_job_id(name, thread_id, run["run_id"])
-        return f"Follow-up sent. New job_id: {new_job_id}"
+        job: AsyncSubAgentJob = {
+            "job_id": new_job_id,
+            "agent_name": name,
+            "thread_id": thread_id,
+            "run_id": run["run_id"],
+            "status": "running",
+        }
+        msg = f"Follow-up sent. New job_id: {new_job_id}"
+        return Command(
+            update={
+                "messages": [ToolMessage(msg, tool_call_id=runtime.tool_call_id)],
+                "async_subagent_jobs": {new_job_id: job},
+            }
+        )
 
     return StructuredTool.from_function(
         name="update_async_subagent",
@@ -365,6 +480,9 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
     `SubAgentMiddleware`, async subagents return immediately with a job ID,
     allowing the main agent to continue working while subagents execute.
 
+    Job IDs are persisted in the agent state under `async_subagent_jobs`
+    so they survive context compaction and can be accessed programmatically.
+
     Args:
         async_subagents: List of async subagent specifications. Each must
             include `name`, `description`, `url`, and `graph_id`.
@@ -387,6 +505,8 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         )
         ```
     """
+
+    state_schema = AsyncSubAgentState
 
     def __init__(
         self,

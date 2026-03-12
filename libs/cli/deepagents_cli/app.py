@@ -2193,6 +2193,7 @@ class DeepAgentsApp(App):
                 adapter=self._ui_adapter,
                 backend=self._backend,
                 image_tracker=self._image_tracker,
+                sandbox_type=self._sandbox_type,
             )
         except Exception as e:  # noqa: BLE001  # Resilient tool rendering
             # Ensure any in-flight tool calls don't remain stuck in "Running..."

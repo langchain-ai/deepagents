@@ -12,13 +12,19 @@ ensures the two sides stay in sync.
 
 from __future__ import annotations
 
+import atexit
 import logging
+import sys
 from typing import Any
 
 from deepagents_cli._server_config import ServerConfig
 from deepagents_cli.project_utils import ProjectContext, get_server_project_context
 
 logger = logging.getLogger(__name__)
+
+# Module-level sandbox state kept alive for the server process lifetime.
+_sandbox_cm: Any = None
+_sandbox_backend: Any = None
 
 
 def _build_tools(
@@ -90,10 +96,37 @@ def make_graph() -> Any:  # noqa: ANN401
 
     tools, mcp_server_info = _build_tools(config, project_context)
 
+    # Create sandbox backend if a sandbox provider is configured.
+    # The context manager is held open at module level and cleaned up via
+    # atexit so the sandbox lives for the entire server process lifetime.
+    global _sandbox_cm, _sandbox_backend  # noqa: PLW0603
+    sandbox_backend = None
+    if config.sandbox_type:
+        from deepagents_cli.integrations.sandbox_factory import create_sandbox
+
+        try:
+            _sandbox_cm = create_sandbox(
+                config.sandbox_type,
+                sandbox_id=config.sandbox_id,
+                setup_script_path=config.sandbox_setup,
+            )
+            _sandbox_backend = _sandbox_cm.__enter__()  # noqa: PLC2801  # Context manager kept open for server process lifetime
+            sandbox_backend = _sandbox_backend
+
+            def _cleanup_sandbox() -> None:
+                if _sandbox_cm is not None:
+                    _sandbox_cm.__exit__(None, None, None)
+
+            atexit.register(_cleanup_sandbox)
+        except (ImportError, ValueError, RuntimeError, NotImplementedError):
+            logger.exception("Sandbox creation failed")
+            sys.exit(1)
+
     agent, _ = create_cli_agent(
         model=result.model,
         assistant_id=config.assistant_id,
         tools=tools,
+        sandbox=sandbox_backend,
         sandbox_type=config.sandbox_type,
         system_prompt=config.system_prompt,
         interactive=config.interactive,

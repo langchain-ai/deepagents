@@ -119,6 +119,8 @@ class ServerConfig:
     enable_memory: bool = True
     enable_skills: bool = True
     sandbox_type: str | None = None
+    sandbox_id: str | None = None
+    sandbox_setup: str | None = None
     cwd: str | None = None
     project_root: str | None = None
     mcp_config_path: str | None = None
@@ -163,6 +165,8 @@ class ServerConfig:
                 if self.sandbox_type and self.sandbox_type != "none"
                 else None
             ),
+            "SANDBOX_ID": self.sandbox_id,
+            "SANDBOX_SETUP": self.sandbox_setup,
             "CWD": self.cwd,
             "PROJECT_ROOT": self.project_root,
             "MCP_CONFIG_PATH": self.mcp_config_path,
@@ -196,6 +200,8 @@ class ServerConfig:
             enable_memory=_read_env_bool("ENABLE_MEMORY", default=True),
             enable_skills=_read_env_bool("ENABLE_SKILLS", default=True),
             sandbox_type=_read_env_str("SANDBOX_TYPE"),
+            sandbox_id=_read_env_str("SANDBOX_ID"),
+            sandbox_setup=_read_env_str("SANDBOX_SETUP"),
             cwd=_read_env_str("CWD"),
             project_root=_read_env_str("PROJECT_ROOT"),
             mcp_config_path=_read_env_str("MCP_CONFIG_PATH"),
@@ -217,6 +223,8 @@ class ServerConfig:
         assistant_id: str,
         auto_approve: bool,
         sandbox_type: str,
+        sandbox_id: str | None,
+        sandbox_setup: str | None,
         enable_shell: bool,
         enable_ask_user: bool,
         mcp_config_path: str | None,
@@ -237,6 +245,8 @@ class ServerConfig:
             assistant_id: Agent identifier.
             auto_approve: Auto-approve all tools.
             sandbox_type: Sandbox type.
+            sandbox_id: Existing sandbox ID to reuse.
+            sandbox_setup: Path to setup script for the sandbox.
             enable_shell: Enable shell execution tools.
             enable_ask_user: Enable ask_user tool.
             mcp_config_path: Path to MCP config.
@@ -260,6 +270,8 @@ class ServerConfig:
             sandbox_type=sandbox_type
             if sandbox_type and sandbox_type != "none"
             else None,
+            sandbox_id=sandbox_id,
+            sandbox_setup=_normalize_sandbox_setup_path(sandbox_setup, project_context),
             cwd=(
                 str(project_context.user_cwd) if project_context is not None else None
             ),
@@ -273,6 +285,39 @@ class ServerConfig:
             no_mcp=no_mcp,
             trust_project_mcp=trust_project_mcp,
         )
+
+
+def _normalize_sandbox_setup_path(
+    raw_path: str | None,
+    project_context: ProjectContext | None,
+) -> str | None:
+    """Resolve a possibly-relative sandbox setup script path to absolute.
+
+    The server subprocess runs in a different working directory, so relative
+    paths must be resolved against the user's original cwd before serialization.
+
+    Args:
+        raw_path: Setup script path from CLI arguments (may be relative).
+        project_context: User/project context for path resolution.
+
+    Returns:
+        Absolute path string, or `None` when *raw_path* is `None` or empty.
+
+    Raises:
+        ValueError: If the path cannot be resolved.
+    """
+    if not raw_path:
+        return None
+    try:
+        if project_context is not None:
+            return str(project_context.resolve_user_path(raw_path))
+        return str(Path(raw_path).expanduser().resolve())
+    except OSError as exc:
+        msg = (
+            f"Could not resolve sandbox setup path {raw_path!r}: {exc}. "
+            "Ensure the path exists and is accessible."
+        )
+        raise ValueError(msg) from exc
 
 
 def _normalize_mcp_config_path(

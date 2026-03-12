@@ -114,6 +114,7 @@ class TestServerGraph:
             model=model_obj,
             assistant_id="agent",
             tools=[http_tool, fetch_tool, mcp_tool],
+            sandbox=None,
             sandbox_type=None,
             system_prompt=None,
             interactive=True,

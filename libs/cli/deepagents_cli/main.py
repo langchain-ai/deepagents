@@ -580,12 +580,8 @@ async def run_textual_cli_async(
         sandbox_type: Type of sandbox
             ("none", "modal", "runloop", "daytona", "langsmith")
         sandbox_id: Optional existing sandbox ID to reuse.
-
-            Not yet supported in server mode; logs a warning if set.
         sandbox_setup: Optional path to setup script to run in the sandbox
             after creation.
-
-            Not yet supported in server mode; logs a warning if set.
         model_name: Optional model name to use
         model_params: Extra kwargs from `--model-params` to pass to the model.
 
@@ -613,11 +609,6 @@ async def run_textual_cli_async(
     from deepagents_cli.app import run_textual_app
     from deepagents_cli.config import console, create_model
     from deepagents_cli.model_config import ModelConfigError, save_recent_model
-
-    if sandbox_id:
-        logger.warning("--sandbox-id is not yet supported in server mode; ignoring")
-    if sandbox_setup:
-        logger.warning("--sandbox-setup is not yet supported in server mode; ignoring")
 
     try:
         result = create_model(
@@ -664,6 +655,8 @@ async def run_textual_cli_async(
             model_params=model_params,
             auto_approve=auto_approve,
             sandbox_type=sandbox_type,
+            sandbox_id=sandbox_id,
+            sandbox_setup=sandbox_setup,
             enable_ask_user=enable_ask_user,
             mcp_config_path=mcp_config_path,
             no_mcp=no_mcp,

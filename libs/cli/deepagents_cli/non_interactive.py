@@ -727,11 +727,6 @@ async def run_non_interactive(
     Returns:
         Exit code: 0 for success, 1 for error, 130 for keyboard interrupt.
     """
-    if sandbox_id:
-        logger.warning("--sandbox-id is not yet supported in server mode; ignoring")
-    if sandbox_setup:
-        logger.warning("--sandbox-setup is not yet supported in server mode; ignoring")
-
     # stderr=True routes all console.print() to stderr; agent response text
     # uses _write_text() -> sys.stdout directly.
     console = Console(stderr=True) if quiet else Console()
@@ -796,6 +791,8 @@ async def run_non_interactive(
             model_params=model_params,
             auto_approve=use_auto_approve,
             sandbox_type=sandbox_type,
+            sandbox_id=sandbox_id,
+            sandbox_setup=sandbox_setup,
             enable_shell=enable_shell,
             enable_ask_user=False,
             mcp_config_path=mcp_config_path,

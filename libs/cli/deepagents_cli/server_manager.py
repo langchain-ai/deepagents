@@ -188,6 +188,8 @@ async def start_server_and_get_agent(
     model_params: dict[str, Any] | None = None,
     auto_approve: bool = False,
     sandbox_type: str = "none",
+    sandbox_id: str | None = None,
+    sandbox_setup: str | None = None,
     enable_shell: bool = True,
     enable_ask_user: bool = False,
     mcp_config_path: str | None = None,
@@ -205,6 +207,8 @@ async def start_server_and_get_agent(
         model_params: Extra model kwargs.
         auto_approve: Auto-approve all tools.
         sandbox_type: Sandbox type.
+        sandbox_id: Existing sandbox ID to reuse.
+        sandbox_setup: Path to setup script for the sandbox.
         enable_shell: Enable shell execution tools.
         enable_ask_user: Enable ask_user tool.
         mcp_config_path: Path to MCP config.
@@ -231,6 +235,8 @@ async def start_server_and_get_agent(
         assistant_id=assistant_id,
         auto_approve=auto_approve,
         sandbox_type=sandbox_type,
+        sandbox_id=sandbox_id,
+        sandbox_setup=sandbox_setup,
         enable_shell=enable_shell,
         enable_ask_user=enable_ask_user,
         mcp_config_path=mcp_config_path,
@@ -269,6 +275,8 @@ async def server_session(
     model_params: dict[str, Any] | None = None,
     auto_approve: bool = False,
     sandbox_type: str = "none",
+    sandbox_id: str | None = None,
+    sandbox_setup: str | None = None,
     enable_shell: bool = True,
     enable_ask_user: bool = False,
     mcp_config_path: str | None = None,
@@ -289,6 +297,8 @@ async def server_session(
         model_params: Extra model kwargs.
         auto_approve: Auto-approve all tools.
         sandbox_type: Sandbox type.
+        sandbox_id: Existing sandbox ID to reuse.
+        sandbox_setup: Path to setup script for the sandbox.
         enable_shell: Enable shell execution tools.
         enable_ask_user: Enable ask_user tool.
         mcp_config_path: Path to MCP config.
@@ -310,6 +320,8 @@ async def server_session(
             model_params=model_params,
             auto_approve=auto_approve,
             sandbox_type=sandbox_type,
+            sandbox_id=sandbox_id,
+            sandbox_setup=sandbox_setup,
             enable_shell=enable_shell,
             enable_ask_user=enable_ask_user,
             mcp_config_path=mcp_config_path,

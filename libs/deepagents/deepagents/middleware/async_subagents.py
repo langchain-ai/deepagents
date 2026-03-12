@@ -41,17 +41,18 @@ class AsyncSubAgent(TypedDict):
         name: Unique identifier for the async subagent.
         description: What this subagent does. The main agent uses this to decide
             when to delegate.
-        url: URL of the LangGraph server (e.g., `"https://my-deployment.langsmith.dev"`).
         graph_id: The graph name or assistant ID on the remote server.
 
     Optional fields:
+        url: URL of the LangGraph server (e.g., `"https://my-deployment.langsmith.dev"`).
+            Omit to use ASGI transport for local LangGraph servers.
         headers: Additional headers to include in requests to the remote server.
     """
 
     name: str
     description: str
-    url: str
     graph_id: str
+    url: NotRequired[str]
     headers: NotRequired[dict[str, str]]
 
 
@@ -137,7 +138,7 @@ class _ClientCache:
         if name not in self._sync:
             spec = self._agents[name]
             self._sync[name] = get_sync_client(
-                url=spec["url"],
+                url=spec.get("url"),
                 headers=_resolve_headers(spec),
             )
         return self._sync[name]
@@ -147,7 +148,7 @@ class _ClientCache:
         if name not in self._async:
             spec = self._agents[name]
             self._async[name] = get_client(
-                url=spec["url"],
+                url=spec.get("url"),
                 headers=_resolve_headers(spec),
             )
         return self._async[name]
@@ -512,7 +513,8 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
 
     Args:
         async_subagents: List of async subagent specifications. Each must
-            include `name`, `description`, `url`, and `graph_id`.
+            include `name`, `description`, and `graph_id`. `url` is optional —
+            omit it to use ASGI transport for local LangGraph servers.
         system_prompt: Instructions appended to the main agent's system prompt
             about how to use the async subagent tools.
 

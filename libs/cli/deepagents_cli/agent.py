@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import tempfile
+import tomllib
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -81,8 +82,6 @@ def load_async_subagents(config_path: Path | None = None) -> list[AsyncSubAgent]
     Returns:
         List of `AsyncSubAgent` specs (empty if section is absent or invalid).
     """
-    import tomllib
-
     if config_path is None:
         config_path = Path.home() / ".deepagents" / "config.toml"
 
@@ -100,7 +99,7 @@ def load_async_subagents(config_path: Path | None = None) -> list[AsyncSubAgent]
     if not isinstance(section, dict):
         return []
 
-    required = {"description", "url", "graph_id"}
+    required = {"description", "graph_id"}
     agents: list[AsyncSubAgent] = []
     for name, spec in section.items():
         if not isinstance(spec, dict):
@@ -115,9 +114,10 @@ def load_async_subagents(config_path: Path | None = None) -> list[AsyncSubAgent]
         agent: AsyncSubAgent = {
             "name": name,
             "description": spec["description"],
-            "url": spec["url"],
             "graph_id": spec["graph_id"],
         }
+        if "url" in spec and isinstance(spec["url"], str):
+            agent["url"] = spec["url"]
         if "headers" in spec and isinstance(spec["headers"], dict):
             agent["headers"] = spec["headers"]
         agents.append(agent)

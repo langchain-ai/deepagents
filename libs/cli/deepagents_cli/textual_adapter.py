@@ -30,8 +30,10 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.types import Command, Interrupt
 from pydantic import TypeAdapter, ValidationError
 
+from deepagents_cli._debug import configure_debug_logging
 from deepagents_cli.ask_user import AskUserRequest
 from deepagents_cli.config import settings
+from deepagents_cli.configurable_model import CLIContext  # noqa: TC001
 from deepagents_cli.file_ops import FileOpTracker
 from deepagents_cli.hooks import dispatch_hook
 from deepagents_cli.input import MediaTracker, parse_file_mentions
@@ -46,6 +48,7 @@ from deepagents_cli.widgets.messages import (
 )
 
 logger = logging.getLogger(__name__)
+configure_debug_logging(logger)
 
 _git_branch_cache: dict[str, str | None] = {}
 """Cache git-branch lookups by current working directory."""
@@ -487,6 +490,7 @@ async def execute_task_textual(
     adapter: TextualUIAdapter,
     backend: Any = None,  # noqa: ANN401  # Dynamic backend type
     image_tracker: MediaTracker | None = None,
+    context: CLIContext | None = None,
 ) -> SessionStats:
     """Execute a task with output directed to Textual UI.
 
@@ -501,6 +505,8 @@ async def execute_task_textual(
         adapter: The TextualUIAdapter for UI operations
         backend: Optional backend for file operations
         image_tracker: Optional tracker for images
+        context: Optional `CLIContext` with model override and params, passed
+            to the graph via `context=`.
 
     Returns:
         Stats accumulated over this turn (request count, token counts,
@@ -607,9 +613,11 @@ async def execute_task_textual(
                 stream_mode=["messages", "updates"],
                 subgraphs=True,
                 config=config,
+                context=context,
                 durability="exit",
             ):
                 if not isinstance(chunk, tuple) or len(chunk) != 3:  # noqa: PLR2004  # stream chunk is a 3-tuple (namespace, mode, data)
+                    logger.debug("Skipping non-3-tuple chunk: %s", type(chunk).__name__)
                     continue
 
                 namespace, current_stream_mode, data = chunk
@@ -679,12 +687,23 @@ async def execute_task_textual(
                 elif current_stream_mode == "messages":
                     # Skip subagent outputs - only render main agent content in chat
                     if not is_main_agent:
+                        logger.debug("Skipping subagent message ns=%s", ns_key)
                         continue
 
                     if not isinstance(data, tuple) or len(data) != 2:  # noqa: PLR2004  # message stream data is a 2-tuple (message, metadata)
+                        logger.debug(
+                            "Skipping non-2-tuple message data: type=%s",
+                            type(data).__name__,
+                        )
                         continue
 
                     message, metadata = data
+                    logger.debug(
+                        "Processing message: type=%s id=%s has_content_blocks=%s",
+                        type(message).__name__,
+                        getattr(message, "id", None),
+                        hasattr(message, "content_blocks"),
+                    )
 
                     # Filter out summarization model output, but keep UI feedback.
                     # The summarization model streams AIMessage chunks tagged
@@ -795,10 +814,20 @@ async def execute_task_textual(
 
                     # Check if this is an AIMessageChunk with content
                     if not hasattr(message, "content_blocks"):
+                        logger.debug(
+                            "Message has no content_blocks: type=%s",
+                            type(message).__name__,
+                        )
                         continue
 
                     # Process content blocks
-                    for block in message.content_blocks:
+                    blocks = message.content_blocks
+                    logger.debug(
+                        "content_blocks count=%d blocks=%s",
+                        len(blocks),
+                        repr(blocks)[:500],
+                    )
+                    for block in blocks:
                         block_type = block.get("type")
 
                         if block_type == "text":
@@ -912,6 +941,12 @@ async def execute_task_textual(
                                 pending_text_by_namespace[ns_key] = ""
                                 assistant_message_by_namespace.pop(ns_key, None)
 
+                            logger.debug(
+                                "Tool call buffer: name=%s id=%s args=%s",
+                                buffer_name,
+                                buffer_id,
+                                repr(parsed_args)[:200],
+                            )
                             if (
                                 buffer_id is not None
                                 and buffer_id not in displayed_tool_ids
@@ -926,6 +961,11 @@ async def execute_task_textual(
                                     await adapter._set_spinner(None)
 
                                 # Mount tool call message
+                                logger.debug(
+                                    "Mounting ToolCallMessage: %s(%s)",
+                                    buffer_name,
+                                    repr(parsed_args)[:200],
+                                )
                                 tool_msg = ToolCallMessage(buffer_name, parsed_args)
                                 await adapter._mount_message(tool_msg)
                                 adapter._current_tool_messages[buffer_id] = tool_msg

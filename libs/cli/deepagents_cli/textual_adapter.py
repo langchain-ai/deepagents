@@ -505,8 +505,8 @@ async def execute_task_textual(
         adapter: The TextualUIAdapter for UI operations
         backend: Optional backend for file operations
         image_tracker: Optional tracker for images
-        context: Optional ``CLIContext`` with model override and params,
-            passed to the graph via ``context=``.
+        context: Optional `CLIContext` with model override and params, passed
+            to the graph via `context=`.
 
     Returns:
         Stats accumulated over this turn (request count, token counts,

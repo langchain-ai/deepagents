@@ -98,8 +98,8 @@ class TestNoOverride:
         )
         assert captured[0].model is request.model
 
-    def test_non_cli_context_ignored(self) -> None:
-        runtime = SimpleNamespace(context={"model": "openai:gpt-4o"})
+    def test_non_dict_context_ignored(self) -> None:
+        runtime = SimpleNamespace(context="not-a-dict")
         request = ModelRequest(
             model=_make_model("claude-sonnet-4-6"),
             messages=[HumanMessage(content="hi")],

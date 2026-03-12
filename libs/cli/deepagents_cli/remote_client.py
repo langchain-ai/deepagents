@@ -99,6 +99,7 @@ class RemoteAgent:
         stream_mode: list[str] | None = None,
         subgraphs: bool = False,
         config: dict[str, Any] | None = None,
+        context: Any | None = None,  # noqa: ANN401
         durability: str | None = None,  # noqa: ARG002
     ) -> AsyncIterator[tuple[tuple[str, ...], str, Any]]:
         """Stream agent execution, yielding tuples matching Pregel's format.
@@ -112,6 +113,8 @@ class RemoteAgent:
             stream_mode: Stream modes to request.
             subgraphs: Whether to stream subgraph events.
             config: LangGraph config with `configurable.thread_id`, etc.
+            context: Runtime context (e.g. `CLIContext`) forwarded to the
+                server via the SDK's `context=` parameter.
             durability: Ignored (server manages durability).
 
         Yields:
@@ -128,11 +131,16 @@ class RemoteAgent:
         config = _prepare_config(config)
         dropped_count = 0
 
+        kwargs: dict[str, Any] = {}
+        if context is not None:
+            kwargs["context"] = context
+
         async for ns, mode, data in graph.astream(
             input,
             stream_mode=stream_mode or ["messages", "updates"],
             subgraphs=subgraphs,
             config=config,
+            **kwargs,
         ):
             logger.debug("RemoteGraph event mode=%s ns=%s", mode, ns)
 

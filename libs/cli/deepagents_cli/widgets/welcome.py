@@ -62,6 +62,8 @@ class WelcomeBanner(Static):
         self._cli_thread_id: str | None = thread_id
         self._mcp_tool_count = mcp_tool_count
         self._connecting = connecting
+        self._failed = False
+        self._failure_error: str = ""
         self._project_name: str | None = get_langsmith_project_name()
         self._project_url: str | None = None
 
@@ -103,7 +105,19 @@ class WelcomeBanner(Static):
             mcp_tool_count: Number of MCP tools loaded during connection.
         """
         self._connecting = False
+        self._failed = False
         self._mcp_tool_count = mcp_tool_count
+        self.update(self._build_banner(self._project_url))
+
+    def set_failed(self, error: str) -> None:
+        """Transition from "connecting" to a persistent failure state.
+
+        Args:
+            error: Error message describing the server startup failure.
+        """
+        self._connecting = False
+        self._failed = True
+        self._failure_error = error
         self.update(self._build_banner(self._project_url))
 
     def on_click(self, event: Click) -> None:  # noqa: PLR6301  # Textual event handler
@@ -165,11 +179,29 @@ class WelcomeBanner(Static):
             label = "MCP tool" if self._mcp_tool_count == 1 else "MCP tools"
             banner.append(f"Loaded {self._mcp_tool_count} {label}\n")
 
-        if self._connecting:
+        if self._failed:
+            banner.append_text(build_failure_footer(self._failure_error))
+        elif self._connecting:
             banner.append_text(build_connecting_footer())
         else:
             banner.append_text(build_welcome_footer())
         return banner
+
+
+def build_failure_footer(error: str) -> Text:
+    """Build a footer shown when the server failed to start.
+
+    Args:
+        error: Error message describing the failure.
+
+    Returns:
+        Rich Text with a persistent failure message.
+    """
+    footer = Text()
+    footer.append("\nServer failed to start: ", style="bold red")
+    footer.append(error, style="red")
+    footer.append("\n", style="red")
+    return footer
 
 
 def build_connecting_footer() -> Text:

@@ -126,7 +126,7 @@ def generate_langgraph_json(
 def _scoped_env_overrides(
     overrides: dict[str, str],
 ) -> Iterator[None]:
-    """Context manager that applies env-var overrides and rolls them back.
+    """Apply env-var overrides, rolling back only on exception.
 
     Separates the concern of temporary `os.environ` mutations from subprocess
     management, making both independently testable.

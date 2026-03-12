@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import io
 import socket
 from typing import Self
 from unittest.mock import patch
 
-from deepagents_cli.server import _find_free_port, _port_in_use, _read_process_output
+from deepagents_cli.server import _find_free_port, _port_in_use
 
 
 class _FakeSocket:
@@ -78,31 +77,3 @@ class TestFindFreePort:
             port = _find_free_port("127.0.0.1")
 
         assert port == 53123
-
-
-class _FakeProc:
-    """Minimal stand-in for a finished subprocess.Popen."""
-
-    def __init__(
-        self,
-        stdout: bytes | None = None,
-        stderr: bytes | None = None,
-    ) -> None:
-        self.stdout = io.BytesIO(stdout) if stdout is not None else None
-        self.stderr = io.BytesIO(stderr) if stderr is not None else None
-
-
-class TestReadProcessOutput:
-    def test_reads_stdout_and_stderr(self) -> None:
-        proc = _FakeProc(stdout=b"stdout line", stderr=b"stderr line")
-        result = _read_process_output(proc)  # type: ignore[arg-type]
-        assert "stdout line" in result
-        assert "stderr line" in result
-
-    def test_empty_output(self) -> None:
-        proc = _FakeProc(stdout=b"", stderr=b"")
-        assert _read_process_output(proc) == ""  # type: ignore[arg-type]
-
-    def test_no_pipes(self) -> None:
-        proc = _FakeProc()
-        assert _read_process_output(proc) == ""  # type: ignore[arg-type]

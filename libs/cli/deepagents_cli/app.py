@@ -80,11 +80,8 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from deepagents.backends import CompositeBackend
-    from deepagents.backends.sandbox import SandboxBackendProtocol
     from deepagents.middleware.summarization import SummarizationMiddleware
     from langchain_core.runnables import RunnableConfig
-    from langchain_core.tools import BaseTool
-    from langgraph.checkpoint.base import BaseCheckpointSaver
     from langgraph.pregel import Pregel
     from textual.app import ComposeResult
     from textual.events import Click, MouseUp, Paste
@@ -555,14 +552,9 @@ class DeepAgentsApp(App):
         assistant_id: str | None = None,
         backend: CompositeBackend | None = None,
         auto_approve: bool = False,
-        enable_ask_user: bool = False,
         cwd: str | Path | None = None,
         thread_id: str | None = None,
         initial_prompt: str | None = None,
-        checkpointer: BaseCheckpointSaver | None = None,
-        tools: list[BaseTool | Callable[..., Any] | dict[str, Any]] | None = None,
-        sandbox: SandboxBackendProtocol | None = None,
-        sandbox_type: str | None = None,
         mcp_server_info: list[MCPServerInfo] | None = None,
         profile_override: dict[str, Any] | None = None,
         server_proc: ServerProcess | None = None,
@@ -575,20 +567,9 @@ class DeepAgentsApp(App):
             assistant_id: Agent identifier for memory storage
             backend: Backend for file operations
             auto_approve: Whether to start with auto-approve enabled
-            enable_ask_user: Whether `ask_user` is enabled for the session.
             cwd: Current working directory to display
             thread_id: Optional thread ID for session persistence
             initial_prompt: Optional prompt to auto-submit when session starts
-            checkpointer: Checkpointer for session persistence.
-
-                Retained for compatibility with direct app construction.
-            tools: Tools used to create the agent.
-
-                Retained for compatibility with direct app construction.
-            sandbox: Sandbox backend.
-
-                Retained for compatibility with direct app construction.
-            sandbox_type: Type of sandbox provider.
             mcp_server_info: MCP server metadata for the `/mcp` viewer.
             profile_override: Extra profile fields from `--profile-override`,
                 retained so later profile-aware behavior stays consistent with
@@ -603,16 +584,10 @@ class DeepAgentsApp(App):
         self._assistant_id = assistant_id
         self._backend = backend
         self._auto_approve = auto_approve
-        self._enable_ask_user = enable_ask_user
         self._cwd = str(cwd) if cwd else str(Path.cwd())
         # Avoid collision with App._thread_id
         self._lc_thread_id = thread_id
         self._initial_prompt = initial_prompt
-        # Retained for direct app construction and test harnesses.
-        self._checkpointer = checkpointer
-        self._tools = tools or []
-        self._sandbox = sandbox
-        self._sandbox_type = sandbox_type
         self._mcp_server_info = mcp_server_info
         self._profile_override = profile_override
         self._server_proc = server_proc
@@ -3472,14 +3447,9 @@ async def run_textual_app(
     assistant_id: str | None = None,
     backend: CompositeBackend | None = None,
     auto_approve: bool = False,
-    enable_ask_user: bool = False,
     cwd: str | Path | None = None,
     thread_id: str | None = None,
     initial_prompt: str | None = None,
-    checkpointer: BaseCheckpointSaver | None = None,
-    tools: list[BaseTool | Callable[..., Any] | dict[str, Any]] | None = None,
-    sandbox: SandboxBackendProtocol | None = None,
-    sandbox_type: str | None = None,
     mcp_server_info: list[MCPServerInfo] | None = None,
     profile_override: dict[str, Any] | None = None,
     server_proc: ServerProcess | None = None,
@@ -3491,20 +3461,9 @@ async def run_textual_app(
         assistant_id: Agent identifier for memory storage
         backend: Backend for file operations
         auto_approve: Whether to start with auto-approve enabled
-        enable_ask_user: Whether `ask_user` is enabled for the session.
         cwd: Current working directory to display
         thread_id: Optional thread ID for session persistence
         initial_prompt: Optional prompt to auto-submit when session starts
-        checkpointer: Checkpointer for session persistence.
-
-            Retained for compatibility with direct app construction.
-        tools: Tools used to create the agent.
-
-            Retained for compatibility with direct app construction.
-        sandbox: Sandbox backend.
-
-            Retained for compatibility with direct app construction.
-        sandbox_type: Type of sandbox provider.
         mcp_server_info: MCP server metadata for the `/mcp` viewer.
         profile_override: Extra profile fields from `--profile-override`,
             retained so later profile-aware behavior stays consistent with
@@ -3521,14 +3480,9 @@ async def run_textual_app(
         assistant_id=assistant_id,
         backend=backend,
         auto_approve=auto_approve,
-        enable_ask_user=enable_ask_user,
         cwd=cwd,
         thread_id=thread_id,
         initial_prompt=initial_prompt,
-        checkpointer=checkpointer,
-        tools=tools,
-        sandbox=sandbox,
-        sandbox_type=sandbox_type,
         mcp_server_info=mcp_server_info,
         profile_override=profile_override,
         server_proc=server_proc,

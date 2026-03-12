@@ -42,7 +42,7 @@ The fastest way to start using Deep Agents. `deepagents-cli` is a pre-built codi
 - **Interactive TUI** — rich terminal interface with streaming responses
 - **Conversation resume** — pick up where you left off across sessions
 - **Web search** — ground responses in live information
-- **Remote sandboxes** — run code in isolated environments (Modal, Runloop, Daytona, & more)
+- **Remote sandboxes** — run code in isolated environments (Modal, Runloop, Daytona, E2B, & more)
 - **Persistent memory** — agent remembers context across conversations
 - **Custom skills** — extend the agent with your own slash commands
 - **Headless mode** — run non-interactively for scripting and CI

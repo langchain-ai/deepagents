@@ -36,6 +36,7 @@ jobs:
       cli: ${{ steps.filter.outputs.cli }}
       harbor: ${{ steps.filter.outputs.harbor }}
       daytona: ${{ steps.filter.outputs.daytona }}
+      e2b: ${{ steps.filter.outputs.e2b }}
       modal: ${{ steps.filter.outputs.modal }}
       runloop: ${{ steps.filter.outputs.runloop }}
     steps:
@@ -79,6 +80,12 @@ jobs:
               - '.github/actions/**'
             daytona:
               - 'libs/partners/daytona/**'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/_lint.yml'
+              - '.github/workflows/_test.yml'
+              - '.github/actions/**'
+            e2b:
+              - 'libs/partners/e2b/**'
               - '.github/workflows/ci.yml'
               - '.github/workflows/_lint.yml'
               - '.github/workflows/_test.yml'
@@ -131,6 +138,15 @@ jobs:
     uses: ./.github/workflows/_lint.yml
     with:
       working-directory: "libs/partners/daytona"
+      python-version: "3.11"
+
+  lint-e2b:
+    name: "🧹 Lint e2b"
+    needs: changes
+    if: needs.changes.outputs.e2b == 'true' || github.event_name == 'push'
+    uses: ./.github/workflows/_lint.yml
+    with:
+      working-directory: "libs/partners/e2b"
       python-version: "3.11"
 
   lint-modal:
@@ -208,6 +224,19 @@ jobs:
       python-version: ${{ matrix.python-version }}
       coverage: ${{ matrix.python-version == '3.12' }}
 
+  test-e2b:
+    name: "🧪 Test e2b"
+    needs: changes
+    if: needs.changes.outputs.e2b == 'true' || github.event_name == 'push'
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+      fail-fast: false
+    uses: ./.github/workflows/_test.yml
+    with:
+      working-directory: "libs/partners/e2b"
+      python-version: ${{ matrix.python-version }}
+
   test-modal:
     name: "🧪 Test modal"
     needs: changes
@@ -245,12 +274,14 @@ jobs:
       - lint-cli
       - lint-harbor
       - lint-daytona
+      - lint-e2b
       - lint-modal
       - lint-runloop
       - test-deepagents
       - test-cli
       - test-harbor
       - test-daytona
+      - test-e2b
       - test-modal
       - test-runloop
     if: always()

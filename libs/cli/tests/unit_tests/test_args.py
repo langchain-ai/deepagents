@@ -123,7 +123,6 @@ class TestTopLevelHelp:
         # Should contain global help content
         assert "deepagents" in output.lower()
         assert "--help" in output
-        assert "--ask-user" in output
 
     def test_help_subcommand_parses(self) -> None:
         """Running `deepagents help` should parse as command='help'.

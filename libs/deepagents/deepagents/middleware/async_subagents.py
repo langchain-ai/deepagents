@@ -101,12 +101,14 @@ You have access to async subagent tools that launch background jobs on remote La
 - `launch_async_subagent`: Start a new background job. Returns a job ID immediately.
 - `check_async_subagent`: Check the status of a running job. Returns status and result if complete.
 - `update_async_subagent`: Send an update or new instructions to a running job.
+- `list_async_subagent_jobs`: List all tracked jobs and their last-known statuses. Use this to recall job IDs.
 
 ### Workflow:
 1. **Launch** — Use `launch_async_subagent` to start a job. You get back a job ID.
 2. **Monitor** — Use `check_async_subagent` to poll for status. Jobs can be: pending, running, success, error, timeout, or interrupted.
 3. **Update** (optional) — Use `update_async_subagent` to send new context or instructions to a running job.
 4. **Collect** — When status is "success", the result is included in the check response.
+5. **Recall** — Use `list_async_subagent_jobs` if you need to recall job IDs (e.g., after context compaction).
 
 ### When to use async subagents:
 - Long-running tasks that would block the main agent
@@ -449,16 +451,40 @@ def _build_update_tool(
     )
 
 
+def _build_list_jobs_tool() -> StructuredTool:
+    """Build the list_async_subagent_jobs tool."""
+
+    def list_async_subagent_jobs(runtime: ToolRuntime) -> str:
+        jobs: dict[str, AsyncSubAgentJob] = runtime.state.get("async_subagent_jobs") or {}
+        if not jobs:
+            return "No async subagent jobs tracked."
+        entries = [f"- job_id: {job['job_id']}  agent: {job['agent_name']}  status: {job['status']}" for job in jobs.values()]
+        return f"{len(entries)} tracked job(s):\n" + "\n".join(entries)
+
+    async def alist_async_subagent_jobs(runtime: ToolRuntime) -> str:
+        return list_async_subagent_jobs(runtime=runtime)
+
+    return StructuredTool.from_function(
+        name="list_async_subagent_jobs",
+        func=list_async_subagent_jobs,
+        coroutine=alist_async_subagent_jobs,
+        description=(
+            "List all tracked async subagent jobs and their last-known statuses. "
+            "Use this to recall job IDs after context compaction or to see what jobs are in flight."
+        ),
+    )
+
+
 def _build_async_subagent_tools(
     agents: list[AsyncSubAgent],
 ) -> list[StructuredTool]:
-    """Build the three async subagent tools from agent specs.
+    """Build the async subagent tools from agent specs.
 
     Args:
         agents: List of async subagent specifications.
 
     Returns:
-        List of StructuredTools for launch, check, and update operations.
+        List of StructuredTools for launch, check, update, and list operations.
     """
     agent_map: dict[str, AsyncSubAgent] = {a["name"]: a for a in agents}
     clients = _ClientCache(agent_map)
@@ -469,6 +495,7 @@ def _build_async_subagent_tools(
         _build_launch_tool(agent_map, clients, launch_desc),
         _build_check_tool(agent_map, clients),
         _build_update_tool(agent_map, clients),
+        _build_list_jobs_tool(),
     ]
 
 

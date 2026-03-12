@@ -1,5 +1,6 @@
 """End-to-end unit tests for deepagents with fake LLM models."""
 
+import base64
 from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 from typing import Any
@@ -1184,12 +1185,9 @@ class TestDeepAgentEndToEnd:
             f"A single-line file should not cause token overflow."
         )
 
-
     @pytest.mark.parametrize("backend_factory", BACKEND_FACTORIES)
     def test_deep_agent_read_image_file(self, tmp_path: Path, backend_factory: Callable[[Path], BackendProtocol]) -> None:
         """Test that reading an image returns a ToolMessage with content blocks."""
-        import base64
-
         backend = backend_factory(tmp_path)
         img_bytes = b"\x89PNG\r\n\x1a\n fake image data"
 

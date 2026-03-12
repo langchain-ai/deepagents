@@ -145,10 +145,39 @@ class TestModelSwitchErrorHandling:
         # No server restart — model override is set for next stream call
         mock_proc.restart.assert_not_awaited()
         assert app._model_override == "anthropic:claude-sonnet-4-5"
+        assert app._model_params_override is None
         mock_save.assert_called_once()
         assert settings.model_name == "claude-sonnet-4-5"
         assert settings.model_provider == "anthropic"
         assert any("Switched to" in m for m in captured_messages)
+
+    async def test_server_proc_sets_model_params_override(self) -> None:
+        """With server_proc, extra_kwargs are stored as _model_params_override."""
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        mock_proc = _make_mock_server_proc()
+        app._server_proc = mock_proc
+
+        settings.model_name = "gpt-4o"
+        settings.model_provider = "openai"
+
+        with (
+            patch(
+                "deepagents_cli.model_config.has_provider_credentials",
+                return_value=True,
+            ),
+            patch("deepagents_cli.app.save_recent_model", return_value=True),
+        ):
+            await app._switch_model(
+                "anthropic:claude-sonnet-4-5",
+                extra_kwargs={"temperature": 0.7, "max_tokens": 1024},
+            )
+
+        assert app._model_override == "anthropic:claude-sonnet-4-5"
+        assert app._model_params_override == {
+            "temperature": 0.7,
+            "max_tokens": 1024,
+        }
 
     async def test_no_checkpointer_saves_preference(self) -> None:
         """_switch_model without checkpointer saves preference but doesn't hot-swap."""

@@ -189,3 +189,130 @@ class TestAsyncWrapModelCall:
 
         assert request.model is original
         assert result == "async_response"
+
+
+class TestModelParams:
+    """Tests for model_params override via configurable."""
+
+    def test_params_only_merges_model_settings(self) -> None:
+        """model_params without model swap merges into model_settings."""
+        mw = ConfigurableModelMiddleware()
+        model = _make_model("claude-sonnet-4-6")
+        request = _make_request(
+            model,
+            config={"configurable": {"model_params": {"temperature": 0.7}}},
+        )
+
+        captured: list[ModelRequest] = []
+
+        def handler(req: ModelRequest) -> str:
+            captured.append(req)
+            return "response"
+
+        mw.wrap_model_call(request, handler)
+
+        assert len(captured) == 1
+        assert captured[0].model is model  # model unchanged
+        assert captured[0].model_settings == {"temperature": 0.7}
+
+    def test_params_with_model_swap(self) -> None:
+        """model_params + model swap both applied."""
+        mw = ConfigurableModelMiddleware()
+        original = _make_model("claude-sonnet-4-6")
+        override = _make_model("gpt-4o")
+        request = _make_request(
+            original,
+            config={
+                "configurable": {
+                    "model": "openai:gpt-4o",
+                    "model_params": {"max_tokens": 1024},
+                }
+            },
+        )
+
+        captured: list[ModelRequest] = []
+
+        def handler(req: ModelRequest) -> str:
+            captured.append(req)
+            return "response"
+
+        with patch(
+            "deepagents.middleware.configurable_model._resolve_model_from_spec",
+            return_value=override,
+        ):
+            mw.wrap_model_call(request, handler)
+
+        assert captured[0].model is override
+        assert captured[0].model_settings == {"max_tokens": 1024}
+
+    def test_empty_params_no_op(self) -> None:
+        """Empty model_params dict does not trigger override."""
+        mw = ConfigurableModelMiddleware()
+        model = _make_model("claude-sonnet-4-6")
+        request = _make_request(
+            model,
+            config={"configurable": {"model_params": {}}},
+        )
+
+        captured: list[ModelRequest] = []
+
+        def handler(req: ModelRequest) -> str:
+            captured.append(req)
+            return "response"
+
+        mw.wrap_model_call(request, handler)
+
+        # Handler receives the original request object (no override call)
+        assert captured[0] is request
+
+    def test_params_merge_preserves_existing_settings(self) -> None:
+        """model_params merges on top of existing model_settings."""
+        mw = ConfigurableModelMiddleware()
+        model = _make_model("claude-sonnet-4-6")
+        runtime = SimpleNamespace(
+            config={
+                "configurable": {
+                    "model_params": {"temperature": 0.5},
+                }
+            }
+        )
+        request = ModelRequest(
+            model=model,
+            messages=[HumanMessage(content="hi")],
+            tools=[],
+            runtime=runtime,
+            model_settings={"max_tokens": 2048},
+        )
+
+        captured: list[ModelRequest] = []
+
+        def handler(req: ModelRequest) -> str:
+            captured.append(req)
+            return "response"
+
+        mw.wrap_model_call(request, handler)
+
+        assert captured[0].model_settings == {
+            "max_tokens": 2048,
+            "temperature": 0.5,
+        }
+
+    async def test_async_params_override(self) -> None:
+        """model_params works in async path."""
+        mw = ConfigurableModelMiddleware()
+        model = _make_model("claude-sonnet-4-6")
+        request = _make_request(
+            model,
+            config={"configurable": {"model_params": {"temperature": 0.3}}},
+        )
+
+        captured: list[ModelRequest] = []
+
+        async def handler(req: ModelRequest) -> str:
+            captured.append(req)
+            return "async_response"
+
+        result = await mw.awrap_model_call(request, handler)
+
+        assert captured[0].model_settings == {"temperature": 0.3}
+        assert result == "async_response"

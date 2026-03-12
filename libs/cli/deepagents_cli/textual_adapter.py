@@ -275,6 +275,7 @@ def _build_stream_config(
     assistant_id: str | None,
     *,
     model_override: str | None = None,
+    model_params: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the LangGraph stream config dict.
 
@@ -288,6 +289,9 @@ def _build_stream_config(
         assistant_id: The agent/assistant identifier, if any.
         model_override: Model spec to pass via `configurable` for
             `ConfigurableModelMiddleware` to swap at runtime.
+        model_params: Invocation params (e.g., `temperature`, `max_tokens`)
+            to pass via `configurable["model_params"]` for
+            `ConfigurableModelMiddleware` to merge into `model_settings`.
 
     Returns:
         Config dict with `configurable` and `metadata` keys.
@@ -312,6 +316,8 @@ def _build_stream_config(
     configurable: dict[str, Any] = {"thread_id": thread_id}
     if model_override:
         configurable["model"] = model_override
+    if model_params:
+        configurable["model_params"] = model_params
     return {
         "configurable": configurable,
         "metadata": metadata,
@@ -510,6 +516,7 @@ async def execute_task_textual(
     backend: Any = None,  # noqa: ANN401  # Dynamic backend type
     image_tracker: MediaTracker | None = None,
     model_override: str | None = None,
+    model_params: dict[str, Any] | None = None,
 ) -> SessionStats:
     """Execute a task with output directed to Textual UI.
 
@@ -526,6 +533,8 @@ async def execute_task_textual(
         image_tracker: Optional tracker for images
         model_override: Model spec to pass via `configurable` for runtime
             model switching (e.g., `"openai:gpt-4o"`).
+        model_params: Invocation params (e.g., `temperature`, `max_tokens`)
+            forwarded to `ConfigurableModelMiddleware` via the stream config.
 
     Returns:
         Stats accumulated over this turn (request count, token counts,
@@ -584,7 +593,10 @@ async def execute_task_textual(
 
     thread_id = session_state.thread_id
     config = _build_stream_config(
-        thread_id, assistant_id, model_override=model_override
+        thread_id,
+        assistant_id,
+        model_override=model_override,
+        model_params=model_params,
     )
 
     await dispatch_hook("session.start", {"thread_id": thread_id})

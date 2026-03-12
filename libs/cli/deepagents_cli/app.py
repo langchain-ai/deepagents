@@ -610,6 +610,7 @@ class DeepAgentsApp(App):
         self._profile_override = profile_override
         self._server_proc = server_proc
         self._model_override: str | None = None
+        self._model_params_override: dict[str, Any] | None = None
         self._mcp_tool_count = sum(len(s.tools) for s in (mcp_server_info or []))
         self._status_bar: StatusBar | None = None
         self._chat_input: ChatInput | None = None
@@ -2208,6 +2209,7 @@ class DeepAgentsApp(App):
                 backend=self._backend,
                 image_tracker=self._image_tracker,
                 model_override=self._model_override,
+                model_params=self._model_params_override,
             )
         except Exception as e:  # Resilient tool rendering
             logger.exception("Agent execution failed")
@@ -3204,7 +3206,7 @@ class DeepAgentsApp(App):
         self,
         model_spec: str,
         *,
-        extra_kwargs: dict[str, Any] | None = None,  # noqa: ARG002  # reserved for future model params support via configurable
+        extra_kwargs: dict[str, Any] | None = None,
     ) -> None:
         """Switch to a new model, preserving conversation history.
 
@@ -3278,6 +3280,7 @@ class DeepAgentsApp(App):
         # and the middleware swaps the model per-invocation — no server restart.
         if self._server_proc is not None:
             self._model_override = display
+            self._model_params_override = extra_kwargs
 
             settings.model_name = model_name
             if provider:

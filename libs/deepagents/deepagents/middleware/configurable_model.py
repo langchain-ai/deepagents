@@ -61,6 +61,19 @@ class ConfigurableModelMiddleware(AgentMiddleware):
         ```
     """
 
+    @staticmethod
+    def _get_configurable(request: ModelRequest) -> dict[str, Any]:
+        """Extract `configurable` dict from the runtime config.
+
+        Args:
+            request: The current model request.
+
+        Returns:
+            The `configurable` sub-dict (empty dict if absent).
+        """
+        config = getattr(request.runtime, "config", None) or {}
+        return config.get("configurable", {})
+
     def _get_override_model(self, request: ModelRequest) -> BaseChatModel | None:
         """Read the model override from runtime config, if present.
 
@@ -70,8 +83,7 @@ class ConfigurableModelMiddleware(AgentMiddleware):
         Returns:
             A resolved `BaseChatModel` if an override is specified, else `None`.
         """
-        config = getattr(request.runtime, "config", None) or {}
-        configurable: dict[str, Any] = config.get("configurable", {})
+        configurable = self._get_configurable(request)
         model_spec = configurable.get("model")
         if model_spec is None:
             return None
@@ -87,12 +99,53 @@ class ConfigurableModelMiddleware(AgentMiddleware):
         logger.debug("Overriding model to %s (was %s)", model_spec, current)
         return _resolve_model_from_spec(model_spec)
 
+    @staticmethod
+    def _get_model_params(request: ModelRequest) -> dict[str, Any] | None:
+        """Read invocation param overrides from runtime config.
+
+        Args:
+            request: The current model request.
+
+        Returns:
+            A non-empty dict of params to merge into `model_settings`,
+            or `None` if no overrides are configured.
+        """
+        configurable = ConfigurableModelMiddleware._get_configurable(request)
+        params: dict[str, Any] | None = configurable.get("model_params")
+        return params or None
+
+    def _apply_overrides(self, request: ModelRequest) -> ModelRequest:
+        """Apply model and param overrides from runtime config.
+
+        Args:
+            request: The original model request.
+
+        Returns:
+            A (possibly new) request with model and/or `model_settings` overrides
+            applied. Returns the original request unchanged if no overrides are
+            configured.
+        """
+        overrides: dict[str, Any] = {}
+
+        override_model = self._get_override_model(request)
+        if override_model is not None:
+            overrides["model"] = override_model
+
+        params = self._get_model_params(request)
+        if params is not None:
+            merged = {**request.model_settings, **params}
+            overrides["model_settings"] = merged
+
+        if overrides:
+            return request.override(**overrides)
+        return request
+
     def wrap_model_call(
         self,
         request: ModelRequest,
         handler: Callable[[ModelRequest], ModelResponse],
     ) -> ModelResponse:
-        """Swap the model on the request before the handler executes.
+        """Swap the model / merge invocation params before the handler executes.
 
         Args:
             request: The model request.
@@ -101,10 +154,7 @@ class ConfigurableModelMiddleware(AgentMiddleware):
         Returns:
             The model response from the handler.
         """
-        override = self._get_override_model(request)
-        if override is not None:
-            request = request.override(model=override)
-        return handler(request)
+        return handler(self._apply_overrides(request))
 
     async def awrap_model_call(
         self,
@@ -120,7 +170,4 @@ class ConfigurableModelMiddleware(AgentMiddleware):
         Returns:
             The model response from the handler.
         """
-        override = self._get_override_model(request)
-        if override is not None:
-            request = request.override(model=override)
-        return await handler(request)
+        return await handler(self._apply_overrides(request))

@@ -2380,6 +2380,11 @@ class DeepAgentsApp(App):
     async def _fetch_thread_history_data(self, thread_id: str) -> list[MessageData]:
         """Fetch and convert stored messages for a thread.
 
+        In server mode the LangGraph dev server starts with an empty thread
+        store, so `aget_state` via the HTTP API returns no messages even when
+        checkpoints exist on disk.  We fall back to reading the SQLite
+        checkpointer directly to guarantee resumed threads load their history.
+
         Args:
             thread_id: Thread ID to fetch from checkpoint storage.
 
@@ -2391,15 +2396,59 @@ class DeepAgentsApp(App):
 
         config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
         state = await self._agent.aget_state(config)
-        if not state or not state.values:
-            return []
 
-        messages = state.values.get("messages", [])
+        messages: list[Any] = []
+        if state and state.values:
+            messages = state.values.get("messages", [])
+
+        # In server mode the dev server may return empty state for threads
+        # that were persisted in a previous session.  Read the SQLite
+        # checkpointer directly as a fallback.
+        if not messages and self._server_proc is not None:
+            messages = await self._read_messages_from_checkpointer(thread_id)
+
         if not messages:
             return []
 
+        # Server mode / direct checkpointer may return dicts; convert to
+        # LangChain message objects so _convert_messages_to_data works.
+        if messages and isinstance(messages[0], dict):
+            from langchain_core.messages.utils import convert_to_messages
+
+            messages = convert_to_messages(messages)
+
         # Offload conversion so large histories don't block the UI loop.
         return await asyncio.to_thread(self._convert_messages_to_data, messages)
+
+    @staticmethod
+    async def _read_messages_from_checkpointer(thread_id: str) -> list[Any]:
+        """Read messages directly from the SQLite checkpointer.
+
+        Args:
+            thread_id: Thread ID to look up.
+
+        Returns:
+            List of LangChain message objects, or empty list on failure.
+        """
+        try:
+            from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
+            from deepagents_cli.sessions import get_db_path
+
+            db_path = str(get_db_path())
+            config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
+            async with AsyncSqliteSaver.from_conn_string(db_path) as saver:
+                tup = await saver.aget_tuple(config)
+                if tup and tup.checkpoint:
+                    channel_values = tup.checkpoint.get("channel_values", {})
+                    return channel_values.get("messages", [])
+        except Exception:
+            logger.debug(
+                "Failed to read checkpointer directly for %s",
+                thread_id,
+                exc_info=True,
+            )
+        return []
 
     async def _upgrade_thread_message_link(
         self,
@@ -3052,6 +3101,7 @@ class DeepAgentsApp(App):
 
         current = self._session_state.thread_id if self._session_state else None
         thread_limit = get_thread_limit()
+
         initial_threads = get_cached_threads(limit=thread_limit)
 
         def handle_result(result: str | None) -> None:

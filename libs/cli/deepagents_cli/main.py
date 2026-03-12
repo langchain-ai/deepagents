@@ -20,6 +20,7 @@ import shutil
 import sys
 import traceback
 from collections.abc import Callable, Sequence
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -502,6 +503,39 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+async def _persist_thread_index(
+    thread_id: str,
+    *,
+    agent_name: str | None = None,
+    created_at: str | None = None,
+    updated_at: str | None = None,
+) -> None:
+    """Write thread metadata to local SQLite for cross-restart persistence.
+
+    Best-effort — failures are logged but do not block the session.
+
+    Args:
+        thread_id: Thread identifier.
+        agent_name: Agent that owns the thread.
+        created_at: ISO timestamp for new threads.
+        updated_at: ISO timestamp of latest activity.
+    """
+    try:
+        from deepagents_cli.sessions import upsert_thread_index
+        from deepagents_cli.textual_adapter import _get_git_branch
+
+        await upsert_thread_index(
+            thread_id,
+            agent_name=agent_name,
+            git_branch=_get_git_branch(),
+            cwd=str(Path.cwd()),
+            created_at=created_at,
+            updated_at=updated_at,
+        )
+    except Exception:
+        logger.debug("Failed to persist thread index entry", exc_info=True)
+
+
 async def run_textual_cli_async(
     assistant_id: str,
     *,
@@ -601,6 +635,16 @@ async def run_textual_cli_async(
     from deepagents_cli.app import AppResult
     from deepagents_cli.server_manager import start_server_and_get_agent
 
+    # Persist thread metadata to local SQLite so /threads, -r, and
+    # `deepagents threads list` work across server restarts.
+    now = datetime.now().astimezone().isoformat()
+    await _persist_thread_index(
+        thread_id=thread_id or "",
+        agent_name=assistant_id,
+        created_at=now if not is_resumed else None,
+        updated_at=now,
+    )
+
     server_proc = None
     mcp_session_manager = None
     try:
@@ -647,6 +691,17 @@ async def run_textual_cli_async(
                 profile_override=profile_override,
                 server_proc=server_proc,
             )
+
+            # Update the thread index with final timestamp so sorting is
+            # accurate for `/threads` and `-r`.
+            final_tid = result.thread_id or thread_id
+            if final_tid:
+                end_now = datetime.now().astimezone().isoformat()
+                await _persist_thread_index(
+                    thread_id=final_tid,
+                    agent_name=assistant_id,
+                    updated_at=end_now,
+                )
         except Exception as e:
             logger.debug("App error", exc_info=True)
             error_text = Text("Application error: ", style="red")
@@ -1276,11 +1331,9 @@ def cli_main() -> None:
                 build_langsmith_thread_url,
             )
             from deepagents_cli.sessions import (
-                find_similar_threads,
                 generate_thread_id,
                 get_most_recent,
                 get_thread_agent,
-                thread_exists,
             )
 
             thread_id = None
@@ -1307,40 +1360,17 @@ def cli_main() -> None:
                     console.print(msg)
 
             elif args.resume_thread:
-                # -r <ID>: Resume specific thread
-                if asyncio.run(thread_exists(args.resume_thread)):
-                    thread_id = args.resume_thread
-                    is_resumed = True
-                    if args.agent == _DEFAULT_AGENT_NAME:
-                        agent_name = asyncio.run(get_thread_agent(thread_id))
-                        if agent_name:
-                            args.agent = agent_name
-                else:
-                    error_msg = Text("Thread '", style="red")
-                    error_msg.append(args.resume_thread)
-                    error_msg.append("' not found.", style="red")
-                    console.print(error_msg)
-
-                    # Check for similar thread IDs
-                    similar = asyncio.run(find_similar_threads(args.resume_thread))
-                    if similar:
-                        console.print()
-                        console.print("[yellow]Did you mean?[/yellow]")
-                        for tid in similar:
-                            hint = Text("  deepagents -r ", style="cyan")
-                            hint.append(str(tid), style="cyan")
-                            console.print(hint)
-                        console.print()
-
-                    console.print(
-                        "[dim]Use 'deepagents threads list' to see "
-                        "available threads.[/dim]"
-                    )
-                    console.print(
-                        "[dim]Use 'deepagents -r' to resume the most "
-                        "recent thread.[/dim]"
-                    )
-                    sys.exit(1)
+                # -r <ID>: Resume specific thread.
+                # In server mode the thread lives on the remote server,
+                # not local SQLite.  Check locally first (for agent name
+                # lookup) but always accept the ID — the server will
+                # create an empty thread if the ID doesn't exist there.
+                thread_id = args.resume_thread
+                is_resumed = True
+                if args.agent == _DEFAULT_AGENT_NAME:
+                    agent_name = asyncio.run(get_thread_agent(thread_id))
+                    if agent_name:
+                        args.agent = agent_name
 
             # Generate new thread ID if not resuming
             if thread_id is None:
@@ -1385,11 +1415,13 @@ def cli_main() -> None:
                 console.print(Text(traceback.format_exc(), style="dim"))
                 sys.exit(1)
 
-            # Show LangSmith thread link for threads with checkpointed
-            # content (same table that backs the `/threads` listing).
+            # Show LangSmith thread link.
+            # In server mode the thread lives on the remote server, not
+            # local SQLite, so skip the `thread_exists` gate (we just
+            # used the thread — it exists).
             try:
                 thread_url = build_langsmith_thread_url(thread_id)
-                if thread_url and asyncio.run(thread_exists(thread_id)):
+                if thread_url and thread_id:
                     console.print()
                     ls_hint = Text("View this thread in LangSmith: ", style="dim")
                     ls_hint.append(
@@ -1403,8 +1435,8 @@ def cli_main() -> None:
                     exc_info=True,
                 )
 
-            # Show resume hint on exit for threads with checkpointed content.
-            if thread_id and return_code == 0 and asyncio.run(thread_exists(thread_id)):
+            # Show resume hint on exit.
+            if thread_id and return_code == 0:
                 console.print()
                 console.print("[dim]Resume this thread with:[/dim]")
                 hint = Text("deepagents -r ", style="cyan")

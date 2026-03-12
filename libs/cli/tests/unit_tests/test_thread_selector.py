@@ -2863,3 +2863,101 @@ class TestThreadSelectorDomSkip:
 
                 # Same widget objects should still be mounted (no rebuild)
                 assert screen._option_widgets == initial_widgets
+
+
+class TestThreadFetcherCallback:
+    """Tests for thread_fetcher callback injection."""
+
+    async def test_fetcher_used_instead_of_local_db(self) -> None:
+        """When thread_fetcher is provided, local list_threads is NOT called."""
+        remote_threads = [
+            {
+                "thread_id": "remote-1",
+                "agent_name": "server-agent",
+                "updated_at": "2025-01-15T10:00:00",
+                "created_at": "2025-01-15T09:00:00",
+            },
+        ]
+        fetcher = AsyncMock(return_value=remote_threads)
+
+        with _patch_columns():
+            app = ThreadSelectorTestApp(current_thread=None)
+            async with app.run_test() as pilot:
+
+                def _show() -> None:
+                    screen = ThreadSelectorScreen(
+                        thread_fetcher=fetcher,
+                    )
+                    app.push_screen(screen, lambda _r: None)
+
+                app.call_after_refresh(_show)
+                await pilot.pause()
+                for _ in range(10):
+                    await pilot.pause(0.05)
+
+                fetcher.assert_awaited()
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                assert len(screen._threads) == 1
+                assert screen._threads[0]["thread_id"] == "remote-1"
+
+    async def test_fetcher_none_falls_back_to_local(self) -> None:
+        """When thread_fetcher is None, local list_threads is called."""
+        with _patch_list_threads(), _patch_columns():
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+                for _ in range(10):
+                    await pilot.pause(0.05)
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                assert len(screen._threads) == len(MOCK_THREADS)
+
+
+class TestThreadDeleterCallback:
+    """Tests for thread_deleter callback injection."""
+
+    async def test_deleter_called_on_confirm(self) -> None:
+        """When thread_deleter is provided, it is used for deletion."""
+        deleter = AsyncMock(return_value=True)
+        remote_threads = [
+            {
+                "thread_id": "remote-1",
+                "agent_name": "server-agent",
+                "updated_at": "2025-01-15T10:00:00",
+                "created_at": "2025-01-15T09:00:00",
+            },
+            {
+                "thread_id": "remote-2",
+                "agent_name": "server-agent",
+                "updated_at": "2025-01-14T10:00:00",
+                "created_at": "2025-01-14T09:00:00",
+            },
+        ]
+        fetcher = AsyncMock(return_value=remote_threads)
+
+        with _patch_columns():
+            app = ThreadSelectorTestApp(current_thread=None)
+            async with app.run_test() as pilot:
+
+                def _show() -> None:
+                    screen = ThreadSelectorScreen(
+                        thread_fetcher=fetcher,
+                        thread_deleter=deleter,
+                    )
+                    app.push_screen(screen, lambda _r: None)
+
+                app.call_after_refresh(_show)
+                await pilot.pause()
+                for _ in range(10):
+                    await pilot.pause(0.05)
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                # Directly call the delete handler
+                await screen._handle_delete_confirm("remote-1")
+                deleter.assert_awaited_once_with("remote-1")
+                assert len(screen._threads) == 1
+                assert screen._threads[0]["thread_id"] == "remote-2"

@@ -1723,3 +1723,91 @@ class TestInterruptApprovalPriority:
         approval.action_select_reject.assert_called_once()
         worker.cancel.assert_not_called()
         assert app._quit_pending is False
+
+
+class TestFetchThreadHistoryData:
+    """Verify _fetch_thread_history_data handles server-mode resume scenarios."""
+
+    async def test_dict_messages_converted_to_message_objects(self) -> None:
+        """Dict-based messages from server mode are deserialized before conversion."""
+        from deepagents_cli.widgets.message_store import MessageData, MessageType
+
+        state = MagicMock()
+        state.values = {
+            "messages": [
+                {"type": "human", "content": "hello", "id": "h1"},
+                {
+                    "type": "ai",
+                    "content": "Hi there!",
+                    "id": "a1",
+                    "tool_calls": [],
+                },
+            ],
+        }
+
+        mock_agent = AsyncMock()
+        mock_agent.aget_state.return_value = state
+
+        app = DeepAgentsApp(agent=mock_agent, thread_id="t-1")
+        result = await app._fetch_thread_history_data("t-1")
+
+        assert len(result) == 2
+        assert isinstance(result[0], MessageData)
+        assert result[0].type == MessageType.USER
+        assert result[0].content == "hello"
+        assert isinstance(result[1], MessageData)
+        assert result[1].type == MessageType.ASSISTANT
+        assert result[1].content == "Hi there!"
+
+    async def test_server_mode_falls_back_to_checkpointer(self) -> None:
+        """When the server returns empty state, read SQLite checkpointer directly."""
+        from langchain_core.messages import AIMessage, HumanMessage
+
+        from deepagents_cli.widgets.message_store import MessageData, MessageType
+
+        # Server returns empty state (fresh restart, thread not loaded)
+        empty_state = MagicMock()
+        empty_state.values = {}
+
+        mock_agent = AsyncMock()
+        mock_agent.aget_state.return_value = empty_state
+
+        app = DeepAgentsApp(agent=mock_agent, thread_id="t-1", server_proc=MagicMock())
+
+        # Patch the checkpointer fallback to return messages
+        checkpointer_msgs = [
+            HumanMessage(content="hello", id="h1"),
+            AIMessage(content="world", id="a1"),
+        ]
+        with patch.object(
+            DeepAgentsApp,
+            "_read_messages_from_checkpointer",
+            return_value=checkpointer_msgs,
+        ):
+            result = await app._fetch_thread_history_data("t-1")
+
+        assert len(result) == 2
+        assert result[0].type == MessageType.USER
+        assert result[0].content == "hello"
+        assert result[1].type == MessageType.ASSISTANT
+        assert result[1].content == "world"
+
+    async def test_no_fallback_without_server_proc(self) -> None:
+        """Non-server mode does not attempt checkpointer fallback."""
+        empty_state = MagicMock()
+        empty_state.values = {}
+
+        mock_agent = AsyncMock()
+        mock_agent.aget_state.return_value = empty_state
+
+        # No server_proc → not in server mode
+        app = DeepAgentsApp(agent=mock_agent, thread_id="t-1")
+
+        with patch.object(
+            DeepAgentsApp,
+            "_read_messages_from_checkpointer",
+        ) as mock_read:
+            result = await app._fetch_thread_history_data("t-1")
+
+        mock_read.assert_not_called()
+        assert result == []

@@ -99,6 +99,7 @@ def generate_langgraph_json(
     *,
     graph_ref: str = "./server_graph.py:graph",
     env_file: str | None = None,
+    checkpointer_path: str | None = None,
 ) -> Path:
     """Generate a `langgraph.json` config file for `langgraph dev`.
 
@@ -106,6 +107,9 @@ def generate_langgraph_json(
         output_dir: Directory to write the config file.
         graph_ref: Python module:variable reference to the graph.
         env_file: Optional path to an env file.
+        checkpointer_path: Import path to an async context manager
+            that yields a `BaseCheckpointSaver`. When set, the server
+            persists checkpoint data to disk instead of in-memory.
 
     Returns:
         Path to the generated config file.
@@ -118,6 +122,8 @@ def generate_langgraph_json(
     }
     if env_file:
         config["env"] = env_file
+    if checkpointer_path:
+        config["checkpointer"] = {"path": checkpointer_path}
 
     output_path = Path(output_dir) / "langgraph.json"
     output_path.write_text(json.dumps(config, indent=2))

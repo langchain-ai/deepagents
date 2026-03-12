@@ -87,11 +87,13 @@ async def start_server_and_get_agent(
     server_graph_dst = Path(work_dir) / "server_graph.py"
     shutil.copy2(server_graph_src, server_graph_dst)
 
+    _write_checkpointer(Path(work_dir))
     _write_pyproject(Path(work_dir))
 
     generate_langgraph_json(
         work_dir,
         graph_ref="./server_graph.py:graph",
+        checkpointer_path="./checkpointer.py:create_checkpointer",
     )
 
     server = ServerProcess(
@@ -162,6 +164,37 @@ def _set_server_env(
         os.environ[f"{_ENV_PREFIX}CWD"] = str(Path.cwd())
     except OSError:
         logger.warning("Could not determine working directory for server")
+
+
+def _write_checkpointer(work_dir: Path) -> None:
+    """Write a checkpointer module that persists to ~/.deepagents/sessions.db.
+
+    This makes the LangGraph server store checkpoints on disk so thread
+    history survives server restarts and `/threads` / `-r` work correctly.
+
+    Args:
+        work_dir: Server working directory.
+    """
+    from deepagents_cli.sessions import get_db_path
+
+    db_path = str(get_db_path())
+    content = f'''\
+"""Persistent SQLite checkpointer for the LangGraph dev server."""
+
+from contextlib import asynccontextmanager
+
+
+@asynccontextmanager
+async def create_checkpointer():
+    """Yield an AsyncSqliteSaver connected to the CLI sessions DB."""
+    from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
+    async with AsyncSqliteSaver.from_conn_string(
+        {db_path!r}
+    ) as saver:
+        yield saver
+'''
+    (work_dir / "checkpointer.py").write_text(content)
 
 
 def _write_pyproject(work_dir: Path) -> None:

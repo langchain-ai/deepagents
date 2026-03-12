@@ -1688,3 +1688,150 @@ class TestBatchCheckpointSummaries:
         finally:
             sessions._message_count_cache.clear()
             sessions._initial_prompt_cache.clear()
+
+
+class TestThreadIndex:
+    """Tests for thread_index table used by server-mode sessions."""
+
+    @pytest.fixture
+    def empty_db(self, tmp_path: Path) -> Path:
+        """Return a path to an empty database (no tables)."""
+        return tmp_path / "thread_index_test.db"
+
+    @pytest.fixture
+    def index_only_db(self, tmp_path: Path) -> Path:
+        """DB with only a thread_index table (server-mode scenario)."""
+        db = tmp_path / "index_only.db"
+        conn = sqlite3.connect(str(db))
+        conn.execute("""
+            CREATE TABLE thread_index (
+                thread_id   TEXT PRIMARY KEY,
+                agent_name  TEXT,
+                updated_at  TEXT,
+                created_at  TEXT,
+                git_branch  TEXT,
+                cwd         TEXT
+            )
+        """)
+        conn.execute(
+            "INSERT INTO thread_index VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                "srv-1",
+                "agent1",
+                "2025-06-01T12:00:00+00:00",
+                "2025-06-01T11:00:00+00:00",
+                "main",
+                "/home/user",
+            ),
+        )
+        conn.execute(
+            "INSERT INTO thread_index VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                "srv-2",
+                "agent2",
+                "2025-06-02T12:00:00+00:00",
+                "2025-06-02T11:00:00+00:00",
+                "feat",
+                "/tmp/work",
+            ),
+        )
+        conn.commit()
+        conn.close()
+        return db
+
+    # -- upsert_thread_index --
+
+    async def test_upsert_creates_table_and_row(self, empty_db: Path) -> None:
+        with patch.object(sessions, "get_db_path", return_value=empty_db):
+            await sessions.upsert_thread_index(
+                "t1",
+                agent_name="a",
+                updated_at="2025-01-01T00:00:00",
+                created_at="2025-01-01T00:00:00",
+                git_branch="main",
+                cwd="/x",
+            )
+            assert await sessions.thread_exists("t1")
+
+    async def test_upsert_updates_existing(self, index_only_db: Path) -> None:
+        with patch.object(sessions, "get_db_path", return_value=index_only_db):
+            await sessions.upsert_thread_index(
+                "srv-1",
+                updated_at="2025-07-01T00:00:00+00:00",
+            )
+            threads = await sessions.list_threads()
+            by_id = {t["thread_id"]: t for t in threads}
+            assert by_id["srv-1"]["updated_at"] == "2025-07-01T00:00:00+00:00"
+            # agent_name should be preserved via COALESCE
+            assert by_id["srv-1"]["agent_name"] == "agent1"
+
+    # -- list_threads with thread_index --
+
+    async def test_list_threads_from_index_only(self, index_only_db: Path) -> None:
+        with patch.object(sessions, "get_db_path", return_value=index_only_db):
+            threads = await sessions.list_threads()
+            assert len(threads) == 2
+            ids = {t["thread_id"] for t in threads}
+            assert ids == {"srv-1", "srv-2"}
+
+    async def test_list_threads_index_filter_by_agent(
+        self, index_only_db: Path
+    ) -> None:
+        with patch.object(sessions, "get_db_path", return_value=index_only_db):
+            threads = await sessions.list_threads(agent_name="agent1")
+            assert len(threads) == 1
+            assert threads[0]["thread_id"] == "srv-1"
+
+    async def test_list_threads_index_filter_by_branch(
+        self, index_only_db: Path
+    ) -> None:
+        with patch.object(sessions, "get_db_path", return_value=index_only_db):
+            threads = await sessions.list_threads(branch="feat")
+            assert len(threads) == 1
+            assert threads[0]["thread_id"] == "srv-2"
+
+    # -- thread_exists with thread_index --
+
+    async def test_thread_exists_in_index(self, index_only_db: Path) -> None:
+        with patch.object(sessions, "get_db_path", return_value=index_only_db):
+            assert await sessions.thread_exists("srv-1") is True
+            assert await sessions.thread_exists("nope") is False
+
+    # -- get_most_recent with thread_index --
+
+    async def test_get_most_recent_from_index(self, index_only_db: Path) -> None:
+        with patch.object(sessions, "get_db_path", return_value=index_only_db):
+            tid = await sessions.get_most_recent()
+            assert tid == "srv-2"  # latest updated_at
+
+    async def test_get_most_recent_from_index_filtered(
+        self, index_only_db: Path
+    ) -> None:
+        with patch.object(sessions, "get_db_path", return_value=index_only_db):
+            tid = await sessions.get_most_recent(agent_name="agent1")
+            assert tid == "srv-1"
+
+    # -- get_thread_agent with thread_index --
+
+    async def test_get_thread_agent_from_index(self, index_only_db: Path) -> None:
+        with patch.object(sessions, "get_db_path", return_value=index_only_db):
+            assert await sessions.get_thread_agent("srv-1") == "agent1"
+            assert await sessions.get_thread_agent("nope") is None
+
+    # -- find_similar_threads with thread_index --
+
+    async def test_find_similar_from_index(self, index_only_db: Path) -> None:
+        with patch.object(sessions, "get_db_path", return_value=index_only_db):
+            matches = await sessions.find_similar_threads("srv")
+            assert set(matches) == {"srv-1", "srv-2"}
+
+    # -- delete_thread with thread_index --
+
+    async def test_delete_from_index(self, index_only_db: Path) -> None:
+        with patch.object(sessions, "get_db_path", return_value=index_only_db):
+            assert await sessions.delete_thread("srv-1") is True
+            assert await sessions.thread_exists("srv-1") is False
+
+    async def test_delete_missing_from_index(self, index_only_db: Path) -> None:
+        with patch.object(sessions, "get_db_path", return_value=index_only_db):
+            assert await sessions.delete_thread("nope") is False

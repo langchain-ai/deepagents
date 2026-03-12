@@ -177,6 +177,10 @@ class RemoteAgent:
     ) -> Any:  # noqa: ANN401
         """Get the current state of a thread.
 
+        Uses `_ensure_thread` so that threads persisted in the SQLite
+        checkpointer (from a previous server session) are registered in
+        the server's in-memory thread registry before reading state.
+
         Args:
             config: Config with `configurable.thread_id`.
 
@@ -190,10 +194,8 @@ class RemoteAgent:
             return None
 
         try:
-            thread_id = await self._resolve_thread_id(thread_id)
-            if thread_id is None:
-                return None
-            state = await client.threads.get_state(thread_id)
+            thread = await self._ensure_thread(thread_id)
+            state = await client.threads.get_state(thread["thread_id"])
             return _StateWrapper(state)
         except Exception:
             logger.warning(
@@ -218,10 +220,8 @@ class RemoteAgent:
             return
 
         try:
-            thread_id = await self._resolve_thread_id(thread_id)
-            if thread_id is None:
-                return
-            await client.threads.update_state(thread_id, values)
+            thread = await self._ensure_thread(thread_id)
+            await client.threads.update_state(thread["thread_id"], values)
         except Exception:
             logger.warning(
                 "Failed to update state for thread %s", thread_id, exc_info=True
@@ -278,22 +278,57 @@ class RemoteAgent:
             metadata=thread_metadata,
         )
 
-    async def _resolve_thread_id(self, thread_id: str) -> str | None:
-        """Resolve a thread ID, returning None if the thread doesn't exist.
+    async def list_threads(
+        self,
+        *,
+        limit: int = 20,
+        sort_by: str = "updated",
+    ) -> list[dict[str, Any]]:
+        """List threads from the remote LangGraph server.
 
         Args:
-            thread_id: Thread ID to resolve.
+            limit: Maximum number of threads to return.
+            sort_by: Sort field — `"updated"` or `"created"`.
 
         Returns:
-            The thread ID if it exists, None otherwise.
+            List of `ThreadInfo`-compatible dicts.
         """
         client = self._get_client()
         try:
-            thread = await client.threads.get(_to_uuid(thread_id))
-            return thread["thread_id"]
+            results = await client.threads.search(
+                limit=limit,
+                sort_by="updated" if sort_by == "updated" else "created",
+                sort_order="desc",
+            )
         except Exception:
-            logger.debug("Thread %s not found or unreachable", thread_id, exc_info=True)
-            return None
+            logger.warning("Failed to list threads from server", exc_info=True)
+            return []
+        return [_server_thread_to_info(t) for t in results]
+
+    async def delete_thread(self, thread_id: str) -> bool:
+        """Delete a thread on the remote server.
+
+        Args:
+            thread_id: Thread ID to delete.
+
+        Returns:
+            True if deleted, False if not found.
+        """
+        client = self._get_client()
+        try:
+            await client.threads.delete(_to_uuid(thread_id))
+        except Exception as exc:
+            import httpx
+
+            if isinstance(exc, httpx.HTTPStatusError) and (
+                exc.response.status_code == 404  # noqa: PLR2004
+            ):
+                return False
+            logger.warning(
+                "Failed to delete thread %s from server", thread_id, exc_info=True
+            )
+            return False
+        return True
 
     def with_config(self, config: dict[str, Any]) -> RemoteAgent:  # noqa: ARG002
         """Return self (config is passed per-call, not stored).
@@ -305,6 +340,34 @@ class RemoteAgent:
             Self.
         """
         return self
+
+
+def _server_thread_to_info(thread: dict[str, Any]) -> dict[str, Any]:
+    """Convert a server Thread dict to a `ThreadInfo`-compatible dict.
+
+    Args:
+        thread: Thread dict from the LangGraph server.
+
+    Returns:
+        Dict matching the `ThreadInfo` TypedDict shape.
+    """
+    metadata = thread.get("metadata") or {}
+
+    def _ts(val: Any) -> str | None:  # noqa: ANN401
+        if val is None:
+            return None
+        if isinstance(val, datetime):
+            return val.isoformat()
+        return str(val)
+
+    return {
+        "thread_id": thread.get("thread_id", ""),
+        "agent_name": metadata.get("agent_name"),
+        "updated_at": _ts(thread.get("updated_at")),
+        "created_at": _ts(thread.get("created_at")),
+        "git_branch": metadata.get("git_branch"),
+        "cwd": metadata.get("cwd"),
+    }
 
 
 class _StateWrapper:
@@ -416,6 +479,17 @@ class _StreamConverter:
                     self._seen_msg_ids.add(msg_id)
                 if event == "messages/complete":
                     if msg_id and msg_id in self._seen_text:
+                        # Text already streamed via partial — but the
+                        # complete event often carries usage_metadata that
+                        # was absent on partials.  Emit a content-free
+                        # chunk so the adapter can record token counts.
+                        if isinstance(item, dict) and item.get("usage_metadata"):
+                            usage_stub = dict(item)
+                            usage_stub["content"] = ""
+                            usage_stub["tool_calls"] = []
+                            msg_obj = _convert_message_data(usage_stub)
+                            if msg_obj is not None:
+                                results.append((namespace, "messages", (msg_obj, {})))
                         continue
                     msg_obj = _convert_message_data(item)
                     if msg_obj is not None:

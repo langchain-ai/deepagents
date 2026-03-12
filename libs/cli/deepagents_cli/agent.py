@@ -591,6 +591,11 @@ def _add_interrupt_on() -> dict[str, InterruptOnConfig]:
         "description": _format_task_description,  # type: ignore[typeddict-item]  # Callable description narrower than TypedDict expects
     }
 
+    async_subagent_interrupt_config: InterruptOnConfig = {
+        "allowed_decisions": ["approve", "reject"],
+        "description": "Launch or send a follow-up to a remote async subagent.",
+    }
+
     interrupt_map: dict[str, InterruptOnConfig] = {
         "execute": execute_interrupt_config,
         "write_file": write_file_interrupt_config,
@@ -598,6 +603,8 @@ def _add_interrupt_on() -> dict[str, InterruptOnConfig]:
         "web_search": web_search_interrupt_config,
         "fetch_url": fetch_url_interrupt_config,
         "task": task_interrupt_config,
+        "launch_async_subagent": async_subagent_interrupt_config,
+        "update_async_subagent": async_subagent_interrupt_config,
     }
 
     if REQUIRE_COMPACT_TOOL_APPROVAL:

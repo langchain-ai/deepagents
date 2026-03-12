@@ -38,6 +38,8 @@ def test_acp_mode_loads_tools_and_mcp_and_runs_server() -> None:
     model_obj = object()
     model_result = SimpleNamespace(
         model=model_obj,
+        provider="anthropic",
+        model_name="claude-sonnet-4-6",
         apply_to_settings=MagicMock(),
     )
     server = object()
@@ -78,6 +80,7 @@ def test_acp_mode_loads_tools_and_mcp_and_runs_server() -> None:
         ),
         patch("deepagents_cli.main.parse_args", return_value=args),
         patch("deepagents_cli.config.settings", new=SimpleNamespace(has_tavily=True)),
+        patch("deepagents_cli.model_config.save_recent_model", return_value=True),
         patch(
             "deepagents_cli.config.create_model", return_value=model_result
         ) as mock_create_model,
@@ -125,6 +128,8 @@ def test_acp_mode_omits_web_search_without_tavily() -> None:
     model_obj = object()
     model_result = SimpleNamespace(
         model=model_obj,
+        provider="anthropic",
+        model_name="claude-sonnet-4-6",
         apply_to_settings=MagicMock(),
     )
     server = object()
@@ -142,6 +147,7 @@ def test_acp_mode_omits_web_search_without_tavily() -> None:
         ),
         patch("deepagents_cli.main.parse_args", return_value=args),
         patch("deepagents_cli.config.settings", new=SimpleNamespace(has_tavily=False)),
+        patch("deepagents_cli.model_config.save_recent_model", return_value=True),
         patch("deepagents_cli.config.create_model", return_value=model_result),
         patch("deepagents_cli.mcp_tools.resolve_and_load_mcp_tools", resolve_mcp_tools),
         patch("deepagents_cli.tools.http_request", new=http_tool),

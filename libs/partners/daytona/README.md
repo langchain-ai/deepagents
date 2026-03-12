@@ -22,7 +22,7 @@ sandbox = Daytona().create()
 backend = DaytonaSandbox(
     sandbox=sandbox,
     timeout=300,
-    polling_interval=0.25,
+    sync_polling_interval=0.25,
 )
 result = backend.execute("echo hello")
 print(result.output)

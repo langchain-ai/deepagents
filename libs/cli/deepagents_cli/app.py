@@ -710,6 +710,13 @@ class DeepAgentsApp(App):
                 group="startup-thread-prewarm",
             )
 
+            # Prewarm model caches so `/model` opens instantly.
+            self.run_worker(
+                self._prewarm_model_caches,
+                exclusive=True,
+                group="startup-model-prewarm",
+            )
+
         # Background update check (opt-out via DEEPAGENTS_NO_UPDATE_CHECK)
         if not os.environ.get("DEEPAGENTS_NO_UPDATE_CHECK"):
             self.run_worker(
@@ -768,6 +775,21 @@ class DeepAgentsApp(App):
         )
 
         await prewarm_thread_message_counts(limit=get_thread_limit())
+
+    async def _prewarm_model_caches(self) -> None:
+        """Prewarm model discovery and profile caches without blocking startup."""
+        try:
+            from deepagents_cli.model_config import (
+                get_available_models,
+                get_model_profiles,
+            )
+
+            await asyncio.to_thread(get_available_models)
+            await asyncio.to_thread(
+                get_model_profiles, cli_override=self._profile_override
+            )
+        except Exception:
+            logger.debug("Could not prewarm model caches", exc_info=True)
 
     async def _check_for_updates(self) -> None:
         """Check PyPI for a newer deepagents-cli version and notify the user."""
@@ -3206,17 +3228,25 @@ class DeepAgentsApp(App):
             provider = detect_provider(model_spec)
 
         # Check credentials
-        if provider and has_provider_credentials(provider) is False:
+        has_creds = has_provider_credentials(provider) if provider else None
+        if has_creds is False and provider is not None:
             env_var = get_credential_env_var(provider)
-            if env_var:
-                detail = f"{env_var} is not set or is empty"
-            else:
-                detail = (
+            detail = (
+                f"{env_var} is not set or is empty"
+                if env_var
+                else (
                     f"provider '{provider}' is not recognized. "
-                    "Add it to ~/.deepagents/config.toml with an api_key_env field"
+                    "Add it to ~/.deepagents/config.toml with an "
+                    "api_key_env field"
                 )
+            )
             await self._mount_message(ErrorMessage(f"Missing credentials: {detail}"))
             return
+        if has_creds is None and provider:
+            logger.debug(
+                "Credentials for provider '%s' cannot be verified; proceeding anyway",
+                provider,
+            )
 
         # Check if already using this exact model
         if model_name == settings.model_name and (
@@ -3230,7 +3260,7 @@ class DeepAgentsApp(App):
         if not self._checkpointer:
             # No checkpointer means we can't hot-swap
             # Save the preference and notify user
-            if save_recent_model(model_spec):
+            if await asyncio.to_thread(save_recent_model, model_spec):
                 await self._mount_message(
                     AppMessage(
                         f"Model preference set to {model_spec}. "
@@ -3296,7 +3326,7 @@ class DeepAgentsApp(App):
             if provider:
                 model_spec = f"{provider}:{model_spec}"
 
-        if save_default_model(model_spec):
+        if await asyncio.to_thread(save_default_model, model_spec):
             await self._mount_message(AppMessage(f"Default model set to {model_spec}"))
         else:
             await self._mount_message(
@@ -3313,7 +3343,7 @@ class DeepAgentsApp(App):
         """
         from deepagents_cli.model_config import clear_default_model
 
-        if clear_default_model():
+        if await asyncio.to_thread(clear_default_model):
             await self._mount_message(
                 AppMessage(
                     "Default model cleared. "

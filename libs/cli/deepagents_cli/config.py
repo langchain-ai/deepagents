@@ -1332,7 +1332,7 @@ def _get_default_model_spec() -> str:
     if settings.has_vertex_ai:
         return "google_vertexai:gemini-3.1-pro-preview"
     if settings.has_nvidia:
-        return "nvidia:nvidia/nemotron-3-nano-30b-a3b"
+        return "nvidia:nvidia/nemotron-3-super-120b-a12b"
 
     msg = (
         "No credentials configured. Please set one of: "

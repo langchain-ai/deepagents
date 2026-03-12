@@ -1,58 +1,23 @@
-"""Tests for _convert_stream_chunk, _StreamConverter, _to_uuid, and RemoteAgent."""
+"""Tests for RemoteAgent, _to_uuid, _convert_message_data, and helpers."""
 
 import uuid
-from typing import Any, NamedTuple
-from unittest.mock import AsyncMock, MagicMock, patch
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from langchain_core.messages import AIMessageChunk, HumanMessage, ToolMessage
 
 from deepagents_cli.remote_client import (
     RemoteAgent,
-    _convert_stream_chunk,
-    _StreamConverter,
+    _convert_interrupts,
+    _convert_message_data,
+    _prepare_config,
     _to_uuid,
 )
 
-
-class StreamPart(NamedTuple):
-    event: str
-    data: Any
-
-
-def test_error_event_raises() -> None:
-    """Error event with a dict containing 'message' raises RuntimeError."""
-    chunk = StreamPart(event="error", data={"message": "something broke"})
-    with pytest.raises(RuntimeError, match="something broke"):
-        _convert_stream_chunk(chunk, modes=["updates"])
-
-
-def test_error_event_raises_non_dict() -> None:
-    """Error event with a plain string raises RuntimeError."""
-    chunk = StreamPart(event="error", data="plain error text")
-    with pytest.raises(RuntimeError, match="plain error text"):
-        _convert_stream_chunk(chunk, modes=["updates"])
-
-
-def test_metadata_event_ignored() -> None:
-    """Metadata events should be silently ignored (empty list)."""
-    chunk = StreamPart(event="metadata", data={"run_id": "abc"})
-    result = _convert_stream_chunk(chunk, modes=["updates"])
-    assert result == []
-
-
-def test_end_event_ignored() -> None:
-    """End events should be silently ignored (empty list)."""
-    chunk = StreamPart(event="end", data=None)
-    result = _convert_stream_chunk(chunk, modes=["updates"])
-    assert result == []
-
-
-def test_updates_event() -> None:
-    """Updates event with dict data returns a single 3-tuple."""
-    data = {"agent": {"messages": [{"role": "ai", "content": "hi"}]}}
-    chunk = StreamPart(event="updates", data=data)
-    result = _convert_stream_chunk(chunk, modes=["updates"])
-    assert result == [((), "updates", data)]
+# ---------------------------------------------------------------------------
+# _to_uuid
+# ---------------------------------------------------------------------------
 
 
 class TestToUuid:
@@ -69,796 +34,511 @@ class TestToUuid:
         assert _to_uuid("abcd1234") == _to_uuid("abcd1234")
 
 
-class TestStreamConverterDelta:
-    """Verify _StreamConverter emits incremental deltas, not accumulated text."""
+# ---------------------------------------------------------------------------
+# _prepare_config
+# ---------------------------------------------------------------------------
 
-    def _make_partial(self, msg_id: str, content: str) -> StreamPart:
-        return StreamPart(
-            event="messages/partial",
-            data={"id": msg_id, "type": "AIMessageChunk", "content": content},
-        )
 
-    @staticmethod
-    def _get_text(msg: Any) -> str:  # noqa: ANN401
-        """Extract plain text from a message's content_blocks."""
-        return "".join(
-            b.get("text", "") for b in msg.content_blocks if b.get("type") == "text"
-        )
+class TestPrepareConfig:
+    def test_converts_thread_id_to_uuid(self) -> None:
+        config = {"configurable": {"thread_id": "short"}}
+        result = _prepare_config(config)
+        uuid.UUID(result["configurable"]["thread_id"])
 
-    def test_first_chunk_emits_full_text(self) -> None:
-        converter = _StreamConverter()
-        results = converter.convert(self._make_partial("m1", "Hi"), modes=[])
-        assert len(results) == 1
-        _, mode, (msg, _meta) = results[0]
-        assert mode == "messages"
-        assert self._get_text(msg) == "Hi"
+    def test_preserves_valid_uuid(self) -> None:
+        tid = str(uuid.uuid4())
+        config = {"configurable": {"thread_id": tid}}
+        result = _prepare_config(config)
+        assert result["configurable"]["thread_id"] == tid
 
-    def test_subsequent_chunks_emit_delta_only(self) -> None:
-        converter = _StreamConverter()
-        converter.convert(self._make_partial("m1", "Hi"), modes=[])
-        results = converter.convert(self._make_partial("m1", "Hi! How"), modes=[])
-        assert len(results) == 1
-        _, _, (msg, _) = results[0]
-        assert self._get_text(msg) == "! How"
+    def test_none_config(self) -> None:
+        result = _prepare_config(None)
+        assert result == {"configurable": {}}
 
-    def test_full_accumulation_gives_correct_deltas(self) -> None:
-        converter = _StreamConverter()
-        texts = ["Hi", "Hi! How", "Hi! How can I help you today?"]
-        deltas = []
-        for text in texts:
-            results = converter.convert(self._make_partial("m1", text), modes=[])
-            if results:
-                _, _, (msg, _) = results[0]
-                deltas.append(self._get_text(msg))
-        assert "".join(deltas) == "Hi! How can I help you today?"
+    def test_does_not_mutate_original(self) -> None:
+        config = {"configurable": {"thread_id": "abc"}}
+        _prepare_config(config)
+        assert config["configurable"]["thread_id"] == "abc"
 
-    def test_empty_delta_skipped(self) -> None:
-        converter = _StreamConverter()
-        converter.convert(self._make_partial("m1", "Hi"), modes=[])
-        results = converter.convert(self._make_partial("m1", "Hi"), modes=[])
-        assert results == []
+    def test_missing_configurable_key(self) -> None:
+        result = _prepare_config({"other": "value"})
+        assert result["configurable"] == {}
 
-    def test_different_message_ids_tracked_independently(self) -> None:
-        converter = _StreamConverter()
-        converter.convert(self._make_partial("m1", "Hello"), modes=[])
-        results = converter.convert(self._make_partial("m2", "World"), modes=[])
-        assert len(results) == 1
-        _, _, (msg, _) = results[0]
-        assert self._get_text(msg) == "World"
+    def test_empty_string_thread_id_not_converted(self) -> None:
+        result = _prepare_config({"configurable": {"thread_id": ""}})
+        assert result["configurable"]["thread_id"] == ""
 
-    def test_tool_calls_emitted_even_without_text_delta(self) -> None:
-        converter = _StreamConverter()
-        chunk = StreamPart(
-            event="messages/partial",
-            data={
-                "id": "m1",
+
+# ---------------------------------------------------------------------------
+# _convert_message_data
+# ---------------------------------------------------------------------------
+
+
+class TestConvertMessageData:
+    def test_ai_message_text(self) -> None:
+        msg = _convert_message_data({"type": "ai", "content": "Hello", "id": "m1"})
+        assert isinstance(msg, AIMessageChunk)
+        assert msg.content == "Hello"
+        assert msg.id == "m1"
+
+    def test_ai_message_with_tool_call_chunks(self) -> None:
+        msg = _convert_message_data(
+            {
                 "type": "AIMessageChunk",
                 "content": "",
-                "tool_calls": [{"id": "tc1", "name": "search", "args": {"q": "test"}}],
-            },
-        )
-        results = converter.convert(chunk, modes=[])
-        assert len(results) == 1
-
-    def test_list_content_delta(self) -> None:
-        converter = _StreamConverter()
-        chunk1 = StreamPart(
-            event="messages/partial",
-            data={
                 "id": "m1",
-                "type": "AIMessageChunk",
-                "content": [{"type": "text", "text": "Hi"}],
-            },
+                "tool_call_chunks": [
+                    {"name": "search", "args": '{"q":', "id": "tc1", "index": 0}
+                ],
+            }
         )
-        chunk2 = StreamPart(
-            event="messages/partial",
-            data={
+        assert isinstance(msg, AIMessageChunk)
+        tc_blocks = [
+            b for b in msg.content_blocks if b.get("type") == "tool_call_chunk"
+        ]
+        assert len(tc_blocks) == 1
+        assert tc_blocks[0]["name"] == "search"
+        assert tc_blocks[0]["args"] == '{"q":'
+
+    def test_ai_message_with_string_args_tool_calls(self) -> None:
+        msg = _convert_message_data(
+            {
+                "type": "ai",
+                "content": "",
                 "id": "m1",
-                "type": "AIMessageChunk",
-                "content": [{"type": "text", "text": "Hi! How"}],
-            },
+                "tool_calls": [{"name": "ls", "args": '{"path":"/"', "id": "tc1"}],
+            }
         )
-        converter.convert(chunk1, modes=[])
-        results = converter.convert(chunk2, modes=[])
-        assert len(results) == 1
-        _, _, (msg, _) = results[0]
-        assert self._get_text(msg) == "! How"
+        assert isinstance(msg, AIMessageChunk)
+        tc_blocks = [
+            b for b in msg.content_blocks if b.get("type") == "tool_call_chunk"
+        ]
+        assert len(tc_blocks) == 1
 
-    def test_complete_event_passes_through_tool_message(self) -> None:
-        converter = _StreamConverter()
-        chunk = StreamPart(
-            event="messages/complete",
-            data=[
-                {
-                    "id": "m2",
-                    "type": "tool",
-                    "content": "Sunny, 75F",
-                    "tool_call_id": "tc1",
-                    "name": "search",
-                }
-            ],
+    def test_ai_message_with_dict_args_tool_calls(self) -> None:
+        msg = _convert_message_data(
+            {
+                "type": "ai",
+                "content": "",
+                "id": "m1",
+                "tool_calls": [{"name": "search", "args": {"q": "test"}, "id": "tc1"}],
+            }
         )
-        results = converter.convert(chunk, modes=[])
-        assert len(results) == 1
-        _, mode, (msg, _) = results[0]
-        assert mode == "messages"
-        from langchain_core.messages import ToolMessage
-
-        assert isinstance(msg, ToolMessage)
-        assert msg.content == "Sunny, 75F"
-        assert msg.tool_call_id == "tc1"
-
-    def test_complete_event_empty_content_not_dropped(self) -> None:
-        converter = _StreamConverter()
-        chunk = StreamPart(
-            event="messages/complete",
-            data=[
-                {
-                    "id": "m2",
-                    "type": "tool",
-                    "content": "",
-                    "tool_call_id": "tc1",
-                    "name": "search",
-                }
-            ],
-        )
-        results = converter.convert(chunk, modes=[])
-        assert len(results) == 1
-
-    def test_repeated_tool_call_same_args_not_re_emitted(self) -> None:
-        converter = _StreamConverter()
-        chunk1 = StreamPart(
-            event="messages/partial",
-            data=[
-                {
-                    "id": "m1",
-                    "type": "AIMessageChunk",
-                    "content": "",
-                    "tool_calls": [
-                        {"id": "tc1", "name": "search", "args": {"q": "test"}}
-                    ],
-                }
-            ],
-        )
-        results1 = converter.convert(chunk1, modes=[])
-        assert len(results1) == 1
-
-        results2 = converter.convert(chunk1, modes=[])
-        assert results2 == []
-
-    def test_tool_call_args_change_emits_delta(self) -> None:
-        converter = _StreamConverter()
-        chunk1 = StreamPart(
-            event="messages/partial",
-            data=[
-                {
-                    "id": "m1",
-                    "type": "AIMessageChunk",
-                    "content": "",
-                    "tool_calls": [
-                        {"id": "tc1", "name": "search", "args": {"q": "test"}}
-                    ],
-                }
-            ],
-        )
-        converter.convert(chunk1, modes=[])
-
-        chunk2 = StreamPart(
-            event="messages/partial",
-            data=[
-                {
-                    "id": "m1",
-                    "type": "AIMessageChunk",
-                    "content": "",
-                    "tool_calls": [
-                        {"id": "tc1", "name": "search", "args": {"q": "test query"}}
-                    ],
-                }
-            ],
-        )
-        results2 = converter.convert(chunk2, modes=[])
-        assert len(results2) == 1
-
-    def test_updates_event_extracts_tool_call_messages(self) -> None:
-        converter = _StreamConverter()
-        chunk = StreamPart(
-            event="updates",
-            data={
-                "agent": {
-                    "messages": [
-                        {
-                            "id": "m1",
-                            "type": "ai",
-                            "content": "",
-                            "tool_calls": [
-                                {"id": "tc1", "name": "search", "args": {"q": "test"}}
-                            ],
-                            "response_metadata": {},
-                        }
-                    ]
-                }
-            },
-        )
-        results = converter.convert(chunk, modes=[])
-        updates = [r for r in results if r[1] == "updates"]
-        messages = [r for r in results if r[1] == "messages"]
-        assert len(updates) == 1
-        assert len(messages) == 1
-        msg = messages[0][2][0]
+        assert isinstance(msg, AIMessageChunk)
         assert msg.tool_calls[0]["name"] == "search"
 
-    def test_updates_event_extracts_tool_result(self) -> None:
-        converter = _StreamConverter()
-        chunk = StreamPart(
-            event="updates",
-            data={
-                "tools": {
-                    "messages": [
-                        {
-                            "id": "m2",
-                            "type": "tool",
-                            "content": "Sunny",
-                            "tool_call_id": "tc1",
-                            "name": "search",
-                        }
-                    ]
-                }
-            },
-        )
-        results = converter.convert(chunk, modes=[])
-        messages = [r for r in results if r[1] == "messages"]
-        assert len(messages) == 1
-        from langchain_core.messages import ToolMessage
-
-        assert isinstance(messages[0][2][0], ToolMessage)
-
-    def test_updates_no_duplicate_with_partial(self) -> None:
-        converter = _StreamConverter()
-        partial = StreamPart(
-            event="messages/partial",
-            data=[
-                {
-                    "id": "m1",
-                    "type": "AIMessageChunk",
-                    "content": "Hi",
-                    "tool_calls": [],
-                }
-            ],
-        )
-        converter.convert(partial, modes=[])
-        update = StreamPart(
-            event="updates",
-            data={
-                "agent": {
-                    "messages": [
-                        {
-                            "id": "m1",
-                            "type": "ai",
-                            "content": "Hi",
-                            "tool_calls": [],
-                            "response_metadata": {},
-                        }
-                    ]
-                }
-            },
-        )
-        results = converter.convert(update, modes=[])
-        messages = [r for r in results if r[1] == "messages"]
-        assert len(messages) == 0
-
-    def test_full_tool_call_sequence(self) -> None:
-        """Simulate the full SSE event sequence for an agent with tool calls."""
-        from langchain_core.messages import ToolMessage as LCToolMessage
-
-        converter = _StreamConverter()
-        ai_msg = {
-            "content": "Let me search.",
-            "type": "ai",
-            "id": "msg-1",
-            "tool_calls": [
-                {
-                    "name": "search",
-                    "args": {"q": "weather"},
-                    "id": "tc1",
-                    "type": "tool_call",
-                }
-            ],
-            "response_metadata": {},
-            "invalid_tool_calls": [],
-        }
-        tool_msg = {
-            "content": "Sunny",
-            "type": "tool",
-            "tool_call_id": "tc1",
-            "id": "msg-2",
-            "name": "search",
-        }
-        events = [
-            StreamPart("messages/partial", [{**ai_msg, "content": "Let me "}]),
-            StreamPart("messages/partial", [ai_msg]),
-            StreamPart("messages/complete", [ai_msg]),
-            StreamPart("updates", {"agent": {"messages": [ai_msg]}}),
-            StreamPart("messages/complete", [tool_msg]),
-            StreamPart("updates", {"tools": {"messages": [tool_msg]}}),
-        ]
-
-        all_msgs = []
-        for ev in events:
-            for _, mode, data in converter.convert(ev, modes=[]):
-                if mode == "messages":
-                    all_msgs.append(data[0])
-
-        ai_chunks = [m for m in all_msgs if not isinstance(m, LCToolMessage)]
-        tool_results = [m for m in all_msgs if isinstance(m, LCToolMessage)]
-
-        assert len(tool_results) == 1
-        assert tool_results[0].content == "Sunny"
-
-        tc_blocks = [
-            b
-            for m in ai_chunks
-            for b in m.content_blocks
-            if b.get("type") in ("tool_call", "tool_call_chunk")
-        ]
-        assert len(tc_blocks) >= 1
-        assert tc_blocks[0]["name"] == "search"
-
-        text = "".join(
-            b.get("text", "")
-            for m in ai_chunks
-            for b in m.content_blocks
-            if b.get("type") == "text"
-        )
-        assert text == "Let me search."
-
-    def test_content_blocks_format_for_textual_adapter(self) -> None:
-        """Verify content_blocks produce tool_call_chunk with string args."""
-        converter = _StreamConverter()
-        chunk = StreamPart(
-            event="messages/partial",
-            data=[
-                {
-                    "id": "m1",
-                    "type": "ai",
-                    "content": "",
-                    "tool_calls": [
-                        {
-                            "name": "web_search",
-                            "args": {"query": "weather NYC"},
-                            "id": "call_abc123",
-                            "type": "tool_call",
-                        }
-                    ],
-                    "response_metadata": {},
-                    "invalid_tool_calls": [],
-                    "usage_metadata": None,
-                }
-            ],
-        )
-        results = converter.convert(chunk, modes=[])
-        assert len(results) == 1
-        _, mode, (msg, _meta) = results[0]
-        assert mode == "messages"
-
-        blocks = msg.content_blocks
-        tc_blocks = [
-            b for b in blocks if b.get("type") in ("tool_call", "tool_call_chunk")
-        ]
-        assert len(tc_blocks) == 1
-        tc = tc_blocks[0]
-        assert tc["type"] == "tool_call_chunk"
-        assert tc["name"] == "web_search"
-        assert tc["id"] == "call_abc123"
-        assert isinstance(tc["args"], str)
-        assert "weather NYC" in tc["args"]
-
-    def test_text_then_tool_call_produces_separate_messages(self) -> None:
-        """Text and tool call split into separate messages."""
-        converter = _StreamConverter()
-        converter.convert(
-            StreamPart(
-                "messages/partial",
-                [
-                    {
-                        "id": "m1",
-                        "type": "ai",
-                        "content": "Let me ",
-                        "tool_calls": [],
-                    }
-                ],
-            ),
-            modes=[],
-        )
-        results = converter.convert(
-            StreamPart(
-                "messages/partial",
-                [
-                    {
-                        "id": "m1",
-                        "type": "ai",
-                        "content": "Let me check.",
-                        "tool_calls": [
-                            {
-                                "name": "search",
-                                "args": {"q": "test"},
-                                "id": "tc1",
-                                "type": "tool_call",
-                            }
-                        ],
-                    }
-                ],
-            ),
-            modes=[],
-        )
-        assert len(results) == 2
-        text_msg = results[0][2][0]
-        tc_msg = results[1][2][0]
-        assert self._get_text(text_msg) == "check."
-        tc_blocks = [
-            b
-            for b in tc_msg.content_blocks
-            if b.get("type") in ("tool_call", "tool_call_chunk")
-        ]
-        assert len(tc_blocks) == 1
-        assert tc_blocks[0]["name"] == "search"
-
-    def test_messages_partial_data_as_single_dict(self) -> None:
-        """Server may send messages/partial data as a single dict (not list)."""
-        converter = _StreamConverter()
-        chunk = StreamPart(
-            event="messages/partial",
-            data={
-                "id": "m1",
+    def test_ai_message_usage_metadata(self) -> None:
+        msg = _convert_message_data(
+            {
                 "type": "ai",
-                "content": "Hello",
-                "tool_calls": [],
-                "response_metadata": {},
-            },
+                "content": "",
+                "id": "m1",
+                "usage_metadata": {
+                    "input_tokens": 10,
+                    "output_tokens": 20,
+                    "total_tokens": 30,
+                },
+            }
         )
-        results = converter.convert(chunk, modes=[])
-        assert len(results) == 1
-        msg = results[0][2][0]
-        text = "".join(
-            b.get("text", "") for b in msg.content_blocks if b.get("type") == "text"
-        )
-        assert text == "Hello"
+        assert msg.usage_metadata["input_tokens"] == 10
 
-    def test_complete_ai_message_skipped_if_seen_in_partial(self) -> None:
-        """AI messages/complete are skipped if already seen via partial."""
-        converter = _StreamConverter()
-        converter.convert(
-            StreamPart(
-                "messages/partial",
-                [{"id": "m1", "type": "ai", "content": "Hi", "tool_calls": []}],
-            ),
-            modes=[],
-        )
-        results = converter.convert(
-            StreamPart(
-                "messages/complete",
-                [{"id": "m1", "type": "ai", "content": "Hi", "tool_calls": []}],
-            ),
-            modes=[],
-        )
-        assert len(results) == 0
+    def test_ai_message_type_alias(self) -> None:
+        msg = _convert_message_data({"type": "AIMessage", "content": "Hi", "id": "m1"})
+        assert isinstance(msg, AIMessageChunk)
+        assert msg.content == "Hi"
 
-    def test_complete_emits_usage_when_skipped_as_duplicate(self) -> None:
-        """usage_metadata on a duplicate complete event is still emitted."""
-        converter = _StreamConverter()
-        converter.convert(
-            StreamPart(
-                "messages/partial",
-                [{"id": "m1", "type": "ai", "content": "Hi", "tool_calls": []}],
-            ),
-            modes=[],
-        )
-        results = converter.convert(
-            StreamPart(
-                "messages/complete",
-                [
-                    {
-                        "id": "m1",
-                        "type": "ai",
-                        "content": "Hi",
-                        "tool_calls": [],
-                        "usage_metadata": {
-                            "input_tokens": 10,
-                            "output_tokens": 20,
-                            "total_tokens": 30,
-                        },
-                    }
-                ],
-            ),
-            modes=[],
-        )
-        assert len(results) == 1
-        msg = results[0][2][0]
-        assert msg.usage_metadata == {
-            "input_tokens": 10,
-            "output_tokens": 20,
-            "total_tokens": 30,
-        }
+    def test_human_message(self) -> None:
+        msg = _convert_message_data({"type": "human", "content": "Hi", "id": "m1"})
+        assert isinstance(msg, HumanMessage)
+        assert msg.content == "Hi"
 
-    def test_complete_no_usage_still_skipped(self) -> None:
-        """Duplicate complete without usage_metadata is still fully skipped."""
-        converter = _StreamConverter()
-        converter.convert(
-            StreamPart(
-                "messages/partial",
-                [{"id": "m1", "type": "ai", "content": "Hi", "tool_calls": []}],
-            ),
-            modes=[],
+    def test_human_message_type_alias(self) -> None:
+        msg = _convert_message_data(
+            {"type": "HumanMessage", "content": "Hey", "id": "m1"}
         )
-        results = converter.convert(
-            StreamPart(
-                "messages/complete",
-                [{"id": "m1", "type": "ai", "content": "Hi", "tool_calls": []}],
-            ),
-            modes=[],
-        )
-        assert len(results) == 0
+        assert isinstance(msg, HumanMessage)
+        assert msg.content == "Hey"
 
-    def test_partial_final_usage_metadata_emitted(self) -> None:
-        """Final partial with usage_metadata but no new text emits a stub chunk."""
-        converter = _StreamConverter()
-        # First partial: text arrives
-        converter.convert(
-            StreamPart(
-                "messages/partial",
-                [
-                    {
-                        "id": "m1",
-                        "type": "ai",
-                        "content": "Hello",
-                        "tool_calls": [],
-                        "usage_metadata": None,
-                    }
-                ],
-            ),
-            modes=[],
+    def test_tool_message(self) -> None:
+        msg = _convert_message_data(
+            {
+                "type": "tool",
+                "content": "Sunny",
+                "tool_call_id": "tc1",
+                "name": "weather",
+                "id": "m2",
+            }
         )
-        # Final partial: same text, but now has usage_metadata
-        results = converter.convert(
-            StreamPart(
-                "messages/partial",
-                [
-                    {
-                        "id": "m1",
-                        "type": "ai",
-                        "content": "Hello",
-                        "tool_calls": [],
-                        "usage_metadata": {
-                            "input_tokens": 100,
-                            "output_tokens": 50,
-                            "total_tokens": 150,
-                        },
-                    }
-                ],
-            ),
-            modes=[],
+        assert isinstance(msg, ToolMessage)
+        assert msg.content == "Sunny"
+        assert msg.tool_call_id == "tc1"
+
+    def test_tool_message_type_alias(self) -> None:
+        msg = _convert_message_data(
+            {
+                "type": "ToolMessage",
+                "content": "result",
+                "tool_call_id": "tc1",
+                "name": "search",
+                "id": "m3",
+            }
         )
-        assert len(results) == 1
-        msg = results[0][2][0]
-        assert msg.usage_metadata == {
-            "input_tokens": 100,
-            "output_tokens": 50,
-            "total_tokens": 150,
-        }
-        # Stub should have empty content
+        assert isinstance(msg, ToolMessage)
+        assert msg.content == "result"
+
+    def test_tool_message_defaults(self) -> None:
+        msg = _convert_message_data({"type": "tool", "id": "m1"})
+        assert isinstance(msg, ToolMessage)
         assert msg.content == ""
+        assert msg.tool_call_id == ""
+        assert msg.name == ""
+        assert msg.status == "success"
 
-    def test_anthropic_tool_call_streaming(self) -> None:
-        """Anthropic tool_use blocks with partial_json produce incremental chunks."""
-        import json
-
-        converter = _StreamConverter()
-        msg_id = "msg-1"
-        tc_id = "toolu_01WUnPp2tqBtg5kqA1vGNGPu"
-        meta = {"model_name": "claude-opus-4-6", "model_provider": "anthropic"}
-
-        events = [
-            StreamPart(
-                "messages/partial",
-                [
-                    {
-                        "content": [],
-                        "response_metadata": meta,
-                        "type": "ai",
-                        "id": msg_id,
-                        "tool_calls": [],
-                    }
-                ],
-            ),
-            StreamPart(
-                "messages/partial",
-                [
-                    {
-                        "content": [
-                            {
-                                "id": tc_id,
-                                "input": {},
-                                "name": "ls",
-                                "type": "tool_use",
-                                "index": 0,
-                            }
-                        ],
-                        "response_metadata": meta,
-                        "type": "ai",
-                        "id": msg_id,
-                        "tool_calls": [
-                            {
-                                "name": "ls",
-                                "args": {},
-                                "id": tc_id,
-                                "type": "tool_call",
-                            }
-                        ],
-                    }
-                ],
-            ),
-            StreamPart(
-                "messages/partial",
-                [
-                    {
-                        "content": [
-                            {
-                                "id": tc_id,
-                                "input": {},
-                                "name": "ls",
-                                "type": "tool_use",
-                                "index": 0,
-                                "partial_json": "",
-                            }
-                        ],
-                        "response_metadata": meta,
-                        "type": "ai",
-                        "id": msg_id,
-                        "tool_calls": [
-                            {
-                                "name": "ls",
-                                "args": {},
-                                "id": tc_id,
-                                "type": "tool_call",
-                            }
-                        ],
-                    }
-                ],
-            ),
-            StreamPart(
-                "messages/partial",
-                [
-                    {
-                        "content": [
-                            {
-                                "id": tc_id,
-                                "input": {},
-                                "name": "ls",
-                                "type": "tool_use",
-                                "index": 0,
-                                "partial_json": '{"path": "/priv',
-                            }
-                        ],
-                        "response_metadata": meta,
-                        "type": "ai",
-                        "id": msg_id,
-                        "tool_calls": [
-                            {
-                                "name": "ls",
-                                "args": {"path": "/priv"},
-                                "id": tc_id,
-                                "type": "tool_call",
-                            }
-                        ],
-                    }
-                ],
-            ),
-            StreamPart(
-                "messages/partial",
-                [
-                    {
-                        "content": [
-                            {
-                                "id": tc_id,
-                                "input": {"path": "/private"},
-                                "name": "ls",
-                                "type": "tool_use",
-                                "index": 0,
-                                "partial_json": '{"path": "/private"}',
-                            }
-                        ],
-                        "response_metadata": meta,
-                        "type": "ai",
-                        "id": msg_id,
-                        "tool_calls": [
-                            {
-                                "name": "ls",
-                                "args": {"path": "/private"},
-                                "id": tc_id,
-                                "type": "tool_call",
-                            }
-                        ],
-                    }
-                ],
-            ),
-        ]
-
-        all_args_parts: list[str] = []
-        for ev in events:
-            for _, mode, (msg, _) in converter.convert(ev, modes=[]):
-                if mode != "messages":
-                    continue
-                for block in msg.content_blocks:
-                    if block.get("type") == "tool_call_chunk":
-                        args = block.get("args", "")
-                        if args:
-                            all_args_parts.append(args)
-
-        joined = "".join(all_args_parts)
-        parsed = json.loads(joined)
-        assert parsed == {"path": "/private"}
+    def test_unknown_type_returns_none(self) -> None:
+        assert _convert_message_data({"type": "unknown"}) is None
 
 
-class TestInterruptConversion:
-    """Verify interrupt dicts from the server are converted to Interrupt objects."""
+# ---------------------------------------------------------------------------
+# _convert_interrupts
+# ---------------------------------------------------------------------------
 
-    def test_values_event_converts_interrupt_dicts(self) -> None:
+
+class TestConvertInterrupts:
+    def test_dicts_to_interrupt_objects(self) -> None:
         from langgraph.types import Interrupt
 
-        converter = _StreamConverter()
-        chunk = StreamPart(
-            event="values",
-            data={
-                "__interrupt__": [
-                    {
-                        "value": {"type": "ask_user", "question": "Approve?"},
-                        "id": "int-1",
-                    }
-                ]
-            },
-        )
-        results = converter.convert(chunk, modes=[])
-        assert len(results) == 1
-        _, mode, data = results[0]
-        assert mode == "updates"
-        interrupts = data["__interrupt__"]
-        assert len(interrupts) == 1
-        assert isinstance(interrupts[0], Interrupt)
-        assert interrupts[0].value == {"type": "ask_user", "question": "Approve?"}
-        assert interrupts[0].id == "int-1"
-
-    def test_updates_event_converts_interrupt_dicts(self) -> None:
-        from langgraph.types import Interrupt
-
-        converter = _StreamConverter()
-        chunk = StreamPart(
-            event="updates",
-            data={
-                "__interrupt__": [
-                    {
-                        "value": {"type": "ask_user", "question": "OK?"},
-                        "id": "int-2",
-                    }
-                ]
-            },
-        )
-        results = converter.convert(chunk, modes=[])
-        updates = [r for r in results if r[1] == "updates"]
-        assert len(updates) == 1
-        interrupts = updates[0][2]["__interrupt__"]
-        assert len(interrupts) == 1
-        assert isinstance(interrupts[0], Interrupt)
-        assert interrupts[0].value == {"type": "ask_user", "question": "OK?"}
+        result = _convert_interrupts([{"value": {"type": "ask_user"}, "id": "int-1"}])
+        assert len(result) == 1
+        assert isinstance(result[0], Interrupt)
+        assert result[0].value == {"type": "ask_user"}
+        assert result[0].id == "int-1"
 
     def test_interrupt_objects_passed_through(self) -> None:
         from langgraph.types import Interrupt
 
-        interrupt = Interrupt(value={"type": "ask_user"}, id="int-3")
-        converter = _StreamConverter()
-        chunk = StreamPart(
-            event="values",
-            data={"__interrupt__": [interrupt]},
-        )
-        results = converter.convert(chunk, modes=[])
+        obj = Interrupt(value="test", id="int-2")
+        result = _convert_interrupts([obj])
+        assert result[0] is obj
+
+    def test_non_list_returns_empty(self) -> None:
+        assert _convert_interrupts("not a list") == []
+
+    def test_dict_without_value_passed_through(self) -> None:
+        raw = [{"id": "x", "other": 123}]
+        result = _convert_interrupts(raw)
+        assert result[0] == {"id": "x", "other": 123}
+
+    def test_interrupt_dict_missing_id_defaults_to_empty(self) -> None:
+        from langgraph.types import Interrupt
+
+        result = _convert_interrupts([{"value": "confirm"}])
+        assert isinstance(result[0], Interrupt)
+        assert result[0].value == "confirm"
+        assert result[0].id == ""
+
+
+# ---------------------------------------------------------------------------
+# Helpers for RemoteAgent tests
+# ---------------------------------------------------------------------------
+
+
+def _make_agent(
+    events: list[tuple[tuple[str, ...], str, Any]],
+) -> RemoteAgent:
+    """Create a RemoteAgent with a mock RemoteGraph yielding events."""
+    agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
+    mock_graph = MagicMock()
+
+    async def fake_astream(  # noqa: RUF029
+        input: Any,  # noqa: A002, ANN401, ARG001
+        **kwargs: Any,  # noqa: ARG001
+    ) -> Any:  # noqa: ANN401
+        for ev in events:
+            yield ev
+
+    mock_graph.astream = fake_astream
+    agent._graph = mock_graph
+    return agent
+
+
+def _config() -> dict[str, Any]:
+    return {"configurable": {"thread_id": "t1"}}
+
+
+# ---------------------------------------------------------------------------
+# RemoteAgent — astream delegation
+# ---------------------------------------------------------------------------
+
+
+class TestRemoteAgentAstream:
+    async def test_text_message_converted(self) -> None:
+        """Messages-tuple text chunks are converted to AIMessageChunk."""
+        events = [((), "messages", ({"type": "ai", "content": "Hi", "id": "m1"}, {}))]
+        agent = _make_agent(events)
+        results = [
+            item async for item in agent.astream({"messages": []}, config=_config())
+        ]
+        assert len(results) == 1
+        ns, mode, (msg, _meta) = results[0]
+        assert ns == ()
+        assert mode == "messages"
+        assert isinstance(msg, AIMessageChunk)
+        assert msg.content == "Hi"
+
+    async def test_tool_message_converted(self) -> None:
+        """Tool messages are converted to ToolMessage."""
+        events = [
+            (
+                (),
+                "messages",
+                (
+                    {
+                        "type": "tool",
+                        "content": "Sunny",
+                        "tool_call_id": "tc1",
+                        "name": "weather",
+                        "id": "m2",
+                    },
+                    {},
+                ),
+            )
+        ]
+        agent = _make_agent(events)
+        results = [
+            item async for item in agent.astream({"messages": []}, config=_config())
+        ]
+        assert len(results) == 1
+        assert isinstance(results[0][2][0], ToolMessage)
+
+    async def test_updates_with_interrupt_converted(self) -> None:
+        """Interrupt dicts in updates events are converted to Interrupt."""
+        from langgraph.types import Interrupt
+
+        events = [
+            (
+                (),
+                "updates",
+                {"__interrupt__": [{"value": {"type": "ask_user"}, "id": "int-1"}]},
+            )
+        ]
+        agent = _make_agent(events)
+        results = [
+            item async for item in agent.astream({"messages": []}, config=_config())
+        ]
         assert len(results) == 1
         interrupts = results[0][2]["__interrupt__"]
-        assert interrupts[0] is interrupt
+        assert isinstance(interrupts[0], Interrupt)
+
+    async def test_updates_without_interrupt_passed_through(self) -> None:
+        """Regular updates events pass through unchanged."""
+        events = [((), "updates", {"agent": {"messages": []}})]
+        agent = _make_agent(events)
+        results = [
+            item async for item in agent.astream({"messages": []}, config=_config())
+        ]
+        assert len(results) == 1
+        assert results[0][1] == "updates"
+        assert results[0][2] == {"agent": {"messages": []}}
+
+    async def test_namespace_preserved(self) -> None:
+        """Namespace from RemoteGraph is preserved in output."""
+        events = [
+            (
+                ("sub", "inner"),
+                "messages",
+                ({"type": "ai", "content": "Hi", "id": "m1"}, {}),
+            )
+        ]
+        agent = _make_agent(events)
+        results = [
+            item async for item in agent.astream({"messages": []}, config=_config())
+        ]
+        assert results[0][0] == ("sub", "inner")
+
+    async def test_unknown_message_type_skipped(self) -> None:
+        """Unknown message types don't produce output."""
+        events = [((), "messages", ({"type": "unknown", "content": "?"}, {}))]
+        agent = _make_agent(events)
+        results = [
+            item async for item in agent.astream({"messages": []}, config=_config())
+        ]
+        assert results == []
+
+    async def test_missing_thread_id_raises(self) -> None:
+        """Raises ValueError if thread_id is missing."""
+        agent = _make_agent([])
+        with pytest.raises(ValueError, match="thread_id"):
+            async for _ in agent.astream({"messages": []}, config={"configurable": {}}):
+                pass
+
+    async def test_rapid_streaming(self) -> None:
+        """Many rapid text events all arrive (no dropped tokens)."""
+        events = [
+            (
+                (),
+                "messages",
+                ({"type": "ai", "content": f"tok{i}", "id": "m1"}, {}),
+            )
+            for i in range(100)
+        ]
+        agent = _make_agent(events)
+        results = [
+            item async for item in agent.astream({"messages": []}, config=_config())
+        ]
+        combined = "".join(r[2][0].content for r in results)
+        assert combined == "".join(f"tok{i}" for i in range(100))
+        assert len(results) == 100
+
+    async def test_non_dict_message_object_passed_through(self) -> None:
+        """Pre-deserialized LangChain message objects are yielded as-is."""
+        chunk = AIMessageChunk(content="pre-built", id="m1")
+        events = [((), "messages", (chunk, {"run_id": "r1"}))]
+        agent = _make_agent(events)
+        results = [
+            item async for item in agent.astream({"messages": []}, config=_config())
+        ]
+        assert len(results) == 1
+        assert results[0][2][0] is chunk
+        assert results[0][2][1] == {"run_id": "r1"}
+
+    async def test_meta_none_defaults_to_empty_dict(self) -> None:
+        """None metadata is normalized to empty dict."""
+        events = [((), "messages", ({"type": "ai", "content": "x", "id": "m1"}, None))]
+        agent = _make_agent(events)
+        results = [
+            item async for item in agent.astream({"messages": []}, config=_config())
+        ]
+        assert results[0][2][1] == {}
+
+    async def test_unknown_mode_passed_through(self) -> None:
+        """Events with unknown modes are yielded unchanged."""
+        events = [((), "values", {"key": "val"})]
+        agent = _make_agent(events)
+        results = [
+            item async for item in agent.astream({"messages": []}, config=_config())
+        ]
+        assert len(results) == 1
+        assert results[0] == ((), "values", {"key": "val"})
+
+    async def test_non_dict_updates_falls_through(self) -> None:
+        """Non-dict updates data passes through the generic yield."""
+        events = [((), "updates", "string_data")]
+        agent = _make_agent(events)
+        results = [
+            item async for item in agent.astream({"messages": []}, config=_config())
+        ]
+        assert len(results) == 1
+        assert results[0] == ((), "updates", "string_data")
+
+
+# ---------------------------------------------------------------------------
+# RemoteAgent — aget_state
+# ---------------------------------------------------------------------------
+
+
+class TestRemoteAgentGetState:
+    async def test_returns_state_on_success(self) -> None:
+        agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
+        mock_graph = MagicMock()
+        state = MagicMock(values={"messages": []}, next=())
+        mock_graph.aget_state = AsyncMock(return_value=state)
+        agent._graph = mock_graph
+
+        result = await agent.aget_state(_config())
+        assert result is state
+
+    async def test_returns_none_when_thread_id_missing(self) -> None:
+        agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
+        result = await agent.aget_state({"configurable": {}})
+        assert result is None
+
+    async def test_returns_none_on_not_found(self) -> None:
+        from langgraph_sdk.errors import NotFoundError
+
+        agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
+        mock_graph = MagicMock()
+        request = MagicMock()
+        response = MagicMock(status_code=404, headers={})
+        exc = NotFoundError("not found", response=response, body=None)
+        exc.request = request
+        mock_graph.aget_state = AsyncMock(side_effect=exc)
+        agent._graph = mock_graph
+
+        result = await agent.aget_state(_config())
+        assert result is None
+
+    async def test_propagates_non_404_exception(self) -> None:
+        agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
+        mock_graph = MagicMock()
+        mock_graph.aget_state = AsyncMock(side_effect=ConnectionError("down"))
+        agent._graph = mock_graph
+
+        with pytest.raises(ConnectionError, match="down"):
+            await agent.aget_state(_config())
+
+    async def test_normalizes_config(self) -> None:
+        agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
+        mock_graph = MagicMock()
+        mock_graph.aget_state = AsyncMock(return_value=None)
+        agent._graph = mock_graph
+
+        await agent.aget_state({"configurable": {"thread_id": "short"}})
+        call_config = mock_graph.aget_state.call_args[0][0]
+        uuid.UUID(call_config["configurable"]["thread_id"])
+
+
+# ---------------------------------------------------------------------------
+# RemoteAgent — aupdate_state
+# ---------------------------------------------------------------------------
+
+
+class TestRemoteAgentUpdateState:
+    async def test_delegates_to_graph(self) -> None:
+        agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
+        mock_graph = MagicMock()
+        mock_graph.aupdate_state = AsyncMock()
+        agent._graph = mock_graph
+
+        await agent.aupdate_state(_config(), {"key": "val"})
+        mock_graph.aupdate_state.assert_called_once()
+
+    async def test_noop_when_thread_id_missing(self) -> None:
+        agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
+        mock_graph = MagicMock()
+        mock_graph.aupdate_state = AsyncMock()
+        agent._graph = mock_graph
+
+        await agent.aupdate_state({"configurable": {}}, {"key": "val"})
+        mock_graph.aupdate_state.assert_not_called()
+
+    async def test_propagates_exception(self) -> None:
+        agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
+        mock_graph = MagicMock()
+        mock_graph.aupdate_state = AsyncMock(side_effect=ConnectionError("down"))
+        agent._graph = mock_graph
+
+        with pytest.raises(ConnectionError, match="down"):
+            await agent.aupdate_state(_config(), {"key": "val"})
+
+    async def test_normalizes_config(self) -> None:
+        agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
+        mock_graph = MagicMock()
+        mock_graph.aupdate_state = AsyncMock()
+        agent._graph = mock_graph
+
+        await agent.aupdate_state(
+            {"configurable": {"thread_id": "short"}}, {"key": "val"}
+        )
+        call_config = mock_graph.aupdate_state.call_args[0][0]
+        uuid.UUID(call_config["configurable"]["thread_id"])
+
+
+# ---------------------------------------------------------------------------
+# RemoteAgent — with_config
+# ---------------------------------------------------------------------------
+
+
+class TestRemoteAgentWithConfig:
+    def test_returns_self(self) -> None:
+        agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
+        assert agent.with_config({"configurable": {}}) is agent

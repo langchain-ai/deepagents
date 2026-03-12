@@ -136,7 +136,6 @@ async def start_server_and_get_agent(
 
     agent = RemoteAgent(
         url=server.url,
-        assistant_id=assistant_id,
         graph_name="agent",
     )
 

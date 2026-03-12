@@ -27,7 +27,6 @@ from textual.message import Message
 from textual.screen import ModalScreen
 
 from deepagents_cli.clipboard import copy_selection_to_clipboard
-from deepagents_cli.configurable_model import CLIContext
 from deepagents_cli.config import (
     DOCS_URL,
     SHELL_TOOL_NAMES,
@@ -40,6 +39,7 @@ from deepagents_cli.config import (
     newline_shortcut,
     settings,
 )
+from deepagents_cli.configurable_model import CLIContext
 from deepagents_cli.hooks import dispatch_hook
 from deepagents_cli.model_config import ModelSpec, save_recent_model
 from deepagents_cli.textual_adapter import (

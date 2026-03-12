@@ -133,7 +133,7 @@ class _ClientCache:
         self._sync: dict[str, SyncLangGraphClient] = {}
         self._async: dict[str, LangGraphClient] = {}
 
-    def sync(self, name: str) -> SyncLangGraphClient:
+    def get_sync(self, name: str) -> SyncLangGraphClient:
         """Get or create a sync client for the named agent."""
         if name not in self._sync:
             spec = self._agents[name]
@@ -143,7 +143,7 @@ class _ClientCache:
             )
         return self._sync[name]
 
-    def async_(self, name: str) -> LangGraphClient:
+    def get_async(self, name: str) -> LangGraphClient:
         """Get or create an async client for the named agent."""
         if name not in self._async:
             spec = self._agents[name]
@@ -209,14 +209,14 @@ def _build_launch_tool(
 
     def launch_async_subagent(
         description: Annotated[str, "A detailed description of the task for the async subagent to perform."],
-        subagent_type: Annotated[str, "The type of async subagent to use. Must be one of the available types."],
+        subagent_type: Annotated[str, "The type of async subagent to use. Must be one of the available types listed in the tool description."],
         runtime: ToolRuntime,
     ) -> str | Command:
         error = _validate_agent_type(agent_map, subagent_type)
         if error:
             return error
         spec = agent_map[subagent_type]
-        client = clients.sync(subagent_type)
+        client = clients.get_sync(subagent_type)
         thread = client.threads.create()
         run = client.runs.create(
             thread_id=thread["thread_id"],
@@ -241,14 +241,14 @@ def _build_launch_tool(
 
     async def alaunch_async_subagent(
         description: Annotated[str, "A detailed description of the task for the async subagent to perform."],
-        subagent_type: Annotated[str, "The type of async subagent to use. Must be one of the available types."],
+        subagent_type: Annotated[str, "The type of async subagent to use. Must be one of the available types listed in the tool description."],
         runtime: ToolRuntime,
     ) -> str | Command:
         error = _validate_agent_type(agent_map, subagent_type)
         if error:
             return error
         spec = agent_map[subagent_type]
-        client = clients.async_(subagent_type)
+        client = clients.get_async(subagent_type)
         thread = await client.threads.create()
         run = await client.runs.create(
             thread_id=thread["thread_id"],
@@ -283,6 +283,9 @@ def _resolve_client_name(agent_name: str, agent_map: dict[str, AsyncSubAgent]) -
     """Resolve the client name from a parsed job_id agent_name field."""
     if agent_name and agent_name in agent_map:
         return agent_name
+    if agent_name:
+        msg = f"Unknown agent '{agent_name}' in job_id. Available: {', '.join(agent_map)}"
+        raise ValueError(msg)
     return next(iter(agent_map))
 
 
@@ -298,7 +301,7 @@ def _build_check_tool(
     ) -> Command:
         agent_name, thread_id, run_id = _parse_job_id(job_id)
         name = _resolve_client_name(agent_name, agent_map)
-        client = clients.sync(name)
+        client = clients.get_sync(name)
         run = client.runs.get(thread_id=thread_id, run_id=run_id)
         result: dict[str, Any] = {"status": run["status"], "run_id": run["run_id"], "thread_id": thread_id}
         if run["status"] == "success":
@@ -331,7 +334,7 @@ def _build_check_tool(
     ) -> Command:
         agent_name, thread_id, run_id = _parse_job_id(job_id)
         name = _resolve_client_name(agent_name, agent_map)
-        client = clients.async_(name)
+        client = clients.get_async(name)
         run = await client.runs.get(thread_id=thread_id, run_id=run_id)
         result: dict[str, Any] = {"status": run["status"], "run_id": run["run_id"], "thread_id": thread_id}
         if run["status"] == "success":
@@ -386,7 +389,7 @@ def _build_update_tool(
         agent_name, thread_id, _run_id = _parse_job_id(job_id)
         name = _resolve_client_name(agent_name, agent_map)
         spec = agent_map[name]
-        client = clients.sync(name)
+        client = clients.get_sync(name)
         run = client.runs.create(
             thread_id=thread_id,
             assistant_id=spec["graph_id"],
@@ -417,7 +420,7 @@ def _build_update_tool(
         agent_name, thread_id, _run_id = _parse_job_id(job_id)
         name = _resolve_client_name(agent_name, agent_map)
         spec = agent_map[name]
-        client = clients.async_(name)
+        client = clients.get_async(name)
         run = await client.runs.create(
             thread_id=thread_id,
             assistant_id=spec["graph_id"],

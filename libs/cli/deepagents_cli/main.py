@@ -784,11 +784,14 @@ async def _run_acp_cli_async(
         return 1
 
     try:
+        from langgraph.checkpoint.memory import InMemorySaver
+
         agent_graph, _backend = create_cli_agent(
             model=model_result.model,
             assistant_id=assistant_id,
             tools=tools,
             mcp_server_info=mcp_server_info,
+            checkpointer=InMemorySaver(),
         )
     except Exception as exc:
         sys.stderr.write(f"Error: failed to create agent: {exc}\n")

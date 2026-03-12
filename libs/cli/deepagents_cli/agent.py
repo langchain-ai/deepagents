@@ -14,7 +14,6 @@ from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, LocalShellBackend
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.middleware import MemoryMiddleware, SkillsMiddleware
-from langgraph.checkpoint.memory import InMemorySaver
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -567,7 +566,7 @@ def create_cli_agent(
     enable_skills: bool = True,
     enable_shell: bool = True,
     enable_ask_user: bool = False,
-    checkpointer: BaseCheckpointSaver | bool | None = None,
+    checkpointer: BaseCheckpointSaver | None = None,
     mcp_server_info: list[MCPServerInfo] | None = None,
     cwd: str | Path | None = None,
     project_context: ProjectContext | None = None,
@@ -607,11 +606,7 @@ def create_cli_agent(
             (only in local mode). When enabled, the `execute` tool is available.
         enable_ask_user: Enable the `ask_user` tool for interactive questioning.
         checkpointer: Optional checkpointer for session persistence.
-
-            If `None`, uses `InMemorySaver`.
-
-            Pass `False` to compile without any checkpointer (e.g., when the
-            platform manages persistence).
+            When `None`, the graph is compiled without a checkpointer.
         mcp_server_info: MCP server metadata to surface in the system prompt.
         cwd: Override the working directory for the agent's filesystem backend
             and system prompt.
@@ -821,12 +816,6 @@ def create_cli_agent(
     )
 
     # Create the agent
-    if checkpointer is False:
-        final_checkpointer = None
-    elif checkpointer is not None:
-        final_checkpointer = checkpointer
-    else:
-        final_checkpointer = InMemorySaver()
     agent = create_deep_agent(
         model=model,
         system_prompt=system_prompt,
@@ -834,7 +823,7 @@ def create_cli_agent(
         backend=composite_backend,
         middleware=agent_middleware,
         interrupt_on=interrupt_on,
-        checkpointer=final_checkpointer,
+        checkpointer=checkpointer,
         subagents=custom_subagents or None,
     ).with_config(config)
     return agent, composite_backend

@@ -3213,17 +3213,25 @@ class DeepAgentsApp(App):
             provider = detect_provider(model_spec)
 
         # Check credentials
-        if provider and has_provider_credentials(provider) is False:
+        has_creds = has_provider_credentials(provider) if provider else None
+        if has_creds is False and provider is not None:
             env_var = get_credential_env_var(provider)
-            if env_var:
-                detail = f"{env_var} is not set or is empty"
-            else:
-                detail = (
+            detail = (
+                f"{env_var} is not set or is empty"
+                if env_var
+                else (
                     f"provider '{provider}' is not recognized. "
-                    "Add it to ~/.deepagents/config.toml with an api_key_env field"
+                    "Add it to ~/.deepagents/config.toml with an "
+                    "api_key_env field"
                 )
+            )
             await self._mount_message(ErrorMessage(f"Missing credentials: {detail}"))
             return
+        if has_creds is None and provider:
+            logger.debug(
+                "Credentials for provider '%s' cannot be verified; proceeding anyway",
+                provider,
+            )
 
         # Check if already using this exact model
         if model_name == settings.model_name and (

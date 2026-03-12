@@ -516,29 +516,17 @@ def get_model_profiles(
     return frozen
 
 
-def _is_langchain_supported_provider(provider: str) -> bool:
-    """Check if a provider is in langchain's built-in provider registry.
-
-    Args:
-        provider: Provider name to check.
-
-    Returns:
-        True if the provider is known to `init_chat_model`.
-    """
-    return provider in _get_builtin_providers()
-
-
 def has_provider_credentials(provider: str) -> bool | None:
     """Check if credentials are available for a provider.
 
-    Checks in order:
+    Resolution order:
 
     1. Config-file providers (`config.toml`) — takes priority so user
         overrides (e.g., custom `api_key_env` or `base_url`) are respected.
     2. Hardcoded `PROVIDER_API_KEY_ENV` mapping (anthropic, openai, etc.).
-    3. Langchain's `_SUPPORTED_PROVIDERS` registry — if the provider is known
-        to `init_chat_model`, credential status is unknown; the provider
-        itself will report auth failures at model-creation time.
+    3. For any other provider (e.g., third-party langchain provider
+        packages), credential status is unknown — the provider itself will
+        report auth failures at model-creation time.
 
     Args:
         provider: Provider name.
@@ -560,12 +548,14 @@ def has_provider_credentials(provider: str) -> bool | None:
     if env_var:
         return bool(os.environ.get(env_var))
 
-    # If langchain knows this provider, let it through — we can't verify
-    # credentials, but the provider will raise its own auth error if needed.
-    if _is_langchain_supported_provider(provider):
-        return None
-
-    return False
+    # Provider not found in config or hardcoded map — credential status is
+    # unknown. The provider itself will report auth failures at
+    # model-creation time.
+    logger.debug(
+        "No credential information for provider '%s'; deferring auth to provider",
+        provider,
+    )
+    return None
 
 
 def get_credential_env_var(provider: str) -> str | None:

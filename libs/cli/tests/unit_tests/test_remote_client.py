@@ -1,7 +1,6 @@
 """Tests for _convert_stream_chunk, _StreamConverter, _to_uuid, and RemoteAgent."""
 
 import uuid
-from datetime import UTC, datetime
 from typing import Any, NamedTuple
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -10,7 +9,6 @@ import pytest
 from deepagents_cli.remote_client import (
     RemoteAgent,
     _convert_stream_chunk,
-    _server_thread_to_info,
     _StreamConverter,
     _to_uuid,
 )
@@ -864,144 +862,3 @@ class TestInterruptConversion:
         assert len(results) == 1
         interrupts = results[0][2]["__interrupt__"]
         assert interrupts[0] is interrupt
-
-
-class TestServerThreadToInfo:
-    """Tests for _server_thread_to_info helper."""
-
-    def test_basic_conversion(self) -> None:
-        server_thread = {
-            "thread_id": "abc-123",
-            "metadata": {
-                "agent_name": "my-agent",
-                "git_branch": "main",
-                "cwd": "/home/user",
-            },
-            "updated_at": datetime(2025, 1, 15, 10, 30, tzinfo=UTC),
-            "created_at": datetime(2025, 1, 15, 9, 0, tzinfo=UTC),
-        }
-        info = _server_thread_to_info(server_thread)
-        assert info["thread_id"] == "abc-123"
-        assert info["agent_name"] == "my-agent"
-        assert info["git_branch"] == "main"
-        assert info["cwd"] == "/home/user"
-        assert "2025-01-15" in info["updated_at"]
-        assert "2025-01-15" in info["created_at"]
-
-    def test_missing_metadata(self) -> None:
-        server_thread = {
-            "thread_id": "abc-123",
-            "metadata": None,
-            "updated_at": None,
-            "created_at": None,
-        }
-        info = _server_thread_to_info(server_thread)
-        assert info["thread_id"] == "abc-123"
-        assert info["agent_name"] is None
-        assert info["updated_at"] is None
-
-    def test_string_timestamps(self) -> None:
-        server_thread = {
-            "thread_id": "t1",
-            "metadata": {},
-            "updated_at": "2025-01-15T10:30:00+00:00",
-            "created_at": "2025-01-15T09:00:00+00:00",
-        }
-        info = _server_thread_to_info(server_thread)
-        assert info["updated_at"] == "2025-01-15T10:30:00+00:00"
-
-
-class TestRemoteAgentListThreads:
-    """Tests for RemoteAgent.list_threads."""
-
-    async def test_list_threads_returns_thread_info(self) -> None:
-        agent = RemoteAgent("http://localhost:8123")
-        mock_client = MagicMock()
-        mock_client.threads = MagicMock()
-        mock_client.threads.search = AsyncMock(
-            return_value=[
-                {
-                    "thread_id": "t1",
-                    "metadata": {"agent_name": "agent-a"},
-                    "updated_at": datetime(2025, 1, 15, 10, 30, tzinfo=UTC),
-                    "created_at": datetime(2025, 1, 15, 9, 0, tzinfo=UTC),
-                },
-                {
-                    "thread_id": "t2",
-                    "metadata": {"agent_name": "agent-b"},
-                    "updated_at": datetime(2025, 1, 14, 8, 0, tzinfo=UTC),
-                    "created_at": datetime(2025, 1, 14, 7, 0, tzinfo=UTC),
-                },
-            ]
-        )
-        agent._client = mock_client
-
-        threads = await agent.list_threads(limit=10, sort_by="updated")
-        assert len(threads) == 2
-        assert threads[0]["thread_id"] == "t1"
-        assert threads[1]["agent_name"] == "agent-b"
-        mock_client.threads.search.assert_awaited_once_with(
-            limit=10, sort_by="updated", sort_order="desc"
-        )
-
-    async def test_list_threads_empty_on_error(self) -> None:
-        agent = RemoteAgent("http://localhost:8123")
-        mock_client = MagicMock()
-        mock_client.threads = MagicMock()
-        mock_client.threads.search = AsyncMock(side_effect=RuntimeError("boom"))
-        agent._client = mock_client
-
-        threads = await agent.list_threads()
-        assert threads == []
-
-    async def test_list_threads_sort_by_created(self) -> None:
-        agent = RemoteAgent("http://localhost:8123")
-        mock_client = MagicMock()
-        mock_client.threads = MagicMock()
-        mock_client.threads.search = AsyncMock(return_value=[])
-        agent._client = mock_client
-
-        await agent.list_threads(sort_by="created")
-        mock_client.threads.search.assert_awaited_once_with(
-            limit=20, sort_by="created", sort_order="desc"
-        )
-
-
-class TestRemoteAgentDeleteThread:
-    """Tests for RemoteAgent.delete_thread."""
-
-    async def test_delete_success(self) -> None:
-        agent = RemoteAgent("http://localhost:8123")
-        mock_client = MagicMock()
-        mock_client.threads = MagicMock()
-        mock_client.threads.delete = AsyncMock(return_value=None)
-        agent._client = mock_client
-
-        result = await agent.delete_thread("t1")
-        assert result is True
-
-    async def test_delete_not_found(self) -> None:
-        import httpx
-
-        agent = RemoteAgent("http://localhost:8123")
-        mock_client = MagicMock()
-        mock_client.threads = MagicMock()
-        response = httpx.Response(404, request=httpx.Request("DELETE", "http://x"))
-        exc = httpx.HTTPStatusError(
-            "not found", request=response.request, response=response
-        )
-        mock_client.threads.delete = AsyncMock(side_effect=exc)
-        agent._client = mock_client
-
-        result = await agent.delete_thread("t1")
-        assert result is False
-
-    async def test_delete_other_error(self) -> None:
-        agent = RemoteAgent("http://localhost:8123")
-        mock_client = MagicMock()
-        mock_client.threads = MagicMock()
-        mock_client.threads.delete = AsyncMock(side_effect=RuntimeError("boom"))
-        agent._client = mock_client
-
-        result = await agent.delete_thread("t1")
-        assert result is False

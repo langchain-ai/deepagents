@@ -254,64 +254,6 @@ async def _table_exists(conn: aiosqlite.Connection, table: str) -> bool:
         return await cursor.fetchone() is not None
 
 
-async def _ensure_thread_index(conn: aiosqlite.Connection) -> None:
-    """Create the `thread_index` table if it does not exist.
-
-    This lightweight table stores thread metadata for sessions that use a
-    remote server (no local checkpointer) so that `/threads`, `-r`, and
-    `deepagents threads list` keep working across restarts.
-    """
-    await conn.execute("""
-        CREATE TABLE IF NOT EXISTS thread_index (
-            thread_id   TEXT PRIMARY KEY,
-            agent_name  TEXT,
-            updated_at  TEXT,
-            created_at  TEXT,
-            git_branch  TEXT,
-            cwd         TEXT
-        )
-    """)
-    await conn.commit()
-
-
-async def upsert_thread_index(
-    thread_id: str,
-    *,
-    agent_name: str | None = None,
-    git_branch: str | None = None,
-    cwd: str | None = None,
-    created_at: str | None = None,
-    updated_at: str | None = None,
-) -> None:
-    """Insert or update a row in the `thread_index` table.
-
-    Args:
-        thread_id: Unique thread identifier.
-        agent_name: Agent that owns the thread.
-        git_branch: Git branch active when the session started.
-        cwd: Working directory of the session.
-        created_at: ISO timestamp of thread creation.
-        updated_at: ISO timestamp of latest activity.
-    """
-    async with _connect() as conn:
-        await _ensure_thread_index(conn)
-        await conn.execute(
-            """
-            INSERT INTO thread_index
-                (thread_id, agent_name, updated_at,
-                 created_at, git_branch, cwd)
-            VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(thread_id) DO UPDATE SET
-                agent_name = COALESCE(excluded.agent_name, agent_name),
-                updated_at = COALESCE(excluded.updated_at, updated_at),
-                git_branch = COALESCE(excluded.git_branch, git_branch),
-                cwd        = COALESCE(excluded.cwd, cwd)
-            """,
-            (thread_id, agent_name, updated_at, created_at, git_branch, cwd),
-        )
-        await conn.commit()
-
-
 async def list_threads(
     agent_name: str | None = None,
     limit: int = 20,
@@ -319,12 +261,7 @@ async def list_threads(
     sort_by: str = "updated",
     branch: str | None = None,
 ) -> list[ThreadInfo]:
-    """List threads from checkpoints and thread_index tables.
-
-    Merges results from the local checkpointer (`checkpoints`) and the
-    lightweight thread index (`thread_index`) used by server-mode sessions.
-    When both tables contain the same `thread_id`, the checkpoints row wins
-    because it carries richer metadata (checkpoint ID, message counts).
+    """List threads from checkpoints table.
 
     Args:
         agent_name: Optional filter by agent name.
@@ -341,97 +278,60 @@ async def list_threads(
     Raises:
         ValueError: If `sort_by` is not `"updated"` or `"created"`.
     """
-    if sort_by not in {"updated", "created"}:
-        msg = f"Invalid sort_by {sort_by!r}; expected 'updated' or 'created'"
-        raise ValueError(msg)
-    order_col = "created_at" if sort_by == "created" else "updated_at"
-
     async with _connect() as conn:
-        has_checkpoints = await _table_exists(conn, "checkpoints")
-        has_index = await _table_exists(conn, "thread_index")
-
-        if not has_checkpoints and not has_index:
+        if not await _table_exists(conn, "checkpoints"):
             return []
 
-        threads_by_id: dict[str, ThreadInfo] = {}
+        if sort_by not in {"updated", "created"}:
+            msg = f"Invalid sort_by {sort_by!r}; expected 'updated' or 'created'"
+            raise ValueError(msg)
+        order_col = "created_at" if sort_by == "created" else "updated_at"
 
-        # --- checkpoints source ---
-        if has_checkpoints:
-            cp_where: list[str] = []
-            cp_params: list[str | int] = []
-            if agent_name:
-                cp_where.append("json_extract(metadata, '$.agent_name') = ?")
-                cp_params.append(agent_name)
-            if branch:
-                cp_where.append("json_extract(metadata, '$.git_branch') = ?")
-                cp_params.append(branch)
-            cp_where_sql = f"WHERE {' AND '.join(cp_where)}" if cp_where else ""
+        where_clauses: list[str] = []
+        params_list: list[str | int] = []
 
-            cp_query = f"""
-                SELECT thread_id,
-                       json_extract(metadata, '$.agent_name') as agent_name,
-                       MAX(json_extract(metadata, '$.updated_at')) as updated_at,
-                       MAX(checkpoint_id) as latest_checkpoint_id,
-                       MIN(json_extract(metadata, '$.updated_at')) as created_at,
-                       MAX(json_extract(metadata, '$.git_branch')) as git_branch,
-                       MAX(json_extract(metadata, '$.cwd')) as cwd
-                FROM checkpoints
-                {cp_where_sql}
-                GROUP BY thread_id
-            """  # noqa: S608  # where_sql/order_col derived from controlled internal values; user values use ? placeholders
-            async with conn.execute(cp_query, tuple(cp_params)) as cursor:
-                for r in await cursor.fetchall():
-                    threads_by_id[r[0]] = ThreadInfo(
-                        thread_id=r[0],
-                        agent_name=r[1],
-                        updated_at=r[2],
-                        latest_checkpoint_id=r[3],
-                        created_at=r[4],
-                        git_branch=r[5],
-                        cwd=r[6],
-                    )
+        if agent_name:
+            where_clauses.append("json_extract(metadata, '$.agent_name') = ?")
+            params_list.append(agent_name)
+        if branch:
+            where_clauses.append("json_extract(metadata, '$.git_branch') = ?")
+            params_list.append(branch)
 
-        # --- thread_index source (server-mode sessions) ---
-        if has_index:
-            ix_where: list[str] = []
-            ix_params: list[str | int] = []
-            if agent_name:
-                ix_where.append("agent_name = ?")
-                ix_params.append(agent_name)
-            if branch:
-                ix_where.append("git_branch = ?")
-                ix_params.append(branch)
-            ix_where_sql = f"WHERE {' AND '.join(ix_where)}" if ix_where else ""
+        where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
 
-            ix_query = f"""
-                SELECT thread_id, agent_name, updated_at, created_at,
-                       git_branch, cwd
-                FROM thread_index
-                {ix_where_sql}
-            """  # noqa: S608  # where_sql derived from controlled internal values; user values use ? placeholders
-            async with conn.execute(ix_query, tuple(ix_params)) as cursor:
-                for r in await cursor.fetchall():
-                    tid = r[0]
-                    if tid in threads_by_id:
-                        continue  # checkpoints row is richer; skip duplicate
-                    threads_by_id[tid] = ThreadInfo(
-                        thread_id=tid,
-                        agent_name=r[1],
-                        updated_at=r[2],
-                        created_at=r[3],
-                        git_branch=r[4],
-                        cwd=r[5],
-                    )
+        query = f"""
+            SELECT thread_id,
+                   json_extract(metadata, '$.agent_name') as agent_name,
+                   MAX(json_extract(metadata, '$.updated_at')) as updated_at,
+                   MAX(checkpoint_id) as latest_checkpoint_id,
+                   MIN(json_extract(metadata, '$.updated_at')) as created_at,
+                   MAX(json_extract(metadata, '$.git_branch')) as git_branch,
+                   MAX(json_extract(metadata, '$.cwd')) as cwd
+            FROM checkpoints
+            {where_sql}
+            GROUP BY thread_id
+            ORDER BY {order_col} DESC
+            LIMIT ?
+        """  # noqa: S608  # where_sql/order_col derived from controlled internal values; user values use ? placeholders
+        params: tuple = (*params_list, limit)
 
-        # Sort and limit
-        threads = sorted(
-            threads_by_id.values(),
-            key=lambda t: t.get(order_col) or "",
-            reverse=True,
-        )[:limit]
+        async with conn.execute(query, params) as cursor:
+            rows = await cursor.fetchall()
+            threads: list[ThreadInfo] = [
+                ThreadInfo(
+                    thread_id=r[0],
+                    agent_name=r[1],
+                    updated_at=r[2],
+                    latest_checkpoint_id=r[3],
+                    created_at=r[4],
+                    git_branch=r[5],
+                    cwd=r[6],
+                )
+                for r in rows
+            ]
 
         # Fetch message counts if requested
-        if include_message_count and threads and has_checkpoints:
+        if include_message_count and threads:
             await _populate_message_counts(conn, threads)
 
         # Only cache unfiltered results so the thread selector modal
@@ -991,130 +891,71 @@ def _coerce_prompt_text(content: object) -> str | None:
 async def get_most_recent(agent_name: str | None = None) -> str | None:
     """Get most recent thread_id, optionally filtered by agent.
 
-    Checks both `checkpoints` and `thread_index` tables and returns the
-    thread with the most recent timestamp.
-
     Returns:
         Most recent thread_id or None if no threads exist.
     """
     async with _connect() as conn:
-        has_checkpoints = await _table_exists(conn, "checkpoints")
-        has_index = await _table_exists(conn, "thread_index")
-
-        if not has_checkpoints and not has_index:
+        if not await _table_exists(conn, "checkpoints"):
             return None
 
-        candidates: list[tuple[str, str | None]] = []  # (thread_id, updated_at)
+        if agent_name:
+            query = """
+                SELECT thread_id FROM checkpoints
+                WHERE json_extract(metadata, '$.agent_name') = ?
+                ORDER BY checkpoint_id DESC
+                LIMIT 1
+            """
+            params: tuple = (agent_name,)
+        else:
+            query = (
+                "SELECT thread_id FROM checkpoints ORDER BY checkpoint_id DESC LIMIT 1"
+            )
+            params = ()
 
-        if has_checkpoints:
-            if agent_name:
-                query = """
-                    SELECT thread_id, json_extract(metadata, '$.updated_at')
-                    FROM checkpoints
-                    WHERE json_extract(metadata, '$.agent_name') = ?
-                    ORDER BY checkpoint_id DESC
-                    LIMIT 1
-                """
-                params: tuple = (agent_name,)
-            else:
-                query = """
-                    SELECT thread_id, json_extract(metadata, '$.updated_at')
-                    FROM checkpoints
-                    ORDER BY checkpoint_id DESC
-                    LIMIT 1
-                """
-                params = ()
-            async with conn.execute(query, params) as cursor:
-                row = await cursor.fetchone()
-                if row:
-                    candidates.append((row[0], row[1]))
-
-        if has_index:
-            if agent_name:
-                ix_query = """
-                    SELECT thread_id, updated_at FROM thread_index
-                    WHERE agent_name = ?
-                    ORDER BY updated_at DESC LIMIT 1
-                """
-                ix_params: tuple = (agent_name,)
-            else:
-                ix_query = (
-                    "SELECT thread_id, updated_at FROM thread_index "
-                    "ORDER BY updated_at DESC LIMIT 1"
-                )
-                ix_params = ()
-            async with conn.execute(ix_query, ix_params) as cursor:
-                row = await cursor.fetchone()
-                if row:
-                    candidates.append((row[0], row[1]))
-
-        if not candidates:
-            return None
-        # Return the candidate with the most recent updated_at
-        return max(candidates, key=lambda c: c[1] or "")[0]
+        async with conn.execute(query, params) as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row else None
 
 
 async def get_thread_agent(thread_id: str) -> str | None:
     """Get agent_name for a thread.
 
-    Checks both `checkpoints` and `thread_index` tables.
-
     Returns:
         Agent name associated with the thread, or None if not found.
     """
     async with _connect() as conn:
-        if await _table_exists(conn, "checkpoints"):
-            query = """
-                SELECT json_extract(metadata, '$.agent_name')
-                FROM checkpoints
-                WHERE thread_id = ?
-                LIMIT 1
-            """
-            async with conn.execute(query, (thread_id,)) as cursor:
-                row = await cursor.fetchone()
-                if row and row[0]:
-                    return row[0]
+        if not await _table_exists(conn, "checkpoints"):
+            return None
 
-        if await _table_exists(conn, "thread_index"):
-            async with conn.execute(
-                "SELECT agent_name FROM thread_index WHERE thread_id = ? LIMIT 1",
-                (thread_id,),
-            ) as cursor:
-                row = await cursor.fetchone()
-                if row and row[0]:
-                    return row[0]
-
-        return None
+        query = """
+            SELECT json_extract(metadata, '$.agent_name')
+            FROM checkpoints
+            WHERE thread_id = ?
+            LIMIT 1
+        """
+        async with conn.execute(query, (thread_id,)) as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row else None
 
 
 async def thread_exists(thread_id: str) -> bool:
-    """Check if a thread exists in checkpoints or thread_index.
+    """Check if a thread exists in checkpoints.
 
     Returns:
         True if thread exists, False otherwise.
     """
     async with _connect() as conn:
-        if await _table_exists(conn, "checkpoints"):
-            query = "SELECT 1 FROM checkpoints WHERE thread_id = ? LIMIT 1"
-            async with conn.execute(query, (thread_id,)) as cursor:
-                if await cursor.fetchone() is not None:
-                    return True
+        if not await _table_exists(conn, "checkpoints"):
+            return False
 
-        if await _table_exists(conn, "thread_index"):
-            async with conn.execute(
-                "SELECT 1 FROM thread_index WHERE thread_id = ? LIMIT 1",
-                (thread_id,),
-            ) as cursor:
-                if await cursor.fetchone() is not None:
-                    return True
-
-        return False
+        query = "SELECT 1 FROM checkpoints WHERE thread_id = ? LIMIT 1"
+        async with conn.execute(query, (thread_id,)) as cursor:
+            row = await cursor.fetchone()
+            return row is not None
 
 
 async def find_similar_threads(thread_id: str, limit: int = 3) -> list[str]:
     """Find threads whose IDs start with the given prefix.
-
-    Checks both `checkpoints` and `thread_index` tables.
 
     Args:
         thread_id: Prefix to match against thread IDs.
@@ -1123,51 +964,39 @@ async def find_similar_threads(thread_id: str, limit: int = 3) -> list[str]:
     Returns:
         List of thread IDs that begin with the given prefix.
     """
-    prefix = thread_id + "%"
-    results: set[str] = set()
-
     async with _connect() as conn:
-        if await _table_exists(conn, "checkpoints"):
-            async with conn.execute(
-                "SELECT DISTINCT thread_id FROM checkpoints "
-                "WHERE thread_id LIKE ? ORDER BY thread_id LIMIT ?",
-                (prefix, limit),
-            ) as cursor:
-                results.update(r[0] for r in await cursor.fetchall())
+        if not await _table_exists(conn, "checkpoints"):
+            return []
 
-        if await _table_exists(conn, "thread_index"):
-            async with conn.execute(
-                "SELECT thread_id FROM thread_index "
-                "WHERE thread_id LIKE ? ORDER BY thread_id LIMIT ?",
-                (prefix, limit),
-            ) as cursor:
-                results.update(r[0] for r in await cursor.fetchall())
-
-    return sorted(results)[:limit]
+        query = """
+            SELECT DISTINCT thread_id
+            FROM checkpoints
+            WHERE thread_id LIKE ?
+            ORDER BY thread_id
+            LIMIT ?
+        """
+        prefix = thread_id + "%"
+        async with conn.execute(query, (prefix, limit)) as cursor:
+            rows = await cursor.fetchall()
+            return [r[0] for r in rows]
 
 
 async def delete_thread(thread_id: str) -> bool:
-    """Delete thread checkpoints and thread index entry.
+    """Delete thread checkpoints.
 
     Returns:
         True if thread was deleted, False if not found.
     """
     async with _connect() as conn:
-        deleted = False
-        if await _table_exists(conn, "checkpoints"):
-            cursor = await conn.execute(
-                "DELETE FROM checkpoints WHERE thread_id = ?", (thread_id,)
-            )
-            deleted = cursor.rowcount > 0
-            if await _table_exists(conn, "writes"):
-                await conn.execute(
-                    "DELETE FROM writes WHERE thread_id = ?", (thread_id,)
-                )
-        if await _table_exists(conn, "thread_index"):
-            cursor = await conn.execute(
-                "DELETE FROM thread_index WHERE thread_id = ?", (thread_id,)
-            )
-            deleted = deleted or cursor.rowcount > 0
+        if not await _table_exists(conn, "checkpoints"):
+            return False
+
+        cursor = await conn.execute(
+            "DELETE FROM checkpoints WHERE thread_id = ?", (thread_id,)
+        )
+        deleted = cursor.rowcount > 0
+        if await _table_exists(conn, "writes"):
+            await conn.execute("DELETE FROM writes WHERE thread_id = ?", (thread_id,))
         await conn.commit()
         if deleted:
             _message_count_cache.pop(thread_id, None)

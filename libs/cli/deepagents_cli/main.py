@@ -20,7 +20,6 @@ import shutil
 import sys
 import traceback
 from collections.abc import Callable, Sequence
-from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -503,39 +502,6 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-async def _persist_thread_index(
-    thread_id: str,
-    *,
-    agent_name: str | None = None,
-    created_at: str | None = None,
-    updated_at: str | None = None,
-) -> None:
-    """Write thread metadata to local SQLite for cross-restart persistence.
-
-    Best-effort — failures are logged but do not block the session.
-
-    Args:
-        thread_id: Thread identifier.
-        agent_name: Agent that owns the thread.
-        created_at: ISO timestamp for new threads.
-        updated_at: ISO timestamp of latest activity.
-    """
-    try:
-        from deepagents_cli.sessions import upsert_thread_index
-        from deepagents_cli.textual_adapter import _get_git_branch
-
-        await upsert_thread_index(
-            thread_id,
-            agent_name=agent_name,
-            git_branch=_get_git_branch(),
-            cwd=str(Path.cwd()),
-            created_at=created_at,
-            updated_at=updated_at,
-        )
-    except Exception:
-        logger.debug("Failed to persist thread index entry", exc_info=True)
-
-
 async def run_textual_cli_async(
     assistant_id: str,
     *,
@@ -635,16 +601,6 @@ async def run_textual_cli_async(
     from deepagents_cli.app import AppResult
     from deepagents_cli.server_manager import start_server_and_get_agent
 
-    # Persist thread metadata to local SQLite so /threads, -r, and
-    # `deepagents threads list` work across server restarts.
-    now = datetime.now().astimezone().isoformat()
-    await _persist_thread_index(
-        thread_id=thread_id or "",
-        agent_name=assistant_id,
-        created_at=now if not is_resumed else None,
-        updated_at=now,
-    )
-
     server_proc = None
     mcp_session_manager = None
     try:
@@ -691,17 +647,6 @@ async def run_textual_cli_async(
                 profile_override=profile_override,
                 server_proc=server_proc,
             )
-
-            # Update the thread index with final timestamp so sorting is
-            # accurate for `/threads` and `-r`.
-            final_tid = result.thread_id or thread_id
-            if final_tid:
-                end_now = datetime.now().astimezone().isoformat()
-                await _persist_thread_index(
-                    thread_id=final_tid,
-                    agent_name=assistant_id,
-                    updated_at=end_now,
-                )
         except Exception as e:
             logger.debug("App error", exc_info=True)
             error_text = Text("Application error: ", style="red")

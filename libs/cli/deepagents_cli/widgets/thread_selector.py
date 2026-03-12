@@ -6,7 +6,7 @@ import asyncio
 import contextlib
 import logging
 import sqlite3
-from typing import TYPE_CHECKING, Any, ClassVar, cast
+from typing import TYPE_CHECKING, ClassVar, cast
 
 from rich.cells import cell_len
 from rich.style import Style
@@ -20,7 +20,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Checkbox, Input, Static
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Mapping
+    from collections.abc import Mapping
 
     from textual.app import ComposeResult
     from textual.events import Click, Key
@@ -623,8 +623,6 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         *,
         thread_limit: int | None = None,
         initial_threads: list[ThreadInfo] | None = None,
-        thread_fetcher: Callable[..., Awaitable[list[Any]]] | None = None,
-        thread_deleter: Callable[[str], Awaitable[bool]] | None = None,
     ) -> None:
         """Initialize the `ThreadSelectorScreen`.
 
@@ -632,14 +630,10 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             current_thread: The currently active thread ID (to highlight).
             thread_limit: Maximum number of rows to fetch when querying DB.
             initial_threads: Optional preloaded rows to render immediately.
-            thread_fetcher: Async callback to list threads (server mode).
-            thread_deleter: Async callback to delete a thread (server mode).
         """
         super().__init__()
         self._current_thread = current_thread
         self._thread_limit = thread_limit
-        self._thread_fetcher = thread_fetcher
-        self._thread_deleter = thread_deleter
         self._threads: list[ThreadInfo] = (
             [ThreadInfo(**thread) for thread in initial_threads]
             if initial_threads is not None
@@ -1257,6 +1251,12 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
     async def _load_threads(self) -> None:
         """Load thread rows first, then kick off background enrichment."""
+        from deepagents_cli.sessions import (
+            apply_cached_thread_initial_prompts,
+            apply_cached_thread_message_counts,
+            list_threads,
+        )
+
         old_threads = list(self._threads)
 
         try:
@@ -1266,46 +1266,34 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
                 limit = get_thread_limit()
             sort_by = "updated" if self._sort_by_updated else "created"
-
-            if self._thread_fetcher is not None:
-                self._threads = [
-                    ThreadInfo(**t)
-                    for t in await self._thread_fetcher(limit=limit, sort_by=sort_by)
-                ]
-            else:
-                from deepagents_cli.sessions import list_threads
-
-                self._threads = await list_threads(
-                    limit=limit, include_message_count=False, sort_by=sort_by
-                )
-        except Exception as exc:
+            self._threads = await list_threads(
+                limit=limit, include_message_count=False, sort_by=sort_by
+            )
+        except (OSError, sqlite3.Error) as exc:
             logger.exception("Failed to load threads for thread selector")
             await self._show_mount_error(str(exc))
             return
+        except Exception as exc:
+            logger.exception("Unexpected error loading threads for thread selector")
+            await self._show_mount_error(str(exc))
+            return
 
-        # Local-mode enrichment (cache + checkpoint details)
-        if self._thread_fetcher is None:
-            from deepagents_cli.sessions import (
-                apply_cached_thread_initial_prompts,
-                apply_cached_thread_message_counts,
-            )
-
-            apply_cached_thread_message_counts(self._threads)
-            apply_cached_thread_initial_prompts(self._threads)
-            if not self._has_initial_threads:
-                try:
-                    await self._populate_visible_checkpoint_details()
-                except (OSError, sqlite3.Error):
-                    logger.debug(
-                        "Could not preload checkpoint details for thread selector",
-                        exc_info=True,
-                    )
-                except Exception:
-                    logger.warning(
-                        "Unexpected error preloading checkpoint details "
-                        "for thread selector",
-                        exc_info=True,
-                    )
+        apply_cached_thread_message_counts(self._threads)
+        apply_cached_thread_initial_prompts(self._threads)
+        if not self._has_initial_threads:
+            try:
+                await self._populate_visible_checkpoint_details()
+            except (OSError, sqlite3.Error):
+                logger.debug(
+                    "Could not preload checkpoint details for thread selector",
+                    exc_info=True,
+                )
+            except Exception:
+                logger.warning(
+                    "Unexpected error preloading checkpoint details "
+                    "for thread selector",
+                    exc_info=True,
+                )
         self._update_filtered_list()
         self._sync_selected_index()
 
@@ -1326,9 +1314,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         else:
             await self._build_list()
 
-        # Only schedule local-mode checkpoint enrichment
-        if self._thread_fetcher is None:
-            self._schedule_checkpoint_enrichment()
+        self._schedule_checkpoint_enrichment()
 
         if self._current_thread:
             self._resolve_thread_url()
@@ -1764,6 +1750,8 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         Args:
             thread_id: Thread ID to delete.
         """
+        from deepagents_cli.sessions import delete_thread
+
         preferred_thread_id: str | None = None
         if self._selected_index + 1 < len(self._filtered_threads):
             preferred_thread_id = self._filtered_threads[self._selected_index + 1][
@@ -1775,13 +1763,8 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             ]
 
         try:
-            if self._thread_deleter is not None:
-                await self._thread_deleter(thread_id)
-            else:
-                from deepagents_cli.sessions import delete_thread
-
-                await delete_thread(thread_id)
-        except Exception:
+            await delete_thread(thread_id)
+        except (OSError, sqlite3.Error):
             logger.warning("Failed to delete thread %s", thread_id, exc_info=True)
             self.app.notify(
                 f"Failed to delete thread {thread_id[:8]}",

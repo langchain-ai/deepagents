@@ -278,58 +278,6 @@ class RemoteAgent:
             metadata=thread_metadata,
         )
 
-    async def list_threads(
-        self,
-        *,
-        limit: int = 20,
-        sort_by: str = "updated",
-    ) -> list[dict[str, Any]]:
-        """List threads from the remote LangGraph server.
-
-        Args:
-            limit: Maximum number of threads to return.
-            sort_by: Sort field — `"updated"` or `"created"`.
-
-        Returns:
-            List of `ThreadInfo`-compatible dicts.
-        """
-        client = self._get_client()
-        try:
-            results = await client.threads.search(
-                limit=limit,
-                sort_by="updated" if sort_by == "updated" else "created",
-                sort_order="desc",
-            )
-        except Exception:
-            logger.warning("Failed to list threads from server", exc_info=True)
-            return []
-        return [_server_thread_to_info(t) for t in results]
-
-    async def delete_thread(self, thread_id: str) -> bool:
-        """Delete a thread on the remote server.
-
-        Args:
-            thread_id: Thread ID to delete.
-
-        Returns:
-            True if deleted, False if not found.
-        """
-        client = self._get_client()
-        try:
-            await client.threads.delete(_to_uuid(thread_id))
-        except Exception as exc:
-            import httpx
-
-            if isinstance(exc, httpx.HTTPStatusError) and (
-                exc.response.status_code == 404  # noqa: PLR2004
-            ):
-                return False
-            logger.warning(
-                "Failed to delete thread %s from server", thread_id, exc_info=True
-            )
-            return False
-        return True
-
     def with_config(self, config: dict[str, Any]) -> RemoteAgent:  # noqa: ARG002
         """Return self (config is passed per-call, not stored).
 
@@ -340,34 +288,6 @@ class RemoteAgent:
             Self.
         """
         return self
-
-
-def _server_thread_to_info(thread: dict[str, Any]) -> dict[str, Any]:
-    """Convert a server Thread dict to a `ThreadInfo`-compatible dict.
-
-    Args:
-        thread: Thread dict from the LangGraph server.
-
-    Returns:
-        Dict matching the `ThreadInfo` TypedDict shape.
-    """
-    metadata = thread.get("metadata") or {}
-
-    def _ts(val: Any) -> str | None:  # noqa: ANN401
-        if val is None:
-            return None
-        if isinstance(val, datetime):
-            return val.isoformat()
-        return str(val)
-
-    return {
-        "thread_id": thread.get("thread_id", ""),
-        "agent_name": metadata.get("agent_name"),
-        "updated_at": _ts(thread.get("updated_at")),
-        "created_at": _ts(thread.get("created_at")),
-        "git_branch": metadata.get("git_branch"),
-        "cwd": metadata.get("cwd"),
-    }
 
 
 class _StateWrapper:

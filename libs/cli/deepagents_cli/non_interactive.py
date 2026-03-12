@@ -774,7 +774,7 @@ async def run_non_interactive(
     thread_url_lookup: ThreadUrlLookupState | None = None
     if not quiet:
         thread_url_lookup = _start_langsmith_thread_url_lookup(thread_id)
-        console.print("[dim]Running task non-interactively...[/dim]", highlight=False)
+        console.print(Text("Running task non-interactively...", style="dim"))
         header = _build_non_interactive_header(assistant_id, thread_id)
         console.print(header)
 
@@ -790,7 +790,7 @@ async def run_non_interactive(
         use_auto_approve = not enable_shell or shell_is_unrestricted
 
         if not quiet:
-            console.print("[dim]Starting LangGraph server...[/dim]")
+            console.print(Text("Starting LangGraph server...", style="dim"))
 
         agent, server_proc, mcp_session_manager = await start_server_and_get_agent(
             assistant_id=assistant_id,

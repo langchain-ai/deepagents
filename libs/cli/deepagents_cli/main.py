@@ -604,7 +604,7 @@ async def run_textual_cli_async(
     server_proc = None
     mcp_session_manager = None
     try:
-        console.print("[dim]Starting LangGraph server...[/dim]")
+        console.print(Text("Starting LangGraph server...", style="dim"))
         try:
             agent, server_proc, mcp_session_manager = await start_server_and_get_agent(
                 assistant_id=assistant_id,

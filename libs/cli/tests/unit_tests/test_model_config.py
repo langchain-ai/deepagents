@@ -108,9 +108,9 @@ class TestModelSpec:
 class TestHasProviderCredentials:
     """Tests for has_provider_credentials() function."""
 
-    def test_returns_false_for_unknown_provider(self):
-        """Returns False for unknown provider."""
-        assert has_provider_credentials("unknown") is False
+    def test_returns_none_for_unknown_provider(self):
+        """Returns None for unknown provider (let provider handle auth)."""
+        assert has_provider_credentials("unknown") is None
 
     def test_returns_true_when_env_var_set(self):
         """Returns True when provider env var is set."""
@@ -1073,20 +1073,13 @@ api_key_env = "FIREWORKS_API_KEY"
         ):
             assert has_provider_credentials("fireworks") is False
 
-    def test_returns_false_for_totally_unknown_provider(self):
-        """Returns False for provider not in hardcoded map, config, or langchain."""
-        assert has_provider_credentials("nonexistent_provider_xyz") is False
+    def test_returns_none_for_totally_unknown_provider(self):
+        """Returns None for provider not in hardcoded map or config.
 
-    def test_returns_none_for_langchain_known_provider(self):
-        """Returns None for a provider known to langchain but not in config."""
-        fake_registry = {
-            "ollama": ("langchain_ollama", "ChatOllama", None),
-        }
-        with patch(
-            "deepagents_cli.model_config._get_builtin_providers",
-            return_value=fake_registry,
-        ):
-            assert has_provider_credentials("ollama") is None
+        Unknown providers are let through so the provider itself can report
+        auth failures at model-creation time.
+        """
+        assert has_provider_credentials("nonexistent_provider_xyz") is None
 
 
 class TestModelConfigGetClassPath:

@@ -72,21 +72,25 @@ class TestResolveHeaders:
 
 
 class TestParseJobId:
-    def test_canonical_format(self) -> None:
-        assert _parse_job_id("thread_abc::run_xyz") == ("thread_abc", "run_xyz")
+    def test_canonical_three_part_format(self) -> None:
+        assert _parse_job_id("alpha::thread_abc::run_xyz") == ("alpha", "thread_abc", "run_xyz")
 
     def test_full_launch_output(self) -> None:
-        assert _parse_job_id("Launched async subagent. job_id: thread_abc::run_xyz") == (
+        assert _parse_job_id("Launched async subagent. job_id: alpha::thread_abc::run_xyz") == (
+            "alpha",
             "thread_abc",
             "run_xyz",
         )
 
+    def test_legacy_two_part_format(self) -> None:
+        assert _parse_job_id("thread_abc::run_xyz") == ("", "thread_abc", "run_xyz")
+
     def test_legacy_json_format(self) -> None:
         job_id = json.dumps({"thread_id": "thread_abc", "run_id": "run_xyz"})
-        assert _parse_job_id(job_id) == ("thread_abc", "run_xyz")
+        assert _parse_job_id(job_id) == ("", "thread_abc", "run_xyz")
 
     def test_whitespace_stripped(self) -> None:
-        assert _parse_job_id("  thread_abc::run_xyz  ") == ("thread_abc", "run_xyz")
+        assert _parse_job_id("  alpha::thread_abc::run_xyz  ") == ("alpha", "thread_abc", "run_xyz")
 
     def test_invalid_format_raises(self) -> None:
         with pytest.raises(ValueError, match="Invalid job_id format"):
@@ -131,7 +135,7 @@ class TestLaunchTool:
             headers={"x-auth-scheme": "langsmith"},
         )
 
-        assert "thread_abc::run_xyz" in result
+        assert "alpha::thread_abc::run_xyz" in result
         assert "job_id:" in result
 
         mock_client.threads.create.assert_called_once()
@@ -154,7 +158,7 @@ class TestCheckTool:
 
         tools = _build_async_subagent_tools([_make_spec()])
         check = tools[1]
-        result = check.invoke({"job_id": "thread_abc::run_xyz"})
+        result = check.invoke({"job_id": "test-agent::thread_abc::run_xyz"})
 
         parsed = json.loads(result)
         assert parsed["status"] == "running"
@@ -178,7 +182,7 @@ class TestCheckTool:
 
         tools = _build_async_subagent_tools([_make_spec()])
         check = tools[1]
-        result = check.invoke({"job_id": "thread_abc::run_xyz"})
+        result = check.invoke({"job_id": "test-agent::thread_abc::run_xyz"})
 
         parsed = json.loads(result)
         assert parsed["status"] == "success"
@@ -195,7 +199,7 @@ class TestCheckTool:
 
         tools = _build_async_subagent_tools([_make_spec()])
         check = tools[1]
-        result = check.invoke({"job_id": "thread_abc::run_xyz"})
+        result = check.invoke({"job_id": "test-agent::thread_abc::run_xyz"})
 
         parsed = json.loads(result)
         assert parsed["status"] == "error"
@@ -204,22 +208,27 @@ class TestCheckTool:
 
 class TestUpdateTool:
     @patch("deepagents.middleware.async_subagents.get_sync_client")
-    def test_update_sends_message(self, mock_get_client) -> None:
+    def test_update_creates_new_run(self, mock_get_client) -> None:
         mock_client = MagicMock()
-        mock_client.threads.update_state.return_value = None
+        mock_client.runs.create.return_value = {"run_id": "run_new"}
         mock_get_client.return_value = mock_client
 
         tools = _build_async_subagent_tools([_make_spec()])
         update = tools[2]
-        result = update.invoke({"job_id": "thread_abc::run_xyz", "update": "Focus on security issues only"})
+        result = update.invoke(
+            {
+                "job_id": "test-agent::thread_abc::run_xyz",
+                "message": "Focus on security issues only",
+            }
+        )
 
-        parsed = json.loads(result)
-        assert parsed["status"] == "updated"
-        assert parsed["thread_id"] == "thread_abc"
+        assert "test-agent::thread_abc::run_new" in result
+        assert "job_id:" in result.lower()
 
-        mock_client.threads.update_state.assert_called_once_with(
+        mock_client.runs.create.assert_called_once_with(
             thread_id="thread_abc",
-            values={"messages": [{"role": "user", "content": "Focus on security issues only"}]},
+            assistant_id="my_graph",
+            input={"messages": [{"role": "user", "content": "Focus on security issues only"}]},
         )
 
 
@@ -245,7 +254,7 @@ class TestAsyncTools:
         launch = tools[0]
         result = await launch.ainvoke({"description": "analyze data", "subagent_type": "alpha"})
 
-        assert "thread_abc::run_xyz" in result
+        assert "alpha::thread_abc::run_xyz" in result
         assert "job_id:" in result
 
     @patch("deepagents.middleware.async_subagents.get_client")
@@ -257,21 +266,25 @@ class TestAsyncTools:
 
         tools = _build_async_subagent_tools([_make_spec()])
         check = tools[1]
-        result = await check.ainvoke({"job_id": "thread_abc::run_xyz"})
+        result = await check.ainvoke({"job_id": "test-agent::thread_abc::run_xyz"})
 
         parsed = json.loads(result)
         assert parsed["status"] == "success"
         assert parsed["result"] == "Done!"
 
     @patch("deepagents.middleware.async_subagents.get_client")
-    async def test_async_update_sends_message(self, mock_get_client) -> None:
+    async def test_async_update_creates_new_run(self, mock_get_client) -> None:
         mock_client = MagicMock()
-        mock_client.threads.update_state = _async_return(None)
+        mock_client.runs.create = _async_return({"run_id": "run_new"})
         mock_get_client.return_value = mock_client
 
         tools = _build_async_subagent_tools([_make_spec()])
         update = tools[2]
-        result = await update.ainvoke({"job_id": "thread_abc::run_xyz", "update": "New instructions"})
+        result = await update.ainvoke(
+            {
+                "job_id": "test-agent::thread_abc::run_xyz",
+                "message": "New instructions",
+            }
+        )
 
-        parsed = json.loads(result)
-        assert parsed["status"] == "updated"
+        assert "test-agent::thread_abc::run_new" in result

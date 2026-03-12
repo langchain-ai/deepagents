@@ -4,6 +4,7 @@
 import asyncio
 import concurrent.futures
 import mimetypes
+import warnings
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Annotated, Any, Literal, NotRequired, cast
@@ -548,6 +549,13 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             limit: int,
         ) -> ToolMessage | str:
             if isinstance(read_result, str):
+                warnings.warn(
+                    "Returning a plain `str` from `backend.read()` is deprecated. "
+                    "Return a `ReadResult` instead. Returning `str` will not be "
+                    "supported in a future version.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
                 return read_result
             if read_result.error:
                 return f"Error: {read_result.error}"

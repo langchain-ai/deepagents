@@ -1278,7 +1278,8 @@ class TestFilesystemMiddleware:
         )
 
         read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
-        result = read_file_tool.invoke({"file_path": "/app/file.txt", "runtime": runtime})
+        with pytest.warns(DeprecationWarning, match="Returning a plain `str`"):
+            result = read_file_tool.invoke({"file_path": "/app/file.txt", "runtime": runtime})
 
         assert isinstance(result, str)
         assert "line one" in result

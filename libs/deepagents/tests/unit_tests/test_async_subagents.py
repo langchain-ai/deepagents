@@ -229,6 +229,7 @@ class TestUpdateTool:
             thread_id="thread_abc",
             assistant_id="my_graph",
             input={"messages": [{"role": "user", "content": "Focus on security issues only"}]},
+            multitask_strategy="interrupt",
         )
 
 

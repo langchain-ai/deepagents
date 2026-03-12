@@ -23,6 +23,7 @@ from textual.app import App
 from textual.binding import Binding, BindingType
 from textual.containers import Container, VerticalScroll
 from textual.css.query import NoMatches
+from textual.message import Message
 from textual.screen import ModalScreen
 
 from deepagents_cli.clipboard import copy_selection_to_clipboard
@@ -38,6 +39,7 @@ from deepagents_cli.config import (
     newline_shortcut,
     settings,
 )
+from deepagents_cli.configurable_model import CLIContext
 from deepagents_cli.hooks import dispatch_hook
 from deepagents_cli.model_config import ModelSpec, save_recent_model
 from deepagents_cli.textual_adapter import (
@@ -80,11 +82,9 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from deepagents.backends import CompositeBackend
-    from deepagents.backends.sandbox import SandboxBackendProtocol
+    from deepagents.backends.protocol import BackendProtocol
     from deepagents.middleware.summarization import SummarizationMiddleware
     from langchain_core.runnables import RunnableConfig
-    from langchain_core.tools import BaseTool
-    from langgraph.checkpoint.base import BaseCheckpointSaver
     from langgraph.pregel import Pregel
     from textual.app import ComposeResult
     from textual.events import Click, MouseUp, Paste
@@ -95,6 +95,8 @@ if TYPE_CHECKING:
 
     from deepagents_cli.ask_user import AskUserWidgetResult, Question
     from deepagents_cli.mcp_tools import MCPServerInfo
+    from deepagents_cli.remote_client import RemoteAgent
+    from deepagents_cli.server import ServerProcess
 
 # iTerm2 Cursor Guide Workaround
 # ===============================
@@ -337,6 +339,17 @@ class TextualTokenTracker:
         self._update_callback(self.current_context)
 
 
+def _new_thread_id() -> str:
+    """Deferred-import wrapper around `sessions.generate_thread_id`.
+
+    Returns:
+        UUID7 string.
+    """
+    from deepagents_cli.sessions import generate_thread_id
+
+    return generate_thread_id()
+
+
 class TextualSessionState:
     """Session state for the Textual app."""
 
@@ -350,10 +363,10 @@ class TextualSessionState:
 
         Args:
             auto_approve: Whether to auto-approve tool calls
-            thread_id: Optional thread ID (generates 8-char hex if not provided)
+            thread_id: Optional thread ID (generates UUID7 if not provided)
         """
         self.auto_approve = auto_approve
-        self.thread_id = thread_id or uuid.uuid4().hex[:8]
+        self.thread_id = thread_id or _new_thread_id()
 
     def reset_thread(self) -> str:
         """Reset to a new thread.
@@ -361,7 +374,7 @@ class TextualSessionState:
         Returns:
             The new thread_id.
         """
-        self.thread_id = uuid.uuid4().hex[:8]
+        self.thread_id = _new_thread_id()
         return self.thread_id
 
 
@@ -536,6 +549,27 @@ class DeepAgentsApp(App):
         Binding("n", "approval_no", "No", show=False),
     ]
 
+    class ServerReady(Message):
+        """Posted by the background server-startup worker on success."""
+
+        def __init__(  # noqa: D107
+            self,
+            agent: Any,  # noqa: ANN401
+            server_proc: Any,  # noqa: ANN401
+            mcp_server_info: list[Any] | None,
+        ) -> None:
+            super().__init__()
+            self.agent = agent
+            self.server_proc = server_proc
+            self.mcp_server_info = mcp_server_info
+
+    class ServerStartFailed(Message):
+        """Posted by the background server-startup worker on failure."""
+
+        def __init__(self, error: Exception) -> None:  # noqa: D107
+            super().__init__()
+            self.error = error
+
     def __init__(
         self,
         *,
@@ -543,37 +577,41 @@ class DeepAgentsApp(App):
         assistant_id: str | None = None,
         backend: CompositeBackend | None = None,
         auto_approve: bool = False,
-        enable_ask_user: bool = False,
         cwd: str | Path | None = None,
         thread_id: str | None = None,
         initial_prompt: str | None = None,
-        checkpointer: BaseCheckpointSaver | None = None,
-        tools: list[BaseTool | Callable[..., Any] | dict[str, Any]] | None = None,
-        sandbox: SandboxBackendProtocol | None = None,
-        sandbox_type: str | None = None,
         mcp_server_info: list[MCPServerInfo] | None = None,
         profile_override: dict[str, Any] | None = None,
+        server_proc: ServerProcess | None = None,
+        server_kwargs: dict[str, Any] | None = None,
+        mcp_preload_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> None:
         """Initialize the Deep Agents application.
 
         Args:
-            agent: Pre-configured LangGraph agent (optional for standalone mode)
+            agent: Pre-configured LangGraph agent, or `None` when server
+                startup is deferred via `server_kwargs`.
             assistant_id: Agent identifier for memory storage
             backend: Backend for file operations
             auto_approve: Whether to start with auto-approve enabled
-            enable_ask_user: Whether `ask_user` should stay enabled when
-                recreating agents (for example during model hot-swap)
             cwd: Current working directory to display
             thread_id: Optional thread ID for session persistence
             initial_prompt: Optional prompt to auto-submit when session starts
-            checkpointer: Checkpointer for session persistence (enables model hot-swap)
-            tools: Tools used to create the agent (for model hot-swap)
-            sandbox: Sandbox backend (for model hot-swap)
-            sandbox_type: Type of sandbox provider (for model hot-swap)
             mcp_server_info: MCP server metadata for the `/mcp` viewer.
             profile_override: Extra profile fields from `--profile-override`,
-                retained for model hot-swap and footer display.
+                retained so later profile-aware behavior stays consistent with
+                the CLI override, including model selection details,
+                compaction budget display, and on-demand `create_model()`
+                calls such as `/compact`.
+            server_proc: LangGraph server process for the interactive session.
+            server_kwargs: When provided, server startup is deferred.
+
+                The app shows a "Connecting..." state and starts the server in
+                the background using these kwargs
+                for `start_server_and_get_agent`.
+            mcp_preload_kwargs: Kwargs for `_preload_session_mcp_server_info`,
+                run concurrently with server startup when `server_kwargs` is set.
             **kwargs: Additional arguments passed to parent
         """
         super().__init__(**kwargs)
@@ -581,18 +619,18 @@ class DeepAgentsApp(App):
         self._assistant_id = assistant_id
         self._backend = backend
         self._auto_approve = auto_approve
-        self._enable_ask_user = enable_ask_user
         self._cwd = str(cwd) if cwd else str(Path.cwd())
         # Avoid collision with App._thread_id
         self._lc_thread_id = thread_id
         self._initial_prompt = initial_prompt
-        # Store for model hot-swap
-        self._checkpointer = checkpointer
-        self._tools = tools or []
-        self._sandbox = sandbox
-        self._sandbox_type = sandbox_type
         self._mcp_server_info = mcp_server_info
         self._profile_override = profile_override
+        self._server_proc = server_proc
+        self._server_kwargs = server_kwargs
+        self._mcp_preload_kwargs = mcp_preload_kwargs
+        self._connecting = server_kwargs is not None
+        self._model_override: str | None = None
+        self._model_params_override: dict[str, Any] | None = None
         self._mcp_tool_count = sum(len(s.tools) for s in (mcp_server_info or []))
         self._status_bar: StatusBar | None = None
         self._chat_input: ChatInput | None = None
@@ -617,6 +655,7 @@ class DeepAgentsApp(App):
         self._queued_widgets: deque[QueuedUserMessage] = deque()
         self._processing_pending = False
         self._thread_switching = False
+        self._model_switching = False
         # Message virtualization store
         self._message_store = MessageStore()
         # Lazily imported here to avoid pulling image dependencies into
@@ -624,6 +663,26 @@ class DeepAgentsApp(App):
         from deepagents_cli.input import MediaTracker
 
         self._image_tracker = MediaTracker()
+
+    def _remote_agent(self) -> RemoteAgent | None:
+        """Return the agent narrowed to `RemoteAgent`, or `None`.
+
+        Returns `None` when:
+
+        - No agent is configured (`self._agent is None`).
+        - The agent is a local `Pregel` graph (e.g. ACP mode, test harnesses).
+
+        Used to gate features that require a server-backed agent (e.g. model
+        switching via `ConfigurableModelMiddleware`, checkpointer fallback).
+        Checks the agent type rather than server ownership so this works for
+        both CLI-spawned servers and externally managed ones.
+
+        Returns:
+            The `RemoteAgent` instance, or `None` for local agents.
+        """
+        from deepagents_cli.remote_client import RemoteAgent
+
+        return self._agent if isinstance(self._agent, RemoteAgent) else None
 
     def compose(self) -> ComposeResult:
         """Compose the application layout.
@@ -637,6 +696,7 @@ class DeepAgentsApp(App):
             yield WelcomeBanner(
                 thread_id=self._lc_thread_id,
                 mcp_tool_count=self._mcp_tool_count,
+                connecting=self._connecting,
                 id="welcome-banner",
             )
             yield Container(id="messages")
@@ -677,26 +737,16 @@ class DeepAgentsApp(App):
             self._update_tokens, self._hide_tokens
         )
 
-        # Create UI adapter if agent is provided
+        # Create UI adapter if agent is provided (deferred when connecting)
         if self._agent:
-            self._ui_adapter = TextualUIAdapter(
-                mount_message=self._mount_message,
-                update_status=self._update_status,
-                request_approval=self._request_approval,
-                on_auto_approve_enabled=self._on_auto_approve_enabled,
-                scroll_to_bottom=self._scroll_chat_to_bottom,
-                set_spinner=self._set_spinner,
-                set_active_message=self._set_active_message,
-                sync_message_content=self._sync_message_content,
-                request_ask_user=self._request_ask_user,
-            )
-            self._ui_adapter.set_token_tracker(self._token_tracker)
+            self._init_agent_adapter()
 
-            # Prewarm `/threads` cache in the background so first open is faster.
+        # Deferred server startup: run in background while TUI is visible
+        if self._server_kwargs is not None:
             self.run_worker(
-                self._prewarm_threads_cache,
+                self._start_server_background,
                 exclusive=True,
-                group="startup-thread-prewarm",
+                group="server-startup",
             )
 
         # Background update check (opt-out via DEEPAGENTS_NO_UPDATE_CHECK)
@@ -736,18 +786,158 @@ class DeepAgentsApp(App):
         # This check must come first because _lc_thread_id and _agent are
         # always set (even for brand-new sessions), so an elif after the
         # thread-history branch would never execute.
+        # When connecting, defer until on_deep_agents_app_server_ready fires.
+        if not self._connecting:
+            if self._initial_prompt and self._initial_prompt.strip():
+                prompt = self._initial_prompt
+                self.call_after_refresh(
+                    lambda: asyncio.create_task(self._handle_user_message(prompt))
+                )
+            elif self._lc_thread_id and self._agent:
+                self.call_after_refresh(
+                    lambda: asyncio.create_task(self._load_thread_history())
+                )
+
+    def _init_agent_adapter(self) -> None:
+        """Create the UI adapter and kick off background cache prewarming."""
+        self._ui_adapter = TextualUIAdapter(
+            mount_message=self._mount_message,
+            update_status=self._update_status,
+            request_approval=self._request_approval,
+            on_auto_approve_enabled=self._on_auto_approve_enabled,
+            scroll_to_bottom=self._scroll_chat_to_bottom,
+            set_spinner=self._set_spinner,
+            set_active_message=self._set_active_message,
+            sync_message_content=self._sync_message_content,
+            request_ask_user=self._request_ask_user,
+        )
+        if self._token_tracker:
+            self._ui_adapter.set_token_tracker(self._token_tracker)
+
+        self.run_worker(
+            self._prewarm_threads_cache,
+            exclusive=True,
+            group="startup-thread-prewarm",
+        )
+        self.run_worker(
+            self._prewarm_model_caches,
+            exclusive=True,
+            group="startup-model-prewarm",
+        )
+
+    async def _start_server_background(self) -> None:
+        """Background worker: start server + MCP preload concurrently."""
+        from deepagents_cli.server_manager import start_server_and_get_agent
+
+        coros: list[Any] = [start_server_and_get_agent(**self._server_kwargs)]  # type: ignore[arg-type]
+
+        if self._mcp_preload_kwargs is not None:
+            from deepagents_cli.main import _preload_session_mcp_server_info
+
+            coros.append(_preload_session_mcp_server_info(**self._mcp_preload_kwargs))
+
+        try:
+            results = await asyncio.gather(*coros, return_exceptions=True)
+        except Exception as exc:  # noqa: BLE001  # defensive catch around gather
+            self.post_message(self.ServerStartFailed(error=exc))
+            return
+
+        server_result = results[0]
+        if isinstance(server_result, BaseException):
+            self.post_message(
+                self.ServerStartFailed(
+                    error=server_result
+                    if isinstance(server_result, Exception)
+                    else RuntimeError(str(server_result)),
+                )
+            )
+            return
+
+        agent, server_proc, _ = server_result
+
+        # Assign immediately so the finally block in run_textual_app can
+        # clean up the server even if the ServerReady message is never
+        # processed (e.g. user quits during startup).
+        self._server_proc = server_proc
+
+        mcp_info = None
+        if len(results) > 1 and not isinstance(results[1], BaseException):
+            mcp_info = results[1]
+        elif len(results) > 1 and isinstance(results[1], BaseException):
+            logger.warning(
+                "MCP metadata preload failed: %s",
+                results[1],
+                exc_info=results[1],
+            )
+
+        self.post_message(
+            self.ServerReady(
+                agent=agent,
+                server_proc=server_proc,
+                mcp_server_info=mcp_info,
+            )
+        )
+
+    def on_deep_agents_app_server_ready(self, event: ServerReady) -> None:
+        """Handle successful background server startup."""
+        self._connecting = False
+        self._agent = event.agent
+        self._server_proc = event.server_proc
+        self._mcp_server_info = event.mcp_server_info
+        self._mcp_tool_count = sum(len(s.tools) for s in (event.mcp_server_info or []))
+
+        # Update welcome banner to show ready state
+        try:
+            banner = self.query_one("#welcome-banner", WelcomeBanner)
+            banner.set_connected(self._mcp_tool_count)
+        except NoMatches:
+            logger.warning("Welcome banner not found during server ready transition")
+
+        # Now that the agent is available, set up the adapter
+        self._init_agent_adapter()
+
+        # Handle deferred initial prompt or thread history
         if self._initial_prompt and self._initial_prompt.strip():
-            # Use call_after_refresh to ensure UI is fully mounted before submitting
-            # Capture value for closure to satisfy type checker
             prompt = self._initial_prompt
             self.call_after_refresh(
                 lambda: asyncio.create_task(self._handle_user_message(prompt))
             )
-        # Load thread history if resuming a session (no initial prompt)
         elif self._lc_thread_id and self._agent:
             self.call_after_refresh(
                 lambda: asyncio.create_task(self._load_thread_history())
             )
+
+        # Drain any messages the user typed while the server was starting.
+        # (If an initial prompt exists, its cleanup path will drain the queue.)
+        if self._pending_messages and not (
+            self._initial_prompt and self._initial_prompt.strip()
+        ):
+            self.call_after_refresh(
+                lambda: asyncio.create_task(self._process_next_from_queue())
+            )
+
+    def on_deep_agents_app_server_start_failed(self, event: ServerStartFailed) -> None:
+        """Handle background server startup failure."""
+        self._connecting = False
+        logger.error("Server startup failed: %s", event.error, exc_info=event.error)
+        self.notify(
+            f"Failed to start server: {event.error}",
+            severity="error",
+            timeout=30,
+        )
+        # Update banner to show persistent failure state
+        try:
+            banner = self.query_one("#welcome-banner", WelcomeBanner)
+            banner.set_failed(str(event.error))
+        except NoMatches:
+            logger.warning("Welcome banner not found during server failure transition")
+
+        # Discard any messages queued while the server was starting
+        if self._pending_messages:
+            self._pending_messages.clear()
+            for w in self._queued_widgets:
+                w.remove()
+            self._queued_widgets.clear()
 
     async def _prewarm_threads_cache(self) -> None:  # noqa: PLR6301  # Worker hook kept as instance method
         """Prewarm thread selector cache without blocking app startup."""
@@ -757,6 +947,21 @@ class DeepAgentsApp(App):
         )
 
         await prewarm_thread_message_counts(limit=get_thread_limit())
+
+    async def _prewarm_model_caches(self) -> None:
+        """Prewarm model discovery and profile caches without blocking startup."""
+        try:
+            from deepagents_cli.model_config import (
+                get_available_models,
+                get_model_profiles,
+            )
+
+            await asyncio.to_thread(get_available_models)
+            await asyncio.to_thread(
+                get_model_profiles, cli_override=self._profile_override
+            )
+        except Exception:
+            logger.debug("Could not prewarm model caches", exc_info=True)
 
     async def _check_for_updates(self) -> None:
         """Check PyPI for a newer deepagents-cli version and notify the user."""
@@ -810,7 +1015,7 @@ class DeepAgentsApp(App):
         # Sticky scroll: only scroll to bottom if user is near the bottom
         # "Near" means within 100 pixels of the bottom (about 6-7 lines)
         distance_from_bottom = chat.max_scroll_y - chat.scroll_y
-        if distance_from_bottom < 100:  # noqa: PLR2004  # Token count threshold
+        if distance_from_bottom < 100:  # noqa: PLR2004  # Pixel distance threshold for sticky scroll
             chat.scroll_end(animate=False)
 
     def _check_hydration_needed(self) -> None:
@@ -1237,8 +1442,10 @@ class DeepAgentsApp(App):
             )
             return
 
-        # If agent or shell command is running, enqueue instead of processing
-        if self._agent_running or self._shell_running:
+        # If agent/shell is running or server is still starting up, enqueue
+        # instead of processing. Messages queued during connection are drained
+        # once the server is ready (see on_deep_agents_app_server_ready).
+        if self._agent_running or self._shell_running or self._connecting:
             self._pending_messages.append(QueuedMessage(text=value, mode=mode))
             queued_widget = QueuedUserMessage(value)
             self._queued_widgets.append(queued_widget)
@@ -1795,7 +2002,7 @@ class DeepAgentsApp(App):
         sees "Nothing to compact" with the retention budget and a pointer to
         `/tokens` for a full breakdown.
         """
-        if not self._agent or not self._lc_thread_id or not self._backend:
+        if not self._agent or not self._lc_thread_id:
             await self._mount_message(
                 AppMessage("Nothing to compact \u2014 start a conversation first")
             )
@@ -1812,18 +2019,18 @@ class DeepAgentsApp(App):
         config: RunnableConfig = {"configurable": {"thread_id": self._lc_thread_id}}
 
         try:
-            state = await self._agent.aget_state(config)
+            state_values = await self._get_thread_state_values(self._lc_thread_id)
         except Exception as exc:  # noqa: BLE001
             await self._mount_message(ErrorMessage(f"Failed to read state: {exc}"))
             return
 
-        if not state or not state.values:
+        if not state_values:
             await self._mount_message(
                 AppMessage("Nothing to compact \u2014 start a conversation first")
             )
             return
 
-        messages = state.values.get("messages", [])
+        messages = state_values.get("messages", [])
 
         # Prevent concurrent user input while compaction modifies state
         self._agent_running = True
@@ -1876,16 +2083,22 @@ class DeepAgentsApp(App):
                         model.profile = merged  # type: ignore[union-attr]
 
             defaults = compute_summarization_defaults(model)
+            compact_backend = self._backend
+            if compact_backend is None:
+                from deepagents.backends.filesystem import FilesystemBackend
+
+                compact_backend = FilesystemBackend()
+                logger.info("Using local FilesystemBackend for compaction")
             middleware = SummarizationMiddleware(
                 model=model,
-                backend=self._backend,
+                backend=compact_backend,
                 keep=defaults["keep"],
                 trim_tokens_to_summarize=None,
             )
 
             # Rebuild the message list the model would see, accounting for
             # any prior compaction
-            event = state.values.get("_summarization_event")
+            event = state_values.get("_summarization_event")
             effective = middleware._apply_event_to_messages(messages, event)
 
             cutoff = middleware._determine_cutoff_index(effective)
@@ -1944,7 +2157,9 @@ class DeepAgentsApp(App):
             summary = await middleware._acreate_summary(to_summarize)
 
             offload_result = await self._offload_messages_for_compact(
-                to_summarize, middleware
+                to_summarize,
+                middleware,
+                backend=compact_backend,
             )
             if offload_result is None:
                 # Actual failure (read/write error)
@@ -1991,6 +2206,12 @@ class DeepAgentsApp(App):
                 "file_path": file_path,
             }
 
+            if remote := self._remote_agent():
+                # After a dev-server restart, SQLite checkpoints may exist even
+                # when the remote thread record has not yet been re-created.
+                # Ensure the HTTP-side thread exists before updating state.
+                await remote.aensure_thread(config)  # ty: ignore[invalid-argument-type]
+
             await self._agent.aupdate_state(config, {"_summarization_event": new_event})
 
             await self._mount_message(
@@ -2024,6 +2245,8 @@ class DeepAgentsApp(App):
         self,
         messages: list[Any],
         middleware: SummarizationMiddleware,
+        *,
+        backend: BackendProtocol | None = None,
     ) -> str | None:
         """Write messages to backend storage before compaction.
 
@@ -2036,6 +2259,8 @@ class DeepAgentsApp(App):
         Args:
             messages: Messages to offload.
             middleware: `SummarizationMiddleware` instance for filtering.
+            backend: Backend to persist conversation history to. Defaults to
+                `self._backend` when omitted.
 
         Returns:
             File path where history was stored, `""` (empty string) if there
@@ -2046,7 +2271,8 @@ class DeepAgentsApp(App):
 
         from langchain_core.messages import get_buffer_string
 
-        if self._backend is None:
+        history_backend = backend or self._backend
+        if history_backend is None:
             logger.warning("No backend configured; cannot offload messages")
             return None
 
@@ -2065,7 +2291,7 @@ class DeepAgentsApp(App):
 
         existing_content = ""
         try:
-            responses = await self._backend.adownload_files([path])
+            responses = await history_backend.adownload_files([path])
             resp = responses[0] if responses else None
             if resp and resp.content is not None and resp.error is None:
                 existing_content = resp.content.decode("utf-8")
@@ -2083,9 +2309,9 @@ class DeepAgentsApp(App):
 
         try:
             result = (
-                await self._backend.aedit(path, existing_content, combined)
+                await history_backend.aedit(path, existing_content, combined)
                 if existing_content
-                else await self._backend.awrite(path, combined)
+                else await history_backend.awrite(path, combined)
             )
             if result is None or result.error:
                 error_detail = result.error if result else "backend returned None"
@@ -2139,16 +2365,13 @@ class DeepAgentsApp(App):
             )
         else:
             await self._mount_message(
-                AppMessage(
-                    "Agent not configured. "
-                    "Run with --agent flag or use standalone mode."
-                )
+                AppMessage("Agent not configured for this session.")
             )
 
     async def _run_agent_task(self, message: str) -> None:
         """Run the agent task in a background worker.
 
-        This runs in a worker thread so the main event loop stays responsive.
+        This runs in a Textual worker so the main event loop stays responsive.
         """
         # Caller ensures _ui_adapter is set (checked in _handle_user_message)
         if self._ui_adapter is None:
@@ -2163,8 +2386,13 @@ class DeepAgentsApp(App):
                 adapter=self._ui_adapter,
                 backend=self._backend,
                 image_tracker=self._image_tracker,
+                context=CLIContext(
+                    model=self._model_override,
+                    model_params=self._model_params_override or {},
+                ),
             )
-        except Exception as e:  # noqa: BLE001  # Resilient tool rendering
+        except Exception as e:  # Resilient tool rendering
+            logger.exception("Agent execution failed")
             # Ensure any in-flight tool calls don't remain stuck in "Running..."
             # when streaming aborts before tool results arrive.
             if self._ui_adapter:
@@ -2329,8 +2557,59 @@ class DeepAgentsApp(App):
 
         return result
 
+    async def _get_thread_state_values(self, thread_id: str) -> dict[str, Any]:
+        """Fetch thread state values, with remote checkpointer fallback.
+
+        In server mode the LangGraph dev server can report an empty thread state
+        after a restart even when checkpoints exist on disk. When that happens,
+        read the latest checkpoint directly so resumed threads can still load
+        history and compact correctly.
+
+        Args:
+            thread_id: Thread ID to fetch from checkpoint storage.
+
+        Returns:
+            Thread state values keyed by channel name. Returns an empty dict
+                when no checkpointed values are available.
+        """
+        if not self._agent:
+            return {}
+
+        config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
+        state = await self._agent.aget_state(config)
+
+        values: dict[str, Any] = {}
+        if state and state.values:
+            values = dict(state.values)
+
+        messages = values.get("messages")
+        if isinstance(messages, list) and messages:
+            return values
+        if not self._remote_agent():
+            return values
+
+        logger.debug(
+            "Remote state empty for thread %s; falling back to local checkpointer",
+            thread_id,
+        )
+        fallback_values = await self._read_channel_values_from_checkpointer(thread_id)
+        fallback_messages = fallback_values.get("messages")
+        if isinstance(fallback_messages, list) and fallback_messages:
+            values["messages"] = fallback_messages
+        if (
+            values.get("_summarization_event") is None
+            and "_summarization_event" in fallback_values
+        ):
+            values["_summarization_event"] = fallback_values["_summarization_event"]
+        return values
+
     async def _fetch_thread_history_data(self, thread_id: str) -> list[MessageData]:
         """Fetch and convert stored messages for a thread.
+
+        In server mode the LangGraph dev server starts with an empty thread
+        store, so `aget_state` via the HTTP API returns no messages even when
+        checkpoints exist on disk. We fall back to reading the SQLite
+        checkpointer directly to guarantee resumed threads load their history.
 
         Args:
             thread_id: Thread ID to fetch from checkpoint storage.
@@ -2338,20 +2617,59 @@ class DeepAgentsApp(App):
         Returns:
             Converted message data ready for bulk loading.
         """
-        if not self._agent:
-            return []
+        state_values = await self._get_thread_state_values(thread_id)
+        messages = state_values.get("messages", [])
 
-        config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
-        state = await self._agent.aget_state(config)
-        if not state or not state.values:
-            return []
-
-        messages = state.values.get("messages", [])
         if not messages:
             return []
 
+        # Server mode / direct checkpointer may return dicts; convert to
+        # LangChain message objects so _convert_messages_to_data works.
+        if messages and isinstance(messages[0], dict):
+            from langchain_core.messages.utils import convert_to_messages
+
+            messages = convert_to_messages(messages)
+
         # Offload conversion so large histories don't block the UI loop.
         return await asyncio.to_thread(self._convert_messages_to_data, messages)
+
+    @staticmethod
+    async def _read_channel_values_from_checkpointer(thread_id: str) -> dict[str, Any]:
+        """Read checkpoint channel values directly from the SQLite checkpointer.
+
+        Args:
+            thread_id: Thread ID to look up.
+
+        Returns:
+            Channel values from the latest checkpoint, or an empty dict on
+                failure.
+        """
+        try:
+            from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
+            from deepagents_cli.sessions import get_db_path
+
+            db_path = str(get_db_path())
+            config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
+            async with AsyncSqliteSaver.from_conn_string(db_path) as saver:
+                tup = await saver.aget_tuple(config)
+                if tup and tup.checkpoint:
+                    channel_values = tup.checkpoint.get("channel_values", {})
+                    if isinstance(channel_values, dict):
+                        return dict(channel_values)
+        except (ImportError, OSError) as exc:
+            logger.warning(
+                "Failed to read checkpointer directly for %s: %s",
+                thread_id,
+                exc,
+            )
+        except Exception:
+            logger.warning(
+                "Unexpected error reading checkpointer for %s",
+                thread_id,
+                exc_info=True,
+            )
+        return {}
 
     async def _upgrade_thread_message_link(
         self,
@@ -3004,6 +3322,7 @@ class DeepAgentsApp(App):
 
         current = self._session_state.thread_id if self._session_state else None
         thread_limit = get_thread_limit()
+
         initial_threads = get_cached_threads(limit=thread_limit)
 
         def handle_result(result: str | None) -> None:
@@ -3162,6 +3481,11 @@ class DeepAgentsApp(App):
     ) -> None:
         """Switch to a new model, preserving conversation history.
 
+        This requires a server-backed interactive session. It sets a model
+        override that `ConfigurableModelMiddleware` picks up on the next
+        invocation, so the conversation thread stays intact and no server
+        restart is required.
+
         Args:
             model_spec: The model specification to switch to.
 
@@ -3172,146 +3496,120 @@ class DeepAgentsApp(App):
         """
         logger.info("Switching model to %s", model_spec)
 
-        from deepagents_cli.agent import create_cli_agent
+        if self._model_switching:
+            await self._mount_message(AppMessage("Model switch already in progress."))
+            return
+
         from deepagents_cli.model_config import (
-            ModelConfigError,
             get_credential_env_var,
             has_provider_credentials,
         )
 
-        # Strip leading colon — treat ":claude-opus-4-6" as "claude-opus-4-6"
-        model_spec = model_spec.removeprefix(":")
+        self._model_switching = True
+        try:
+            # Defensively strip leading colon in case of empty provider,
+            # treat ":claude-opus-4-6" as "claude-opus-4-6"
+            model_spec = model_spec.removeprefix(":")
 
-        parsed = ModelSpec.try_parse(model_spec)
-        if parsed:
-            provider: str | None = parsed.provider
-            model_name = parsed.model
-        else:
-            model_name = model_spec
-            provider = detect_provider(model_spec)
-
-        # Check credentials
-        if provider and has_provider_credentials(provider) is False:
-            env_var = get_credential_env_var(provider)
-            if env_var:
-                detail = f"{env_var} is not set or is empty"
-            else:
-                detail = (
-                    f"provider '{provider}' is not recognized. "
-                    "Add it to ~/.deepagents/config.toml with an api_key_env field"
-                )
-            await self._mount_message(ErrorMessage(f"Missing credentials: {detail}"))
-            return
-
-        # Check if already using this exact model
-        if model_name == settings.model_name and (
-            not provider or provider == settings.model_provider
-        ):
-            current = f"{settings.model_provider}:{settings.model_name}"
-            await self._mount_message(AppMessage(f"Already using {current}"))
-            return
-
-        # Check if we have what we need for hot-swap
-        if not self._checkpointer:
-            # No checkpointer means we can't hot-swap
-            # Save the preference and notify user
-            if save_recent_model(model_spec):
+            if not self._remote_agent():
                 await self._mount_message(
-                    AppMessage(
-                        f"Model preference set to {model_spec}. "
-                        "Restart the CLI for the change to take effect."
+                    ErrorMessage("Model switching requires a server-backed session.")
+                )
+                return
+
+            parsed = ModelSpec.try_parse(model_spec)
+            if parsed:
+                provider: str | None = parsed.provider
+                model_name = parsed.model
+            else:
+                model_name = model_spec
+                provider = detect_provider(model_spec)
+
+            # Check credentials
+            has_creds = has_provider_credentials(provider) if provider else None
+            if has_creds is False and provider is not None:
+                env_var = get_credential_env_var(provider)
+                detail = (
+                    f"{env_var} is not set or is empty"
+                    if env_var
+                    else (
+                        f"provider '{provider}' is not recognized. "
+                        "Add it to ~/.deepagents/config.toml with an "
+                        "api_key_env field"
                     )
                 )
-            else:
+                await self._mount_message(
+                    ErrorMessage(f"Missing credentials: {detail}")
+                )
+                return
+            if has_creds is None and provider:
+                logger.debug(
+                    "Credentials for provider '%s' cannot be verified;"
+                    " proceeding anyway",
+                    provider,
+                )
+
+            # Check if already using this exact model
+            if model_name == settings.model_name and (
+                not provider or provider == settings.model_provider
+            ):
+                current = f"{settings.model_provider}:{settings.model_name}"
+                await self._mount_message(AppMessage(f"Already using {current}"))
+                return
+
+            # Build the provider:model spec for the configurable middleware.
+            display = model_spec
+            if provider and not parsed:
+                display = f"{provider}:{model_name}"
+
+            try:
+                create_model(
+                    display,
+                    extra_kwargs=extra_kwargs,
+                    profile_overrides=self._profile_override,
+                ).apply_to_settings()
+            except Exception as exc:
+                logger.exception("Failed to resolve model metadata for %s", display)
+                await self._mount_message(
+                    ErrorMessage(f"Failed to switch model: {exc}")
+                )
+                return
+
+            # Set the model override for ConfigurableModelMiddleware.
+            # The next stream call passes CLIContext via context= and the
+            # middleware swaps the model per-invocation — no graph recreation.
+            self._model_override = display
+            self._model_params_override = extra_kwargs
+
+            if self._status_bar:
+                self._status_bar.set_model(
+                    provider=settings.model_provider or "",
+                    model=settings.model_name or "",
+                )
+
+            if not await asyncio.to_thread(save_recent_model, display):
                 await self._mount_message(
                     ErrorMessage(
-                        "Could not save model preference. "
-                        "Check permissions for ~/.deepagents/"
+                        "Model switched for this session, but could not save "
+                        "preference. Check permissions for ~/.deepagents/"
                     )
                 )
-            return
+            else:
+                await self._mount_message(AppMessage(f"Switched to {display}"))
+            logger.info("Model switched to %s (via configurable middleware)", display)
 
-        try:
-            result = create_model(
-                model_spec,
-                extra_kwargs=extra_kwargs,
-                profile_overrides=self._profile_override,
-            )
-        except ModelConfigError as e:
-            await self._mount_message(ErrorMessage(str(e)))
-            return
-        except Exception as e:
-            logger.exception("Failed to create model from spec %s", model_spec)
-            await self._mount_message(ErrorMessage(f"Failed to create model: {e}"))
-            return
+            # Scroll to bottom so the confirmation message is visible
+            def _scroll_after_switch() -> None:
+                try:
+                    chat = self.query_one("#chat", VerticalScroll)
+                    if chat.max_scroll_y > 0:
+                        chat.scroll_end(animate=False)
+                except NoMatches:
+                    pass
 
-        # When switching models, settings must be updated before
-        # create_cli_agent because it builds the system prompt from global
-        # settings (model name, provider, context limit). Otherwise the
-        # prompt would describe the old model to the new one.
-        #
-        # Save previous values for rollback if agent creation fails.
-        prev_name = settings.model_name
-        prev_provider = settings.model_provider
-        prev_context_limit = settings.model_context_limit
-        result.apply_to_settings()
-
-        try:
-            new_agent, new_backend = create_cli_agent(
-                model=result.model,
-                assistant_id=self._assistant_id or "default",
-                tools=self._tools,
-                sandbox=self._sandbox,
-                sandbox_type=self._sandbox_type,
-                auto_approve=self._auto_approve,
-                enable_ask_user=self._enable_ask_user,
-                checkpointer=self._checkpointer,
-                mcp_server_info=self._mcp_server_info,
-            )
-        except Exception as e:
-            # Roll back settings so the running agent isn't misrepresented.
-            settings.model_name = prev_name
-            settings.model_provider = prev_provider
-            settings.model_context_limit = prev_context_limit
-            logger.exception("Failed to create agent for model switch")
-            await self._mount_message(ErrorMessage(f"Model switch failed: {e}"))
-            return
-
-        # Swap agent
-        self._agent = new_agent
-        self._backend = new_backend
-
-        # Post-swap: update UI and save config
-        display = f"{settings.model_provider}:{settings.model_name}"
-        if self._status_bar:
-            self._status_bar.set_model(
-                provider=settings.model_provider or "",
-                model=settings.model_name or "",
-            )
-
-        config_saved = save_recent_model(display)
-        if config_saved:
-            await self._mount_message(AppMessage(f"Switched to {display}"))
-        else:
-            await self._mount_message(
-                AppMessage(
-                    f"Switched to {display} (preference not saved - "
-                    "check ~/.deepagents/ permissions)"
-                )
-            )
-
-        logger.info("Model switched to %s", display)
-
-        # Scroll to bottom so the confirmation message is visible
-        def _scroll_after_switch() -> None:
-            try:
-                chat = self.query_one("#chat", VerticalScroll)
-                if chat.max_scroll_y > 0:
-                    chat.scroll_end(animate=False)
-            except NoMatches:
-                pass
-
-        self.call_after_refresh(_scroll_after_switch)
+            self.call_after_refresh(_scroll_after_switch)
+        finally:
+            self._model_switching = False
 
     async def _set_default_model(self, model_spec: str) -> None:
         """Set the default model in config without switching the current session.
@@ -3332,7 +3630,7 @@ class DeepAgentsApp(App):
             if provider:
                 model_spec = f"{provider}:{model_spec}"
 
-        if save_default_model(model_spec):
+        if await asyncio.to_thread(save_default_model, model_spec):
             await self._mount_message(AppMessage(f"Default model set to {model_spec}"))
         else:
             await self._mount_message(
@@ -3349,7 +3647,7 @@ class DeepAgentsApp(App):
         """
         from deepagents_cli.model_config import clear_default_model
 
-        if clear_default_model():
+        if await asyncio.to_thread(clear_default_model):
             await self._mount_message(
                 AppMessage(
                     "Default model cleared. "
@@ -3383,40 +3681,42 @@ class AppResult:
 
 async def run_textual_app(
     *,
-    agent: Pregel | None = None,
+    agent: Any = None,  # noqa: ANN401
     assistant_id: str | None = None,
     backend: CompositeBackend | None = None,
     auto_approve: bool = False,
-    enable_ask_user: bool = False,
     cwd: str | Path | None = None,
     thread_id: str | None = None,
     initial_prompt: str | None = None,
-    checkpointer: BaseCheckpointSaver | None = None,
-    tools: list[BaseTool | Callable[..., Any] | dict[str, Any]] | None = None,
-    sandbox: SandboxBackendProtocol | None = None,
-    sandbox_type: str | None = None,
     mcp_server_info: list[MCPServerInfo] | None = None,
     profile_override: dict[str, Any] | None = None,
+    server_proc: ServerProcess | None = None,
+    server_kwargs: dict[str, Any] | None = None,
+    mcp_preload_kwargs: dict[str, Any] | None = None,
 ) -> AppResult:
     """Run the Textual application.
 
+    When `server_kwargs` is provided (and `agent` is `None`), the app starts
+    immediately with a "Connecting..." banner and launches the server in the
+    background.  Server cleanup is handled automatically after the app exits.
+
     Args:
-        agent: Pre-configured LangGraph agent (optional)
-        assistant_id: Agent identifier for memory storage
-        backend: Backend for file operations
-        auto_approve: Whether to start with auto-approve enabled
-        enable_ask_user: Whether `ask_user` should stay enabled when
-            recreating agents (for example during model hot-swap)
-        cwd: Current working directory to display
-        thread_id: Optional thread ID for session persistence
-        initial_prompt: Optional prompt to auto-submit when session starts
-        checkpointer: Checkpointer for session persistence (enables model hot-swap)
-        tools: Tools used to create the agent (for model hot-swap)
-        sandbox: Sandbox backend (for model hot-swap)
-        sandbox_type: Type of sandbox provider (for model hot-swap)
+        agent: Pre-configured LangGraph agent (optional).
+        assistant_id: Agent identifier for memory storage.
+        backend: Backend for file operations.
+        auto_approve: Whether to start with auto-approve enabled.
+        cwd: Current working directory to display.
+        thread_id: Optional thread ID for session persistence.
+        initial_prompt: Optional prompt to auto-submit when session starts.
         mcp_server_info: MCP server metadata for the `/mcp` viewer.
         profile_override: Extra profile fields from `--profile-override`,
-            retained for model hot-swap and footer display.
+            retained so later profile-aware behavior stays consistent with
+            the CLI override, including model selection details, compaction
+            budget display, and on-demand `create_model()` calls such as
+            `/compact`.
+        server_proc: LangGraph server process for the interactive session.
+        server_kwargs: Kwargs for deferred `start_server_and_get_agent` call.
+        mcp_preload_kwargs: Kwargs for concurrent MCP metadata preload.
 
     Returns:
         An `AppResult` with the return code and final thread ID.
@@ -3426,26 +3726,26 @@ async def run_textual_app(
         assistant_id=assistant_id,
         backend=backend,
         auto_approve=auto_approve,
-        enable_ask_user=enable_ask_user,
         cwd=cwd,
         thread_id=thread_id,
         initial_prompt=initial_prompt,
-        checkpointer=checkpointer,
-        tools=tools,
-        sandbox=sandbox,
-        sandbox_type=sandbox_type,
         mcp_server_info=mcp_server_info,
         profile_override=profile_override,
+        server_proc=server_proc,
+        server_kwargs=server_kwargs,
+        mcp_preload_kwargs=mcp_preload_kwargs,
     )
-    await app.run_async()
+    try:
+        await app.run_async()
+    finally:
+        # Guarantee server cleanup regardless of how the app exits.
+        # Covers both the pre-started server_proc path and the deferred
+        # server_kwargs path (where the background worker sets _server_proc).
+        if app._server_proc is not None:
+            app._server_proc.stop()
+
     return AppResult(
         return_code=app.return_code or 0,
         thread_id=app._lc_thread_id,
         session_stats=app._session_stats,
     )
-
-
-if __name__ == "__main__":
-    import asyncio
-
-    asyncio.run(run_textual_app())

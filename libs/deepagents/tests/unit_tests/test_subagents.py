@@ -1550,6 +1550,60 @@ class TestSubAgents:
         subagent_state = captured_subagent_states[0]
         assert "skills_metadata" not in subagent_state, "Subagent without skills parameter should NOT have skills_metadata"
 
+    def test_general_purpose_subagent_override(self) -> None:
+        """Test that a general-purpose subagent spec overrides the default."""
+        override_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(content="Override response."),
+                ]
+            )
+        )
+
+        parent_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {
+                                    "description": "Do work",
+                                    "subagent_type": "general-purpose",
+                                },
+                                "id": "call_gp",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=parent_model,
+            checkpointer=InMemorySaver(),
+            subagents=[
+                SubAgent(
+                    name="general-purpose",
+                    description="Override agent",
+                    system_prompt="You are the override.",
+                    model=override_model,
+                )
+            ],
+        )
+
+        result = agent.invoke(
+            {"messages": [HumanMessage(content="Do something")]},
+            config={"configurable": {"thread_id": "test_gp_override"}},
+        )
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert len(tool_messages) == 1
+        assert tool_messages[0].content == "Override response."
+
 
 class TestSubAgentMiddlewareValidation:
     """Tests for SubAgentMiddleware initialization validation."""

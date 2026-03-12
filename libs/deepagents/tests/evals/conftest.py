@@ -17,6 +17,33 @@ from deepagents.graph import get_default_model
 pytest_plugins = ["tests.evals.pytest_reporter"]
 
 
+def pytest_configure(config: pytest.Config) -> None:  # noqa: ARG001  # pytest hook signature
+    """Fail fast if LangSmith tracing is not enabled.
+
+    All eval tests require `@pytest.mark.langsmith` and
+    `LANGSMITH_TRACING=true`. Detect this early so the entire suite is skipped
+    with a clear message instead of failing one-by-one.
+    """
+    tracing_enabled = any(
+        os.environ.get(var, "").lower() == "true"
+        for var in (
+            "LANGSMITH_TRACING_V2",
+            "LANGCHAIN_TRACING_V2",
+            "LANGSMITH_TRACING",
+            "LANGCHAIN_TRACING",
+        )
+    )
+    if not tracing_enabled:
+        pytest.exit(
+            "Aborting: LangSmith tracing is not enabled. "
+            "All eval tests require LangSmith tracing. "
+            "Set one of LANGSMITH_TRACING / LANGSMITH_TRACING_V2 / "
+            "LANGCHAIN_TRACING_V2 to 'true' and ensure a valid "
+            "LANGSMITH_API_KEY is set, then re-run.",
+            returncode=1,
+        )
+
+
 def pytest_addoption(parser: pytest.Parser) -> None:
     parser.addoption(
         "--model",

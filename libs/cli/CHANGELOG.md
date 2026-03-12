@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.0.32](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.31...deepagents-cli==0.0.32) (2026-03-11)
+
+### Features
+
+* Add token breakdown to `/tokens` and simplify `/compact` messages ([#1782](https://github.com/langchain-ai/deepagents/issues/1782)) ([2f37bff](https://github.com/langchain-ai/deepagents/commit/2f37bffa9d7a9ced6945abe4ab6bc3409bfb97b1))
+* `--json` flag for machine-readable output ([#1768](https://github.com/langchain-ai/deepagents/issues/1768)) ([6f62496](https://github.com/langchain-ai/deepagents/commit/6f62496bb699dfa6086ee1850b83f38d3b1242fa))
+
+### Bug Fixes
+
+* Work around VS Code 1.110 space key regression ([#1748](https://github.com/langchain-ai/deepagents/issues/1748)) ([f5fe431](https://github.com/langchain-ai/deepagents/commit/f5fe4315143bf5b636cf42fc98cbfe3d99918cfc))
+
 ## [0.0.31](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.30...deepagents-cli==0.0.31) (2026-03-09)
 
 ### Features

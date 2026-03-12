@@ -337,6 +337,17 @@ class TextualTokenTracker:
         self._update_callback(self.current_context)
 
 
+def _new_thread_id() -> str:
+    """Deferred-import wrapper around `sessions.generate_thread_id`.
+
+    Returns:
+        UUID7 string.
+    """
+    from deepagents_cli.sessions import generate_thread_id
+
+    return generate_thread_id()
+
+
 class TextualSessionState:
     """Session state for the Textual app."""
 
@@ -350,10 +361,10 @@ class TextualSessionState:
 
         Args:
             auto_approve: Whether to auto-approve tool calls
-            thread_id: Optional thread ID (generates 8-char hex if not provided)
+            thread_id: Optional thread ID (generates UUID7 if not provided)
         """
         self.auto_approve = auto_approve
-        self.thread_id = thread_id or uuid.uuid4().hex[:8]
+        self.thread_id = thread_id or _new_thread_id()
 
     def reset_thread(self) -> str:
         """Reset to a new thread.
@@ -361,7 +372,7 @@ class TextualSessionState:
         Returns:
             The new thread_id.
         """
-        self.thread_id = uuid.uuid4().hex[:8]
+        self.thread_id = _new_thread_id()
         return self.thread_id
 
 

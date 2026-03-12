@@ -861,11 +861,15 @@ class TestFetchThreadUrl:
         import time
 
         def _blocking(_tid: str) -> str:
-            time.sleep(3)
+            time.sleep(0.1)
             return "https://example.com"
 
         with (
             _patch_list_threads(),
+            patch(
+                "deepagents_cli.widgets.thread_selector._URL_FETCH_TIMEOUT",
+                0.01,
+            ),
             patch(
                 "deepagents_cli.widgets.thread_selector.build_langsmith_thread_url",
                 side_effect=_blocking,
@@ -1414,6 +1418,7 @@ class TestThreadSelectorPrefetchedRows:
                     await pilot.pause(0.05)
 
                 mock_list_threads.assert_awaited_once()
+                assert mock_list_threads.await_args is not None
                 kw = mock_list_threads.await_args.kwargs
                 assert kw["limit"] == 20
                 assert kw["include_message_count"] is False
@@ -1506,6 +1511,7 @@ class TestThreadSelectorPrefetchedRows:
                     await pilot.pause(0.05)
 
                 mock_list_threads.assert_awaited_once()
+                assert mock_list_threads.await_args is not None
                 kw = mock_list_threads.await_args.kwargs
                 assert kw["limit"] == 20
                 assert kw["include_message_count"] is False

@@ -846,6 +846,21 @@ class TestMessageQueue:
             assert app._pending_messages[0].text == "queued msg"
             assert app._pending_messages[0].mode == "normal"
 
+    async def test_message_queued_while_connecting(self) -> None:
+        """Messages submitted during server startup should be queued."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+
+            app.post_message(ChatInput.Submitted("early msg", "normal"))
+            await pilot.pause()
+
+            assert len(app._pending_messages) == 1
+            assert app._pending_messages[0].text == "early msg"
+            widgets = app.query(QueuedUserMessage)
+            assert len(widgets) == 1
+
     async def test_message_blocked_while_thread_switching(self) -> None:
         """Submissions should be ignored while thread switching is in-flight."""
         app = DeepAgentsApp()
@@ -1910,3 +1925,99 @@ class TestDeferredShowApproval:
         await app._deferred_show_approval(placeholder, menu)
 
         assert not mount_called, "_mount_approval_widget should NOT have been called"
+class TestFetchThreadHistoryData:
+    """Verify _fetch_thread_history_data handles server-mode resume scenarios."""
+
+    async def test_dict_messages_converted_to_message_objects(self) -> None:
+        """Dict-based messages from server mode are deserialized before conversion."""
+        from deepagents_cli.widgets.message_store import MessageData, MessageType
+
+        state = MagicMock()
+        state.values = {
+            "messages": [
+                {"type": "human", "content": "hello", "id": "h1"},
+                {
+                    "type": "ai",
+                    "content": "Hi there!",
+                    "id": "a1",
+                    "tool_calls": [],
+                },
+            ],
+        }
+
+        mock_agent = AsyncMock()
+        mock_agent.aget_state.return_value = state
+
+        app = DeepAgentsApp(agent=mock_agent, thread_id="t-1")
+        result = await app._fetch_thread_history_data("t-1")
+
+        assert len(result) == 2
+        assert isinstance(result[0], MessageData)
+        assert result[0].type == MessageType.USER
+        assert result[0].content == "hello"
+        assert isinstance(result[1], MessageData)
+        assert result[1].type == MessageType.ASSISTANT
+        assert result[1].content == "Hi there!"
+
+    async def test_server_mode_falls_back_to_checkpointer(self) -> None:
+        """When the server returns empty state, read SQLite checkpointer directly."""
+        from langchain_core.messages import AIMessage, HumanMessage
+
+        from deepagents_cli.remote_client import RemoteAgent
+        from deepagents_cli.widgets.message_store import MessageData, MessageType
+
+        # Server returns empty state (fresh restart, thread not loaded)
+        empty_state = MagicMock()
+        empty_state.values = {}
+
+        # spec=RemoteAgent so _remote_agent() isinstance check passes
+        mock_agent = MagicMock(spec=RemoteAgent)
+        mock_agent.aget_state = AsyncMock(return_value=empty_state)
+
+        app = DeepAgentsApp(agent=mock_agent, thread_id="t-1")
+
+        # Patch the checkpointer fallback to return messages
+        checkpointer_msgs = [
+            HumanMessage(content="hello", id="h1"),
+            AIMessage(content="world", id="a1"),
+        ]
+        with patch.object(
+            DeepAgentsApp,
+            "_read_channel_values_from_checkpointer",
+            return_value={"messages": checkpointer_msgs},
+        ):
+            result = await app._fetch_thread_history_data("t-1")
+
+        assert len(result) == 2
+        assert result[0].type == MessageType.USER
+        assert result[0].content == "hello"
+        assert result[1].type == MessageType.ASSISTANT
+        assert result[1].content == "world"
+
+
+class TestRemoteAgent:
+    """Tests for DeepAgentsApp._remote_agent()."""
+
+    def test_returns_instance_with_remote_agent(self) -> None:
+        from deepagents_cli.remote_client import RemoteAgent
+
+        app = DeepAgentsApp()
+        agent = RemoteAgent("http://test:0")
+        app._agent = agent
+        assert app._remote_agent() is agent
+
+    def test_none_when_agent_is_none(self) -> None:
+        app = DeepAgentsApp()
+        assert app._remote_agent() is None
+
+    def test_none_with_non_remote_agent(self) -> None:
+        """Local Pregel-like agent returns None."""
+        app = DeepAgentsApp()
+        app._agent = MagicMock()
+        assert app._remote_agent() is None
+
+    def test_none_with_mock_spec_pregel(self) -> None:
+        """MagicMock without RemoteAgent spec returns None."""
+        app = DeepAgentsApp()
+        app._agent = MagicMock(spec=[])
+        assert app._remote_agent() is None

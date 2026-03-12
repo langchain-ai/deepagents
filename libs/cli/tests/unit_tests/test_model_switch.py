@@ -66,6 +66,7 @@ class TestModelSwitchNoOp:
         assert len(captured_messages) == 1
         assert "Already using" in captured_messages[0]
         assert "Switched to" not in captured_messages[0]
+        assert app._model_switching is False
 
 
 class TestModelSwitchErrorHandling:
@@ -105,6 +106,7 @@ class TestModelSwitchErrorHandling:
         assert len(captured_errors) == 1
         assert "Missing credentials" in captured_errors[0]
         assert "ANTHROPIC_API_KEY" in captured_errors[0]
+        assert app._model_switching is False
 
     async def test_create_model_config_error_shows_error(self) -> None:
         """_switch_model shows error when create_model raises ModelConfigError."""
@@ -220,6 +222,7 @@ class TestModelSwitchErrorHandling:
         assert settings.model_name == "gpt-4o"
         assert settings.model_provider == "openai"
         assert settings.model_context_limit == 128_000
+        assert app._model_switching is False
 
     async def test_context_limit_cleared_when_new_model_has_none(self) -> None:
         """Switching to a model without a context limit clears the old value."""
@@ -319,6 +322,7 @@ class TestModelSwitchErrorHandling:
         assert len(captured_messages) == 1
         assert "Model preference set" in captured_messages[0]
         assert "Restart" in captured_messages[0]
+        assert app._model_switching is False
 
     async def test_no_checkpointer_save_failure_shows_error(self) -> None:
         """_switch_model without checkpointer shows error when save fails."""
@@ -349,6 +353,7 @@ class TestModelSwitchErrorHandling:
         app._mount_message.assert_called_once()  # type: ignore[union-attr]
         assert len(captured_errors) == 1
         assert "Could not save model preference" in captured_errors[0]
+        assert app._model_switching is False
 
     async def test_hot_swap_save_failure_warns_in_message(self) -> None:
         """Successful hot-swap shows ErrorMessage when save_recent_model fails."""
@@ -394,6 +399,7 @@ class TestModelSwitchErrorHandling:
         assert len(captured_errors) == 1
         assert "Switched to" in captured_errors[0]
         assert "preference not saved" in captured_errors[0]
+        assert app._model_switching is False
 
 
 class TestModelSwitchConcurrencyGuard:

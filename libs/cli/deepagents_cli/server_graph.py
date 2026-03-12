@@ -139,12 +139,24 @@ def make_graph() -> Any:  # noqa: ANN401
             logger.exception(
                 "Sandbox provider '%s' is not installed", config.sandbox_type
             )
+            print(  # noqa: T201  # stderr fallback — logger may not reach parent process
+                f"Sandbox provider '{config.sandbox_type}' is not installed",
+                file=sys.stderr,
+            )
             sys.exit(1)
         except NotImplementedError:
             logger.exception("Sandbox type '%s' is not supported", config.sandbox_type)
+            print(  # noqa: T201  # stderr fallback — logger may not reach parent process
+                f"Sandbox type '{config.sandbox_type}' is not supported",
+                file=sys.stderr,
+            )
             sys.exit(1)
-        except Exception:
+        except Exception as exc:
             logger.exception("Sandbox creation failed for '%s'", config.sandbox_type)
+            print(  # noqa: T201  # stderr fallback — logger may not reach parent process
+                f"Sandbox creation failed for '{config.sandbox_type}': {exc}",
+                file=sys.stderr,
+            )
             sys.exit(1)
 
     agent, _ = create_cli_agent(
@@ -169,6 +181,9 @@ def make_graph() -> Any:  # noqa: ANN401
 
 try:
     graph = make_graph()
-except Exception:
+except Exception as exc:
     logger.critical("Failed to initialize server graph", exc_info=True)
+    print(  # noqa: T201  # stderr fallback — logger may not reach parent process
+        f"Failed to initialize server graph: {exc}", file=sys.stderr
+    )
     sys.exit(1)

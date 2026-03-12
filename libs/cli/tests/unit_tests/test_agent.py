@@ -567,7 +567,7 @@ class TestCreateCliAgentInteractiveForwarding:
             patch("deepagents_cli.agent.MemoryMiddleware"),
             patch("deepagents_cli.agent.create_deep_agent", return_value=mock_agent),
             patch(
-                "deepagents.graph.init_chat_model",
+                "deepagents._models.init_chat_model",
                 return_value=fake_model,
             ),
             patch("deepagents_cli.agent.get_system_prompt") as mock_get_prompt,
@@ -619,7 +619,7 @@ class TestCreateCliAgentInteractiveForwarding:
             patch("deepagents_cli.agent.MemoryMiddleware"),
             patch("deepagents_cli.agent.create_deep_agent", return_value=mock_agent),
             patch(
-                "deepagents.graph.init_chat_model",
+                "deepagents._models.init_chat_model",
                 return_value=fake_model,
             ),
             patch("deepagents_cli.agent.get_system_prompt") as mock_get_prompt,
@@ -875,7 +875,7 @@ class TestCreateCliAgentSkillsSources:
             patch("deepagents_cli.agent.MemoryMiddleware"),
             patch("deepagents_cli.agent.create_deep_agent", return_value=mock_agent),
             patch(
-                "deepagents.graph.init_chat_model",
+                "deepagents._models.init_chat_model",
                 return_value=fake_model,
             ),
         ):
@@ -952,7 +952,7 @@ class TestCreateCliAgentMemorySources:
                 return_value=mock_agent,
             ),
             patch(
-                "deepagents.graph.init_chat_model",
+                "deepagents._models.init_chat_model",
                 return_value=fake_model,
             ),
         ):
@@ -1018,7 +1018,7 @@ class TestCreateCliAgentMemorySources:
                 return_value=mock_agent,
             ),
             patch(
-                "deepagents.graph.init_chat_model",
+                "deepagents._models.init_chat_model",
                 return_value=fake_model,
             ),
         ):
@@ -1084,7 +1084,7 @@ class TestMiddlewareStackConformance:
                 side_effect=capture_create_agent,
             ),
             patch(
-                "deepagents.graph.init_chat_model",
+                "deepagents._models.init_chat_model",
                 return_value=fake_model,
             ),
         ):

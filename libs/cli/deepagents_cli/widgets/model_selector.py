@@ -513,8 +513,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             has_creds: Credential status (True/False/None).
             is_default: Whether this is the configured default model.
             status: Model status from profile (e.g., `'deprecated'`,
-                `'beta'`). `'deprecated'` renders in red; other non-None
-                values render dimmed.
+                `'beta'`, `'alpha'`). `'deprecated'` renders in red;
+                other non-None values render in yellow.
 
         Returns:
             Rich-markup label string.
@@ -532,7 +532,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         if status == "deprecated":
             status_suffix = " [red](deprecated)[/red]"
         elif status:
-            status_suffix = f" [dim]({status})[/dim]"
+            status_suffix = f" [yellow]({status})[/yellow]"
         else:
             status_suffix = ""
         return f"{cursor}{spec_text}{suffix}{default_suffix}{status_suffix}"

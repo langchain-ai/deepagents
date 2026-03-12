@@ -705,8 +705,8 @@ class TestFormatOptionLabel:
         )
         assert "(deprecated)" not in label
 
-    def test_other_status_renders_dimmed(self) -> None:
-        """Non-deprecated statuses (e.g., beta) render dimmed, not red."""
+    def test_other_status_renders_yellow(self) -> None:
+        """Non-deprecated statuses (e.g., beta) render yellow, not red."""
         label = ModelSelectorScreen._format_option_label(
             "anthropic:new-model",
             selected=False,
@@ -716,7 +716,7 @@ class TestFormatOptionLabel:
         )
         assert "(deprecated)" not in label
         assert "(beta)" in label
-        assert "[dim]" in label
+        assert "[yellow]" in label
 
     def test_all_suffixes_coexist(self) -> None:
         """Current + default + deprecated all render together."""

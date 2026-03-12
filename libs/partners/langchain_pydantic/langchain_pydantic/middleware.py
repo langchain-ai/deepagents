@@ -183,15 +183,39 @@ class _MontyOS(AbstractOS):
 
 REPL_TOOL_DESCRIPTION = """Evaluates code using a Monty-backed Python-like REPL.
 
-CRITICAL: The REPL does NOT retain state between calls. Each `repl` invocation is evaluated from scratch.
-Do NOT assume variables, imports, or helper functions from prior `repl` calls are available.
+CRITICAL RULES:
+- The REPL does NOT retain state between calls. Each `repl` invocation starts from scratch.
+- Prefer solving the task in a single `repl` call whenever possible.
+- Values are NOT surfaced automatically. If you need to see any result, you must `print(...)` it.
+- A bare final expression is not enough. Use `print(value)`.
 
-Capabilities and limitations:
-- Very limited subset of Python syntax (basic expressions, for-loops, if/else).
-- No Python standard library (e.g., `math.sin` is not available). Use an equivalent foreign function if provided.
-- For file access, use `pathlib` (do not use `open`), and do not use context managers (they are not supported).
-- CRITICAL: Values are not surfaced automatically. If you need to see a value in the repl output, you must `print(...)` it explicitly.
-- Use `print()` for any intermediate or final result that you need the agent to observe in the next step or use in the final answer.
+Syntax and limitations:
+- Supports a limited subset of Python syntax (basic expressions, variables, for-loops, if/else).
+- No Python standard library (for example, `math.sin` is not available) unless equivalent foreign functions are provided.
+- For file access, use `pathlib` (do not use `open`) and do not use context managers.
+- If a function is shown as `def ...`, call it normally. If it is shown as `async def ...`, use `await`.
+- If a function returns structured data like `list[...]` or typed records, inspect that data directly in the same program.
+- You can use lists, indexing, loops, and conditionals inside one program to inspect result sizes, choose items, and branch on the number of results.
+- Do not split work across multiple `repl` calls just to confirm intermediate IDs, names, or other simple values. Compute them and keep using them in the same program.
+- Usually you should `print(...)` only the final answer, not intermediate IDs.
+
+Examples:
+```python
+user_id = get_id()
+location_id = get_location(user_id)
+print(location_id)
+```
+
+```python
+items = search("alice")
+first = items[0]
+print(first["id"])
+```
+
+```python
+result = await fetch_value("weather")
+print(result)
+```
 {external_functions_section}
 """  # noqa: E501  # preserve prompt text formatting exactly for the model
 
@@ -199,17 +223,63 @@ REPL_SYSTEM_PROMPT = """## REPL tool
 
 You have access to a `repl` tool.
 
-CRITICAL: The REPL does NOT retain state between calls. Each `repl` invocation is evaluated from scratch.
-Do NOT assume variables, imports, or helper functions from prior `repl` calls are available.
+Use it when the task can be solved by writing a small self-contained program.
 
-- The REPL supports a very limited subset of Python (roughly Python syntax), but does NOT provide the Python standard library.
-  For example, you cannot use `math.sin`.
-- If you need functionality that would normally come from the standard library, use an equivalent foreign function if one has been provided.
-- If you want file access, use `pathlib` (do not use `open`), and do not use context managers (they are not supported).
-- CRITICAL: Values are not surfaced automatically. If you need to observe any result from the repl, you must `print(...)` it explicitly.
-- Use `print()` for any intermediate or final result that you need the agent to see, reuse in a later step, or include in the final answer.
+CRITICAL RULES:
+- The REPL does NOT retain state between calls. Each `repl` invocation starts from scratch.
+- Prefer solving the task in a single `repl` call whenever possible.
+- Do as much useful work as possible in one program when it is practical and clear to do so.
+- Values are NOT surfaced automatically. If you need to observe any result, you must `print(...)` it.
 - A bare final expression like `city` is not enough; use `print(city)`.
-- Use it for small computations, control flow (for-loops, if/else), and calling externally registered foreign functions.
+
+Guidance:
+- Store intermediate results in variables and continue the computation in the same program.
+- If one function's output can be used directly by later code, do that in the same `repl` call instead of making another `repl` call.
+- When several independent lookups are needed, group them into the same program and complete as much of the reasoning as possible before returning.
+- If a function returns structured data like `list[...]` or typed records, inspect that data directly in the same program.
+- You can use lists, indexing, loops, and conditionals inside one program to inspect result sizes, pick items, and change logic based on the number of results.
+- Do not make a separate `repl` call just to confirm an intermediate ID, location, name, list item, or other simple lookup result.
+- If you can compute an intermediate value and immediately use it, you should usually keep that work in the same `repl` call.
+- Usually you should `print(...)` only the final answer, not intermediate IDs.
+- The REPL supports a limited subset of Python syntax (basic expressions, variables, for-loops, if/else).
+- The Python standard library is not available unless equivalent foreign functions are provided.
+- If a function is shown as `def ...`, call it normally. If it is shown as `async def ...`, use `await`.
+- For file access, use `pathlib` (do not use `open`) and do not use context managers.
+
+Bad pattern:
+```python
+location_id = get_location(user_id)
+print(location_id)
+```
+Then making another `repl` call to use `location_id`.
+
+Better pattern:
+```python
+location_id = get_location(user_id)
+city = get_city(location_id)
+time = get_time(location_id)
+weather = get_weather(location_id)
+print(city, time, weather)
+```
+
+Examples:
+```python
+user_id = get_id()
+location_id = get_location(user_id)
+city = get_city(location_id)
+print(city)
+```
+
+```python
+items = search("alice")
+first = items[0]
+print(first["id"])
+```
+
+```python
+result = await fetch_value("weather")
+print(result)
+```
 {external_functions_section}
 """  # noqa: E501  # preserve prompt text formatting exactly for the model
 

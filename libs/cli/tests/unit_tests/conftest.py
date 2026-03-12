@@ -1,6 +1,28 @@
 """Shared fixtures for CLI unit tests."""
 
+import contextlib
+
 import pytest
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _warm_model_caches() -> None:
+    """Pre-populate model-config caches once per xdist worker.
+
+    Tests like the model-selector UI tests call `get_available_models()` and
+    `get_model_profiles()` during widget init.  Without a warm cache the first
+    invocation in each worker process pays ~800-1200 ms of disk I/O to discover
+    provider profiles via `importlib.util`.  Paying that cost once per session
+    instead of once per test shaves significant time off the overall run.
+
+    Tests that explicitly need a clean cache (e.g. `test_model_config.py`) use
+    their own function-scoped `clear_caches()` fixture which overrides this.
+    """
+    with contextlib.suppress(Exception):
+        from deepagents_cli.model_config import get_available_models, get_model_profiles
+
+        get_available_models()
+        get_model_profiles()
 
 
 @pytest.fixture(autouse=True)

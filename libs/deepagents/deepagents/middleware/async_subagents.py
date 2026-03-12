@@ -300,6 +300,7 @@ def _build_update_tool(
             thread_id=thread_id,
             assistant_id=spec["graph_id"],
             input={"messages": [{"role": "user", "content": message}]},
+            multitask_strategy="interrupt",
         )
         new_job_id = _format_job_id(name, thread_id, run["run_id"])
         return f"Follow-up sent. New job_id: {new_job_id}"
@@ -316,6 +317,7 @@ def _build_update_tool(
             thread_id=thread_id,
             assistant_id=spec["graph_id"],
             input={"messages": [{"role": "user", "content": message}]},
+            multitask_strategy="interrupt",
         )
         new_job_id = _format_job_id(name, thread_id, run["run_id"])
         return f"Follow-up sent. New job_id: {new_job_id}"

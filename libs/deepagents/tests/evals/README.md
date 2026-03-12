@@ -17,7 +17,7 @@ LANGSMITH_TEST_SUITE=deepagents-evals uv run --group test --group evals pytest t
 LANGSMITH_TEST_SUITE=deepagents-evals uv run --group test --group evals pytest tests/evals/test_file_operations.py
 ```
 
-Results are logged to [LangSmith](https://smith.langchain.com/) under the `deepagents-evals` test suite. Set `--evals-report-file <path>` (or `DEEPAGENTS_EVALS_REPORT_FILE`) to also write a JSON summary.
+Results are logged to [LangSmith](https://smith.langchain.com/) under the `deepagents-evals` test suite (under Experiments tab). Set `--evals-report-file <path>` (or `DEEPAGENTS_EVALS_REPORT_FILE`) to also write a JSON summary.
 
 ## Architecture
 

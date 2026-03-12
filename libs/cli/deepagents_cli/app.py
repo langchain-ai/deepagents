@@ -337,6 +337,17 @@ class TextualTokenTracker:
         self._update_callback(self.current_context)
 
 
+def _new_thread_id() -> str:
+    """Deferred-import wrapper around `sessions.generate_thread_id`.
+
+    Returns:
+        UUID7 string.
+    """
+    from deepagents_cli.sessions import generate_thread_id
+
+    return generate_thread_id()
+
+
 class TextualSessionState:
     """Session state for the Textual app."""
 
@@ -350,10 +361,10 @@ class TextualSessionState:
 
         Args:
             auto_approve: Whether to auto-approve tool calls
-            thread_id: Optional thread ID (generates 8-char hex if not provided)
+            thread_id: Optional thread ID (generates UUID7 if not provided)
         """
         self.auto_approve = auto_approve
-        self.thread_id = thread_id or uuid.uuid4().hex[:8]
+        self.thread_id = thread_id or _new_thread_id()
 
     def reset_thread(self) -> str:
         """Reset to a new thread.
@@ -361,7 +372,7 @@ class TextualSessionState:
         Returns:
             The new thread_id.
         """
-        self.thread_id = uuid.uuid4().hex[:8]
+        self.thread_id = _new_thread_id()
         return self.thread_id
 
 
@@ -543,7 +554,6 @@ class DeepAgentsApp(App):
         assistant_id: str | None = None,
         backend: CompositeBackend | None = None,
         auto_approve: bool = False,
-        enable_ask_user: bool = False,
         cwd: str | Path | None = None,
         thread_id: str | None = None,
         initial_prompt: str | None = None,
@@ -562,8 +572,6 @@ class DeepAgentsApp(App):
             assistant_id: Agent identifier for memory storage
             backend: Backend for file operations
             auto_approve: Whether to start with auto-approve enabled
-            enable_ask_user: Whether `ask_user` should stay enabled when
-                recreating agents (for example during model hot-swap)
             cwd: Current working directory to display
             thread_id: Optional thread ID for session persistence
             initial_prompt: Optional prompt to auto-submit when session starts
@@ -581,7 +589,6 @@ class DeepAgentsApp(App):
         self._assistant_id = assistant_id
         self._backend = backend
         self._auto_approve = auto_approve
-        self._enable_ask_user = enable_ask_user
         self._cwd = str(cwd) if cwd else str(Path.cwd())
         # Avoid collision with App._thread_id
         self._lc_thread_id = thread_id
@@ -617,6 +624,7 @@ class DeepAgentsApp(App):
         self._queued_widgets: deque[QueuedUserMessage] = deque()
         self._processing_pending = False
         self._thread_switching = False
+        self._model_switching = False
         # Message virtualization store
         self._message_store = MessageStore()
         # Lazily imported here to avoid pulling image dependencies into
@@ -699,6 +707,13 @@ class DeepAgentsApp(App):
                 group="startup-thread-prewarm",
             )
 
+            # Prewarm model caches so `/model` opens instantly.
+            self.run_worker(
+                self._prewarm_model_caches,
+                exclusive=True,
+                group="startup-model-prewarm",
+            )
+
         # Background update check (opt-out via DEEPAGENTS_NO_UPDATE_CHECK)
         if not os.environ.get("DEEPAGENTS_NO_UPDATE_CHECK"):
             self.run_worker(
@@ -757,6 +772,21 @@ class DeepAgentsApp(App):
         )
 
         await prewarm_thread_message_counts(limit=get_thread_limit())
+
+    async def _prewarm_model_caches(self) -> None:
+        """Prewarm model discovery and profile caches without blocking startup."""
+        try:
+            from deepagents_cli.model_config import (
+                get_available_models,
+                get_model_profiles,
+            )
+
+            await asyncio.to_thread(get_available_models)
+            await asyncio.to_thread(
+                get_model_profiles, cli_override=self._profile_override
+            )
+        except Exception:
+            logger.debug("Could not prewarm model caches", exc_info=True)
 
     async def _check_for_updates(self) -> None:
         """Check PyPI for a newer deepagents-cli version and notify the user."""
@@ -3172,6 +3202,10 @@ class DeepAgentsApp(App):
         """
         logger.info("Switching model to %s", model_spec)
 
+        if self._model_switching:
+            await self._mount_message(AppMessage("Model switch already in progress."))
+            return
+
         from deepagents_cli.agent import create_cli_agent
         from deepagents_cli.model_config import (
             ModelConfigError,
@@ -3179,139 +3213,159 @@ class DeepAgentsApp(App):
             has_provider_credentials,
         )
 
-        # Strip leading colon — treat ":claude-opus-4-6" as "claude-opus-4-6"
-        model_spec = model_spec.removeprefix(":")
+        self._model_switching = True
+        try:
+            # Strip leading colon — treat ":claude-opus-4-6" as "claude-opus-4-6"
+            model_spec = model_spec.removeprefix(":")
 
-        parsed = ModelSpec.try_parse(model_spec)
-        if parsed:
-            provider: str | None = parsed.provider
-            model_name = parsed.model
-        else:
-            model_name = model_spec
-            provider = detect_provider(model_spec)
-
-        # Check credentials
-        if provider and has_provider_credentials(provider) is False:
-            env_var = get_credential_env_var(provider)
-            if env_var:
-                detail = f"{env_var} is not set or is empty"
+            parsed = ModelSpec.try_parse(model_spec)
+            if parsed:
+                provider: str | None = parsed.provider
+                model_name = parsed.model
             else:
+                model_name = model_spec
+                provider = detect_provider(model_spec)
+
+            # Check credentials
+            has_creds = has_provider_credentials(provider) if provider else None
+            if has_creds is False and provider is not None:
+                env_var = get_credential_env_var(provider)
                 detail = (
-                    f"provider '{provider}' is not recognized. "
-                    "Add it to ~/.deepagents/config.toml with an api_key_env field"
-                )
-            await self._mount_message(ErrorMessage(f"Missing credentials: {detail}"))
-            return
-
-        # Check if already using this exact model
-        if model_name == settings.model_name and (
-            not provider or provider == settings.model_provider
-        ):
-            current = f"{settings.model_provider}:{settings.model_name}"
-            await self._mount_message(AppMessage(f"Already using {current}"))
-            return
-
-        # Check if we have what we need for hot-swap
-        if not self._checkpointer:
-            # No checkpointer means we can't hot-swap
-            # Save the preference and notify user
-            if save_recent_model(model_spec):
-                await self._mount_message(
-                    AppMessage(
-                        f"Model preference set to {model_spec}. "
-                        "Restart the CLI for the change to take effect."
+                    f"{env_var} is not set or is empty"
+                    if env_var
+                    else (
+                        f"provider '{provider}' is not recognized. "
+                        "Add it to ~/.deepagents/config.toml with an "
+                        "api_key_env field"
                     )
                 )
+                await self._mount_message(
+                    ErrorMessage(f"Missing credentials: {detail}")
+                )
+                return
+            if has_creds is None and provider:
+                logger.debug(
+                    "Credentials for provider '%s' cannot be verified;"
+                    " proceeding anyway",
+                    provider,
+                )
+
+            # Check if already using this exact model
+            if model_name == settings.model_name and (
+                not provider or provider == settings.model_provider
+            ):
+                current = f"{settings.model_provider}:{settings.model_name}"
+                await self._mount_message(AppMessage(f"Already using {current}"))
+                return
+
+            # Check if we have what we need for hot-swap
+            if not self._checkpointer:
+                # No checkpointer means we can't hot-swap
+                # Save the preference and notify user
+                if await asyncio.to_thread(save_recent_model, model_spec):
+                    await self._mount_message(
+                        AppMessage(
+                            f"Model preference set to {model_spec}. "
+                            "Restart the CLI for the change to take effect."
+                        )
+                    )
+                else:
+                    await self._mount_message(
+                        ErrorMessage(
+                            "Could not save model preference. "
+                            "Check permissions for ~/.deepagents/"
+                        )
+                    )
+                return
+
+            try:
+                result = create_model(
+                    model_spec,
+                    extra_kwargs=extra_kwargs,
+                    profile_overrides=self._profile_override,
+                )
+            except ModelConfigError as e:
+                logger.warning("Model config error for %s: %s", model_spec, e)
+                await self._mount_message(ErrorMessage(str(e)))
+                return
+            except Exception as e:
+                logger.exception("Failed to create model from spec %s", model_spec)
+                await self._mount_message(ErrorMessage(f"Failed to create model: {e}"))
+                return
+
+            # When switching models, settings must be updated before
+            # create_cli_agent because it builds the system prompt from global
+            # settings (model name, provider, context limit). Otherwise the
+            # prompt would describe the old model to the new one.
+            #
+            # Save previous values for rollback if agent creation fails.
+            prev_name = settings.model_name
+            prev_provider = settings.model_provider
+            prev_context_limit = settings.model_context_limit
+            result.apply_to_settings()
+
+            try:
+                new_agent, new_backend = create_cli_agent(
+                    model=result.model,
+                    assistant_id=self._assistant_id or "default",
+                    tools=self._tools,
+                    sandbox=self._sandbox,
+                    sandbox_type=self._sandbox_type,
+                    auto_approve=self._auto_approve,
+                    checkpointer=self._checkpointer,
+                    mcp_server_info=self._mcp_server_info,
+                )
+            except Exception as e:
+                # Roll back settings so the running agent isn't misrepresented.
+                settings.model_name = prev_name
+                settings.model_provider = prev_provider
+                settings.model_context_limit = prev_context_limit
+                logger.exception("Failed to create agent for model switch")
+                await self._mount_message(ErrorMessage(f"Model switch failed: {e}"))
+                return
+
+            # Swap agent
+            self._agent = new_agent
+            self._backend = new_backend
+
+            # Post-swap: update UI and save config
+            display = f"{settings.model_provider}:{settings.model_name}"
+            if self._status_bar:
+                self._status_bar.set_model(
+                    provider=settings.model_provider or "",
+                    model=settings.model_name or "",
+                )
+
+            config_saved = await asyncio.to_thread(save_recent_model, display)
+            if config_saved:
+                await self._mount_message(AppMessage(f"Switched to {display}"))
             else:
+                logger.warning(
+                    "Failed to save model preference after switching to %s"
+                    " — check ~/.deepagents/ permissions",
+                    display,
+                )
                 await self._mount_message(
                     ErrorMessage(
-                        "Could not save model preference. "
-                        "Check permissions for ~/.deepagents/"
+                        f"Switched to {display} (preference not saved — "
+                        "check ~/.deepagents/ permissions)"
                     )
                 )
-            return
 
-        try:
-            result = create_model(
-                model_spec,
-                extra_kwargs=extra_kwargs,
-                profile_overrides=self._profile_override,
-            )
-        except ModelConfigError as e:
-            await self._mount_message(ErrorMessage(str(e)))
-            return
-        except Exception as e:
-            logger.exception("Failed to create model from spec %s", model_spec)
-            await self._mount_message(ErrorMessage(f"Failed to create model: {e}"))
-            return
+            logger.info("Model switched to %s", display)
 
-        # When switching models, settings must be updated before
-        # create_cli_agent because it builds the system prompt from global
-        # settings (model name, provider, context limit). Otherwise the
-        # prompt would describe the old model to the new one.
-        #
-        # Save previous values for rollback if agent creation fails.
-        prev_name = settings.model_name
-        prev_provider = settings.model_provider
-        prev_context_limit = settings.model_context_limit
-        result.apply_to_settings()
+            # Scroll to bottom so the confirmation message is visible
+            def _scroll_after_switch() -> None:
+                try:
+                    chat = self.query_one("#chat", VerticalScroll)
+                    if chat.max_scroll_y > 0:
+                        chat.scroll_end(animate=False)
+                except NoMatches:
+                    pass
 
-        try:
-            new_agent, new_backend = create_cli_agent(
-                model=result.model,
-                assistant_id=self._assistant_id or "default",
-                tools=self._tools,
-                sandbox=self._sandbox,
-                sandbox_type=self._sandbox_type,
-                auto_approve=self._auto_approve,
-                enable_ask_user=self._enable_ask_user,
-                checkpointer=self._checkpointer,
-                mcp_server_info=self._mcp_server_info,
-            )
-        except Exception as e:
-            # Roll back settings so the running agent isn't misrepresented.
-            settings.model_name = prev_name
-            settings.model_provider = prev_provider
-            settings.model_context_limit = prev_context_limit
-            logger.exception("Failed to create agent for model switch")
-            await self._mount_message(ErrorMessage(f"Model switch failed: {e}"))
-            return
-
-        # Swap agent
-        self._agent = new_agent
-        self._backend = new_backend
-
-        # Post-swap: update UI and save config
-        display = f"{settings.model_provider}:{settings.model_name}"
-        if self._status_bar:
-            self._status_bar.set_model(
-                provider=settings.model_provider or "",
-                model=settings.model_name or "",
-            )
-
-        config_saved = save_recent_model(display)
-        if config_saved:
-            await self._mount_message(AppMessage(f"Switched to {display}"))
-        else:
-            await self._mount_message(
-                AppMessage(
-                    f"Switched to {display} (preference not saved - "
-                    "check ~/.deepagents/ permissions)"
-                )
-            )
-
-        logger.info("Model switched to %s", display)
-
-        # Scroll to bottom so the confirmation message is visible
-        def _scroll_after_switch() -> None:
-            try:
-                chat = self.query_one("#chat", VerticalScroll)
-                if chat.max_scroll_y > 0:
-                    chat.scroll_end(animate=False)
-            except NoMatches:
-                pass
-
-        self.call_after_refresh(_scroll_after_switch)
+            self.call_after_refresh(_scroll_after_switch)
+        finally:
+            self._model_switching = False
 
     async def _set_default_model(self, model_spec: str) -> None:
         """Set the default model in config without switching the current session.
@@ -3332,7 +3386,7 @@ class DeepAgentsApp(App):
             if provider:
                 model_spec = f"{provider}:{model_spec}"
 
-        if save_default_model(model_spec):
+        if await asyncio.to_thread(save_default_model, model_spec):
             await self._mount_message(AppMessage(f"Default model set to {model_spec}"))
         else:
             await self._mount_message(
@@ -3349,7 +3403,7 @@ class DeepAgentsApp(App):
         """
         from deepagents_cli.model_config import clear_default_model
 
-        if clear_default_model():
+        if await asyncio.to_thread(clear_default_model):
             await self._mount_message(
                 AppMessage(
                     "Default model cleared. "
@@ -3387,7 +3441,6 @@ async def run_textual_app(
     assistant_id: str | None = None,
     backend: CompositeBackend | None = None,
     auto_approve: bool = False,
-    enable_ask_user: bool = False,
     cwd: str | Path | None = None,
     thread_id: str | None = None,
     initial_prompt: str | None = None,
@@ -3405,8 +3458,6 @@ async def run_textual_app(
         assistant_id: Agent identifier for memory storage
         backend: Backend for file operations
         auto_approve: Whether to start with auto-approve enabled
-        enable_ask_user: Whether `ask_user` should stay enabled when
-            recreating agents (for example during model hot-swap)
         cwd: Current working directory to display
         thread_id: Optional thread ID for session persistence
         initial_prompt: Optional prompt to auto-submit when session starts
@@ -3426,7 +3477,6 @@ async def run_textual_app(
         assistant_id=assistant_id,
         backend=backend,
         auto_approve=auto_approve,
-        enable_ask_user=enable_ask_user,
         cwd=cwd,
         thread_id=thread_id,
         initial_prompt=initial_prompt,

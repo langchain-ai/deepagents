@@ -935,7 +935,7 @@ class TestFetchLangsmithProjectUrl:
             patch("langsmith.Client") as mock_client_cls,
         ):
             mock_client_cls.return_value.read_project.side_effect = lambda **_kwargs: (
-                time.sleep(0.1)
+                time.sleep(0.02)
             )
             result = fetch_langsmith_project_url("my-project")
 

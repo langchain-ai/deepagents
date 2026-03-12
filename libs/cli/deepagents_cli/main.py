@@ -1317,9 +1317,11 @@ def cli_main() -> None:
                 build_langsmith_thread_url,
             )
             from deepagents_cli.sessions import (
+                find_similar_threads,
                 generate_thread_id,
                 get_most_recent,
                 get_thread_agent,
+                thread_exists,
             )
 
             thread_id = None
@@ -1346,17 +1348,40 @@ def cli_main() -> None:
                     console.print(msg)
 
             elif args.resume_thread:
-                # -r <ID>: Resume specific thread.
-                # In server mode the thread lives on the remote server,
-                # not local SQLite.  Check locally first (for agent name
-                # lookup) but always accept the ID — the server will
-                # create an empty thread if the ID doesn't exist there.
-                thread_id = args.resume_thread
-                is_resumed = True
-                if args.agent == _DEFAULT_AGENT_NAME:
-                    agent_name = asyncio.run(get_thread_agent(thread_id))
-                    if agent_name:
-                        args.agent = agent_name
+                # -r <ID>: Resume specific thread
+                if asyncio.run(thread_exists(args.resume_thread)):
+                    thread_id = args.resume_thread
+                    is_resumed = True
+                    if args.agent == _DEFAULT_AGENT_NAME:
+                        agent_name = asyncio.run(get_thread_agent(thread_id))
+                        if agent_name:
+                            args.agent = agent_name
+                else:
+                    error_msg = Text("Thread '", style="red")
+                    error_msg.append(args.resume_thread)
+                    error_msg.append("' not found.", style="red")
+                    console.print(error_msg)
+
+                    # Check for similar thread IDs
+                    similar = asyncio.run(find_similar_threads(args.resume_thread))
+                    if similar:
+                        console.print()
+                        console.print("[yellow]Did you mean?[/yellow]")
+                        for tid in similar:
+                            hint = Text("  deepagents -r ", style="cyan")
+                            hint.append(str(tid), style="cyan")
+                            console.print(hint)
+                        console.print()
+
+                    console.print(
+                        "[dim]Use 'deepagents threads list' to see "
+                        "available threads.[/dim]"
+                    )
+                    console.print(
+                        "[dim]Use 'deepagents -r' to resume the most "
+                        "recent thread.[/dim]"
+                    )
+                    sys.exit(1)
 
             # Generate new thread ID if not resuming
             if thread_id is None:
@@ -1401,13 +1426,11 @@ def cli_main() -> None:
                 console.print(Text(traceback.format_exc(), style="dim"))
                 sys.exit(1)
 
-            # Show LangSmith thread link.
-            # In server mode the thread lives on the remote server, not
-            # local SQLite, so skip the `thread_exists` gate (we just
-            # used the thread — it exists).
+            # Show LangSmith thread link for threads with checkpointed
+            # content (same table that backs the `/threads` listing).
             try:
                 thread_url = build_langsmith_thread_url(thread_id)
-                if thread_url and thread_id:
+                if thread_url and asyncio.run(thread_exists(thread_id)):
                     console.print()
                     ls_hint = Text("View this thread in LangSmith: ", style="dim")
                     ls_hint.append(
@@ -1421,8 +1444,8 @@ def cli_main() -> None:
                     exc_info=True,
                 )
 
-            # Show resume hint on exit.
-            if thread_id and return_code == 0:
+            # Show resume hint on exit for threads with checkpointed content.
+            if thread_id and return_code == 0 and asyncio.run(thread_exists(thread_id)):
                 console.print()
                 console.print("[dim]Resume this thread with:[/dim]")
                 hint = Text("deepagents -r ", style="cyan")

@@ -409,7 +409,13 @@ class ServerProcess:
             except subprocess.TimeoutExpired:
                 logger.warning("Server did not stop gracefully, killing")
                 self._process.kill()
-                self._process.wait(timeout=2)
+                try:
+                    self._process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    logger.warning(
+                        "Server process pid=%d did not exit after SIGKILL",
+                        self._process.pid,
+                    )
             except OSError:
                 logger.debug("Error stopping server", exc_info=True)
 

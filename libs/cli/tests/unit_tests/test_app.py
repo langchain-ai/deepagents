@@ -1793,3 +1793,30 @@ class TestFetchThreadHistoryData:
         assert result[0].content == "hello"
         assert result[1].type == MessageType.ASSISTANT
         assert result[1].content == "world"
+
+
+class TestIsRemote:
+    """Tests for DeepAgentsApp._is_remote()."""
+
+    def test_true_with_remote_agent(self) -> None:
+        from deepagents_cli.remote_client import RemoteAgent
+
+        app = DeepAgentsApp()
+        app._agent = RemoteAgent("http://test:0")
+        assert app._is_remote() is True
+
+    def test_false_when_agent_is_none(self) -> None:
+        app = DeepAgentsApp()
+        assert app._is_remote() is False
+
+    def test_false_with_non_remote_agent(self) -> None:
+        """Local Pregel-like agent returns False."""
+        app = DeepAgentsApp()
+        app._agent = MagicMock()
+        assert app._is_remote() is False
+
+    def test_false_with_mock_spec_pregel(self) -> None:
+        """MagicMock without RemoteAgent spec returns False."""
+        app = DeepAgentsApp()
+        app._agent = MagicMock(spec=[])
+        assert app._is_remote() is False

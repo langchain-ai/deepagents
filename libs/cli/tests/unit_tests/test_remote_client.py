@@ -2,7 +2,7 @@
 
 import uuid
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from langchain_core.messages import AIMessageChunk, HumanMessage, ToolMessage
@@ -450,10 +450,10 @@ class TestRemoteAgentGetState:
         result = await agent.aget_state(_config())
         assert result is state
 
-    async def test_returns_none_when_thread_id_missing(self) -> None:
+    async def test_raises_when_thread_id_missing(self) -> None:
         agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
-        result = await agent.aget_state({"configurable": {}})
-        assert result is None
+        with pytest.raises(ValueError, match="thread_id"):
+            await agent.aget_state({"configurable": {}})
 
     async def test_returns_none_on_not_found(self) -> None:
         from langgraph_sdk.errors import NotFoundError
@@ -505,14 +505,10 @@ class TestRemoteAgentUpdateState:
         await agent.aupdate_state(_config(), {"key": "val"})
         mock_graph.aupdate_state.assert_called_once()
 
-    async def test_noop_when_thread_id_missing(self) -> None:
+    async def test_raises_when_thread_id_missing(self) -> None:
         agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
-        mock_graph = MagicMock()
-        mock_graph.aupdate_state = AsyncMock()
-        agent._graph = mock_graph
-
-        await agent.aupdate_state({"configurable": {}}, {"key": "val"})
-        mock_graph.aupdate_state.assert_not_called()
+        with pytest.raises(ValueError, match="thread_id"):
+            await agent.aupdate_state({"configurable": {}}, {"key": "val"})
 
     async def test_propagates_exception(self) -> None:
         agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
@@ -539,6 +535,62 @@ class TestRemoteAgentUpdateState:
 # ---------------------------------------------------------------------------
 # RemoteAgent — with_config
 # ---------------------------------------------------------------------------
+
+
+class TestRemoteAgentInit:
+    def test_api_key_passed_to_remote_graph(self) -> None:
+        """api_key kwarg is forwarded to RemoteGraph."""
+        agent = RemoteAgent(
+            url="http://localhost:8123",
+            graph_name="agent",
+            api_key="sk-test-123",
+        )
+        with patch("langgraph.pregel.remote.RemoteGraph") as mock_cls:
+            agent._get_graph()
+            mock_cls.assert_called_once_with(
+                "agent",
+                url="http://localhost:8123",
+                api_key="sk-test-123",
+                headers=None,
+            )
+
+    def test_headers_passed_to_remote_graph(self) -> None:
+        """Headers kwarg is forwarded to RemoteGraph."""
+        hdrs = {"Authorization": "Bearer tok", "X-Custom": "val"}
+        agent = RemoteAgent(
+            url="http://localhost:8123",
+            graph_name="agent",
+            headers=hdrs,
+        )
+        with patch("langgraph.pregel.remote.RemoteGraph") as mock_cls:
+            agent._get_graph()
+            mock_cls.assert_called_once_with(
+                "agent",
+                url="http://localhost:8123",
+                api_key=None,
+                headers=hdrs,
+            )
+
+    def test_defaults_no_auth(self) -> None:
+        """Default construction passes None for api_key and headers."""
+        agent = RemoteAgent(url="http://localhost:8123")
+        with patch("langgraph.pregel.remote.RemoteGraph") as mock_cls:
+            agent._get_graph()
+            mock_cls.assert_called_once_with(
+                "agent",
+                url="http://localhost:8123",
+                api_key=None,
+                headers=None,
+            )
+
+    def test_graph_lazy_singleton(self) -> None:
+        """_get_graph creates RemoteGraph once and caches it."""
+        agent = RemoteAgent(url="http://localhost:8123")
+        with patch("langgraph.pregel.remote.RemoteGraph") as mock_cls:
+            g1 = agent._get_graph()
+            g2 = agent._get_graph()
+            assert g1 is g2
+            mock_cls.assert_called_once()
 
 
 class TestRemoteAgentWithConfig:

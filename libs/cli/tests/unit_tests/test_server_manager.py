@@ -6,12 +6,15 @@ import os
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from deepagents_cli._server_config import ServerConfig
 from deepagents_cli._server_constants import ENV_PREFIX
 from deepagents_cli.project_utils import ProjectContext
 from deepagents_cli.server_manager import (
     _apply_server_config,
     _write_pyproject,
+    server_session,
     start_server_and_get_agent,
 )
 
@@ -187,3 +190,73 @@ class TestWritePyproject:
 
         assert '"deepagents-cli @ file://' in content
         assert "langgraph-cli[inmem]" not in content
+
+
+class TestServerSession:
+    """Tests for the server_session async context manager."""
+
+    async def test_yields_agent_and_server(self) -> None:
+        """server_session yields (agent, server_proc)."""
+        mock_agent = MagicMock()
+        mock_server = MagicMock()
+        mock_server.stop = MagicMock()
+
+        with patch(
+            "deepagents_cli.server_manager.start_server_and_get_agent",
+            new_callable=AsyncMock,
+            return_value=(mock_agent, mock_server, None),
+        ):
+            async with server_session(assistant_id="agent") as (agent, server):
+                assert agent is mock_agent
+                assert server is mock_server
+
+    async def test_stops_server_on_normal_exit(self) -> None:
+        """Server is stopped when the context manager exits normally."""
+        mock_server = MagicMock()
+        mock_server.stop = MagicMock()
+
+        with patch(
+            "deepagents_cli.server_manager.start_server_and_get_agent",
+            new_callable=AsyncMock,
+            return_value=(MagicMock(), mock_server, None),
+        ):
+            async with server_session(assistant_id="agent"):
+                pass
+
+        mock_server.stop.assert_called_once()
+
+    async def test_stops_server_on_exception(self) -> None:
+        """Server is stopped even when body raises."""
+        mock_server = MagicMock()
+        mock_server.stop = MagicMock()
+
+        with (  # noqa: PT012
+            patch(
+                "deepagents_cli.server_manager.start_server_and_get_agent",
+                new_callable=AsyncMock,
+                return_value=(MagicMock(), mock_server, None),
+            ),
+            pytest.raises(RuntimeError, match="boom"),
+        ):
+            async with server_session(assistant_id="agent"):
+                msg = "boom"
+                raise RuntimeError(msg)
+
+        mock_server.stop.assert_called_once()
+
+    async def test_cleans_up_mcp_session(self) -> None:
+        """MCP session manager is cleaned up in finally block."""
+        mock_server = MagicMock()
+        mock_server.stop = MagicMock()
+        mock_mcp = AsyncMock()
+
+        with patch(
+            "deepagents_cli.server_manager.start_server_and_get_agent",
+            new_callable=AsyncMock,
+            return_value=(MagicMock(), mock_server, mock_mcp),
+        ):
+            async with server_session(assistant_id="agent"):
+                pass
+
+        mock_mcp.cleanup.assert_awaited_once()
+        mock_server.stop.assert_called_once()

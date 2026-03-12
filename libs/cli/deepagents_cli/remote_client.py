@@ -54,15 +54,26 @@ class RemoteAgent:
         url: str,
         *,
         graph_name: str = "agent",
+        api_key: str | None = None,
+        headers: dict[str, str] | None = None,
     ) -> None:
         """Initialize the remote agent client.
 
         Args:
             url: Base URL of the LangGraph server.
             graph_name: Name of the graph on the server.
+            api_key: API key for authenticated deployments.
+
+                When `None`, `RemoteGraph` auto-reads `LANGGRAPH_API_KEY`,
+                `LANGSMITH_API_KEY`, or `LANGCHAIN_API_KEY` from
+                the environment.
+            headers: Extra HTTP headers to include in every request
+                (e.g. bearer tokens, proxy headers).
         """
         self._url = url
         self._graph_name = graph_name
+        self._api_key = api_key
+        self._headers = headers
         self._graph: Any = None
 
     def _get_graph(self) -> Any:  # noqa: ANN401
@@ -77,6 +88,8 @@ class RemoteAgent:
             self._graph = RemoteGraph(
                 self._graph_name,
                 url=self._url,
+                api_key=self._api_key,
+                headers=self._headers,
             )
         return self._graph
 
@@ -159,9 +172,9 @@ class RemoteAgent:
     ) -> Any:  # noqa: ANN401
         """Get the current state of a thread.
 
-        Returns `None` for missing `thread_id` or when the thread does not
-        exist on the server (404). All other errors (network, auth, 500) are
-        logged at WARNING and re-raised so callers can handle them.
+        Returns `None` when the thread does not exist on the server (404).
+        All other errors (network, auth, 500) are logged at WARNING and
+        re-raised so callers can handle them.
 
         Args:
             config: Config with `configurable.thread_id`.
@@ -169,12 +182,16 @@ class RemoteAgent:
         Returns:
             Thread state object with `values` and `next` attributes, or `None`
                 if the thread is not found.
+
+        Raises:
+            ValueError: If `thread_id` is not present in `config`.
         """
         from langgraph_sdk.errors import NotFoundError
 
         thread_id = config.get("configurable", {}).get("thread_id")
-        if thread_id is None:
-            return None
+        if not thread_id:
+            msg = "thread_id is required in config.configurable"
+            raise ValueError(msg)
 
         graph = self._get_graph()
         try:
@@ -201,10 +218,14 @@ class RemoteAgent:
         Args:
             config: Config with `configurable.thread_id`.
             values: State values to update.
+
+        Raises:
+            ValueError: If `thread_id` is not present in `config`.
         """
         thread_id = config.get("configurable", {}).get("thread_id")
-        if thread_id is None:
-            return
+        if not thread_id:
+            msg = "thread_id is required in config.configurable"
+            raise ValueError(msg)
 
         graph = self._get_graph()
         try:

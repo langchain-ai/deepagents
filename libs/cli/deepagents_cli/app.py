@@ -2443,7 +2443,7 @@ class DeepAgentsApp(App):
                     channel_values = tup.checkpoint.get("channel_values", {})
                     return channel_values.get("messages", [])
         except Exception:
-            logger.debug(
+            logger.warning(
                 "Failed to read checkpointer directly for %s",
                 thread_id,
                 exc_info=True,

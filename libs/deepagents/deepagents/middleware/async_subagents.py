@@ -125,19 +125,20 @@ class _ClientCache:
 _JOB_ID_SEP = "::"
 
 
-def _format_job_id(thread_id: str, run_id: str) -> str:
-    return f"{thread_id}{_JOB_ID_SEP}{run_id}"
+def _format_job_id(agent_name: str, thread_id: str, run_id: str) -> str:
+    return f"{agent_name}{_JOB_ID_SEP}{thread_id}{_JOB_ID_SEP}{run_id}"
 
 
 _JOB_ID_PREFIX = "job_id: "
 
 
-def _parse_job_id(job_id: str) -> tuple[str, str]:
-    """Parse a job ID into (thread_id, run_id).
+def _parse_job_id(job_id: str) -> tuple[str, str, str]:
+    """Parse a job ID into (agent_name, thread_id, run_id).
 
     Handles multiple formats the LLM might pass:
-    - `thread_abc::run_xyz` (canonical)
-    - `Launched async subagent. job_id: thread_abc::run_xyz` (full launch output)
+    - `agent::thread_abc::run_xyz` (canonical, 3-part)
+    - `Launched async subagent. job_id: agent::thread_abc::run_xyz` (full launch output)
+    - `thread_abc::run_xyz` (legacy 2-part, agent defaults to empty)
     - `{"thread_id": "...", "run_id": "..."}` (legacy JSON)
     """
     raw = job_id.strip()
@@ -145,12 +146,15 @@ def _parse_job_id(job_id: str) -> tuple[str, str]:
     if idx != -1:
         raw = raw[idx + len(_JOB_ID_PREFIX) :].strip()
     if _JOB_ID_SEP in raw:
-        parts = raw.split(_JOB_ID_SEP, maxsplit=1)
-        return parts[0], parts[1]
+        parts = raw.split(_JOB_ID_SEP)
+        if len(parts) >= 3:  # noqa: PLR2004
+            return parts[0], parts[1], parts[2]
+        if len(parts) == 2:  # noqa: PLR2004
+            return "", parts[0], parts[1]
     try:
         data = json.loads(raw)
         if isinstance(data, dict):
-            return data["thread_id"], data["run_id"]
+            return "", data["thread_id"], data["run_id"]
     except (json.JSONDecodeError, KeyError):
         pass
     msg = f"Invalid job_id format: {job_id!r}. Expected the exact job_id string returned by launch_async_subagent."
@@ -186,7 +190,7 @@ def _build_launch_tool(
             assistant_id=spec["graph_id"],
             input={"messages": [{"role": "user", "content": description}]},
         )
-        job_id = _format_job_id(thread["thread_id"], run["run_id"])
+        job_id = _format_job_id(subagent_type, thread["thread_id"], run["run_id"])
         return f"Launched async subagent. job_id: {job_id}"
 
     async def alaunch_async_subagent(
@@ -204,7 +208,7 @@ def _build_launch_tool(
             assistant_id=spec["graph_id"],
             input={"messages": [{"role": "user", "content": description}]},
         )
-        job_id = _format_job_id(thread["thread_id"], run["run_id"])
+        job_id = _format_job_id(subagent_type, thread["thread_id"], run["run_id"])
         return f"Launched async subagent. job_id: {job_id}"
 
     return StructuredTool.from_function(
@@ -215,18 +219,24 @@ def _build_launch_tool(
     )
 
 
+def _resolve_client_name(agent_name: str, agent_map: dict[str, AsyncSubAgent]) -> str:
+    """Resolve the client name from a parsed job_id agent_name field."""
+    if agent_name and agent_name in agent_map:
+        return agent_name
+    return next(iter(agent_map))
+
+
 def _build_check_tool(
     agent_map: dict[str, AsyncSubAgent],
     clients: _ClientCache,
 ) -> StructuredTool:
     """Build the check_async_subagent tool."""
-    first_name = next(iter(agent_map))
 
     def check_async_subagent(
         job_id: Annotated[str, "The exact job_id string returned by launch_async_subagent. Pass it verbatim."],
     ) -> str:
-        thread_id, run_id = _parse_job_id(job_id)
-        client = clients.sync(first_name)
+        agent_name, thread_id, run_id = _parse_job_id(job_id)
+        client = clients.sync(_resolve_client_name(agent_name, agent_map))
         run = client.runs.get(thread_id=thread_id, run_id=run_id)
         result: dict[str, Any] = {"status": run["status"], "run_id": run["run_id"], "thread_id": thread_id}
         if run["status"] == "success":
@@ -243,8 +253,8 @@ def _build_check_tool(
     async def acheck_async_subagent(
         job_id: Annotated[str, "The exact job_id string returned by launch_async_subagent. Pass it verbatim."],
     ) -> str:
-        thread_id, run_id = _parse_job_id(job_id)
-        client = clients.async_(first_name)
+        agent_name, thread_id, run_id = _parse_job_id(job_id)
+        client = clients.async_(_resolve_client_name(agent_name, agent_map))
         run = await client.runs.get(thread_id=thread_id, run_id=run_id)
         result: dict[str, Any] = {"status": run["status"], "run_id": run["run_id"], "thread_id": thread_id}
         if run["status"] == "success":
@@ -270,38 +280,55 @@ def _build_update_tool(
     agent_map: dict[str, AsyncSubAgent],
     clients: _ClientCache,
 ) -> StructuredTool:
-    """Build the update_async_subagent tool."""
-    first_name = next(iter(agent_map))
+    """Build the update_async_subagent tool.
+
+    Sends a follow-up message to an async subagent by creating a new run
+    on the same thread. The subagent sees the full conversation history
+    (including the original task and any prior results) plus the new message.
+    Returns a new job_id for the follow-up run.
+    """
 
     def update_async_subagent(
-        job_id: Annotated[str, "The exact job_id string returned by launch_async_subagent. Pass it verbatim."],
-        update: Annotated[str, "New instructions or context to send to the running subagent."],
+        job_id: Annotated[str, "The exact job_id string returned by launch_async_subagent or a previous update. Pass it verbatim."],
+        message: Annotated[str, "Follow-up instructions or context to send to the subagent."],
     ) -> str:
-        thread_id, _run_id = _parse_job_id(job_id)
-        client = clients.sync(first_name)
-        client.threads.update_state(
+        agent_name, thread_id, _run_id = _parse_job_id(job_id)
+        name = _resolve_client_name(agent_name, agent_map)
+        spec = agent_map[name]
+        client = clients.sync(name)
+        run = client.runs.create(
             thread_id=thread_id,
-            values={"messages": [{"role": "user", "content": update}]},
+            assistant_id=spec["graph_id"],
+            input={"messages": [{"role": "user", "content": message}]},
         )
-        return json.dumps({"status": "updated", "thread_id": thread_id})
+        new_job_id = _format_job_id(name, thread_id, run["run_id"])
+        return f"Follow-up sent. New job_id: {new_job_id}"
 
     async def aupdate_async_subagent(
-        job_id: Annotated[str, "The exact job_id string returned by launch_async_subagent. Pass it verbatim."],
-        update: Annotated[str, "New instructions or context to send to the running subagent."],
+        job_id: Annotated[str, "The exact job_id string returned by launch_async_subagent or a previous update. Pass it verbatim."],
+        message: Annotated[str, "Follow-up instructions or context to send to the subagent."],
     ) -> str:
-        thread_id, _run_id = _parse_job_id(job_id)
-        client = clients.async_(first_name)
-        await client.threads.update_state(
+        agent_name, thread_id, _run_id = _parse_job_id(job_id)
+        name = _resolve_client_name(agent_name, agent_map)
+        spec = agent_map[name]
+        client = clients.async_(name)
+        run = await client.runs.create(
             thread_id=thread_id,
-            values={"messages": [{"role": "user", "content": update}]},
+            assistant_id=spec["graph_id"],
+            input={"messages": [{"role": "user", "content": message}]},
         )
-        return json.dumps({"status": "updated", "thread_id": thread_id})
+        new_job_id = _format_job_id(name, thread_id, run["run_id"])
+        return f"Follow-up sent. New job_id: {new_job_id}"
 
     return StructuredTool.from_function(
         name="update_async_subagent",
         func=update_async_subagent,
         coroutine=aupdate_async_subagent,
-        description="Send an update or new instructions to a running async subagent job.",
+        description=(
+            "Send a follow-up message to an async subagent. Creates a new run on the same thread "
+            "so the subagent sees the full conversation history plus your new message. "
+            "Returns a new job_id to track the follow-up."
+        ),
     )
 
 

@@ -121,10 +121,13 @@ def test_store_backend_ls_trailing_slash():
     assert [fi["path"] for fi in listing1] == [fi["path"] for fi in listing2]
 
 
-def test_store_backend_intercept_large_tool_result():
+@pytest.mark.parametrize("file_format", ["v1", "v2"])
+def test_store_backend_intercept_large_tool_result(file_format):
     """Test that StoreBackend properly handles large tool result interception."""
     rt = make_runtime()
-    middleware = FilesystemMiddleware(backend=lambda r: StoreBackend(r, namespace=lambda _ctx: ("filesystem",)), tool_token_limit_before_evict=1000)
+    middleware = FilesystemMiddleware(
+        backend=lambda r: StoreBackend(r, namespace=lambda _ctx: ("filesystem",), file_format=file_format), tool_token_limit_before_evict=1000
+    )
 
     large_content = "y" * 5000
     tool_message = ToolMessage(content=large_content, tool_call_id="test_456")
@@ -136,8 +139,8 @@ def test_store_backend_intercept_large_tool_result():
 
     stored_content = rt.store.get(("filesystem",), "/large_tool_results/test_456")
     assert stored_content is not None
-    # v1 format stores content as list[str]
-    assert stored_content.value["content"] == [large_content]
+    expected = [large_content] if file_format == "v1" else large_content
+    assert stored_content.value["content"] == expected
 
 
 @dataclass

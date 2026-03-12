@@ -1,5 +1,7 @@
 """Async tests for StateBackend."""
 
+from functools import partial
+
 import pytest
 from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
@@ -259,10 +261,14 @@ async def test_state_backend_aglob_recursive():
     assert "/readme.txt" not in py_files
 
 
-async def test_state_backend_intercept_large_tool_result_async():
+@pytest.mark.parametrize("file_format", ["v1", "v2"])
+async def test_state_backend_intercept_large_tool_result_async(file_format):
     """Test that StateBackend properly handles large tool result interception in async context."""
     rt = make_runtime()
-    middleware = FilesystemMiddleware(backend=StateBackend, tool_token_limit_before_evict=1000)
+    middleware = FilesystemMiddleware(
+        backend=partial(StateBackend, file_format=file_format),
+        tool_token_limit_before_evict=1000,
+    )
 
     large_content = "x" * 5000
     tool_message = ToolMessage(content=large_content, tool_call_id="test_123")
@@ -270,8 +276,8 @@ async def test_state_backend_intercept_large_tool_result_async():
 
     assert isinstance(result, Command)
     assert "/large_tool_results/test_123" in result.update["files"]
-    # v1 format stores content as list[str]
-    assert result.update["files"]["/large_tool_results/test_123"]["content"] == [large_content]
+    expected = [large_content] if file_format == "v1" else large_content
+    assert result.update["files"]["/large_tool_results/test_123"]["content"] == expected
     assert "Tool result too large" in result.update["messages"][0].content
 
 

@@ -47,7 +47,7 @@ class StateBackend(BackendProtocol):
         self,
         runtime: "ToolRuntime",
         *,
-        file_format: FileFormat = "v1",
+        file_format: FileFormat = "v2",
     ) -> None:
         r"""Initialize StateBackend with runtime.
 

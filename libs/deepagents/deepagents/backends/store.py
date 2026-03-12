@@ -114,7 +114,7 @@ class StoreBackend(BackendProtocol):
         runtime: "ToolRuntime",
         *,
         namespace: NamespaceFactory | None = None,
-        file_format: FileFormat = "v1",
+        file_format: FileFormat = "v2",
     ) -> None:
         r"""Initialize StoreBackend with runtime.
 

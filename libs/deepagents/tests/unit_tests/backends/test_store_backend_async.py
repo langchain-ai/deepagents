@@ -1,5 +1,8 @@
 """Async tests for StoreBackend."""
 
+from functools import partial
+
+import pytest
 from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
 from langgraph.store.memory import InMemoryStore
@@ -280,10 +283,14 @@ async def test_store_backend_agrep_invalid_regex():
     assert isinstance(result, list)  # Returns empty list, not error
 
 
-async def test_store_backend_intercept_large_tool_result_async():
+@pytest.mark.parametrize("file_format", ["v1", "v2"])
+async def test_store_backend_intercept_large_tool_result_async(file_format):
     """Test that StoreBackend properly handles large tool result interception in async context."""
     rt = make_runtime()
-    middleware = FilesystemMiddleware(backend=StoreBackend, tool_token_limit_before_evict=1000)
+    middleware = FilesystemMiddleware(
+        backend=partial(StoreBackend, file_format=file_format),
+        tool_token_limit_before_evict=1000,
+    )
 
     large_content = "y" * 5000
     tool_message = ToolMessage(content=large_content, tool_call_id="test_456")
@@ -295,14 +302,18 @@ async def test_store_backend_intercept_large_tool_result_async():
 
     stored_content = rt.store.get(("filesystem",), "/large_tool_results/test_456")
     assert stored_content is not None
-    # v1 format stores content as list[str]
-    assert stored_content.value["content"] == [large_content]
+    expected = [large_content] if file_format == "v1" else large_content
+    assert stored_content.value["content"] == expected
 
 
-async def test_store_backend_aintercept_large_tool_result_async():
+@pytest.mark.parametrize("file_format", ["v1", "v2"])
+async def test_store_backend_aintercept_large_tool_result_async(file_format):
     """Test async intercept path uses async store methods (fixes InvalidStateError with BatchedStore)."""
     rt = make_runtime()
-    middleware = FilesystemMiddleware(backend=StoreBackend, tool_token_limit_before_evict=1000)
+    middleware = FilesystemMiddleware(
+        backend=partial(StoreBackend, file_format=file_format),
+        tool_token_limit_before_evict=1000,
+    )
 
     large_content = "z" * 5000
     artifact_payload = {"kind": "structured", "value": {"key": "v"}}
@@ -333,5 +344,5 @@ async def test_store_backend_aintercept_large_tool_result_async():
     # Verify content was stored via async path
     stored_content = await rt.store.aget(("filesystem",), "/large_tool_results/test_async_789")
     assert stored_content is not None
-    # v1 format stores content as list[str]
-    assert stored_content.value["content"] == [large_content]
+    expected = [large_content] if file_format == "v1" else large_content
+    assert stored_content.value["content"] == expected

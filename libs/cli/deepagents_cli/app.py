@@ -2107,6 +2107,7 @@ class DeepAgentsApp(App):
                 adapter=self._ui_adapter,
                 backend=self._backend,
                 image_tracker=self._image_tracker,
+                sandbox_type=self._sandbox_type,
                 context=CLIContext(
                     model=self._model_override,
                     model_params=self._model_params_override or {},

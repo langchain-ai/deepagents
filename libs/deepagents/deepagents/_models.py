@@ -11,6 +11,11 @@ from langchain_core.language_models import BaseChatModel
 def resolve_model(model: str | BaseChatModel) -> BaseChatModel:
     """Resolve a model string to a `BaseChatModel`.
 
+    If `model` is already a `BaseChatModel`, returns it unchanged.
+
+    String models are resolved via `init_chat_model`. OpenAI models
+    (prefixed with `openai:`) default to the Responses API.
+
     Args:
         model: Model string or pre-configured model instance.
 
@@ -44,9 +49,16 @@ def get_model_identifier(model: BaseChatModel) -> str | None:
 def model_matches_spec(model: BaseChatModel, spec: str) -> bool:
     """Check whether a model instance already matches a string model spec.
 
+    Matching is performed in two ways: first by exact string equality between
+    `spec` and the model identifier, then by comparing only the model-name
+    portion of a `provider:model` spec against the identifier. For example,
+    `"openai:gpt-5"` matches a model with identifier `"gpt-5"`.
+
+    Assumes the `provider:model` convention (single colon separator).
+
     Args:
         model: Chat model instance to inspect.
-        spec: Model spec passed by the user (for example, `openai:gpt-5`).
+        spec: Model spec in `provider:model` format (e.g., `openai:gpt-5`).
 
     Returns:
         `True` if the model already matches the spec, otherwise `False`.

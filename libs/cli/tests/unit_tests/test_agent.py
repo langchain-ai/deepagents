@@ -567,7 +567,10 @@ class TestCreateCliAgentInteractiveForwarding:
             patch("deepagents_cli.agent.SkillsMiddleware"),
             patch("deepagents_cli.agent.MemoryMiddleware"),
             patch("deepagents_cli.agent.create_deep_agent", return_value=mock_agent),
-            patch("deepagents.graph.resolve_model", return_value=fake_model),
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
             patch("deepagents_cli.agent.get_system_prompt") as mock_get_prompt,
         ):
             mock_get_prompt.return_value = "mocked prompt"
@@ -616,7 +619,10 @@ class TestCreateCliAgentInteractiveForwarding:
             patch("deepagents_cli.agent.SkillsMiddleware"),
             patch("deepagents_cli.agent.MemoryMiddleware"),
             patch("deepagents_cli.agent.create_deep_agent", return_value=mock_agent),
-            patch("deepagents.graph.resolve_model", return_value=fake_model),
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
             patch("deepagents_cli.agent.get_system_prompt") as mock_get_prompt,
         ):
             create_cli_agent(
@@ -869,7 +875,10 @@ class TestCreateCliAgentSkillsSources:
             patch("deepagents_cli.agent.SkillsMiddleware", FakeSkillsMiddleware),
             patch("deepagents_cli.agent.MemoryMiddleware"),
             patch("deepagents_cli.agent.create_deep_agent", return_value=mock_agent),
-            patch("deepagents.graph.resolve_model", return_value=fake_model),
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
         ):
             create_cli_agent(
                 model="fake-model",
@@ -943,7 +952,10 @@ class TestCreateCliAgentMemorySources:
                 "deepagents_cli.agent.create_deep_agent",
                 return_value=mock_agent,
             ),
-            patch("deepagents.graph.resolve_model", return_value=fake_model),
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
         ):
             create_cli_agent(
                 model="fake-model",
@@ -1006,7 +1018,10 @@ class TestCreateCliAgentMemorySources:
                 "deepagents_cli.agent.create_deep_agent",
                 return_value=mock_agent,
             ),
-            patch("deepagents.graph.resolve_model", return_value=fake_model),
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
         ):
             create_cli_agent(
                 model="fake-model",
@@ -1285,7 +1300,10 @@ class TestMiddlewareStackConformance:
                 "deepagents_cli.agent.create_deep_agent",
                 side_effect=capture_create_agent,
             ),
-            patch("deepagents.graph.resolve_model", return_value=fake_model),
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
         ):
             create_cli_agent(
                 model="fake-model",

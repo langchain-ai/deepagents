@@ -304,7 +304,6 @@ class TestDeepAgentEndToEnd:
         it is properly resolved to a chat model instead of
         causing an AttributeError when accessing the profile attribute.
         """
-        # Mock shared model resolution to return a fake model
         fake_model = FixedGenericFakeChatModel(
             messages=iter(
                 [
@@ -315,17 +314,11 @@ class TestDeepAgentEndToEnd:
             )
         )
 
-        with patch("deepagents.graph._resolve_model", return_value=fake_model):
-            # This should not raise AttributeError: 'str' object has no attribute 'profile'
+        with patch("deepagents.graph.resolve_model", return_value=fake_model):
             agent = create_deep_agent(model="claude-sonnet-4-6", tools=[sample_tool])
-
-            # Verify agent was created successfully
             assert agent is not None
 
-            # Invoke the agent to ensure it works
             result = agent.invoke({"messages": [HumanMessage(content="Test message")]})
-
-            # Verify the agent executed correctly
             assert "messages" in result
             assert len(result["messages"]) > 0
 

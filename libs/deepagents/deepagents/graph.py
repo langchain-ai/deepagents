@@ -17,7 +17,7 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.store.base import BaseStore
 from langgraph.types import Checkpointer
 
-from deepagents._models import resolve_model as _resolve_model
+from deepagents._models import resolve_model
 from deepagents.backends import StateBackend
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
 from deepagents.middleware.configurable_model import ConfigurableModelMiddleware
@@ -77,24 +77,6 @@ def get_default_model() -> ChatAnthropic:
     return ChatAnthropic(
         model_name="claude-sonnet-4-6",
     )
-
-
-def resolve_model(model: str | BaseChatModel) -> BaseChatModel:
-    """Resolve a model string to a `BaseChatModel` instance.
-
-    If `model` is already a `BaseChatModel`, returns it unchanged.
-
-    String models are resolved via `init_chat_model`, with OpenAI models
-    defaulting to the Responses API. See the `create_deep_agent` docstring for
-    details on how to customize this behavior.
-
-    Args:
-        model: Model name string or pre-configured model instance.
-
-    Returns:
-        Resolved `BaseChatModel` instance.
-    """
-    return _resolve_model(model)
 
 
 def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic with many conditional branches

@@ -552,7 +552,6 @@ def create_cli_agent(
     enable_memory: bool = True,
     enable_skills: bool = True,
     enable_shell: bool = True,
-    enable_ask_user: bool = False,
     checkpointer: BaseCheckpointSaver | None = None,
     mcp_server_info: list[MCPServerInfo] | None = None,
 ) -> tuple[Pregel, CompositeBackend]:
@@ -589,7 +588,6 @@ def create_cli_agent(
         enable_skills: Enable `SkillsMiddleware` for custom agent skills
         enable_shell: Enable shell execution via `LocalShellBackend`
             (only in local mode). When enabled, the `execute` tool is available.
-        enable_ask_user: Enable the `ask_user` tool for interactive questioning.
         checkpointer: Optional checkpointer for session persistence.
 
             If `None`, uses `InMemorySaver` (no persistence across
@@ -647,10 +645,9 @@ def create_cli_agent(
     agent_middleware = []
 
     # Add ask_user middleware (must be early so its tool is available)
-    if enable_ask_user:
-        from deepagents_cli.ask_user import AskUserMiddleware
+    from deepagents_cli.ask_user import AskUserMiddleware
 
-        agent_middleware.append(AskUserMiddleware())
+    agent_middleware.append(AskUserMiddleware())
 
     # Add memory middleware
     if enable_memory:

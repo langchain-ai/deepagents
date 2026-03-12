@@ -790,40 +790,6 @@ class TestModelSwitchBareModelName:
         assert "Already using" in captured_messages[0]
 
 
-class TestModelSwitchAskUserPersistence:
-    """Tests for preserving ask_user enablement across model hot-swap."""
-
-    async def test_model_switch_preserves_enable_ask_user_flag(self) -> None:
-        """Rebuilt agent receives `enable_ask_user=True` when app is configured."""
-        app = DeepAgentsApp(enable_ask_user=True)
-        app._mount_message = AsyncMock()  # type: ignore[method-assign]
-        app._checkpointer = MagicMock()
-
-        settings.model_name = "gpt-4o"
-        settings.model_provider = "openai"
-
-        mock_result = ModelResult(
-            model=MagicMock(),
-            model_name="claude-sonnet-4-5",
-            provider="anthropic",
-        )
-
-        with (
-            patch(
-                "deepagents_cli.model_config.has_provider_credentials",
-                return_value=True,
-            ),
-            patch("deepagents_cli.app.create_model", return_value=mock_result),
-            patch("deepagents_cli.app.save_recent_model", return_value=True),
-            patch("deepagents_cli.agent.create_cli_agent") as mock_create_agent,
-        ):
-            mock_create_agent.return_value = (MagicMock(), MagicMock())
-            await app._switch_model("anthropic:claude-sonnet-4-5")
-
-        assert mock_create_agent.call_count == 1
-        assert mock_create_agent.call_args.kwargs["enable_ask_user"] is True
-
-
 class TestExtractModelParamsFlag:
     """Tests for _extract_model_params_flag helper."""
 

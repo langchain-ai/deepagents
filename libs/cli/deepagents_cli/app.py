@@ -571,24 +571,31 @@ class DeepAgentsApp(App):
         """Initialize the Deep Agents application.
 
         Args:
-            agent: Pre-configured LangGraph agent (optional for standalone mode)
+            agent: Pre-configured LangGraph agent for the session.
             assistant_id: Agent identifier for memory storage
             backend: Backend for file operations
             auto_approve: Whether to start with auto-approve enabled
-            enable_ask_user: Whether `ask_user` should stay enabled when
-                recreating agents (for example during model hot-swap)
+            enable_ask_user: Whether `ask_user` is enabled for the session.
             cwd: Current working directory to display
             thread_id: Optional thread ID for session persistence
             initial_prompt: Optional prompt to auto-submit when session starts
-            checkpointer: Checkpointer for session persistence (enables model hot-swap)
-            tools: Tools used to create the agent (for model hot-swap)
-            sandbox: Sandbox backend (for model hot-swap)
-            sandbox_type: Type of sandbox provider (for model hot-swap)
+            checkpointer: Checkpointer for session persistence.
+
+                Retained for compatibility with direct app construction.
+            tools: Tools used to create the agent.
+
+                Retained for compatibility with direct app construction.
+            sandbox: Sandbox backend.
+
+                Retained for compatibility with direct app construction.
+            sandbox_type: Type of sandbox provider.
             mcp_server_info: MCP server metadata for the `/mcp` viewer.
             profile_override: Extra profile fields from `--profile-override`,
-                retained for model hot-swap and footer display.
-            server_proc: LangGraph server process (enables model switching
-                via server restart in client-server mode).
+                retained so later profile-aware behavior stays consistent with
+                the CLI override, including model selection details,
+                compaction budget display, and on-demand `create_model()`
+                calls such as `/compact`.
+            server_proc: LangGraph server process for the interactive session.
             **kwargs: Additional arguments passed to parent
         """
         super().__init__(**kwargs)
@@ -601,7 +608,7 @@ class DeepAgentsApp(App):
         # Avoid collision with App._thread_id
         self._lc_thread_id = thread_id
         self._initial_prompt = initial_prompt
-        # Store for model hot-swap
+        # Retained for direct app construction and test harnesses.
         self._checkpointer = checkpointer
         self._tools = tools or []
         self._sandbox = sandbox
@@ -2184,10 +2191,7 @@ class DeepAgentsApp(App):
             )
         else:
             await self._mount_message(
-                AppMessage(
-                    "Agent not configured. "
-                    "Run with --agent flag or use standalone mode."
-                )
+                AppMessage("Agent not configured for this session.")
             )
 
     async def _run_agent_task(self, message: str) -> None:
@@ -3260,10 +3264,10 @@ class DeepAgentsApp(App):
     ) -> None:
         """Switch to a new model, preserving conversation history.
 
-        In client-server mode (when `_server_proc` is set), this sets a model
+        This requires a server-backed interactive session. It sets a model
         override that `ConfigurableModelMiddleware` picks up on the next
-        invocation — no server restart required. The conversation thread is
-        preserved because the thread ID does not change.
+        invocation, so the conversation thread stays intact and no server
+        restart is required.
 
         Args:
             model_spec: The model specification to switch to.
@@ -3282,6 +3286,12 @@ class DeepAgentsApp(App):
 
         # Strip leading colon — treat ":claude-opus-4-6" as "claude-opus-4-6"
         model_spec = model_spec.removeprefix(":")
+
+        if self._server_proc is None:
+            await self._mount_message(
+                ErrorMessage("Model switching requires a server-backed session.")
+            )
+            return
 
         parsed = ModelSpec.try_parse(model_spec)
         if parsed:
@@ -3325,44 +3335,25 @@ class DeepAgentsApp(App):
         if provider and not parsed:
             display = f"{provider}:{model_name}"
 
-        # Client-server mode: set model override for ConfigurableModelMiddleware.
+        # Set the model override for ConfigurableModelMiddleware.
         # The next stream call will pass this in config["configurable"]["model"],
         # and the middleware swaps the model per-invocation — no server restart.
-        if self._server_proc is not None:
-            self._model_override = display
-            self._model_params_override = extra_kwargs
+        self._model_override = display
+        self._model_params_override = extra_kwargs
 
-            settings.model_name = model_name
-            if provider:
-                settings.model_provider = provider
+        settings.model_name = model_name
+        if provider:
+            settings.model_provider = provider
 
-            if self._status_bar:
-                self._status_bar.set_model(
-                    provider=settings.model_provider or "",
-                    model=settings.model_name or "",
-                )
+        if self._status_bar:
+            self._status_bar.set_model(
+                provider=settings.model_provider or "",
+                model=settings.model_name or "",
+            )
 
-            await asyncio.to_thread(save_recent_model, display)
-            await self._mount_message(AppMessage(f"Switched to {display}"))
-            logger.info("Model switched to %s (via configurable middleware)", display)
-
-        # No server proc — save preference only.
-        else:
-            if await asyncio.to_thread(save_recent_model, model_spec):
-                await self._mount_message(
-                    AppMessage(
-                        f"Model preference set to {model_spec}. "
-                        "Restart the CLI for the change to take effect."
-                    )
-                )
-            else:
-                await self._mount_message(
-                    ErrorMessage(
-                        "Could not save model preference. "
-                        "Check permissions for ~/.deepagents/"
-                    )
-                )
-            return
+        await asyncio.to_thread(save_recent_model, display)
+        await self._mount_message(AppMessage(f"Switched to {display}"))
+        logger.info("Model switched to %s (via configurable middleware)", display)
 
         # Scroll to bottom so the confirmation message is visible
         def _scroll_after_switch() -> None:
@@ -3468,19 +3459,26 @@ async def run_textual_app(
         assistant_id: Agent identifier for memory storage
         backend: Backend for file operations
         auto_approve: Whether to start with auto-approve enabled
-        enable_ask_user: Whether `ask_user` should stay enabled when
-            recreating agents (for example during model hot-swap)
+        enable_ask_user: Whether `ask_user` is enabled for the session.
         cwd: Current working directory to display
         thread_id: Optional thread ID for session persistence
         initial_prompt: Optional prompt to auto-submit when session starts
-        checkpointer: Checkpointer for session persistence (enables model hot-swap)
-        tools: Tools used to create the agent (for model hot-swap)
-        sandbox: Sandbox backend (for model hot-swap)
-        sandbox_type: Type of sandbox provider (for model hot-swap)
+        checkpointer: Checkpointer for session persistence. Retained for
+            compatibility with direct app construction.
+        tools: Tools used to create the agent.
+
+            Retained for compatibility with direct app construction.
+        sandbox: Sandbox backend.
+
+            Retained for compatibility with direct app construction.
+        sandbox_type: Type of sandbox provider.
         mcp_server_info: MCP server metadata for the `/mcp` viewer.
         profile_override: Extra profile fields from `--profile-override`,
-            retained for model hot-swap and footer display.
-        server_proc: LangGraph server process for model switching.
+            retained so later profile-aware behavior stays consistent with
+            the CLI override, including model selection details, compaction
+            budget display, and on-demand `create_model()` calls such as
+            `/compact`.
+        server_proc: LangGraph server process for the interactive session.
 
     Returns:
         An `AppResult` with the return code and final thread ID.
@@ -3508,9 +3506,3 @@ async def run_textual_app(
         thread_id=app._lc_thread_id,
         session_stats=app._session_stats,
     )
-
-
-if __name__ == "__main__":
-    import asyncio
-
-    asyncio.run(run_textual_app())

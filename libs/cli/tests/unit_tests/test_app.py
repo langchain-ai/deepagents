@@ -1791,23 +1791,3 @@ class TestFetchThreadHistoryData:
         assert result[0].content == "hello"
         assert result[1].type == MessageType.ASSISTANT
         assert result[1].content == "world"
-
-    async def test_no_fallback_without_server_proc(self) -> None:
-        """Non-server mode does not attempt checkpointer fallback."""
-        empty_state = MagicMock()
-        empty_state.values = {}
-
-        mock_agent = AsyncMock()
-        mock_agent.aget_state.return_value = empty_state
-
-        # No server_proc → not in server mode
-        app = DeepAgentsApp(agent=mock_agent, thread_id="t-1")
-
-        with patch.object(
-            DeepAgentsApp,
-            "_read_messages_from_checkpointer",
-        ) as mock_read:
-            result = await app._fetch_thread_history_data("t-1")
-
-        mock_read.assert_not_called()
-        assert result == []

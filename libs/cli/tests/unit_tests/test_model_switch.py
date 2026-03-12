@@ -44,7 +44,7 @@ class TestModelSwitchNoOp:
         app = DeepAgentsApp()
         # Replace method with mock to track calls (hence ignore)
         app._mount_message = AsyncMock()  # type: ignore[method-assign]
-        app._server_proc = None  # Enable hot-swap path
+        app._server_proc = _make_mock_server_proc()
 
         # Set current model
         settings.model_name = "claude-opus-4-5"
@@ -82,7 +82,7 @@ class TestModelSwitchErrorHandling:
         """_switch_model shows error when provider credentials are missing."""
         app = DeepAgentsApp()
         app._mount_message = AsyncMock()  # type: ignore[method-assign]
-        app._server_proc = None
+        app._server_proc = _make_mock_server_proc()
 
         # Set a different current model
         settings.model_name = "gpt-4o"
@@ -179,98 +179,6 @@ class TestModelSwitchErrorHandling:
             "max_tokens": 1024,
         }
 
-    async def test_no_checkpointer_saves_preference(self) -> None:
-        """_switch_model without checkpointer saves preference but doesn't hot-swap."""
-        app = DeepAgentsApp()
-        app._mount_message = AsyncMock()  # type: ignore[method-assign]
-        app._checkpointer = None  # No checkpointer
-
-        # Set a different current model
-        settings.model_name = "gpt-4o"
-        settings.model_provider = "openai"
-
-        captured_messages: list[str] = []
-        original_init = AppMessage.__init__
-
-        def capture_init(self: AppMessage, message: str, **kwargs: object) -> None:
-            captured_messages.append(message)
-            original_init(self, message, **kwargs)
-
-        with (
-            patch(
-                "deepagents_cli.model_config.has_provider_credentials",
-                return_value=True,
-            ),
-            patch("deepagents_cli.app.save_recent_model", return_value=True),
-            patch.object(AppMessage, "__init__", capture_init),
-        ):
-            await app._switch_model("anthropic:claude-sonnet-4-5")
-
-        app._mount_message.assert_called_once()  # type: ignore[union-attr]
-        assert len(captured_messages) == 1
-        assert "Model preference set" in captured_messages[0]
-        assert "Restart" in captured_messages[0]
-
-    async def test_no_checkpointer_save_failure_shows_error(self) -> None:
-        """_switch_model without checkpointer shows error when save fails."""
-        app = DeepAgentsApp()
-        app._mount_message = AsyncMock()  # type: ignore[method-assign]
-        app._checkpointer = None
-
-        settings.model_name = "gpt-4o"
-        settings.model_provider = "openai"
-
-        captured_errors: list[str] = []
-        original_init = ErrorMessage.__init__
-
-        def capture_init(self: ErrorMessage, message: str, **kwargs: object) -> None:
-            captured_errors.append(message)
-            original_init(self, message, **kwargs)
-
-        with (
-            patch(
-                "deepagents_cli.model_config.has_provider_credentials",
-                return_value=True,
-            ),
-            patch("deepagents_cli.app.save_recent_model", return_value=False),
-            patch.object(ErrorMessage, "__init__", capture_init),
-        ):
-            await app._switch_model("anthropic:claude-sonnet-4-5")
-
-        app._mount_message.assert_called_once()  # type: ignore[union-attr]
-        assert len(captured_errors) == 1
-        assert "Could not save model preference" in captured_errors[0]
-
-    async def test_no_server_save_failure_shows_error(self) -> None:
-        """Shows error when save_recent_model fails (no server proc)."""
-        app = DeepAgentsApp()
-        app._mount_message = AsyncMock()  # type: ignore[method-assign]
-        app._server_proc = None
-
-        settings.model_name = "gpt-4o"
-        settings.model_provider = "openai"
-
-        captured_errors: list[str] = []
-        original_init = ErrorMessage.__init__
-
-        def capture_init(self: ErrorMessage, message: str, **kwargs: object) -> None:
-            captured_errors.append(message)
-            original_init(self, message, **kwargs)
-
-        with (
-            patch(
-                "deepagents_cli.model_config.has_provider_credentials",
-                return_value=True,
-            ),
-            patch("deepagents_cli.app.save_recent_model", return_value=False),
-            patch.object(ErrorMessage, "__init__", capture_init),
-        ):
-            await app._switch_model("anthropic:claude-sonnet-4-5")
-
-        app._mount_message.assert_called_once()  # type: ignore[union-attr]
-        assert len(captured_errors) == 1
-        assert "Could not save model preference" in captured_errors[0]
-
 
 class TestModelSwitchConfigProvider:
     """Tests for switching to config-file-defined providers."""
@@ -282,8 +190,8 @@ class TestModelSwitchConfigProvider:
     async def test_switch_to_config_provider_no_whitelist_error(self, tmp_path) -> None:
         """Switching to a provider not in PROVIDER_API_KEY_ENV succeeds.
 
-        Previously this would error with "Unknown provider". Now it saves
-        the preference and tells the user to restart.
+        Previously this would error with "Unknown provider". Now it switches
+        immediately in the server-backed session.
         """
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
@@ -293,7 +201,8 @@ api_key_env = "FIREWORKS_API_KEY"
 """)
         app = DeepAgentsApp()
         app._mount_message = AsyncMock()  # type: ignore[method-assign]
-        app._server_proc = None
+        mock_proc = _make_mock_server_proc()
+        app._server_proc = mock_proc
 
         settings.model_name = "gpt-4o"
         settings.model_provider = "openai"
@@ -315,10 +224,15 @@ api_key_env = "FIREWORKS_API_KEY"
         ):
             await app._switch_model("fireworks:llama-v3p1-70b")
 
+        mock_proc.restart.assert_not_awaited()
         mock_save.assert_called_once_with("fireworks:llama-v3p1-70b")
+        assert app._model_override == "fireworks:llama-v3p1-70b"
+        assert settings.model_name == "llama-v3p1-70b"
+        assert settings.model_provider == "fireworks"
         # Should succeed, not show "Unknown provider"
-        assert any("Model preference set" in m for m in captured_messages)
-        assert any("Restart" in m for m in captured_messages)
+        assert any(
+            "Switched to fireworks:llama-v3p1-70b" in m for m in captured_messages
+        )
         assert not any("Unknown provider" in m for m in captured_messages)
 
     async def test_switch_config_provider_missing_credentials(self, tmp_path) -> None:
@@ -331,7 +245,7 @@ api_key_env = "FIREWORKS_API_KEY"
 """)
         app = DeepAgentsApp()
         app._mount_message = AsyncMock()  # type: ignore[method-assign]
-        app._server_proc = None
+        app._server_proc = _make_mock_server_proc()
 
         settings.model_name = "gpt-4o"
         settings.model_provider = "openai"
@@ -356,7 +270,7 @@ api_key_env = "FIREWORKS_API_KEY"
         assert "FIREWORKS_API_KEY" in captured_errors[0]
 
     async def test_switch_to_ollama_no_key_required(self, tmp_path) -> None:
-        """Ollama (no api_key_env) passes credential check and saves preference."""
+        """Ollama (no api_key_env) passes credential check and switches."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
 [models.providers.ollama]
@@ -364,7 +278,8 @@ models = ["llama3"]
 """)
         app = DeepAgentsApp()
         app._mount_message = AsyncMock()  # type: ignore[method-assign]
-        app._server_proc = None
+        mock_proc = _make_mock_server_proc()
+        app._server_proc = mock_proc
 
         settings.model_name = "gpt-4o"
         settings.model_provider = "openai"
@@ -385,19 +300,23 @@ models = ["llama3"]
         ):
             await app._switch_model("ollama:llama3")
 
+        mock_proc.restart.assert_not_awaited()
         mock_save.assert_called_once_with("ollama:llama3")
-        assert any("Model preference set" in m for m in captured_messages)
-        assert any("Restart" in m for m in captured_messages)
+        assert app._model_override == "ollama:llama3"
+        assert settings.model_name == "llama3"
+        assert settings.model_provider == "ollama"
+        assert any("Switched to ollama:llama3" in m for m in captured_messages)
 
 
 class TestModelSwitchBareModelName:
     """Tests for _switch_model with bare model names (no provider prefix)."""
 
     async def test_bare_model_name_auto_detects_provider(self) -> None:
-        """Bare model name like 'gpt-4o' auto-detects provider and saves preference."""
+        """Bare model name like 'gpt-4o' auto-detects provider and switches."""
         app = DeepAgentsApp()
         app._mount_message = AsyncMock()  # type: ignore[method-assign]
-        app._server_proc = None
+        mock_proc = _make_mock_server_proc()
+        app._server_proc = mock_proc
 
         settings.model_name = "claude-sonnet-4-5"
         settings.model_provider = "anthropic"
@@ -422,15 +341,18 @@ class TestModelSwitchBareModelName:
         ):
             await app._switch_model("gpt-4o")
 
-        mock_save.assert_called_once_with("gpt-4o")
-        assert any("Model preference set" in m for m in captured_messages)
-        assert any("Restart" in m for m in captured_messages)
+        mock_proc.restart.assert_not_awaited()
+        mock_save.assert_called_once_with("openai:gpt-4o")
+        assert app._model_override == "openai:gpt-4o"
+        assert settings.model_name == "gpt-4o"
+        assert settings.model_provider == "openai"
+        assert any("Switched to openai:gpt-4o" in m for m in captured_messages)
 
     async def test_bare_model_name_missing_credentials(self) -> None:
         """Bare model name shows credential error when provider creds are missing."""
         app = DeepAgentsApp()
         app._mount_message = AsyncMock()  # type: ignore[method-assign]
-        app._server_proc = None
+        app._server_proc = _make_mock_server_proc()
 
         settings.model_name = "claude-sonnet-4-5"
         settings.model_provider = "anthropic"
@@ -465,7 +387,7 @@ class TestModelSwitchBareModelName:
         """Bare model name matching current model shows 'Already using'."""
         app = DeepAgentsApp()
         app._mount_message = AsyncMock()  # type: ignore[method-assign]
-        app._server_proc = None
+        app._server_proc = _make_mock_server_proc()
 
         settings.model_name = "gpt-4o"
         settings.model_provider = "openai"

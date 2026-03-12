@@ -2944,9 +2944,9 @@ class DeepAgentsApp(App):
             return
         self.call_after_refresh(self._chat_input.focus_input)
 
-    def on_mouse_up(self, event: MouseUp) -> None:  # noqa: ARG002  # Textual event handler signature
-        """Copy selection to clipboard on mouse release."""
-        copy_selection_to_clipboard(self)
+    # def on_mouse_up(self, event: MouseUp) -> None:  # noqa: ARG002  # Textual event handler signature
+    #     """Copy selection to clipboard on mouse release."""
+    #     copy_selection_to_clipboard(self)
 
     # =========================================================================
     # Model Switching

@@ -146,7 +146,7 @@ Screen {
 
 /* Scrollable tool info area in approval menu */
 .approval-menu .tool-info-scroll {
-    height: 10;
+    max-height: 10;
     margin-top: 0;
 }
 

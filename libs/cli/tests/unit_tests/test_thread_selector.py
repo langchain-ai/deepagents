@@ -861,11 +861,15 @@ class TestFetchThreadUrl:
         import time
 
         def _blocking(_tid: str) -> str:
-            time.sleep(3)
+            time.sleep(0.1)
             return "https://example.com"
 
         with (
             _patch_list_threads(),
+            patch(
+                "deepagents_cli.widgets.thread_selector._URL_FETCH_TIMEOUT",
+                0.01,
+            ),
             patch(
                 "deepagents_cli.widgets.thread_selector.build_langsmith_thread_url",
                 side_effect=_blocking,

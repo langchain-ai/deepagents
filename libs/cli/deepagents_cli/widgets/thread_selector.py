@@ -36,6 +36,9 @@ from deepagents_cli.widgets._links import open_style_link
 
 logger = logging.getLogger(__name__)
 
+_URL_FETCH_TIMEOUT = 2.0
+"""Seconds to wait for LangSmith thread-URL resolution before giving up."""
+
 _column_widths_cache: (
     tuple[
         tuple[tuple[str, str | None], ...],  # (thread_id, checkpoint_id) fingerprint
@@ -1380,7 +1383,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         try:
             thread_url = await asyncio.wait_for(
                 asyncio.to_thread(build_langsmith_thread_url, self._current_thread),
-                timeout=2.0,
+                timeout=_URL_FETCH_TIMEOUT,
             )
         except (TimeoutError, OSError):
             logger.debug(

@@ -16,6 +16,7 @@ from deepagents_cli.widgets import chat_input as chat_input_module
 from deepagents_cli.widgets.autocomplete import MAX_SUGGESTIONS, SLASH_COMMANDS
 from deepagents_cli.widgets.chat_input import (
     ChatInput,
+    ChatTextArea,
     CompletionOption,
     CompletionPopup,
 )
@@ -1989,3 +1990,89 @@ class TestVSCodeSpaceWorkaround:
             await pilot.pause()
 
             assert ta.text == "hello "
+
+
+class _TextAreaTypingApp(App[None]):
+    """Minimal app that captures ChatTextArea.Typing and ChatInput.Typing events."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.text_area_typing_count = 0
+        self.chat_input_typing_count = 0
+
+    def compose(self) -> ComposeResult:
+        yield ChatInput(id="chat-input")
+
+    def on_chat_text_area_typing(
+        self,
+        event: ChatTextArea.Typing,  # noqa: ARG002
+    ) -> None:
+        self.text_area_typing_count += 1
+
+    def on_chat_input_typing(
+        self,
+        event: ChatInput.Typing,  # noqa: ARG002
+    ) -> None:
+        self.chat_input_typing_count += 1
+
+
+class TestChatTextAreaTypingEmission:
+    """ChatTextArea should emit Typing on printable keys and backspace."""
+
+    async def test_printable_key_emits_typing(self) -> None:
+        """Pressing a printable character should emit ChatTextArea.Typing."""
+        app = _TextAreaTypingApp()
+        async with app.run_test() as pilot:
+            text_area = app.query_one(ChatTextArea)
+            text_area.focus()
+            await pilot.pause()
+
+            before = app.text_area_typing_count
+            await pilot.press("a")
+            await pilot.pause()
+
+            assert app.text_area_typing_count > before
+
+    async def test_backspace_emits_typing(self) -> None:
+        """Pressing backspace should emit ChatTextArea.Typing."""
+        app = _TextAreaTypingApp()
+        async with app.run_test() as pilot:
+            text_area = app.query_one(ChatTextArea)
+            text_area.focus()
+            await pilot.press("h")
+            await pilot.pause()
+
+            before = app.text_area_typing_count
+            await pilot.press("backspace")
+            await pilot.pause()
+
+            assert app.text_area_typing_count > before
+
+    async def test_enter_does_not_emit_typing(self) -> None:
+        """Pressing enter should NOT emit ChatTextArea.Typing."""
+        app = _TextAreaTypingApp()
+        async with app.run_test() as pilot:
+            text_area = app.query_one(ChatTextArea)
+            text_area.focus()
+            await pilot.pause()
+            initial = app.text_area_typing_count
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert app.text_area_typing_count == initial
+
+
+class TestChatInputTypingBubble:
+    """ChatInput.Typing should bubble from ChatTextArea.Typing."""
+
+    async def test_typing_bubbles_to_chat_input(self) -> None:
+        """ChatInput.Typing count should track ChatTextArea.Typing."""
+        app = _TextAreaTypingApp()
+        async with app.run_test() as pilot:
+            text_area = app.query_one(ChatTextArea)
+            text_area.focus()
+            await pilot.press("x")
+            await pilot.press("y")
+            await pilot.pause()
+
+            assert app.chat_input_typing_count == 2

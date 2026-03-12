@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import io
 import os
 import signal
+import time
 import webbrowser
 from typing import TYPE_CHECKING, ClassVar
 from unittest.mock import AsyncMock, MagicMock, call, patch
@@ -25,6 +27,7 @@ from textual.widgets import Checkbox, Input, Static
 from deepagents_cli.app import (
     _ITERM_CURSOR_GUIDE_OFF,
     _ITERM_CURSOR_GUIDE_ON,
+    _TYPING_IDLE_THRESHOLD_SECONDS,
     DeepAgentsApp,
     QueuedMessage,
     TextualSessionState,
@@ -1723,3 +1726,187 @@ class TestInterruptApprovalPriority:
         approval.action_select_reject.assert_called_once()
         worker.cancel.assert_not_called()
         assert app._quit_pending is False
+
+
+class TestIsUserTyping:
+    """Unit tests for `_is_user_typing()` threshold logic."""
+
+    def test_returns_false_when_never_typed(self) -> None:
+        """Should return False if _last_typed_at is None."""
+        app = DeepAgentsApp()
+        assert app._is_user_typing() is False
+
+    def test_returns_true_within_threshold(self) -> None:
+        """Should return True right after a keystroke."""
+        app = DeepAgentsApp()
+        app._last_typed_at = time.monotonic()
+        assert app._is_user_typing() is True
+
+    def test_returns_false_after_threshold(self) -> None:
+        """Should return False once the idle threshold has elapsed."""
+        app = DeepAgentsApp()
+        app._last_typed_at = time.monotonic() - (_TYPING_IDLE_THRESHOLD_SECONDS + 0.1)
+        assert app._is_user_typing() is False
+
+    def test_boundary_just_within_threshold(self) -> None:
+        """Should return True when just inside the threshold window."""
+        app = DeepAgentsApp()
+        app._last_typed_at = time.monotonic() - (_TYPING_IDLE_THRESHOLD_SECONDS - 0.1)
+        assert app._is_user_typing() is True
+
+
+class TestRequestApprovalBranching:
+    """_request_approval should show a placeholder when the user is typing."""
+
+    async def test_placeholder_mounted_when_typing(self) -> None:
+        """If the user is typing, a Static placeholder is mounted instead of menu."""
+        app = DeepAgentsApp(agent=MagicMock())
+        # Simulate recent typing
+        app._last_typed_at = time.monotonic()
+
+        mounted_classes: list[str] = []
+
+        def fake_mount_before_queued(_container: object, widget: object) -> None:
+            if isinstance(widget, Static):
+                mounted_classes.append(" ".join(widget.classes))
+
+        app._mount_before_queued = fake_mount_before_queued  # type: ignore[assignment]
+
+        # Prevent actual worker from running; we just want to check branching.
+        run_worker_calls: list[object] = []
+
+        def _stub_worker(coro: object, **_: object) -> MagicMock:
+            # Consume the coroutine immediately to suppress RuntimeWarning.
+            if inspect.iscoroutine(coro):
+                coro.close()
+            run_worker_calls.append(coro)
+            return MagicMock()
+
+        app.run_worker = _stub_worker  # type: ignore[method-assign]
+
+        dummy_container = MagicMock()
+        app.query_one = MagicMock(return_value=dummy_container)  # type: ignore[method-assign]
+
+        action_requests = [
+            {"name": "write_file", "args": {"path": "/tmp/x.txt", "content": "hi"}}
+        ]
+        future = asyncio.get_event_loop().create_future()
+
+        with patch.object(asyncio, "get_running_loop") as mock_loop:
+            mock_loop.return_value.create_future.return_value = future
+            returned = await app._request_approval(action_requests, None)
+
+        assert returned is future
+        assert any("approval-placeholder" in cls for cls in mounted_classes), (
+            "Expected 'approval-placeholder' in mounted widget",
+            f"classes, got {mounted_classes}",
+        )
+        assert len(run_worker_calls) == 1, (
+            "run_worker should have been called once for the deferred swap"
+        )
+
+    async def test_menu_mounted_directly_when_not_typing(self) -> None:
+        """If the user is NOT typing, the ApprovalMenu is mounted directly."""
+        from deepagents_cli.widgets.approval import ApprovalMenu
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._last_typed_at = None
+
+        mounted_types: list[type] = []
+
+        def fake_mount_before_queued(_container: object, widget: object) -> None:
+            mounted_types.append(type(widget))
+
+        app._mount_before_queued = fake_mount_before_queued  # type: ignore[assignment]
+        app.call_after_refresh = MagicMock()  # type: ignore[method-assign]
+
+        dummy_container = MagicMock()
+        app.query_one = MagicMock(return_value=dummy_container)  # type: ignore[method-assign]
+
+        action_requests = [
+            {"name": "write_file", "args": {"path": "/tmp/y.txt", "content": "hi"}}
+        ]
+        future = asyncio.get_event_loop().create_future()
+
+        with patch.object(asyncio, "get_running_loop") as mock_loop:
+            mock_loop.return_value.create_future.return_value = future
+            returned = await app._request_approval(action_requests, None)
+
+        assert returned is future
+        assert ApprovalMenu in mounted_types, (
+            f"Expected ApprovalMenu to be mounted, got {mounted_types}"
+        )
+
+
+class TestDeferredShowApproval:
+    """_deferred_show_approval should swap placeholder once idle."""
+
+    async def test_swaps_placeholder_for_menu_after_idle(self) -> None:
+        """Once typing stops, placeholder is removed and menu is mounted."""
+        from deepagents_cli.widgets.approval import ApprovalMenu
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._last_typed_at = time.monotonic()
+
+        placeholder = MagicMock(spec=Static)
+        placeholder.is_attached = True
+        remove_called = False
+
+        async def fake_remove() -> None:  # noqa: RUF029
+            nonlocal remove_called
+            remove_called = True
+
+        placeholder.remove = fake_remove
+
+        action_requests = [{"name": "write_file", "args": {}}]
+        loop = asyncio.get_event_loop()
+        future = loop.create_future()
+        menu = ApprovalMenu(action_requests[0])
+        menu.set_future(future)
+
+        mount_called = False
+
+        async def fake_mount_approval(m: ApprovalMenu) -> None:  # noqa: ARG001, RUF029
+            nonlocal mount_called
+            mount_called = True
+
+        app._mount_approval_widget = fake_mount_approval  # type: ignore[method-assign]
+
+        async def stop_typing() -> None:
+            await asyncio.sleep(0.05)
+            app._last_typed_at = None
+
+        typing_task = asyncio.create_task(stop_typing())
+        await app._deferred_show_approval(placeholder, menu)
+        await typing_task
+
+        assert remove_called, "placeholder.remove() should have been called"
+        assert mount_called, "_mount_approval_widget should have been called"
+
+    async def test_bails_if_placeholder_detached(self) -> None:
+        """If placeholder is already detached, worker should exit silently."""
+        from deepagents_cli.widgets.approval import ApprovalMenu
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._last_typed_at = None
+
+        placeholder = MagicMock(spec=Static)
+        placeholder.is_attached = False
+
+        mount_called = False
+
+        async def fake_mount_approval(m: ApprovalMenu) -> None:  # noqa: ARG001, RUF029
+            nonlocal mount_called
+            mount_called = True
+
+        app._mount_approval_widget = fake_mount_approval  # type: ignore[method-assign]
+
+        action_requests = [{"name": "shell", "args": {"command": "ls"}}]
+        loop = asyncio.get_event_loop()
+        future = loop.create_future()
+        menu = ApprovalMenu(action_requests[0])
+        menu.set_future(future)
+
+        await app._deferred_show_approval(placeholder, menu)
+
+        assert not mount_called, "_mount_approval_widget should NOT have been called"

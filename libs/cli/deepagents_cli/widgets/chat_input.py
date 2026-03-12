@@ -319,6 +319,12 @@ class ChatTextArea(TextArea):
             self.paths = paths
             super().__init__()
 
+    class Typing(Message):
+        """Posted when the user presses a printable key or backspace.
+
+        Bubbles up to `ChatInput.Typing` for the app to track typing activity.
+        """
+
     def __init__(self, **kwargs: Any) -> None:
         """Initialize the chat text area."""
         # Remove placeholder if passed, TextArea doesn't support it the same way
@@ -476,6 +482,12 @@ class ChatTextArea(TextArea):
             return
 
         now = time.monotonic()
+
+        # Signal typing activity for printable keys and backspace so the app
+        # can defer approval widgets while the user is actively editing.
+        if event.is_printable or event.key == "backspace":
+            self.post_message(self.Typing())
+
         if self._paste_burst_buffer:
             if event.key == "enter":
                 self._append_paste_burst("\n", now)
@@ -796,6 +808,14 @@ class ChatInput(Vertical):
             """Initialize with new mode."""
             super().__init__()
             self.mode = mode
+
+    class Typing(Message):
+        """Posted when the user presses a printable key or backspace in the input.
+
+        The app uses this to delay approval widgets while the user is actively
+        typing, preventing accidental key presses (e.g. `y`, `n`) from
+        triggering approval decisions.
+        """
 
     mode: reactive[str] = reactive("normal")
 
@@ -1164,6 +1184,13 @@ class ChatInput(Vertical):
                 self._skip_media_sync_events -= 1
             return
         self._image_tracker.sync_to_text(text)
+
+    def on_chat_text_area_typing(
+        self,
+        event: ChatTextArea.Typing,  # noqa: ARG002  # Textual event handler signature
+    ) -> None:
+        """Bubble typing activity up to the app as `ChatInput.Typing`."""
+        self.post_message(self.Typing())
 
     def on_chat_text_area_submitted(self, event: ChatTextArea.Submitted) -> None:
         """Handle text submission.

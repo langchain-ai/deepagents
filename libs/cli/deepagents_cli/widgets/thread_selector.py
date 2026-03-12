@@ -36,6 +36,21 @@ from deepagents_cli.widgets._links import open_style_link
 
 logger = logging.getLogger(__name__)
 
+_URL_FETCH_TIMEOUT = 2.0
+"""Seconds to wait for LangSmith thread-URL resolution before giving up."""
+
+_column_widths_cache: (
+    tuple[
+        tuple[tuple[str, str | None], ...],  # (thread_id, checkpoint_id) fingerprint
+        frozenset[str],  # visible column keys
+        bool,  # relative_time
+        dict[str, int | None],  # computed widths
+    ]
+    | None
+) = None
+"""Module-level cache so repeated `/threads` opens skip column-width computation
+when the inputs (thread data + config) haven't changed."""
+
 _COL_TID = 10
 _COL_AGENT = 12
 _COL_MSGS = 4
@@ -634,16 +649,18 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         self._filter_input: Input | None = None
         self._filter_controls: list[Input | Checkbox] | None = None
 
-        from deepagents_cli.model_config import (
-            load_thread_columns,
-            load_thread_relative_time,
-            load_thread_sort_order,
-        )
+        from deepagents_cli.model_config import load_thread_config
 
-        self._columns = load_thread_columns()
-        self._relative_time = load_thread_relative_time()
-        self._sort_by_updated = load_thread_sort_order() == "updated_at"
+        cfg = load_thread_config()
+        self._columns = dict(cfg.columns)
+        self._relative_time = cfg.relative_time
+        self._sort_by_updated = cfg.sort_order == "updated_at"
 
+        # Cached threads are pre-sorted by updated_at DESC (the only sort
+        # order the cache stores).  Skip the O(n log n) re-sort when that
+        # matches the user's preference.
+        if not (self._has_initial_threads and self._sort_by_updated):
+            self._apply_sort()
         self._sync_selected_index()
         self._column_widths = self._compute_column_widths()
 
@@ -1026,9 +1043,22 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         from the visible data instead.
 
         Returns:
-            Dict mapping column keys to their effective pixel widths, with
+            Dict mapping column keys to their effective cell widths, with
                 `None` for flex columns.
         """
+        global _column_widths_cache  # noqa: PLW0603  # Module-level cache requires global statement
+
+        visible = frozenset(_visible_column_keys(self._columns))
+        fingerprint = tuple(
+            (t["thread_id"], t.get("latest_checkpoint_id"))
+            for t in self._filtered_threads
+        )
+
+        if _column_widths_cache is not None:
+            fp, vis, rel, cached_widths = _column_widths_cache
+            if fp == fingerprint and vis == visible and rel == self._relative_time:
+                return dict(cached_widths)
+
         widths = dict(_COLUMN_WIDTHS)
 
         for key in _AUTO_WIDTH_COLUMNS:
@@ -1043,6 +1073,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                 _CELL_PADDING_RIGHT
             )
 
+        _column_widths_cache = (fingerprint, visible, self._relative_time, widths)
         return widths
 
     @staticmethod
@@ -1198,6 +1229,26 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             group="thread-selector-checkpoints",
         )
 
+    @staticmethod
+    def _threads_match(old: list[ThreadInfo], new: list[ThreadInfo]) -> bool:
+        """Check whether two thread lists have the same IDs and checkpoints in order.
+
+        Args:
+            old: Previous thread list.
+            new: Fresh thread list.
+
+        Returns:
+            True if both lists have identical thread/checkpoint ID pairs.
+        """
+        if len(old) != len(new):
+            return False
+        for a, b in zip(old, new, strict=True):
+            if a["thread_id"] != b["thread_id"]:
+                return False
+            if a.get("latest_checkpoint_id") != b.get("latest_checkpoint_id"):
+                return False
+        return True
+
     async def _load_threads(self) -> None:
         """Load thread rows first, then kick off background enrichment."""
         from deepagents_cli.sessions import (
@@ -1206,13 +1257,18 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             list_threads,
         )
 
+        old_threads = list(self._threads)
+
         try:
             limit = self._thread_limit
             if limit is None:
                 from deepagents_cli.sessions import get_thread_limit
 
                 limit = get_thread_limit()
-            self._threads = await list_threads(limit=limit, include_message_count=False)
+            sort_by = "updated" if self._sort_by_updated else "created"
+            self._threads = await list_threads(
+                limit=limit, include_message_count=False, sort_by=sort_by
+            )
         except (OSError, sqlite3.Error) as exc:
             logger.exception("Failed to load threads for thread selector")
             await self._show_mount_error(str(exc))
@@ -1241,7 +1297,22 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         self._update_filtered_list()
         self._sync_selected_index()
 
-        await self._build_list()
+        # Short-circuit: when the fresh data matches what is already rendered,
+        # update widget references and cell labels without tearing down the DOM.
+        if (
+            self._has_initial_threads
+            and self._option_widgets
+            and self._threads_match(old_threads, self._filtered_threads)
+        ):
+            for widget, thread in zip(
+                self._option_widgets,
+                self._filtered_threads,
+                strict=True,
+            ):
+                widget.thread = thread
+            self._refresh_cell_labels()
+        else:
+            await self._build_list()
 
         self._schedule_checkpoint_enrichment()
 
@@ -1312,7 +1383,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         try:
             thread_url = await asyncio.wait_for(
                 asyncio.to_thread(build_langsmith_thread_url, self._current_thread),
-                timeout=2.0,
+                timeout=_URL_FETCH_TIMEOUT,
             )
         except (TimeoutError, OSError):
             logger.debug(

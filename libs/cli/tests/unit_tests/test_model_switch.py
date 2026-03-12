@@ -170,7 +170,7 @@ class TestModelSwitchErrorHandling:
         assert app._model_switching is False
 
     async def test_save_recent_model_failure_shows_warning(self) -> None:
-        """Permission error saving recent model shows warning but still switches."""
+        """Permission error saving recent model shows error, no success message."""
         app = DeepAgentsApp()
         app._mount_message = AsyncMock()  # type: ignore[method-assign]
         app._agent = _make_remote_agent()
@@ -208,8 +208,8 @@ class TestModelSwitchErrorHandling:
         assert "could not save" in captured_errors[0].lower()
         assert "~/.deepagents/" in captured_errors[0]
 
-        # Should still confirm the switch happened
-        assert any("Switched to" in m for m in captured_messages)
+        # Should NOT show success message when save fails
+        assert not any("Switched to" in m for m in captured_messages)
         assert app._model_override == "anthropic:claude-sonnet-4-5"
 
     async def test_remote_agent_sets_model_override(self) -> None:

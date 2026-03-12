@@ -1102,7 +1102,7 @@ class TestCreateCliAgentProjectContext:
             patch("deepagents_cli.agent.MemoryMiddleware"),
             patch("deepagents_cli.agent.list_subagents", return_value=[]) as mock_list,
             patch("deepagents_cli.agent.create_deep_agent", return_value=mock_agent),
-            patch("deepagents.graph.resolve_model", return_value=fake_model),
+            patch("deepagents._models.init_chat_model", return_value=fake_model),
         ):
             create_cli_agent(
                 model="fake-model",
@@ -1179,7 +1179,7 @@ class TestCreateCliAgentProjectContext:
             patch("deepagents_cli.agent.MemoryMiddleware", FakeMemoryMiddleware),
             patch("deepagents_cli.agent.FilesystemBackend"),
             patch("deepagents_cli.agent.create_deep_agent", return_value=mock_agent),
-            patch("deepagents.graph.resolve_model", return_value=fake_model),
+            patch("deepagents._models.init_chat_model", return_value=fake_model),
         ):
             create_cli_agent(
                 model="fake-model",
@@ -1239,7 +1239,7 @@ class TestCreateCliAgentProjectContext:
                 "deepagents_cli.agent.LocalShellBackend", return_value=mock_backend
             ) as mock_shell,
             patch("deepagents_cli.agent.create_deep_agent", return_value=mock_agent),
-            patch("deepagents.graph.resolve_model", return_value=fake_model),
+            patch("deepagents._models.init_chat_model", return_value=fake_model),
         ):
             create_cli_agent(
                 model="fake-model",
@@ -1290,7 +1290,7 @@ class TestCreateCliAgentProjectContext:
             patch("deepagents_cli.agent.SkillsMiddleware"),
             patch("deepagents_cli.agent.FilesystemBackend") as mock_filesystem,
             patch("deepagents_cli.agent.create_deep_agent", return_value=mock_agent),
-            patch("deepagents.graph.resolve_model", return_value=fake_model),
+            patch("deepagents._models.init_chat_model", return_value=fake_model),
         ):
             create_cli_agent(
                 model="fake-model",

@@ -78,30 +78,6 @@ def get_default_model() -> ChatAnthropic:
     )
 
 
-def _split_middleware(
-    middleware: Sequence[AgentMiddleware],
-) -> tuple[list[AgentMiddleware], list[AgentMiddleware]]:
-    """Partition middleware into prepended and trailing groups.
-
-    Callers can mark middleware with the private `_deepagents_prepend` flag
-    when it must run before the built-in deep-agent middleware stack.
-
-    Args:
-        middleware: Middleware passed to `create_deep_agent()`.
-
-    Returns:
-        Two lists: `(prepended, trailing)`.
-    """
-    prepended: list[AgentMiddleware] = []
-    trailing: list[AgentMiddleware] = []
-    for item in middleware:
-        if getattr(item, "_deepagents_prepend", False):
-            prepended.append(item)
-        else:
-            trailing.append(item)
-    return prepended, trailing
-
-
 def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic with many conditional branches
     model: str | BaseChatModel | None = None,
     tools: Sequence[BaseTool | Callable | dict[str, Any]] | None = None,
@@ -208,11 +184,9 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
     model = get_default_model() if model is None else resolve_model(model)
 
     backend = backend if backend is not None else (StateBackend)
-    prepended_middleware, trailing_middleware = _split_middleware(middleware)
 
     # Build general-purpose subagent with default middleware stack
     gp_middleware: list[AgentMiddleware[Any, Any, Any]] = [
-        *prepended_middleware,
         TodoListMiddleware(),
         FilesystemMiddleware(backend=backend),
         create_summarization_middleware(model, backend),
@@ -244,7 +218,6 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
 
             # Build middleware: base stack + skills (if specified) + user's middleware
             subagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
-                *prepended_middleware,
                 TodoListMiddleware(),
                 FilesystemMiddleware(backend=backend),
                 create_summarization_middleware(subagent_model, backend),
@@ -269,7 +242,6 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
 
     # Build main agent middleware stack
     deepagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
-        *prepended_middleware,
         TodoListMiddleware(),
     ]
     if memory is not None:
@@ -289,8 +261,8 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
         ]
     )
 
-    if trailing_middleware:
-        deepagent_middleware.extend(trailing_middleware)
+    if middleware:
+        deepagent_middleware.extend(middleware)
     if interrupt_on is not None:
         deepagent_middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
 

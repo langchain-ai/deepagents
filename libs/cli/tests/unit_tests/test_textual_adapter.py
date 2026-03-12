@@ -187,41 +187,11 @@ class TestBuildStreamConfig:
         config = _build_stream_config("t-abc", assistant_id=None)
         assert config["configurable"]["thread_id"] == "t-abc"
 
-    def test_model_override_in_configurable(self) -> None:
-        """Model override should appear in `configurable["model"]`."""
-        config = _build_stream_config(
-            "t-model", assistant_id=None, model_override="openai:gpt-4o"
-        )
-        assert config["configurable"]["model"] == "openai:gpt-4o"
-
-    def test_no_model_override_omits_key(self) -> None:
-        """Absent model override should not add a `model` key."""
+    def test_no_model_keys_in_configurable(self) -> None:
+        """Model/model_params should not be in configurable."""
         config = _build_stream_config("t-no-model", assistant_id=None)
         assert "model" not in config["configurable"]
-
-    def test_model_params_in_configurable(self) -> None:
-        """Model params should appear in `configurable["model_params"]`."""
-        params = {"temperature": 0.7, "max_tokens": 1024}
-        config = _build_stream_config(
-            "t-params", assistant_id=None, model_params=params
-        )
-        assert config["configurable"]["model_params"] == params
-
-    def test_no_model_params_omits_key(self) -> None:
-        """Absent model params should not add a `model_params` key."""
-        config = _build_stream_config("t-no-params", assistant_id=None)
         assert "model_params" not in config["configurable"]
-
-    def test_model_override_and_params_together(self) -> None:
-        """Both model override and params can coexist in configurable."""
-        config = _build_stream_config(
-            "t-both",
-            assistant_id=None,
-            model_override="anthropic:claude-sonnet-4-5",
-            model_params={"temperature": 0.3},
-        )
-        assert config["configurable"]["model"] == "anthropic:claude-sonnet-4-5"
-        assert config["configurable"]["model_params"] == {"temperature": 0.3}
 
 
 class TestGetGitBranch:

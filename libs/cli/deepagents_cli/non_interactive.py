@@ -3,6 +3,9 @@
 Provides `run_non_interactive` which runs a single user task against the
 agent graph, streams results to stdout, and exits with an appropriate code.
 
+The agent runs inside a `langgraph dev` server subprocess, connected via
+the `RemoteAgent` client (see `server_manager.server_session`).
+
 Shell commands are gated by an optional allow-list (`--shell-allow-list`):
 
 - Not set → shell disabled, all other tool calls auto-approved.

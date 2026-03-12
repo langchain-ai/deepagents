@@ -15,6 +15,7 @@ from __future__ import annotations
 import atexit
 import logging
 import sys
+import traceback
 from typing import Any
 
 from deepagents_cli._server_config import ServerConfig
@@ -184,6 +185,7 @@ try:
 except Exception as exc:
     logger.critical("Failed to initialize server graph", exc_info=True)
     print(  # noqa: T201  # stderr fallback — logger may not reach parent process
-        f"Failed to initialize server graph: {exc}", file=sys.stderr
+        f"Failed to initialize server graph: {exc}\n{traceback.format_exc()}",
+        file=sys.stderr,
     )
     sys.exit(1)

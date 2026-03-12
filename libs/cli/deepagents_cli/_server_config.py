@@ -162,11 +162,7 @@ class ServerConfig:
             "ENABLE_ASK_USER": str(self.enable_ask_user).lower(),
             "ENABLE_MEMORY": str(self.enable_memory).lower(),
             "ENABLE_SKILLS": str(self.enable_skills).lower(),
-            "SANDBOX_TYPE": (
-                self.sandbox_type
-                if self.sandbox_type and self.sandbox_type != "none"
-                else None
-            ),
+            "SANDBOX_TYPE": self.sandbox_type,
             "SANDBOX_ID": self.sandbox_id,
             "SANDBOX_SETUP": self.sandbox_setup,
             "CWD": self.cwd,
@@ -269,9 +265,7 @@ class ServerConfig:
             interactive=interactive,
             enable_shell=enable_shell,
             enable_ask_user=enable_ask_user,
-            sandbox_type=sandbox_type
-            if sandbox_type and sandbox_type != "none"
-            else None,
+            sandbox_type=sandbox_type,
             sandbox_id=sandbox_id,
             sandbox_setup=_normalize_path(
                 sandbox_setup, project_context, "sandbox setup"

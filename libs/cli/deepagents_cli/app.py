@@ -39,6 +39,7 @@ from deepagents_cli.config import (
     newline_shortcut,
     settings,
 )
+from deepagents_cli.configurable_model import CLIContext
 from deepagents_cli.hooks import dispatch_hook
 from deepagents_cli.model_config import ModelSpec, save_recent_model
 from deepagents_cli.textual_adapter import (
@@ -589,7 +590,8 @@ class DeepAgentsApp(App):
         """Initialize the Deep Agents application.
 
         Args:
-            agent: Pre-configured LangGraph agent for the session.
+            agent: Pre-configured LangGraph agent, or `None` when server
+                startup is deferred via `server_kwargs`.
             assistant_id: Agent identifier for memory storage
             backend: Backend for file operations
             auto_approve: Whether to start with auto-approve enabled
@@ -889,7 +891,7 @@ class DeepAgentsApp(App):
             banner = self.query_one("#welcome-banner", WelcomeBanner)
             banner.set_connected(self._mcp_tool_count)
         except NoMatches:
-            pass
+            logger.warning("Welcome banner not found during server ready transition")
 
         # Now that the agent is available, set up the adapter
         self._init_agent_adapter()
@@ -923,12 +925,12 @@ class DeepAgentsApp(App):
             severity="error",
             timeout=30,
         )
-        # Update banner to show the failure
+        # Update banner to show persistent failure state
         try:
             banner = self.query_one("#welcome-banner", WelcomeBanner)
-            banner.set_connected(0)
+            banner.set_failed(str(event.error))
         except NoMatches:
-            pass
+            logger.warning("Welcome banner not found during server failure transition")
 
         # Discard any messages queued while the server was starting
         if self._pending_messages:
@@ -1013,7 +1015,7 @@ class DeepAgentsApp(App):
         # Sticky scroll: only scroll to bottom if user is near the bottom
         # "Near" means within 100 pixels of the bottom (about 6-7 lines)
         distance_from_bottom = chat.max_scroll_y - chat.scroll_y
-        if distance_from_bottom < 100:  # noqa: PLR2004  # Token count threshold
+        if distance_from_bottom < 100:  # noqa: PLR2004  # Pixel distance threshold for sticky scroll
             chat.scroll_end(animate=False)
 
     def _check_hydration_needed(self) -> None:
@@ -2369,7 +2371,7 @@ class DeepAgentsApp(App):
     async def _run_agent_task(self, message: str) -> None:
         """Run the agent task in a background worker.
 
-        This runs in a worker thread so the main event loop stays responsive.
+        This runs in a Textual worker so the main event loop stays responsive.
         """
         # Caller ensures _ui_adapter is set (checked in _handle_user_message)
         if self._ui_adapter is None:
@@ -2384,8 +2386,10 @@ class DeepAgentsApp(App):
                 adapter=self._ui_adapter,
                 backend=self._backend,
                 image_tracker=self._image_tracker,
-                model_override=self._model_override,
-                model_params=self._model_params_override,
+                context=CLIContext(
+                    model=self._model_override,
+                    model_params=self._model_params_override or {},
+                ),
             )
         except Exception as e:  # Resilient tool rendering
             logger.exception("Agent execution failed")
@@ -2584,6 +2588,10 @@ class DeepAgentsApp(App):
         if not self._remote_agent():
             return values
 
+        logger.debug(
+            "Remote state empty for thread %s; falling back to local checkpointer",
+            thread_id,
+        )
         fallback_values = await self._read_channel_values_from_checkpointer(thread_id)
         fallback_messages = fallback_values.get("messages")
         if isinstance(fallback_messages, list) and fallback_messages:
@@ -2649,31 +2657,19 @@ class DeepAgentsApp(App):
                     channel_values = tup.checkpoint.get("channel_values", {})
                     if isinstance(channel_values, dict):
                         return dict(channel_values)
+        except (ImportError, OSError) as exc:
+            logger.warning(
+                "Failed to read checkpointer directly for %s: %s",
+                thread_id,
+                exc,
+            )
         except Exception:
             logger.warning(
-                "Failed to read checkpointer directly for %s",
+                "Unexpected error reading checkpointer for %s",
                 thread_id,
                 exc_info=True,
             )
         return {}
-
-    @staticmethod
-    async def _read_messages_from_checkpointer(thread_id: str) -> list[Any]:
-        """Read messages directly from the SQLite checkpointer.
-
-        Args:
-            thread_id: Thread ID to look up.
-
-        Returns:
-            List of LangChain message objects, or empty list on failure.
-        """
-        channel_values = await DeepAgentsApp._read_channel_values_from_checkpointer(
-            thread_id
-        )
-        messages = channel_values.get("messages")
-        if isinstance(messages, list):
-            return messages
-        return []
 
     async def _upgrade_thread_message_link(
         self,
@@ -3580,8 +3576,8 @@ class DeepAgentsApp(App):
                 return
 
             # Set the model override for ConfigurableModelMiddleware.
-            # The next stream call will pass this in config["configurable"]["model"],
-            # and the middleware swaps the model per-invocation — no server restart.
+            # The next stream call passes CLIContext via context= and the
+            # middleware swaps the model per-invocation — no graph recreation.
             self._model_override = display
             self._model_params_override = extra_kwargs
 
@@ -3598,7 +3594,8 @@ class DeepAgentsApp(App):
                         "preference. Check permissions for ~/.deepagents/"
                     )
                 )
-            await self._mount_message(AppMessage(f"Switched to {display}"))
+            else:
+                await self._mount_message(AppMessage(f"Switched to {display}"))
             logger.info("Model switched to %s (via configurable middleware)", display)
 
             # Scroll to bottom so the confirmation message is visible

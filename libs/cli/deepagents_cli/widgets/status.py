@@ -216,10 +216,6 @@ class StatusBar(Horizontal):
     def on_mount(self) -> None:
         """Set reactive values after mount to trigger watchers safely."""
         self.cwd = self._initial_cwd
-        # Set initial model display
-        label = self.query_one("#model-display", ModelLabel)
-        label.provider = settings.model_provider or ""
-        label.model = settings.model_name or ""
 
     def watch_mode(self, mode: str) -> None:
         """Update mode indicator when mode changes."""
@@ -352,7 +348,10 @@ class StatusBar(Horizontal):
 
     def hide_tokens(self) -> None:
         """Hide the token display (e.g., during streaming)."""
-        self.query_one("#tokens-display", Static).update("")
+        try:
+            self.query_one("#tokens-display", Static).update("")
+        except NoMatches:
+            return
 
     def set_model(self, *, provider: str, model: str) -> None:
         """Update the model display text.
@@ -361,6 +360,9 @@ class StatusBar(Horizontal):
             provider: Model provider name (e.g., `'anthropic'`).
             model: Model name (e.g., `'claude-sonnet-4-5'`).
         """
-        label = self.query_one("#model-display", ModelLabel)
+        try:
+            label = self.query_one("#model-display", ModelLabel)
+        except NoMatches:
+            return
         label.provider = provider
         label.model = model

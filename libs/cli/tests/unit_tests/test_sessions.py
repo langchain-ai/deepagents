@@ -33,10 +33,52 @@ class TestGenerateThreadId:
         tid = sessions.generate_thread_id()
         assert uuid.UUID(tid).version == 7
 
+    def test_monotonic_ordering(self) -> None:
+        """Thread IDs sort chronologically by creation time."""
+        ids = [sessions.generate_thread_id() for _ in range(10)]
+        assert ids == sorted(ids)
+
     def test_unique(self) -> None:
         """Thread IDs are unique."""
         ids = {sessions.generate_thread_id() for _ in range(100)}
         assert len(ids) == 100
+
+
+class TestMixedThreadIdFormats:
+    """Old 8-char hex IDs and new UUID7 IDs coexist in the database."""
+
+    def test_list_returns_both_formats(self, tmp_path: Path) -> None:
+        """list_threads returns threads regardless of ID format."""
+        db_path = tmp_path / "mixed.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("""
+            CREATE TABLE checkpoints (
+                thread_id TEXT NOT NULL,
+                checkpoint_ns TEXT NOT NULL DEFAULT '',
+                checkpoint_id TEXT NOT NULL,
+                metadata BLOB,
+                PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id)
+            )
+        """)
+        old_id = "a1b2c3d4"
+        new_id = sessions.generate_thread_id()
+        now = datetime.now(UTC).isoformat()
+        for tid in (old_id, new_id):
+            meta = json.dumps({"agent_name": "agent", "updated_at": now})
+            conn.execute(
+                "INSERT INTO checkpoints "
+                "(thread_id, checkpoint_ns, checkpoint_id, metadata) "
+                "VALUES (?, '', ?, ?)",
+                (tid, f"cp_{tid}", meta),
+            )
+        conn.commit()
+        conn.close()
+
+        with patch.object(sessions, "get_db_path", return_value=db_path):
+            threads = asyncio.run(sessions.list_threads())
+            returned_ids = {t["thread_id"] for t in threads}
+            assert old_id in returned_ids
+            assert new_id in returned_ids
 
 
 class TestThreadFunctions:

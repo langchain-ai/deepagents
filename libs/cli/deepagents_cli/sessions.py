@@ -236,7 +236,7 @@ def generate_thread_id() -> str:
     """Generate a new thread ID as a full UUID7 string.
 
     Returns:
-        UUID7 string (time-ordered).
+        UUID7 string (time-ordered for natural sort by creation time).
     """
     from uuid_utils import uuid7
 

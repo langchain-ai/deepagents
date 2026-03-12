@@ -256,12 +256,50 @@ def update_file_data(file_data: FileData, content: str) -> FileData:
     }
 
 
+def slice_read_response(
+    file_data: FileData,
+    offset: int,
+    limit: int,
+) -> str:
+    """Slice file data to the requested line range without formatting.
+
+    Returns raw text for the requested window. Line-number formatting
+    is applied downstream by the middleware layer.
+
+    Args:
+        file_data: FileData dict.
+        offset: Line offset (0-indexed).
+        limit: Maximum number of lines.
+
+    Returns:
+        Raw sliced content, empty-file warning, or error message.
+    """
+    content = file_data_to_string(file_data)
+    empty_msg = check_empty_content(content)
+    if empty_msg:
+        return empty_msg
+
+    lines = content.splitlines()
+    start_idx = offset
+    end_idx = min(start_idx + limit, len(lines))
+
+    if start_idx >= len(lines):
+        return f"Error: Line offset {offset} exceeds file length ({len(lines)} lines)"
+
+    selected_lines = lines[start_idx:end_idx]
+    return "\n".join(selected_lines)
+
+
 def format_read_response(
     file_data: FileData,
     offset: int,
     limit: int,
 ) -> str:
     """Format file data for read response with line numbers.
+
+    .. deprecated::
+        Use `slice_read_response` and apply
+        `format_content_with_line_numbers` separately.
 
     Args:
         file_data: FileData dict

@@ -32,9 +32,9 @@ from deepagents.backends.utils import (
     _to_legacy_file_data,
     create_file_data,
     file_data_to_string,
-    format_read_response,
     grep_matches_from_files,
     perform_string_replacement,
+    slice_read_response,
     update_file_data,
 )
 
@@ -393,7 +393,7 @@ class StoreBackend(BackendProtocol):
         offset: int = 0,
         limit: int = 2000,
     ) -> ReadResult:
-        """Read file content with line numbers.
+        """Read file content for the requested line range.
 
         Args:
             file_path: Absolute file path.
@@ -401,7 +401,8 @@ class StoreBackend(BackendProtocol):
             limit: Maximum number of lines to read.
 
         Returns:
-            ReadResult
+            ReadResult with raw (unformatted) content for the requested
+            window. Line-number formatting is applied by the middleware.
         """
         store = self._get_store()
         namespace = self._get_namespace()
@@ -418,10 +419,10 @@ class StoreBackend(BackendProtocol):
         if _get_file_type(file_path) != "text":
             return ReadResult(file_data=file_data)
 
-        formatted = format_read_response(file_data, offset, limit)
+        sliced = slice_read_response(file_data, offset, limit)
         return ReadResult(
             file_data=FileData(
-                content=formatted,
+                content=sliced,
                 encoding=file_data.get("encoding", "utf-8"),
                 created_at=file_data.get("created_at", ""),
                 modified_at=file_data.get("modified_at", ""),
@@ -453,10 +454,10 @@ class StoreBackend(BackendProtocol):
         if _get_file_type(file_path) != "text":
             return ReadResult(file_data=file_data)
 
-        formatted = format_read_response(file_data, offset, limit)
+        sliced = slice_read_response(file_data, offset, limit)
         return ReadResult(
             file_data=FileData(
-                content=formatted,
+                content=sliced,
                 encoding=file_data.get("encoding", "utf-8"),
                 created_at=file_data.get("created_at", ""),
                 modified_at=file_data.get("modified_at", ""),

@@ -544,6 +544,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             read_result: ReadResult | str,
             validated_path: str,
             tool_call_id: str | None,
+            offset: int,
             limit: int,
         ) -> ToolMessage | str:
             if isinstance(read_result, str):
@@ -565,6 +566,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     tool_call_id=tool_call_id,
                     additional_kwargs={"read_file_path": validated_path, "read_file_media_type": mime_type},
                 )
+
+            content = format_content_with_line_numbers(content, start_line=offset + 1)
 
             lines = content.splitlines(keepends=True)
             if len(lines) > limit:
@@ -593,7 +596,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 return f"Error: {e}"
 
             read_result = resolved_backend.read(validated_path, offset=offset, limit=limit)
-            return _handle_read_result(read_result, validated_path, runtime.tool_call_id, limit)
+            return _handle_read_result(read_result, validated_path, runtime.tool_call_id, offset, limit)
 
         async def async_read_file(
             file_path: Annotated[str, "Absolute path to the file to read. Must be absolute, not relative."],
@@ -609,7 +612,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 return f"Error: {e}"
 
             read_result = await resolved_backend.aread(validated_path, offset=offset, limit=limit)
-            return _handle_read_result(read_result, validated_path, runtime.tool_call_id, limit)
+            return _handle_read_result(read_result, validated_path, runtime.tool_call_id, offset, limit)
 
         return StructuredTool.from_function(
             name="read_file",

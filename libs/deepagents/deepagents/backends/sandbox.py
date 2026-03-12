@@ -203,11 +203,7 @@ if encoding == 'utf-8' and file_type == 'text':
         print(json.dumps({{'error': f'Line offset {{offset}} exceeds file length ({{len(lines)}} lines)'}}))
         sys.exit(1)
     selected = lines[start_idx:end_idx]
-    formatted = []
-    for i, line in enumerate(selected):
-        line_num = offset + i + 1
-        formatted.append(f'{{line_num:6d}}\\t{{line}}')
-    content = '\\n'.join(formatted)
+    content = '\\n'.join(selected)
 
 print(json.dumps({{'encoding': encoding, 'content': content}}))
 " <<'__DEEPAGENTS_EOF__'

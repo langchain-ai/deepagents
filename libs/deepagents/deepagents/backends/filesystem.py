@@ -26,7 +26,6 @@ from deepagents.backends.utils import (
     _get_file_type,
     check_empty_content,
     create_file_data,
-    format_content_with_line_numbers,
     perform_string_replacement,
 )
 
@@ -300,7 +299,7 @@ class FilesystemBackend(BackendProtocol):
         offset: int = 0,
         limit: int = 2000,
     ) -> ReadResult:
-        """Read file content with line numbers.
+        """Read file content for the requested line range.
 
         Args:
             file_path: Absolute or relative file path.
@@ -308,7 +307,8 @@ class FilesystemBackend(BackendProtocol):
             limit: Maximum number of lines to read.
 
         Returns:
-            ReadResult
+            ReadResult with raw (unformatted) content for the requested
+            window. Line-number formatting is applied by the middleware.
         """
         resolved_path = self._resolve_path(file_path)
 
@@ -338,8 +338,7 @@ class FilesystemBackend(BackendProtocol):
                 return ReadResult(error=f"Line offset {offset} exceeds file length ({len(lines)} lines)")
 
             selected_lines = lines[start_idx:end_idx]
-            formatted = format_content_with_line_numbers(selected_lines, start_line=start_idx + 1)
-            return ReadResult(file_data=create_file_data(formatted))
+            return ReadResult(file_data=create_file_data("\n".join(selected_lines)))
         except OSError as e:
             return ReadResult(error=f"Error reading file '{file_path}': {e}")
 

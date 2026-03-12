@@ -560,6 +560,15 @@ class _StreamConverter:
         )
 
         if not delta_text and not delta_tool_calls:
+            # The final partial often carries usage_metadata with no new text.
+            # Emit a content-free stub so the adapter can record token counts.
+            usage = data.get("usage_metadata")
+            if usage:
+                stub = dict(data)
+                stub["content"] = ""
+                stub["tool_calls"] = []
+                msg = _convert_message_data(stub)
+                return [msg] if msg is not None else []
             return []
 
         clean_meta = {

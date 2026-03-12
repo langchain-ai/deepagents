@@ -600,6 +600,55 @@ class TestStreamConverterDelta:
         )
         assert len(results) == 0
 
+    def test_partial_final_usage_metadata_emitted(self) -> None:
+        """Final partial with usage_metadata but no new text emits a stub chunk."""
+        converter = _StreamConverter()
+        # First partial: text arrives
+        converter.convert(
+            StreamPart(
+                "messages/partial",
+                [
+                    {
+                        "id": "m1",
+                        "type": "ai",
+                        "content": "Hello",
+                        "tool_calls": [],
+                        "usage_metadata": None,
+                    }
+                ],
+            ),
+            modes=[],
+        )
+        # Final partial: same text, but now has usage_metadata
+        results = converter.convert(
+            StreamPart(
+                "messages/partial",
+                [
+                    {
+                        "id": "m1",
+                        "type": "ai",
+                        "content": "Hello",
+                        "tool_calls": [],
+                        "usage_metadata": {
+                            "input_tokens": 100,
+                            "output_tokens": 50,
+                            "total_tokens": 150,
+                        },
+                    }
+                ],
+            ),
+            modes=[],
+        )
+        assert len(results) == 1
+        msg = results[0][2][0]
+        assert msg.usage_metadata == {
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "total_tokens": 150,
+        }
+        # Stub should have empty content
+        assert msg.content == ""
+
     def test_anthropic_tool_call_streaming(self) -> None:
         """Anthropic tool_use blocks with partial_json produce incremental chunks."""
         import json

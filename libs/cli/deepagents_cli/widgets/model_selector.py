@@ -229,7 +229,6 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         self._options_container: Container | None = None
         self._option_widgets: list[ModelOption] = []
         self._filter_text = ""
-        self._rebuild_needed = True
         self._current_spec: str | None = None
         if current_model and current_provider:
             self._current_spec = f"{current_provider}:{current_model}"
@@ -316,7 +315,6 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         """
         self._filter_text = event.value
         self._update_filtered_list()
-        self._rebuild_needed = True
         self.call_after_refresh(self._update_display)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
@@ -385,7 +383,6 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
 
         await self._options_container.remove_children()
         self._option_widgets = []
-        self._rebuild_needed = False
 
         if not self._filtered_models:
             no_matches = Static("[dim]No matching models[/dim]")
@@ -425,13 +422,17 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         if self._current_model and self._current_provider:
             current_spec = f"{self._current_provider}:{self._current_model}"
 
+        # Resolve credentials upfront so the widget-building loop
+        # stays focused on layout
+        creds = {p: has_provider_credentials(p) for p in by_provider}
+
         # Collect all widgets first, then batch-mount once to avoid
         # individual DOM mutations per widget
         all_widgets: list[Static] = []
 
         for provider, model_entries in by_provider.items():
             # Provider header with credential indicator
-            has_creds = has_provider_credentials(provider)
+            has_creds = creds[provider]
             if has_creds is True:
                 cred_indicator = glyphs.checkmark
             elif has_creds is False:
@@ -763,12 +764,14 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         elif custom_input:
             self.dismiss((custom_input, ""))
 
-    def action_set_default(self) -> None:
+    async def action_set_default(self) -> None:
         """Toggle the highlighted model as the default.
 
         If the highlighted model is already the default, clears it.
         Otherwise sets it as the new default.
         """
+        import asyncio
+
         if not self._filtered_models or not self._option_widgets:
             return
 
@@ -777,18 +780,16 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
 
         if model_spec == self._default_spec:
             # Already default — clear it
-            if clear_default_model():
+            if await asyncio.to_thread(clear_default_model):
                 self._default_spec = None
-                self._rebuild_needed = True
                 self.call_after_refresh(self._update_display)
                 help_widget.update("[bold]Default cleared[/bold]")
                 self.set_timer(3.0, self._restore_help_text)
             else:
                 help_widget.update("[bold red]Failed to clear default[/bold red]")
                 self.set_timer(3.0, self._restore_help_text)
-        elif save_default_model(model_spec):
+        elif await asyncio.to_thread(save_default_model, model_spec):
             self._default_spec = model_spec
-            self._rebuild_needed = True
             self.call_after_refresh(self._update_display)
             help_widget.update(f"[bold]Default set to {model_spec}[/bold]")
             self.set_timer(3.0, self._restore_help_text)

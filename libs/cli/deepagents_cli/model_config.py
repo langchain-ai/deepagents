@@ -209,6 +209,7 @@ _available_models_cache: dict[str, list[str]] | None = None
 _builtin_providers_cache: dict[str, Any] | None = None
 _default_config_cache: ModelConfig | None = None
 _profiles_cache: Mapping[str, ModelProfileEntry] | None = None
+_profiles_override_cache: tuple[int, Mapping[str, ModelProfileEntry]] | None = None
 
 
 def clear_caches() -> None:
@@ -216,11 +217,12 @@ def clear_caches() -> None:
 
     Intended for tests and for the `/reload` command.
     """
-    global _available_models_cache, _builtin_providers_cache, _default_config_cache, _profiles_cache  # noqa: PLW0603, E501  # Module-level caches require global statement
+    global _available_models_cache, _builtin_providers_cache, _default_config_cache, _profiles_cache, _profiles_override_cache  # noqa: PLW0603, E501  # Module-level caches require global statement
     _available_models_cache = None
     _builtin_providers_cache = None
     _default_config_cache = None
     _profiles_cache = None
+    _profiles_override_cache = None
     invalidate_thread_config_cache()
 
 
@@ -439,9 +441,12 @@ def get_model_profiles(
     Unlike `get_available_models()`, this includes all models from upstream
     profiles regardless of capability filters (tool calling, text I/O).
 
-    Results are cached when `cli_override` is None; use `clear_caches()`
-    to reset. When `cli_override` is provided the cache is bypassed
-    because CLI overrides are session-specific.
+    Results are cached; use `clear_caches()` to reset. When `cli_override` is
+    provided the result is stored in a single-slot cache keyed by
+    `id(cli_override)`. This relies on the caller retaining the same dict
+    object for the session (the CLI stores it once on the app instance);
+    passing a different dict with the same contents will bypass the cache
+    and overwrite the previous entry.
 
     Args:
         cli_override: Extra profile fields from `--profile-override`.
@@ -453,9 +458,13 @@ def get_model_profiles(
     Returns:
         Read-only mapping of spec strings to profile entries.
     """
-    global _profiles_cache  # noqa: PLW0603  # Module-level cache requires global statement
+    global _profiles_cache, _profiles_override_cache  # noqa: PLW0603  # Module-level caches require global statement
     if cli_override is None and _profiles_cache is not None:
         return _profiles_cache
+    if cli_override is not None and _profiles_override_cache is not None:
+        cached_id, cached_result = _profiles_override_cache
+        if cached_id == id(cli_override):
+            return cached_result
 
     result: dict[str, ModelProfileEntry] = {}
     config = ModelConfig.load()
@@ -500,9 +509,10 @@ def get_model_profiles(
                 result[spec] = _build_entry({}, overrides, cli_override)
 
     frozen = MappingProxyType(result)
-    # Only populate cache for the static (no CLI override) path.
     if cli_override is None:
         _profiles_cache = frozen
+    else:
+        _profiles_override_cache = (id(cli_override), frozen)
     return frozen
 
 

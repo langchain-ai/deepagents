@@ -6,10 +6,6 @@ from typing import TYPE_CHECKING, Annotated, Any
 
 import quickjs
 from deepagents.middleware._utils import append_to_system_message
-from langchain_quickjs._foreign_function_docs import (
-    format_foreign_function_docs,
-    render_foreign_function_section,
-)
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     AgentState,
@@ -19,7 +15,11 @@ from langchain.agents.middleware.types import (
     ResponseT,
 )
 from langchain_core.tools import BaseTool, StructuredTool
-from pydantic import BaseModel, ConfigDict, Field
+
+from langchain_quickjs._foreign_function_docs import (
+    format_foreign_function_docs,
+    render_foreign_function_section,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -59,18 +59,6 @@ function print(...args) {
   __deepagents_print_buffer__.push(args.map((arg) => String(arg)).join(" "));
 }
 """
-
-
-class _ReplInput(BaseModel):
-    """Input schema for the QuickJS repl tool."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    code: str = Field(description="Code string to evaluate in QuickJS.")
-    timeout: int | None = Field(
-        default=None,
-        description="Optional timeout in seconds for this evaluation.",
-    )
 
 
 class QuickJSMiddleware(AgentMiddleware[AgentState[Any], ContextT, ResponseT]):
@@ -186,7 +174,9 @@ class QuickJSMiddleware(AgentMiddleware[AgentState[Any], ContextT, ResponseT]):
     def _build_external_functions(self) -> dict[str, Callable[..., Any]]:
         """Normalize foreign implementations into plain sync callables for QuickJS."""
         external_functions: dict[str, Callable[..., Any]] = {}
-        for name, implementation in (self._external_function_implementations or {}).items():
+        for name, implementation in (
+            self._external_function_implementations or {}
+        ).items():
             if isinstance(implementation, BaseTool):
                 external_functions[name] = self._wrap_tool_for_js(implementation)
             else:
@@ -261,5 +251,4 @@ class QuickJSMiddleware(AgentMiddleware[AgentState[Any], ContextT, ResponseT]):
             description=tool_description,
             func=_sync_quickjs,
             coroutine=_async_quickjs,
-            args_schema=_ReplInput,
         )

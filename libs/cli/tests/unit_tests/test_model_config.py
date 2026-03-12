@@ -409,6 +409,7 @@ class TestProviderApiKeyEnv:
         """Contains environment variables for major providers."""
         assert PROVIDER_API_KEY_ENV["anthropic"] == "ANTHROPIC_API_KEY"
         assert PROVIDER_API_KEY_ENV["azure_openai"] == "AZURE_OPENAI_API_KEY"
+        assert PROVIDER_API_KEY_ENV["baseten"] == "BASETEN_API_KEY"
         assert PROVIDER_API_KEY_ENV["cohere"] == "COHERE_API_KEY"
         assert PROVIDER_API_KEY_ENV["deepseek"] == "DEEPSEEK_API_KEY"
         assert PROVIDER_API_KEY_ENV["fireworks"] == "FIREWORKS_API_KEY"

@@ -7,7 +7,6 @@ from langchain.agents import create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig, TodoListMiddleware
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain.agents.structured_output import ResponseFormat
-from langchain.chat_models import init_chat_model
 from langchain_anthropic import ChatAnthropic
 from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
 from langchain_core.language_models import BaseChatModel
@@ -18,6 +17,7 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.store.base import BaseStore
 from langgraph.types import Checkpointer
 
+from deepagents._models import resolve_model as _resolve_model
 from deepagents.backends import StateBackend
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
 from deepagents.middleware.configurable_model import ConfigurableModelMiddleware
@@ -94,15 +94,7 @@ def resolve_model(model: str | BaseChatModel) -> BaseChatModel:
     Returns:
         Resolved `BaseChatModel` instance.
     """
-    if isinstance(model, BaseChatModel):
-        return model
-    if model.startswith("openai:"):
-        # Use Responses API by default. To use chat completions, use
-        # `model=init_chat_model("openai:...")`
-        # To disable data retention with the Responses API, use
-        # `model=init_chat_model("openai:...", use_responses_api=True, store=False, include=["reasoning.encrypted_content"])`
-        return init_chat_model(model, use_responses_api=True)
-    return init_chat_model(model)
+    return _resolve_model(model)
 
 
 def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic with many conditional branches
@@ -153,6 +145,11 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
             the Responses API, use
             `init_chat_model("openai:...", use_responses_api=True, store=False, include=["reasoning.encrypted_content"])`
             and pass the initialized model instance here.
+
+            To override the model or per-call model settings at invocation time,
+            pass `config={"configurable": {"model": "...", "model_params": {...}}}`.
+            `model_params` are merged into the request's `model_settings` for
+            that invocation only.
         tools: The tools the agent should have access to.
 
             In addition to custom tools you provide, deep agents include built-in tools for planning,

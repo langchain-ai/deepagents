@@ -3,6 +3,7 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
 from langchain.agents.middleware.types import ModelRequest
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage
@@ -14,6 +15,7 @@ def _make_model(name: str) -> MagicMock:
     """Create a mock BaseChatModel with model_name set."""
     model = MagicMock(spec=BaseChatModel)
     model.model_name = name
+    model.model_dump.return_value = {"model_name": name}
     return model
 
 
@@ -66,12 +68,35 @@ class TestGetOverrideModel:
             model,
             config={"configurable": {"model": "openai:gpt-4o"}},
         )
-        with patch("deepagents.middleware.configurable_model._resolve_model_from_spec") as mock_resolve:
+        with patch("deepagents.middleware.configurable_model.resolve_model") as mock_resolve:
             mock_resolve.return_value = _make_model("gpt-4o")
             result = mw._get_override_model(request)
 
         assert result is not None
         assert result.model_name == "gpt-4o"
+        mock_resolve.assert_called_once_with("openai:gpt-4o")
+
+    def test_uses_langgraph_config_when_available(self) -> None:
+        mw = ConfigurableModelMiddleware()
+        model = _make_model("claude-sonnet-4-6")
+        request = ModelRequest(
+            model=model,
+            messages=[HumanMessage(content="hi")],
+            tools=[],
+            runtime=SimpleNamespace(),
+        )
+
+        with (
+            patch(
+                "deepagents.middleware.configurable_model.get_config",
+                return_value={"configurable": {"model": "openai:gpt-4o"}},
+            ),
+            patch("deepagents.middleware.configurable_model.resolve_model") as mock_resolve,
+        ):
+            mock_resolve.return_value = _make_model("gpt-4o")
+            result = mw._get_override_model(request)
+
+        assert result is not None
         mock_resolve.assert_called_once_with("openai:gpt-4o")
 
     def test_none_runtime_config_returns_none(self) -> None:
@@ -85,6 +110,35 @@ class TestGetOverrideModel:
             runtime=runtime,
         )
         assert mw._get_override_model(request) is None
+
+    def test_invalid_runtime_config_type_raises_type_error(self) -> None:
+        mw = ConfigurableModelMiddleware()
+        model = _make_model("claude-sonnet-4-6")
+        request = ModelRequest(
+            model=model,
+            messages=[HumanMessage(content="hi")],
+            tools=[],
+            runtime=SimpleNamespace(config="not-a-dict"),
+        )
+
+        with pytest.raises(TypeError, match="`config` must be a dictionary"):
+            mw._get_override_model(request)
+
+    def test_invalid_configurable_type_raises_type_error(self) -> None:
+        mw = ConfigurableModelMiddleware()
+        model = _make_model("claude-sonnet-4-6")
+        request = _make_request(model, config={"configurable": "openai:gpt-4o"})
+
+        with pytest.raises(TypeError, match="config\\['configurable'\\]"):
+            mw._get_override_model(request)
+
+    def test_invalid_model_spec_type_raises_type_error(self) -> None:
+        mw = ConfigurableModelMiddleware()
+        model = _make_model("claude-sonnet-4-6")
+        request = _make_request(model, config={"configurable": {"model": 123}})
+
+        with pytest.raises(TypeError, match="config\\['configurable'\\]\\['model'\\]"):
+            mw._get_override_model(request)
 
     def test_missing_runtime_attr_returns_none(self) -> None:
         """Runtime without config attr should not crash."""
@@ -120,7 +174,7 @@ class TestWrapModelCall:
             return "response"
 
         with patch(
-            "deepagents.middleware.configurable_model._resolve_model_from_spec",
+            "deepagents.middleware.configurable_model.resolve_model",
             return_value=override,
         ):
             result = mw.wrap_model_call(request, handler)
@@ -168,7 +222,7 @@ class TestAsyncWrapModelCall:
             return "async_response"
 
         with patch(
-            "deepagents.middleware.configurable_model._resolve_model_from_spec",
+            "deepagents.middleware.configurable_model.resolve_model",
             return_value=override,
         ):
             result = await mw.awrap_model_call(request, handler)
@@ -237,7 +291,7 @@ class TestModelParams:
             return "response"
 
         with patch(
-            "deepagents.middleware.configurable_model._resolve_model_from_spec",
+            "deepagents.middleware.configurable_model.resolve_model",
             return_value=override,
         ):
             mw.wrap_model_call(request, handler)
@@ -316,3 +370,14 @@ class TestModelParams:
 
         assert captured[0].model_settings == {"temperature": 0.3}
         assert result == "async_response"
+
+    def test_invalid_model_params_type_raises_type_error(self) -> None:
+        mw = ConfigurableModelMiddleware()
+        model = _make_model("claude-sonnet-4-6")
+        request = _make_request(
+            model,
+            config={"configurable": {"model_params": "temperature=0.3"}},
+        )
+
+        with pytest.raises(TypeError, match="config\\['configurable'\\]\\['model_params'\\]"):
+            mw.wrap_model_call(request, lambda _req: "response")

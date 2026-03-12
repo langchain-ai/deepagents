@@ -2,49 +2,61 @@
 
 Allows switching the model per-invocation by passing the model spec
 in `config["configurable"]["model"]` without recompiling the graph.
+
+Per-invocation model settings can be merged from
+`config["configurable"]["model_params"]`.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol, TypedDict, cast
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     ModelRequest,
     ModelResponse,
 )
-from langchain.chat_models import init_chat_model
+from langgraph.config import get_config
+
+from deepagents._models import model_matches_spec, resolve_model
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
     from langchain_core.language_models import BaseChatModel
+    from langchain_core.runnables import RunnableConfig
+
 
 logger = logging.getLogger(__name__)
 
 
-def _resolve_model_from_spec(spec: str) -> BaseChatModel:
-    """Resolve a model spec string to a chat model instance.
+class _RuntimeWithConfig(Protocol):
+    """Protocol for runtimes that expose a `config` attribute."""
 
-    Handles the `openai:` prefix to enable the Responses API, matching the
-    behavior of `deepagents.graph.resolve_model`.
+    config: RunnableConfig | None
 
-    Args:
-        spec: Model specification (e.g., `'anthropic:claude-sonnet-4-6'`).
 
-    Returns:
-        Resolved `BaseChatModel` instance.
-    """
-    if spec.startswith("openai:"):
-        return init_chat_model(spec, use_responses_api=True)
-    return init_chat_model(spec)
+class _ConfigurableModelConfig(TypedDict, total=False):
+    """Supported `config["configurable"]` keys for model overrides."""
+
+    model: str
+    model_params: dict[str, Any]
 
 
 class ConfigurableModelMiddleware(AgentMiddleware):
-    """Swap the model at runtime based on `config["configurable"]["model"]`.
+    """Swap the model or per-call settings from `config["configurable"]`.
 
-    When the configurable key is absent, the graph's original model is used.
+    When the configurable key is absent, the graph's original model and request
+    settings are used.
+
+    Supported keys:
+
+    - `model`: provider-prefixed model spec, resolved with the same rules as
+        `create_deep_agent()`
+    - `model_params`: per-invocation settings merged into
+        `ModelRequest.model_settings`
+
     This middleware should be placed early in the middleware stack so that
     downstream middleware (e.g., prompt caching, summarization) sees the
     correct model.
@@ -53,26 +65,77 @@ class ConfigurableModelMiddleware(AgentMiddleware):
         ```python
         agent = create_deep_agent(model="anthropic:claude-sonnet-4-6", ...)
 
-        # Switch model at runtime — no graph recompilation needed:
+        # Switch model and tune per-call settings at runtime:
         agent.ainvoke(
             {"messages": [...]},
-            config={"configurable": {"model": "openai:gpt-4o"}},
+            config={
+                "configurable": {
+                    "model": "openai:gpt-4o",
+                    "model_params": {"temperature": 0.2, "max_tokens": 1024},
+                }
+            },
         )
         ```
+
+    `model_params` are merged into the request's `model_settings`, so the
+    supported keys depend on the selected provider and model.
     """
 
     @staticmethod
-    def _get_configurable(request: ModelRequest) -> dict[str, Any]:
-        """Extract `configurable` dict from the runtime config.
+    def _get_runnable_config(request: ModelRequest) -> RunnableConfig:
+        """Extract runnable config for the current model request.
+
+        LangGraph recommends `get_config()` for middleware access. We still
+        accept `request.runtime.config` as a fallback because tests and some
+        call sites inject it directly.
 
         Args:
             request: The current model request.
 
         Returns:
-            The `configurable` sub-dict (empty dict if absent).
+            Runnable config for this request, or an empty dict when unavailable.
         """
-        config = getattr(request.runtime, "config", None) or {}
-        return config.get("configurable", {})
+        empty_config: RunnableConfig = {}
+
+        try:
+            return get_config()
+        except RuntimeError:
+            runtime = request.runtime
+            if runtime is None:
+                return empty_config
+
+            try:
+                runtime_config = cast("_RuntimeWithConfig", runtime).config
+            except AttributeError:
+                return empty_config
+
+            if runtime_config is None:
+                return empty_config
+            return runtime_config
+
+    @classmethod
+    def _get_configurable(cls, request: ModelRequest) -> _ConfigurableModelConfig:
+        """Extract validated `configurable` settings from runnable config.
+
+        Args:
+            request: The current model request.
+
+        Returns:
+            The validated `configurable` settings.
+
+        Raises:
+            TypeError: If the runnable config is not a dict.
+            TypeError: If `config["configurable"]` is not a dict.
+        """
+        config = cls._get_runnable_config(request)
+        if not isinstance(config, dict):
+            msg = "`config` must be a dictionary."
+            raise TypeError(msg)
+        configurable = config.get("configurable", {})
+        if not isinstance(configurable, dict):
+            msg = "`config['configurable']` must be a dictionary."
+            raise TypeError(msg)
+        return cast("_ConfigurableModelConfig", configurable)
 
     def _get_override_model(self, request: ModelRequest) -> BaseChatModel | None:
         """Read the model override from runtime config, if present.
@@ -84,20 +147,18 @@ class ConfigurableModelMiddleware(AgentMiddleware):
             A resolved `BaseChatModel` if an override is specified, else `None`.
         """
         configurable = self._get_configurable(request)
-        model_spec = configurable.get("model")
-        if model_spec is None:
+        raw_model_spec = configurable.get("model")
+        if raw_model_spec is None:
+            return None
+        if not isinstance(raw_model_spec, str):
+            msg = "`config['configurable']['model']` must be a string."
+            raise TypeError(msg)
+
+        if model_matches_spec(request.model, raw_model_spec):
             return None
 
-        current = getattr(request.model, "model_name", None) or getattr(request.model, "model", None)
-        if model_spec == current:
-            return None
-        # Handle provider-prefixed specs (e.g., "anthropic:claude-sonnet-4-6")
-        # matching model_name without the prefix ("claude-sonnet-4-6").
-        if ":" in model_spec and model_spec.split(":", 1)[1] == current:
-            return None
-
-        logger.debug("Overriding model to %s (was %s)", model_spec, current)
-        return _resolve_model_from_spec(model_spec)
+        logger.debug("Overriding model to %s", raw_model_spec)
+        return resolve_model(raw_model_spec)
 
     @staticmethod
     def _get_model_params(request: ModelRequest) -> dict[str, Any] | None:
@@ -109,10 +170,18 @@ class ConfigurableModelMiddleware(AgentMiddleware):
         Returns:
             A non-empty dict of params to merge into `model_settings`,
                 or `None` if no overrides are configured.
+
+        Raises:
+            TypeError: If `model_params` is not a dict.
         """
         configurable = ConfigurableModelMiddleware._get_configurable(request)
-        params: dict[str, Any] | None = configurable.get("model_params")
-        return params or None
+        raw_params = configurable.get("model_params")
+        if raw_params is None:
+            return None
+        if not isinstance(raw_params, dict):
+            msg = "`config['configurable']['model_params']` must be a dictionary."
+            raise TypeError(msg)
+        return raw_params or None
 
     def _apply_overrides(self, request: ModelRequest) -> ModelRequest:
         """Apply model and param overrides from runtime config.

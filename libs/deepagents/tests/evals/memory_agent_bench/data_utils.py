@@ -186,9 +186,13 @@ def _ensure_nltk_tokenizer(nltk_module: object) -> None:
 
 
 def _sent_tokenize(nltk_module: object, text: str) -> list[str]:
-    """Sentence-tokenize text with a robust fallback for constrained environments."""
-    try:
-        return list(nltk_module.sent_tokenize(text))  # type: ignore[reportUnknownMemberType,attr-defined]
-    except Exception:  # noqa: BLE001
-        logger.warning("Falling back to newline-based chunking; NLTK sentence tokenizer unavailable.")
-        return [line for line in text.splitlines() if line.strip()] or [text]
+    """Sentence-tokenize text using NLTK.
+
+    Args:
+        nltk_module: The `nltk` module (passed to avoid top-level import).
+        text: The text to tokenize.
+
+    Returns:
+        List of sentences.
+    """
+    return list(nltk_module.sent_tokenize(text))  # type: ignore[reportUnknownMemberType,attr-defined]

@@ -19,6 +19,7 @@ import contextlib
 import logging
 import os
 import uuid
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 import pytest
@@ -73,7 +74,30 @@ QUERY_PREFIX = (
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Data types
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _QAPrediction:
+    """Raw prediction for a single QA pair, before any metric computation."""
+
+    question: str
+    prediction: str
+    ground_truths: list[str]
+    qa_pair_id: str | None = None
+
+
+@dataclass(frozen=True)
+class _SampleOutput:
+    """Raw output from running a benchmark sample through the agent."""
+
+    predictions: list[_QAPrediction] = field(default_factory=list)
+    trajectories: list[AgentTrajectory] = field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Runner
 # ---------------------------------------------------------------------------
 
 
@@ -81,10 +105,11 @@ def _run_benchmark_sample(
     sample: BenchmarkSample,
     config: DatasetConfig,
     model: BaseChatModel,
-) -> list[dict[str, object]]:
+) -> _SampleOutput:
     """Execute a single MemoryAgentBench sample against deepagents.
 
-    Feeds context chunks, poses each question, and returns per-question metrics.
+    Feeds context chunks then poses each question, returning raw predictions
+    without computing metrics or logging feedback.
 
     Args:
         sample: The benchmark sample to evaluate.
@@ -92,8 +117,7 @@ def _run_benchmark_sample(
         model: The chat model to use.
 
     Returns:
-        List of dicts, one per question, each containing the computed metrics
-        and the raw prediction/answer pair.
+        Raw predictions and agent trajectories.
     """
     checkpointer = MemorySaver()
     agent = create_deep_agent(model=model, checkpointer=checkpointer)
@@ -107,7 +131,6 @@ def _run_benchmark_sample(
         len(sample.questions),
     )
 
-    # --- Memorization phase ---
     for chunk in chunks:
         run_agent(
             agent,
@@ -116,9 +139,8 @@ def _run_benchmark_sample(
             query=MEMORIZE_PREFIX + chunk,
         )
 
-    # --- Query phase ---
-    results: list[dict[str, object]] = []
-    query_trajectories: list[AgentTrajectory] = []
+    predictions: list[_QAPrediction] = []
+    trajectories: list[AgentTrajectory] = []
     for idx, (question, answer) in enumerate(zip(sample.questions, sample.answers, strict=True)):
         trajectory = run_agent(
             agent,
@@ -126,51 +148,83 @@ def _run_benchmark_sample(
             thread_id=thread_id,
             query=QUERY_PREFIX + question,
         )
-        query_trajectories.append(trajectory)
+        trajectories.append(trajectory)
 
-        prediction = trajectory.answer
         ground_truths = answer if isinstance(answer, list) else [answer]
-        metrics = calculate_metrics(prediction, ground_truths)
-
         qa_pair_id = sample.qa_pair_ids[idx] if idx < len(sample.qa_pair_ids) else None
-        result = {
-            **metrics,
-            "prediction": prediction,
-            "answer": ground_truths,
-            "question": question,
-            "qa_pair_id": qa_pair_id,
-        }
-        results.append(result)
+        predictions.append(
+            _QAPrediction(
+                question=question,
+                prediction=trajectory.answer,
+                ground_truths=ground_truths,
+                qa_pair_id=qa_pair_id,
+            )
+        )
 
-        _log_feedback(key=f"q{idx}_exact_match", value=metrics["exact_match"])
-        _log_feedback(key=f"q{idx}_f1", value=metrics["f1"])
-        _log_feedback(key=f"q{idx}_substring_match", value=metrics["substring_exact_match"])
+    return _SampleOutput(predictions=predictions, trajectories=trajectories)
 
-    # Log aggregate efficiency data from the query-phase trajectories so they
-    # appear in LangSmith alongside the standard eval keys.
-    total_steps = sum(len(traj.steps) for traj in query_trajectories)
-    total_tool_calls = sum(len(s.action.tool_calls) for traj in query_trajectories for s in traj.steps)
-    _log_feedback(key="agent_steps", value=total_steps)
-    _log_feedback(key="tool_call_requests", value=total_tool_calls)
 
+# ---------------------------------------------------------------------------
+# Scorer (pure computation, no side effects)
+# ---------------------------------------------------------------------------
+
+
+def _score_predictions(output: _SampleOutput) -> list[dict[str, object]]:
+    """Compute QA metrics for each prediction in a sample output.
+
+    Args:
+        output: Raw output from `_run_benchmark_sample`.
+
+    Returns:
+        List of dicts, one per question, each containing computed metrics
+        and the raw prediction/answer pair.
+    """
+    results: list[dict[str, object]] = []
+    for pred in output.predictions:
+        metrics = calculate_metrics(pred.prediction, pred.ground_truths)
+        results.append(
+            {
+                **metrics,
+                "prediction": pred.prediction,
+                "answer": pred.ground_truths,
+                "question": pred.question,
+                "qa_pair_id": pred.qa_pair_id,
+            }
+        )
     return results
 
 
-def _log_results(
+# ---------------------------------------------------------------------------
+# Feedback logging (LangSmith side effects only)
+# ---------------------------------------------------------------------------
+
+
+def _log_sample_feedback(
     results: list[dict[str, object]],
+    trajectories: list[AgentTrajectory],
     *,
     metric: str = "f1",
 ) -> None:
-    """Log per-sample metrics to LangSmith for trend tracking.
+    """Log per-question and aggregate metrics to LangSmith.
 
-    Computes token-level F1 stats and logs them as feedback. Does **not**
-    fail the test — the evals are tracking-only so regressions surface in
-    dashboards rather than blocking CI.
+    Does **not** fail the test — evals are tracking-only so regressions
+    surface in dashboards rather than blocking CI.
 
     Args:
-        results: Per-question result dicts from `_run_benchmark_sample`.
+        results: Per-question result dicts from `_score_predictions`.
+        trajectories: Agent trajectories from the query phase.
         metric: Which metric to aggregate.
     """
+    for idx, result in enumerate(results):
+        _log_feedback(key=f"q{idx}_exact_match", value=result["exact_match"])
+        _log_feedback(key=f"q{idx}_f1", value=result["f1"])
+        _log_feedback(key=f"q{idx}_substring_match", value=result["substring_exact_match"])
+
+    total_steps = sum(len(traj.steps) for traj in trajectories)
+    total_tool_calls = sum(len(s.action.tool_calls) for traj in trajectories for s in traj.steps)
+    _log_feedback(key="agent_steps", value=total_steps)
+    _log_feedback(key="tool_call_requests", value=total_tool_calls)
+
     if not results:
         _log_feedback(key="correctness", value=0)
         return
@@ -221,8 +275,9 @@ def test_conflict_resolution(model: BaseChatModel, config: DatasetConfig) -> Non
         pytest.skip(f"No samples found for source={config.source!r}")
 
     for sample in samples:
-        results = _run_benchmark_sample(sample, config, model)
-        _log_results(results)
+        output = _run_benchmark_sample(sample, config, model)
+        results = _score_predictions(output)
+        _log_sample_feedback(results, output.trajectories)
 
 
 # ---------------------------------------------------------------------------
@@ -248,8 +303,9 @@ def test_time_learning(model: BaseChatModel, config: DatasetConfig) -> None:
         pytest.skip(f"No samples found for source={config.source!r}")
 
     for sample in samples:
-        results = _run_benchmark_sample(sample, config, model)
-        _log_results(results)
+        output = _run_benchmark_sample(sample, config, model)
+        results = _score_predictions(output)
+        _log_sample_feedback(results, output.trajectories)
 
 
 # ---------------------------------------------------------------------------
@@ -275,5 +331,6 @@ def test_memory_agent_bench_ci(model: BaseChatModel, config: DatasetConfig) -> N
         pytest.skip(f"No samples found for source={config.source!r}")
 
     for sample in samples:
-        results = _run_benchmark_sample(sample, config, model)
-        _log_results(results)
+        output = _run_benchmark_sample(sample, config, model)
+        results = _score_predictions(output)
+        _log_sample_feedback(results, output.trajectories)

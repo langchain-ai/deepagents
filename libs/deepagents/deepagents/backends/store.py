@@ -420,6 +420,8 @@ class StoreBackend(BackendProtocol):
             return ReadResult(file_data=file_data)
 
         sliced = slice_read_response(file_data, offset, limit)
+        if isinstance(sliced, ReadResult):
+            return sliced
         return ReadResult(
             file_data=FileData(
                 content=sliced,
@@ -455,6 +457,8 @@ class StoreBackend(BackendProtocol):
             return ReadResult(file_data=file_data)
 
         sliced = slice_read_response(file_data, offset, limit)
+        if isinstance(sliced, ReadResult):
+            return sliced
         return ReadResult(
             file_data=FileData(
                 content=sliced,

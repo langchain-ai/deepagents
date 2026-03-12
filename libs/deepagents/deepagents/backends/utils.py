@@ -15,7 +15,7 @@ from typing import Any, Literal, overload
 
 import wcmatch.glob as wcglob
 
-from deepagents.backends.protocol import FileData, FileInfo as _FileInfo, GrepMatch as _GrepMatch
+from deepagents.backends.protocol import FileData, FileInfo as _FileInfo, GrepMatch as _GrepMatch, ReadResult
 
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
 
@@ -260,7 +260,7 @@ def slice_read_response(
     file_data: FileData,
     offset: int,
     limit: int,
-) -> str:
+) -> str | ReadResult:
     """Slice file data to the requested line range without formatting.
 
     Returns raw text for the requested window. Line-number formatting
@@ -272,7 +272,8 @@ def slice_read_response(
         limit: Maximum number of lines.
 
     Returns:
-        Raw sliced content, empty-file warning, or error message.
+        Raw sliced content string on success, or `ReadResult` with
+        `error` set when the offset exceeds the file length.
     """
     content = file_data_to_string(file_data)
     empty_msg = check_empty_content(content)
@@ -284,7 +285,7 @@ def slice_read_response(
     end_idx = min(start_idx + limit, len(lines))
 
     if start_idx >= len(lines):
-        return f"Error: Line offset {offset} exceeds file length ({len(lines)} lines)"
+        return ReadResult(error=f"Line offset {offset} exceeds file length ({len(lines)} lines)")
 
     selected_lines = lines[start_idx:end_idx]
     return "\n".join(selected_lines)

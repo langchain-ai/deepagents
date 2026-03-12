@@ -78,7 +78,7 @@ def get_default_model() -> ChatAnthropic:
     )
 
 
-def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic with many conditional branches
+def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly logic with many conditional branches
     model: str | BaseChatModel | None = None,
     tools: Sequence[BaseTool | Callable | dict[str, Any]] | None = None,
     *,
@@ -237,8 +237,13 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
             }
             processed_subagents.append(processed_spec)
 
-    # Combine GP with processed user-provided subagents
-    all_subagents: list[SubAgent | CompiledSubAgent] = [general_purpose_spec, *processed_subagents]
+    if any(spec["name"] == GENERAL_PURPOSE_SUBAGENT["name"] for spec in processed_subagents):
+        # If an agent with general purpose name already exists in subagents, then don't add it
+        # This is how you overwrite/configure general purpose subagent
+        all_subagents: list[SubAgent | CompiledSubAgent] = processed_subagents
+    else:
+        # Otherwise - add it!
+        all_subagents = [general_purpose_spec, *processed_subagents]
 
     # Build main agent middleware stack
     deepagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [

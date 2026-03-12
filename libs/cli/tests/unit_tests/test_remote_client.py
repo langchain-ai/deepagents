@@ -9,8 +9,11 @@ from langchain_core.messages import AIMessageChunk, HumanMessage, ToolMessage
 
 from deepagents_cli.remote_client import (
     RemoteAgent,
+    _convert_ai_message,
+    _convert_human_message,
     _convert_interrupts,
     _convert_message_data,
+    _convert_tool_message,
     _prepare_config,
     _to_uuid,
 )

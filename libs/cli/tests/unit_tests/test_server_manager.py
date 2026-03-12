@@ -6,17 +6,75 @@ import os
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from deepagents_cli._server_config import ServerConfig
 from deepagents_cli._server_constants import ENV_PREFIX
 from deepagents_cli.project_utils import ProjectContext
 from deepagents_cli.server_manager import (
-    _set_server_env,
+    _apply_server_config,
     _write_pyproject,
     start_server_and_get_agent,
 )
 
 
-class TestSetServerEnv:
-    """Tests for server environment boundary normalization."""
+class TestServerConfigRoundTrip:
+    """The env-var serialization contract between CLI and server graph."""
+
+    def test_round_trip_preserves_all_fields(self) -> None:
+        """to_env -> from_env should reconstruct the original config."""
+        original = ServerConfig(
+            model="anthropic:claude-sonnet-4-6",
+            model_params={"temperature": 0.7},
+            assistant_id="my-agent",
+            system_prompt="Be helpful",
+            auto_approve=True,
+            interactive=False,
+            enable_shell=False,
+            enable_ask_user=True,
+            enable_memory=False,
+            enable_skills=False,
+            sandbox_type="modal",
+            cwd="/home/user/project",
+            project_root="/home/user/project",
+            mcp_config_path="/home/user/.mcp.json",
+            no_mcp=True,
+            trust_project_mcp=True,
+        )
+        env_dict = original.to_env()
+        with patch.dict(os.environ, {}, clear=True):
+            for suffix, value in env_dict.items():
+                if value is not None:
+                    os.environ[f"{ENV_PREFIX}{suffix}"] = value
+            restored = ServerConfig.from_env()
+
+        assert restored == original
+
+    def test_defaults_round_trip(self) -> None:
+        """Default config should survive a round trip."""
+        original = ServerConfig()
+        env_dict = original.to_env()
+        with patch.dict(os.environ, {}, clear=True):
+            for suffix, value in env_dict.items():
+                if value is not None:
+                    os.environ[f"{ENV_PREFIX}{suffix}"] = value
+            restored = ServerConfig.from_env()
+
+        assert restored == original
+
+    def test_trust_project_mcp_none_round_trips(self) -> None:
+        """None trust_project_mcp should survive a round trip."""
+        original = ServerConfig(trust_project_mcp=None)
+        env_dict = original.to_env()
+        with patch.dict(os.environ, {}, clear=True):
+            for suffix, value in env_dict.items():
+                if value is not None:
+                    os.environ[f"{ENV_PREFIX}{suffix}"] = value
+            restored = ServerConfig.from_env()
+
+        assert restored.trust_project_mcp is None
+
+
+class TestApplyServerConfig:
+    """Tests for env-var serialization via ServerConfig."""
 
     def test_normalizes_relative_mcp_path_from_project_context(
         self, tmp_path: Path, monkeypatch
@@ -30,24 +88,26 @@ class TestSetServerEnv:
 
         project_context = ProjectContext.from_user_cwd(user_cwd)
 
+        config = ServerConfig.from_cli_args(
+            project_context=project_context,
+            model_name=None,
+            model_params=None,
+            assistant_id="agent",
+            auto_approve=False,
+            sandbox_type="none",
+            enable_shell=True,
+            enable_ask_user=False,
+            mcp_config_path="configs/mcp.json",
+            no_mcp=False,
+            trust_project_mcp=None,
+            interactive=True,
+        )
+
         with patch.dict(os.environ, {}, clear=False):
             for suffix in ("MCP_CONFIG_PATH", "CWD", "PROJECT_ROOT"):
                 monkeypatch.delenv(f"{ENV_PREFIX}{suffix}", raising=False)
 
-            _set_server_env(
-                project_context=project_context,
-                model_name=None,
-                model_params=None,
-                assistant_id="agent",
-                auto_approve=False,
-                sandbox_type="none",
-                enable_shell=True,
-                enable_ask_user=False,
-                mcp_config_path="configs/mcp.json",
-                no_mcp=False,
-                trust_project_mcp=None,
-                interactive=True,
-            )
+            _apply_server_config(config)
 
             assert os.environ[f"{ENV_PREFIX}MCP_CONFIG_PATH"] == str(
                 (user_cwd / "configs" / "mcp.json").resolve()

@@ -9,29 +9,16 @@ Textual adapter expects.
 from __future__ import annotations
 
 import logging
-import os
 import uuid
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Callable
+
+from deepagents_cli._debug import configure_debug_logging
 
 logger = logging.getLogger(__name__)
-
-if os.environ.get("DEEPAGENTS_DEBUG"):
-    from pathlib import Path
-
-    _debug_path = Path(
-        os.environ.get(
-            "DEEPAGENTS_DEBUG_FILE",
-            "/tmp/deepagents_debug.log",  # noqa: S108
-        )
-    )
-    _fh = logging.FileHandler(str(_debug_path), mode="a")
-    _fh.setLevel(logging.DEBUG)
-    _fh.setFormatter(logging.Formatter("%(asctime)s %(name)s %(message)s"))
-    logger.addHandler(_fh)
-    logger.setLevel(logging.DEBUG)
+configure_debug_logging(logger)
 
 
 _THREAD_UUID_NAMESPACE = uuid.UUID("a1b2c3d4-e5f6-7890-abcd-ef1234567890")
@@ -241,7 +228,7 @@ class RemoteAgent:
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Config helpers
 # ---------------------------------------------------------------------------
 
 
@@ -291,8 +278,163 @@ def _convert_interrupts(raw: Any) -> list[Any]:  # noqa: ANN401
     return results
 
 
+# ---------------------------------------------------------------------------
+# Message conversion — per-type converters with a dispatch table
+# ---------------------------------------------------------------------------
+#
+# Each converter handles one LangChain message type.  The dispatch table
+# maps type strings (both short and class-name forms) to the appropriate
+# converter.  This keeps each converter focused and makes adding new
+# message types a one-line addition to the table.
+# ---------------------------------------------------------------------------
+
+
+def _convert_ai_message(data: dict[str, Any]) -> Any:  # noqa: ANN401
+    """Convert a server AI message dict to an `AIMessageChunk`.
+
+    Handles the three tool-call representations the server may emit:
+
+    - `tool_call_chunks`: streaming partial args (string `args`).
+    - `tool_calls` with string `args`: legacy streaming format,
+        normalized to `tool_call_chunks`.
+    - `tool_calls` with dict `args`: fully parsed calls.
+
+    Args:
+        data: Raw message dict from the server.
+
+    Returns:
+        An `AIMessageChunk`, or `None` on construction failure.
+    """
+    from langchain_core.messages import AIMessageChunk
+
+    content = data.get("content", "")
+    tool_call_chunks = data.get("tool_call_chunks", [])
+    tool_calls = data.get("tool_calls", [])
+    usage_metadata = data.get("usage_metadata")
+    response_metadata = data.get("response_metadata", {})
+
+    kwargs: dict[str, Any] = {
+        "content": content,
+        "id": data.get("id"),
+        "response_metadata": response_metadata,
+    }
+
+    if tool_call_chunks:
+        kwargs["tool_call_chunks"] = [
+            {
+                "name": tc.get("name"),
+                "args": tc.get("args", ""),
+                "id": tc.get("id"),
+                "index": tc.get("index", i),
+            }
+            for i, tc in enumerate(tool_call_chunks)
+        ]
+    elif tool_calls:
+        has_str_args = any(isinstance(tc.get("args"), str) for tc in tool_calls)
+        if has_str_args:
+            kwargs["tool_call_chunks"] = [
+                {
+                    "name": tc.get("name"),
+                    "args": tc.get("args", ""),
+                    "id": tc.get("id"),
+                    "index": i,
+                }
+                for i, tc in enumerate(tool_calls)
+            ]
+        else:
+            kwargs["tool_calls"] = tool_calls
+
+    try:
+        chunk = AIMessageChunk(**kwargs)
+    except (TypeError, ValueError, KeyError):
+        logger.warning(
+            "Failed to construct AIMessageChunk from server data (id=%s)",
+            data.get("id"),
+            exc_info=True,
+        )
+        return None
+
+    if usage_metadata:
+        chunk.usage_metadata = usage_metadata
+    return chunk
+
+
+def _convert_human_message(data: dict[str, Any]) -> Any:  # noqa: ANN401
+    """Convert a server human message dict to a `HumanMessage`.
+
+    Args:
+        data: Raw message dict from the server.
+
+    Returns:
+        A `HumanMessage`, or `None` on construction failure.
+    """
+    from langchain_core.messages import HumanMessage
+
+    try:
+        return HumanMessage(
+            content=data.get("content", ""),
+            id=data.get("id"),
+        )
+    except (TypeError, ValueError, KeyError):
+        logger.warning(
+            "Failed to construct HumanMessage from server data (id=%s)",
+            data.get("id"),
+            exc_info=True,
+        )
+        return None
+
+
+def _convert_tool_message(data: dict[str, Any]) -> Any:  # noqa: ANN401
+    """Convert a server tool message dict to a `ToolMessage`.
+
+    Args:
+        data: Raw message dict from the server.
+
+    Returns:
+        A `ToolMessage`, or `None` on construction failure.
+    """
+    from langchain_core.messages import ToolMessage
+
+    try:
+        return ToolMessage(
+            content=data.get("content", ""),
+            tool_call_id=data.get("tool_call_id", ""),
+            name=data.get("name", ""),
+            id=data.get("id"),
+            status=data.get("status", "success"),
+        )
+    except (TypeError, ValueError, KeyError):
+        logger.warning(
+            "Failed to construct ToolMessage from server data (id=%s)",
+            data.get("id"),
+            exc_info=True,
+        )
+        return None
+
+
+_MESSAGE_CONVERTERS: dict[str, Callable[[dict[str, Any]], Any]] = {
+    "ai": _convert_ai_message,
+    "AIMessage": _convert_ai_message,
+    "AIMessageChunk": _convert_ai_message,
+    "human": _convert_human_message,
+    "HumanMessage": _convert_human_message,
+    "tool": _convert_tool_message,
+    "ToolMessage": _convert_tool_message,
+}
+"""Maps server message `type` strings to their converter functions.
+
+Both short forms (`'ai'`, `'human'`, `'tool'`) and class-name forms
+(`'AIMessage'`, `'HumanMessage'`, `'ToolMessage'`) are supported so
+the converter works regardless of how the server serializes the type field.
+"""
+
+
 def _convert_message_data(data: dict[str, Any]) -> Any:  # noqa: ANN401
     """Convert a server message dict into a LangChain message object.
+
+    Dispatches to a per-type converter via `_MESSAGE_CONVERTERS`. New message
+    types can be supported by adding a converter function and a table entry —
+    no changes to this dispatcher are needed.
 
     Args:
         data: Message dict from the server.
@@ -300,95 +442,9 @@ def _convert_message_data(data: dict[str, Any]) -> Any:  # noqa: ANN401
     Returns:
         A LangChain message object, or `None` if conversion fails.
     """
-    from langchain_core.messages import (
-        AIMessageChunk,
-        HumanMessage,
-        ToolMessage,
-    )
-
     msg_type = data.get("type", "")
-
-    if msg_type in {"ai", "AIMessage", "AIMessageChunk"}:
-        content = data.get("content", "")
-        tool_call_chunks = data.get("tool_call_chunks", [])
-        tool_calls = data.get("tool_calls", [])
-        usage_metadata = data.get("usage_metadata")
-        response_metadata = data.get("response_metadata", {})
-
-        kwargs: dict[str, Any] = {
-            "content": content,
-            "id": data.get("id"),
-            "response_metadata": response_metadata,
-        }
-        # messages-tuple sends tool_call_chunks (string args) directly.
-        if tool_call_chunks:
-            kwargs["tool_call_chunks"] = [
-                {
-                    "name": tc.get("name"),
-                    "args": tc.get("args", ""),
-                    "id": tc.get("id"),
-                    "index": tc.get("index", i),
-                }
-                for i, tc in enumerate(tool_call_chunks)
-            ]
-        elif tool_calls:
-            has_str_args = any(isinstance(tc.get("args"), str) for tc in tool_calls)
-            if has_str_args:
-                kwargs["tool_call_chunks"] = [
-                    {
-                        "name": tc.get("name"),
-                        "args": tc.get("args", ""),
-                        "id": tc.get("id"),
-                        "index": i,
-                    }
-                    for i, tc in enumerate(tool_calls)
-                ]
-            else:
-                kwargs["tool_calls"] = tool_calls
-
-        try:
-            chunk = AIMessageChunk(**kwargs)
-        except Exception:
-            logger.warning(
-                "Failed to construct AIMessageChunk from server data (id=%s)",
-                data.get("id"),
-                exc_info=True,
-            )
-            return None
-        if usage_metadata:
-            chunk.usage_metadata = usage_metadata
-        return chunk
-
-    if msg_type in {"human", "HumanMessage"}:
-        try:
-            return HumanMessage(
-                content=data.get("content", ""),
-                id=data.get("id"),
-            )
-        except Exception:
-            logger.warning(
-                "Failed to construct HumanMessage from server data (id=%s)",
-                data.get("id"),
-                exc_info=True,
-            )
-            return None
-
-    if msg_type in {"tool", "ToolMessage"}:
-        try:
-            return ToolMessage(
-                content=data.get("content", ""),
-                tool_call_id=data.get("tool_call_id", ""),
-                name=data.get("name", ""),
-                id=data.get("id"),
-                status=data.get("status", "success"),
-            )
-        except Exception:
-            logger.warning(
-                "Failed to construct ToolMessage from server data (id=%s)",
-                data.get("id"),
-                exc_info=True,
-            )
-            return None
-
+    converter = _MESSAGE_CONVERTERS.get(msg_type)
+    if converter is not None:
+        return converter(data)
     logger.warning("Unknown message type in stream: %s", msg_type)
     return None

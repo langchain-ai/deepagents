@@ -8,6 +8,7 @@ import sys
 from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from deepagents_cli._server_config import ServerConfig
 from deepagents_cli._server_constants import ENV_PREFIX
 
 
@@ -69,8 +70,16 @@ class TestServerGraph:
             resolve_and_load_mcp_tools=resolve_mcp_tools,
         )
 
+        # Build env from ServerConfig to exercise the same serialization
+        # path the real CLI uses.
+        config = ServerConfig(no_mcp=False)
+        env_overrides = {}
+        for suffix, value in config.to_env().items():
+            if value is not None:
+                env_overrides[f"{ENV_PREFIX}{suffix}"] = value
+
         with (
-            patch.dict(os.environ, {f"{ENV_PREFIX}NO_MCP": "false"}, clear=False),
+            patch.dict(os.environ, env_overrides, clear=False),
             patch.dict(
                 sys.modules,
                 {

@@ -6,7 +6,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -31,6 +30,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.types import Command, Interrupt
 from pydantic import TypeAdapter, ValidationError
 
+from deepagents_cli._debug import configure_debug_logging
 from deepagents_cli.ask_user import AskUserRequest
 from deepagents_cli.config import settings
 from deepagents_cli.file_ops import FileOpTracker
@@ -47,19 +47,7 @@ from deepagents_cli.widgets.messages import (
 )
 
 logger = logging.getLogger(__name__)
-
-if os.environ.get("DEEPAGENTS_DEBUG"):
-    _debug_path = Path(
-        os.environ.get(
-            "DEEPAGENTS_DEBUG_FILE",
-            "/tmp/deepagents_debug.log",  # noqa: S108
-        )
-    )
-    _fh = logging.FileHandler(str(_debug_path), mode="a")
-    _fh.setLevel(logging.DEBUG)
-    _fh.setFormatter(logging.Formatter("%(asctime)s %(name)s %(message)s"))
-    logger.addHandler(_fh)
-    logger.setLevel(logging.DEBUG)
+configure_debug_logging(logger)
 
 _git_branch_cache: dict[str, str | None] = {}
 """Cache git-branch lookups by current working directory."""

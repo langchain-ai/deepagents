@@ -1,12 +1,13 @@
 """LangGraph server lifecycle management for the CLI.
 
-Handles starting/stopping a `langgraph dev` server process and generatin the
+Handles starting/stopping a `langgraph dev` server process and generating the
 required `langgraph.json` configuration file.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -16,7 +17,10 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, Self
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterator
 
 logger = logging.getLogger(__name__)
 
@@ -113,11 +117,168 @@ def generate_langgraph_json(
     return output_path
 
 
+# ---------------------------------------------------------------------------
+# Scoped env-var management
+# ---------------------------------------------------------------------------
+
+
+@contextlib.contextmanager
+def _scoped_env_overrides(
+    overrides: dict[str, str],
+) -> Iterator[None]:
+    """Context manager that applies env-var overrides and rolls them back.
+
+    Separates the concern of temporary `os.environ` mutations from subprocess
+    management, making both independently testable.
+
+    On normal exit the overrides are left in place (the caller "keeps"
+    them). On exception the previous values are restored so the next attempt
+    starts from a known-good state.
+
+    Args:
+        overrides: Key/value pairs to set in `os.environ`.
+
+    Yields:
+        Control to the caller.
+    """
+    prev: dict[str, str | None] = {}
+    for key, val in overrides.items():
+        prev[key] = os.environ.get(key)
+        os.environ[key] = val
+    try:
+        yield
+    except Exception:
+        for key, old_val in prev.items():
+            if old_val is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = old_val
+        raise
+
+
+# ---------------------------------------------------------------------------
+# Health checking
+# ---------------------------------------------------------------------------
+
+
+async def wait_for_server_healthy(
+    url: str,
+    *,
+    timeout: float = _HEALTH_TIMEOUT,  # noqa: ASYNC109
+    process: subprocess.Popen | None = None,
+    read_log: Callable[[], str] | None = None,
+) -> None:
+    """Poll a LangGraph server health endpoint until it responds.
+
+    Args:
+        url: Server base URL (health endpoint is `{url}/ok`).
+        timeout: Max seconds to wait.
+        process: Optional subprocess handle; if the process exits early
+            we fail fast instead of waiting for the timeout.
+        read_log: Optional callable returning log file contents (for
+            error messages on early exit).
+
+    Raises:
+        RuntimeError: If the server doesn't become healthy in time.
+    """
+    import httpx
+
+    health_url = f"{url}/ok"
+    deadline = time.monotonic() + timeout
+    last_status: int | None = None
+
+    while time.monotonic() < deadline:
+        if process and process.poll() is not None:
+            output = read_log() if read_log else ""
+            msg = f"Server process exited with code {process.returncode}"
+            if output:
+                msg += f"\n{output[-3000:]}"
+            raise RuntimeError(msg)
+
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(health_url, timeout=2)
+                if resp.status_code == 200:  # noqa: PLR2004
+                    logger.info("Server is healthy at %s", url)
+                    return
+                last_status = resp.status_code
+                logger.debug("Health check returned status %d", resp.status_code)
+        except (httpx.ConnectError, httpx.TimeoutException, OSError):
+            pass
+
+        await asyncio.sleep(_HEALTH_POLL_INTERVAL)
+
+    msg = f"Server did not become healthy within {timeout}s"
+    if last_status is not None:
+        msg += f" (last status: {last_status})"
+    raise RuntimeError(msg)
+
+
+# ---------------------------------------------------------------------------
+# Server command / env construction
+# ---------------------------------------------------------------------------
+
+
+def _build_server_cmd(config_path: Path, *, host: str, port: int) -> list[str]:
+    """Build the `langgraph dev` command line.
+
+    Args:
+        config_path: Path to the `langgraph.json` config file.
+        host: Host to bind.
+        port: Port to bind.
+
+    Returns:
+        Command argv list.
+    """
+    return [
+        sys.executable,
+        "-m",
+        "langgraph_cli",
+        "dev",
+        "--host",
+        host,
+        "--port",
+        str(port),
+        "--no-browser",
+        "--no-reload",
+        "--config",
+        str(config_path),
+    ]
+
+
+def _build_server_env() -> dict[str, str]:
+    """Build the environment dict for the server subprocess.
+
+    Copies `os.environ`, sets required flags, and strips auth-related variables
+    that are not needed (and could interfere) for the local dev server.
+
+    Returns:
+        Environment dict for `subprocess.Popen`.
+    """
+    env = os.environ.copy()
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    env["LANGGRAPH_AUTH_TYPE"] = "noop"
+    for key in (
+        "LANGGRAPH_AUTH",
+        "LANGGRAPH_CLOUD_LICENSE_KEY",
+        "LANGSMITH_CONTROL_PLANE_API_KEY",
+        "LANGSMITH_TENANT_ID",
+    ):
+        env.pop(key, None)
+    return env
+
+
+# ---------------------------------------------------------------------------
+# ServerProcess
+# ---------------------------------------------------------------------------
+
+
 class ServerProcess:
     """Manages a `langgraph dev` server subprocess.
 
-    Starts the server, waits for it to become healthy, and provides
-    clean shutdown.
+    Focuses on subprocess lifecycle (start, stop, restart) and health checking.
+    Env-var management for model-switch restarts is handled by
+    `_scoped_env_overrides`, keeping this class focused on process management.
     """
 
     def __init__(
@@ -144,6 +305,7 @@ class ServerProcess:
         self._process: subprocess.Popen | None = None
         self._temp_dir: tempfile.TemporaryDirectory | None = None
         self._log_file: tempfile.NamedTemporaryFile | None = None  # type: ignore[type-arg]
+        self._env_overrides: dict[str, str] = {}
 
     @property
     def url(self) -> str:
@@ -204,31 +366,8 @@ class ServerProcess:
             self.port = _find_free_port(self.host)
             logger.info("Default port in use, using port %d instead", self.port)
 
-        cmd = [
-            sys.executable,
-            "-m",
-            "langgraph_cli",
-            "dev",
-            "--host",
-            self.host,
-            "--port",
-            str(self.port),
-            "--no-browser",
-            "--no-reload",
-            "--config",
-            str(config_path),
-        ]
-
-        env = os.environ.copy()
-        env["PYTHONDONTWRITEBYTECODE"] = "1"
-        env["LANGGRAPH_AUTH_TYPE"] = "noop"
-        for key in (
-            "LANGGRAPH_AUTH",
-            "LANGGRAPH_CLOUD_LICENSE_KEY",
-            "LANGSMITH_CONTROL_PLANE_API_KEY",
-            "LANGSMITH_TENANT_ID",
-        ):
-            env.pop(key, None)
+        cmd = _build_server_cmd(config_path, host=self.host, port=self.port)
+        env = _build_server_env()
 
         logger.info("Starting langgraph dev server: %s", " ".join(cmd))
         self._log_file = tempfile.NamedTemporaryFile(  # noqa: SIM115
@@ -246,48 +385,12 @@ class ServerProcess:
             stderr=subprocess.STDOUT,
         )
 
-        await self._wait_for_healthy(timeout)
-
-    async def _wait_for_healthy(self, timeout: float) -> None:  # noqa: ASYNC109
-        """Poll the server health endpoint until it responds.
-
-        Args:
-            timeout: Max seconds to wait.
-
-        Raises:
-            RuntimeError: If the server doesn't become healthy in time.
-        """
-        import httpx
-
-        url = f"{self.url}/ok"
-        deadline = time.monotonic() + timeout
-        last_status: int | None = None
-
-        while time.monotonic() < deadline:
-            if self._process and self._process.poll() is not None:
-                output = self._read_log_file()
-                msg = f"Server process exited with code {self._process.returncode}"
-                if output:
-                    msg += f"\n{output[-3000:]}"
-                raise RuntimeError(msg)
-
-            try:
-                async with httpx.AsyncClient() as client:
-                    resp = await client.get(url, timeout=2)
-                    if resp.status_code == 200:  # noqa: PLR2004
-                        logger.info("Server is healthy at %s", self.url)
-                        return
-                    last_status = resp.status_code
-                    logger.debug("Health check returned status %d", resp.status_code)
-            except (httpx.ConnectError, httpx.TimeoutException, OSError):
-                pass
-
-            await asyncio.sleep(_HEALTH_POLL_INTERVAL)
-
-        msg = f"Server did not become healthy within {timeout}s"
-        if last_status is not None:
-            msg += f" (last status: {last_status})"
-        raise RuntimeError(msg)
+        await wait_for_server_healthy(
+            self.url,
+            timeout=timeout,
+            process=self._process,
+            read_log=self._read_log_file,
+        )
 
     def _stop_process(self) -> None:
         """Stop only the server subprocess and its log file.
@@ -341,3 +444,47 @@ class ServerProcess:
                     "Failed to clean up config dir %s", self.config_dir, exc_info=True
                 )
             self._owns_config_dir = False
+
+    def update_env(self, **overrides: str) -> None:
+        """Stage env var overrides to apply on the next `restart()`.
+
+        These are applied to `os.environ` immediately before the subprocess
+        starts, keeping mutation scoped to the restart call.
+
+        Args:
+            **overrides: Key/value env var pairs
+                (e.g., `DA_SERVER_MODEL="anthropic:claude-sonnet-4-6"`).
+        """
+        self._env_overrides.update(overrides)
+
+    async def restart(self, *, timeout: float = _HEALTH_TIMEOUT) -> None:  # noqa: ASYNC109
+        """Restart the server process, reusing the existing config directory.
+
+        Stops the subprocess, then starts a new one. Any env overrides staged
+        via `update_env()` are applied within a `_scoped_env_overrides` context
+        manager so that failures automatically roll back the environment to the
+        last known-good state.
+
+        Args:
+            timeout: Max seconds to wait for the server to become healthy.
+        """
+        logger.info("Restarting langgraph dev server")
+        self._stop_process()
+
+        with _scoped_env_overrides(self._env_overrides):
+            await self.start(timeout=timeout)
+
+        self._env_overrides.clear()
+
+    async def __aenter__(self) -> Self:
+        """Async context manager entry.
+
+        Returns:
+            The server process instance.
+        """
+        await self.start()
+        return self
+
+    async def __aexit__(self, *args: object) -> None:
+        """Async context manager exit."""
+        self.stop()

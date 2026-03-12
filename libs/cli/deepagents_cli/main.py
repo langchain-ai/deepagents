@@ -159,16 +159,11 @@ async def _preload_session_mcp_server_info(
         return None
 
     from deepagents_cli.mcp_tools import resolve_and_load_mcp_tools
-    from deepagents_cli.project_utils import ProjectContext
+    from deepagents_cli.server_manager import _capture_project_context
 
     session_manager = None
     try:
-        try:
-            project_context = ProjectContext.from_user_cwd(Path.cwd())
-        except OSError:
-            logger.warning("Could not determine working directory for MCP metadata")
-            project_context = None
-
+        project_context = _capture_project_context()
         _tools, session_manager, server_info = await resolve_and_load_mcp_tools(
             explicit_config_path=mcp_config_path,
             no_mcp=no_mcp,
@@ -659,67 +654,55 @@ async def run_textual_cli_async(
         console.print(msg)
 
     from deepagents_cli.app import AppResult
-    from deepagents_cli.server_manager import start_server_and_get_agent
+    from deepagents_cli.server_manager import server_session
 
-    server_proc = None
-    mcp_session_manager = None
+    console.print(Text("Starting LangGraph server...", style="dim"))
     try:
-        console.print(Text("Starting LangGraph server...", style="dim"))
-        try:
-            agent, server_proc, mcp_session_manager = await start_server_and_get_agent(
-                assistant_id=assistant_id,
-                model_name=model_name,
-                model_params=model_params,
-                auto_approve=auto_approve,
-                sandbox_type=sandbox_type,
-                enable_ask_user=enable_ask_user,
-                mcp_config_path=mcp_config_path,
-                no_mcp=no_mcp,
-                trust_project_mcp=trust_project_mcp,
-                interactive=True,
-            )
-        except Exception as e:
-            logger.debug("Failed to start server", exc_info=True)
-            error_text = Text("Failed to start server: ", style="red")
-            error_text.append(str(e))
-            console.print(error_text)
-            if logger.isEnabledFor(logging.DEBUG):
-                console.print(Text(traceback.format_exc(), style="dim"))
-            return AppResult(return_code=1, thread_id=None)
+        async with server_session(
+            assistant_id=assistant_id,
+            model_name=model_name,
+            model_params=model_params,
+            auto_approve=auto_approve,
+            sandbox_type=sandbox_type,
+            enable_ask_user=enable_ask_user,
+            mcp_config_path=mcp_config_path,
+            no_mcp=no_mcp,
+            trust_project_mcp=trust_project_mcp,
+            interactive=True,
+        ) as (agent, server_proc):
+            console.print("[green]✓ Server ready[/green]")
 
-        console.print("[green]✓ Server ready[/green]")
-
-        try:
-            result = await run_textual_app(
-                agent=agent,
-                assistant_id=assistant_id,
-                backend=None,
-                auto_approve=auto_approve,
-                cwd=Path.cwd(),
-                thread_id=thread_id,
-                initial_prompt=initial_prompt,
-                mcp_server_info=mcp_server_info,
-                profile_override=profile_override,
-                server_proc=server_proc,
-            )
-        except Exception as e:
-            logger.debug("App error", exc_info=True)
-            error_text = Text("Application error: ", style="red")
-            error_text.append(str(e))
-            console.print(error_text)
-            if logger.isEnabledFor(logging.DEBUG):
-                console.print(Text(traceback.format_exc(), style="dim"))
-            return AppResult(return_code=1, thread_id=None)
-
-        return result
-    finally:
-        if mcp_session_manager is not None:
             try:
-                await mcp_session_manager.cleanup()
-            except Exception:
-                logger.warning("MCP session cleanup failed", exc_info=True)
-        if server_proc is not None:
-            server_proc.stop()
+                result = await run_textual_app(
+                    agent=agent,
+                    assistant_id=assistant_id,
+                    backend=None,
+                    auto_approve=auto_approve,
+                    cwd=Path.cwd(),
+                    thread_id=thread_id,
+                    initial_prompt=initial_prompt,
+                    mcp_server_info=mcp_server_info,
+                    profile_override=profile_override,
+                    server_proc=server_proc,
+                )
+            except Exception as e:
+                logger.debug("App error", exc_info=True)
+                error_text = Text("Application error: ", style="red")
+                error_text.append(str(e))
+                console.print(error_text)
+                if logger.isEnabledFor(logging.DEBUG):
+                    console.print(Text(traceback.format_exc(), style="dim"))
+                return AppResult(return_code=1, thread_id=None)
+
+            return result
+    except Exception as e:
+        logger.debug("Failed to start server", exc_info=True)
+        error_text = Text("Failed to start server: ", style="red")
+        error_text.append(str(e))
+        console.print(error_text)
+        if logger.isEnabledFor(logging.DEBUG):
+            console.print(Text(traceback.format_exc(), style="dim"))
+        return AppResult(return_code=1, thread_id=None)
 
 
 async def _run_acp_cli_async(

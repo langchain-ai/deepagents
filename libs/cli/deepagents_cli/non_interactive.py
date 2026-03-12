@@ -778,10 +778,8 @@ async def run_non_interactive(
         header = _build_non_interactive_header(assistant_id, thread_id)
         console.print(header)
 
-    from deepagents_cli.server_manager import start_server_and_get_agent
+    from deepagents_cli.server_manager import server_session
 
-    server_proc = None
-    mcp_session_manager = None
     try:
         enable_shell = bool(settings.shell_allow_list)
         shell_is_unrestricted = isinstance(
@@ -792,7 +790,7 @@ async def run_non_interactive(
         if not quiet:
             console.print(Text("Starting LangGraph server...", style="dim"))
 
-        agent, server_proc, mcp_session_manager = await start_server_and_get_agent(
+        async with server_session(
             assistant_id=assistant_id,
             model_name=model_name,
             model_params=model_params,
@@ -804,23 +802,22 @@ async def run_non_interactive(
             no_mcp=no_mcp,
             trust_project_mcp=trust_project_mcp,
             interactive=False,
-        )
+        ) as (agent, _server_proc):
+            if not quiet:
+                console.print("[green]✓ Server ready[/green]")
 
-        if not quiet:
-            console.print("[green]✓ Server ready[/green]")
+            file_op_tracker = FileOpTracker(assistant_id=assistant_id, backend=None)
 
-        file_op_tracker = FileOpTracker(assistant_id=assistant_id, backend=None)
-
-        await _run_agent_loop(
-            agent,
-            message,
-            config,
-            console,
-            file_op_tracker,
-            quiet=quiet,
-            stream=stream,
-            thread_url_lookup=thread_url_lookup,
-        )
+            await _run_agent_loop(
+                agent,
+                message,
+                config,
+                console,
+                file_op_tracker,
+                quiet=quiet,
+                stream=stream,
+                thread_url_lookup=thread_url_lookup,
+            )
 
     except KeyboardInterrupt:
         console.print("\n[yellow]Interrupted[/yellow]")
@@ -843,11 +840,3 @@ async def run_non_interactive(
         return 1
     else:
         return 0
-    finally:
-        if mcp_session_manager is not None:
-            try:
-                await mcp_session_manager.cleanup()
-            except Exception:
-                logger.warning("MCP session cleanup failed", exc_info=True)
-        if server_proc is not None:
-            server_proc.stop()

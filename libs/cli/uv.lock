@@ -986,6 +986,7 @@ dependencies = [
     { name = "textual" },
     { name = "textual-autocomplete" },
     { name = "tomli-w" },
+    { name = "uuid-utils" },
 ]
 
 [package.optional-dependencies]
@@ -1130,6 +1131,7 @@ requires-dist = [
     { name = "textual", specifier = ">=8.0.0,<9.0.0" },
     { name = "textual-autocomplete", specifier = ">=3.0.0,<5.0.0" },
     { name = "tomli-w", specifier = ">=1.0.0,<2.0.0" },
+    { name = "uuid-utils", specifier = ">=0.10.0,<1.0.0" },
 ]
 provides-extras = ["anthropic", "baseten", "bedrock", "cohere", "deepseek", "fireworks", "google-genai", "groq", "huggingface", "ibm", "litellm", "mistralai", "nvidia", "ollama", "openai", "openrouter", "perplexity", "vertexai", "xai", "all-providers"]
 

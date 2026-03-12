@@ -7,7 +7,6 @@ from langchain.agents import create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig, TodoListMiddleware
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain.agents.structured_output import ResponseFormat
-from langchain.chat_models import init_chat_model
 from langchain_anthropic import ChatAnthropic
 from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
 from langchain_core.language_models import BaseChatModel
@@ -18,6 +17,7 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.store.base import BaseStore
 from langgraph.types import Checkpointer
 
+from deepagents._models import resolve_model
 from deepagents.backends import StateBackend
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
 from deepagents.middleware.filesystem import FilesystemMiddleware
@@ -78,33 +78,7 @@ def get_default_model() -> ChatAnthropic:
     )
 
 
-def resolve_model(model: str | BaseChatModel) -> BaseChatModel:
-    """Resolve a model string to a `BaseChatModel` instance.
-
-    If `model` is already a `BaseChatModel`, returns it unchanged.
-
-    String models are resolved via `init_chat_model`, with OpenAI models
-    defaulting to the Responses API. See the `create_deep_agent` docstring for
-    details on how to customize this behavior.
-
-    Args:
-        model: Model name string or pre-configured model instance.
-
-    Returns:
-        Resolved `BaseChatModel` instance.
-    """
-    if isinstance(model, BaseChatModel):
-        return model
-    if model.startswith("openai:"):
-        # Use Responses API by default. To use chat completions, use
-        # `model=init_chat_model("openai:...")`
-        # To disable data retention with the Responses API, use
-        # `model=init_chat_model("openai:...", use_responses_api=True, store=False, include=["reasoning.encrypted_content"])`
-        return init_chat_model(model, use_responses_api=True)
-    return init_chat_model(model)
-
-
-def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic with many conditional branches
+def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly logic with many conditional branches
     model: str | BaseChatModel | None = None,
     tools: Sequence[BaseTool | Callable | dict[str, Any]] | None = None,
     *,
@@ -263,8 +237,13 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
             }
             processed_subagents.append(processed_spec)
 
-    # Combine GP with processed user-provided subagents
-    all_subagents: list[SubAgent | CompiledSubAgent] = [general_purpose_spec, *processed_subagents]
+    if any(spec["name"] == GENERAL_PURPOSE_SUBAGENT["name"] for spec in processed_subagents):
+        # If an agent with general purpose name already exists in subagents, then don't add it
+        # This is how you overwrite/configure general purpose subagent
+        all_subagents: list[SubAgent | CompiledSubAgent] = processed_subagents
+    else:
+        # Otherwise - add it!
+        all_subagents = [general_purpose_spec, *processed_subagents]
 
     # Build main agent middleware stack
     deepagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [

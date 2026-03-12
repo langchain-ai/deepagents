@@ -642,6 +642,7 @@ class DeepAgentsApp(App):
         self._queued_widgets: deque[QueuedUserMessage] = deque()
         self._processing_pending = False
         self._thread_switching = False
+        self._model_switching = False
         # Message virtualization store
         self._message_store = MessageStore()
         # Lazily imported here to avoid pulling image dependencies into
@@ -3279,92 +3280,103 @@ class DeepAgentsApp(App):
         """
         logger.info("Switching model to %s", model_spec)
 
+        if self._model_switching:
+            await self._mount_message(AppMessage("Model switch already in progress."))
+            return
+
         from deepagents_cli.model_config import (
             get_credential_env_var,
             has_provider_credentials,
         )
 
-        # Strip leading colon — treat ":claude-opus-4-6" as "claude-opus-4-6"
-        model_spec = model_spec.removeprefix(":")
+        self._model_switching = True
+        try:
+            # Strip leading colon — treat ":claude-opus-4-6" as "claude-opus-4-6"
+            model_spec = model_spec.removeprefix(":")
 
-        if self._server_proc is None:
-            await self._mount_message(
-                ErrorMessage("Model switching requires a server-backed session.")
-            )
-            return
-
-        parsed = ModelSpec.try_parse(model_spec)
-        if parsed:
-            provider: str | None = parsed.provider
-            model_name = parsed.model
-        else:
-            model_name = model_spec
-            provider = detect_provider(model_spec)
-
-        # Check credentials
-        has_creds = has_provider_credentials(provider) if provider else None
-        if has_creds is False and provider is not None:
-            env_var = get_credential_env_var(provider)
-            detail = (
-                f"{env_var} is not set or is empty"
-                if env_var
-                else (
-                    f"provider '{provider}' is not recognized. "
-                    "Add it to ~/.deepagents/config.toml with an "
-                    "api_key_env field"
+            if self._server_proc is None:
+                await self._mount_message(
+                    ErrorMessage("Model switching requires a server-backed session.")
                 )
-            )
-            await self._mount_message(ErrorMessage(f"Missing credentials: {detail}"))
-            return
-        if has_creds is None and provider:
-            logger.debug(
-                "Credentials for provider '%s' cannot be verified; proceeding anyway",
-                provider,
-            )
+                return
 
-        # Check if already using this exact model
-        if model_name == settings.model_name and (
-            not provider or provider == settings.model_provider
-        ):
-            current = f"{settings.model_provider}:{settings.model_name}"
-            await self._mount_message(AppMessage(f"Already using {current}"))
-            return
+            parsed = ModelSpec.try_parse(model_spec)
+            if parsed:
+                provider: str | None = parsed.provider
+                model_name = parsed.model
+            else:
+                model_name = model_spec
+                provider = detect_provider(model_spec)
 
-        # Build the provider:model spec for the configurable middleware.
-        display = model_spec
-        if provider and not parsed:
-            display = f"{provider}:{model_name}"
+            # Check credentials
+            has_creds = has_provider_credentials(provider) if provider else None
+            if has_creds is False and provider is not None:
+                env_var = get_credential_env_var(provider)
+                detail = (
+                    f"{env_var} is not set or is empty"
+                    if env_var
+                    else (
+                        f"provider '{provider}' is not recognized. "
+                        "Add it to ~/.deepagents/config.toml with an "
+                        "api_key_env field"
+                    )
+                )
+                await self._mount_message(
+                    ErrorMessage(f"Missing credentials: {detail}")
+                )
+                return
+            if has_creds is None and provider:
+                logger.debug(
+                    "Credentials for provider '%s' cannot be verified;"
+                    " proceeding anyway",
+                    provider,
+                )
 
-        # Set the model override for ConfigurableModelMiddleware.
-        # The next stream call will pass this in config["configurable"]["model"],
-        # and the middleware swaps the model per-invocation — no server restart.
-        self._model_override = display
-        self._model_params_override = extra_kwargs
+            # Check if already using this exact model
+            if model_name == settings.model_name and (
+                not provider or provider == settings.model_provider
+            ):
+                current = f"{settings.model_provider}:{settings.model_name}"
+                await self._mount_message(AppMessage(f"Already using {current}"))
+                return
 
-        settings.model_name = model_name
-        if provider:
-            settings.model_provider = provider
+            # Build the provider:model spec for the configurable middleware.
+            display = model_spec
+            if provider and not parsed:
+                display = f"{provider}:{model_name}"
 
-        if self._status_bar:
-            self._status_bar.set_model(
-                provider=settings.model_provider or "",
-                model=settings.model_name or "",
-            )
+            # Set the model override for ConfigurableModelMiddleware.
+            # The next stream call will pass this in config["configurable"]["model"],
+            # and the middleware swaps the model per-invocation — no server restart.
+            self._model_override = display
+            self._model_params_override = extra_kwargs
 
-        await asyncio.to_thread(save_recent_model, display)
-        await self._mount_message(AppMessage(f"Switched to {display}"))
-        logger.info("Model switched to %s (via configurable middleware)", display)
+            settings.model_name = model_name
+            if provider:
+                settings.model_provider = provider
 
-        # Scroll to bottom so the confirmation message is visible
-        def _scroll_after_switch() -> None:
-            try:
-                chat = self.query_one("#chat", VerticalScroll)
-                if chat.max_scroll_y > 0:
-                    chat.scroll_end(animate=False)
-            except NoMatches:
-                pass
+            if self._status_bar:
+                self._status_bar.set_model(
+                    provider=settings.model_provider or "",
+                    model=settings.model_name or "",
+                )
 
-        self.call_after_refresh(_scroll_after_switch)
+            await asyncio.to_thread(save_recent_model, display)
+            await self._mount_message(AppMessage(f"Switched to {display}"))
+            logger.info("Model switched to %s (via configurable middleware)", display)
+
+            # Scroll to bottom so the confirmation message is visible
+            def _scroll_after_switch() -> None:
+                try:
+                    chat = self.query_one("#chat", VerticalScroll)
+                    if chat.max_scroll_y > 0:
+                        chat.scroll_end(animate=False)
+                except NoMatches:
+                    pass
+
+            self.call_after_refresh(_scroll_after_switch)
+        finally:
+            self._model_switching = False
 
     async def _set_default_model(self, model_spec: str) -> None:
         """Set the default model in config without switching the current session.

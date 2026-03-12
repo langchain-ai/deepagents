@@ -59,6 +59,7 @@ dependencies = [
     "deepagents-acp>=0.0.4",
     "pandas>=2.3.3",
     "pymysql>=1.1.2",
+    "httpx[socks]>=0.28.1",
 ]
 
 [project.optional-dependencies]

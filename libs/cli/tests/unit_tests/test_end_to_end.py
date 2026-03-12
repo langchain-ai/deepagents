@@ -16,6 +16,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from langchain_core.outputs import ChatResult
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool, tool
+from langgraph.checkpoint.memory import InMemorySaver
 from pydantic import Field
 
 from deepagents_cli.agent import create_cli_agent
@@ -145,6 +146,7 @@ class TestDeepAgentsCLIEndToEnd:
                 model=model,
                 assistant_id="test-agent",
                 tools=[],
+                checkpointer=InMemorySaver(),
             )
 
             # Invoke the agent with a simple message
@@ -183,6 +185,7 @@ class TestDeepAgentsCLIEndToEnd:
                 model=model,
                 assistant_id="test-agent",
                 tools=[],
+                checkpointer=InMemorySaver(),
             )
 
             # Invoke the agent
@@ -265,6 +268,7 @@ class TestDeepAgentsCLIEndToEnd:
                 model=model,
                 assistant_id="test-agent",
                 tools=[sample_tool],
+                checkpointer=InMemorySaver(),
             )
 
             # Invoke the agent
@@ -321,6 +325,7 @@ class TestDeepAgentsCLIEndToEnd:
                 model=model,
                 assistant_id="test-agent",
                 tools=[],
+                checkpointer=InMemorySaver(),
             )
 
             # Invoke the agent
@@ -381,6 +386,7 @@ class TestDeepAgentsCLIEndToEnd:
                 model=model,
                 assistant_id="test-agent",
                 tools=[sample_tool],
+                checkpointer=InMemorySaver(),
             )
 
             # Invoke the agent
@@ -422,6 +428,7 @@ class TestDeepAgentsCLIEndToEnd:
                 model=model,
                 assistant_id="test-agent",
                 tools=[],
+                checkpointer=InMemorySaver(),
             )
 
             assert isinstance(backend, CompositeBackend)

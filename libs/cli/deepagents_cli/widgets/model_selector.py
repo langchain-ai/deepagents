@@ -229,7 +229,6 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         self._options_container: Container | None = None
         self._option_widgets: list[ModelOption] = []
         self._filter_text = ""
-        self._rebuild_needed = True
         self._current_spec: str | None = None
         if current_model and current_provider:
             self._current_spec = f"{current_provider}:{current_model}"
@@ -316,7 +315,6 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         """
         self._filter_text = event.value
         self._update_filtered_list()
-        self._rebuild_needed = True
         self.call_after_refresh(self._update_display)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
@@ -385,7 +383,6 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
 
         await self._options_container.remove_children()
         self._option_widgets = []
-        self._rebuild_needed = False
 
         if not self._filtered_models:
             no_matches = Static("[dim]No matching models[/dim]")
@@ -393,10 +390,28 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             self._update_footer()
             return
 
-        # Group by provider
-        by_provider: dict[str, list[str]] = {}
+        # Group by provider, preserving insertion order so models from the
+        # same provider cluster together in the visual list.
+        by_provider: dict[str, list[tuple[str, str]]] = {}
         for model_spec, provider in self._filtered_models:
-            by_provider.setdefault(provider, []).append(model_spec)
+            by_provider.setdefault(provider, []).append((model_spec, provider))
+
+        # Rebuild _filtered_models to match the provider-grouped display
+        # order. Without this, _filtered_models stays in score-sorted order
+        # while _option_widgets follow provider-grouped order, causing
+        # _update_footer to look up the wrong model for the highlighted
+        # index.
+        grouped_order: list[tuple[str, str]] = []
+        for entries in by_provider.values():
+            grouped_order.extend(entries)
+
+        # Remap selected_index so the same model stays highlighted.
+        old_spec = self._filtered_models[self._selected_index][0]
+        self._filtered_models = grouped_order
+        self._selected_index = next(
+            (i for i, (s, _) in enumerate(grouped_order) if s == old_spec),
+            0,
+        )
 
         glyphs = get_glyphs()
         flat_index = 0
@@ -407,13 +422,17 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         if self._current_model and self._current_provider:
             current_spec = f"{self._current_provider}:{self._current_model}"
 
+        # Resolve credentials upfront so the widget-building loop
+        # stays focused on layout
+        creds = {p: has_provider_credentials(p) for p in by_provider}
+
         # Collect all widgets first, then batch-mount once to avoid
         # individual DOM mutations per widget
         all_widgets: list[Static] = []
 
-        for provider, model_specs in by_provider.items():
+        for provider, model_entries in by_provider.items():
             # Provider header with credential indicator
-            has_creds = has_provider_credentials(provider)
+            has_creds = creds[provider]
             if has_creds is True:
                 cred_indicator = glyphs.checkmark
             elif has_creds is False:
@@ -427,7 +446,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 )
             )
 
-            for model_spec in model_specs:
+            for model_spec, _prov in model_entries:
                 is_current = model_spec == current_spec
                 is_selected = flat_index == self._selected_index
 
@@ -443,6 +462,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                     current=is_current,
                     has_creds=has_creds,
                     is_default=model_spec == self._default_spec,
+                    status=self._get_model_status(model_spec),
                 )
                 widget = ModelOption(
                     label=label,
@@ -482,6 +502,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         current: bool,
         has_creds: bool | None,
         is_default: bool = False,
+        status: str | None = None,
     ) -> str:
         """Build the display label for a model option.
 
@@ -491,6 +512,9 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             current: Whether this is the active model.
             has_creds: Credential status (True/False/None).
             is_default: Whether this is the configured default model.
+            status: Model status from profile (e.g., `'deprecated'`,
+                `'beta'`, `'alpha'`). `'deprecated'` renders in red;
+                other non-None values render in yellow.
 
         Returns:
             Rich-markup label string.
@@ -505,7 +529,13 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             spec_text = model_spec
         suffix = " [dim](current)[/dim]" if current else ""
         default_suffix = " [cyan](default)[/cyan]" if is_default else ""
-        return f"{cursor}{spec_text}{suffix}{default_suffix}"
+        if status == "deprecated":
+            status_suffix = " [red](deprecated)[/red]"
+        elif status:
+            status_suffix = f" [yellow]({status})[/yellow]"
+        else:
+            status_suffix = ""
+        return f"{cursor}{spec_text}{suffix}{default_suffix}{status_suffix}"
 
     @staticmethod
     def _format_footer(
@@ -523,8 +553,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         """
         from deepagents_cli.textual_adapter import format_token_count
 
-        if profile_entry is None:
-            return "[dim]No profile data available[/dim]\n\n\n"
+        if profile_entry is None or not profile_entry["profile"]:
+            return "[dim]Model profile not available :([/dim]\n\n\n"
 
         profile = profile_entry["profile"]
         overridden = profile_entry["overridden_keys"]
@@ -568,11 +598,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         token_keys = [("max_input_tokens", "in"), ("max_output_tokens", "out")]
         ctx_parts = [p for k, s in token_keys if (p := _format_token(k, s)) is not None]
         sep = f" {glyphs.bullet} "
-        line1 = (
-            f"Context: {sep.join(ctx_parts)}"
-            if ctx_parts
-            else "[dim]Context: unknown[/dim]"
-        )
+        line1 = f"Context: {sep.join(ctx_parts)}" if ctx_parts else ""
 
         # Line 2: Input modalities
         modality_keys = [
@@ -602,6 +628,24 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         )
 
         return f"{line1}\n{line2}\n{line3}\n{line4}"
+
+    def _get_model_status(self, model_spec: str) -> str | None:
+        """Look up the status field for a model from its profile.
+
+        Args:
+            model_spec: The `provider:model` string.
+
+        Returns:
+            Status string (e.g., `'deprecated'`) if the model has a profile
+            with a `status` key, otherwise None.
+        """
+        entry = self._profiles.get(model_spec)
+        if entry is None:
+            return None
+        profile = entry.get("profile")
+        if not profile:
+            return None
+        return profile.get("status")
 
     def _update_footer(self) -> None:
         """Update the detail footer for the currently highlighted model."""
@@ -643,6 +687,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 current=old_widget.model_spec == self._current_spec,
                 has_creds=old_widget.has_creds,
                 is_default=old_widget.model_spec == self._default_spec,
+                status=self._get_model_status(old_widget.model_spec),
             )
         )
 
@@ -656,6 +701,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 current=new_widget.model_spec == self._current_spec,
                 has_creds=new_widget.has_creds,
                 is_default=new_widget.model_spec == self._default_spec,
+                status=self._get_model_status(new_widget.model_spec),
             )
         )
 
@@ -749,12 +795,14 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         elif custom_input:
             self.dismiss((custom_input, ""))
 
-    def action_set_default(self) -> None:
+    async def action_set_default(self) -> None:
         """Toggle the highlighted model as the default.
 
         If the highlighted model is already the default, clears it.
         Otherwise sets it as the new default.
         """
+        import asyncio
+
         if not self._filtered_models or not self._option_widgets:
             return
 
@@ -763,18 +811,16 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
 
         if model_spec == self._default_spec:
             # Already default — clear it
-            if clear_default_model():
+            if await asyncio.to_thread(clear_default_model):
                 self._default_spec = None
-                self._rebuild_needed = True
                 self.call_after_refresh(self._update_display)
                 help_widget.update("[bold]Default cleared[/bold]")
                 self.set_timer(3.0, self._restore_help_text)
             else:
                 help_widget.update("[bold red]Failed to clear default[/bold red]")
                 self.set_timer(3.0, self._restore_help_text)
-        elif save_default_model(model_spec):
+        elif await asyncio.to_thread(save_default_model, model_spec):
             self._default_spec = model_spec
-            self._rebuild_needed = True
             self.call_after_refresh(self._update_display)
             help_widget.update(f"[bold]Default set to {model_spec}[/bold]")
             self.set_timer(3.0, self._restore_help_text)

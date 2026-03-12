@@ -299,13 +299,12 @@ class TestDeepAgentEndToEnd:
         assert any("second call" in content for content in tool_contents)
 
     def test_deep_agent_with_string_model_name(self) -> None:
-        """Test that create_deep_agent handles string model names correctly.
+        """Test that create_deep_agent resolves string model names correctly.
 
         This test verifies that when a model name is passed as a string,
-        it is properly initialized using init_chat_model instead of
+        it is properly resolved to a chat model instead of
         causing an AttributeError when accessing the profile attribute.
         """
-        # Mock init_chat_model to return a fake model
         fake_model = FixedGenericFakeChatModel(
             messages=iter(
                 [
@@ -316,17 +315,11 @@ class TestDeepAgentEndToEnd:
             )
         )
 
-        with patch("deepagents.graph.init_chat_model", return_value=fake_model):
-            # This should not raise AttributeError: 'str' object has no attribute 'profile'
+        with patch("deepagents.graph.resolve_model", return_value=fake_model):
             agent = create_deep_agent(model="claude-sonnet-4-6", tools=[sample_tool])
-
-            # Verify agent was created successfully
             assert agent is not None
 
-            # Invoke the agent to ensure it works
             result = agent.invoke({"messages": [HumanMessage(content="Test message")]})
-
-            # Verify the agent executed correctly
             assert "messages" in result
             assert len(result["messages"]) > 0
 

@@ -10,7 +10,6 @@ import re
 import shlex
 import sys
 import threading
-import uuid
 from dataclasses import dataclass
 from enum import StrEnum
 from importlib.metadata import PackageNotFoundError, distribution
@@ -21,10 +20,59 @@ import dotenv
 from rich.console import Console
 
 from deepagents_cli._version import __version__
+from deepagents_cli.project_utils import (
+    get_server_project_context as _get_server_project_context,
+)
 
 logger = logging.getLogger(__name__)
 
-dotenv.load_dotenv()
+
+def _find_dotenv_from_start_path(start_path: Path) -> Path | None:
+    """Find the nearest `.env` file from an explicit start path upward.
+
+    Args:
+        start_path: Directory to start searching from.
+
+    Returns:
+        Path to the nearest `.env` file, or `None` if not found.
+    """
+    current = start_path.expanduser().resolve()
+    for parent in [current, *list(current.parents)]:
+        candidate = parent / ".env"
+        try:
+            if candidate.is_file():
+                return candidate
+        except OSError:
+            logger.warning("Could not inspect .env candidate %s", candidate)
+            return None
+    return None
+
+
+def _load_dotenv(*, start_path: Path | None = None, override: bool = False) -> bool:
+    """Load environment variables, optionally anchored to an explicit path.
+
+    Args:
+        start_path: Directory to use for `.env` discovery.
+        override: Whether loaded values should override existing env vars.
+
+    Returns:
+        `True` when a dotenv file was loaded, `False` otherwise.
+    """
+    if start_path is None:
+        return dotenv.load_dotenv(override=override)
+
+    dotenv_path = _find_dotenv_from_start_path(start_path)
+    if dotenv_path is None:
+        return False
+    return dotenv.load_dotenv(dotenv_path=dotenv_path, override=override)
+
+
+_bootstrap_project_context = _get_server_project_context()
+_bootstrap_start_path = (
+    _bootstrap_project_context.user_cwd if _bootstrap_project_context else None
+)
+
+_load_dotenv(start_path=_bootstrap_start_path)
 
 # CRITICAL: Override LANGSMITH_PROJECT to route agent traces to separate project
 # LangSmith reads LANGSMITH_PROJECT at invocation time, so we override it here
@@ -557,7 +605,7 @@ class Settings:
         Returns:
             A list of human-readable change descriptions.
         """
-        dotenv.load_dotenv(override=True)
+        _load_dotenv(start_path=start_path, override=True)
 
         api_key_fields = {
             "openai_api_key",
@@ -886,7 +934,7 @@ class Settings:
 
 
 # Global settings instance (initialized once)
-settings = Settings.from_environment()
+settings = Settings.from_environment(start_path=_bootstrap_start_path)
 
 
 class SessionState:
@@ -915,7 +963,9 @@ class SessionState:
         self.no_splash = no_splash
         self.exit_hint_until: float | None = None
         self.exit_hint_handle = None
-        self.thread_id = str(uuid.uuid4())
+        from deepagents_cli.sessions import generate_thread_id
+
+        self.thread_id = generate_thread_id()
 
     def toggle_auto_approve(self) -> bool:
         """Toggle auto-approve and return the new state.
@@ -1332,7 +1382,7 @@ def _get_default_model_spec() -> str:
     if settings.has_vertex_ai:
         return "google_vertexai:gemini-3.1-pro-preview"
     if settings.has_nvidia:
-        return "nvidia:nvidia/nemotron-3-nano-30b-a3b"
+        return "nvidia:nvidia/nemotron-3-super-120b-a12b"
 
     msg = (
         "No credentials configured. Please set one of: "

@@ -52,6 +52,15 @@ jobs:
           github-token: ${{ steps.app-token.outputs.token }}
           script: |
             const author = context.payload.sender.login;
+
+            // GitHub App bots are not org members but should be
+            // treated as internal — skip the membership check.
+            if (context.payload.sender.type === 'Bot') {
+              console.log(`${author} is a Bot — treating as internal`);
+              core.setOutput('is-external', 'false');
+              return;
+            }
+
             try {
               const membership = await github.rest.orgs.getMembershipForUser({
                 org: 'langchain-ai',
@@ -323,8 +332,15 @@ jobs:
 
             const contributorCache = new Map();
 
-            async function getContributorInfo(author) {
+            async function getContributorInfo(author, userType) {
               if (contributorCache.has(author)) return contributorCache.get(author);
+
+              if (userType === 'Bot') {
+                const info = { isExternal: false, mergedCount: 0 };
+                contributorCache.set(author, info);
+                return info;
+              }
+
               let isExternal = true;
               try {
                 const membership = await github.rest.orgs.getMembershipForUser({
@@ -393,7 +409,7 @@ jobs:
             for (const pr of prs) {
               if (processed >= maxItems) break;
               const author = pr.user.login;
-              const info = await getContributorInfo(author);
+              const info = await getContributorInfo(author, pr.user.type);
               const labels = new Set();
 
               labels.add(info.isExternal ? 'external' : 'internal');

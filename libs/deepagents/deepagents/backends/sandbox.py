@@ -90,7 +90,7 @@ with open(file_path, 'w') as f:
     f.write(content)
 " <<'__DEEPAGENTS_EOF__'
 {payload_b64}
-__DEEPAGENTS_EOF__"""
+__DEEPAGENTS_EOF__\n"""
 
 # Use heredoc to pass edit parameters via stdin to avoid ARG_MAX limits.
 # Stdin format: base64-encoded JSON with {"path": str, "old": str, "new": str}.
@@ -148,7 +148,7 @@ with open(file_path, 'w') as f:
 print(count)
 " <<'__DEEPAGENTS_EOF__'
 {payload_b64}
-__DEEPAGENTS_EOF__"""
+__DEEPAGENTS_EOF__\n"""
 
 # Use heredoc to pass read parameters via stdin, matching write/edit pattern.
 # Stdin format: base64-encoded JSON with
@@ -208,7 +208,7 @@ if encoding == 'utf-8' and file_type == 'text':
 print(json.dumps({{'encoding': encoding, 'content': content}}))
 " <<'__DEEPAGENTS_EOF__'
 {payload_b64}
-__DEEPAGENTS_EOF__"""
+__DEEPAGENTS_EOF__\n"""
 
 
 class BaseSandbox(SandboxBackendProtocol, ABC):

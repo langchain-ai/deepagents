@@ -345,11 +345,8 @@ class TestLocalSandboxOperations:
 
         assert result.error is None
         content = result.file_data["content"]
-        # Should have line numbers
-        assert "1\t" in content or "     1\t" in content
-        assert "Line 1" in content
-        assert "Line 2" in content
-        assert "Line 3" in content
+        # Backend returns raw content; line-number formatting is applied by middleware
+        assert content == "Line 1\nLine 2\nLine 3"
 
     def test_read_nonexistent_file(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test reading a file that doesn't exist."""

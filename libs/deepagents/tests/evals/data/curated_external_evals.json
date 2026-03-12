@@ -1,0 +1,3850 @@
+{
+  "case_count": 50,
+  "cases": [
+    {
+      "answer_substrings": [
+        "healthy",
+        "EcoRoute"
+      ],
+      "expected_calls": [
+        {
+          "allowed_args": {},
+          "name": "toolbench_squake_checkhealth",
+          "output": "SQUAKE API status: healthy."
+        },
+        {
+          "allowed_args": {},
+          "name": "toolbench_squake_projects",
+          "output": "Projects available: EcoRoute, SAF Horizon, and GreenMiles."
+        }
+      ],
+      "id": "toolbench_g1_1",
+      "prompt": "I'm working on a logistics project for my company and need to check the health of the SQUAKE API. Can you verify the API health by calling the 'Checkhealth' API endpoint? Additionally, I would like to retrieve the list of projects using the 'Projects' API endpoint.",
+      "provenance": {
+        "path": "external/ToolBench/data_example/instruction/G1_query.json",
+        "query_id": 1
+      },
+      "source": "toolbench",
+      "source_case_id": "G1:1",
+      "tools": [
+        {
+          "description": "ToolBench proxy for SQUAKE -> Checkhealth.  Method: GET.",
+          "name": "toolbench_squake_checkhealth",
+          "parameters": {
+            "properties": {},
+            "required": [],
+            "type": "object"
+          }
+        },
+        {
+          "description": "ToolBench proxy for SQUAKE -> Projects.  Method: GET.",
+          "name": "toolbench_squake_projects",
+          "parameters": {
+            "properties": {},
+            "required": [],
+            "type": "object"
+          }
+        }
+      ]
+    },
+    {
+      "answer_substrings": [
+        "task-abc123"
+      ],
+      "expected_calls": [
+        {
+          "allowed_args": {
+            "service": [
+              "ecommerce"
+            ],
+            "tracking_code": [
+              "ABC123"
+            ]
+          },
+          "name": "toolbench_transportistas_de_argentina_tracking_correo_argentino_create_task_service_tracking_code",
+          "output": "Created tracking task successfully. task_id=task-abc123."
+        }
+      ],
+      "id": "toolbench_g1_5",
+      "prompt": "I need to track a package sent through Correo Argentino. The tracking code is 'ABC123'. Please create a task to get the history of the package and provide me with the task ID. I will use the task ID to retrieve the result later.",
+      "provenance": {
+        "path": "external/ToolBench/data_example/instruction/G1_query.json",
+        "query_id": 5
+      },
+      "source": "toolbench",
+      "source_case_id": "G1:5",
+      "tools": [
+        {
+          "description": "ToolBench proxy for Transportistas de Argentina -> /tracking/correo_argentino/result_task/:task_id. Result for one Task ID. Method: GET.",
+          "name": "toolbench_transportistas_de_argentina_tracking_correo_argentino_result_task_task_id",
+          "parameters": {
+            "properties": {
+              "task_id": {
+                "description": "Task ID",
+                "type": "string"
+              }
+            },
+            "required": [
+              "task_id"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "description": "ToolBench proxy for Transportistas de Argentina -> /cities/states/:stateIsoCode. List of city for iso state. Method: GET.",
+          "name": "toolbench_transportistas_de_argentina_cities_states_stateisocode",
+          "parameters": {
+            "properties": {
+              "stateIsoCode": {
+                "description": "State ISO Code",
+                "type": "string"
+              }
+            },
+            "required": [
+              "stateIsoCode"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "description": "ToolBench proxy for Transportistas de Argentina -> /cities/postcode/:stateIsoCode/:postCode. List of city for iso state and postcode. Method: GET.",
+          "name": "toolbench_transportistas_de_argentina_cities_postcode_stateisocode_postcode",
+          "parameters": {
+            "properties": {
+              "postCode": {
+                "description": "Postcode",
+                "type": "string"
+              },
+              "stateIsoCode": {
+                "description": "State ISO Code",
+                "type": "string"
+              }
+            },
+            "required": [
+              "stateIsoCode",
+              "postCode"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "description": "ToolBench proxy for Transportistas de Argentina -> /cities/search/:stateIsoCode/:keyword. Search city for iso state and keyword name. Method: GET.",
+          "name": "toolbench_transportistas_de_argentina_cities_search_stateisocode_keyword",
+          "parameters": {
+            "properties": {
+              "keyword": {
+                "description": "Keyword to search, example: Caballito",
+                "type": "string"
+              },
+              "stateIsoCode": {
+                "description": "State ISO Code",
+                "type": "string"
+              }
+            },
+            "required": [
+              "stateIsoCode",
+              "keyword"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "description": "ToolBench proxy for Transportistas de Argentina -> /cities/states. List of states for Argentina with iso code. Method: GET.",
+          "name": "toolbench_transportistas_de_argentina_cities_states",
+          "parameters": {
+            "properties": {},
+            "required": [],
+            "type": "object"
+          }
+        },
+        {
+          "description": "ToolBench proxy for Transportistas de Argentina -> /quotes/city/correo_argentino/:weight/:stateIsoCodeSrc/:normalizeCityNameSrc/:stateIsoCodeDst/:normalizeCityNameDst. List of quote for iso state and city keyword name in Correo Argentino. Method: GET.",
+          "name": "toolbench_transportistas_de_argentina_quotes_city_correo_argentino_weight_stateisocodesrc_normalizecitynamesrc_stateisocodedst_normalizecitynamedst",
+          "parameters": {
+            "properties": {
+              "normalizeCityNameDst": {
+                "description": "Normalize City Name of Destination",
+                "type": "string"
+              },
+              "normalizeCityNameSrc": {
+                "description": "Normalize City Name of Source",
+                "type": "string"
+              },
+              "stateIsoCodeDst": {
+                "description": "State ISO Code of Destination",
+                "type": "string"
+              },
+              "stateIsoCodeSrc": {
+                "description": "State ISO Code of Source",
+                "type": "string"
+              },
+              "weight": {
+                "description": "Weight in KG",
+                "type": "number"
+              }
+            },
+            "required": [
+              "normalizeCityNameSrc",
+              "stateIsoCodeDst",
+              "normalizeCityNameDst",
+              "weight",
+              "stateIsoCodeSrc"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "description": "ToolBench proxy for Transportistas de Argentina -> /quotes/postcode/oca/:cuit/:operativa/:cost/:weight/:volume/:postCodeSrc/:postCodeDst. Quote for postcode in OCA e-Pack. Method: GET.",
+          "name": "toolbench_transportistas_de_argentina_quotes_postcode_oca_cuit_operativa_cost_weight_volume_postcodesrc_postcodedst",
+          "parameters": {
+            "properties": {
+              "cost": {
+                "description": "Cost of products in ARS",
+                "type": "number"
+              },
+              "cuit": {
+                "description": "CUIT of your account in OCA e-Pack",
+                "type": "string"
+              },
+              "operativa": {
+                "description": "Operativa number of your account in OCA e-Pack",
+                "type": "string"
+              },
+              "postCodeDst": {
+                "description": "Postcode Destination",
+                "type": "number"
+              },
+              "postCodeSrc": {
+                "description": "Postcode Source",
+                "type": "number"
+              },
+              "volume": {
+                "description": "Volume in cm3",
+                "type": "number"
+              },
+              "weight": {
+                "description": "Weight in KG",
+                "type": "number"
+              }
+            },
+            "required": [
+              "postCodeDst",
+              "cuit",
+              "operativa",
+              "cost",
+              "postCodeSrc",
+              "volume",
+              "weight"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "description": "ToolBench proxy for Transportistas de Argentina -> /quotes/postcode/correo_argentino/:weight/:postCodeSrc/:postCodeDst. List of quote for postcode in Correo Argentino. Method: GET.",
+          "name": "toolbench_transportistas_de_argentina_quotes_postcode_correo_argentino_weight_postcodesrc_postcodedst",
+          "parameters": {
+            "properties": {
+              "postCodeDst": {
+                "description": "Postcode Destination",
+                "type": "number"
+              },
+              "postCodeSrc": {
+                "description": "Postcode Source",
+                "type": "number"
+              },
+              "weight": {
+                "description": "Weight in KG",
+                "type": "number"
+              }
+            },
+            "required": [
+              "postCodeDst",
+              "postCodeSrc",
+              "weight"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "description": "ToolBench proxy for Transportistas de Argentina -> /tracking/correo_argentino/create_task/:service/:tracking_code. Create task to get the history.\nThe result of the trace can be obtained after approximately 20-60 seconds by calling the endpoint: /tracking/correo_argentino/result_task/:task_id\n**IMPORTANT: ** The result will only be stored for approx 1 hour. Method: GET.",
+          "name": "toolbench_transportistas_de_argentina_tracking_correo_argentino_create_task_service_tracking_code",
+          "parameters": {
+            "properties": {
+              "service": {
+                "description": "Service: ecommerce, mercadolibre, national, national-plus or national-international",
+                "type": "string"
+              },
+              "tracking_code": {
+                "description": "Tracking code",
+                "type": "string"
+              }
+            },
+            "required": [
+              "service",
+              "tracking_code"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "description": "ToolBench proxy for Transportistas de Argentina -> /offices/postcode/:service/:postCode. List of offices for iso state and postcode. Method: GET.",
+          "name": "toolbench_transportistas_de_argentina_offices_postcode_service_postcode",
+          "parameters": {
+            "properties": {
+              "postCode": {
+                "description": "Postcode",
+                "type": "number"
+              },
+              "service": {
+                "description": "Service Name: correo_argentino, oca, andreani",
+                "type": "string"
+              }
+            },
+            "required": [
+              "service",
+              "postCode"
+            ],
+            "type": "object"
+          }
+        }
+      ]
+    },
+    {
+      "answer_substrings": [
+        "In transit",
+        "healthy"
+      ],
+      "expected_calls": [
+        {
+          "allowed_args": {
+            "id": [
+              "6045e2f44e1b233199a5e77a"
+            ]
+          },
+          "name": "toolbench_create_container_tracking_get_tracking_data",
+          "output": "Tracking data for 6045e2f44e1b233199a5e77a: In transit, expected delivery Friday."
+        },
+        {
+          "allowed_args": {},
+          "name": "toolbench_squake_checkhealth",
+          "output": "SQUAKE authentication system status: healthy."
+        }
+      ],
+      "id": "toolbench_g2_1",
+      "prompt": "I'm starting an e-commerce business and I need to integrate a package tracking feature. Can you provide me with the tracking data for the shipment with ID 6045e2f44e1b233199a5e77a? Also, I would like to check the health status of the SQUAKE authentication system.",
+      "provenance": {
+        "path": "external/ToolBench/data_example/instruction/G2_query.json",
+        "query_id": 1
+      },
+      "source": "toolbench",
+      "source_case_id": "G2:1",
+      "tools": [
+        {
+          "description": "ToolBench proxy for Transportistas de Argentina -> /offices/search/:service/:stateIsoCode/:keyword. List of offices for iso state and postcode. Method: GET.",
+          "name": "toolbench_transportistas_de_argentina_offices_search_service_stateisocode_keyword",
+          "parameters": {
+            "properties": {
+              "keyword": {
+                "description": "Keyword to search, example: Caballito",
+                "type": "string"
+              },
+              "service": {
+                "description": "Service Name: correo_argentino, oca, andreani",
+                "type": "string"
+              },
+              "stateIsoCode": {
+                "description": "State ISO Code",
+                "type": "string"
+              }
+            },
+            "required": [
+              "keyword",
+              "service",
+              "stateIsoCode"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "description": "ToolBench proxy for Transportistas de Argentina -> /tracking/correo_argentino/result_task/:task_id. Result for one Task ID. Method: GET.",
+          "name": "toolbench_transportistas_de_argentina_tracking_correo_argentino_result_task_task_id",
+          "parameters": {
+            "properties": {
+              "task_id": {
+                "description": "Task ID",
+                "type": "string"
+              }
+            },
+            "required": [
+              "task_id"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "description": "ToolBench proxy for Transportistas de Argentina -> /quotes/postcode/oca/:cuit/:operativa/:cost/:weight/:volume/:postCodeSrc/:postCodeDst. Quote for postcode in OCA e-Pack. Method: GET.",
+          "name": "toolbench_transportistas_de_argentina_quotes_postcode_oca_cuit_operativa_cost_weight_volume_postcodesrc_postcodedst",
+          "parameters": {
+            "properties": {
+              "cost": {
+                "description": "Cost of products in ARS",
+                "type": "number"
+              },
+              "cuit": {
+                "description": "CUIT of your account in OCA e-Pack",
+                "type": "string"
+              },
+              "operativa": {
+                "description": "Operativa number of your account in OCA e-Pack",
+                "type": "string"
+              },
+              "postCodeDst": {
+                "description": "Postcode Destination",
+                "type": "number"
+              },
+              "postCodeSrc": {
+                "description": "Postcode Source",
+                "type": "number"
+              },
+              "volume": {
+                "description": "Volume in cm3",
+                "type": "number"
+              },
+              "weight": {
+                "description": "Weight in KG",
+                "type": "number"
+              }
+            },
+            "required": [
+              "postCodeDst",
+              "cuit",
+              "operativa",
+              "cost",
+              "postCodeSrc",
+              "volume",
+              "weight"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "description": "ToolBench proxy for Create Container Tracking -> Get Tracking Data. The user will be able to retrieve the data using this endpoint. Method: GET.",
+          "name": "toolbench_create_container_tracking_get_tracking_data",
+          "parameters": {
+            "properties": {
+              "id": {
+                "description": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "description": "ToolBench proxy for Turkey Postal Codes -> il. Turkish plates. 1 to 81 Method: GET.",
+          "name": "toolbench_turkey_postal_codes_il",
+          "parameters": {
+            "properties": {
+              "il": {
+                "description": "",
+                "type": "number"
+              }
+            },
+            "required": [
+              "il"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "description": "ToolBench proxy for SQUAKE -> Checkhealth.  Method: GET.",
+          "name": "toolbench_squake_checkhealth",
+          "parameters": {
+            "properties": {},
+            "required": [],
+            "type": "object"
+          }
+        },
+        {
+          "description": "ToolBench proxy for SQUAKE -> Projects.  Method: GET.",
+          "name": "toolbench_squake_projects",
+          "parameters": {
+            "properties": {},
+            "required": [],
+            "type": "object"
+          }
+        }
+      ]
+    },
+    {
+      "answer_substrings": [
+        "34010",
+        "Delivered"
+      ],
+      "expected_calls": [
+        {
+          "allowed_args": {
+            "il": [
+              34,
+              "34"
+            ]
+          },
+          "name": "toolbench_turkey_postal_codes_il",
+          "output": "Istanbul postal codes include 34010 Fatih, 34367 Sisli, and 34710 Kadikoy."
+        },
+        {
+          "allowed_args": {
+            "task_id": [
+              "987654321"
+            ]
+          },
+          "name": "toolbench_transportistas_de_argentina_tracking_correo_argentino_result_task_task_id",
+          "output": "Tracking task 987654321: Delivered to recipient."
+        }
+      ],
+      "id": "toolbench_g2_2",
+      "prompt": "I'm planning a trip to Istanbul and I need to know the postal codes for different districts. Can you provide me with the postal codes for the districts in Istanbul with plate number 34? Additionally, I would like to track a package with the task ID 987654321.",
+      "provenance": {
+        "path": "external/ToolBench/data_example/instruction/G2_query.json",
+        "query_id": 2
+      },
+      "source": "toolbench",
+      "source_case_id": "G2:2",
+      "tools": [
+        {
+          "description": "ToolBench proxy for Transportistas de Argentina -> /offices/search/:service/:stateIsoCode/:keyword. List of offices for iso state and postcode. Method: GET.",
+          "name": "toolbench_transportistas_de_argentina_offices_search_service_stateisocode_keyword",
+          "parameters": {
+            "properties": {
+              "keyword": {
+                "description": "Keyword to search, example: Caballito",
+                "type": "string"
+              },
+              "service": {
+                "description": "Service Name: correo_argentino, oca, andreani",
+                "type": "string"
+              },
+              "stateIsoCode": {
+                "description": "State ISO Code",
+                "type": "string"
+              }
+            },
+            "required": [
+              "keyword",
+              "service",
+              "stateIsoCode"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "description": "ToolBench proxy for Transportistas de Argentina -> /tracking/correo_argentino/result_task/:task_id. Result for one Task ID. Method: GET.",
+          "name": "toolbench_transportistas_de_argentina_tracking_correo_argentino_result_task_task_id",
+          "parameters": {
+            "properties": {
+              "task_id": {
+                "description": "Task ID",
+                "type": "string"
+              }
+            },
+            "required": [
+              "task_id"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "description": "ToolBench proxy for Transportistas de Argentina -> /quotes/postcode/oca/:cuit/:operativa/:cost/:weight/:volume/:postCodeSrc/:postCodeDst. Quote for postcode in OCA e-Pack. Method: GET.",
+          "name": "toolbench_transportistas_de_argentina_quotes_postcode_oca_cuit_operativa_cost_weight_volume_postcodesrc_postcodedst",
+          "parameters": {
+            "properties": {
+              "cost": {
+                "description": "Cost of products in ARS",
+                "type": "number"
+              },
+              "cuit": {
+                "description": "CUIT of your account in OCA e-Pack",
+                "type": "string"
+              },
+              "operativa": {
+                "description": "Operativa number of your account in OCA e-Pack",
+                "type": "string"
+              },
+              "postCodeDst": {
+                "description": "Postcode Destination",
+                "type": "number"
+              },
+              "postCodeSrc": {
+                "description": "Postcode Source",
+                "type": "number"
+              },
+              "volume": {
+                "description": "Volume in cm3",
+                "type": "number"
+              },
+              "weight": {
+                "description": "Weight in KG",
+                "type": "number"
+              }
+            },
+            "required": [
+              "postCodeDst",
+              "cuit",
+              "operativa",
+              "cost",
+              "postCodeSrc",
+              "volume",
+              "weight"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "description": "ToolBench proxy for Create Container Tracking -> Get Tracking Data. The user will be able to retrieve the data using this endpoint. Method: GET.",
+          "name": "toolbench_create_container_tracking_get_tracking_data",
+          "parameters": {
+            "properties": {
+              "id": {
+                "description": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "description": "ToolBench proxy for Turkey Postal Codes -> il. Turkish plates. 1 to 81 Method: GET.",
+          "name": "toolbench_turkey_postal_codes_il",
+          "parameters": {
+            "properties": {
+              "il": {
+                "description": "",
+                "type": "number"
+              }
+            },
+            "required": [
+              "il"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "description": "ToolBench proxy for SQUAKE -> Checkhealth.  Method: GET.",
+          "name": "toolbench_squake_checkhealth",
+          "parameters": {
+            "properties": {},
+            "required": [],
+            "type": "object"
+          }
+        },
+        {
+          "description": "ToolBench proxy for SQUAKE -> Projects.  Method: GET.",
+          "name": "toolbench_squake_projects",
+          "parameters": {
+            "properties": {},
+            "required": [],
+            "type": "object"
+          }
+        }
+      ]
+    },
+    {
+      "answer_substrings": [
+        "Sunset Spritz",
+        "birthday"
+      ],
+      "expected_calls": [
+        {
+          "allowed_args": {},
+          "name": "toolbench_the_cocktail_db_list_of_cocktails",
+          "output": "Popular cocktails: Sunset Spritz (id=45) and Citrus Fizz (id=52)."
+        },
+        {
+          "allowed_args": {
+            "id": [
+              "45",
+              45
+            ]
+          },
+          "name": "toolbench_the_cocktail_db_detailed_cocktail_recipe_by_id",
+          "output": "Sunset Spritz recipe: combine orange juice, soda water, and bitters; shake and pour over ice."
+        },
+        {
+          "allowed_args": {},
+          "name": "toolbench_web_search_newssearch",
+          "output": "Birthday celebration news: 'Community birthday festival ideas' and 'How hosts plan memorable parties'."
+        }
+      ],
+      "id": "toolbench_g3_1",
+      "prompt": "I'm planning a surprise birthday party for my best friend. Can you help me find a list of popular cocktails to serve at the party? Also, I need some suggestions for cocktail recipes that are easy to make. Additionally, find some interesting news articles related to birthday celebrations.",
+      "provenance": {
+        "path": "external/ToolBench/data_example/instruction/G3_query.json",
+        "query_id": 1
+      },
+      "source": "toolbench",
+      "source_case_id": "G3:1",
+      "tools": [
+        {
+          "description": "ToolBench proxy for Investors Exchange (IEX) Trading -> IEX Short Interest List. Consolidated market short interest positions in all IEX-listed securities Method: GET.",
+          "name": "toolbench_investors_exchange_iex_trading_iex_short_interest_list",
+          "parameters": {
+            "properties": {
+              "symbol": {
+                "description": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "symbol"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "description": "ToolBench proxy for Investors Exchange (IEX) Trading -> IEX Regulation SHO Threshold Securities List. IEX-listed securities that have an aggregate fail to deliver position for five consecutive settlement days at a registered clearing agency, totaling 10,000 shares or more and equal to at least 0.5% of the issuer\u2019s total shares outstanding (i.e., \u201cthreshold securities\u201d). Method: GET.",
+          "name": "toolbench_investors_exchange_iex_trading_iex_regulation_sho_threshold_securities_list",
+          "parameters": {
+            "properties": {
+              "symbol": {
+                "description": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "symbol"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "description": "ToolBench proxy for Investors Exchange (IEX) Trading -> OHLC. Returns the official open and close for a give symbol. Method: GET.",
+          "name": "toolbench_investors_exchange_iex_trading_ohlc",
+          "parameters": {
+            "properties": {
+              "symbol": {
+                "description": "Specify stock symbol or use \"market\" for market-wide information",
+                "type": "string"
+              }
+            },
+            "required": [
+              "symbol"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "description": "ToolBench proxy for The Cocktail DB -> List of Cocktails. This endpoint responds with a list of cocktails that includes their names and images, as well as their IDs, which must be provided in the \"Detailed Cocktail Recipe by ID\" endpoint to receive the detailed cocktail recipe. Method: GET.",
+          "name": "toolbench_the_cocktail_db_list_of_cocktails",
+          "parameters": {
+            "properties": {},
+            "required": [],
+            "type": "object"
+          }
+        },
+        {
+          "description": "ToolBench proxy for The Cocktail DB -> Detailed Cocktail Recipe by ID. Get Cocktail by ID Method: GET.",
+          "name": "toolbench_the_cocktail_db_detailed_cocktail_recipe_by_id",
+          "parameters": {
+            "properties": {
+              "id": {
+                "description": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "description": "ToolBench proxy for Web Search -> spellCheck. Check spelling. Method: GET.",
+          "name": "toolbench_web_search_spellcheck",
+          "parameters": {
+            "properties": {
+              "text": {
+                "description": "The text string to check for spelling errors.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "text"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "description": "ToolBench proxy for Web Search -> newsSearch. Get news articles relevant for a given query. Method: GET.",
+          "name": "toolbench_web_search_newssearch",
+          "parameters": {
+            "properties": {
+              "autoCorrect": {
+                "description": "Automatically correct spelling.",
+                "type": "boolean"
+              },
+              "fromPublishedDate": {
+                "description": "The  published date and time for the oldest article allowed.  For example: *2015-05-16T05:50:06.* See  [https://www.c-sharpcorner.com/blogs/date-and-time-format-in-c-sharp-programming1 ](url)for more possible DateTime formats. ",
+                "type": "string"
+              },
+              "pageNumber": {
+                "description": "The page to view.",
+                "type": "number"
+              },
+              "pageSize": {
+                "description": "The number of items per page. The maximum value is 50.",
+                "type": "number"
+              },
+              "q": {
+                "description": "The user's search query string.",
+                "type": "string"
+              },
+              "safeSearch": {
+                "description": "A filter used to filter results for adult content.",
+                "type": "boolean"
+              },
+              "toPublishedDate": {
+                "description": "The  published date and time for the newest article allowed.  For example: *2015-05-16T05:50:06.* See  [https://www.c-sharpcorner.com/blogs/date-and-time-format-in-c-sharp-programming1 ](url)for more possible DateTime formats. ",
+                "type": "string"
+              },
+              "withThumbnails": {
+                "description": "Show results with image thumbnails.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "pageSize",
+              "autoCorrect",
+              "q",
+              "pageNumber"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "description": "ToolBench proxy for Web Search -> autoComplete. Suggest as-you-type completion. Method: GET.",
+          "name": "toolbench_web_search_autocomplete",
+          "parameters": {
+            "properties": {
+              "text": {
+                "description": "The prefix to complete",
+                "type": "string"
+              }
+            },
+            "required": [
+              "text"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "description": "ToolBench proxy for Live Sports Odds -> /v4/sports/{sport}/odds. Returns list of live and upcoming games for a given sport, showing bookmaker odds for the specified region and markets. Set the `sport` to a `sport_key` from the /sports endpoint. Alternatively if `sport=upcoming`, it will return a list of the next 8 upcoming games across all sports, as well as any live games. For more info, see [list of available sports](https://the-odds-api.com/sports-odds-data/sports-apis.html) and [list of available bookmakers](https://the-odds-api.com/sports-odds-data/bookmaker-apis.html). Method: GET.",
+          "name": "toolbench_live_sports_odds_v4_sports_sport_odds",
+          "parameters": {
+            "properties": {
+              "dateFormat": {
+                "description": "Format of returned timestamps. Can be iso (ISO8601) or unix timestamp (seconds since epoch)",
+                "type": "string"
+              },
+              "markets": {
+                "description": "The odds market to return. Can be a comma delimited list of odds markets. Defaults to h2h (head to head / moneyline). Outrights only avaialable for select sports. Note each market counts as 1 request against the usage quota.",
+                "type": "string"
+              },
+              "oddsFormat": {
+                "description": "Format of returned odds.",
+                "type": "string"
+              },
+              "regions": {
+                "description": "Determines which bookmakers appear in the response. Can be a comma delimited list of regions. Each region will count as 1 request against the usage quota for each market. Most use cases will only need to specify one region. For a list of bookmakers by region, see https://the-odds-api.com/sports-odds-data/bookmaker-apis.html",
+                "type": "string"
+              },
+              "sport": {
+                "description": "sport key for which to return games and odds",
+                "type": "string"
+              }
+            },
+            "required": [
+              "sport",
+              "regions"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "description": "ToolBench proxy for Live Sports Odds -> /v4/sports. Returns a list of available sports and tournaments. Use the `sports_key` in requests for /odds and /scores endpoints. Method: GET.",
+          "name": "toolbench_live_sports_odds_v4_sports",
+          "parameters": {
+            "properties": {
+              "all": {
+                "description": "When excluded, only recently updated (in-season) sports appear. Include this paramter to see all available sports",
+                "type": "boolean"
+              }
+            },
+            "required": [],
+            "type": "object"
+          }
+        },
+        {
+          "description": "ToolBench proxy for Live Sports Odds -> /v4/sports/{sport}/scores. Returns list of live and upcoming games for a given sport, and optionally recently completed games. Live and completed games will contain scores. **Currently in beta** and only available for selected sports. For more info, see the [list of available sports](https://the-odds-api.com/sports-odds-data/sports-apis.html) Method: GET.",
+          "name": "toolbench_live_sports_odds_v4_sports_sport_scores",
+          "parameters": {
+            "properties": {
+              "daysFrom": {
+                "description": "The number of days in the past from which to return completed games. Valid values are integers from `1` to `3`. If this field is missing, only live and upcoming games are returned.",
+                "type": "number"
+              },
+              "sport": {
+                "description": "sport key for which to return games and odds",
+                "type": "string"
+              }
+            },
+            "required": [
+              "sport"
+            ],
+            "type": "object"
+          }
+        }
+      ]
+    },
+    {
+      "answer_substrings": [
+        "Herb Garden Collins",
+        "NVDA"
+      ],
+      "expected_calls": [
+        {
+          "allowed_args": {},
+          "name": "toolbench_the_cocktail_db_list_of_cocktails",
+          "output": "Popular cocktails: Sunset Spritz (id=45) and Herb Garden Collins (id=61)."
+        },
+        {
+          "allowed_args": {
+            "id": [
+              "61",
+              61
+            ]
+          },
+          "name": "toolbench_the_cocktail_db_detailed_cocktail_recipe_by_id",
+          "output": "Herb Garden Collins recipe: muddle basil, add gin, lemon, and tonic, then stir over ice."
+        },
+        {
+          "allowed_args": {},
+          "name": "toolbench_web_search_newssearch",
+          "output": "Culinary news: 'Chefs embrace regional pairings' and 'Culinary trends for home hosts'."
+        },
+        {
+          "allowed_args": {
+            "symbol": [
+              "NVDA"
+            ]
+          },
+          "name": "toolbench_investors_exchange_iex_trading_iex_regulation_sho_threshold_securities_list",
+          "output": "Threshold securities entry: NVDA remains on the list for the current report."
+        }
+      ],
+      "id": "toolbench_g3_2",
+      "prompt": "I'm a food enthusiast and I want to explore different cuisines. Can you suggest some popular cocktails and their recipes that pair well with different types of cuisine? Also, find some interesting news articles about the culinary world. Additionally, provide me with the current threshold securities list for NVIDIA's stock.",
+      "provenance": {
+        "path": "external/ToolBench/data_example/instruction/G3_query.json",
+        "query_id": 2
+      },
+      "source": "toolbench",
+      "source_case_id": "G3:2",
+      "tools": [
+        {
+          "description": "ToolBench proxy for Investors Exchange (IEX) Trading -> IEX Short Interest List. Consolidated market short interest positions in all IEX-listed securities Method: GET.",
+          "name": "toolbench_investors_exchange_iex_trading_iex_short_interest_list",
+          "parameters": {
+            "properties": {
+              "symbol": {
+                "description": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "symbol"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "description": "ToolBench proxy for Investors Exchange (IEX) Trading -> IEX Regulation SHO Threshold Securities List. IEX-listed securities that have an aggregate fail to deliver position for five consecutive settlement days at a registered clearing agency, totaling 10,000 shares or more and equal to at least 0.5% of the issuer\u2019s total shares outstanding (i.e., \u201cthreshold securities\u201d). Method: GET.",
+          "name": "toolbench_investors_exchange_iex_trading_iex_regulation_sho_threshold_securities_list",
+          "parameters": {
+            "properties": {
+              "symbol": {
+                "description": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "symbol"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "description": "ToolBench proxy for Investors Exchange (IEX) Trading -> OHLC. Returns the official open and close for a give symbol. Method: GET.",
+          "name": "toolbench_investors_exchange_iex_trading_ohlc",
+          "parameters": {
+            "properties": {
+              "symbol": {
+                "description": "Specify stock symbol or use \"market\" for market-wide information",
+                "type": "string"
+              }
+            },
+            "required": [
+              "symbol"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "description": "ToolBench proxy for The Cocktail DB -> List of Cocktails. This endpoint responds with a list of cocktails that includes their names and images, as well as their IDs, which must be provided in the \"Detailed Cocktail Recipe by ID\" endpoint to receive the detailed cocktail recipe. Method: GET.",
+          "name": "toolbench_the_cocktail_db_list_of_cocktails",
+          "parameters": {
+            "properties": {},
+            "required": [],
+            "type": "object"
+          }
+        },
+        {
+          "description": "ToolBench proxy for The Cocktail DB -> Detailed Cocktail Recipe by ID. Get Cocktail by ID Method: GET.",
+          "name": "toolbench_the_cocktail_db_detailed_cocktail_recipe_by_id",
+          "parameters": {
+            "properties": {
+              "id": {
+                "description": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "description": "ToolBench proxy for Web Search -> spellCheck. Check spelling. Method: GET.",
+          "name": "toolbench_web_search_spellcheck",
+          "parameters": {
+            "properties": {
+              "text": {
+                "description": "The text string to check for spelling errors.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "text"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "description": "ToolBench proxy for Web Search -> newsSearch. Get news articles relevant for a given query. Method: GET.",
+          "name": "toolbench_web_search_newssearch",
+          "parameters": {
+            "properties": {
+              "autoCorrect": {
+                "description": "Automatically correct spelling.",
+                "type": "boolean"
+              },
+              "fromPublishedDate": {
+                "description": "The  published date and time for the oldest article allowed.  For example: *2015-05-16T05:50:06.* See  [https://www.c-sharpcorner.com/blogs/date-and-time-format-in-c-sharp-programming1 ](url)for more possible DateTime formats. ",
+                "type": "string"
+              },
+              "pageNumber": {
+                "description": "The page to view.",
+                "type": "number"
+              },
+              "pageSize": {
+                "description": "The number of items per page. The maximum value is 50.",
+                "type": "number"
+              },
+              "q": {
+                "description": "The user's search query string.",
+                "type": "string"
+              },
+              "safeSearch": {
+                "description": "A filter used to filter results for adult content.",
+                "type": "boolean"
+              },
+              "toPublishedDate": {
+                "description": "The  published date and time for the newest article allowed.  For example: *2015-05-16T05:50:06.* See  [https://www.c-sharpcorner.com/blogs/date-and-time-format-in-c-sharp-programming1 ](url)for more possible DateTime formats. ",
+                "type": "string"
+              },
+              "withThumbnails": {
+                "description": "Show results with image thumbnails.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "pageSize",
+              "autoCorrect",
+              "q",
+              "pageNumber"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "description": "ToolBench proxy for Web Search -> autoComplete. Suggest as-you-type completion. Method: GET.",
+          "name": "toolbench_web_search_autocomplete",
+          "parameters": {
+            "properties": {
+              "text": {
+                "description": "The prefix to complete",
+                "type": "string"
+              }
+            },
+            "required": [
+              "text"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "description": "ToolBench proxy for Live Sports Odds -> /v4/sports/{sport}/odds. Returns list of live and upcoming games for a given sport, showing bookmaker odds for the specified region and markets. Set the `sport` to a `sport_key` from the /sports endpoint. Alternatively if `sport=upcoming`, it will return a list of the next 8 upcoming games across all sports, as well as any live games. For more info, see [list of available sports](https://the-odds-api.com/sports-odds-data/sports-apis.html) and [list of available bookmakers](https://the-odds-api.com/sports-odds-data/bookmaker-apis.html). Method: GET.",
+          "name": "toolbench_live_sports_odds_v4_sports_sport_odds",
+          "parameters": {
+            "properties": {
+              "dateFormat": {
+                "description": "Format of returned timestamps. Can be iso (ISO8601) or unix timestamp (seconds since epoch)",
+                "type": "string"
+              },
+              "markets": {
+                "description": "The odds market to return. Can be a comma delimited list of odds markets. Defaults to h2h (head to head / moneyline). Outrights only avaialable for select sports. Note each market counts as 1 request against the usage quota.",
+                "type": "string"
+              },
+              "oddsFormat": {
+                "description": "Format of returned odds.",
+                "type": "string"
+              },
+              "regions": {
+                "description": "Determines which bookmakers appear in the response. Can be a comma delimited list of regions. Each region will count as 1 request against the usage quota for each market. Most use cases will only need to specify one region. For a list of bookmakers by region, see https://the-odds-api.com/sports-odds-data/bookmaker-apis.html",
+                "type": "string"
+              },
+              "sport": {
+                "description": "sport key for which to return games and odds",
+                "type": "string"
+              }
+            },
+            "required": [
+              "sport",
+              "regions"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "description": "ToolBench proxy for Live Sports Odds -> /v4/sports. Returns a list of available sports and tournaments. Use the `sports_key` in requests for /odds and /scores endpoints. Method: GET.",
+          "name": "toolbench_live_sports_odds_v4_sports",
+          "parameters": {
+            "properties": {
+              "all": {
+                "description": "When excluded, only recently updated (in-season) sports appear. Include this paramter to see all available sports",
+                "type": "boolean"
+              }
+            },
+            "required": [],
+            "type": "object"
+          }
+        },
+        {
+          "description": "ToolBench proxy for Live Sports Odds -> /v4/sports/{sport}/scores. Returns list of live and upcoming games for a given sport, and optionally recently completed games. Live and completed games will contain scores. **Currently in beta** and only available for selected sports. For more info, see the [list of available sports](https://the-odds-api.com/sports-odds-data/sports-apis.html) Method: GET.",
+          "name": "toolbench_live_sports_odds_v4_sports_sport_scores",
+          "parameters": {
+            "properties": {
+              "daysFrom": {
+                "description": "The number of days in the past from which to return completed games. Valid values are integers from `1` to `3`. If this field is missing, only live and upcoming games are returned.",
+                "type": "number"
+              },
+              "sport": {
+                "description": "sport key for which to return games and odds",
+                "type": "string"
+              }
+            },
+            "required": [
+              "sport"
+            ],
+            "type": "object"
+          }
+        }
+      ]
+    },
+    {
+      "answer_substrings": [
+        "25"
+      ],
+      "expected_calls": [
+        {
+          "allowed_args": {
+            "base": [
+              10
+            ],
+            "height": [
+              5
+            ],
+            "unit": [
+              "units",
+              ""
+            ]
+          },
+          "name": "calculate_triangle_area",
+          "output": "Area: 25 square units."
+        }
+      ],
+      "id": "bfcl_simple_python_0",
+      "prompt": "Find the area of a triangle with a base of 10 units and height of 5 units.",
+      "provenance": {
+        "path": "external/gorilla/berkeley-function-call-leaderboard/bfcl_eval/data/BFCL_v4_simple_python.json",
+        "possible_answer_path": "external/gorilla/berkeley-function-call-leaderboard/bfcl_eval/data/possible_answer/BFCL_v4_simple_python.json"
+      },
+      "source": "bfcl",
+      "source_case_id": "simple_python_0",
+      "tools": [
+        {
+          "description": "Calculate the area of a triangle given its base and height.",
+          "name": "calculate_triangle_area",
+          "parameters": {
+            "properties": {
+              "base": {
+                "description": "The base of the triangle.",
+                "type": "integer"
+              },
+              "height": {
+                "description": "The height of the triangle.",
+                "type": "integer"
+              },
+              "unit": {
+                "description": "The unit of measure (defaults to 'units' if not specified)",
+                "type": "string"
+              }
+            },
+            "required": [
+              "base",
+              "height"
+            ],
+            "type": "object"
+          }
+        }
+      ]
+    },
+    {
+      "answer_substrings": [
+        "120"
+      ],
+      "expected_calls": [
+        {
+          "allowed_args": {
+            "number": [
+              5
+            ]
+          },
+          "name": "math.factorial",
+          "output": "Factorial result: 120."
+        }
+      ],
+      "id": "bfcl_simple_python_1",
+      "prompt": "Calculate the factorial of 5 using math functions.",
+      "provenance": {
+        "path": "external/gorilla/berkeley-function-call-leaderboard/bfcl_eval/data/BFCL_v4_simple_python.json",
+        "possible_answer_path": "external/gorilla/berkeley-function-call-leaderboard/bfcl_eval/data/possible_answer/BFCL_v4_simple_python.json"
+      },
+      "source": "bfcl",
+      "source_case_id": "simple_python_1",
+      "tools": [
+        {
+          "description": "Calculate the factorial of a given number.",
+          "name": "math.factorial",
+          "parameters": {
+            "properties": {
+              "number": {
+                "description": "The number for which factorial needs to be calculated.",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "number"
+            ],
+            "type": "object"
+          }
+        }
+      ]
+    },
+    {
+      "answer_substrings": [
+        "6.403"
+      ],
+      "expected_calls": [
+        {
+          "allowed_args": {
+            "x": [
+              4
+            ],
+            "y": [
+              5
+            ],
+            "z": [
+              "",
+              0
+            ]
+          },
+          "name": "math.hypot",
+          "output": "Hypotenuse: 6.403."
+        }
+      ],
+      "id": "bfcl_simple_python_2",
+      "prompt": "Calculate the hypotenuse of a right triangle given the lengths of the other two sides as 4 and 5.",
+      "provenance": {
+        "path": "external/gorilla/berkeley-function-call-leaderboard/bfcl_eval/data/BFCL_v4_simple_python.json",
+        "possible_answer_path": "external/gorilla/berkeley-function-call-leaderboard/bfcl_eval/data/possible_answer/BFCL_v4_simple_python.json"
+      },
+      "source": "bfcl",
+      "source_case_id": "simple_python_2",
+      "tools": [
+        {
+          "description": "Calculate the Euclidean norm, sqrt(sum(squares)), the length of the vector from the origin to point (x, y) which is the hypotenuse of the right triangle.",
+          "name": "math.hypot",
+          "parameters": {
+            "properties": {
+              "x": {
+                "description": "The x-coordinate value.",
+                "type": "integer"
+              },
+              "y": {
+                "description": "The y-coordinate value.",
+                "type": "integer"
+              },
+              "z": {
+                "description": "Optional. The z-coordinate value. Default is 0.",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "x",
+              "y"
+            ],
+            "type": "object"
+          }
+        }
+      ]
+    },
+    {
+      "answer_substrings": [
+        "1",
+        "2"
+      ],
+      "expected_calls": [
+        {
+          "allowed_args": {
+            "a": [
+              1
+            ],
+            "b": [
+              -3
+            ],
+            "c": [
+              2
+            ]
+          },
+          "name": "algebra.quadratic_roots",
+          "output": "Roots: 1 and 2."
+        }
+      ],
+      "id": "bfcl_simple_python_3",
+      "prompt": "Find the roots of a quadratic equation with coefficients a=1, b=-3, c=2.",
+      "provenance": {
+        "path": "external/gorilla/berkeley-function-call-leaderboard/bfcl_eval/data/BFCL_v4_simple_python.json",
+        "possible_answer_path": "external/gorilla/berkeley-function-call-leaderboard/bfcl_eval/data/possible_answer/BFCL_v4_simple_python.json"
+      },
+      "source": "bfcl",
+      "source_case_id": "simple_python_3",
+      "tools": [
+        {
+          "description": "Find the roots of a quadratic equation ax^2 + bx + c = 0.",
+          "name": "algebra.quadratic_roots",
+          "parameters": {
+            "properties": {
+              "a": {
+                "description": "Coefficient of x^2.",
+                "type": "integer"
+              },
+              "b": {
+                "description": "Coefficient of x.",
+                "type": "integer"
+              },
+              "c": {
+                "description": "Constant term.",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "a",
+              "b",
+              "c"
+            ],
+            "type": "object"
+          }
+        }
+      ]
+    },
+    {
+      "answer_substrings": [
+        "4"
+      ],
+      "expected_calls": [
+        {
+          "allowed_args": {
+            "a": [
+              3
+            ],
+            "b": [
+              -11
+            ],
+            "c": [
+              -4
+            ],
+            "root_type": [
+              "all"
+            ]
+          },
+          "name": "solve_quadratic",
+          "output": "Roots: 4 and -0.3333."
+        }
+      ],
+      "id": "bfcl_simple_python_5",
+      "prompt": "Find all the roots of a quadratic equation given coefficients a = 3, b = -11, and c = -4.",
+      "provenance": {
+        "path": "external/gorilla/berkeley-function-call-leaderboard/bfcl_eval/data/BFCL_v4_simple_python.json",
+        "possible_answer_path": "external/gorilla/berkeley-function-call-leaderboard/bfcl_eval/data/possible_answer/BFCL_v4_simple_python.json"
+      },
+      "source": "bfcl",
+      "source_case_id": "simple_python_5",
+      "tools": [
+        {
+          "description": "Solve a quadratic equation given coefficients a, b, and c. If optional 'root_type' is 'real', the function will only return real roots. If not specified, function may return complex roots.",
+          "name": "solve_quadratic",
+          "parameters": {
+            "properties": {
+              "a": {
+                "description": "The coefficient of the squared term in the quadratic equation.",
+                "type": "integer"
+              },
+              "b": {
+                "description": "The coefficient of the linear term in the quadratic equation.",
+                "type": "integer"
+              },
+              "c": {
+                "description": "The constant term in the quadratic equation.",
+                "type": "integer"
+              },
+              "root_type": {
+                "description": "The type of roots to return: 'real' for real roots, 'all' for both real and complex roots. Default value is 'real'.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "a",
+              "b",
+              "c"
+            ],
+            "type": "object"
+          }
+        }
+      ]
+    },
+    {
+      "answer_substrings": [
+        "25.13"
+      ],
+      "expected_calls": [
+        {
+          "allowed_args": {
+            "radius": [
+              4
+            ],
+            "unit": [
+              "inches",
+              "in"
+            ]
+          },
+          "name": "calculate_circumference",
+          "output": "Circumference: 25.13 inches."
+        }
+      ],
+      "id": "bfcl_simple_python_7",
+      "prompt": "What is the circumference of a circle with a radius of 4 inches?",
+      "provenance": {
+        "path": "external/gorilla/berkeley-function-call-leaderboard/bfcl_eval/data/BFCL_v4_simple_python.json",
+        "possible_answer_path": "external/gorilla/berkeley-function-call-leaderboard/bfcl_eval/data/possible_answer/BFCL_v4_simple_python.json"
+      },
+      "source": "bfcl",
+      "source_case_id": "simple_python_7",
+      "tools": [
+        {
+          "description": "Calculates the circumference of a circle with a given radius.",
+          "name": "calculate_circumference",
+          "parameters": {
+            "properties": {
+              "radius": {
+                "description": "The radius of the circle in the unit given.",
+                "type": "integer"
+              },
+              "unit": {
+                "description": "The unit of measurement for the radius. Default is 'cm'.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "radius"
+            ],
+            "type": "object"
+          }
+        }
+      ]
+    },
+    {
+      "answer_substrings": [
+        "area 6",
+        "perimeter 12"
+      ],
+      "expected_calls": [
+        {
+          "allowed_args": {
+            "get_angles": [
+              "",
+              true
+            ],
+            "get_area": [
+              "",
+              true
+            ],
+            "get_perimeter": [
+              "",
+              true
+            ],
+            "side1": [
+              5
+            ],
+            "side2": [
+              4
+            ],
+            "side3": [
+              3
+            ]
+          },
+          "name": "triangle_properties.get",
+          "output": "Triangle properties: area 6, perimeter 12, angles 37, 53, and 90 degrees."
+        }
+      ],
+      "id": "bfcl_multiple_0",
+      "prompt": "Can I find the dimensions and properties of a triangle, if I know its three sides are 5 units, 4 units and 3 units long?",
+      "provenance": {
+        "path": "external/gorilla/berkeley-function-call-leaderboard/bfcl_eval/data/BFCL_v4_multiple.json",
+        "possible_answer_path": "external/gorilla/berkeley-function-call-leaderboard/bfcl_eval/data/possible_answer/BFCL_v4_multiple.json"
+      },
+      "source": "bfcl",
+      "source_case_id": "multiple_0",
+      "tools": [
+        {
+          "description": "Retrieve the dimensions, such as area and perimeter, of a triangle if lengths of three sides are given.",
+          "name": "triangle_properties.get",
+          "parameters": {
+            "properties": {
+              "get_angles": {
+                "default": true,
+                "description": "A flag to determine whether to calculate the internal angles of triangle. Default is true.",
+                "optional": true,
+                "type": "boolean"
+              },
+              "get_area": {
+                "default": true,
+                "description": "A flag to determine whether to calculate the area of triangle. Default is true.",
+                "optional": true,
+                "type": "boolean"
+              },
+              "get_perimeter": {
+                "default": true,
+                "description": "A flag to determine whether to calculate the perimeter of triangle. Default is true.",
+                "optional": true,
+                "type": "boolean"
+              },
+              "side1": {
+                "description": "The length of first side of the triangle.",
+                "type": "integer"
+              },
+              "side2": {
+                "description": "The length of second side of the triangle.",
+                "type": "integer"
+              },
+              "side3": {
+                "description": "The length of third side of the triangle.",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "side1",
+              "side2",
+              "side3"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "description": "Retrieve the dimensions, such as area and circumference, of a circle if radius is given.",
+          "name": "circle_properties.get",
+          "parameters": {
+            "properties": {
+              "get_area": {
+                "default": true,
+                "description": "A flag to determine whether to calculate the area of circle. Default is true.",
+                "optional": true,
+                "type": "boolean"
+              },
+              "get_circumference": {
+                "default": true,
+                "description": "A flag to determine whether to calculate the circumference of circle. Default is true.",
+                "optional": true,
+                "type": "boolean"
+              },
+              "radius": {
+                "description": "The length of radius of the circle.",
+                "type": "float"
+              }
+            },
+            "required": [
+              "radius"
+            ],
+            "type": "object"
+          }
+        }
+      ]
+    },
+    {
+      "answer_substrings": [
+        "6"
+      ],
+      "expected_calls": [
+        {
+          "allowed_args": {
+            "side1": [
+              3
+            ],
+            "side2": [
+              4
+            ],
+            "side3": [
+              5
+            ]
+          },
+          "name": "math.triangle_area_heron",
+          "output": "Triangle area: 6 square units."
+        }
+      ],
+      "id": "bfcl_multiple_1",
+      "prompt": "Calculate the area of a triangle, given the lengths of its three sides: 3, 4, and 5.",
+      "provenance": {
+        "path": "external/gorilla/berkeley-function-call-leaderboard/bfcl_eval/data/BFCL_v4_multiple.json",
+        "possible_answer_path": "external/gorilla/berkeley-function-call-leaderboard/bfcl_eval/data/possible_answer/BFCL_v4_multiple.json"
+      },
+      "source": "bfcl",
+      "source_case_id": "multiple_1",
+      "tools": [
+        {
+          "description": "Calculates the area of a triangle using Heron's formula, given the lengths of its three sides.",
+          "name": "math.triangle_area_heron",
+          "parameters": {
+            "properties": {
+              "side1": {
+                "description": "Length of the first side of the triangle.",
+                "type": "integer"
+              },
+              "side2": {
+                "description": "Length of the second side of the triangle.",
+                "type": "integer"
+              },
+              "side3": {
+                "description": "Length of the third side of the triangle.",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "side1",
+              "side2",
+              "side3"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "description": "Calculates the area of a circle given its radius.",
+          "name": "math.circle_area",
+          "parameters": {
+            "properties": {
+              "radius": {
+                "description": "The radius of the circle.",
+                "type": "float"
+              }
+            },
+            "required": [
+              "radius"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "description": "Calculates the area of a triangle using the formula (1/2)base*height.",
+          "name": "math.triangle_area_base_height",
+          "parameters": {
+            "properties": {
+              "base": {
+                "description": "The base length of the triangle.",
+                "type": "float"
+              },
+              "height": {
+                "description": "The height of the triangle.",
+                "type": "float"
+              }
+            },
+            "required": [
+              "base",
+              "height"
+            ],
+            "type": "object"
+          }
+        }
+      ]
+    },
+    {
+      "answer_substrings": [
+        "Brasilia"
+      ],
+      "expected_calls": [
+        {
+          "allowed_args": {
+            "country": [
+              "Brazil"
+            ]
+          },
+          "name": "country_info.capital",
+          "output": "Capital of Brazil: Brasilia."
+        }
+      ],
+      "id": "bfcl_multiple_2",
+      "prompt": "What is the capital of Brazil?",
+      "provenance": {
+        "path": "external/gorilla/berkeley-function-call-leaderboard/bfcl_eval/data/BFCL_v4_multiple.json",
+        "possible_answer_path": "external/gorilla/berkeley-function-call-leaderboard/bfcl_eval/data/possible_answer/BFCL_v4_multiple.json"
+      },
+      "source": "bfcl",
+      "source_case_id": "multiple_2",
+      "tools": [
+        {
+          "description": "Fetch the largest city of a specified country.",
+          "name": "country_info.largest_city",
+          "parameters": {
+            "properties": {
+              "country": {
+                "description": "Name of the country.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "country"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "description": "Fetch the capital city of a specified country.",
+          "name": "country_info.capital",
+          "parameters": {
+            "properties": {
+              "country": {
+                "description": "Name of the country.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "country"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "description": "Fetch the current population of a specified country.",
+          "name": "country_info.population",
+          "parameters": {
+            "properties": {
+              "country": {
+                "description": "Name of the country.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "country"
+            ],
+            "type": "object"
+          }
+        }
+      ]
+    },
+    {
+      "answer_substrings": [
+        "2.83"
+      ],
+      "expected_calls": [
+        {
+          "allowed_args": {
+            "pointA": [
+              [
+                3,
+                4
+              ]
+            ],
+            "pointB": [
+              [
+                1,
+                2
+              ]
+            ],
+            "rounding": [
+              "",
+              0
+            ]
+          },
+          "name": "EuclideanDistance.calculate",
+          "output": "Euclidean distance: 2.83."
+        }
+      ],
+      "id": "bfcl_multiple_3",
+      "prompt": "Compute the Euclidean distance between two points A(3,4) and B(1,2).",
+      "provenance": {
+        "path": "external/gorilla/berkeley-function-call-leaderboard/bfcl_eval/data/BFCL_v4_multiple.json",
+        "possible_answer_path": "external/gorilla/berkeley-function-call-leaderboard/bfcl_eval/data/possible_answer/BFCL_v4_multiple.json"
+      },
+      "source": "bfcl",
+      "source_case_id": "multiple_3",
+      "tools": [
+        {
+          "description": "Calculate the Euclidean distance between two points.",
+          "name": "EuclideanDistance.calculate",
+          "parameters": {
+            "properties": {
+              "pointA": {
+                "description": "Coordinates for Point A.",
+                "items": {
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              "pointB": {
+                "description": "Coordinates for Point B.",
+                "items": {
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              "rounding": {
+                "description": "Optional: The number of decimals to round off the result. Default 0",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "pointA",
+              "pointB"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "description": "Calculate the angle between two points with respect to x-axis.",
+          "name": "angleToXAxis.calculate",
+          "parameters": {
+            "properties": {
+              "pointA": {
+                "description": "Coordinates for Point A.",
+                "items": {
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              "pointB": {
+                "description": "Coordinates for Point B.",
+                "items": {
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              "rounding": {
+                "description": "Optional: The number of decimals to round off the result. Default 0",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "pointA",
+              "pointB"
+            ],
+            "type": "object"
+          }
+        }
+      ]
+    },
+    {
+      "answer_substrings": [
+        "225"
+      ],
+      "expected_calls": [
+        {
+          "allowed_args": {
+            "acceleration": [
+              10
+            ],
+            "initial_speed": [
+              20
+            ],
+            "rounding": [
+              "",
+              2
+            ],
+            "time": [
+              5
+            ]
+          },
+          "name": "kinematics.calculate_displacement",
+          "output": "Displacement: 225 meters."
+        }
+      ],
+      "id": "bfcl_multiple_4",
+      "prompt": "Can you calculate the displacement of a car moving at an initial speed of 20 m/s and then accelerates at 10 m/s^2 for 5 seconds? (assuming a straight line motion)",
+      "provenance": {
+        "path": "external/gorilla/berkeley-function-call-leaderboard/bfcl_eval/data/BFCL_v4_multiple.json",
+        "possible_answer_path": "external/gorilla/berkeley-function-call-leaderboard/bfcl_eval/data/possible_answer/BFCL_v4_multiple.json"
+      },
+      "source": "bfcl",
+      "source_case_id": "multiple_4",
+      "tools": [
+        {
+          "description": "Calculate displacement based on initial speed, acceleration, and time interval for a motion along a straight line.",
+          "name": "kinematics.calculate_displacement",
+          "parameters": {
+            "properties": {
+              "acceleration": {
+                "description": "The rate of change of speed, m/s^2.",
+                "type": "integer"
+              },
+              "initial_speed": {
+                "description": "The initial speed of the moving object in m/s.",
+                "type": "integer"
+              },
+              "rounding": {
+                "default": 2,
+                "description": "The number of decimals to round off the result (optional).",
+                "type": "integer"
+              },
+              "time": {
+                "description": "The time interval during which the acceleration is applied, in seconds.",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "initial_speed",
+              "acceleration",
+              "time"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "description": "Calculate the final speed of an object that starts from an initial speed and then accelerates for a certain duration.",
+          "name": "kinematics.calculate_final_speed",
+          "parameters": {
+            "properties": {
+              "acceleration": {
+                "description": "The rate of change of speed, m/s^2.",
+                "type": "float"
+              },
+              "initial_speed": {
+                "description": "The initial speed of the moving object in m/s.",
+                "type": "float"
+              },
+              "rounding": {
+                "default": 2,
+                "description": "The number of decimals to round off the result (optional).",
+                "type": "integer"
+              },
+              "time": {
+                "description": "The time interval during which the acceleration is applied, in seconds.",
+                "type": "float"
+              }
+            },
+            "required": [
+              "initial_speed",
+              "acceleration",
+              "time"
+            ],
+            "type": "object"
+          }
+        }
+      ]
+    },
+    {
+      "answer_substrings": [
+        "8 C",
+        "16"
+      ],
+      "expected_calls": [
+        {
+          "allowed_args": {
+            "coordinates": [
+              [
+                46.603354,
+                1.888334
+              ]
+            ],
+            "date": [
+              "2019-12-13"
+            ]
+          },
+          "name": "weather.get_by_coordinates_date",
+          "output": "Weather on 2019-12-13: 8 C with 16 km/h winds."
+        }
+      ],
+      "id": "bfcl_multiple_5",
+      "prompt": "What is the wind speed and temperature in location given by coordinates 46.603354,1.8883340 on December 13, 2019?",
+      "provenance": {
+        "path": "external/gorilla/berkeley-function-call-leaderboard/bfcl_eval/data/BFCL_v4_multiple.json",
+        "possible_answer_path": "external/gorilla/berkeley-function-call-leaderboard/bfcl_eval/data/possible_answer/BFCL_v4_multiple.json"
+      },
+      "source": "bfcl",
+      "source_case_id": "multiple_5",
+      "tools": [
+        {
+          "description": "Retrieves the historical weather data based on city and date.",
+          "name": "weather.get_by_city_date",
+          "parameters": {
+            "properties": {
+              "city": {
+                "description": "The city for which to retrieve the weather.",
+                "type": "string"
+              },
+              "date": {
+                "description": "The date for which to retrieve the historical weather data in the format YYYY-MM-DD.",
+                "format": "date",
+                "type": "string"
+              }
+            },
+            "required": [
+              "city",
+              "date"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "description": "Get the weather forecast for a specific geographical coordinates.",
+          "name": "weather.get_forecast_by_coordinates",
+          "parameters": {
+            "properties": {
+              "coordinates": {
+                "description": "The geographical coordinates for which to retrieve the weather. The first element of the tuple is the latitude and the second is the longitude.",
+                "items": {
+                  "type": "float"
+                },
+                "type": "tuple"
+              },
+              "days_ahead": {
+                "description": "Number of days to forecast from current date (optional, default is 7).",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "coordinates"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "description": "Retrieves the historical weather data based on coordinates and date.",
+          "name": "weather.get_by_coordinates_date",
+          "parameters": {
+            "properties": {
+              "coordinates": {
+                "description": "The geographical coordinates for which to retrieve the weather. The first element of the tuple is the latitude and the second is the longitude.",
+                "items": {
+                  "type": "float"
+                },
+                "type": "tuple"
+              },
+              "date": {
+                "description": "The date for which to retrieve the historical weather data in the format YYYY-MM-DD.",
+                "format": "date",
+                "type": "string"
+              }
+            },
+            "required": [
+              "coordinates",
+              "date"
+            ],
+            "type": "object"
+          }
+        }
+      ]
+    },
+    {
+      "answer_substrings": [
+        "8.85e-9"
+      ],
+      "expected_calls": [
+        {
+          "allowed_args": {
+            "A": [
+              10
+            ],
+            "K": [
+              1.0,
+              ""
+            ],
+            "d": [
+              0.01
+            ]
+          },
+          "name": "capacitance_calculator.calculate",
+          "output": "Capacitance: 8.85e-9 farads."
+        }
+      ],
+      "id": "bfcl_multiple_6",
+      "prompt": "Calculate the capacitance of a parallel plate capacitor where the area of the plate is 10 square meters, the distance between plates is 0.01 meters and the dielectric constant K is 1.0.",
+      "provenance": {
+        "path": "external/gorilla/berkeley-function-call-leaderboard/bfcl_eval/data/BFCL_v4_multiple.json",
+        "possible_answer_path": "external/gorilla/berkeley-function-call-leaderboard/bfcl_eval/data/possible_answer/BFCL_v4_multiple.json"
+      },
+      "source": "bfcl",
+      "source_case_id": "multiple_6",
+      "tools": [
+        {
+          "description": "Calculate the resistance of an electrical circuit based on current and voltage.",
+          "name": "resistance_calculator.calculate",
+          "parameters": {
+            "properties": {
+              "I": {
+                "description": "The electric current flowing in Amperes.",
+                "type": "float"
+              },
+              "V": {
+                "description": "The voltage difference in Volts.",
+                "type": "float"
+              }
+            },
+            "required": [
+              "I",
+              "V"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "description": "Calculate the capacitance of a parallel plate capacitor based on the area, distance and dielectric constant using the equation C = \u03b5\u2080KA/d.",
+          "name": "capacitance_calculator.calculate",
+          "parameters": {
+            "properties": {
+              "A": {
+                "description": "The area of one plate of the capacitor in square meters.",
+                "type": "integer"
+              },
+              "K": {
+                "description": "The dielectric constant (default is 1.0 for free space, optional).",
+                "type": "float"
+              },
+              "d": {
+                "description": "The distance between the two plates in meters.",
+                "type": "float"
+              }
+            },
+            "required": [
+              "A",
+              "d"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "description": "Calculate the magnetic field based on the current flowing and the radial distance.",
+          "name": "magnetic_field.calculate",
+          "parameters": {
+            "properties": {
+              "I": {
+                "description": "The electric current flowing in Amperes.",
+                "type": "float"
+              },
+              "r": {
+                "description": "The radial distance from the line of current in meters.",
+                "type": "float"
+              }
+            },
+            "required": [
+              "I",
+              "r"
+            ],
+            "type": "object"
+          }
+        }
+      ]
+    },
+    {
+      "answer_substrings": [
+        "Taylor Swift",
+        "Maroon 5"
+      ],
+      "expected_calls": [
+        {
+          "allowed_args": {
+            "artist": [
+              "Taylor Swift"
+            ],
+            "duration": [
+              20
+            ]
+          },
+          "name": "spotify.play",
+          "output": "Queued Taylor Swift for 20 minutes."
+        },
+        {
+          "allowed_args": {
+            "artist": [
+              "Maroon 5"
+            ],
+            "duration": [
+              15
+            ]
+          },
+          "name": "spotify.play",
+          "output": "Queued Maroon 5 for 15 minutes."
+        }
+      ],
+      "id": "bfcl_parallel_0",
+      "prompt": "Play songs from the artists Taylor Swift and Maroon 5, with a play time of 20 minutes and 15 minutes respectively, on Spotify.",
+      "provenance": {
+        "path": "external/gorilla/berkeley-function-call-leaderboard/bfcl_eval/data/BFCL_v4_parallel.json",
+        "possible_answer_path": "external/gorilla/berkeley-function-call-leaderboard/bfcl_eval/data/possible_answer/BFCL_v4_parallel.json"
+      },
+      "source": "bfcl",
+      "source_case_id": "parallel_0",
+      "tools": [
+        {
+          "description": "Play specific tracks from a given artist for a specific time duration.",
+          "name": "spotify.play",
+          "parameters": {
+            "properties": {
+              "artist": {
+                "description": "The artist whose songs you want to play.",
+                "type": "string"
+              },
+              "duration": {
+                "description": "The duration for which the songs should be played, in minutes.",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "artist",
+              "duration"
+            ],
+            "type": "object"
+          }
+        }
+      ]
+    },
+    {
+      "answer_substrings": [
+        "2.5",
+        "1.0"
+      ],
+      "expected_calls": [
+        {
+          "allowed_args": {
+            "area": [
+              2
+            ],
+            "b_field": [
+              5
+            ],
+            "d_time": [
+              4
+            ]
+          },
+          "name": "calculate_em_force",
+          "output": "Induced electromagnetic force: 2.5 volts."
+        },
+        {
+          "allowed_args": {
+            "area": [
+              2
+            ],
+            "b_field": [
+              5
+            ],
+            "d_time": [
+              10
+            ]
+          },
+          "name": "calculate_em_force",
+          "output": "Induced electromagnetic force: 1.0 volts."
+        }
+      ],
+      "id": "bfcl_parallel_1",
+      "prompt": "Calculate the induced electromagnetic force for a magnetic field of 5 Tesla, area of 2 square meters and change in time of 4 seconds, then repeat with a change in time of 10 seconds.",
+      "provenance": {
+        "path": "external/gorilla/berkeley-function-call-leaderboard/bfcl_eval/data/BFCL_v4_parallel.json",
+        "possible_answer_path": "external/gorilla/berkeley-function-call-leaderboard/bfcl_eval/data/possible_answer/BFCL_v4_parallel.json"
+      },
+      "source": "bfcl",
+      "source_case_id": "parallel_1",
+      "tools": [
+        {
+          "description": "Calculate the induced electromagnetic force based on Faraday's Law of Electromagnetic Induction, given the magnetic field (in Tesla), change in magnetic field area (in square meters), and the change in time (in seconds).",
+          "name": "calculate_em_force",
+          "parameters": {
+            "properties": {
+              "area": {
+                "description": "The change in area of magnetic field in square meters.",
+                "type": "integer"
+              },
+              "b_field": {
+                "description": "The magnetic field in Tesla.",
+                "type": "integer"
+              },
+              "d_time": {
+                "description": "The change in time in seconds.",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "b_field",
+              "area",
+              "d_time"
+            ],
+            "type": "object"
+          }
+        }
+      ]
+    },
+    {
+      "answer_substrings": [
+        "0.0084",
+        "0.0141"
+      ],
+      "expected_calls": [
+        {
+          "allowed_args": {
+            "area": [
+              0.01
+            ],
+            "length": [
+              5
+            ],
+            "resistivity": [
+              "copper",
+              ""
+            ]
+          },
+          "name": "calculate_resistance",
+          "output": "Copper wire resistance: 0.0084 ohms."
+        },
+        {
+          "allowed_args": {
+            "area": [
+              0.01
+            ],
+            "length": [
+              5
+            ],
+            "resistivity": [
+              "aluminum"
+            ]
+          },
+          "name": "calculate_resistance",
+          "output": "Aluminum wire resistance: 0.0141 ohms."
+        }
+      ],
+      "id": "bfcl_parallel_2",
+      "prompt": "Calculate the resistance of a wire with a length of 5m and cross sectional area 0.01m\u00b2 with resistivity of copper and aluminum",
+      "provenance": {
+        "path": "external/gorilla/berkeley-function-call-leaderboard/bfcl_eval/data/BFCL_v4_parallel.json",
+        "possible_answer_path": "external/gorilla/berkeley-function-call-leaderboard/bfcl_eval/data/possible_answer/BFCL_v4_parallel.json"
+      },
+      "source": "bfcl",
+      "source_case_id": "parallel_2",
+      "tools": [
+        {
+          "description": "Calculate the resistance of a wire using resistivity, length, and cross-sectional area.",
+          "name": "calculate_resistance",
+          "parameters": {
+            "properties": {
+              "area": {
+                "description": "The cross-sectional area of the wire in square meters.",
+                "type": "float"
+              },
+              "length": {
+                "description": "The length of the wire in meters.",
+                "type": "integer"
+              },
+              "resistivity": {
+                "description": "Resistivity of the material (Default: 'copper'). Allowed values: 'copper', 'aluminum'",
+                "type": "string"
+              }
+            },
+            "required": [
+              "length",
+              "area"
+            ],
+            "type": "object"
+          }
+        }
+      ]
+    },
+    {
+      "answer_substrings": [
+        "23.9",
+        "21.4"
+      ],
+      "expected_calls": [
+        {
+          "allowed_args": {
+            "height": [
+              6.0
+            ],
+            "weight": [
+              80
+            ]
+          },
+          "name": "calculate_bmi",
+          "output": "BMI: 23.9."
+        },
+        {
+          "allowed_args": {
+            "height": [
+              5.6
+            ],
+            "weight": [
+              60
+            ]
+          },
+          "name": "calculate_bmi",
+          "output": "BMI: 21.4."
+        }
+      ],
+      "id": "bfcl_parallel_4",
+      "prompt": "Calculate the body mass index for a person who is 6 feet tall and weighs 80 kg, also for a person who is 5.6 feet and weighs 60 kg.",
+      "provenance": {
+        "path": "external/gorilla/berkeley-function-call-leaderboard/bfcl_eval/data/BFCL_v4_parallel.json",
+        "possible_answer_path": "external/gorilla/berkeley-function-call-leaderboard/bfcl_eval/data/possible_answer/BFCL_v4_parallel.json"
+      },
+      "source": "bfcl",
+      "source_case_id": "parallel_4",
+      "tools": [
+        {
+          "description": "Calculate body mass index for a person based on their weight and height.",
+          "name": "calculate_bmi",
+          "parameters": {
+            "properties": {
+              "height": {
+                "description": "The height of the person in feet.",
+                "type": "float"
+              },
+              "weight": {
+                "description": "The weight of the person in kilograms.",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "height",
+              "weight"
+            ],
+            "type": "object"
+          }
+        }
+      ]
+    },
+    {
+      "answer_substrings": [
+        "Friends",
+        "The Office"
+      ],
+      "expected_calls": [
+        {
+          "allowed_args": {
+            "show_list": [
+              [
+                "Friends"
+              ]
+            ],
+            "sort_by_rating": [
+              true
+            ],
+            "streaming_service": [
+              "Netflix"
+            ]
+          },
+          "name": "streaming_services.shows_list_and_ratings",
+          "output": "Netflix ratings: Friends 8.9."
+        },
+        {
+          "allowed_args": {
+            "show_list": [
+              [
+                "The Office",
+                "Stranger Things"
+              ],
+              [
+                "Stranger Things",
+                "The Office"
+              ]
+            ],
+            "sort_by_rating": [
+              true
+            ],
+            "streaming_service": [
+              "Hulu"
+            ]
+          },
+          "name": "streaming_services.shows_list_and_ratings",
+          "output": "Hulu ratings: The Office 8.8 and Stranger Things 8.7."
+        }
+      ],
+      "id": "bfcl_parallel_5",
+      "prompt": "Find the list of TV shows and their ratings on Netflix for 'Friends', and Hulu for 'The Office' and 'Stranger Things' and sort by its rating",
+      "provenance": {
+        "path": "external/gorilla/berkeley-function-call-leaderboard/bfcl_eval/data/BFCL_v4_parallel.json",
+        "possible_answer_path": "external/gorilla/berkeley-function-call-leaderboard/bfcl_eval/data/possible_answer/BFCL_v4_parallel.json"
+      },
+      "source": "bfcl",
+      "source_case_id": "parallel_5",
+      "tools": [
+        {
+          "description": "Get a list of shows and their ratings on specific streaming services.",
+          "name": "streaming_services.shows_list_and_ratings",
+          "parameters": {
+            "properties": {
+              "show_list": {
+                "description": "List of show names to search for on the platform.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "sort_by_rating": {
+                "description": "If set to true, returns the list sorted by ratings. Defaults to false.",
+                "type": "boolean"
+              },
+              "streaming_service": {
+                "description": "Name of the streaming service. E.g., Netflix, Hulu, etc.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "streaming_service",
+              "show_list"
+            ],
+            "type": "object"
+          }
+        }
+      ]
+    },
+    {
+      "answer_substrings": [
+        "Chicago",
+        "Sacramento",
+        "Portland"
+      ],
+      "expected_calls": [
+        {
+          "allowed_args": {
+            "city": [
+              "Chicago",
+              "CHI"
+            ],
+            "purchase_amount": [
+              30.45
+            ],
+            "state": [
+              "IL",
+              "Illinois"
+            ]
+          },
+          "name": "calculate_sales_tax",
+          "output": "Chicago sales tax: 3.13."
+        },
+        {
+          "allowed_args": {
+            "city": [
+              "Sacramento"
+            ],
+            "purchase_amount": [
+              52.33
+            ],
+            "state": [
+              "CA",
+              "California"
+            ]
+          },
+          "name": "calculate_sales_tax",
+          "output": "Sacramento sales tax: 4.19."
+        },
+        {
+          "allowed_args": {
+            "city": [
+              "Portland"
+            ],
+            "purchase_amount": [
+              11.23
+            ],
+            "state": [
+              "OR",
+              "Oregon"
+            ]
+          },
+          "name": "calculate_sales_tax",
+          "output": "Portland sales tax: 0.00."
+        }
+      ],
+      "id": "bfcl_parallel_6",
+      "prompt": "Calculate the amount of sales tax to be added on a purchase amount of $30.45 in Chicago, Illinois, $52.33 in Sacramento, California and $11.23 in Portland, Oregon.",
+      "provenance": {
+        "path": "external/gorilla/berkeley-function-call-leaderboard/bfcl_eval/data/BFCL_v4_parallel.json",
+        "possible_answer_path": "external/gorilla/berkeley-function-call-leaderboard/bfcl_eval/data/possible_answer/BFCL_v4_parallel.json"
+      },
+      "source": "bfcl",
+      "source_case_id": "parallel_6",
+      "tools": [
+        {
+          "description": "Calculate the sales tax for a given purchase amount in a specific city and state.",
+          "name": "calculate_sales_tax",
+          "parameters": {
+            "properties": {
+              "city": {
+                "description": "The city where the purchase is made.",
+                "type": "string"
+              },
+              "purchase_amount": {
+                "description": "The purchase amount.",
+                "type": "float"
+              },
+              "state": {
+                "description": "The state where the purchase is made.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "purchase_amount",
+              "city",
+              "state"
+            ],
+            "type": "object"
+          }
+        }
+      ]
+    },
+    {
+      "answer_substrings": [
+        "120",
+        "3628800",
+        "1307674368000"
+      ],
+      "expected_calls": [
+        {
+          "allowed_args": {
+            "number": [
+              5
+            ]
+          },
+          "name": "math.factorial",
+          "output": "Factorial result: 120."
+        },
+        {
+          "allowed_args": {
+            "number": [
+              10
+            ]
+          },
+          "name": "math.factorial",
+          "output": "Factorial result: 3628800."
+        },
+        {
+          "allowed_args": {
+            "number": [
+              15
+            ]
+          },
+          "name": "math.factorial",
+          "output": "Factorial result: 1307674368000."
+        }
+      ],
+      "id": "bfcl_parallel_7",
+      "prompt": "Find the factorial of 5,10 and 15.",
+      "provenance": {
+        "path": "external/gorilla/berkeley-function-call-leaderboard/bfcl_eval/data/BFCL_v4_parallel.json",
+        "possible_answer_path": "external/gorilla/berkeley-function-call-leaderboard/bfcl_eval/data/possible_answer/BFCL_v4_parallel.json"
+      },
+      "source": "bfcl",
+      "source_case_id": "parallel_7",
+      "tools": [
+        {
+          "description": "Calculate the factorial of a given positive integer.",
+          "name": "math.factorial",
+          "parameters": {
+            "properties": {
+              "number": {
+                "description": "The number for which factorial needs to be calculated.",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "number"
+            ],
+            "type": "object"
+          }
+        }
+      ]
+    },
+    {
+      "answer_substrings": [
+        "princeton-nlp/unsup-simcse-roberta-base"
+      ],
+      "expected_calls": [
+        {
+          "allowed_args": {},
+          "name": "huggingface_princeton_nlp_unsup_simcse_roberta_base",
+          "output": "Recommended API: princeton-nlp/unsup-simcse-roberta-base. Provider: Hugging Face Transformers."
+        }
+      ],
+      "id": "apibench_huggingface_0_princeton_nlp_unsup_simcse_roberta_base",
+      "prompt": "Design a feature for a social media website to recommend articles to users based on how similar the articles are to their previously liked articles.",
+      "provenance": {
+        "path": "external/gorilla/data/apibench/huggingface_eval.json",
+        "provider": "Hugging Face Transformers"
+      },
+      "source": "gorillabench",
+      "source_case_id": "princeton-nlp/unsup-simcse-roberta-base",
+      "tools": [
+        {
+          "description": "APIBench proxy for princeton-nlp/unsup-simcse-roberta-base. Functionality: Feature Extraction. Description: An unsupervised sentence embedding model trained using the SimCSE approach with a Roberta base architecture.",
+          "name": "huggingface_princeton_nlp_unsup_simcse_roberta_base",
+          "parameters": {
+            "properties": {},
+            "required": [],
+            "type": "object"
+          }
+        },
+        {
+          "description": "APIBench proxy for hubert-large-ll60k. Functionality: Feature Extraction. Description: Hubert-Large is a self-supervised speech representation learning model pretrained on 16kHz sampled speech audio. It is designed to deal with the unique problems in speech representation learning, such as multiple sound units in each input utterance, no lexicon of input sound units during the pre-training phase, and variable lengths of sound units with no explicit segmentation. The model relies on an offline clustering step to provide aligned target labels for a BERT-like prediction loss.",
+          "name": "huggingface_hubert_large_ll60k",
+          "parameters": {
+            "properties": {},
+            "required": [],
+            "type": "object"
+          }
+        },
+        {
+          "description": "APIBench proxy for stabilityai/stable-diffusion-2-inpainting. Functionality: Image generation and modification based on text prompts. Description: A Latent Diffusion Model that uses a fixed, pretrained text encoder (OpenCLIP-ViT/H) to generate and modify images based on text prompts.",
+          "name": "huggingface_stabilityai_stable_diffusion_2_inpainting",
+          "parameters": {
+            "properties": {},
+            "required": [],
+            "type": "object"
+          }
+        },
+        {
+          "description": "APIBench proxy for google/deplot. Functionality: Transformers. Description: DePlot is a model that translates the image of a plot or chart to a linearized table. It decomposes the challenge of visual language reasoning into two steps: (1) plot-to-text translation, and (2) reasoning over the translated text. The output of DePlot can then be directly used to prompt a pretrained large language model (LLM), exploiting the few-shot reasoning capabilities of LLMs.",
+          "name": "huggingface_google_deplot",
+          "parameters": {
+            "properties": {},
+            "required": [],
+            "type": "object"
+          }
+        }
+      ]
+    },
+    {
+      "answer_substrings": [
+        "hubert-large-ll60k"
+      ],
+      "expected_calls": [
+        {
+          "allowed_args": {},
+          "name": "huggingface_hubert_large_ll60k",
+          "output": "Recommended API: hubert-large-ll60k. Provider: Hugging Face Transformers."
+        }
+      ],
+      "id": "apibench_huggingface_2_hubert_large_ll60k",
+      "prompt": "As a journalist, I am curious about speech sentiment analysis in a group of people in a crowd. I want to extract features from the audio to run sentiment analysis.",
+      "provenance": {
+        "path": "external/gorilla/data/apibench/huggingface_eval.json",
+        "provider": "Hugging Face Transformers"
+      },
+      "source": "gorillabench",
+      "source_case_id": "hubert-large-ll60k",
+      "tools": [
+        {
+          "description": "APIBench proxy for princeton-nlp/unsup-simcse-roberta-base. Functionality: Feature Extraction. Description: An unsupervised sentence embedding model trained using the SimCSE approach with a Roberta base architecture.",
+          "name": "huggingface_princeton_nlp_unsup_simcse_roberta_base",
+          "parameters": {
+            "properties": {},
+            "required": [],
+            "type": "object"
+          }
+        },
+        {
+          "description": "APIBench proxy for hubert-large-ll60k. Functionality: Feature Extraction. Description: Hubert-Large is a self-supervised speech representation learning model pretrained on 16kHz sampled speech audio. It is designed to deal with the unique problems in speech representation learning, such as multiple sound units in each input utterance, no lexicon of input sound units during the pre-training phase, and variable lengths of sound units with no explicit segmentation. The model relies on an offline clustering step to provide aligned target labels for a BERT-like prediction loss.",
+          "name": "huggingface_hubert_large_ll60k",
+          "parameters": {
+            "properties": {},
+            "required": [],
+            "type": "object"
+          }
+        },
+        {
+          "description": "APIBench proxy for stabilityai/stable-diffusion-2-inpainting. Functionality: Image generation and modification based on text prompts. Description: A Latent Diffusion Model that uses a fixed, pretrained text encoder (OpenCLIP-ViT/H) to generate and modify images based on text prompts.",
+          "name": "huggingface_stabilityai_stable_diffusion_2_inpainting",
+          "parameters": {
+            "properties": {},
+            "required": [],
+            "type": "object"
+          }
+        },
+        {
+          "description": "APIBench proxy for google/deplot. Functionality: Transformers. Description: DePlot is a model that translates the image of a plot or chart to a linearized table. It decomposes the challenge of visual language reasoning into two steps: (1) plot-to-text translation, and (2) reasoning over the translated text. The output of DePlot can then be directly used to prompt a pretrained large language model (LLM), exploiting the few-shot reasoning capabilities of LLMs.",
+          "name": "huggingface_google_deplot",
+          "parameters": {
+            "properties": {},
+            "required": [],
+            "type": "object"
+          }
+        }
+      ]
+    },
+    {
+      "answer_substrings": [
+        "stabilityai/stable-diffusion-2-inpainting"
+      ],
+      "expected_calls": [
+        {
+          "allowed_args": {},
+          "name": "huggingface_stabilityai_stable_diffusion_2_inpainting",
+          "output": "Recommended API: stabilityai/stable-diffusion-2-inpainting. Provider: Hugging Face."
+        }
+      ],
+      "id": "apibench_huggingface_4_stabilityai_stable_diffusion_2_inpainting",
+      "prompt": "I am an interior designer and want to showcase a modern living room with a fireplace and a large window overlooking a forest. Create an image according to this description.",
+      "provenance": {
+        "path": "external/gorilla/data/apibench/huggingface_eval.json",
+        "provider": "Hugging Face"
+      },
+      "source": "gorillabench",
+      "source_case_id": "stabilityai/stable-diffusion-2-inpainting",
+      "tools": [
+        {
+          "description": "APIBench proxy for princeton-nlp/unsup-simcse-roberta-base. Functionality: Feature Extraction. Description: An unsupervised sentence embedding model trained using the SimCSE approach with a Roberta base architecture.",
+          "name": "huggingface_princeton_nlp_unsup_simcse_roberta_base",
+          "parameters": {
+            "properties": {},
+            "required": [],
+            "type": "object"
+          }
+        },
+        {
+          "description": "APIBench proxy for hubert-large-ll60k. Functionality: Feature Extraction. Description: Hubert-Large is a self-supervised speech representation learning model pretrained on 16kHz sampled speech audio. It is designed to deal with the unique problems in speech representation learning, such as multiple sound units in each input utterance, no lexicon of input sound units during the pre-training phase, and variable lengths of sound units with no explicit segmentation. The model relies on an offline clustering step to provide aligned target labels for a BERT-like prediction loss.",
+          "name": "huggingface_hubert_large_ll60k",
+          "parameters": {
+            "properties": {},
+            "required": [],
+            "type": "object"
+          }
+        },
+        {
+          "description": "APIBench proxy for stabilityai/stable-diffusion-2-inpainting. Functionality: Image generation and modification based on text prompts. Description: A Latent Diffusion Model that uses a fixed, pretrained text encoder (OpenCLIP-ViT/H) to generate and modify images based on text prompts.",
+          "name": "huggingface_stabilityai_stable_diffusion_2_inpainting",
+          "parameters": {
+            "properties": {},
+            "required": [],
+            "type": "object"
+          }
+        },
+        {
+          "description": "APIBench proxy for google/deplot. Functionality: Transformers. Description: DePlot is a model that translates the image of a plot or chart to a linearized table. It decomposes the challenge of visual language reasoning into two steps: (1) plot-to-text translation, and (2) reasoning over the translated text. The output of DePlot can then be directly used to prompt a pretrained large language model (LLM), exploiting the few-shot reasoning capabilities of LLMs.",
+          "name": "huggingface_google_deplot",
+          "parameters": {
+            "properties": {},
+            "required": [],
+            "type": "object"
+          }
+        }
+      ]
+    },
+    {
+      "answer_substrings": [
+        "google/deplot"
+      ],
+      "expected_calls": [
+        {
+          "allowed_args": {},
+          "name": "huggingface_google_deplot",
+          "output": "Recommended API: google/deplot. Provider: Hugging Face Transformers."
+        }
+      ],
+      "id": "apibench_huggingface_7_google_deplot",
+      "prompt": "I am a financial analyst, and I receive report after report filled with charts helping to explain trends and data in my field. However, I also need to have this information in tabular format. Please help me extract a linearized table from this chart.",
+      "provenance": {
+        "path": "external/gorilla/data/apibench/huggingface_eval.json",
+        "provider": "Hugging Face Transformers"
+      },
+      "source": "gorillabench",
+      "source_case_id": "google/deplot",
+      "tools": [
+        {
+          "description": "APIBench proxy for princeton-nlp/unsup-simcse-roberta-base. Functionality: Feature Extraction. Description: An unsupervised sentence embedding model trained using the SimCSE approach with a Roberta base architecture.",
+          "name": "huggingface_princeton_nlp_unsup_simcse_roberta_base",
+          "parameters": {
+            "properties": {},
+            "required": [],
+            "type": "object"
+          }
+        },
+        {
+          "description": "APIBench proxy for hubert-large-ll60k. Functionality: Feature Extraction. Description: Hubert-Large is a self-supervised speech representation learning model pretrained on 16kHz sampled speech audio. It is designed to deal with the unique problems in speech representation learning, such as multiple sound units in each input utterance, no lexicon of input sound units during the pre-training phase, and variable lengths of sound units with no explicit segmentation. The model relies on an offline clustering step to provide aligned target labels for a BERT-like prediction loss.",
+          "name": "huggingface_hubert_large_ll60k",
+          "parameters": {
+            "properties": {},
+            "required": [],
+            "type": "object"
+          }
+        },
+        {
+          "description": "APIBench proxy for stabilityai/stable-diffusion-2-inpainting. Functionality: Image generation and modification based on text prompts. Description: A Latent Diffusion Model that uses a fixed, pretrained text encoder (OpenCLIP-ViT/H) to generate and modify images based on text prompts.",
+          "name": "huggingface_stabilityai_stable_diffusion_2_inpainting",
+          "parameters": {
+            "properties": {},
+            "required": [],
+            "type": "object"
+          }
+        },
+        {
+          "description": "APIBench proxy for google/deplot. Functionality: Transformers. Description: DePlot is a model that translates the image of a plot or chart to a linearized table. It decomposes the challenge of visual language reasoning into two steps: (1) plot-to-text translation, and (2) reasoning over the translated text. The output of DePlot can then be directly used to prompt a pretrained large language model (LLM), exploiting the few-shot reasoning capabilities of LLMs.",
+          "name": "huggingface_google_deplot",
+          "parameters": {
+            "properties": {},
+            "required": [],
+            "type": "object"
+          }
+        }
+      ]
+    },
+    {
+      "answer_substrings": [
+        "slow_r50"
+      ],
+      "expected_calls": [
+        {
+          "allowed_args": {},
+          "name": "torchhub_slow_r50",
+          "output": "Recommended API: slow_r50. Provider: PyTorch."
+        }
+      ],
+      "id": "apibench_torchhub_0_slow_r50",
+      "prompt": "What is an API that can be used to classify sports activities in videos?",
+      "provenance": {
+        "path": "external/gorilla/data/apibench/torchhub_eval.json",
+        "provider": "PyTorch"
+      },
+      "source": "gorillabench",
+      "source_case_id": "slow_r50",
+      "tools": [
+        {
+          "description": "APIBench proxy for slow_r50. Functionality: 3D ResNet. Description: The 3D ResNet model is a Resnet-style video classification network pretrained on the Kinetics 400 dataset. It is based on the architecture from the paper 'SlowFast Networks for Video Recognition' by Christoph Feichtenhofer et al.",
+          "name": "torchhub_slow_r50",
+          "parameters": {
+            "properties": {},
+            "required": [],
+            "type": "object"
+          }
+        },
+        {
+          "description": "APIBench proxy for Silero Models. Functionality: Speech-To-Text. Description: Silero Speech-To-Text models provide enterprise grade STT in a compact form-factor for several commonly spoken languages. The models are robust to a variety of dialects, codecs, domains, noises, and lower sampling rates. They consume a normalized audio in the form of samples and output frames with token probabilities. A decoder utility is provided for simplicity.",
+          "name": "torchhub_silero_models",
+          "parameters": {
+            "properties": {},
+            "required": [],
+            "type": "object"
+          }
+        },
+        {
+          "description": "APIBench proxy for torch.hub.load. Functionality: YOLOv5. Description: YOLOv5 is a family of compound-scaled object detection models trained on the COCO dataset, and includes simple functionality for Test Time Augmentation (TTA), model ensembling, hyperparameter evolution, and export to ONNX, CoreML and TFLite.",
+          "name": "torchhub_torch_hub_load",
+          "parameters": {
+            "properties": {},
+            "required": [],
+            "type": "object"
+          }
+        },
+        {
+          "description": "APIBench proxy for PGAN. Functionality: Generative Adversarial Networks (GANs). Description: Progressive Growing of GANs (PGAN) is a method for generating high-resolution images using generative adversarial networks. The model is trained progressively, starting with low-resolution images and gradually increasing the resolution until the desired output is achieved. This implementation is based on the paper by Tero Karras et al., 'Progressive Growing of GANs for Improved Quality, Stability, and Variation'.",
+          "name": "torchhub_pgan",
+          "parameters": {
+            "properties": {},
+            "required": [],
+            "type": "object"
+          }
+        }
+      ]
+    },
+    {
+      "answer_substrings": [
+        "Silero Models"
+      ],
+      "expected_calls": [
+        {
+          "allowed_args": {},
+          "name": "torchhub_silero_models",
+          "output": "Recommended API: Silero Models. Provider: PyTorch."
+        }
+      ],
+      "id": "apibench_torchhub_1_silero_models",
+      "prompt": "Identify an API capable of converting spoken language in a recording to text.",
+      "provenance": {
+        "path": "external/gorilla/data/apibench/torchhub_eval.json",
+        "provider": "PyTorch"
+      },
+      "source": "gorillabench",
+      "source_case_id": "Silero Models",
+      "tools": [
+        {
+          "description": "APIBench proxy for slow_r50. Functionality: 3D ResNet. Description: The 3D ResNet model is a Resnet-style video classification network pretrained on the Kinetics 400 dataset. It is based on the architecture from the paper 'SlowFast Networks for Video Recognition' by Christoph Feichtenhofer et al.",
+          "name": "torchhub_slow_r50",
+          "parameters": {
+            "properties": {},
+            "required": [],
+            "type": "object"
+          }
+        },
+        {
+          "description": "APIBench proxy for Silero Models. Functionality: Speech-To-Text. Description: Silero Speech-To-Text models provide enterprise grade STT in a compact form-factor for several commonly spoken languages. The models are robust to a variety of dialects, codecs, domains, noises, and lower sampling rates. They consume a normalized audio in the form of samples and output frames with token probabilities. A decoder utility is provided for simplicity.",
+          "name": "torchhub_silero_models",
+          "parameters": {
+            "properties": {},
+            "required": [],
+            "type": "object"
+          }
+        },
+        {
+          "description": "APIBench proxy for torch.hub.load. Functionality: YOLOv5. Description: YOLOv5 is a family of compound-scaled object detection models trained on the COCO dataset, and includes simple functionality for Test Time Augmentation (TTA), model ensembling, hyperparameter evolution, and export to ONNX, CoreML and TFLite.",
+          "name": "torchhub_torch_hub_load",
+          "parameters": {
+            "properties": {},
+            "required": [],
+            "type": "object"
+          }
+        },
+        {
+          "description": "APIBench proxy for PGAN. Functionality: Generative Adversarial Networks (GANs). Description: Progressive Growing of GANs (PGAN) is a method for generating high-resolution images using generative adversarial networks. The model is trained progressively, starting with low-resolution images and gradually increasing the resolution until the desired output is achieved. This implementation is based on the paper by Tero Karras et al., 'Progressive Growing of GANs for Improved Quality, Stability, and Variation'.",
+          "name": "torchhub_pgan",
+          "parameters": {
+            "properties": {},
+            "required": [],
+            "type": "object"
+          }
+        }
+      ]
+    },
+    {
+      "answer_substrings": [
+        "torch.hub.load"
+      ],
+      "expected_calls": [
+        {
+          "allowed_args": {},
+          "name": "torchhub_torch_hub_load",
+          "output": "Recommended API: torch.hub.load. Provider: PyTorch."
+        }
+      ],
+      "id": "apibench_torchhub_3_torch_hub_load",
+      "prompt": "To implement a lightweight object detection, I'm looking for a pre-trained model API that can detect and classify objects within an image in real-time.",
+      "provenance": {
+        "path": "external/gorilla/data/apibench/torchhub_eval.json",
+        "provider": "PyTorch"
+      },
+      "source": "gorillabench",
+      "source_case_id": "torch.hub.load",
+      "tools": [
+        {
+          "description": "APIBench proxy for slow_r50. Functionality: 3D ResNet. Description: The 3D ResNet model is a Resnet-style video classification network pretrained on the Kinetics 400 dataset. It is based on the architecture from the paper 'SlowFast Networks for Video Recognition' by Christoph Feichtenhofer et al.",
+          "name": "torchhub_slow_r50",
+          "parameters": {
+            "properties": {},
+            "required": [],
+            "type": "object"
+          }
+        },
+        {
+          "description": "APIBench proxy for Silero Models. Functionality: Speech-To-Text. Description: Silero Speech-To-Text models provide enterprise grade STT in a compact form-factor for several commonly spoken languages. The models are robust to a variety of dialects, codecs, domains, noises, and lower sampling rates. They consume a normalized audio in the form of samples and output frames with token probabilities. A decoder utility is provided for simplicity.",
+          "name": "torchhub_silero_models",
+          "parameters": {
+            "properties": {},
+            "required": [],
+            "type": "object"
+          }
+        },
+        {
+          "description": "APIBench proxy for torch.hub.load. Functionality: YOLOv5. Description: YOLOv5 is a family of compound-scaled object detection models trained on the COCO dataset, and includes simple functionality for Test Time Augmentation (TTA), model ensembling, hyperparameter evolution, and export to ONNX, CoreML and TFLite.",
+          "name": "torchhub_torch_hub_load",
+          "parameters": {
+            "properties": {},
+            "required": [],
+            "type": "object"
+          }
+        },
+        {
+          "description": "APIBench proxy for PGAN. Functionality: Generative Adversarial Networks (GANs). Description: Progressive Growing of GANs (PGAN) is a method for generating high-resolution images using generative adversarial networks. The model is trained progressively, starting with low-resolution images and gradually increasing the resolution until the desired output is achieved. This implementation is based on the paper by Tero Karras et al., 'Progressive Growing of GANs for Improved Quality, Stability, and Variation'.",
+          "name": "torchhub_pgan",
+          "parameters": {
+            "properties": {},
+            "required": [],
+            "type": "object"
+          }
+        }
+      ]
+    },
+    {
+      "answer_substrings": [
+        "PGAN"
+      ],
+      "expected_calls": [
+        {
+          "allowed_args": {},
+          "name": "torchhub_pgan",
+          "output": "Recommended API: PGAN. Provider: PyTorch."
+        }
+      ],
+      "id": "apibench_torchhub_5_pgan",
+      "prompt": "Developers of a Virtual Reality event want to create a realistic digital crowd. Can you suggest a pretrained model to generate faces of celebrities?",
+      "provenance": {
+        "path": "external/gorilla/data/apibench/torchhub_eval.json",
+        "provider": "PyTorch"
+      },
+      "source": "gorillabench",
+      "source_case_id": "PGAN",
+      "tools": [
+        {
+          "description": "APIBench proxy for slow_r50. Functionality: 3D ResNet. Description: The 3D ResNet model is a Resnet-style video classification network pretrained on the Kinetics 400 dataset. It is based on the architecture from the paper 'SlowFast Networks for Video Recognition' by Christoph Feichtenhofer et al.",
+          "name": "torchhub_slow_r50",
+          "parameters": {
+            "properties": {},
+            "required": [],
+            "type": "object"
+          }
+        },
+        {
+          "description": "APIBench proxy for Silero Models. Functionality: Speech-To-Text. Description: Silero Speech-To-Text models provide enterprise grade STT in a compact form-factor for several commonly spoken languages. The models are robust to a variety of dialects, codecs, domains, noises, and lower sampling rates. They consume a normalized audio in the form of samples and output frames with token probabilities. A decoder utility is provided for simplicity.",
+          "name": "torchhub_silero_models",
+          "parameters": {
+            "properties": {},
+            "required": [],
+            "type": "object"
+          }
+        },
+        {
+          "description": "APIBench proxy for torch.hub.load. Functionality: YOLOv5. Description: YOLOv5 is a family of compound-scaled object detection models trained on the COCO dataset, and includes simple functionality for Test Time Augmentation (TTA), model ensembling, hyperparameter evolution, and export to ONNX, CoreML and TFLite.",
+          "name": "torchhub_torch_hub_load",
+          "parameters": {
+            "properties": {},
+            "required": [],
+            "type": "object"
+          }
+        },
+        {
+          "description": "APIBench proxy for PGAN. Functionality: Generative Adversarial Networks (GANs). Description: Progressive Growing of GANs (PGAN) is a method for generating high-resolution images using generative adversarial networks. The model is trained progressively, starting with low-resolution images and gradually increasing the resolution until the desired output is achieved. This implementation is based on the paper by Tero Karras et al., 'Progressive Growing of GANs for Improved Quality, Stability, and Variation'.",
+          "name": "torchhub_pgan",
+          "parameters": {
+            "properties": {},
+            "required": [],
+            "type": "object"
+          }
+        }
+      ]
+    },
+    {
+      "answer_substrings": [
+        "imagenet_mobilenet_v2_100_224_feature_vector"
+      ],
+      "expected_calls": [
+        {
+          "allowed_args": {},
+          "name": "tensorflow_imagenet_mobilenet_v2_100_224_feature_vector",
+          "output": "Recommended API: imagenet_mobilenet_v2_100_224_feature_vector. Provider: TensorFlow Hub."
+        }
+      ],
+      "id": "apibench_tensorflow_0_imagenet_mobilenet_v2_100_224_feature_vector",
+      "prompt": "I am working on a project where I need to cluster similar images of street art. How can I get the relevant feature vectors from these images for clustering?",
+      "provenance": {
+        "path": "external/gorilla/data/apibench/tensorflow_eval.json",
+        "provider": "TensorFlow Hub"
+      },
+      "source": "gorillabench",
+      "source_case_id": "imagenet_mobilenet_v2_100_224_feature_vector",
+      "tools": [
+        {
+          "description": "APIBench proxy for imagenet_mobilenet_v2_100_224_feature_vector. Functionality: Feature extraction from images. Description: A pre-trained MobileNetV2 model for extracting feature vectors from images, using TensorFlow Hub.",
+          "name": "tensorflow_imagenet_mobilenet_v2_100_224_feature_vector",
+          "parameters": {
+            "properties": {},
+            "required": [],
+            "type": "object"
+          }
+        },
+        {
+          "description": "APIBench proxy for model_id. Functionality: Image classification using pre-trained models. Description: A pre-trained image classification model available on TensorFlow Hub that can be used to classify images into one of the 1000 ImageNet classes. The example provided shows how to load the Inception V3 model, preprocess an image, and obtain predictions.",
+          "name": "tensorflow_model_id",
+          "parameters": {
+            "properties": {},
+            "required": [],
+            "type": "object"
+          }
+        },
+        {
+          "description": "APIBench proxy for model_id. Functionality: Object detection. Description: A pre-trained object detection model that can detect multiple objects in an image. The model is based on the SSD Mobilenet V2 architecture and is trained on the COCO dataset.",
+          "name": "tensorflow_model_id",
+          "parameters": {
+            "properties": {},
+            "required": [],
+            "type": "object"
+          }
+        },
+        {
+          "description": "APIBench proxy for universal-sentence-encoder. Functionality: Embedding text into high-dimensional vectors. Description: The Universal Sentence Encoder encodes text into high-dimensional vectors that can be used for text classification, semantic similarity, clustering, and other natural language tasks.",
+          "name": "tensorflow_universal_sentence_encoder",
+          "parameters": {
+            "properties": {},
+            "required": [],
+            "type": "object"
+          }
+        }
+      ]
+    },
+    {
+      "answer_substrings": [
+        "model_id"
+      ],
+      "expected_calls": [
+        {
+          "allowed_args": {},
+          "name": "tensorflow_model_id",
+          "output": "Recommended API: model_id. Provider: TensorFlow Hub."
+        }
+      ],
+      "id": "apibench_tensorflow_4_model_id",
+      "prompt": "My dog is always getting into things that can be dangerous. Can you help me identify the object my dog is about to eat?",
+      "provenance": {
+        "path": "external/gorilla/data/apibench/tensorflow_eval.json",
+        "provider": "TensorFlow Hub"
+      },
+      "source": "gorillabench",
+      "source_case_id": "model_id",
+      "tools": [
+        {
+          "description": "APIBench proxy for imagenet_mobilenet_v2_100_224_feature_vector. Functionality: Feature extraction from images. Description: A pre-trained MobileNetV2 model for extracting feature vectors from images, using TensorFlow Hub.",
+          "name": "tensorflow_imagenet_mobilenet_v2_100_224_feature_vector",
+          "parameters": {
+            "properties": {},
+            "required": [],
+            "type": "object"
+          }
+        },
+        {
+          "description": "APIBench proxy for model_id. Functionality: Image classification using pre-trained models. Description: A pre-trained image classification model available on TensorFlow Hub that can be used to classify images into one of the 1000 ImageNet classes. The example provided shows how to load the Inception V3 model, preprocess an image, and obtain predictions.",
+          "name": "tensorflow_model_id",
+          "parameters": {
+            "properties": {},
+            "required": [],
+            "type": "object"
+          }
+        },
+        {
+          "description": "APIBench proxy for model_id. Functionality: Object detection. Description: A pre-trained object detection model that can detect multiple objects in an image. The model is based on the SSD Mobilenet V2 architecture and is trained on the COCO dataset.",
+          "name": "tensorflow_model_id",
+          "parameters": {
+            "properties": {},
+            "required": [],
+            "type": "object"
+          }
+        },
+        {
+          "description": "APIBench proxy for universal-sentence-encoder. Functionality: Embedding text into high-dimensional vectors. Description: The Universal Sentence Encoder encodes text into high-dimensional vectors that can be used for text classification, semantic similarity, clustering, and other natural language tasks.",
+          "name": "tensorflow_universal_sentence_encoder",
+          "parameters": {
+            "properties": {},
+            "required": [],
+            "type": "object"
+          }
+        }
+      ]
+    },
+    {
+      "answer_substrings": [
+        "model_id"
+      ],
+      "expected_calls": [
+        {
+          "allowed_args": {},
+          "name": "tensorflow_model_id",
+          "output": "Recommended API: model_id. Provider: TensorFlow Hub."
+        }
+      ],
+      "id": "apibench_tensorflow_5_model_id",
+      "prompt": "A photo is sent to me, and I would like to know what objects are in the photo.",
+      "provenance": {
+        "path": "external/gorilla/data/apibench/tensorflow_eval.json",
+        "provider": "TensorFlow Hub"
+      },
+      "source": "gorillabench",
+      "source_case_id": "model_id",
+      "tools": [
+        {
+          "description": "APIBench proxy for imagenet_mobilenet_v2_100_224_feature_vector. Functionality: Feature extraction from images. Description: A pre-trained MobileNetV2 model for extracting feature vectors from images, using TensorFlow Hub.",
+          "name": "tensorflow_imagenet_mobilenet_v2_100_224_feature_vector",
+          "parameters": {
+            "properties": {},
+            "required": [],
+            "type": "object"
+          }
+        },
+        {
+          "description": "APIBench proxy for model_id. Functionality: Image classification using pre-trained models. Description: A pre-trained image classification model available on TensorFlow Hub that can be used to classify images into one of the 1000 ImageNet classes. The example provided shows how to load the Inception V3 model, preprocess an image, and obtain predictions.",
+          "name": "tensorflow_model_id",
+          "parameters": {
+            "properties": {},
+            "required": [],
+            "type": "object"
+          }
+        },
+        {
+          "description": "APIBench proxy for model_id. Functionality: Object detection. Description: A pre-trained object detection model that can detect multiple objects in an image. The model is based on the SSD Mobilenet V2 architecture and is trained on the COCO dataset.",
+          "name": "tensorflow_model_id",
+          "parameters": {
+            "properties": {},
+            "required": [],
+            "type": "object"
+          }
+        },
+        {
+          "description": "APIBench proxy for universal-sentence-encoder. Functionality: Embedding text into high-dimensional vectors. Description: The Universal Sentence Encoder encodes text into high-dimensional vectors that can be used for text classification, semantic similarity, clustering, and other natural language tasks.",
+          "name": "tensorflow_universal_sentence_encoder",
+          "parameters": {
+            "properties": {},
+            "required": [],
+            "type": "object"
+          }
+        }
+      ]
+    },
+    {
+      "answer_substrings": [
+        "universal-sentence-encoder"
+      ],
+      "expected_calls": [
+        {
+          "allowed_args": {},
+          "name": "tensorflow_universal_sentence_encoder",
+          "output": "Recommended API: universal-sentence-encoder. Provider: TensorFlow Hub."
+        }
+      ],
+      "id": "apibench_tensorflow_6_universal_sentence_encoder",
+      "prompt": "Analyze customer reviews and identify positive and negative sentiments, so please convert the text reviews into vectors.",
+      "provenance": {
+        "path": "external/gorilla/data/apibench/tensorflow_eval.json",
+        "provider": "TensorFlow Hub"
+      },
+      "source": "gorillabench",
+      "source_case_id": "universal-sentence-encoder",
+      "tools": [
+        {
+          "description": "APIBench proxy for imagenet_mobilenet_v2_100_224_feature_vector. Functionality: Feature extraction from images. Description: A pre-trained MobileNetV2 model for extracting feature vectors from images, using TensorFlow Hub.",
+          "name": "tensorflow_imagenet_mobilenet_v2_100_224_feature_vector",
+          "parameters": {
+            "properties": {},
+            "required": [],
+            "type": "object"
+          }
+        },
+        {
+          "description": "APIBench proxy for model_id. Functionality: Image classification using pre-trained models. Description: A pre-trained image classification model available on TensorFlow Hub that can be used to classify images into one of the 1000 ImageNet classes. The example provided shows how to load the Inception V3 model, preprocess an image, and obtain predictions.",
+          "name": "tensorflow_model_id",
+          "parameters": {
+            "properties": {},
+            "required": [],
+            "type": "object"
+          }
+        },
+        {
+          "description": "APIBench proxy for model_id. Functionality: Object detection. Description: A pre-trained object detection model that can detect multiple objects in an image. The model is based on the SSD Mobilenet V2 architecture and is trained on the COCO dataset.",
+          "name": "tensorflow_model_id",
+          "parameters": {
+            "properties": {},
+            "required": [],
+            "type": "object"
+          }
+        },
+        {
+          "description": "APIBench proxy for universal-sentence-encoder. Functionality: Embedding text into high-dimensional vectors. Description: The Universal Sentence Encoder encodes text into high-dimensional vectors that can be used for text classification, semantic similarity, clustering, and other natural language tasks.",
+          "name": "tensorflow_universal_sentence_encoder",
+          "parameters": {
+            "properties": {},
+            "required": [],
+            "type": "object"
+          }
+        }
+      ]
+    },
+    {
+      "answer_substrings": [
+        "yes"
+      ],
+      "documents": [
+        {
+          "text": "Ed Wood is a 1994 American biographical period comedy-drama film directed and produced by Tim Burton, and starring Johnny Depp as cult filmmaker Ed Wood. The film concerns the period in Wood's life when he made his best-known films as well as his relationship with actor Bela Lugosi, played by Martin Landau. Sarah Jessica Parker, Patricia Arquette, Jeffrey Jones, Lisa Marie, and Bill Murray are among the supporting cast.",
+          "title": "Ed Wood (film)"
+        },
+        {
+          "text": "Scott Derrickson (born July 16, 1966) is an American director, screenwriter and producer. He lives in Los Angeles, California. He is best known for directing horror films such as \"Sinister\", \"The Exorcism of Emily Rose\", and \"Deliver Us From Evil\", as well as the 2016 Marvel Cinematic Universe installment, \"Doctor Strange.\"",
+          "title": "Scott Derrickson"
+        },
+        {
+          "text": "Woodson is a census-designated place (CDP) in Pulaski County, Arkansas, in the United States. Its population was 403 at the 2010 census. It is part of the Little Rock\u2013North Little Rock\u2013Conway Metropolitan Statistical Area. Woodson and its accompanying Woodson Lake and Wood Hollow are the namesake for Ed Wood Sr., a prominent plantation owner, trader, and businessman at the turn of the 20th century. Woodson is adjacent to the Wood Plantation, the largest of the plantations own by Ed Wood Sr.",
+          "title": "Woodson, Arkansas"
+        },
+        {
+          "text": "Edward Davis Wood Jr. (October 10, 1924 \u2013 December 10, 1978) was an American filmmaker, actor, writer, producer, and director.",
+          "title": "Ed Wood"
+        }
+      ],
+      "id": "hotpot_5a8b57f25542995d1e6f1371",
+      "prompt": "Were Scott Derrickson and Ed Wood of the same nationality?",
+      "provenance": {
+        "config": "distractor",
+        "dataset": "hotpotqa/hotpot_qa",
+        "split": "validation",
+        "supporting_titles": [
+          "Scott Derrickson",
+          "Ed Wood"
+        ]
+      },
+      "source": "hotpotqa",
+      "source_case_id": "5a8b57f25542995d1e6f1371"
+    },
+    {
+      "answer_substrings": [
+        "Chief of Protocol"
+      ],
+      "documents": [
+        {
+          "text": "Meet Corliss Archer, a program from radio's Golden Age, ran from January 7, 1943 to September 30, 1956. Although it was CBS's answer to NBC's popular \"A Date with Judy\", it was also broadcast by NBC in 1948 as a summer replacement for \"The Bob Hope Show\". From October 3, 1952 to June 26, 1953, it aired on ABC, finally returning to CBS. Despite the program's long run, fewer than 24 episodes are known to exist.",
+          "title": "Meet Corliss Archer"
+        },
+        {
+          "text": "Shirley Temple Black (April 23, 1928 \u2013 February 10, 2014) was an American actress, singer, dancer, businesswoman, and diplomat who was Hollywood's number one box-office draw as a child actress from 1935 to 1938. As an adult, she was named United States ambassador to Ghana and to Czechoslovakia and also served as Chief of Protocol of the United States.",
+          "title": "Shirley Temple"
+        },
+        {
+          "text": "Janet Marie Waldo (February 4, 1920 \u2013 June 12, 2016) was an American radio and voice actress. She is best known in animation for voicing Judy Jetson, Nancy in \"Shazzan\", Penelope Pitstop, and Josie in \"Josie and the Pussycats\", and on radio as the title character in \"Meet Corliss Archer\".",
+          "title": "Janet Waldo"
+        },
+        {
+          "text": "Kiss and Tell is a 1945 American comedy film starring then 17-year-old Shirley Temple as Corliss Archer. In the film, two teenage girls cause their respective parents much concern when they start to become interested in boys. The parents' bickering about which girl is the worse influence causes more problems than it solves.",
+          "title": "Kiss and Tell (1945 film)"
+        }
+      ],
+      "id": "hotpot_5a8c7595554299585d9e36b6",
+      "prompt": "What government position was held by the woman who portrayed Corliss Archer in the film Kiss and Tell?",
+      "provenance": {
+        "config": "distractor",
+        "dataset": "hotpotqa/hotpot_qa",
+        "split": "validation",
+        "supporting_titles": [
+          "Kiss and Tell (1945 film)",
+          "Shirley Temple"
+        ]
+      },
+      "source": "hotpotqa",
+      "source_case_id": "5a8c7595554299585d9e36b6"
+    },
+    {
+      "answer_substrings": [
+        "Animorphs"
+      ],
+      "documents": [
+        {
+          "text": "The Andre Norton Award for Young Adult Science Fiction and Fantasy is an annual award presented by the Science Fiction and Fantasy Writers of America (SFWA) to the author of the best young adult or middle grade science fiction or fantasy book published in the United States in the preceding year. It is named to honor prolific science fiction and fantasy author Andre Norton (1912\u20132005), and it was established by then SFWA president Catherine Asaro and the SFWA Young Adult Fiction committee and announced on February 20, 2005. Any published young adult or middle grade science fiction or fantasy novel is eligible for the prize, including graphic novels. There is no limit on word count. The award is presented along with the Nebula Awards and follows the same rules for nominations and voting; as the awards are separate, works may be simultaneously nominated for both the Andre Norton award and a Nebula Award.",
+          "title": "Andre Norton Award"
+        },
+        {
+          "text": "Victoria Hanley is an American young adult fantasy novelist. Her first three books, \"The Seer And The Sword\", \"The Healer's Keep\" and \"The Light Of The Oracle\" are companion books to one another. Her newest book (released March 2012) is the sequel of a series, called \"Indigo Magic\", published by Egmont USA. She's also published two non-fiction books through Cotton Wood Press; called \"Seize the Story: A Handbook For Teens Who Like To Write\", and \"Wild Ink: A Grownups Guide To Writing Fiction For Teens\".",
+          "title": "Victoria Hanley"
+        },
+        {
+          "text": "The Hork-Bajir Chronicles is the second companion book to the \"Animorphs\" series, written by K. A. Applegate. With respect to continuity within the series, it takes place before book #23, \"The Pretender\", although the events told in the story occur between the time of \"The Ellimist Chronicles\" and \"The Andalite Chronicles\". The book is introduced by Tobias, who flies to the valley of the free Hork-Bajir, where Jara Hamee tells him the story of how the Yeerks enslaved the Hork-Bajir, and how Aldrea, an Andalite, and her companion, Dak Hamee, a Hork-Bajir, tried to save their world from the invasion. Jara Hamee's story is narrated from the points of view of Aldrea, Dak Hamee, and Esplin 9466, alternating in similar fashion to the \"Megamorphs\" books.",
+          "title": "The Hork-Bajir Chronicles"
+        },
+        {
+          "text": "Animorphs is a science fantasy series of young adult books written by Katherine Applegate and her husband Michael Grant, writing together under the name K. A. Applegate, and published by Scholastic. It is told in first person, with all six main characters taking turns narrating the books through their own perspectives. Horror, war, dehumanization, sanity, morality, innocence, leadership, freedom and growing up are the core themes of the series.",
+          "title": "Animorphs"
+        }
+      ],
+      "id": "hotpot_5a85ea095542994775f606a8",
+      "prompt": "What science fantasy young adult series, told in first person, has a set of companion books narrating the stories of enslaved worlds and alien species?",
+      "provenance": {
+        "config": "distractor",
+        "dataset": "hotpotqa/hotpot_qa",
+        "split": "validation",
+        "supporting_titles": [
+          "The Hork-Bajir Chronicles",
+          "Animorphs"
+        ]
+      },
+      "source": "hotpotqa",
+      "source_case_id": "5a85ea095542994775f606a8"
+    },
+    {
+      "answer_substrings": [
+        "no"
+      ],
+      "documents": [
+        {
+          "text": "Esma Sultan (21 March 1873 \u2013 7 May 1899) was an Ottoman princess, the daughter of Sultan Abd\u00fclaziz and his wife Gevheri Kad\u0131n, herself the daughter of Salih Bey Svatnba. She was the half-sister of Abd\u00fclmecid II, the last Caliph of the Muslim world.",
+          "title": "Esma Sultan (daughter of Abd\u00fclaziz)"
+        },
+        {
+          "text": "The Great Mosque of Algiers (Arabic: \u0627\u0644\u062c\u0627\u0645\u0639 \u0627\u0644\u0643\u0628\u064a\u0631\u200e \u200e , \"Jemaa Kebir\") or \u201cDjama\u2019a al-Kebir\u201d (meaning Great Mosque) is a mosque in Algiers, Algeria, located very close to Algiers Harbor. An inscription on the minbar (\u0645\u0646\u0628\u0631) or the pulpit testifies to fact that the mosque was built in 1097. It is also known by several other names such as Grand Mosque d'Alger, Djamaa al-Kebir, El Kebir Mosque and Jami Masjid. It is one of the few remaining examples of Almoravid architecture. It is the oldest mosque in Algiers and is said to be the oldest mosque in Algeria after Sidi Okba Mosque. It was built under sultan Ali ibn Yusuf. Its minaret dates from 1332 (1324 in some sources) and was built by the Ziyyanid Sultan of Tlemcen. The gallery at the outside of the mosque was built in 1840. Its construction was a consequence of a complete reconstruction of the street by the French.",
+          "title": "Djama\u00e2 el Kebir"
+        },
+        {
+          "text": "The Laleli Mosque (Turkish: \"Laleli Camii, or Tulip Mosque\" ) is an 18th-century Ottoman imperial mosque located in Laleli, Fatih, Istanbul, Turkey.",
+          "title": "Laleli Mosque"
+        },
+        {
+          "text": "The Esma Sultan Mansion (Turkish: \"Esma Sultan Yal\u0131s\u0131\" ), a historical yal\u0131 (English: waterside mansion ) located at Bosphorus in Ortak\u00f6y neighborhood of Istanbul, Turkey and named after its original owner Esma Sultan, is used today as a cultural center after being redeveloped.",
+          "title": "Esma Sultan Mansion"
+        }
+      ],
+      "id": "hotpot_5adbf0a255429947ff17385a",
+      "prompt": "Are the Laleli Mosque and Esma Sultan Mansion located in the same neighborhood?",
+      "provenance": {
+        "config": "distractor",
+        "dataset": "hotpotqa/hotpot_qa",
+        "split": "validation",
+        "supporting_titles": [
+          "Laleli Mosque",
+          "Esma Sultan Mansion"
+        ]
+      },
+      "source": "hotpotqa",
+      "source_case_id": "5adbf0a255429947ff17385a"
+    },
+    {
+      "answer_substrings": [
+        "Greenwich Village"
+      ],
+      "documents": [
+        {
+          "text": "Just Another Romantic Wrestling Comedy is a 2006 film starring April Hunter and Joanie Laurer. This Romantic comedy film was premiered at New Jersey and New York City on December 1, 2006 and was released on DVD in the United States and the United Kingdom on April 17, 2007. After the film's DVD release \"Just Another Romantic Wrestling Comedy\" won an \"Honorable Mention\" award at the New Jersey International Festival awards. The release is being handled by \"Victory Multimedia\".",
+          "title": "Just Another Romantic Wrestling Comedy"
+        },
+        {
+          "text": "Kingston Morning is Dave Eggar's 4th solo release recorded in Brooklyn, New York; Kingston, Jamaica; and Big Stone Gap, Virginia; and released by Domo Records. \"Itsbynne Reel\" was nominated at the 53rd Grammy Awards for \"Best Instrumental Arrangement\".",
+          "title": "Kingston Morning"
+        },
+        {
+          "text": "Adriana Trigiani is an Italian American best-selling author of sixteen books, television writer, film director, and entrepreneur based in Greenwich Village, New York City. Trigiani has published a novel a year since 2000.",
+          "title": "Adriana Trigiani"
+        },
+        {
+          "text": "Big Stone Gap is a 2014 American drama romantic comedy film written and directed by Adriana Trigiani and produced by Donna Gigliotti for Altar Identity Studios, a subsidiary of Media Society. Based on Trigiani's 2000 best-selling novel of the same name, the story is set in the actual Virginia town of Big Stone Gap circa 1970s. The film had its world premiere at the Virginia Film Festival on November 6, 2014.",
+          "title": "Big Stone Gap (film)"
+        }
+      ],
+      "id": "hotpot_5a8e3ea95542995a26add48d",
+      "prompt": "The director of the romantic comedy \"Big Stone Gap\" is based in what New York city?",
+      "provenance": {
+        "config": "distractor",
+        "dataset": "hotpotqa/hotpot_qa",
+        "split": "validation",
+        "supporting_titles": [
+          "Big Stone Gap (film)",
+          "Adriana Trigiani"
+        ]
+      },
+      "source": "hotpotqa",
+      "source_case_id": "5a8e3ea95542995a26add48d"
+    },
+    {
+      "answer_substrings": [
+        "YG Entertainment"
+      ],
+      "documents": [
+        {
+          "text": "South Korean boy group Shinee have received several awards and nominations for their music work. The group was formed by S.M. Entertainment in 2008 and released their first full-length album, \"The Shinee World\", on August 28, 2008, which won the Newcomer Album of the Year at the 23rd Golden Disk Awards. The first single released from the album was \"Sanso Gateun Neo (Love Like Oxygen)\" and won first place on \"M Countdown\" on September 18, 2008 making it the group's first win on Korean music shows since debut. Their second album \"Lucifer\" (2010) produced two singles, \"Lucifer\" and \"Hello\". For their outstanding choreography the group was nominated for the Best Dance Performance Award at the Mnet Asian Music Awards in 2010. \" Lucifer\" also won the Disk Bonsang Award at the 25th Golden Disk Awards as well as the Popularity Award. On March 21, 2012 the group released their fourth EP \"Sherlock\" for which the group was awarded another Disk Bonsang Award at the 27th Golden Disc Awards and the Bonsang Award at the 22nd Seoul Music Award. Also following the success of the lead single it was also nominated for Song of the Year at the 2012 Mnet Asian Music Awards.",
+          "title": "List of awards and nominations received by Shinee"
+        },
+        {
+          "text": "Cho Kyu-hyun (born February 3, 1988), better known mononymously as Kyuhyun, is a South Korean singer and musical theatre actor. He is best known as a member of South Korean boy group Super Junior, its sub-groups Super Junior-K.R.Y., Super Junior-M and a former member of the South Korean ballad group S.M. the Ballad. He is one of the first four Korean artists to appear on Chinese postage stamps.",
+          "title": "Cho Kyuhyun"
+        },
+        {
+          "text": "2014 S/S is the debut album of South Korean group WINNER. It was released on August 12, 2014 by the group's record label, YG Entertainment. The members were credited for writing the lyrics and composing the majority of the album's songs.",
+          "title": "2014 S/S"
+        },
+        {
+          "text": "Winner (Hangul: \uc704\ub108), often stylized as WINNER, is a South Korean boy group formed in 2013 by YG Entertainment and debuted in 2014. It currently consists of four members, Jinwoo, Seunghoon, Mino and Seungyoon. Originally a five-piece group with Taehyun, who later departed from the group in November 2016.",
+          "title": "Winner (band)"
+        }
+      ],
+      "id": "hotpot_5abd94525542992ac4f382d2",
+      "prompt": "2014 S/S is the debut album of a South Korean boy group that was formed by who?",
+      "provenance": {
+        "config": "distractor",
+        "dataset": "hotpotqa/hotpot_qa",
+        "split": "validation",
+        "supporting_titles": [
+          "2014 S/S",
+          "Winner (band)"
+        ]
+      },
+      "source": "hotpotqa",
+      "source_case_id": "5abd94525542992ac4f382d2"
+    },
+    {
+      "answer_substrings": [
+        "Eenasul Fateh"
+      ],
+      "documents": [
+        {
+          "text": "James P. Comer (born James Pierpont Comer, September 25, 1934 in East Chicago, Indiana) is currently the Maurice Falk Professor of Child Psychiatry at the Yale Child Study Center and has been since 1976. He is also an associate dean at the Yale School of Medicine. As one of the world's leading child psychiatrists, he is best known for his efforts to improve the scholastic performance of children from lower-income and minority backgrounds which led to the founding of the Comer School Development Program in 1968. His program has been used in more than 600 schools in eighty-two school districts. He is the author of ten books, including the autobiographical \"Maggie\u2019s American Dream: The Life and Times of a Black Family\", 1988; \"Leave No Child Behind: Preparing Today's Youth for Tomorrow's World\", 2004; and his most recent book, \"What I Learned in School: Reflections on Race, Child Development, and School Reform\", 2009. He has also written more than 150 articles for Parents (magazine) and more than 300 articles on children's health and development and race relations. Dr. Comer has also served as a consultant to the Children's Television Workshop (Sesame Workshop) which produces Sesame Street and The Electric Company (1971 TV series). He is a co-founder and past president of the Black Psychiatrists of America and has served on the board of several universities, foundations, and corporations. He has also lectured and consulted widely not only across the United States at different universities, medical schools, and scientific associations, but also around the world in places such as London, Paris, Tokyo, Dakar, Senegal and Sydney, Australia. For his work and scholarship, Dr. Comer has been awarded 47 honorary degrees and has been recognized by numerous organizations.",
+          "title": "James P. Comer"
+        },
+        {
+          "text": "Clifford Smith (born April 1, 1971), better known by his stage name Method Man, is an American rapper, record producer, and actor. He is known as a member of the East Coast hip hop collective Wu-Tang Clan. He is also one half of the hip hop duo Method Man & Redman. He took his stage name from the 1979 film \"Method Man\". In 1996, he won a Grammy Award for Best Rap Performance by a Duo or Group, for \"I'll Be There for You/You're All I Need to Get By\", with American R&B singer-songwriter Mary J. Blige.",
+          "title": "Method Man"
+        },
+        {
+          "text": "Eenasul Fateh (Bengali: \u0988\u09a8\u09be\u09b8\u09c1\u09b2 \u09ab\u09be\u09a4\u09c7\u09b9 ; born 3 April 1959), also known by his stage name Aladin, is a Bangladeshi-British cultural practitioner, magician, live artist and former international management consultant.",
+          "title": "Eenasul Fateh"
+        },
+        {
+          "text": "Management consulting is the practice of helping organizations to improve their performance, operating primarily through the analysis of existing organizational problems and the development of plans for improvement. Organizations may draw upon the services of management consultants for a number of reasons, including gaining external (and presumably objective) advice and access to the consultants' specialized expertise.",
+          "title": "Management consulting"
+        }
+      ],
+      "id": "hotpot_5a85b2d95542997b5ce40028",
+      "prompt": "Who was known by his stage name Aladin and helped organizations improve their performance as a consultant?",
+      "provenance": {
+        "config": "distractor",
+        "dataset": "hotpotqa/hotpot_qa",
+        "split": "validation",
+        "supporting_titles": [
+          "Eenasul Fateh",
+          "Management consulting"
+        ]
+      },
+      "source": "hotpotqa",
+      "source_case_id": "5a85b2d95542997b5ce40028"
+    },
+    {
+      "answer_substrings": [
+        "3,677"
+      ],
+      "documents": [
+        {
+          "text": "The Billings Bulls were a junior ice hockey organization based in Billings, Montana. They most recently played home games at the 550-seat Centennial Ice Arena and due to the arena's small size, the Bulls frequently sold out games. They previously played their home games in the Metrapark which had a max capacity of 9,000 for hockey games. However, a negotiating dispute with arena officials and local county commissioners resulted in the team losing its lease.",
+          "title": "Billings Bulls"
+        },
+        {
+          "text": "The Robins Center is a 7,201-seat multi-purpose arena in Richmond, Virginia. Opened in 1972, the arena is home to the University of Richmond Spiders basketball. It hosted the ECAC South (now known as the Colonial Athletic Association) men's basketball tournament in 1983. It is named for E. Claiborne Robins Sr, class of 1931, who, along with his family, have been leading benefactors for the school. The opening of the Robins Center returning Spider basketball to an on-campus facility for the first time since the mid-1940s when it outgrew Millhiser Gymnasium. In the intervening decades, the Spiders played home games in numerous locations around the Richmond area, including the Richmond Coliseum (1971\u20131972), the Richmond Arena (1954\u20131971), the Benedictine High School gymnasium (1951\u20131954), Grays' Armory (1950\u20131951) and Blues' Armory (1947\u20131950). The Robins Center arena serves as the location of the University of Richmond's commencement exercises and hosted a 1992 Presidential debate involving Bill Clinton, George H. W. Bush, and Ross Perot.",
+          "title": "Robins Center"
+        },
+        {
+          "text": "The Androscoggin Bank Colis\u00e9e (formerly Central Maine Civic Center and Lewiston Colisee) is a 4,000 capacity (3,677 seated) multi-purpose arena, in Lewiston, Maine, that opened in 1958. In 1965 it was the location of the World Heavyweight Title fight during which one of the most famous sports photographs of the century was taken of Muhammed Ali standing over Sonny Liston.",
+          "title": "Androscoggin Bank Colis\u00e9e"
+        },
+        {
+          "text": "The Lewiston Maineiacs were a junior ice hockey team of the Quebec Major Junior Hockey League based in Lewiston, Maine. The team played its home games at the Androscoggin Bank Colis\u00e9e. They were the second QMJHL team in the United States, and the only one to play a full season. They won the President's Cup in 2007.",
+          "title": "Lewiston Maineiacs"
+        }
+      ],
+      "id": "hotpot_5a87ab905542996e4f3088c1",
+      "prompt": "The arena where the Lewiston Maineiacs played their home games can seat how many people?",
+      "provenance": {
+        "config": "distractor",
+        "dataset": "hotpotqa/hotpot_qa",
+        "split": "validation",
+        "supporting_titles": [
+          "Lewiston Maineiacs",
+          "Androscoggin Bank Colis\u00e9e"
+        ]
+      },
+      "source": "hotpotqa",
+      "source_case_id": "5a87ab905542996e4f3088c1"
+    },
+    {
+      "answer_substrings": [
+        "Terry Richardson"
+      ],
+      "documents": [
+        {
+          "text": "Annie Morton (born October 8, 1970) is an American model born in Pennsylvania. She has appeared on the covers of \"British Vogue\", \"ID\", \"Marie Claire\", and other magazines. She has been photographed by Helmut Newton; Peter Lindbergh; Annie Leibovitz; Richard Avedon; Juergen Teller; Paul Jasmin, Mary Ellen Mark and Terry Richardson, and modeled for Donna Karan, Givenchy, Guerlain, Chanel, \"Harper's Bazaar\", \"Sports Illustrated\" and Victoria's Secret. A long time vegetarian, an advocate for organic lifestyle choices and natural healthcare. She co-founded Tsi-La Organics, a \"Green Luxury\" company that creates and sells vegan, organic perfume and skin care products.",
+          "title": "Annie Morton"
+        },
+        {
+          "text": "Madonna is a biography by English author Andrew Morton, chronicling the life of American recording artist Madonna. The book was released in November 2001 by St. Martin's Press in the United States and in April 2002 by Michael O'Mara Books in the United Kingdom. Morton decided to write a biography on Madonna in 2000. The release was announced in April 2001 by St. Martin's Press. President and publisher Sally Richardson described the biography to contain details about Madonna's ambitions, her relationships and her lifestyle.",
+          "title": "Madonna (book)"
+        },
+        {
+          "text": "Terrence \"Uncle Terry\" Richardson (born August 14, 1965) is an American fashion and portrait photographer who has shot advertising campaigns for Marc Jacobs, Aldo, Supreme, Sisley, Tom Ford, and Yves Saint Laurent among others. He has also done work for magazines such as \"Rolling Stone\", \"GQ\", \"Vogue\", \"Vanity Fair\", \"Harper's Bazaar\", \"i-D\", and \"Vice\".",
+          "title": "Terry Richardson"
+        },
+        {
+          "text": "Lady Gaga x Terry Richardson is a photo-book by American singer Lady Gaga and American photographer Terry Richardson, released on November 22, 2011 by Grand Central Publishing. The book features more than 350 pictures of Gaga as taken by Richardson during a ten-month period from Gaga's performance at The Monster Ball Tour till the 2011 Grammy Awards. In addition to photographs, it includes a foreword written by the singer about her relationship with Richardson. The duo had collaborated on other projects prior to the shooting of the book.",
+          "title": "Lady Gaga x Terry Richardson"
+        }
+      ],
+      "id": "hotpot_5a7bbb64554299042af8f7cc",
+      "prompt": "Who is older, Annie Morton or Terry Richardson?",
+      "provenance": {
+        "config": "distractor",
+        "dataset": "hotpotqa/hotpot_qa",
+        "split": "validation",
+        "supporting_titles": [
+          "Annie Morton",
+          "Terry Richardson"
+        ]
+      },
+      "source": "hotpotqa",
+      "source_case_id": "5a7bbb64554299042af8f7cc"
+    },
+    {
+      "answer_substrings": [
+        "yes"
+      ],
+      "documents": [
+        {
+          "text": "Mendocino County, California, was the first jurisdiction in the United States to ban the cultivation, production or distribution of genetically modified organisms (GMOs). The ordinance, entitled Measure H, was passed by referendum on March 2, 2004. Initiated by the group \"GMO Free Mendocino\", the campaign was a highly publicized grassroots effort by local farmers and environmental groups who contend that the potential risks of GMOs to human health and the ecosystem have not yet been fully understood. The measure was met with opposition by several interest groups representing the biotechnology industry, The California Plant Health Association (now the Western Plant Health Association) and CropLife America, a Washington-based consortium whose clients represent some of the largest food distributors in the nation, including Monsanto, DuPont and Dow Chemical. Since the enactment of the ordinance, Mendocino County has been added to an international list of \"GMO free zones.\" Pre-emptive statutes banning local municipalities from such ordinances have now become widespread with adoption in sixteen states.",
+          "title": "Mendocino County GMO Ban"
+        },
+        {
+          "text": "The 1978 United States Senate election in Illinois took place on November 7, 1978. Incumbent Republican United States Senator Charles H. Percy ran for re-election to a third term in the United States Senate. Percy was opposed by Democratic nominee Alex Seith, an attorney who had been appointed to several local government positions. Though Percy had been expected to coast to re-election over Seith, a first-time candidate, the election quickly became competitive. In the last few days of the campaign, a desperate Percy ran a television advertisement that featured him apologizing and acknowledging that, \"I got your message and you're right.\" Percy's last-ditch effort appeared to have paid off, as he was able to edge out Seith to win what would end up being his third and final term in the Senate.",
+          "title": "United States Senate election in Illinois, 1978"
+        },
+        {
+          "text": "Local H is an American rock band originally formed by guitarist and vocalist Scott Lucas, bassist Matt Garcia, drummer Joe Daniels, and lead guitarist John Sparkman in Zion, Illinois in 1987. The members all met in high school in 1987 and founded Local H three years later.",
+          "title": "Local H"
+        },
+        {
+          "text": "For Against is a United States post-punk/dream pop band from Lincoln, Nebraska. Despite numerous lineup shuffles and some periods of dormancy, the band has produced material steadily from its 1984 inception to the present.",
+          "title": "For Against"
+        }
+      ],
+      "id": "hotpot_5a8db19d5542994ba4e3dd00",
+      "prompt": "Are Local H and For Against both from the United States?",
+      "provenance": {
+        "config": "distractor",
+        "dataset": "hotpotqa/hotpot_qa",
+        "split": "validation",
+        "supporting_titles": [
+          "Local H",
+          "For Against"
+        ]
+      },
+      "source": "hotpotqa",
+      "source_case_id": "5a8db19d5542994ba4e3dd00"
+    },
+    {
+      "answer_substrings": [
+        "Kansas Song"
+      ],
+      "documents": [
+        {
+          "text": "North Kansas City is a city in Clay County, Missouri, United States that despite the similarity in name to its larger counterpart, Kansas City, is an independent municipality part of the Kansas City metropolitan area. The population was 4,208 at the 2010 census. Originally a northern suburb across the Missouri River from Kansas City, Missouri, it is now almost completely surrounded by Kansas City, which has annexed far to the north of North Kansas City's northern city limits. North Kansas City also adjoins the small municipality of Avondale.",
+          "title": "North Kansas City, Missouri"
+        },
+        {
+          "text": "The University of Missouri\u2013Kansas City (UMKC) is a public research university serving the greater Kansas City metropolitan area. Located in Kansas City, Missouri, UMKC is one of four system campuses that collectively constitute the University of Missouri. UMKC is spread across multiple locales; the main Volker Campus, home to the majority of university operations, is located in Kansas City's Rockhill neighborhood, east of the Country Club Plaza, and adjacent to both the Stowers Institute for Medical Research and the world-renowned Linda Hall Library. In 2017 the University, in collaboration with Truman Medical Center, Children's Mercy Hospital, the Missouri Health Department, the Jackson County Medical Examiners Office, and the Missouri Department of Mental Health Behavioral Medicine, formed the UMKC Health Sciences District on Hospital Hill. This district is a first-in-the-nation partnership between local and state governments, the university, and these nationally recognized healthcare faculties, designed to promote collaboration in research, innovation, education, grant funding, and community outreach, for the advancement of health and wellness in the greater Kansas City metropolitan area. Also in 2017, the university announced plans to expand its metropolitan identity with the construction of a downtown Campus for the Arts, located near the Kauffman Center for the Performing Arts. The university's enrollment as of 2015 exceeded more than 16,600 students.",
+          "title": "University of Missouri\u2013Kansas City"
+        },
+        {
+          "text": "Kansas Song (We\u2019re From Kansas) is a fight song of the University of Kansas.",
+          "title": "Kansas Song"
+        },
+        {
+          "text": "The University of Kansas, often referred to as KU or Kansas, is a public research university in the U.S. state of Kansas. The main campus in Lawrence, one of the largest college towns in Kansas, is on Mount Oread, the highest elevation in Lawrence. Two branch campuses are in the Kansas City metropolitan area: the Edwards Campus in Overland Park, and the university's medical school and hospital in Kansas City. There are also educational and research sites in Parsons, Topeka, Garden City, Hays, and Leavenworth, and branches of the medical school in Wichita and Salina. The university is one of the 62 members of the Association of American Universities.",
+          "title": "University of Kansas"
+        }
+      ],
+      "id": "hotpot_5a7166395542994082a3e814",
+      "prompt": "What is the name of the fight song of the university whose main campus is in Lawrence, Kansas and whose branch campuses are in the Kansas City metropolitan area?",
+      "provenance": {
+        "config": "distractor",
+        "dataset": "hotpotqa/hotpot_qa",
+        "split": "validation",
+        "supporting_titles": [
+          "Kansas Song",
+          "University of Kansas"
+        ]
+      },
+      "source": "hotpotqa",
+      "source_case_id": "5a7166395542994082a3e814"
+    },
+    {
+      "answer_substrings": [
+        "David Weissman"
+      ],
+      "documents": [
+        {
+          "text": "Ungod is the debut album released in 1994 on Columbia Records by the American industrial rock band Stabbing Westward. The album was recorded in six weeks of 1993 in Chiswick, England, and released on February 15, 1994. With adequate album sales and touring with the likes of Depeche Mode a second album was warranted, \"Wither Blister Burn & Peel\". The guitar line in the chorus of the song \"Ungod\" was later used in Filter's song \"Hey Man, Nice Shot.\" Stuart Zechman, who was also playing guitar for Filter at the time, took the riff and showed it to Stabbing Westward who ended up using it as well. The song \"Nothing\" appeared in the \"Bad Boys\" movie starring Will Smith, Martin Lawrence and T\u00e9a Leoni, but was not featured on the official soundtrack album. The song also accompanied the credits of the film \"Johnny Mnemonic\" and was included on the film's soundtrack, along with the song \"Lost\". \"Lost\", \"Lies\" and \"Can't Happen Here\" were used in the film \"Mortal Kombat\", but Stabbing Westward refused to include it in the official soundtrack. The \"Thread Mix\" of \"Violent Mood Swings\" was included in the Clerks soundtrack.",
+          "title": "Ungod"
+        },
+        {
+          "text": "Season of the Witch is a 2011 American historical fantasy adventure film starring Nicolas Cage and Ron Perlman and directed by Dominic Sena with extensive uncredited reshoots by Brett Ratner. Cage and Perlman star as Teutonic Knights, who return from the Crusades to find their fatherland ruined by the Black Death. Two church elders accuse a girl (Claire Foy) of being a witch responsible for the destruction; they command the two knights to transport the girl to a monastery so the monks can lift her curse from the land. The film draws inspiration from the 1957 film \"The Seventh Seal\". It reunited Sena and Cage who had previously worked together on \"Gone in 60 Seconds\".",
+          "title": "Season of the Witch (2011 film)"
+        },
+        {
+          "text": "David Weissman is a screenwriter and director. His film credits include \"The Family Man\" (2000), \"Evolution\" (2001), and \"\"When in Rome\"\" (2010).",
+          "title": "David Weissman"
+        },
+        {
+          "text": "The Family Man is a 2000 American romantic comedy-drama film directed by Brett Ratner, written by David Diamond and David Weissman, and starring Nicolas Cage and T\u00e9a Leoni. Cage's production company, Saturn Films, helped produce the film. The film centers on a man who sees what could have been had he made a different decision 13 years prior.",
+          "title": "The Family Man"
+        }
+      ],
+      "id": "hotpot_5a877e5d5542993e715abf7d",
+      "prompt": "What screenwriter with credits for \"Evolution\" co-wrote a film starring Nicolas Cage and T\u00e9a Leoni?",
+      "provenance": {
+        "config": "distractor",
+        "dataset": "hotpotqa/hotpot_qa",
+        "split": "validation",
+        "supporting_titles": [
+          "David Weissman",
+          "The Family Man"
+        ]
+      },
+      "source": "hotpotqa",
+      "source_case_id": "5a877e5d5542993e715abf7d"
+    }
+  ],
+  "sources": {
+    "bfcl": "ShishirPatil/gorilla BFCL v4 data",
+    "gorillabench": "ShishirPatil/gorilla APIBench eval files",
+    "hotpotqa": "hotpotqa/hotpot_qa distractor validation split",
+    "toolbench": "OpenBMB/ToolBench official repository examples"
+  }
+}

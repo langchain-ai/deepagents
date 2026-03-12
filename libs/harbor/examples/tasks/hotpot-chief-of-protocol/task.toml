@@ -1,0 +1,20 @@
+version = "1.0"
+
+[metadata]
+source = "hotpotqa"
+source_id = "5a8c7595554299585d9e36b6"
+difficulty = "medium"
+category = "question_answering"
+tags = ["hotpotqa", "multi-hop", "deepagents-port"]
+
+[verifier]
+timeout_sec = 180.0
+
+[agent]
+timeout_sec = 180.0
+
+[environment]
+build_timeout_sec = 600.0
+cpus = 1
+memory = "2G"
+storage = "10G"

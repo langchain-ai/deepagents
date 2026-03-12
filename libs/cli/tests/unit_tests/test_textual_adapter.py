@@ -188,7 +188,7 @@ class TestBuildStreamConfig:
         assert config["configurable"]["thread_id"] == "t-abc"
 
     def test_no_model_keys_in_configurable(self) -> None:
-        """Model/model_params should not be in configurable (moved to runtime context)."""
+        """Model/model_params should not be in configurable."""
         config = _build_stream_config("t-no-model", assistant_id=None)
         assert "model" not in config["configurable"]
         assert "model_params" not in config["configurable"]

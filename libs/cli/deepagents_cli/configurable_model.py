@@ -44,8 +44,9 @@ class CLIContext:
 def _apply_overrides(request: ModelRequest) -> ModelRequest:
     """Apply model/param overrides from ``CLIContext`` on the runtime.
 
-    Returns the original request unchanged when no ``CLIContext`` is present
-    or it contains no overrides.
+    Returns:
+        The original request unchanged when no ``CLIContext`` is present
+        or it contains no overrides, otherwise a new request with overrides.
     """
     runtime = request.runtime
     if runtime is None:
@@ -73,16 +74,18 @@ class ConfigurableModelMiddleware(AgentMiddleware):
 
     _deepagents_prepend = True
 
-    def wrap_model_call(
+    def wrap_model_call(  # noqa: PLR6301
         self,
         request: ModelRequest,
         handler: Callable[[ModelRequest], ModelResponse],
     ) -> ModelResponse:
+        """Apply runtime overrides and delegate to the next handler."""  # noqa: DOC201
         return handler(_apply_overrides(request))
 
-    async def awrap_model_call(
+    async def awrap_model_call(  # noqa: PLR6301
         self,
         request: ModelRequest,
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelResponse:
+        """Apply runtime overrides and delegate to the next async handler."""  # noqa: DOC201
         return await handler(_apply_overrides(request))

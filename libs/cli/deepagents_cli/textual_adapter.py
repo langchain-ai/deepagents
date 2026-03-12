@@ -33,7 +33,7 @@ from pydantic import TypeAdapter, ValidationError
 from deepagents_cli._debug import configure_debug_logging
 from deepagents_cli.ask_user import AskUserRequest
 from deepagents_cli.config import settings
-from deepagents_cli.configurable_model import CLIContext
+from deepagents_cli.configurable_model import CLIContext  # noqa: TC001
 from deepagents_cli.file_ops import FileOpTracker
 from deepagents_cli.hooks import dispatch_hook
 from deepagents_cli.input import MediaTracker, parse_file_mentions

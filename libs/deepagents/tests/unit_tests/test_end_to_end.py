@@ -1185,6 +1185,54 @@ class TestDeepAgentEndToEnd:
         )
 
 
+    @pytest.mark.parametrize("backend_factory", BACKEND_FACTORIES)
+    def test_deep_agent_read_image_file(self, tmp_path: Path, backend_factory: Callable[[Path], BackendProtocol]) -> None:
+        """Test that reading an image returns a ToolMessage with content blocks."""
+        import base64
+
+        backend = backend_factory(tmp_path)
+        img_bytes = b"\x89PNG\r\n\x1a\n fake image data"
+
+        if isinstance(backend, FilesystemBackend):
+            (tmp_path / "photo.png").write_bytes(img_bytes)
+        else:
+            encoded = base64.b64encode(img_bytes).decode("ascii")
+            res = backend.write("/photo.png", encoded)
+            if isinstance(backend, StateBackend):
+                backend.runtime.state["files"].update(res.files_update)
+
+        fake_model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "read_file",
+                                "args": {"file_path": "/photo.png"},
+                                "id": "call_img",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Here is the image."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(model=fake_model, backend=backend)
+        result = agent.invoke({"messages": [HumanMessage(content="Read the image")]})
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert len(tool_messages) == 1
+        tm = tool_messages[0]
+        assert isinstance(tm.content, list)
+        assert len(tm.content) == 1
+        assert tm.content[0]["type"] == "image"
+        assert tm.content[0]["mime_type"] == "image/png"
+        assert "base64" in tm.content[0]
+
+
 class TestDeepAgentStructure:
     """Test basic deep agent structure without making network calls."""
 

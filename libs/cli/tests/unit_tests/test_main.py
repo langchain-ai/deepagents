@@ -273,6 +273,8 @@ class TestBackgroundRuntimeLifecycleHookup:
 
         fake_model_result = SimpleNamespace(
             model="mock-model",
+            provider="openai",
+            model_name="gpt-4.1-mini",
             apply_to_settings=MagicMock(),
         )
 

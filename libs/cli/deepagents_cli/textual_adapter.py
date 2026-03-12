@@ -180,7 +180,6 @@ def print_usage_table(
         console: Rich console for output.
     """
     from rich.table import Table
-    from rich.text import Text
 
     has_time = wall_time >= 0.1  # noqa: PLR2004
     if not (stats.request_count or stats.input_tokens or has_time):
@@ -229,7 +228,7 @@ def print_usage_table(
         console.print(table)
     if has_time:
         console.print()
-        console.print(Text(f"Agent active  {wall_time:.1f}s", style="dim"))
+        console.print(f"[dim]Agent active  {wall_time:.1f}s[/dim]")
 
 
 # Type alias matching HITLResponse["decisions"] element type

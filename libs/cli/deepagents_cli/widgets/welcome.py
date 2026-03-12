@@ -45,6 +45,8 @@ class WelcomeBanner(Static):
         self,
         thread_id: str | None = None,
         mcp_tool_count: int = 0,
+        *,
+        connecting: bool = False,
         **kwargs: Any,
     ) -> None:
         """Initialize the welcome banner.
@@ -52,11 +54,14 @@ class WelcomeBanner(Static):
         Args:
             thread_id: Optional thread ID to display in the banner.
             mcp_tool_count: Number of MCP tools loaded at startup.
+            connecting: When `True`, show a "Connecting..." footer instead of
+                the normal ready prompt. Call `set_connected` to transition.
             **kwargs: Additional arguments passed to parent.
         """
         # Avoid collision with Widget._thread_id (Textual internal int)
         self._cli_thread_id: str | None = thread_id
         self._mcp_tool_count = mcp_tool_count
+        self._connecting = connecting
         self._project_name: str | None = get_langsmith_project_name()
         self._project_url: str | None = None
 
@@ -89,6 +94,16 @@ class WelcomeBanner(Static):
             thread_id: The new thread ID to display.
         """
         self._cli_thread_id = thread_id
+        self.update(self._build_banner(self._project_url))
+
+    def set_connected(self, mcp_tool_count: int = 0) -> None:
+        """Transition from "connecting" to "ready" state.
+
+        Args:
+            mcp_tool_count: Number of MCP tools loaded during connection.
+        """
+        self._connecting = False
+        self._mcp_tool_count = mcp_tool_count
         self.update(self._build_banner(self._project_url))
 
     def on_click(self, event: Click) -> None:  # noqa: PLR6301  # Textual event handler
@@ -150,8 +165,22 @@ class WelcomeBanner(Static):
             label = "MCP tool" if self._mcp_tool_count == 1 else "MCP tools"
             banner.append(f"Loaded {self._mcp_tool_count} {label}\n")
 
-        banner.append_text(build_welcome_footer())
+        if self._connecting:
+            banner.append_text(build_connecting_footer())
+        else:
+            banner.append_text(build_welcome_footer())
         return banner
+
+
+def build_connecting_footer() -> Text:
+    """Build a footer shown while waiting for the server to connect.
+
+    Returns:
+        Rich Text with a connecting status message.
+    """
+    footer = Text()
+    footer.append("\nConnecting to server...\n", style="dim")
+    return footer
 
 
 def build_welcome_footer() -> Text:

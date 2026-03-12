@@ -566,7 +566,6 @@ async def run_textual_cli_async(
     model_params: dict[str, Any] | None = None,
     profile_override: dict[str, Any] | None = None,
     thread_id: str | None = None,
-    is_resumed: bool = False,
     initial_prompt: str | None = None,
     enable_ask_user: bool = False,
     mcp_config_path: str | None = None,
@@ -594,7 +593,6 @@ async def run_textual_cli_async(
 
             Merged on top of config file profile overrides.
         thread_id: Thread ID to use (new or resumed)
-        is_resumed: Whether this is a resumed session
         initial_prompt: Optional prompt to auto-submit when session starts
         enable_ask_user: Enable the ask_user tool
         mcp_config_path: Optional path to MCP servers JSON configuration file.
@@ -632,78 +630,54 @@ async def run_textual_cli_async(
     # not only after an explicit /model switch.
     save_recent_model(f"{result.provider}:{result.model_name}")
 
+    from deepagents_cli.app import AppResult
+
+    # Build kwargs for deferred server startup (runs inside the TUI)
+    server_kwargs: dict[str, Any] = {
+        "assistant_id": assistant_id,
+        "model_name": model_name,
+        "model_params": model_params,
+        "auto_approve": auto_approve,
+        "sandbox_type": sandbox_type,
+        "sandbox_id": sandbox_id,
+        "sandbox_setup": sandbox_setup,
+        "enable_ask_user": enable_ask_user,
+        "mcp_config_path": mcp_config_path,
+        "no_mcp": no_mcp,
+        "trust_project_mcp": trust_project_mcp,
+        "interactive": True,
+    }
+
+    mcp_preload_kwargs: dict[str, Any] | None = None
+    if not no_mcp:
+        mcp_preload_kwargs = {
+            "mcp_config_path": mcp_config_path,
+            "no_mcp": no_mcp,
+            "trust_project_mcp": trust_project_mcp,
+        }
+
     try:
-        mcp_server_info = await _preload_session_mcp_server_info(
-            mcp_config_path=mcp_config_path,
-            no_mcp=no_mcp,
-            trust_project_mcp=trust_project_mcp,
+        result = await run_textual_app(
+            assistant_id=assistant_id,
+            backend=None,
+            auto_approve=auto_approve,
+            cwd=Path.cwd(),
+            thread_id=thread_id,
+            initial_prompt=initial_prompt,
+            profile_override=profile_override,
+            server_kwargs=server_kwargs,
+            mcp_preload_kwargs=mcp_preload_kwargs,
         )
     except Exception as e:
-        logger.warning("MCP metadata preload failed: %s", e, exc_info=True)
-        mcp_server_info = None
-
-    # Show thread info
-    if is_resumed:
-        msg = Text("Resuming thread: ", style="dim")
-        msg.append(str(thread_id), style="dim")
-        console.print(msg)
-    else:
-        msg = Text("Starting with thread: ", style="dim")
-        msg.append(str(thread_id), style="dim")
-        console.print(msg)
-
-    from deepagents_cli.app import AppResult
-    from deepagents_cli.server_manager import server_session
-
-    console.print(Text("Starting LangGraph server...", style="dim"))
-    try:
-        async with server_session(
-            assistant_id=assistant_id,
-            model_name=model_name,
-            model_params=model_params,
-            auto_approve=auto_approve,
-            sandbox_type=sandbox_type,
-            sandbox_id=sandbox_id,
-            sandbox_setup=sandbox_setup,
-            enable_ask_user=enable_ask_user,
-            mcp_config_path=mcp_config_path,
-            no_mcp=no_mcp,
-            trust_project_mcp=trust_project_mcp,
-            interactive=True,
-        ) as (agent, server_proc):
-            console.print("[green]✓ Server ready[/green]")
-
-            try:
-                result = await run_textual_app(
-                    agent=agent,
-                    assistant_id=assistant_id,
-                    backend=None,
-                    auto_approve=auto_approve,
-                    cwd=Path.cwd(),
-                    thread_id=thread_id,
-                    initial_prompt=initial_prompt,
-                    mcp_server_info=mcp_server_info,
-                    profile_override=profile_override,
-                    server_proc=server_proc,
-                )
-            except Exception as e:
-                logger.debug("App error", exc_info=True)
-                error_text = Text("Application error: ", style="red")
-                error_text.append(str(e))
-                console.print(error_text)
-                if logger.isEnabledFor(logging.DEBUG):
-                    console.print(Text(traceback.format_exc(), style="dim"))
-                return AppResult(return_code=1, thread_id=None)
-
-            return result
-    except Exception as e:
-        logger.debug("Failed to start server", exc_info=True)
-        error_text = Text("Failed to start server: ", style="red")
+        logger.debug("App error", exc_info=True)
+        error_text = Text("Application error: ", style="red")
         error_text.append(str(e))
         console.print(error_text)
         if logger.isEnabledFor(logging.DEBUG):
             console.print(Text(traceback.format_exc(), style="dim"))
         return AppResult(return_code=1, thread_id=None)
+
+    return result
 
 
 async def _run_acp_cli_async(
@@ -1329,7 +1303,6 @@ def cli_main() -> None:
             )
 
             thread_id = None
-            is_resumed = False
 
             if args.resume_thread == "__MOST_RECENT__":
                 # -r (no ID): Get most recent thread
@@ -1338,7 +1311,6 @@ def cli_main() -> None:
                 agent_filter = args.agent if args.agent != _DEFAULT_AGENT_NAME else None
                 thread_id = asyncio.run(get_most_recent(agent_filter))
                 if thread_id:
-                    is_resumed = True
                     agent_name = asyncio.run(get_thread_agent(thread_id))
                     if agent_name:
                         args.agent = agent_name
@@ -1355,7 +1327,6 @@ def cli_main() -> None:
                 # -r <ID>: Resume specific thread
                 if asyncio.run(thread_exists(args.resume_thread)):
                     thread_id = args.resume_thread
-                    is_resumed = True
                     if args.agent == _DEFAULT_AGENT_NAME:
                         agent_name = asyncio.run(get_thread_agent(thread_id))
                         if agent_name:
@@ -1410,7 +1381,6 @@ def cli_main() -> None:
                         model_params=model_params,
                         profile_override=profile_override,
                         thread_id=thread_id,
-                        is_resumed=is_resumed,
                         initial_prompt=getattr(args, "initial_prompt", None),
                         enable_ask_user=getattr(args, "ask_user", False),
                         mcp_config_path=getattr(args, "mcp_config", None),

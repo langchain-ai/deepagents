@@ -1783,8 +1783,8 @@ class TestFetchThreadHistoryData:
         ]
         with patch.object(
             DeepAgentsApp,
-            "_read_messages_from_checkpointer",
-            return_value=checkpointer_msgs,
+            "_read_channel_values_from_checkpointer",
+            return_value={"messages": checkpointer_msgs},
         ):
             result = await app._fetch_thread_history_data("t-1")
 

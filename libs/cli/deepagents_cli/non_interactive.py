@@ -773,22 +773,23 @@ async def run_non_interactive(
         header = _build_non_interactive_header(assistant_id, thread_id)
         console.print(header)
 
+    import asyncio
+
     from deepagents_cli.server_manager import server_session
 
+    # Launch MCP preload concurrently with server startup
+    mcp_task: asyncio.Task[Any] | None = None
     if not no_mcp and not quiet:
         try:
             from deepagents_cli.main import _preload_session_mcp_server_info
 
-            mcp_info = await _preload_session_mcp_server_info(
-                mcp_config_path=mcp_config_path,
-                no_mcp=no_mcp,
-                trust_project_mcp=trust_project_mcp,
+            mcp_task = asyncio.create_task(
+                _preload_session_mcp_server_info(
+                    mcp_config_path=mcp_config_path,
+                    no_mcp=no_mcp,
+                    trust_project_mcp=trust_project_mcp,
+                )
             )
-            if mcp_info:
-                tool_count = sum(len(s.tools) for s in mcp_info)
-                if tool_count:
-                    label = "MCP tool" if tool_count == 1 else "MCP tools"
-                    console.print(f"[green]✓ Loaded {tool_count} {label}[/green]")
         except Exception:
             logger.debug("MCP metadata preload failed", exc_info=True)
 
@@ -817,6 +818,20 @@ async def run_non_interactive(
             trust_project_mcp=trust_project_mcp,
             interactive=False,
         ) as (agent, _server_proc):
+            # Collect MCP preload result (ran concurrently with server startup)
+            if mcp_task is not None:
+                try:
+                    mcp_info = await mcp_task
+                    if mcp_info:
+                        tool_count = sum(len(s.tools) for s in mcp_info)
+                        if tool_count:
+                            label = "MCP tool" if tool_count == 1 else "MCP tools"
+                            console.print(
+                                f"[green]✓ Loaded {tool_count} {label}[/green]"
+                            )
+                except Exception:
+                    logger.debug("MCP metadata preload failed", exc_info=True)
+
             if not quiet:
                 console.print("[green]✓ Server ready[/green]")
 

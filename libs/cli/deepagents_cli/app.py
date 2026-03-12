@@ -23,6 +23,7 @@ from textual.app import App
 from textual.binding import Binding, BindingType
 from textual.containers import Container, VerticalScroll
 from textual.css.query import NoMatches
+from textual.message import Message
 from textual.screen import ModalScreen
 
 from deepagents_cli.clipboard import copy_selection_to_clipboard
@@ -80,6 +81,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from deepagents.backends import CompositeBackend
+    from deepagents.backends.protocol import BackendProtocol
     from deepagents.middleware.summarization import SummarizationMiddleware
     from langchain_core.runnables import RunnableConfig
     from langgraph.pregel import Pregel
@@ -545,6 +547,27 @@ class DeepAgentsApp(App):
         Binding("n", "approval_no", "No", show=False),
     ]
 
+    class ServerReady(Message):
+        """Posted by the background server-startup worker on success."""
+
+        def __init__(  # noqa: D107
+            self,
+            agent: Any,  # noqa: ANN401
+            server_proc: Any,  # noqa: ANN401
+            mcp_server_info: list[Any] | None,
+        ) -> None:
+            super().__init__()
+            self.agent = agent
+            self.server_proc = server_proc
+            self.mcp_server_info = mcp_server_info
+
+    class ServerStartFailed(Message):
+        """Posted by the background server-startup worker on failure."""
+
+        def __init__(self, error: Exception) -> None:  # noqa: D107
+            super().__init__()
+            self.error = error
+
     def __init__(
         self,
         *,
@@ -558,6 +581,8 @@ class DeepAgentsApp(App):
         mcp_server_info: list[MCPServerInfo] | None = None,
         profile_override: dict[str, Any] | None = None,
         server_proc: ServerProcess | None = None,
+        server_kwargs: dict[str, Any] | None = None,
+        mcp_preload_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> None:
         """Initialize the Deep Agents application.
@@ -577,6 +602,13 @@ class DeepAgentsApp(App):
                 compaction budget display, and on-demand `create_model()`
                 calls such as `/compact`.
             server_proc: LangGraph server process for the interactive session.
+            server_kwargs: When provided, server startup is deferred.
+
+                The app shows a "Connecting..." state and starts the server in
+                the background using these kwargs
+                for `start_server_and_get_agent`.
+            mcp_preload_kwargs: Kwargs for `_preload_session_mcp_server_info`,
+                run concurrently with server startup when `server_kwargs` is set.
             **kwargs: Additional arguments passed to parent
         """
         super().__init__(**kwargs)
@@ -591,6 +623,9 @@ class DeepAgentsApp(App):
         self._mcp_server_info = mcp_server_info
         self._profile_override = profile_override
         self._server_proc = server_proc
+        self._server_kwargs = server_kwargs
+        self._mcp_preload_kwargs = mcp_preload_kwargs
+        self._connecting = server_kwargs is not None
         self._model_override: str | None = None
         self._model_params_override: dict[str, Any] | None = None
         self._mcp_tool_count = sum(len(s.tools) for s in (mcp_server_info or []))
@@ -658,6 +693,7 @@ class DeepAgentsApp(App):
             yield WelcomeBanner(
                 thread_id=self._lc_thread_id,
                 mcp_tool_count=self._mcp_tool_count,
+                connecting=self._connecting,
                 id="welcome-banner",
             )
             yield Container(id="messages")
@@ -698,33 +734,16 @@ class DeepAgentsApp(App):
             self._update_tokens, self._hide_tokens
         )
 
-        # Create UI adapter if agent is provided
+        # Create UI adapter if agent is provided (deferred when connecting)
         if self._agent:
-            self._ui_adapter = TextualUIAdapter(
-                mount_message=self._mount_message,
-                update_status=self._update_status,
-                request_approval=self._request_approval,
-                on_auto_approve_enabled=self._on_auto_approve_enabled,
-                scroll_to_bottom=self._scroll_chat_to_bottom,
-                set_spinner=self._set_spinner,
-                set_active_message=self._set_active_message,
-                sync_message_content=self._sync_message_content,
-                request_ask_user=self._request_ask_user,
-            )
-            self._ui_adapter.set_token_tracker(self._token_tracker)
+            self._init_agent_adapter()
 
-            # Prewarm `/threads` cache in the background so first open is faster.
+        # Deferred server startup: run in background while TUI is visible
+        if self._server_kwargs is not None:
             self.run_worker(
-                self._prewarm_threads_cache,
+                self._start_server_background,
                 exclusive=True,
-                group="startup-thread-prewarm",
-            )
-
-            # Prewarm model caches so `/model` opens instantly.
-            self.run_worker(
-                self._prewarm_model_caches,
-                exclusive=True,
-                group="startup-model-prewarm",
+                group="server-startup",
             )
 
         # Background update check (opt-out via DEEPAGENTS_NO_UPDATE_CHECK)
@@ -764,18 +783,131 @@ class DeepAgentsApp(App):
         # This check must come first because _lc_thread_id and _agent are
         # always set (even for brand-new sessions), so an elif after the
         # thread-history branch would never execute.
+        # When connecting, defer until _on_server_ready fires.
+        if not self._connecting:
+            if self._initial_prompt and self._initial_prompt.strip():
+                prompt = self._initial_prompt
+                self.call_after_refresh(
+                    lambda: asyncio.create_task(self._handle_user_message(prompt))
+                )
+            elif self._lc_thread_id and self._agent:
+                self.call_after_refresh(
+                    lambda: asyncio.create_task(self._load_thread_history())
+                )
+
+    def _init_agent_adapter(self) -> None:
+        """Create the UI adapter and kick off background cache prewarming."""
+        self._ui_adapter = TextualUIAdapter(
+            mount_message=self._mount_message,
+            update_status=self._update_status,
+            request_approval=self._request_approval,
+            on_auto_approve_enabled=self._on_auto_approve_enabled,
+            scroll_to_bottom=self._scroll_chat_to_bottom,
+            set_spinner=self._set_spinner,
+            set_active_message=self._set_active_message,
+            sync_message_content=self._sync_message_content,
+            request_ask_user=self._request_ask_user,
+        )
+        if self._token_tracker:
+            self._ui_adapter.set_token_tracker(self._token_tracker)
+
+        self.run_worker(
+            self._prewarm_threads_cache,
+            exclusive=True,
+            group="startup-thread-prewarm",
+        )
+        self.run_worker(
+            self._prewarm_model_caches,
+            exclusive=True,
+            group="startup-model-prewarm",
+        )
+
+    async def _start_server_background(self) -> None:
+        """Background worker: start server + MCP preload concurrently."""
+        from deepagents_cli.server_manager import start_server_and_get_agent
+
+        coros: list[Any] = [start_server_and_get_agent(**self._server_kwargs)]  # type: ignore[arg-type]
+
+        if self._mcp_preload_kwargs is not None:
+            from deepagents_cli.main import _preload_session_mcp_server_info
+
+            coros.append(_preload_session_mcp_server_info(**self._mcp_preload_kwargs))
+
+        try:
+            results = await asyncio.gather(*coros, return_exceptions=True)
+        except Exception as exc:  # noqa: BLE001  # defensive catch around gather
+            self.post_message(self.ServerStartFailed(error=exc))
+            return
+
+        server_result = results[0]
+        if isinstance(server_result, BaseException):
+            self.post_message(
+                self.ServerStartFailed(
+                    error=server_result
+                    if isinstance(server_result, Exception)
+                    else RuntimeError(str(server_result)),
+                )
+            )
+            return
+
+        agent, server_proc, _ = server_result
+
+        mcp_info = None
+        if len(results) > 1 and not isinstance(results[1], BaseException):
+            mcp_info = results[1]
+
+        self.post_message(
+            self.ServerReady(
+                agent=agent,
+                server_proc=server_proc,
+                mcp_server_info=mcp_info,
+            )
+        )
+
+    def on_deep_agents_app_server_ready(self, event: ServerReady) -> None:
+        """Handle successful background server startup."""
+        self._connecting = False
+        self._agent = event.agent
+        self._server_proc = event.server_proc
+        self._mcp_server_info = event.mcp_server_info
+        self._mcp_tool_count = sum(len(s.tools) for s in (event.mcp_server_info or []))
+
+        # Update welcome banner to show ready state
+        try:
+            banner = self.query_one("#welcome-banner", WelcomeBanner)
+            banner.set_connected(self._mcp_tool_count)
+        except NoMatches:
+            pass
+
+        # Now that the agent is available, set up the adapter
+        self._init_agent_adapter()
+
+        # Handle deferred initial prompt or thread history
         if self._initial_prompt and self._initial_prompt.strip():
-            # Use call_after_refresh to ensure UI is fully mounted before submitting
-            # Capture value for closure to satisfy type checker
             prompt = self._initial_prompt
             self.call_after_refresh(
                 lambda: asyncio.create_task(self._handle_user_message(prompt))
             )
-        # Load thread history if resuming a session (no initial prompt)
         elif self._lc_thread_id and self._agent:
             self.call_after_refresh(
                 lambda: asyncio.create_task(self._load_thread_history())
             )
+
+    def on_deep_agents_app_server_start_failed(self, event: ServerStartFailed) -> None:
+        """Handle background server startup failure."""
+        self._connecting = False
+        logger.error("Server startup failed: %s", event.error, exc_info=event.error)
+        self.notify(
+            f"Failed to start server: {event.error}",
+            severity="error",
+            timeout=30,
+        )
+        # Update banner to show the failure
+        try:
+            banner = self.query_one("#welcome-banner", WelcomeBanner)
+            banner.set_connected(0)
+        except NoMatches:
+            pass
 
     async def _prewarm_threads_cache(self) -> None:  # noqa: PLR6301  # Worker hook kept as instance method
         """Prewarm thread selector cache without blocking app startup."""
@@ -1855,18 +1987,18 @@ class DeepAgentsApp(App):
         config: RunnableConfig = {"configurable": {"thread_id": self._lc_thread_id}}
 
         try:
-            state = await self._agent.aget_state(config)
+            state_values = await self._get_thread_state_values(self._lc_thread_id)
         except Exception as exc:  # noqa: BLE001
             await self._mount_message(ErrorMessage(f"Failed to read state: {exc}"))
             return
 
-        if not state or not state.values:
+        if not state_values:
             await self._mount_message(
                 AppMessage("Nothing to compact \u2014 start a conversation first")
             )
             return
 
-        messages = state.values.get("messages", [])
+        messages = state_values.get("messages", [])
 
         # Prevent concurrent user input while compaction modifies state
         self._agent_running = True
@@ -1940,7 +2072,7 @@ class DeepAgentsApp(App):
 
             # Rebuild the message list the model would see, accounting for
             # any prior compaction
-            event = state.values.get("_summarization_event")
+            event = state_values.get("_summarization_event")
             effective = middleware._apply_event_to_messages(messages, event)
 
             cutoff = middleware._determine_cutoff_index(effective)
@@ -1999,7 +2131,9 @@ class DeepAgentsApp(App):
             summary = await middleware._acreate_summary(to_summarize)
 
             offload_result = await self._offload_messages_for_compact(
-                to_summarize, middleware
+                to_summarize,
+                middleware,
+                backend=compact_backend,
             )
             if offload_result is None:
                 # Actual failure (read/write error)
@@ -2079,6 +2213,8 @@ class DeepAgentsApp(App):
         self,
         messages: list[Any],
         middleware: SummarizationMiddleware,
+        *,
+        backend: BackendProtocol | None = None,
     ) -> str | None:
         """Write messages to backend storage before compaction.
 
@@ -2091,6 +2227,8 @@ class DeepAgentsApp(App):
         Args:
             messages: Messages to offload.
             middleware: `SummarizationMiddleware` instance for filtering.
+            backend: Backend to persist conversation history to. Defaults to
+                `self._backend` when omitted.
 
         Returns:
             File path where history was stored, `""` (empty string) if there
@@ -2101,7 +2239,8 @@ class DeepAgentsApp(App):
 
         from langchain_core.messages import get_buffer_string
 
-        if self._backend is None:
+        history_backend = backend or self._backend
+        if history_backend is None:
             logger.warning("No backend configured; cannot offload messages")
             return None
 
@@ -2120,7 +2259,7 @@ class DeepAgentsApp(App):
 
         existing_content = ""
         try:
-            responses = await self._backend.adownload_files([path])
+            responses = await history_backend.adownload_files([path])
             resp = responses[0] if responses else None
             if resp and resp.content is not None and resp.error is None:
                 existing_content = resp.content.decode("utf-8")
@@ -2138,9 +2277,9 @@ class DeepAgentsApp(App):
 
         try:
             result = (
-                await self._backend.aedit(path, existing_content, combined)
+                await history_backend.aedit(path, existing_content, combined)
                 if existing_content
-                else await self._backend.awrite(path, combined)
+                else await history_backend.awrite(path, combined)
             )
             if result is None or result.error:
                 error_detail = result.error if result else "backend returned None"
@@ -2384,12 +2523,54 @@ class DeepAgentsApp(App):
 
         return result
 
+    async def _get_thread_state_values(self, thread_id: str) -> dict[str, Any]:
+        """Fetch thread state values, with remote checkpointer fallback.
+
+        In server mode the LangGraph dev server can report an empty thread state
+        after a restart even when checkpoints exist on disk. When that happens,
+        read the latest checkpoint directly so resumed threads can still load
+        history and compact correctly.
+
+        Args:
+            thread_id: Thread ID to fetch from checkpoint storage.
+
+        Returns:
+            Thread state values keyed by channel name. Returns an empty dict
+                when no checkpointed values are available.
+        """
+        if not self._agent:
+            return {}
+
+        config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
+        state = await self._agent.aget_state(config)
+
+        values: dict[str, Any] = {}
+        if state and state.values:
+            values = dict(state.values)
+
+        messages = values.get("messages")
+        if isinstance(messages, list) and messages:
+            return values
+        if not self._is_remote():
+            return values
+
+        fallback_values = await self._read_channel_values_from_checkpointer(thread_id)
+        fallback_messages = fallback_values.get("messages")
+        if isinstance(fallback_messages, list) and fallback_messages:
+            values["messages"] = fallback_messages
+        if (
+            values.get("_summarization_event") is None
+            and "_summarization_event" in fallback_values
+        ):
+            values["_summarization_event"] = fallback_values["_summarization_event"]
+        return values
+
     async def _fetch_thread_history_data(self, thread_id: str) -> list[MessageData]:
         """Fetch and convert stored messages for a thread.
 
         In server mode the LangGraph dev server starts with an empty thread
         store, so `aget_state` via the HTTP API returns no messages even when
-        checkpoints exist on disk.  We fall back to reading the SQLite
+        checkpoints exist on disk. We fall back to reading the SQLite
         checkpointer directly to guarantee resumed threads load their history.
 
         Args:
@@ -2398,21 +2579,8 @@ class DeepAgentsApp(App):
         Returns:
             Converted message data ready for bulk loading.
         """
-        if not self._agent:
-            return []
-
-        config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
-        state = await self._agent.aget_state(config)
-
-        messages: list[Any] = []
-        if state and state.values:
-            messages = state.values.get("messages", [])
-
-        # In server mode the dev server may return empty state for threads
-        # that were persisted in a previous session.  Read the SQLite
-        # checkpointer directly as a fallback.
-        if not messages and self._is_remote():
-            messages = await self._read_messages_from_checkpointer(thread_id)
+        state_values = await self._get_thread_state_values(thread_id)
+        messages = state_values.get("messages", [])
 
         if not messages:
             return []
@@ -2428,14 +2596,15 @@ class DeepAgentsApp(App):
         return await asyncio.to_thread(self._convert_messages_to_data, messages)
 
     @staticmethod
-    async def _read_messages_from_checkpointer(thread_id: str) -> list[Any]:
-        """Read messages directly from the SQLite checkpointer.
+    async def _read_channel_values_from_checkpointer(thread_id: str) -> dict[str, Any]:
+        """Read checkpoint channel values directly from the SQLite checkpointer.
 
         Args:
             thread_id: Thread ID to look up.
 
         Returns:
-            List of LangChain message objects, or empty list on failure.
+            Channel values from the latest checkpoint, or an empty dict on
+                failure.
         """
         try:
             from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
@@ -2448,13 +2617,32 @@ class DeepAgentsApp(App):
                 tup = await saver.aget_tuple(config)
                 if tup and tup.checkpoint:
                     channel_values = tup.checkpoint.get("channel_values", {})
-                    return channel_values.get("messages", [])
+                    if isinstance(channel_values, dict):
+                        return dict(channel_values)
         except Exception:
             logger.warning(
                 "Failed to read checkpointer directly for %s",
                 thread_id,
                 exc_info=True,
             )
+        return {}
+
+    @staticmethod
+    async def _read_messages_from_checkpointer(thread_id: str) -> list[Any]:
+        """Read messages directly from the SQLite checkpointer.
+
+        Args:
+            thread_id: Thread ID to look up.
+
+        Returns:
+            List of LangChain message objects, or empty list on failure.
+        """
+        channel_values = await DeepAgentsApp._read_channel_values_from_checkpointer(
+            thread_id
+        )
+        messages = channel_values.get("messages")
+        if isinstance(messages, list):
+            return messages
         return []
 
     async def _upgrade_thread_message_link(
@@ -3475,17 +3663,23 @@ async def run_textual_app(
     mcp_server_info: list[MCPServerInfo] | None = None,
     profile_override: dict[str, Any] | None = None,
     server_proc: ServerProcess | None = None,
+    server_kwargs: dict[str, Any] | None = None,
+    mcp_preload_kwargs: dict[str, Any] | None = None,
 ) -> AppResult:
     """Run the Textual application.
 
+    When `server_kwargs` is provided (and `agent` is `None`), the app starts
+    immediately with a "Connecting..." banner and launches the server in the
+    background.  Server cleanup is handled automatically after the app exits.
+
     Args:
-        agent: Pre-configured LangGraph agent (optional)
-        assistant_id: Agent identifier for memory storage
-        backend: Backend for file operations
-        auto_approve: Whether to start with auto-approve enabled
-        cwd: Current working directory to display
-        thread_id: Optional thread ID for session persistence
-        initial_prompt: Optional prompt to auto-submit when session starts
+        agent: Pre-configured LangGraph agent (optional).
+        assistant_id: Agent identifier for memory storage.
+        backend: Backend for file operations.
+        auto_approve: Whether to start with auto-approve enabled.
+        cwd: Current working directory to display.
+        thread_id: Optional thread ID for session persistence.
+        initial_prompt: Optional prompt to auto-submit when session starts.
         mcp_server_info: MCP server metadata for the `/mcp` viewer.
         profile_override: Extra profile fields from `--profile-override`,
             retained so later profile-aware behavior stays consistent with
@@ -3493,6 +3687,8 @@ async def run_textual_app(
             budget display, and on-demand `create_model()` calls such as
             `/compact`.
         server_proc: LangGraph server process for the interactive session.
+        server_kwargs: Kwargs for deferred `start_server_and_get_agent` call.
+        mcp_preload_kwargs: Kwargs for concurrent MCP metadata preload.
 
     Returns:
         An `AppResult` with the return code and final thread ID.
@@ -3508,8 +3704,18 @@ async def run_textual_app(
         mcp_server_info=mcp_server_info,
         profile_override=profile_override,
         server_proc=server_proc,
+        server_kwargs=server_kwargs,
+        mcp_preload_kwargs=mcp_preload_kwargs,
     )
-    await app.run_async()
+    try:
+        await app.run_async()
+    finally:
+        # Guarantee server cleanup regardless of how the app exits.
+        # Covers both the pre-started server_proc path and the deferred
+        # server_kwargs path (where the background worker sets _server_proc).
+        if app._server_proc is not None:
+            app._server_proc.stop()
+
     return AppResult(
         return_code=app.return_code or 0,
         thread_id=app._lc_thread_id,

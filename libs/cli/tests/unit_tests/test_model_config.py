@@ -3,7 +3,7 @@
 import logging
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 from unittest.mock import patch
 
 import pytest
@@ -19,6 +19,7 @@ from deepagents_cli.model_config import (
     _get_builtin_providers,
     _get_provider_profile_modules,
     _load_provider_profiles,
+    _profile_module_from_class_path,
     clear_caches,
     clear_default_model,
     get_available_models,
@@ -1013,8 +1014,8 @@ models = ["claude-sonnet-4-5"]
 
         assert models["anthropic"].count("claude-sonnet-4-5") == 1
 
-    def test_skips_config_provider_with_no_models(self, tmp_path):
-        """Config provider with empty models list is not added."""
+    def test_skips_config_provider_with_no_models_and_no_class_path(self, tmp_path):
+        """Config provider with no models and no class_path is not added."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
 [models.providers.empty]
@@ -1030,6 +1031,275 @@ api_key_env = "SOME_KEY"
             models = get_available_models()
 
         assert "empty" not in models
+
+
+class TestProfileModuleFromClassPath:
+    """Tests for _profile_module_from_class_path() helper."""
+
+    def test_derives_module_path(self):
+        """Derives profile module from a valid class_path."""
+        result = _profile_module_from_class_path(
+            "langchain_baseten.chat_models:ChatBaseten"
+        )
+        assert result == "langchain_baseten.data._profiles"
+
+    def test_returns_none_for_missing_colon(self):
+        """Returns None when class_path has no colon separator."""
+        assert _profile_module_from_class_path("my_package.MyChatModel") is None
+
+    def test_single_segment_package(self):
+        """Works with a single-segment package name."""
+        result = _profile_module_from_class_path("mypkg:MyClass")
+        assert result == "mypkg.data._profiles"
+
+    def test_returns_none_for_empty_module_part(self):
+        """Returns None when module part before colon is empty."""
+        assert _profile_module_from_class_path(":MyClass") is None
+
+
+class TestClassPathProviderAutoDiscovery:
+    """Tests for auto-discovering models from class_path provider packages."""
+
+    FAKE_BASETEN_PROFILES: ClassVar[dict[str, dict[str, Any]]] = {
+        "deepseek-ai/DeepSeek-V3.2": {
+            "tool_calling": True,
+            "text_inputs": True,
+            "text_outputs": True,
+        },
+        "Qwen/Qwen3-Coder": {
+            "tool_calling": True,
+            "text_inputs": True,
+            "text_outputs": True,
+        },
+        "some/no-tools-model": {
+            "tool_calling": False,
+            "text_inputs": True,
+            "text_outputs": True,
+        },
+    }
+
+    def test_get_available_models_discovers_class_path_profiles(self, tmp_path):
+        """class_path provider auto-discovers models from package profiles."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.baseten]
+class_path = "langchain_baseten.chat_models:ChatBaseten"
+api_key_env = "BASETEN_API_KEY"
+""")
+
+        def mock_load(module_path: str) -> dict[str, Any]:
+            if module_path == "langchain_baseten.data._profiles":
+                return self.FAKE_BASETEN_PROFILES
+            msg = "not installed"
+            raise ImportError(msg)
+
+        with (
+            patch(
+                "deepagents_cli.model_config._load_provider_profiles",
+                side_effect=mock_load,
+            ),
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+        ):
+            models = get_available_models()
+
+        assert "baseten" in models
+        assert "deepseek-ai/DeepSeek-V3.2" in models["baseten"]
+        assert "Qwen/Qwen3-Coder" in models["baseten"]
+        # Filtered out: no tool_calling
+        assert "some/no-tools-model" not in models["baseten"]
+
+    def test_get_model_profiles_discovers_class_path_profiles(self, tmp_path):
+        """class_path provider profiles are included in get_model_profiles()."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.baseten]
+class_path = "langchain_baseten.chat_models:ChatBaseten"
+api_key_env = "BASETEN_API_KEY"
+""")
+
+        def mock_load(module_path: str) -> dict[str, Any]:
+            if module_path == "langchain_baseten.data._profiles":
+                return self.FAKE_BASETEN_PROFILES
+            msg = "not installed"
+            raise ImportError(msg)
+
+        with (
+            patch(
+                "deepagents_cli.model_config._load_provider_profiles",
+                side_effect=mock_load,
+            ),
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+        ):
+            profiles = get_model_profiles()
+
+        assert "baseten:deepseek-ai/DeepSeek-V3.2" in profiles
+        entry = profiles["baseten:deepseek-ai/DeepSeek-V3.2"]
+        assert entry["profile"]["tool_calling"] is True
+        # No config overrides, so overridden_keys should be empty
+        assert entry["overridden_keys"] == frozenset()
+        # Unlike get_available_models(), profiles include ALL models (no filter)
+        assert "baseten:some/no-tools-model" in profiles
+
+    def test_get_model_profiles_class_path_import_failure_graceful(self, tmp_path):
+        """get_model_profiles() degrades gracefully when class_path package fails."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.baseten]
+class_path = "langchain_baseten.chat_models:ChatBaseten"
+api_key_env = "BASETEN_API_KEY"
+""")
+        with (
+            patch(
+                "deepagents_cli.model_config._load_provider_profiles",
+                side_effect=ImportError("not installed"),
+            ),
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+        ):
+            profiles = get_model_profiles()
+
+        assert not any(key.startswith("baseten:") for key in profiles)
+
+    def test_class_path_profiles_merged_with_config_overrides(self, tmp_path):
+        """Config profile overrides are applied on top of class_path profiles."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.baseten]
+class_path = "langchain_baseten.chat_models:ChatBaseten"
+api_key_env = "BASETEN_API_KEY"
+
+[models.providers.baseten.profile]
+max_input_tokens = 9999
+""")
+
+        def mock_load(module_path: str) -> dict[str, Any]:
+            if module_path == "langchain_baseten.data._profiles":
+                return {
+                    "my-model": {
+                        "tool_calling": True,
+                        "max_input_tokens": 4096,
+                    },
+                }
+            msg = "not installed"
+            raise ImportError(msg)
+
+        with (
+            patch(
+                "deepagents_cli.model_config._load_provider_profiles",
+                side_effect=mock_load,
+            ),
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+        ):
+            profiles = get_model_profiles()
+
+        entry = profiles["baseten:my-model"]
+        assert entry["profile"]["max_input_tokens"] == 9999
+        assert "max_input_tokens" in entry["overridden_keys"]
+
+    def test_class_path_import_failure_graceful(self, tmp_path):
+        """Gracefully handles class_path package not being installed."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.baseten]
+class_path = "langchain_baseten.chat_models:ChatBaseten"
+api_key_env = "BASETEN_API_KEY"
+""")
+        with (
+            patch(
+                "deepagents_cli.model_config._load_provider_profiles",
+                side_effect=ImportError("not installed"),
+            ),
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+        ):
+            models = get_available_models()
+
+        assert "baseten" not in models
+
+    def test_class_path_non_import_error_logs_warning(self, tmp_path, caplog):
+        """Non-ImportError from class_path package logs warning, not debug."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.baseten]
+class_path = "langchain_baseten.chat_models:ChatBaseten"
+api_key_env = "BASETEN_API_KEY"
+""")
+
+        def mock_load(module_path: str) -> dict[str, Any]:
+            if module_path == "langchain_baseten.data._profiles":
+                msg = "broken profiles module"
+                raise RuntimeError(msg)
+            msg = "not installed"
+            raise ImportError(msg)
+
+        with (
+            patch(
+                "deepagents_cli.model_config._load_provider_profiles",
+                side_effect=mock_load,
+            ),
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            caplog.at_level(logging.WARNING, logger="deepagents_cli.model_config"),
+        ):
+            models = get_available_models()
+
+        assert "baseten" not in models
+        assert any(
+            "Failed to load profiles" in record.message and "baseten" in record.message
+            for record in caplog.records
+        )
+
+    def test_explicit_models_list_skips_auto_discovery(self, tmp_path):
+        """Explicit models list bypasses auto-discovery even when profiles exist."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.baseten]
+class_path = "langchain_baseten.chat_models:ChatBaseten"
+api_key_env = "BASETEN_API_KEY"
+models = ["my-explicit-model"]
+""")
+
+        def mock_load(module_path: str) -> dict[str, Any]:
+            if module_path == "langchain_baseten.data._profiles":
+                return self.FAKE_BASETEN_PROFILES
+            msg = "not installed"
+            raise ImportError(msg)
+
+        with (
+            patch(
+                "deepagents_cli.model_config._load_provider_profiles",
+                side_effect=mock_load,
+            ),
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+        ):
+            models = get_available_models()
+
+        assert "baseten" in models
+        assert models["baseten"] == ["my-explicit-model"]
+
+    def test_skips_builtin_registry_providers(self, tmp_path):
+        """Does not double-load profiles for providers in the built-in registry."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.anthropic]
+class_path = "langchain_anthropic.chat_models:ChatAnthropic"
+""")
+        fake_profiles = {"claude-sonnet-4-5": {"tool_calling": True}}
+
+        def mock_load(module_path: str) -> dict[str, Any]:
+            if module_path == "langchain_anthropic.data._profiles":
+                return fake_profiles
+            msg = "not installed"
+            raise ImportError(msg)
+
+        with (
+            patch(
+                "deepagents_cli.model_config._load_provider_profiles",
+                side_effect=mock_load,
+            ),
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+        ):
+            models = get_available_models()
+
+        # Should only appear once (from registry path, not double-loaded)
+        assert models["anthropic"].count("claude-sonnet-4-5") == 1
 
 
 class TestHasProviderCredentialsFallback:

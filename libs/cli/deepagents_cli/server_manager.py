@@ -24,8 +24,36 @@ if TYPE_CHECKING:
     from deepagents_cli.server import ServerProcess
 
 from deepagents_cli._server_constants import ENV_PREFIX as _ENV_PREFIX
+from deepagents_cli.project_utils import ProjectContext
 
 logger = logging.getLogger(__name__)
+
+
+def _set_or_clear_server_env(name: str, value: str | None) -> None:
+    """Set or clear a server environment variable.
+
+    Args:
+        name: Suffix after `DA_SERVER_`.
+        value: String value to set, or `None` to clear the variable.
+    """
+    key = f"{_ENV_PREFIX}{name}"
+    if value is None:
+        os.environ.pop(key, None)
+    else:
+        os.environ[key] = value
+
+
+def _capture_server_project_context() -> ProjectContext | None:
+    """Capture explicit user/project path context for the server process.
+
+    Returns:
+        Explicit project context, or `None` when cwd cannot be determined.
+    """
+    try:
+        return ProjectContext.from_user_cwd(Path.cwd())
+    except OSError:
+        logger.warning("Could not determine working directory for server")
+        return None
 
 
 async def start_server_and_get_agent(
@@ -67,9 +95,11 @@ async def start_server_and_get_agent(
     from deepagents_cli.remote_client import RemoteAgent
     from deepagents_cli.server import ServerProcess, generate_langgraph_json
 
-    work_dir = tempfile.mkdtemp(prefix="deepagents_server_")
+    work_dir = Path(tempfile.mkdtemp(prefix="deepagents_server_"))
+    project_context = _capture_server_project_context()
 
     _set_server_env(
+        project_context=project_context,
         model_name=model_name,
         model_params=model_params,
         assistant_id=assistant_id,
@@ -84,16 +114,18 @@ async def start_server_and_get_agent(
     )
 
     server_graph_src = Path(__file__).parent / "server_graph.py"
-    server_graph_dst = Path(work_dir) / "server_graph.py"
+    server_graph_dst = work_dir / "server_graph.py"
     shutil.copy2(server_graph_src, server_graph_dst)
 
-    _write_checkpointer(Path(work_dir))
-    _write_pyproject(Path(work_dir))
+    checkpointer_path = work_dir / "checkpointer.py"
+
+    _write_checkpointer(work_dir)
+    _write_pyproject(work_dir)
 
     generate_langgraph_json(
         work_dir,
-        graph_ref="./server_graph.py:graph",
-        checkpointer_path="./checkpointer.py:create_checkpointer",
+        graph_ref=f"{server_graph_dst.resolve()}:graph",
+        checkpointer_path=f"{checkpointer_path.resolve()}:create_checkpointer",
     )
 
     server = ServerProcess(
@@ -112,6 +144,7 @@ async def start_server_and_get_agent(
 
 def _set_server_env(
     *,
+    project_context: ProjectContext | None,
     model_name: str | None,
     model_params: dict[str, Any] | None,
     assistant_id: str,
@@ -130,6 +163,7 @@ def _set_server_env(
     are the communication channel for CLI configuration.
 
     Args:
+        project_context: Explicit user/project path context for the server.
         model_name: Model spec.
         model_params: Extra model kwargs.
         assistant_id: Agent identifier.
@@ -142,28 +176,53 @@ def _set_server_env(
         trust_project_mcp: Trust project MCP servers.
         interactive: Interactive mode flag.
     """
-    if model_name:
-        os.environ[f"{_ENV_PREFIX}MODEL"] = model_name
-    os.environ[f"{_ENV_PREFIX}ASSISTANT_ID"] = assistant_id
-    os.environ[f"{_ENV_PREFIX}AUTO_APPROVE"] = str(auto_approve).lower()
-    os.environ[f"{_ENV_PREFIX}INTERACTIVE"] = str(interactive).lower()
-    os.environ[f"{_ENV_PREFIX}ENABLE_SHELL"] = str(enable_shell).lower()
-    os.environ[f"{_ENV_PREFIX}ENABLE_ASK_USER"] = str(enable_ask_user).lower()
-    os.environ[f"{_ENV_PREFIX}NO_MCP"] = str(no_mcp).lower()
-    if trust_project_mcp is not None:
-        os.environ[f"{_ENV_PREFIX}TRUST_PROJECT_MCP"] = str(trust_project_mcp).lower()
-
-    if sandbox_type and sandbox_type != "none":
-        os.environ[f"{_ENV_PREFIX}SANDBOX_TYPE"] = sandbox_type
+    normalized_mcp_config_path: str | None = None
     if mcp_config_path:
-        os.environ[f"{_ENV_PREFIX}MCP_CONFIG_PATH"] = mcp_config_path
-    if model_params:
-        os.environ[f"{_ENV_PREFIX}MODEL_PARAMS"] = json.dumps(model_params)
+        try:
+            if project_context is not None:
+                normalized_mcp_config_path = str(
+                    project_context.resolve_user_path(mcp_config_path)
+                )
+            else:
+                normalized_mcp_config_path = str(
+                    Path(mcp_config_path).expanduser().resolve()
+                )
+        except OSError:
+            logger.warning("Could not normalize MCP config path %s", mcp_config_path)
+            normalized_mcp_config_path = mcp_config_path
 
-    try:
-        os.environ[f"{_ENV_PREFIX}CWD"] = str(Path.cwd())
-    except OSError:
-        logger.warning("Could not determine working directory for server")
+    _set_or_clear_server_env("MODEL", model_name)
+    _set_or_clear_server_env("ASSISTANT_ID", assistant_id)
+    _set_or_clear_server_env("AUTO_APPROVE", str(auto_approve).lower())
+    _set_or_clear_server_env("INTERACTIVE", str(interactive).lower())
+    _set_or_clear_server_env("ENABLE_SHELL", str(enable_shell).lower())
+    _set_or_clear_server_env("ENABLE_ASK_USER", str(enable_ask_user).lower())
+    _set_or_clear_server_env("NO_MCP", str(no_mcp).lower())
+    _set_or_clear_server_env(
+        "TRUST_PROJECT_MCP",
+        str(trust_project_mcp).lower() if trust_project_mcp is not None else None,
+    )
+    _set_or_clear_server_env(
+        "SANDBOX_TYPE",
+        sandbox_type if sandbox_type and sandbox_type != "none" else None,
+    )
+    _set_or_clear_server_env("MCP_CONFIG_PATH", normalized_mcp_config_path)
+    _set_or_clear_server_env(
+        "MODEL_PARAMS",
+        json.dumps(model_params) if model_params is not None else None,
+    )
+    _set_or_clear_server_env(
+        "CWD",
+        str(project_context.user_cwd) if project_context is not None else None,
+    )
+    _set_or_clear_server_env(
+        "PROJECT_ROOT",
+        (
+            str(project_context.project_root)
+            if project_context is not None and project_context.project_root is not None
+            else None
+        ),
+    )
 
 
 def _write_checkpointer(work_dir: Path) -> None:

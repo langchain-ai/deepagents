@@ -929,9 +929,11 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
         extract_stdio_server_commands,
         load_mcp_config_lenient,
     )
+    from deepagents_cli.project_utils import ProjectContext
 
     try:
-        config_paths = discover_mcp_configs()
+        project_context = ProjectContext.from_user_cwd(Path.cwd())
+        config_paths = discover_mcp_configs(project_context=project_context)
     except (OSError, RuntimeError):
         return None
 
@@ -958,9 +960,10 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
         is_project_mcp_trusted,
         trust_project_mcp,
     )
-    from deepagents_cli.project_utils import find_project_root
 
-    project_root = str((find_project_root() or Path.cwd()).resolve())
+    project_root = str(
+        (project_context.project_root or project_context.user_cwd).resolve()
+    )
     fingerprint = compute_config_fingerprint(project_configs)
 
     if is_project_mcp_trusted(project_root, fingerprint):

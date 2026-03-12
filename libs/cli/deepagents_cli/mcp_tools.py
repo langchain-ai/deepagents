@@ -19,6 +19,8 @@ if TYPE_CHECKING:
     from langchain_core.tools import BaseTool
     from langchain_mcp_adapters.client import Connection, MultiServerMCPClient
 
+    from deepagents_cli.project_utils import ProjectContext
+
 logger = logging.getLogger(__name__)
 
 
@@ -170,7 +172,26 @@ def load_mcp_config(config_path: str) -> dict[str, Any]:
     return config
 
 
-def discover_mcp_configs() -> list[Path]:
+def _resolve_project_config_base(project_context: ProjectContext | None) -> Path:
+    """Resolve the base directory for project-level MCP configuration lookup.
+
+    Args:
+        project_context: Explicit project path context, if available.
+
+    Returns:
+        Project root when one exists, otherwise the user working directory.
+    """
+    if project_context is not None:
+        return project_context.project_root or project_context.user_cwd
+
+    from deepagents_cli.project_utils import find_project_root
+
+    return find_project_root() or Path.cwd()
+
+
+def discover_mcp_configs(
+    *, project_context: ProjectContext | None = None
+) -> list[Path]:
     """Find MCP config files from standard locations.
 
     Checks three paths in precedence order (lowest to highest):
@@ -179,15 +200,14 @@ def discover_mcp_configs() -> list[Path]:
     2. `<project-root>/.deepagents/.mcp.json` (project subdir)
     3. `<project-root>/.mcp.json` (project root, Claude Code compat)
 
-    Project root is determined by `find_project_root()`, falling back to CWD.
+    Project root is determined from `project_context` when provided,
+    otherwise by `find_project_root()`, falling back to CWD.
 
     Returns:
         List of existing config file paths, ordered lowest-to-highest precedence.
     """
-    from deepagents_cli.project_utils import find_project_root
-
     user_dir = Path.home() / ".deepagents"
-    project_root = find_project_root() or Path.cwd()
+    project_root = _resolve_project_config_base(project_context)
 
     candidates = [
         user_dir / ".mcp.json",
@@ -476,6 +496,7 @@ async def resolve_and_load_mcp_tools(
     explicit_config_path: str | None = None,
     no_mcp: bool = False,
     trust_project_mcp: bool | None = None,
+    project_context: ProjectContext | None = None,
 ) -> tuple[list[BaseTool], MCPSessionManager | None, list[MCPServerInfo]]:
     """Resolve MCP config and load tools.
 
@@ -494,6 +515,8 @@ async def resolve_and_load_mcp_tools(
             - `False`: filter out project stdio servers, log warning.
             - `None` (default): check the persistent trust store; if the
                 fingerprint matches, allow; otherwise filter + warn.
+        project_context: Explicit project path context for config discovery
+            and trust resolution.
 
     Returns:
         Tuple of `(tools_list, session_manager, server_infos)`.
@@ -509,7 +532,7 @@ async def resolve_and_load_mcp_tools(
 
     # Auto-discovery
     try:
-        config_paths = discover_mcp_configs()
+        config_paths = discover_mcp_configs(project_context=project_context)
     except (OSError, RuntimeError):
         logger.warning("MCP config auto-discovery failed", exc_info=True)
         config_paths = []
@@ -556,9 +579,8 @@ async def resolve_and_load_mcp_tools(
                 compute_config_fingerprint,
                 is_project_mcp_trusted,
             )
-            from deepagents_cli.project_utils import find_project_root
 
-            project_root = str((find_project_root() or Path.cwd()).resolve())
+            project_root = str(_resolve_project_config_base(project_context).resolve())
             fingerprint = compute_config_fingerprint(project_configs)
             if is_project_mcp_trusted(project_root, fingerprint):
                 configs.append(cfg)
@@ -578,7 +600,12 @@ async def resolve_and_load_mcp_tools(
 
     # Explicit path is highest precedence — errors are fatal
     if explicit_config_path:
-        configs.append(load_mcp_config(explicit_config_path))
+        config_path = (
+            str(project_context.resolve_user_path(explicit_config_path))
+            if project_context is not None
+            else explicit_config_path
+        )
+        configs.append(load_mcp_config(config_path))
 
     if not configs:
         return [], None, []

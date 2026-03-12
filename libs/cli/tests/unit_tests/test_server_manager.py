@@ -1,0 +1,110 @@
+"""Tests for server manager bootstrap behavior."""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
+
+from deepagents_cli._server_constants import ENV_PREFIX
+from deepagents_cli.project_utils import ProjectContext
+from deepagents_cli.server_manager import _set_server_env, start_server_and_get_agent
+
+
+class TestSetServerEnv:
+    """Tests for server environment boundary normalization."""
+
+    def test_normalizes_relative_mcp_path_from_project_context(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Relative MCP config paths should be made absolute before crossing."""
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        (project_root / ".git").mkdir()
+        user_cwd = project_root / "src"
+        user_cwd.mkdir()
+
+        project_context = ProjectContext.from_user_cwd(user_cwd)
+
+        with patch.dict(os.environ, {}, clear=False):
+            for suffix in ("MCP_CONFIG_PATH", "CWD", "PROJECT_ROOT"):
+                monkeypatch.delenv(f"{ENV_PREFIX}{suffix}", raising=False)
+
+            _set_server_env(
+                project_context=project_context,
+                model_name=None,
+                model_params=None,
+                assistant_id="agent",
+                auto_approve=False,
+                sandbox_type="none",
+                enable_shell=True,
+                enable_ask_user=False,
+                mcp_config_path="configs/mcp.json",
+                no_mcp=False,
+                trust_project_mcp=None,
+                interactive=True,
+            )
+
+            assert os.environ[f"{ENV_PREFIX}MCP_CONFIG_PATH"] == str(
+                (user_cwd / "configs" / "mcp.json").resolve()
+            )
+            assert os.environ[f"{ENV_PREFIX}CWD"] == str(user_cwd.resolve())
+            assert os.environ[f"{ENV_PREFIX}PROJECT_ROOT"] == str(
+                project_root.resolve()
+            )
+
+
+class TestStartServerAndGetAgent:
+    """Tests for server bootstrap wiring."""
+
+    async def test_uses_absolute_graph_and_checkpointer_refs(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Generated LangGraph config should use absolute bootstrap paths."""
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        monkeypatch.chdir(project_root)
+
+        work_dir = tmp_path / "runtime"
+        work_dir.mkdir()
+
+        mock_server = MagicMock()
+        mock_server.start = AsyncMock()
+        mock_server.url = "http://127.0.0.1:2024"
+        mock_agent = object()
+
+        with (
+            patch.dict(os.environ, {}, clear=False),
+            patch(
+                "deepagents_cli.server_manager.tempfile.mkdtemp",
+                return_value=str(work_dir),
+            ),
+            patch("deepagents_cli.server_manager.shutil.copy2"),
+            patch("deepagents_cli.server_manager._write_checkpointer"),
+            patch("deepagents_cli.server_manager._write_pyproject"),
+            patch(
+                "deepagents_cli.server.generate_langgraph_json"
+            ) as mock_generate_langgraph_json,
+            patch("deepagents_cli.server.ServerProcess", return_value=mock_server),
+            patch("deepagents_cli.remote_client.RemoteAgent", return_value=mock_agent),
+        ):
+            agent, server, manager = await start_server_and_get_agent(
+                assistant_id="agent",
+                mcp_config_path=None,
+            )
+
+        assert agent is mock_agent
+        assert server is mock_server
+        assert manager is None
+
+        kwargs = mock_generate_langgraph_json.call_args.kwargs
+        graph_path, _graph_attr = kwargs["graph_ref"].rsplit(":", 1)
+        checkpointer_path, _checkpointer_attr = kwargs["checkpointer_path"].rsplit(
+            ":",
+            1,
+        )
+
+        assert Path(graph_path).is_absolute()
+        assert Path(checkpointer_path).is_absolute()
+        assert Path(graph_path).parent == work_dir
+        assert Path(checkpointer_path).parent == work_dir

@@ -43,6 +43,7 @@ from deepagents_cli.config import (
 )
 from deepagents_cli.integrations.sandbox_factory import get_default_working_dir
 from deepagents_cli.local_context import LocalContextMiddleware, _ExecutableBackend
+from deepagents_cli.project_utils import ProjectContext, get_server_project_context
 from deepagents_cli.subagents import list_subagents
 from deepagents_cli.unicode_security import (
     check_url_safety,
@@ -467,7 +468,12 @@ def _format_execute_description(
     args = tool_call["args"]
     command_raw = str(args.get("command", "N/A"))
     command = strip_dangerous_unicode(command_raw)
-    effective_cwd = os.environ.get("DA_SERVER_CWD") or str(Path.cwd())
+    project_context = get_server_project_context()
+    effective_cwd = (
+        str(project_context.user_cwd)
+        if project_context is not None
+        else str(Path.cwd())
+    )
     lines = [f"Execute Command: {command}", f"Working Directory: {effective_cwd}"]
 
     issues = detect_dangerous_unicode(command_raw)
@@ -563,6 +569,7 @@ def create_cli_agent(
     checkpointer: BaseCheckpointSaver | bool | None = None,
     mcp_server_info: list[MCPServerInfo] | None = None,
     cwd: str | Path | None = None,
+    project_context: ProjectContext | None = None,
 ) -> tuple[Pregel, CompositeBackend]:
     """Create a CLI-configured agent with flexible options.
 
@@ -605,6 +612,9 @@ def create_cli_agent(
         mcp_server_info: MCP server metadata to surface in the system prompt.
         cwd: Override the working directory for the agent's filesystem backend
             and system prompt.
+        project_context: Explicit project path context for project-sensitive
+            behavior such as project `AGENTS.md` files, skills, subagents, and
+            MCP trust.
 
     Returns:
         2-tuple of `(agent_graph, backend)`
@@ -614,6 +624,11 @@ def create_cli_agent(
             - `composite_backend`: `CompositeBackend` for file operations
     """
     tools = tools or []
+    effective_cwd = (
+        Path(cwd)
+        if cwd is not None
+        else (project_context.user_cwd if project_context is not None else None)
+    )
 
     # Setup agent directory for persistent memory (if enabled)
     if enable_memory or enable_skills:
@@ -632,13 +647,25 @@ def create_cli_agent(
     if enable_skills:
         skills_dir = settings.ensure_user_skills_dir(assistant_id)
         user_agent_skills_dir = settings.get_user_agent_skills_dir()
-        project_skills_dir = settings.get_project_skills_dir()
-        project_agent_skills_dir = settings.get_project_agent_skills_dir()
+        project_skills_dir = (
+            project_context.project_skills_dir()
+            if project_context is not None
+            else settings.get_project_skills_dir()
+        )
+        project_agent_skills_dir = (
+            project_context.project_agent_skills_dir()
+            if project_context is not None
+            else settings.get_project_agent_skills_dir()
+        )
 
     # Load custom subagents from filesystem
     custom_subagents: list[SubAgent | CompiledSubAgent] = []
     user_agents_dir = settings.get_user_agents_dir(assistant_id)
-    project_agents_dir = settings.get_project_agents_dir()
+    project_agents_dir = (
+        project_context.project_agents_dir()
+        if project_context is not None
+        else settings.get_project_agents_dir()
+    )
 
     for subagent_meta in list_subagents(
         user_agents_dir=user_agents_dir,
@@ -665,7 +692,12 @@ def create_cli_agent(
     # Add memory middleware
     if enable_memory:
         memory_sources = [str(settings.get_user_agent_md_path(assistant_id))]
-        memory_sources.extend(str(p) for p in settings.get_project_agent_md_path())
+        project_agent_md_paths = (
+            project_context.project_agent_md_paths()
+            if project_context is not None
+            else settings.get_project_agent_md_path()
+        )
+        memory_sources.extend(str(p) for p in project_agent_md_paths)
 
         agent_middleware.append(
             MemoryMiddleware(
@@ -706,7 +738,7 @@ def create_cli_agent(
             # Use LocalShellBackend for filesystem + shell execution.
             # The SDK's FilesystemMiddleware exposes per-command timeout
             # on the execute tool natively.
-            root_dir = Path(cwd) if cwd is not None else Path.cwd()
+            root_dir = effective_cwd if effective_cwd is not None else Path.cwd()
             backend = LocalShellBackend(
                 root_dir=root_dir,
                 inherit_env=True,
@@ -735,7 +767,7 @@ def create_cli_agent(
             assistant_id=assistant_id,
             sandbox_type=sandbox_type,
             interactive=interactive,
-            cwd=cwd,
+            cwd=effective_cwd,
         )
 
     # Configure interrupt_on based on auto_approve setting

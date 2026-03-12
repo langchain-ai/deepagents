@@ -17,6 +17,7 @@ import os
 from typing import Any
 
 from deepagents_cli._server_constants import ENV_PREFIX as _ENV_PREFIX
+from deepagents_cli.project_utils import get_server_project_context
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,7 @@ def make_graph() -> Any:  # noqa: ANN401
         DA_SERVER_AUTO_APPROVE: `"true"` to auto-approve all tools.
         DA_SERVER_INTERACTIVE: `"true"` to enable interactive mode.
         DA_SERVER_CWD: Working directory for the agent.
+        DA_SERVER_PROJECT_ROOT: Project root for project-sensitive behavior.
         DA_SERVER_SANDBOX_TYPE: Sandbox type string.
         DA_SERVER_ENABLE_MEMORY: `"true"` to enable memory middleware.
         DA_SERVER_ENABLE_SKILLS: `"true"` to enable skills middleware.
@@ -64,6 +66,8 @@ def make_graph() -> Any:  # noqa: ANN401
     Returns:
         Compiled LangGraph agent graph.
     """
+    project_context = get_server_project_context()
+
     from deepagents_cli.agent import DEFAULT_AGENT_NAME, create_cli_agent
     from deepagents_cli.config import create_model, settings
     from deepagents_cli.tools import fetch_url, http_request, web_search
@@ -88,6 +92,9 @@ def make_graph() -> Any:  # noqa: ANN401
     interactive_str = os.environ.get(f"{_ENV_PREFIX}INTERACTIVE", "true")
     interactive = interactive_str.lower() == "true"
     cwd = os.environ.get(f"{_ENV_PREFIX}CWD")
+
+    if project_context is not None:
+        settings.reload_from_environment(start_path=project_context.user_cwd)
 
     model_params = _read_env_json(f"{_ENV_PREFIX}MODEL_PARAMS")
     result = create_model(model_spec, extra_kwargs=model_params)
@@ -118,6 +125,7 @@ def make_graph() -> Any:  # noqa: ANN401
                 trust_project_mcp=(
                     trust_project_mcp if trust_project_mcp is not None else True
                 ),
+                project_context=project_context,
             )
         )
         tools.extend(mcp_tools)
@@ -136,7 +144,8 @@ def make_graph() -> Any:  # noqa: ANN401
         enable_ask_user=enable_ask_user,
         checkpointer=False,
         mcp_server_info=mcp_server_info,
-        cwd=cwd,
+        cwd=project_context.user_cwd if project_context is not None else cwd,
+        project_context=project_context,
     )
     return agent
 

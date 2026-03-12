@@ -727,6 +727,7 @@ def create_cli_agent(
     # CONDITIONAL SETUP: Local vs Remote Sandbox
     if sandbox is None:
         # ========== LOCAL MODE ==========
+        root_dir = effective_cwd if effective_cwd is not None else Path.cwd()
         if enable_shell:
             # Create environment for shell commands
             # Restore user's original LANGSMITH_PROJECT so their code traces separately
@@ -737,7 +738,6 @@ def create_cli_agent(
             # Use LocalShellBackend for filesystem + shell execution.
             # The SDK's FilesystemMiddleware exposes per-command timeout
             # on the execute tool natively.
-            root_dir = effective_cwd if effective_cwd is not None else Path.cwd()
             backend = LocalShellBackend(
                 root_dir=root_dir,
                 inherit_env=True,
@@ -745,7 +745,7 @@ def create_cli_agent(
             )
         else:
             # No shell access - use plain FilesystemBackend
-            backend = FilesystemBackend()
+            backend = FilesystemBackend(root_dir=root_dir)
     else:
         # ========== REMOTE SANDBOX MODE ==========
         backend = sandbox  # Remote sandbox (ModalBackend, etc.)

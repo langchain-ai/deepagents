@@ -257,7 +257,7 @@ class ServerConfig:
         Returns:
             A fully resolved `ServerConfig`.
         """
-        normalized_mcp = _normalize_mcp_config_path(mcp_config_path, project_context)
+        normalized_mcp = _normalize_path(mcp_config_path, project_context, "MCP config")
 
         return cls(
             model=model_name,
@@ -271,7 +271,9 @@ class ServerConfig:
             if sandbox_type and sandbox_type != "none"
             else None,
             sandbox_id=sandbox_id,
-            sandbox_setup=_normalize_sandbox_setup_path(sandbox_setup, project_context),
+            sandbox_setup=_normalize_path(
+                sandbox_setup, project_context, "sandbox setup"
+            ),
             cwd=(
                 str(project_context.user_cwd) if project_context is not None else None
             ),
@@ -287,18 +289,20 @@ class ServerConfig:
         )
 
 
-def _normalize_sandbox_setup_path(
+def _normalize_path(
     raw_path: str | None,
     project_context: ProjectContext | None,
+    label: str,
 ) -> str | None:
-    """Resolve a possibly-relative sandbox setup script path to absolute.
+    """Resolve a possibly-relative path to absolute.
 
     The server subprocess runs in a different working directory, so relative
     paths must be resolved against the user's original cwd before serialization.
 
     Args:
-        raw_path: Setup script path from CLI arguments (may be relative).
+        raw_path: Path from CLI arguments (may be relative).
         project_context: User/project context for path resolution.
+        label: Human-readable label for error messages (e.g. "MCP config").
 
     Returns:
         Absolute path string, or `None` when *raw_path* is `None` or empty.
@@ -314,40 +318,7 @@ def _normalize_sandbox_setup_path(
         return str(Path(raw_path).expanduser().resolve())
     except OSError as exc:
         msg = (
-            f"Could not resolve sandbox setup path {raw_path!r}: {exc}. "
-            "Ensure the path exists and is accessible."
-        )
-        raise ValueError(msg) from exc
-
-
-def _normalize_mcp_config_path(
-    raw_path: str | None,
-    project_context: ProjectContext | None,
-) -> str | None:
-    """Resolve a possibly-relative MCP config path to an absolute path.
-
-    The server subprocess runs in a different working directory, so relative
-    paths must be resolved against the user's original cwd before serialization.
-
-    Args:
-        raw_path: MCP config path from CLI arguments (may be relative).
-        project_context: User/project context for path resolution.
-
-    Returns:
-        Absolute path string, or `None` when *raw_path* is `None` or empty.
-
-    Raises:
-        ValueError: If the path cannot be resolved.
-    """
-    if not raw_path:
-        return None
-    try:
-        if project_context is not None:
-            return str(project_context.resolve_user_path(raw_path))
-        return str(Path(raw_path).expanduser().resolve())
-    except OSError as exc:
-        msg = (
-            f"Could not resolve MCP config path {raw_path!r}: {exc}. "
+            f"Could not resolve {label} path {raw_path!r}: {exc}. "
             "Ensure the path exists and is accessible."
         )
         raise ValueError(msg) from exc

@@ -1927,7 +1927,8 @@ class DeepAgentsApp(App):
                 logger.info("Using local FilesystemBackend for compaction")
                 await self._mount_message(
                     AppMessage(
-                        "No backend configured — using local filesystem for compaction"
+                        "No backend configured — using local filesystem for "
+                        "compaction. File diffs may not reflect server-side changes."
                     )
                 )
             middleware = SummarizationMiddleware(
@@ -3346,15 +3347,24 @@ class DeepAgentsApp(App):
             if provider and not parsed:
                 display = f"{provider}:{model_name}"
 
+            try:
+                create_model(
+                    display,
+                    extra_kwargs=extra_kwargs,
+                    profile_overrides=self._profile_override,
+                ).apply_to_settings()
+            except Exception as exc:
+                logger.exception("Failed to resolve model metadata for %s", display)
+                await self._mount_message(
+                    ErrorMessage(f"Failed to switch model: {exc}")
+                )
+                return
+
             # Set the model override for ConfigurableModelMiddleware.
             # The next stream call will pass this in config["configurable"]["model"],
             # and the middleware swaps the model per-invocation — no server restart.
             self._model_override = display
             self._model_params_override = extra_kwargs
-
-            settings.model_name = model_name
-            if provider:
-                settings.model_provider = provider
 
             if self._status_bar:
                 self._status_bar.set_model(

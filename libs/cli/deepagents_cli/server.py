@@ -186,6 +186,7 @@ async def wait_for_server_healthy(
     health_url = f"{url}/ok"
     deadline = time.monotonic() + timeout
     last_status: int | None = None
+    last_exc: Exception | None = None
 
     while time.monotonic() < deadline:
         if process and process.poll() is not None:
@@ -203,14 +204,17 @@ async def wait_for_server_healthy(
                     return
                 last_status = resp.status_code
                 logger.debug("Health check returned status %d", resp.status_code)
-        except (httpx.ConnectError, httpx.TimeoutException, OSError):
-            pass
+        except (httpx.ConnectError, httpx.TimeoutException, OSError) as exc:
+            logger.debug("Health check attempt failed: %s", exc)
+            last_exc = exc
 
         await asyncio.sleep(_HEALTH_POLL_INTERVAL)
 
     msg = f"Server did not become healthy within {timeout}s"
     if last_status is not None:
         msg += f" (last status: {last_status})"
+    elif last_exc is not None:
+        msg += f" (last error: {last_exc})"
     raise RuntimeError(msg)
 
 
@@ -277,8 +281,9 @@ class ServerProcess:
     """Manages a `langgraph dev` server subprocess.
 
     Focuses on subprocess lifecycle (start, stop, restart) and health checking.
-    Env-var management for model-switch restarts is handled by
-    `_scoped_env_overrides`, keeping this class focused on process management.
+    Env-var management for restarts (e.g. configuration changes requiring a full
+    restart) is handled by `_scoped_env_overrides`, keeping this class focused
+    on process management.
     """
 
     def __init__(
@@ -293,7 +298,10 @@ class ServerProcess:
 
         Args:
             host: Host to bind the server to.
-            port: Port to bind the server to.
+            port: Initial port to bind the server to.
+
+                May be reassigned automatically by `start()` if the port is
+                already in use.
             config_dir: Directory containing `langgraph.json`.
             owns_config_dir: When `True`, the server will delete `config_dir`
                 on `stop()`.
@@ -331,6 +339,11 @@ class ServerProcess:
                 encoding="utf-8", errors="replace"
             )
         except OSError:
+            logger.warning(
+                "Failed to read server log file %s",
+                self._log_file.name,
+                exc_info=True,
+            )
             return ""
 
     async def start(
@@ -385,12 +398,16 @@ class ServerProcess:
             stderr=subprocess.STDOUT,
         )
 
-        await wait_for_server_healthy(
-            self.url,
-            timeout=timeout,
-            process=self._process,
-            read_log=self._read_log_file,
-        )
+        try:
+            await wait_for_server_healthy(
+                self.url,
+                timeout=timeout,
+                process=self._process,
+                read_log=self._read_log_file,
+            )
+        except Exception:
+            self.stop()
+            raise
 
     def _stop_process(self) -> None:
         """Stop only the server subprocess and its log file.
@@ -417,7 +434,7 @@ class ServerProcess:
                         self._process.pid,
                     )
             except OSError:
-                logger.debug("Error stopping server", exc_info=True)
+                logger.warning("Error stopping server", exc_info=True)
 
         self._process = None
 

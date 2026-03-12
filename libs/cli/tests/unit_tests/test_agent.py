@@ -1252,6 +1252,57 @@ class TestCreateCliAgentProjectContext:
 
         assert mock_shell.call_args.kwargs["root_dir"] == user_cwd
 
+    def test_cwd_sets_local_filesystem_root_dir_without_shell(
+        self, tmp_path: Path
+    ) -> None:
+        """Filesystem backend root should follow the explicit working directory."""
+        user_cwd = tmp_path / "project" / "src"
+        user_cwd.mkdir(parents=True)
+
+        agent_dir = tmp_path / "agent"
+        agent_dir.mkdir()
+        user_skills_dir = tmp_path / "skills"
+        user_skills_dir.mkdir()
+
+        mock_settings = Mock()
+        mock_settings.ensure_agent_dir.return_value = agent_dir
+        mock_settings.ensure_user_skills_dir.return_value = user_skills_dir
+        mock_settings.get_project_skills_dir.return_value = None
+        mock_settings.get_built_in_skills_dir.return_value = (
+            Settings.get_built_in_skills_dir()
+        )
+        mock_settings.get_user_agent_md_path.return_value = agent_dir / "AGENTS.md"
+        mock_settings.get_project_agent_md_path.return_value = []
+        mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
+        mock_settings.get_project_agents_dir.return_value = None
+        mock_settings.model_name = None
+        mock_settings.model_provider = None
+        mock_settings.model_context_limit = None
+        mock_settings.project_root = None
+
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+
+        fake_model = _make_fake_chat_model()
+        with (
+            patch("deepagents_cli.agent.settings", mock_settings),
+            patch("deepagents_cli.agent.MemoryMiddleware"),
+            patch("deepagents_cli.agent.SkillsMiddleware"),
+            patch("deepagents_cli.agent.FilesystemBackend") as mock_filesystem,
+            patch("deepagents_cli.agent.create_deep_agent", return_value=mock_agent),
+            patch("deepagents.graph.resolve_model", return_value=fake_model),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=False,
+                cwd=user_cwd,
+            )
+
+        assert mock_filesystem.call_args_list[0].kwargs["root_dir"] == user_cwd
+
 
 class TestMiddlewareStackConformance:
     """Verify all middleware passed to create_deep_agent inherits AgentMiddleware."""

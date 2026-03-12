@@ -252,7 +252,11 @@ async def start_server_and_get_agent(
     server = ServerProcess(
         host=host, port=port, config_dir=work_dir, owns_config_dir=True
     )
-    await server.start()
+    try:
+        await server.start()
+    except Exception:
+        server.stop()
+        raise
 
     agent = RemoteAgent(
         url=server.url,

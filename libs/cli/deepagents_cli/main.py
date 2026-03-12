@@ -159,11 +159,15 @@ async def _preload_session_mcp_server_info(
         return None
 
     from deepagents_cli.mcp_tools import resolve_and_load_mcp_tools
-    from deepagents_cli.server_manager import _capture_project_context
+    from deepagents_cli.project_utils import ProjectContext
 
     session_manager = None
     try:
-        project_context = _capture_project_context()
+        try:
+            project_context = ProjectContext.from_user_cwd(Path.cwd())
+        except OSError:
+            logger.warning("Could not determine working directory for MCP preload")
+            project_context = None
         _tools, session_manager, server_info = await resolve_and_load_mcp_tools(
             explicit_config_path=mcp_config_path,
             no_mcp=no_mcp,
@@ -628,11 +632,15 @@ async def run_textual_cli_async(
     # not only after an explicit /model switch.
     save_recent_model(f"{result.provider}:{result.model_name}")
 
-    mcp_server_info = await _preload_session_mcp_server_info(
-        mcp_config_path=mcp_config_path,
-        no_mcp=no_mcp,
-        trust_project_mcp=trust_project_mcp,
-    )
+    try:
+        mcp_server_info = await _preload_session_mcp_server_info(
+            mcp_config_path=mcp_config_path,
+            no_mcp=no_mcp,
+            trust_project_mcp=trust_project_mcp,
+        )
+    except Exception as e:
+        logger.warning("MCP metadata preload failed: %s", e, exc_info=True)
+        mcp_server_info = None
 
     # Show thread info
     if is_resumed:

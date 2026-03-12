@@ -12,6 +12,10 @@ from deepagents_cli._server_constants import ENV_PREFIX as _ENV_PREFIX
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 @dataclass(frozen=True)
 class ProjectContext:
@@ -24,6 +28,16 @@ class ProjectContext:
 
     user_cwd: Path
     project_root: Path | None = None
+
+    def __post_init__(self) -> None:
+        """Validate that `user_cwd` is an absolute path.
+
+        Raises:
+            ValueError: If `user_cwd` is not absolute.
+        """
+        if not self.user_cwd.is_absolute():
+            msg = f"user_cwd must be absolute, got {self.user_cwd!r}"
+            raise ValueError(msg)
 
     @classmethod
     def from_user_cwd(cls, user_cwd: str | Path) -> ProjectContext:
@@ -105,6 +119,11 @@ def get_server_project_context(
             else find_project_root(user_cwd)
         )
     except OSError:
+        logger.warning(
+            "Could not resolve server project context from CWD=%s",
+            raw_cwd,
+            exc_info=True,
+        )
         return None
 
     return ProjectContext(user_cwd=user_cwd, project_root=project_root)

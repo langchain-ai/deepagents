@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import socket
-from typing import Self
-from unittest.mock import patch
+from typing import TYPE_CHECKING, Self
+from unittest.mock import AsyncMock, MagicMock, patch
 
-from deepagents_cli.server import _find_free_port, _port_in_use
+import pytest
+
+from deepagents_cli.server import ServerProcess, _find_free_port, _port_in_use
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 class _FakeSocket:
@@ -77,3 +82,48 @@ class TestFindFreePort:
             port = _find_free_port("127.0.0.1")
 
         assert port == 53123
+
+
+class TestServerProcess:
+    async def test_start_cleans_up_partial_state_on_health_failure(
+        self, tmp_path: Path
+    ) -> None:
+        """Failed startup should stop the process and remove owned resources."""
+        config_dir = tmp_path / "runtime"
+        config_dir.mkdir()
+        (config_dir / "langgraph.json").write_text("{}")
+
+        log_path = tmp_path / "server.log"
+        log_path.write_text("booting")
+
+        process = MagicMock()
+        process.pid = 1234
+        process.poll.return_value = None
+
+        log_file = MagicMock()
+        log_file.name = str(log_path)
+
+        server = ServerProcess(config_dir=config_dir, owns_config_dir=True)
+
+        with (
+            patch("deepagents_cli.server._port_in_use", return_value=False),
+            patch(
+                "deepagents_cli.server.tempfile.NamedTemporaryFile",
+                return_value=log_file,
+            ),
+            patch("deepagents_cli.server.subprocess.Popen", return_value=process),
+            patch(
+                "deepagents_cli.server.wait_for_server_healthy",
+                new=AsyncMock(side_effect=RuntimeError("boom")),
+            ),
+            pytest.raises(RuntimeError, match="boom"),
+        ):
+            await server.start()
+
+        process.send_signal.assert_called_once()
+        process.wait.assert_called_once()
+        log_file.close.assert_called_once()
+        assert server._process is None
+        assert server._log_file is None
+        assert not config_dir.exists()
+        assert not log_path.exists()

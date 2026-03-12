@@ -10,7 +10,7 @@ import pytest
 
 from deepagents_cli._server_config import (
     ServerConfig,
-    _normalize_mcp_config_path,
+    _normalize_path,
     _read_env_bool,
     _read_env_json,
     _read_env_optional_bool,
@@ -128,21 +128,21 @@ class TestReadEnvOptionalBool:
 
 
 # ------------------------------------------------------------------
-# _normalize_mcp_config_path
+# _normalize_path
 # ------------------------------------------------------------------
 
 
-class TestNormalizeMcpConfigPath:
+class TestNormalizePath:
     def test_none_returns_none(self) -> None:
-        assert _normalize_mcp_config_path(None, None) is None
+        assert _normalize_path(None, None, "test") is None
 
     def test_empty_string_returns_none(self) -> None:
-        assert _normalize_mcp_config_path("", None) is None
+        assert _normalize_path("", None, "test") is None
 
     def test_absolute_path_without_context(self, tmp_path: Path) -> None:
         p = tmp_path / "mcp.json"
         p.touch()
-        result = _normalize_mcp_config_path(str(p), None)
+        result = _normalize_path(str(p), None, "MCP config")
         assert result is not None
         assert Path(result).is_absolute()
 
@@ -154,7 +154,17 @@ class TestNormalizeMcpConfigPath:
             ),
             pytest.raises(ValueError, match="Could not resolve"),
         ):
-            _normalize_mcp_config_path("/some/path/mcp.json", None)
+            _normalize_path("/some/path/mcp.json", None, "MCP config")
+
+    def test_label_appears_in_error_message(self) -> None:
+        with (
+            patch(
+                "deepagents_cli._server_config.Path.expanduser",
+                side_effect=OSError("perm"),
+            ),
+            pytest.raises(ValueError, match="sandbox setup"),
+        ):
+            _normalize_path("/some/path/setup.sh", None, "sandbox setup")
 
 
 # ------------------------------------------------------------------

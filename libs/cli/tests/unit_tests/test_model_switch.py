@@ -1,14 +1,14 @@
 """Tests for model switching functionality."""
 
 from collections.abc import Iterator
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
 from deepagents_cli import model_config
 from deepagents_cli.app import DeepAgentsApp, _extract_model_params_flag
 from deepagents_cli.config import settings
-from deepagents_cli.model_config import clear_caches
+from deepagents_cli.model_config import ModelSpec, clear_caches
 from deepagents_cli.remote_client import RemoteAgent
 from deepagents_cli.widgets.messages import AppMessage, ErrorMessage
 
@@ -16,6 +16,21 @@ from deepagents_cli.widgets.messages import AppMessage, ErrorMessage
 def _make_remote_agent() -> RemoteAgent:
     """Create a RemoteAgent pointing at a dummy URL for test scaffolding."""
     return RemoteAgent("http://test:0")
+
+
+class _FakeModelResult:
+    """Minimal model result for `_switch_model` tests."""
+
+    def __init__(self, *, model_name: str, provider: str, context_limit: int) -> None:
+        self.model_name = model_name
+        self.provider = provider
+        self.context_limit = context_limit
+
+    def apply_to_settings(self) -> None:
+        """Mirror `ModelResult.apply_to_settings()` for test isolation."""
+        settings.model_name = self.model_name
+        settings.model_provider = self.provider
+        settings.model_context_limit = self.context_limit
 
 
 @pytest.fixture(autouse=True)
@@ -28,6 +43,46 @@ def _restore_settings() -> Iterator[None]:
     settings.model_name = original_name
     settings.model_provider = original_provider
     settings.model_context_limit = original_context_limit
+
+
+@pytest.fixture(autouse=True)
+def mock_create_model() -> Iterator[Mock]:
+    """Avoid provider package imports while preserving metadata updates."""
+    context_limits = {
+        "anthropic:claude-opus-4-5": 200_000,
+        "anthropic:claude-sonnet-4-5": 200_000,
+        "fireworks:llama-v3p1-70b": 131_072,
+        "ollama:llama3": 8_192,
+        "openai:gpt-4o": 128_000,
+    }
+
+    def fake_create_model(
+        model_spec: str,
+        *,
+        extra_kwargs: dict[str, object] | None = None,
+        profile_overrides: dict[str, object] | None = None,
+    ) -> _FakeModelResult:
+        del extra_kwargs, profile_overrides
+        parsed = ModelSpec.try_parse(model_spec)
+        if parsed is None:
+            provider = "openai"
+            model_name = model_spec
+        else:
+            provider = parsed.provider
+            model_name = parsed.model
+
+        context_limit = context_limits.get(f"{provider}:{model_name}", 65_536)
+        return _FakeModelResult(
+            model_name=model_name,
+            provider=provider,
+            context_limit=context_limit,
+        )
+
+    with patch(
+        "deepagents_cli.app.create_model",
+        side_effect=fake_create_model,
+    ) as mock:
+        yield mock
 
 
 class TestModelSwitchNoOp:
@@ -191,6 +246,40 @@ class TestModelSwitchErrorHandling:
         assert settings.model_name == "claude-sonnet-4-5"
         assert settings.model_provider == "anthropic"
         assert any("Switched to" in m for m in captured_messages)
+
+    async def test_remote_agent_refreshes_model_metadata(
+        self, mock_create_model: Mock
+    ) -> None:
+        """Switching models should refresh derived settings like context size."""
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app._agent = _make_remote_agent()
+        app._profile_override = {"max_input_tokens": 180_000}
+
+        settings.model_name = "gpt-4o"
+        settings.model_provider = "openai"
+        settings.model_context_limit = 128_000
+
+        with (
+            patch(
+                "deepagents_cli.model_config.has_provider_credentials",
+                return_value=True,
+            ),
+            patch("deepagents_cli.app.save_recent_model", return_value=True),
+        ):
+            await app._switch_model(
+                "anthropic:claude-sonnet-4-5",
+                extra_kwargs={"temperature": 0.7},
+            )
+
+        assert settings.model_name == "claude-sonnet-4-5"
+        assert settings.model_provider == "anthropic"
+        assert settings.model_context_limit == 200_000
+        mock_create_model.assert_called_once_with(
+            "anthropic:claude-sonnet-4-5",
+            extra_kwargs={"temperature": 0.7},
+            profile_overrides={"max_input_tokens": 180_000},
+        )
 
     async def test_remote_agent_sets_model_params_override(self) -> None:
         """With remote agent, extra_kwargs are stored as _model_params_override."""

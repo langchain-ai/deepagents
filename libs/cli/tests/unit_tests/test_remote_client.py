@@ -223,8 +223,11 @@ class TestConvertInterrupts:
         result = _convert_interrupts([obj])
         assert result[0] is obj
 
-    def test_non_list_returns_empty(self) -> None:
-        assert _convert_interrupts("not a list") == []
+    def test_non_list_wraps_value(self) -> None:
+        assert _convert_interrupts("not a list") == ["not a list"]
+
+    def test_none_returns_empty(self) -> None:
+        assert _convert_interrupts(None) == []
 
     def test_dict_without_value_passed_through(self) -> None:
         raw = [{"id": "x", "other": 123}]

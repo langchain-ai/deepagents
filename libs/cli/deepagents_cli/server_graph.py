@@ -4,7 +4,7 @@ This module is referenced by the generated `langgraph.json` and exposes the CLI
 agent graph as a module-level variable that the LangGraph server can load
 and serve.
 
-The graph is created lazily on first access via `make_graph()`, which reads
+The graph is created at module import time via `make_graph()`, which reads
 configuration from `ServerConfig.from_env()` — the same dataclass the CLI uses
 to *write* the configuration via `ServerConfig.to_env()`. This shared schema
 ensures the two sides stay in sync.
@@ -118,7 +118,7 @@ def make_graph() -> Any:  # noqa: ANN401
                     _sandbox_cm.__exit__(None, None, None)
 
             atexit.register(_cleanup_sandbox)
-        except (ImportError, ValueError, RuntimeError, NotImplementedError):
+        except Exception:
             logger.exception("Sandbox creation failed")
             sys.exit(1)
 
@@ -142,4 +142,8 @@ def make_graph() -> Any:  # noqa: ANN401
     return agent
 
 
-graph = make_graph()
+try:
+    graph = make_graph()
+except Exception:
+    logger.critical("Failed to initialize server graph", exc_info=True)
+    sys.exit(1)

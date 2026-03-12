@@ -24,6 +24,25 @@ configure_debug_logging(logger)
 _THREAD_UUID_NAMESPACE = uuid.UUID("a1b2c3d4-e5f6-7890-abcd-ef1234567890")
 
 
+def _require_thread_id(config: dict[str, Any] | None) -> str:
+    """Extract and validate that `thread_id` is present in config.
+
+    Args:
+        config: Config dict with `configurable.thread_id`.
+
+    Returns:
+        The thread ID string.
+
+    Raises:
+        ValueError: If `thread_id` is missing.
+    """
+    thread_id = (config or {}).get("configurable", {}).get("thread_id")
+    if not thread_id:
+        msg = "thread_id is required in config.configurable"
+        raise ValueError(msg)
+    return thread_id
+
+
 def _to_uuid(short_id: str) -> str:
     """Convert a thread ID string to a valid UUID string.
 
@@ -120,15 +139,13 @@ class RemoteAgent:
 
         Raises:
             ValueError: If `thread_id` is not present in `config`.
-        """
+        """  # noqa: DOC502 — raised by _require_thread_id
         from langchain_core.messages import BaseMessage
+
+        _require_thread_id(config)
 
         graph = self._get_graph()
         config = _prepare_config(config)
-
-        if not config.get("configurable", {}).get("thread_id"):
-            msg = "thread_id is required in config.configurable"
-            raise ValueError(msg)
 
         async for ns, mode, data in graph.astream(
             input,
@@ -185,13 +202,10 @@ class RemoteAgent:
 
         Raises:
             ValueError: If `thread_id` is not present in `config`.
-        """
+        """  # noqa: DOC502 — raised by _require_thread_id
         from langgraph_sdk.errors import NotFoundError
 
-        thread_id = config.get("configurable", {}).get("thread_id")
-        if not thread_id:
-            msg = "thread_id is required in config.configurable"
-            raise ValueError(msg)
+        thread_id = _require_thread_id(config)
 
         graph = self._get_graph()
         try:
@@ -221,11 +235,8 @@ class RemoteAgent:
 
         Raises:
             ValueError: If `thread_id` is not present in `config`.
-        """
-        thread_id = config.get("configurable", {}).get("thread_id")
-        if not thread_id:
-            msg = "thread_id is required in config.configurable"
-            raise ValueError(msg)
+        """  # noqa: DOC502 — raised by _require_thread_id
+        thread_id = _require_thread_id(config)
 
         graph = self._get_graph()
         try:
@@ -287,7 +298,7 @@ def _convert_interrupts(raw: Any) -> list[Any]:  # noqa: ANN401
             "Expected list for __interrupt__ data, got %s",
             type(raw).__name__,
         )
-        return []
+        return [raw] if raw is not None else []
     results = []
     for item in raw:
         if isinstance(item, Interrupt):

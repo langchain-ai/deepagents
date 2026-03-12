@@ -26,7 +26,7 @@ Results are logged to [LangSmith](https://smith.langchain.com/) under the `deepa
 Each eval uses a `TrajectoryScorer` with two assertion tiers:
 
 - ✅ **Success assertions** (`.success(...)`) are correctness checks that **hard-fail** the test.
-  - Examples: `final_text_contains`, `file_equals`
+  - Examples: `final_text_contains`, `file_equals`, `llm_judge`
 - 📈 **Efficiency assertions** (`.expect(...)`) are trajectory-shape expectations that are **logged but never fail**.
   - Examples: expected step count, expected tool calls.
 
@@ -45,6 +45,7 @@ scorer = (
 | File | Purpose |
 |---|---|
 | `utils.py` | Core framework: `AgentTrajectory`, assertion classes, `TrajectoryScorer`, `run_agent` entry point |
+| `llm_judge.py` | LLM-as-judge `SuccessAssertion` — grades agent answers against human-readable criteria |
 | `conftest.py` | pytest fixtures: `--model` CLI option, `model` / `model_name` fixtures, LangSmith metadata |
 | `pytest_reporter.py` | Custom pytest plugin: collects efficiency data and prints/writes a summary report |
 | `fixtures/` | Static test data |
@@ -61,6 +62,8 @@ scorer = (
 | `test_subagents.py` | Subagent delegation behavior |
 | `test_system_prompt.py` | System prompt adherence |
 | `test_tool_usage_relational.py` | Multi-step tool chaining with dependent data lookups (user -> location -> weather) |
+| `test_tool_selection.py` | Picking the right tool from intent (direct, indirect, multi-step) with independent mock tools |
+| `test_followup_quality.py` | Followup question relevance for underspecified requests (LLM judge) |
 
 ## Writing a new eval
 
@@ -84,6 +87,19 @@ def test_example(model: BaseChatModel) -> None:
             .success(final_text_contains("4"))
         ),
     )
+```
+
+For semantic grading where substring matching is insufficient, use the LLM judge:
+
+```python
+from tests.evals.llm_judge import llm_judge
+
+scorer = TrajectoryScorer().success(
+    llm_judge(
+        "The answer mentions the capital of France is Paris.",
+        "The tone is conversational, not robotic.",
+    )
+)
 ```
 
 ## Report output

@@ -61,6 +61,7 @@ evals = [
   "langchain-groq",
   "langchain-ollama",
   "langchain-fireworks",
+  "langchain-baseten",
 ]
 
 [build-system]

@@ -706,6 +706,7 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 evals = [
+    { name = "langchain-baseten" },
     { name = "langchain-deepseek" },
     { name = "langchain-fireworks" },
     { name = "langchain-groq" },

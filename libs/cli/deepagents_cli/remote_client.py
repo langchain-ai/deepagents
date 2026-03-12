@@ -131,16 +131,12 @@ class RemoteAgent:
         config = _prepare_config(config)
         dropped_count = 0
 
-        kwargs: dict[str, Any] = {}
-        if context is not None:
-            kwargs["context"] = context
-
         async for ns, mode, data in graph.astream(
             input,
             stream_mode=stream_mode or ["messages", "updates"],
             subgraphs=subgraphs,
             config=config,
-            **kwargs,
+            context=context,
         ):
             logger.debug("RemoteGraph event mode=%s ns=%s", mode, ns)
 

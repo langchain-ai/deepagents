@@ -122,7 +122,6 @@ class TestServerGraph:
             enable_memory=True,
             enable_skills=True,
             enable_shell=True,
-            enable_ask_user=False,
             mcp_server_info=mcp_server_info,
             cwd=None,
             project_context=None,

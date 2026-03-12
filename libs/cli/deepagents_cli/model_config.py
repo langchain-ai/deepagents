@@ -332,6 +332,25 @@ def _load_provider_profiles(module_path: str) -> dict[str, Any]:
     return getattr(module, "_PROFILES", {})
 
 
+def _profile_module_from_class_path(class_path: str) -> str | None:
+    """Derive the profile module path from a `class_path` config value.
+
+    Args:
+        class_path: Fully-qualified class in `module.path:ClassName` format.
+
+    Returns:
+        Dotted module path like `langchain_baseten.data._profiles`, or None
+            if `class_path` is malformed.
+    """
+    if ":" not in class_path:
+        return None
+    module_part, _ = class_path.split(":", 1)
+    package_root = module_part.split(".", maxsplit=1)[0]
+    if not package_root:
+        return None
+    return f"{package_root}.data._profiles"
+
+
 def get_available_models() -> dict[str, list[str]]:
     """Get available models dynamically from installed LangChain provider packages.
 
@@ -341,7 +360,9 @@ def get_available_models() -> dict[str, list[str]]:
 
     Returns:
         Dictionary mapping provider names to lists of model identifiers.
-            Only includes providers whose packages are installed.
+            Includes providers from the langchain registry, config-file
+            providers with explicit model lists, and `class_path` providers
+            whose packages expose a `_profiles` module.
     """
     global _available_models_cache  # noqa: PLW0603  # Module-level cache requires global statement
     if _available_models_cache is not None:
@@ -353,8 +374,10 @@ def get_available_models() -> dict[str, list[str]]:
     # Build the list dynamically from langchain's supported-provider registry
     # so new providers are picked up automatically when langchain adds them.
     provider_modules = _get_provider_profile_modules()
+    registry_providers: set[str] = set()
 
     for provider, module_path in provider_modules:
+        registry_providers.add(provider)
         try:
             profiles = _load_provider_profiles(module_path)
         except ImportError:
@@ -388,7 +411,43 @@ def get_available_models() -> dict[str, list[str]]:
     # Merge in models from config file (custom providers like ollama, fireworks)
     config = ModelConfig.load()
     for provider_name, provider_config in config.providers.items():
-        config_models = provider_config.get("models", [])
+        config_models = list(provider_config.get("models", []))
+
+        # For class_path providers not in the built-in registry, auto-discover
+        # models from the package's _profiles.py when no explicit models list.
+        if (
+            not config_models
+            and provider_name not in registry_providers
+            and provider_name not in available
+        ):
+            class_path = provider_config.get("class_path", "")
+            profile_module = _profile_module_from_class_path(class_path)
+            if profile_module:
+                try:
+                    profiles = _load_provider_profiles(profile_module)
+                except ImportError:
+                    logger.debug(
+                        "Could not import profiles from %s for class_path "
+                        "provider '%s' (package may not be installed)",
+                        profile_module,
+                        provider_name,
+                    )
+                except Exception:
+                    logger.warning(
+                        "Failed to load profiles from %s for class_path provider '%s'",
+                        profile_module,
+                        provider_name,
+                        exc_info=True,
+                    )
+                else:
+                    config_models = sorted(
+                        name
+                        for name, profile in profiles.items()
+                        if profile.get("tool_calling", False)
+                        and profile.get("text_inputs", True) is not False
+                        and profile.get("text_outputs", True) is not False
+                    )
+
         if provider_name not in available:
             if config_models:
                 available[provider_name] = config_models
@@ -472,7 +531,9 @@ def get_model_profiles(
     # Collect upstream profiles from provider packages.
     seen_specs: set[str] = set()
     provider_modules = _get_provider_profile_modules()
+    registry_providers: set[str] = set()
     for provider, module_path in provider_modules:
+        registry_providers.add(provider)
         try:
             profiles = _load_provider_profiles(module_path)
         except ImportError:
@@ -497,8 +558,41 @@ def get_model_profiles(
             overrides = config.get_profile_overrides(provider, model_name=model_name)
             result[spec] = _build_entry(upstream_profile, overrides, cli_override)
 
-    # Add config-only models that have no upstream profile.
+    # Add config-only models and class_path provider profiles.
     for provider_name, provider_config in config.providers.items():
+        # For class_path providers not in the built-in registry, load
+        # upstream profiles from the package's _profiles.py.
+        if provider_name not in registry_providers:
+            class_path = provider_config.get("class_path", "")
+            profile_module = _profile_module_from_class_path(class_path)
+            if profile_module:
+                try:
+                    pkg_profiles = _load_provider_profiles(profile_module)
+                except ImportError:
+                    logger.debug(
+                        "Could not import profiles from %s for class_path "
+                        "provider '%s' (package may not be installed)",
+                        profile_module,
+                        provider_name,
+                    )
+                except Exception:
+                    logger.warning(
+                        "Failed to load profiles from %s for class_path provider '%s'",
+                        profile_module,
+                        provider_name,
+                        exc_info=True,
+                    )
+                else:
+                    for model_name, upstream_profile in pkg_profiles.items():
+                        spec = f"{provider_name}:{model_name}"
+                        seen_specs.add(spec)
+                        overrides = config.get_profile_overrides(
+                            provider_name, model_name=model_name
+                        )
+                        result[spec] = _build_entry(
+                            upstream_profile, overrides, cli_override
+                        )
+
         config_models = provider_config.get("models", [])
         for model_name in config_models:
             spec = f"{provider_name}:{model_name}"

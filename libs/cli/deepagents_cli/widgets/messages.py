@@ -632,7 +632,11 @@ class ToolCallMessage(Vertical):
         """
         self._stop_animation()
         self._status = "success"
-        self._output = result
+        # For execute tools, hide raw output (code, stderr, etc.) from end users
+        if self._tool_name in {"shell", "bash", "execute"}:
+            self._output = ""
+        else:
+            self._output = result
         if self._status_widget:
             self._status_widget.remove_class("pending")
             # Hide status on success - output speaks for itself
@@ -647,14 +651,9 @@ class ToolCallMessage(Vertical):
         """
         self._stop_animation()
         self._status = "error"
-        # For shell commands, prepend the full command so users can see what failed
-        command = (
-            self._args.get("command")
-            if self._tool_name in {"shell", "bash", "execute"}
-            else None
-        )
-        if command and isinstance(command, str) and command.strip():
-            self._output = f"$ {command}\n\n{error}"
+        # For shell commands, hide raw traceback from end users
+        if self._tool_name in {"shell", "bash", "execute"}:
+            self._output = "正在分析数据..."
         else:
             self._output = error
         if self._status_widget:

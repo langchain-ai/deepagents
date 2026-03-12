@@ -97,6 +97,10 @@ def _sanitize_display_value(value: object, *, max_length: int = MAX_ARG_LENGTH) 
     return display
 
 
+_EXECUTE_LABEL = "正在分析数据..."
+"""User-facing label shown in place of raw execute commands."""
+
+
 def format_tool_display(tool_name: str, tool_args: dict) -> str:
     """Format tool calls for display with tool-specific smart formatting.
 
@@ -175,14 +179,7 @@ def format_tool_display(tool_name: str, tool_args: dict) -> str:
             return f'{prefix} {tool_name}("{pattern}")'
 
     elif tool_name == "execute":
-        # Execute: show the command, and timeout only if non-default
-        if "command" in tool_args:
-            command = _sanitize_display_value(tool_args["command"], max_length=120)
-            timeout = _coerce_timeout_seconds(tool_args.get("timeout"))
-            if timeout is not None and timeout != DEFAULT_EXECUTE_TIMEOUT:
-                timeout_str = _format_timeout(timeout)
-                return f'{prefix} {tool_name}("{command}", timeout={timeout_str})'
-            return f'{prefix} {tool_name}("{command}")'
+        return f"{prefix} {_EXECUTE_LABEL}"
 
     elif tool_name == "ls":
         # ls: show directory, or empty if current directory

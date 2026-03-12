@@ -12,6 +12,13 @@ from deepagents_cli.model_config import clear_caches
 from deepagents_cli.widgets.messages import AppMessage, ErrorMessage
 
 
+def _make_mock_server_proc() -> MagicMock:
+    """Create a mock ServerProcess with an async restart method."""
+    proc = MagicMock()
+    proc.restart = AsyncMock()
+    return proc
+
+
 @pytest.fixture(autouse=True)
 def _restore_settings() -> Iterator[None]:
     """Save and restore global settings mutated by tests."""
@@ -37,7 +44,7 @@ class TestModelSwitchNoOp:
         app = DeepAgentsApp()
         # Replace method with mock to track calls (hence ignore)
         app._mount_message = AsyncMock()  # type: ignore[method-assign]
-        app._checkpointer = MagicMock()  # Enable hot-swap path
+        app._server_proc = None  # Enable hot-swap path
 
         # Set current model
         settings.model_name = "claude-opus-4-5"
@@ -75,7 +82,7 @@ class TestModelSwitchErrorHandling:
         """_switch_model shows error when provider credentials are missing."""
         app = DeepAgentsApp()
         app._mount_message = AsyncMock()  # type: ignore[method-assign]
-        app._checkpointer = MagicMock()
+        app._server_proc = None
 
         # Set a different current model
         settings.model_name = "gpt-4o"
@@ -106,13 +113,13 @@ class TestModelSwitchErrorHandling:
         assert "Missing credentials" in captured_errors[0]
         assert "ANTHROPIC_API_KEY" in captured_errors[0]
 
-    async def test_checkpointer_saves_preference_and_shows_restart(self) -> None:
-        """With checkpointer, saves preference and tells user to restart."""
+    async def test_server_proc_sets_model_override(self) -> None:
+        """With server_proc, sets model override for ConfigurableModelMiddleware."""
         app = DeepAgentsApp()
         app._mount_message = AsyncMock()  # type: ignore[method-assign]
-        app._checkpointer = MagicMock()
+        mock_proc = _make_mock_server_proc()
+        app._server_proc = mock_proc
 
-        # Set a different current model
         settings.model_name = "gpt-4o"
         settings.model_provider = "openai"
 
@@ -135,42 +142,13 @@ class TestModelSwitchErrorHandling:
         ):
             await app._switch_model("anthropic:claude-sonnet-4-5")
 
-        mock_save.assert_called_once_with("anthropic:claude-sonnet-4-5")
-        app._mount_message.assert_called_once()  # type: ignore[union-attr]
-        assert len(captured_messages) == 1
-        assert "Model preference set" in captured_messages[0]
-        assert "Restart" in captured_messages[0]
-
-    async def test_checkpointer_save_failure_shows_error(self) -> None:
-        """_switch_model with checkpointer shows error when save fails."""
-        app = DeepAgentsApp()
-        app._mount_message = AsyncMock()  # type: ignore[method-assign]
-        app._checkpointer = MagicMock()
-
-        # Set a different current model
-        settings.model_name = "gpt-4o"
-        settings.model_provider = "openai"
-
-        captured_errors: list[str] = []
-        original_init = ErrorMessage.__init__
-
-        def capture_init(self: ErrorMessage, message: str, **kwargs: object) -> None:
-            captured_errors.append(message)
-            original_init(self, message, **kwargs)
-
-        with (
-            patch(
-                "deepagents_cli.model_config.has_provider_credentials",
-                return_value=True,
-            ),
-            patch("deepagents_cli.app.save_recent_model", return_value=False),
-            patch.object(ErrorMessage, "__init__", capture_init),
-        ):
-            await app._switch_model("anthropic:claude-sonnet-4-5")
-
-        app._mount_message.assert_called_once()  # type: ignore[union-attr]
-        assert len(captured_errors) == 1
-        assert "Could not save model preference" in captured_errors[0]
+        # No server restart — model override is set for next stream call
+        mock_proc.restart.assert_not_awaited()
+        assert app._model_override == "anthropic:claude-sonnet-4-5"
+        mock_save.assert_called_once()
+        assert settings.model_name == "claude-sonnet-4-5"
+        assert settings.model_provider == "anthropic"
+        assert any("Switched to" in m for m in captured_messages)
 
     async def test_no_checkpointer_saves_preference(self) -> None:
         """_switch_model without checkpointer saves preference but doesn't hot-swap."""
@@ -234,11 +212,11 @@ class TestModelSwitchErrorHandling:
         assert len(captured_errors) == 1
         assert "Could not save model preference" in captured_errors[0]
 
-    async def test_save_failure_shows_error_with_checkpointer(self) -> None:
-        """Shows error when save_recent_model fails (with checkpointer)."""
+    async def test_no_server_save_failure_shows_error(self) -> None:
+        """Shows error when save_recent_model fails (no server proc)."""
         app = DeepAgentsApp()
         app._mount_message = AsyncMock()  # type: ignore[method-assign]
-        app._checkpointer = MagicMock()
+        app._server_proc = None
 
         settings.model_name = "gpt-4o"
         settings.model_provider = "openai"
@@ -286,7 +264,7 @@ api_key_env = "FIREWORKS_API_KEY"
 """)
         app = DeepAgentsApp()
         app._mount_message = AsyncMock()  # type: ignore[method-assign]
-        app._checkpointer = MagicMock()
+        app._server_proc = None
 
         settings.model_name = "gpt-4o"
         settings.model_provider = "openai"
@@ -324,7 +302,7 @@ api_key_env = "FIREWORKS_API_KEY"
 """)
         app = DeepAgentsApp()
         app._mount_message = AsyncMock()  # type: ignore[method-assign]
-        app._checkpointer = MagicMock()
+        app._server_proc = None
 
         settings.model_name = "gpt-4o"
         settings.model_provider = "openai"
@@ -357,7 +335,7 @@ models = ["llama3"]
 """)
         app = DeepAgentsApp()
         app._mount_message = AsyncMock()  # type: ignore[method-assign]
-        app._checkpointer = MagicMock()
+        app._server_proc = None
 
         settings.model_name = "gpt-4o"
         settings.model_provider = "openai"
@@ -390,7 +368,7 @@ class TestModelSwitchBareModelName:
         """Bare model name like 'gpt-4o' auto-detects provider and saves preference."""
         app = DeepAgentsApp()
         app._mount_message = AsyncMock()  # type: ignore[method-assign]
-        app._checkpointer = MagicMock()
+        app._server_proc = None
 
         settings.model_name = "claude-sonnet-4-5"
         settings.model_provider = "anthropic"
@@ -423,7 +401,7 @@ class TestModelSwitchBareModelName:
         """Bare model name shows credential error when provider creds are missing."""
         app = DeepAgentsApp()
         app._mount_message = AsyncMock()  # type: ignore[method-assign]
-        app._checkpointer = MagicMock()
+        app._server_proc = None
 
         settings.model_name = "claude-sonnet-4-5"
         settings.model_provider = "anthropic"
@@ -458,7 +436,7 @@ class TestModelSwitchBareModelName:
         """Bare model name matching current model shows 'Already using'."""
         app = DeepAgentsApp()
         app._mount_message = AsyncMock()  # type: ignore[method-assign]
-        app._checkpointer = MagicMock()
+        app._server_proc = None
 
         settings.model_name = "gpt-4o"
         settings.model_provider = "openai"

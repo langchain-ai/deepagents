@@ -273,6 +273,8 @@ def _get_git_branch() -> str | None:
 def _build_stream_config(
     thread_id: str,
     assistant_id: str | None,
+    *,
+    model_override: str | None = None,
 ) -> dict[str, Any]:
     """Build the LangGraph stream config dict.
 
@@ -284,6 +286,8 @@ def _build_stream_config(
     Args:
         thread_id: The CLI session thread identifier.
         assistant_id: The agent/assistant identifier, if any.
+        model_override: Model spec to pass via `configurable` for
+            `ConfigurableModelMiddleware` to swap at runtime.
 
     Returns:
         Config dict with `configurable` and `metadata` keys.
@@ -305,8 +309,11 @@ def _build_stream_config(
     branch = _get_git_branch()
     if branch:
         metadata["git_branch"] = branch
+    configurable: dict[str, Any] = {"thread_id": thread_id}
+    if model_override:
+        configurable["model"] = model_override
     return {
-        "configurable": {"thread_id": thread_id},
+        "configurable": configurable,
         "metadata": metadata,
     }
 
@@ -502,6 +509,7 @@ async def execute_task_textual(
     adapter: TextualUIAdapter,
     backend: Any = None,  # noqa: ANN401  # Dynamic backend type
     image_tracker: MediaTracker | None = None,
+    model_override: str | None = None,
 ) -> SessionStats:
     """Execute a task with output directed to Textual UI.
 
@@ -516,6 +524,8 @@ async def execute_task_textual(
         adapter: The TextualUIAdapter for UI operations
         backend: Optional backend for file operations
         image_tracker: Optional tracker for images
+        model_override: Model spec to pass via `configurable` for runtime
+            model switching (e.g., `"openai:gpt-4o"`).
 
     Returns:
         Stats accumulated over this turn (request count, token counts,
@@ -573,7 +583,9 @@ async def execute_task_textual(
         message_content = final_input
 
     thread_id = session_state.thread_id
-    config = _build_stream_config(thread_id, assistant_id)
+    config = _build_stream_config(
+        thread_id, assistant_id, model_override=model_override
+    )
 
     await dispatch_hook("session.start", {"thread_id": thread_id})
 

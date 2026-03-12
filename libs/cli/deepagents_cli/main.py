@@ -645,6 +645,7 @@ async def run_textual_cli_async(
                 sandbox_type=sandbox_type if sandbox_type != "none" else None,
                 mcp_server_info=None,
                 profile_override=profile_override,
+                server_proc=server_proc,
             )
         except Exception as e:
             logger.debug("App error", exc_info=True)

@@ -95,6 +95,7 @@ if TYPE_CHECKING:
 
     from deepagents_cli.ask_user import AskUserWidgetResult, Question
     from deepagents_cli.mcp_tools import MCPServerInfo
+    from deepagents_cli.server import ServerProcess
 
 # iTerm2 Cursor Guide Workaround
 # ===============================
@@ -564,6 +565,7 @@ class DeepAgentsApp(App):
         sandbox_type: str | None = None,
         mcp_server_info: list[MCPServerInfo] | None = None,
         profile_override: dict[str, Any] | None = None,
+        server_proc: ServerProcess | None = None,
         **kwargs: Any,
     ) -> None:
         """Initialize the Deep Agents application.
@@ -585,6 +587,8 @@ class DeepAgentsApp(App):
             mcp_server_info: MCP server metadata for the `/mcp` viewer.
             profile_override: Extra profile fields from `--profile-override`,
                 retained for model hot-swap and footer display.
+            server_proc: LangGraph server process (enables model switching
+                via server restart in client-server mode).
             **kwargs: Additional arguments passed to parent
         """
         super().__init__(**kwargs)
@@ -604,6 +608,8 @@ class DeepAgentsApp(App):
         self._sandbox_type = sandbox_type
         self._mcp_server_info = mcp_server_info
         self._profile_override = profile_override
+        self._server_proc = server_proc
+        self._model_override: str | None = None
         self._mcp_tool_count = sum(len(s.tools) for s in (mcp_server_info or []))
         self._status_bar: StatusBar | None = None
         self._chat_input: ChatInput | None = None
@@ -2201,6 +2207,7 @@ class DeepAgentsApp(App):
                 adapter=self._ui_adapter,
                 backend=self._backend,
                 image_tracker=self._image_tracker,
+                model_override=self._model_override,
             )
         except Exception as e:  # Resilient tool rendering
             logger.exception("Agent execution failed")
@@ -3197,9 +3204,14 @@ class DeepAgentsApp(App):
         self,
         model_spec: str,
         *,
-        extra_kwargs: dict[str, Any] | None = None,  # noqa: ARG002
+        extra_kwargs: dict[str, Any] | None = None,  # noqa: ARG002  # reserved for future model params support via configurable
     ) -> None:
         """Switch to a new model, preserving conversation history.
+
+        In client-server mode (when `_server_proc` is set), this sets a model
+        override that `ConfigurableModelMiddleware` picks up on the next
+        invocation — no server restart required. The conversation thread is
+        preserved because the thread ID does not change.
 
         Args:
             model_spec: The model specification to switch to.
@@ -3256,10 +3268,33 @@ class DeepAgentsApp(App):
             await self._mount_message(AppMessage(f"Already using {current}"))
             return
 
-        # Check if we have what we need for hot-swap
-        if not self._checkpointer:
-            # No checkpointer means we can't hot-swap
-            # Save the preference and notify user
+        # Build the provider:model spec for the configurable middleware.
+        display = model_spec
+        if provider and not parsed:
+            display = f"{provider}:{model_name}"
+
+        # Client-server mode: set model override for ConfigurableModelMiddleware.
+        # The next stream call will pass this in config["configurable"]["model"],
+        # and the middleware swaps the model per-invocation — no server restart.
+        if self._server_proc is not None:
+            self._model_override = display
+
+            settings.model_name = model_name
+            if provider:
+                settings.model_provider = provider
+
+            if self._status_bar:
+                self._status_bar.set_model(
+                    provider=settings.model_provider or "",
+                    model=settings.model_name or "",
+                )
+
+            await asyncio.to_thread(save_recent_model, display)
+            await self._mount_message(AppMessage(f"Switched to {display}"))
+            logger.info("Model switched to %s (via configurable middleware)", display)
+
+        # No server proc — save preference only.
+        else:
             if await asyncio.to_thread(save_recent_model, model_spec):
                 await self._mount_message(
                     AppMessage(
@@ -3275,26 +3310,6 @@ class DeepAgentsApp(App):
                     )
                 )
             return
-
-        # In client-server mode, model switching requires a server restart.
-        # Save the preference and notify the user.
-        config_saved = save_recent_model(model_spec)
-        if config_saved:
-            await self._mount_message(
-                AppMessage(
-                    f"Model preference set to {model_spec}. "
-                    "Restart the CLI for the change to take effect."
-                )
-            )
-        else:
-            await self._mount_message(
-                ErrorMessage(
-                    "Could not save model preference. "
-                    "Check permissions for ~/.deepagents/"
-                )
-            )
-
-        logger.info("Model preference saved: %s", model_spec)
 
         # Scroll to bottom so the confirmation message is visible
         def _scroll_after_switch() -> None:
@@ -3391,6 +3406,7 @@ async def run_textual_app(
     sandbox_type: str | None = None,
     mcp_server_info: list[MCPServerInfo] | None = None,
     profile_override: dict[str, Any] | None = None,
+    server_proc: ServerProcess | None = None,
 ) -> AppResult:
     """Run the Textual application.
 
@@ -3411,6 +3427,7 @@ async def run_textual_app(
         mcp_server_info: MCP server metadata for the `/mcp` viewer.
         profile_override: Extra profile fields from `--profile-override`,
             retained for model hot-swap and footer display.
+        server_proc: LangGraph server process for model switching.
 
     Returns:
         An `AppResult` with the return code and final thread ID.
@@ -3430,6 +3447,7 @@ async def run_textual_app(
         sandbox_type=sandbox_type,
         mcp_server_info=mcp_server_info,
         profile_override=profile_override,
+        server_proc=server_proc,
     )
     await app.run_async()
     return AppResult(

@@ -20,6 +20,7 @@ from langgraph.types import Checkpointer
 
 from deepagents.backends import StateBackend
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
+from deepagents.middleware.configurable_model import ConfigurableModelMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
@@ -213,6 +214,7 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
 
     # Build general-purpose subagent with default middleware stack
     gp_middleware: list[AgentMiddleware[Any, Any, Any]] = [
+        ConfigurableModelMiddleware(),
         TodoListMiddleware(),
         FilesystemMiddleware(backend=backend),
         create_summarization_middleware(model, backend),
@@ -244,6 +246,7 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
 
             # Build middleware: base stack + skills (if specified) + user's middleware
             subagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
+                ConfigurableModelMiddleware(),
                 TodoListMiddleware(),
                 FilesystemMiddleware(backend=backend),
                 create_summarization_middleware(subagent_model, backend),
@@ -268,6 +271,7 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
 
     # Build main agent middleware stack
     deepagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
+        ConfigurableModelMiddleware(),
         TodoListMiddleware(),
     ]
     if memory is not None:

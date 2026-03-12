@@ -155,6 +155,7 @@ class ServerProcess:
         self._process: subprocess.Popen | None = None
         self._temp_dir: tempfile.TemporaryDirectory | None = None
         self._log_file: tempfile.NamedTemporaryFile | None = None  # type: ignore[type-arg]
+        self._env_overrides: dict[str, str] = {}
 
     @property
     def url(self) -> str:
@@ -300,8 +301,12 @@ class ServerProcess:
             msg += f" (last status: {last_status})"
         raise RuntimeError(msg)
 
-    def stop(self) -> None:
-        """Stop the server process gracefully."""
+    def _stop_process(self) -> None:
+        """Stop only the server subprocess and its log file.
+
+        Unlike `stop()`, this does NOT clean up the config directory or temp
+        directory, so the server can be restarted with the same config.
+        """
         if self._process is None:
             return
 
@@ -327,6 +332,10 @@ class ServerProcess:
                 logger.debug("Failed to clean up log file", exc_info=True)
             self._log_file = None
 
+    def stop(self) -> None:
+        """Stop the server process and clean up all resources."""
+        self._stop_process()
+
         if self._temp_dir is not None:
             try:
                 self._temp_dir.cleanup()
@@ -344,6 +353,51 @@ class ServerProcess:
                     "Failed to clean up config dir %s", self.config_dir, exc_info=True
                 )
             self._owns_config_dir = False
+
+    def update_env(self, **overrides: str) -> None:
+        """Stage env var overrides to apply on the next `restart()`.
+
+        These are applied to `os.environ` immediately before the subprocess
+        starts, keeping mutation scoped to the restart call.
+
+        Args:
+            **overrides: Key/value env var pairs
+                (e.g., `DA_SERVER_MODEL="anthropic:claude-sonnet-4-6"`).
+        """
+        self._env_overrides.update(overrides)
+
+    async def restart(self, *, timeout: float = _HEALTH_TIMEOUT) -> None:  # noqa: ASYNC109
+        """Restart the server process, reusing the existing config directory.
+
+        Stops the subprocess, then starts a new one. Any env overrides staged
+        via `update_env()` are applied to `os.environ` before the new process
+        starts. On failure, env overrides are rolled back.
+
+        Args:
+            timeout: Max seconds to wait for the server to become healthy.
+        """
+        logger.info("Restarting langgraph dev server")
+        self._stop_process()
+
+        # Apply env overrides, saving old values for rollback.
+        prev_env: dict[str, str | None] = {}
+        for key, val in self._env_overrides.items():
+            prev_env[key] = os.environ.get(key)
+            os.environ[key] = val
+
+        try:
+            await self.start(timeout=timeout)
+        except Exception:
+            # Roll back env so the next restart attempt (or error display)
+            # reflects the state of the last successful server.
+            for key, old_val in prev_env.items():
+                if old_val is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = old_val
+            raise
+
+        self._env_overrides.clear()
 
     async def __aenter__(self) -> Self:
         """Async context manager entry.

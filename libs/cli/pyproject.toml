@@ -58,6 +58,7 @@ dependencies = [
     "pyperclip>=1.11.0,<2.0.0",
 
     # Utilities
+    "uuid-utils>=0.10.0,<1.0.0",
     "python-dotenv>=1.0.0,<2.0.0",
     "requests>=2.0.0,<3.0.0",
     "pillow>=10.0.0,<13.0.0",

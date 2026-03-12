@@ -339,7 +339,7 @@ class TextualTokenTracker:
 
 
 def _new_thread_id() -> str:
-    """Generate a new thread ID as a UUID7 string.
+    """Deferred-import wrapper around `sessions.generate_thread_id`.
 
     Returns:
         UUID7 string.

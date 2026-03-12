@@ -10,7 +10,6 @@ import re
 import shlex
 import sys
 import threading
-import uuid
 from dataclasses import dataclass
 from enum import StrEnum
 from importlib.metadata import PackageNotFoundError, distribution
@@ -964,7 +963,9 @@ class SessionState:
         self.no_splash = no_splash
         self.exit_hint_until: float | None = None
         self.exit_hint_handle = None
-        self.thread_id = str(uuid.uuid4())
+        from deepagents_cli.sessions import generate_thread_id
+
+        self.thread_id = generate_thread_id()
 
     def toggle_auto_approve(self) -> bool:
         """Toggle auto-approve and return the new state.

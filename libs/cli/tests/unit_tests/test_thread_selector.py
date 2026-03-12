@@ -70,10 +70,10 @@ def _patch_list_threads(threads: list[ThreadInfo] | None = None) -> Any:  # noqa
 
 
 def _patch_columns(columns: dict[str, bool] | None = None) -> Any:  # noqa: ANN401
-    """Patch load_thread_columns and load_thread_sort_order for tests."""
+    """Patch thread config loaders for tests."""
     import contextlib
 
-    from deepagents_cli.model_config import THREAD_COLUMN_DEFAULTS
+    from deepagents_cli.model_config import THREAD_COLUMN_DEFAULTS, ThreadConfig
 
     cols = columns if columns is not None else THREAD_COLUMN_DEFAULTS
 
@@ -87,6 +87,14 @@ def _patch_columns(columns: dict[str, bool] | None = None) -> Any:  # noqa: ANN4
             patch(
                 "deepagents_cli.model_config.load_thread_sort_order",
                 return_value="updated_at",
+            ),
+            patch(
+                "deepagents_cli.model_config.load_thread_config",
+                return_value=ThreadConfig(
+                    columns=dict(cols),
+                    relative_time=True,
+                    sort_order="updated_at",
+                ),
             ),
         ):
             yield
@@ -1529,7 +1537,7 @@ class TestThreadSelectorInitialSortOrder:
 
         import contextlib
 
-        from deepagents_cli.model_config import THREAD_COLUMN_DEFAULTS
+        from deepagents_cli.model_config import THREAD_COLUMN_DEFAULTS, ThreadConfig
 
         @contextlib.contextmanager
         def _patch_sort_created() -> Any:  # noqa: ANN401
@@ -1541,6 +1549,14 @@ class TestThreadSelectorInitialSortOrder:
                 patch(
                     "deepagents_cli.model_config.load_thread_sort_order",
                     return_value="created_at",
+                ),
+                patch(
+                    "deepagents_cli.model_config.load_thread_config",
+                    return_value=ThreadConfig(
+                        columns=dict(THREAD_COLUMN_DEFAULTS),
+                        relative_time=True,
+                        sort_order="created_at",
+                    ),
                 ),
             ):
                 yield
@@ -2739,3 +2755,105 @@ class TestColumnKeyConsistency:
             f"missing={order_keys - set(THREAD_COLUMN_DEFAULTS)}, "
             f"extra={set(THREAD_COLUMN_DEFAULTS) - order_keys}"
         )
+
+
+class TestThreadsMatch:
+    """Tests for _threads_match short-circuit comparison."""
+
+    @staticmethod
+    def _thread(tid: str, cp: str | None = None) -> ThreadInfo:
+        t: ThreadInfo = {
+            "thread_id": tid,
+            "agent_name": "a",
+            "updated_at": "x",
+        }
+        if cp is not None:
+            t["latest_checkpoint_id"] = cp
+        return t
+
+    def test_identical_lists_match(self) -> None:
+        """Identical thread lists should match."""
+        a = [self._thread("t1", "cp1"), self._thread("t2", "cp2")]
+        b = [self._thread("t1", "cp1"), self._thread("t2", "cp2")]
+        assert ThreadSelectorScreen._threads_match(a, b) is True
+
+    def test_different_lengths_do_not_match(self) -> None:
+        """Different-length lists should not match."""
+        a = [self._thread("t1")]
+        b = [self._thread("t1"), self._thread("t2")]
+        assert ThreadSelectorScreen._threads_match(a, b) is False
+
+    def test_different_thread_ids_do_not_match(self) -> None:
+        """Different thread IDs at same position should not match."""
+        a = [self._thread("t1", "cp1")]
+        b = [self._thread("t2", "cp1")]
+        assert ThreadSelectorScreen._threads_match(a, b) is False
+
+    def test_different_checkpoint_ids_do_not_match(self) -> None:
+        """Lists with different checkpoint IDs should not match."""
+        a = [self._thread("t1", "cp1")]
+        b = [self._thread("t1", "cp2")]
+        assert ThreadSelectorScreen._threads_match(a, b) is False
+
+    def test_reordered_threads_do_not_match(self) -> None:
+        """Positional comparison means reordered lists fail."""
+        a = [self._thread("t1", "cp1"), self._thread("t2", "cp2")]
+        b = [self._thread("t2", "cp2"), self._thread("t1", "cp1")]
+        assert ThreadSelectorScreen._threads_match(a, b) is False
+
+    def test_empty_lists_match(self) -> None:
+        """Two empty lists should match."""
+        assert ThreadSelectorScreen._threads_match([], []) is True
+
+
+class TestThreadSelectorDomSkip:
+    """Tests for skipping DOM rebuild when data matches prewarm cache."""
+
+    async def test_matching_refresh_skips_dom_rebuild(self) -> None:
+        """When refreshed threads match prefetched, DOM should not be rebuilt."""
+        prefetched: list[ThreadInfo] = [
+            {
+                "thread_id": "abc12345",
+                "agent_name": "my-agent",
+                "updated_at": "2025-01-15T10:30:00",
+                "latest_checkpoint_id": "cp_1",
+                "message_count": 5,
+            }
+        ]
+        # Same thread and checkpoint
+        refreshed: list[ThreadInfo] = [
+            {
+                "thread_id": "abc12345",
+                "agent_name": "my-agent",
+                "updated_at": "2025-01-15T10:30:00",
+                "latest_checkpoint_id": "cp_1",
+            }
+        ]
+        app = ThreadSelectorTestApp(current_thread="abc12345")
+
+        with patch(
+            "deepagents_cli.sessions.list_threads",
+            new_callable=AsyncMock,
+            return_value=refreshed,
+        ):
+            async with app.run_test() as pilot:
+                app.push_screen(
+                    ThreadSelectorScreen(
+                        current_thread="abc12345",
+                        thread_limit=20,
+                        initial_threads=prefetched,
+                    )
+                )
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                initial_widgets = list(screen._option_widgets)
+                assert len(initial_widgets) == 1
+
+                # Wait for background refresh
+                for _ in range(10):
+                    await pilot.pause(0.05)
+
+                # Same widget objects should still be mounted (no rebuild)
+                assert screen._option_widgets == initial_widgets

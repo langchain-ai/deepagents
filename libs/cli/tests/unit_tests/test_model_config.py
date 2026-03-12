@@ -251,6 +251,156 @@ class TestThreadSortOrderPersistence:
         assert data["threads"]["sort_order"] == "created_at"
 
 
+class TestThreadConfigCoalesced:
+    """Tests for the coalesced `load_thread_config()` helper."""
+
+    def test_defaults_when_no_file(self, tmp_path: Path) -> None:
+        """When the config file does not exist, defaults should be returned."""
+        from deepagents_cli.model_config import load_thread_config
+
+        config_path = tmp_path / "config.toml"
+        cfg = load_thread_config(config_path)
+        assert cfg.columns == THREAD_COLUMN_DEFAULTS
+        assert cfg.relative_time is True
+        assert cfg.sort_order == "updated_at"
+
+    def test_reads_all_sections_from_one_parse(self, tmp_path: Path) -> None:
+        """A single TOML read should populate columns, relative_time, and sort_order."""
+        from deepagents_cli.model_config import load_thread_config
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            """
+[threads]
+relative_time = false
+sort_order = "created_at"
+
+[threads.columns]
+thread_id = true
+messages = false
+"""
+        )
+        cfg = load_thread_config(config_path)
+        assert cfg.columns["thread_id"] is True
+        assert cfg.columns["messages"] is False
+        # unchanged defaults
+        assert cfg.columns["updated_at"] is True
+        assert cfg.relative_time is False
+        assert cfg.sort_order == "created_at"
+
+    def test_matches_individual_loaders(self, tmp_path: Path) -> None:
+        """Coalesced result should match the three individual loaders."""
+        from deepagents_cli.model_config import (
+            load_thread_columns,
+            load_thread_config,
+            load_thread_relative_time,
+            load_thread_sort_order,
+        )
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            """
+[threads]
+relative_time = false
+sort_order = "created_at"
+
+[threads.columns]
+git_branch = true
+cwd = true
+"""
+        )
+        cfg = load_thread_config(config_path)
+        assert cfg.columns == load_thread_columns(config_path)
+        assert cfg.relative_time == load_thread_relative_time(config_path)
+        assert cfg.sort_order == load_thread_sort_order(config_path)
+
+    def test_corrupt_toml_returns_defaults(self, tmp_path: Path) -> None:
+        """A corrupt config file should return defaults without crashing."""
+        from deepagents_cli.model_config import load_thread_config
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("this is not valid TOML {{{{")
+        cfg = load_thread_config(config_path)
+        assert cfg.columns == THREAD_COLUMN_DEFAULTS
+        assert cfg.relative_time is True
+        assert cfg.sort_order == "updated_at"
+
+    def test_default_path_uses_cache(self) -> None:
+        """Second call with default path should return cached result."""
+        from deepagents_cli.model_config import (
+            _thread_config_cache,
+            invalidate_thread_config_cache,
+            load_thread_config,
+        )
+
+        invalidate_thread_config_cache()
+        try:
+            first = load_thread_config()
+            second = load_thread_config()
+            assert first is second
+        finally:
+            invalidate_thread_config_cache()
+
+    def test_save_invalidates_cache(self, tmp_path: Path) -> None:
+        """Saving thread config should invalidate the cached value."""
+        from deepagents_cli.model_config import (
+            invalidate_thread_config_cache,
+            load_thread_config,
+            save_thread_columns,
+        )
+
+        invalidate_thread_config_cache()
+        try:
+            first = load_thread_config()
+            assert first is load_thread_config()
+
+            save_thread_columns(dict(THREAD_COLUMN_DEFAULTS), tmp_path / "c.toml")
+            # Cache was invalidated by save
+            from deepagents_cli.model_config import _thread_config_cache
+
+            assert _thread_config_cache is None
+        finally:
+            invalidate_thread_config_cache()
+
+    def test_save_relative_time_invalidates_cache(self, tmp_path: Path) -> None:
+        """Saving relative_time should invalidate the cached value."""
+        from deepagents_cli.model_config import (
+            _thread_config_cache,
+            invalidate_thread_config_cache,
+            load_thread_config,
+            save_thread_relative_time,
+        )
+
+        invalidate_thread_config_cache()
+        try:
+            load_thread_config()
+            save_thread_relative_time(False, tmp_path / "c.toml")
+            from deepagents_cli.model_config import _thread_config_cache
+
+            assert _thread_config_cache is None
+        finally:
+            invalidate_thread_config_cache()
+
+    def test_save_sort_order_invalidates_cache(self, tmp_path: Path) -> None:
+        """Saving sort_order should invalidate the cached value."""
+        from deepagents_cli.model_config import (
+            _thread_config_cache,
+            invalidate_thread_config_cache,
+            load_thread_config,
+            save_thread_sort_order,
+        )
+
+        invalidate_thread_config_cache()
+        try:
+            load_thread_config()
+            save_thread_sort_order("created_at", tmp_path / "c.toml")
+            from deepagents_cli.model_config import _thread_config_cache
+
+            assert _thread_config_cache is None
+        finally:
+            invalidate_thread_config_cache()
+
+
 class TestProviderApiKeyEnv:
     """Tests for PROVIDER_API_KEY_ENV constant."""
 

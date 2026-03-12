@@ -15,7 +15,7 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, TypedDict
+from typing import TYPE_CHECKING, Any, NamedTuple, TypedDict
 
 import tomli_w
 
@@ -221,6 +221,7 @@ def clear_caches() -> None:
     _builtin_providers_cache = None
     _default_config_cache = None
     _profiles_cache = None
+    invalidate_thread_config_cache()
 
 
 def _get_builtin_providers() -> dict[str, Any]:
@@ -1079,6 +1080,91 @@ THREAD_COLUMN_DEFAULTS: dict[str, bool] = {
 """Default visibility for thread selector columns."""
 
 
+class ThreadConfig(NamedTuple):
+    """Coalesced thread-selector configuration read from a single TOML parse."""
+
+    columns: dict[str, bool]
+    """Column visibility settings."""
+
+    relative_time: bool
+    """Whether to display timestamps as relative time."""
+
+    sort_order: str
+    """`'updated_at'` or `'created_at'`."""
+
+
+_thread_config_cache: ThreadConfig | None = None
+
+
+def load_thread_config(config_path: Path | None = None) -> ThreadConfig:
+    """Load all thread-selector settings from one config file read.
+
+    Returns a cached result when reading the default config path. The
+    prewarm worker calls this at startup so subsequent opens of the
+    `/threads` modal avoid disk I/O entirely.
+
+    Args:
+        config_path: Path to config file.
+
+    Returns:
+        Coalesced thread configuration.
+    """
+    global _thread_config_cache  # noqa: PLW0603  # Module-level cache requires global statement
+
+    if config_path is None:
+        if _thread_config_cache is not None:
+            return _thread_config_cache
+        config_path = DEFAULT_CONFIG_PATH
+    use_default = config_path == DEFAULT_CONFIG_PATH
+
+    columns = dict(THREAD_COLUMN_DEFAULTS)
+    relative_time = True
+    sort_order = "updated_at"
+
+    try:
+        if not config_path.exists():
+            result = ThreadConfig(columns, relative_time, sort_order)
+            if use_default:
+                _thread_config_cache = result
+            return result
+        with config_path.open("rb") as f:
+            data = tomllib.load(f)
+        threads_section = data.get("threads", {})
+
+        # columns
+        raw_columns = threads_section.get("columns", {})
+        if isinstance(raw_columns, dict):
+            for key in columns:
+                if key in raw_columns and isinstance(raw_columns[key], bool):
+                    columns[key] = raw_columns[key]
+
+        # relative_time
+        rt_value = threads_section.get("relative_time")
+        if isinstance(rt_value, bool):
+            relative_time = rt_value
+
+        # sort_order
+        so_value = threads_section.get("sort_order")
+        if so_value in {"updated_at", "created_at"}:
+            sort_order = so_value
+    except (OSError, tomllib.TOMLDecodeError):
+        logger.warning("Could not read thread config; using defaults", exc_info=True)
+        # Do not cache on error — allow retry on next call in case the
+        # file is fixed or permissions are restored.
+        return ThreadConfig(columns, relative_time, sort_order)
+
+    result = ThreadConfig(columns, relative_time, sort_order)
+    if use_default:
+        _thread_config_cache = result
+    return result
+
+
+def invalidate_thread_config_cache() -> None:
+    """Clear the cached `ThreadConfig` so the next load re-reads disk."""
+    global _thread_config_cache  # noqa: PLW0603  # Module-level cache requires global statement
+    _thread_config_cache = None
+
+
 def load_thread_columns(config_path: Path | None = None) -> dict[str, bool]:
     """Load thread column visibility from config file.
 
@@ -1147,6 +1233,7 @@ def save_thread_columns(
     except (OSError, tomllib.TOMLDecodeError):
         logger.exception("Could not save thread column preferences")
         return False
+    invalidate_thread_config_cache()
     return True
 
 
@@ -1208,6 +1295,7 @@ def save_thread_relative_time(enabled: bool, config_path: Path | None = None) ->
     except (OSError, tomllib.TOMLDecodeError):
         logger.exception("Could not save thread relative_time preference")
         return False
+    invalidate_thread_config_cache()
     return True
 
 
@@ -1277,6 +1365,7 @@ def save_thread_sort_order(sort_order: str, config_path: Path | None = None) -> 
     except (OSError, tomllib.TOMLDecodeError):
         logger.exception("Could not save thread sort_order preference")
         return False
+    invalidate_thread_config_cache()
     return True
 
 

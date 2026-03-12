@@ -113,18 +113,18 @@ def make_graph() -> Any:  # noqa: ANN401
 
     mcp_server_info = None
     mcp_config_path = os.environ.get(f"{_ENV_PREFIX}MCP_CONFIG_PATH")
-    if mcp_config_path and not no_mcp:
+    if not no_mcp:
         import asyncio
 
         from deepagents_cli.mcp_tools import resolve_and_load_mcp_tools
 
+        # Server mode should honor the same MCP auto-discovery behavior as the
+        # direct CLI paths, with `--mcp-config` layered on as explicit override.
         mcp_tools, _, mcp_server_info = asyncio.run(
             resolve_and_load_mcp_tools(
                 explicit_config_path=mcp_config_path,
                 no_mcp=no_mcp,
-                trust_project_mcp=(
-                    trust_project_mcp if trust_project_mcp is not None else True
-                ),
+                trust_project_mcp=trust_project_mcp,
                 project_context=project_context,
             )
         )

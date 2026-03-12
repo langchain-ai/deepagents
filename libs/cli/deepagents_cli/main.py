@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from deepagents_cli.app import AppResult
+    from deepagents_cli.mcp_tools import MCPServerInfo
 
 # Suppress Pydantic v1 compatibility warnings from langchain on Python 3.14+
 warnings.filterwarnings("ignore", message=".*Pydantic V1.*", category=UserWarning)
@@ -131,6 +132,59 @@ def format_tool_warning_cli(tool: str) -> str:
             f"{_RIPGREP_SUPPRESS_HINT}\n"
         )
     return f"{tool} is not installed."
+
+
+async def _preload_session_mcp_server_info(
+    *,
+    mcp_config_path: str | None,
+    no_mcp: bool,
+    trust_project_mcp: bool | None,
+) -> list["MCPServerInfo"] | None:
+    """Load MCP metadata for the interactive TUI in server mode.
+
+    In server mode the actual MCP tools are created inside the LangGraph server
+    process, but the local Textual app still needs MCP metadata for the welcome
+    banner and `/mcp` viewer. This preloads the metadata in the CLI process and
+    immediately cleans up any temporary MCP sessions it opened.
+
+    Args:
+        mcp_config_path: Optional explicit MCP config path.
+        no_mcp: Whether MCP loading is disabled.
+        trust_project_mcp: Project-level MCP trust decision.
+
+    Returns:
+        MCP server metadata for the TUI, or `None` when MCP is disabled.
+    """
+    if no_mcp:
+        return None
+
+    from deepagents_cli.mcp_tools import resolve_and_load_mcp_tools
+    from deepagents_cli.project_utils import ProjectContext
+
+    session_manager = None
+    try:
+        try:
+            project_context = ProjectContext.from_user_cwd(Path.cwd())
+        except OSError:
+            logger.warning("Could not determine working directory for MCP metadata")
+            project_context = None
+
+        _tools, session_manager, server_info = await resolve_and_load_mcp_tools(
+            explicit_config_path=mcp_config_path,
+            no_mcp=no_mcp,
+            trust_project_mcp=trust_project_mcp,
+            project_context=project_context,
+        )
+        return server_info
+    finally:
+        if session_manager is not None:
+            try:
+                await session_manager.cleanup()
+            except Exception:
+                logger.warning(
+                    "MCP metadata preload cleanup failed",
+                    exc_info=True,
+                )
 
 
 def parse_args() -> argparse.Namespace:
@@ -588,6 +642,12 @@ async def run_textual_cli_async(
     # not only after an explicit /model switch.
     save_recent_model(f"{result.provider}:{result.model_name}")
 
+    mcp_server_info = await _preload_session_mcp_server_info(
+        mcp_config_path=mcp_config_path,
+        no_mcp=no_mcp,
+        trust_project_mcp=trust_project_mcp,
+    )
+
     # Show thread info
     if is_resumed:
         msg = Text("Resuming thread: ", style="dim")
@@ -643,7 +703,7 @@ async def run_textual_cli_async(
                 tools=[],
                 sandbox=None,
                 sandbox_type=sandbox_type if sandbox_type != "none" else None,
-                mcp_server_info=None,
+                mcp_server_info=mcp_server_info,
                 profile_override=profile_override,
                 server_proc=server_proc,
             )

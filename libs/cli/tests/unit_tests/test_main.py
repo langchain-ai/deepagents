@@ -1,8 +1,10 @@
 """Unit tests for main entry point."""
 
+import asyncio
 import inspect
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -164,6 +166,57 @@ class TestThreadMessage:
             if "Thread:" in line and "Resuming" not in line and "Starting" not in line
         ]
         assert len(lines) == 0, f"Should not have old 'Thread:' format. Found: {lines}"
+
+
+class TestRunTextualCliAsyncMcp:
+    """Tests for MCP metadata handling in interactive server mode."""
+
+    async def test_passes_preloaded_mcp_info_to_textual_app(self) -> None:
+        """Interactive TUI should receive MCP metadata for `/mcp` and banner UI."""
+        model_result = SimpleNamespace(
+            model=object(),
+            provider="openai",
+            model_name="gpt-5",
+            apply_to_settings=MagicMock(),
+        )
+        app_result = AppResult(return_code=0, thread_id="thread-123")
+        mcp_server_info = [SimpleNamespace(name="docs", tools=[])]
+        server_proc = SimpleNamespace(stop=MagicMock())
+        captured_kwargs: dict[str, object] = {}
+
+        async def _run_textual_app_stub(**kwargs: object) -> AppResult:
+            captured_kwargs.update(kwargs)
+            await asyncio.sleep(0)
+            return app_result
+
+        with (
+            patch("deepagents_cli.config.console"),
+            patch("deepagents_cli.config.create_model", return_value=model_result),
+            patch("deepagents_cli.model_config.save_recent_model"),
+            patch(
+                "deepagents_cli.main._preload_session_mcp_server_info",
+                AsyncMock(return_value=mcp_server_info),
+            ) as mock_preload,
+            patch(
+                "deepagents_cli.server_manager.start_server_and_get_agent",
+                AsyncMock(return_value=(object(), server_proc, None)),
+            ),
+            patch("deepagents_cli.app.run_textual_app", new=_run_textual_app_stub),
+        ):
+            result = await run_textual_cli_async(
+                "agent",
+                thread_id="thread-123",
+            )
+
+        assert result == app_result
+        mock_preload.assert_awaited_once_with(
+            mcp_config_path=None,
+            no_mcp=False,
+            trust_project_mcp=None,
+        )
+        assert captured_kwargs["mcp_server_info"] == mcp_server_info
+        model_result.apply_to_settings.assert_called_once_with()
+        server_proc.stop.assert_called_once_with()
 
 
 class TestCheckOptionalTools:

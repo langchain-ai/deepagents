@@ -27,8 +27,8 @@ logger = logging.getLogger(__name__)
 def _resolve_model_from_spec(spec: str) -> BaseChatModel:
     """Resolve a model spec string to a chat model instance.
 
-    Handles the `openai:` prefix to enable the Responses API,
-    matching the behavior of `deepagents.graph.resolve_model`.
+    Handles the `openai:` prefix to enable the Responses API, matching the
+    behavior of `deepagents.graph.resolve_model`.
 
     Args:
         spec: Model specification (e.g., `'anthropic:claude-sonnet-4-6'`).
@@ -108,7 +108,7 @@ class ConfigurableModelMiddleware(AgentMiddleware):
 
         Returns:
             A non-empty dict of params to merge into `model_settings`,
-            or `None` if no overrides are configured.
+                or `None` if no overrides are configured.
         """
         configurable = ConfigurableModelMiddleware._get_configurable(request)
         params: dict[str, Any] | None = configurable.get("model_params")
@@ -121,9 +121,11 @@ class ConfigurableModelMiddleware(AgentMiddleware):
             request: The original model request.
 
         Returns:
-            A (possibly new) request with model and/or `model_settings` overrides
-            applied. Returns the original request unchanged if no overrides are
-            configured.
+            A (possibly new) request with model and/or `model_settings`
+                overrides applied.
+
+                Returns the original request unchanged if no overrides are
+                configured.
         """
         overrides: dict[str, Any] = {}
 

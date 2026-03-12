@@ -7,7 +7,7 @@ questions efficiently.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal, TypedDict, TypeVar, overload
 
 import pytest
 from langchain_core.tools import ToolException, tool
@@ -24,7 +24,103 @@ from tests.evals.utils import (
     tool_call,
 )
 
-ENGINEER_DATA = [
+class Engineer(TypedDict):
+    id: int
+    name: str
+    email: str
+    team_id: int
+
+
+class Team(TypedDict):
+    id: int
+    name: str
+    oncall_engineer_id: int
+
+
+class Repo(TypedDict):
+    id: int
+    name: str
+    default_branch: str
+
+
+class Runbook(TypedDict):
+    id: int
+    title: str
+    url: str
+
+
+class Environment(TypedDict):
+    id: int
+    name: str
+    region: str
+
+
+class Service(TypedDict):
+    id: int
+    name: str
+    team_id: int
+    repo_id: int
+    runbook_id: int
+    environment_id: int
+    dependency_ids: list[int]
+
+
+class Incident(TypedDict):
+    id: int
+    title: str
+    service_id: int
+    severity: Literal["sev1", "sev2", "sev3"]
+    status: Literal["active", "resolved"]
+    started_at: str
+
+
+class Alert(TypedDict):
+    id: int
+    service_id: int
+    name: str
+    status: Literal["firing", "resolved"]
+
+
+class Deploy(TypedDict):
+    id: int
+    service_id: int
+    repo_id: int
+    version: str
+    deployed_at: str
+
+
+class MetricSnapshot(TypedDict):
+    service_id: int
+    metric_name: Literal["error_rate", "latency_p95", "auth_failure_rate", "queue_depth"]
+    value: str
+
+
+class IncidentSearchResult(TypedDict):
+    id: int
+    title: str
+
+
+class ServiceSearchResult(TypedDict):
+    id: int
+    name: str
+
+
+class EngineerSearchResult(TypedDict):
+    id: int
+    name: str
+
+
+class TeamSearchResult(TypedDict):
+    id: int
+    name: str
+
+
+DataItemT = TypeVar(
+    "DataItemT", Incident, Service, Engineer, Team, Repo, Runbook, Environment, Alert, Deploy
+)
+
+
+ENGINEER_DATA: list[Engineer] = [
     {"id": 7118, "name": "Alice Kim", "email": "alice@ops.example.com", "team_id": 481},
     {"id": 7243, "name": "Ben Ortiz", "email": "ben@ops.example.com", "team_id": 481},
     {"id": 7381, "name": "Cara Singh", "email": "cara@ops.example.com", "team_id": 562},
@@ -33,20 +129,20 @@ ENGINEER_DATA = [
     {"id": 7684, "name": "Farah Chen", "email": "farah@ops.example.com", "team_id": 693},
 ]
 
-TEAM_DATA = [
+TEAM_DATA: list[Team] = [
     {"id": 481, "name": "Payments Platform", "oncall_engineer_id": 7243},
     {"id": 562, "name": "Checkout Experience", "oncall_engineer_id": 7381},
     {"id": 693, "name": "Identity", "oncall_engineer_id": 7684},
 ]
 
-REPO_DATA = [
+REPO_DATA: list[Repo] = [
     {"id": 9104, "name": "payments-service", "default_branch": "main"},
     {"id": 9217, "name": "checkout-frontend", "default_branch": "main"},
     {"id": 9346, "name": "identity-service", "default_branch": "main"},
     {"id": 9482, "name": "shared-observability", "default_branch": "main"},
 ]
 
-RUNBOOK_DATA = [
+RUNBOOK_DATA: list[Runbook] = [
     {
         "id": 12041,
         "title": "Payments API 5xx Response Runbook",
@@ -64,12 +160,12 @@ RUNBOOK_DATA = [
     },
 ]
 
-ENVIRONMENT_DATA = [
+ENVIRONMENT_DATA: list[Environment] = [
     {"id": 301, "name": "production", "region": "us-east-1"},
     {"id": 442, "name": "staging", "region": "us-west-2"},
 ]
 
-SERVICE_DATA = [
+SERVICE_DATA: list[Service] = [
     {
         "id": 8401,
         "name": "payments-api",
@@ -108,7 +204,7 @@ SERVICE_DATA = [
     },
 ]
 
-INCIDENT_DATA = [
+INCIDENT_DATA: list[Incident] = [
     {
         "id": 41017,
         "title": "Payments API elevated 5xx",
@@ -143,7 +239,7 @@ INCIDENT_DATA = [
     },
 ]
 
-ALERT_DATA = [
+ALERT_DATA: list[Alert] = [
     {"id": 55101, "service_id": 8401, "name": "payments-api 5xx rate", "status": "firing"},
     {"id": 55114, "service_id": 8401, "name": "payments-api latency p95", "status": "firing"},
     {"id": 55128, "service_id": 8514, "name": "checkout-web latency p95", "status": "firing"},
@@ -151,7 +247,7 @@ ALERT_DATA = [
     {"id": 55152, "service_id": 8799, "name": "analytics-worker queue depth", "status": "firing"},
 ]
 
-DEPLOY_DATA = [
+DEPLOY_DATA: list[Deploy] = [
     {
         "id": 66011,
         "service_id": 8401,
@@ -189,7 +285,7 @@ DEPLOY_DATA = [
     },
 ]
 
-METRIC_SNAPSHOT_DATA = [
+METRIC_SNAPSHOT_DATA: list[MetricSnapshot] = [
     {"service_id": 8401, "metric_name": "error_rate", "value": "12.4%"},
     {"service_id": 8401, "metric_name": "latency_p95", "value": "1.8s"},
     {"service_id": 8514, "metric_name": "latency_p95", "value": "2.4s"},
@@ -200,7 +296,29 @@ METRIC_SNAPSHOT_DATA = [
 CURRENT_INCIDENT_ID = 41017
 
 
-def _similarity_search(data: list[dict], query: str, key: str) -> list[dict]:
+@overload
+def _similarity_search(
+    data: list[Incident], query: str, key: Literal["title"]
+) -> list[IncidentSearchResult]: ...
+
+
+@overload
+def _similarity_search(
+    data: list[Service], query: str, key: Literal["name"]
+) -> list[ServiceSearchResult]: ...
+
+
+@overload
+def _similarity_search(
+    data: list[Engineer], query: str, key: Literal["name"]
+) -> list[EngineerSearchResult]: ...
+
+
+@overload
+def _similarity_search(data: list[Team], query: str, key: Literal["name"]) -> list[TeamSearchResult]: ...
+
+
+def _similarity_search(data: list[dict[str, object]], query: str, key: str) -> list[dict[str, object]]:
     def _score(x: str) -> float:
         return len(set(x.lower()) & set(query.lower())) / len(set(x.lower()) | set(query.lower()))
 
@@ -208,7 +326,7 @@ def _similarity_search(data: list[dict], query: str, key: str) -> list[dict]:
     return [{"id": item["id"], key: item[key]} for item in ranked]
 
 
-def _get_by_id(data: list[dict], item_id: int, label: str) -> dict:
+def _get_by_id(data: list[DataItemT], item_id: int, label: str) -> DataItemT:
     for item in data:
         if item["id"] == item_id:
             return item
@@ -216,7 +334,7 @@ def _get_by_id(data: list[dict], item_id: int, label: str) -> dict:
     raise ToolException(msg)
 
 
-def _get_metric_snapshot(service_id: int, metric_name: str) -> dict:
+def _get_metric_snapshot(service_id: int, metric_name: str) -> MetricSnapshot:
     for metric in METRIC_SNAPSHOT_DATA:
         if metric["service_id"] == service_id and metric["metric_name"] == metric_name:
             return metric
@@ -247,7 +365,7 @@ def find_incidents_by_title(title: str) -> list[dict]:
 
 
 @tool
-def find_services_by_name(name: str) -> list[dict]:
+def find_services_by_name(name: str) -> list[ServiceSearchResult]:
     """Find services with a similar name.
 
     Args:
@@ -257,7 +375,7 @@ def find_services_by_name(name: str) -> list[dict]:
 
 
 @tool
-def find_engineers_by_name(name: str) -> list[dict]:
+def find_engineers_by_name(name: str) -> list[EngineerSearchResult]:
     """Find engineers with a similar name.
 
     Args:
@@ -918,3 +1036,4 @@ async def test_six_tools_current_incident_metrics_parallel(model: BaseChatModel)
             ],
         ),
     )
+

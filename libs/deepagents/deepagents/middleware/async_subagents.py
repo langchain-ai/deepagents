@@ -305,8 +305,8 @@ def _build_check_tool(
         run = client.runs.get(thread_id=thread_id, run_id=run_id)
         result: dict[str, Any] = {"status": run["status"], "run_id": run["run_id"], "thread_id": thread_id}
         if run["status"] == "success":
-            state = client.threads.get_state(thread_id=thread_id)
-            values = state.get("values", {})
+            thread = client.threads.get(thread_id=thread_id)
+            values = thread.get("values") or {}
             messages = values.get("messages", []) if isinstance(values, dict) else []
             if messages:
                 last = messages[-1]
@@ -338,8 +338,8 @@ def _build_check_tool(
         run = await client.runs.get(thread_id=thread_id, run_id=run_id)
         result: dict[str, Any] = {"status": run["status"], "run_id": run["run_id"], "thread_id": thread_id}
         if run["status"] == "success":
-            state = await client.threads.get_state(thread_id=thread_id)
-            values = state.get("values", {})
+            thread = await client.threads.get(thread_id=thread_id)
+            values = thread.get("values") or {}
             messages = values.get("messages", []) if isinstance(values, dict) else []
             if messages:
                 last = messages[-1]

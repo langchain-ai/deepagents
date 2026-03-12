@@ -268,7 +268,7 @@ class TestCheckTool:
     def test_check_completed_job_returns_result(self, mock_get_client: MagicMock) -> None:
         mock_client = MagicMock()
         mock_client.runs.get.return_value = {"run_id": "run_xyz", "status": "success"}
-        mock_client.threads.get_state.return_value = {
+        mock_client.threads.get.return_value = {
             "values": {
                 "messages": [
                     {"role": "assistant", "content": "Analysis complete: found 3 issues."},
@@ -433,7 +433,7 @@ class TestAsyncTools:
     async def test_async_check_returns_command(self, mock_get_client: MagicMock) -> None:
         mock_client = MagicMock()
         mock_client.runs.get = _async_return({"run_id": "run_xyz", "status": "success"})
-        mock_client.threads.get_state = _async_return({"values": {"messages": [{"role": "assistant", "content": "Done!"}]}})
+        mock_client.threads.get = _async_return({"values": {"messages": [{"role": "assistant", "content": "Done!"}]}})
         mock_get_client.return_value = mock_client
 
         tools = _build_async_subagent_tools([_make_spec()])

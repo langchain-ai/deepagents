@@ -343,7 +343,7 @@ class TextualSessionState:
     def __init__(
         self,
         *,
-        auto_approve: bool = False,
+        auto_approve: bool = True,
         thread_id: str | None = None,
     ) -> None:
         """Initialize session state.
@@ -542,7 +542,7 @@ class DeepAgentsApp(App):
         agent: Pregel | None = None,
         assistant_id: str | None = None,
         backend: CompositeBackend | None = None,
-        auto_approve: bool = False,
+        auto_approve: bool = True,
         enable_ask_user: bool = False,
         cwd: str | Path | None = None,
         thread_id: str | None = None,
@@ -3386,7 +3386,7 @@ async def run_textual_app(
     agent: Pregel | None = None,
     assistant_id: str | None = None,
     backend: CompositeBackend | None = None,
-    auto_approve: bool = False,
+    auto_approve: bool = True,
     enable_ask_user: bool = False,
     cwd: str | Path | None = None,
     thread_id: str | None = None,

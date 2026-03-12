@@ -548,7 +548,7 @@ def create_cli_agent(
     sandbox_type: str | None = None,
     system_prompt: str | None = None,
     interactive: bool = True,
-    auto_approve: bool = False,
+    auto_approve: bool = True,
     enable_memory: bool = True,
     enable_skills: bool = True,
     enable_shell: bool = True,

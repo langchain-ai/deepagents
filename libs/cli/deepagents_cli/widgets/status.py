@@ -166,7 +166,7 @@ class StatusBar(Horizontal):
 
     mode: reactive[str] = reactive("normal", init=False)
     status_message: reactive[str] = reactive("", init=False)
-    auto_approve: reactive[bool] = reactive(default=False, init=False)
+    auto_approve: reactive[bool] = reactive(default=True, init=False)
     cwd: reactive[str] = reactive("", init=False)
     branch: reactive[str] = reactive("", init=False)
     tokens: reactive[int] = reactive(0, init=False)
@@ -190,11 +190,6 @@ class StatusBar(Horizontal):
                 model display.
         """
         yield Static("", classes="status-mode normal", id="mode-indicator")
-        yield Static(
-            "手动 | shift+tab 切换",
-            classes="status-auto-approve off",
-            id="auto-approve-indicator",
-        )
         with Horizontal(classes="status-left-collapsible"):
             yield Static("", classes="status-message", id="status-message")
             yield Static("", classes="status-cwd", id="cwd-display")

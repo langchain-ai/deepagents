@@ -569,7 +569,7 @@ async def execute_task_textual(
 
     # Show spinner
     if adapter._set_spinner:
-        await adapter._set_spinner("Thinking")
+        await adapter._set_spinner("思考中")
 
     # Hide token display during streaming (will be shown with accurate count at end)
     if adapter._token_tracker:
@@ -710,7 +710,7 @@ async def execute_task_textual(
                                 exc_info=True,
                             )
                         if adapter._set_spinner:
-                            await adapter._set_spinner("Thinking")
+                            await adapter._set_spinner("思考中")
 
                     if isinstance(message, HumanMessage):
                         content = message.text
@@ -734,7 +734,7 @@ async def execute_task_textual(
 
                         # Reshow spinner after tool result
                         if adapter._set_spinner:
-                            await adapter._set_spinner("Thinking")
+                            await adapter._set_spinner("思考中")
 
                         # Update tool call status with output
                         tool_id = getattr(message, "tool_call_id", None)
@@ -960,7 +960,7 @@ async def execute_task_textual(
                         exc_info=True,
                     )
                 if adapter._set_spinner:
-                    await adapter._set_spinner("Thinking")
+                    await adapter._set_spinner("思考中")
 
             # Flush any remaining text from all namespaces
             for ns_key, pending_text in list(pending_text_by_namespace.items()):

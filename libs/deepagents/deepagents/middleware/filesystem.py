@@ -541,11 +541,13 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         token_limit = self._tool_token_limit_before_evict
 
         def _handle_read_result(
-            read_result: ReadResult,
+            read_result: ReadResult | str,
             validated_path: str,
             tool_call_id: str | None,
             limit: int,
         ) -> ToolMessage | str:
+            if isinstance(read_result, str):
+                return read_result
             if read_result.error:
                 return f"Error: {read_result.error}"
 

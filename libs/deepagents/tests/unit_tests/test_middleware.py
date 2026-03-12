@@ -1249,6 +1249,30 @@ class TestFilesystemMiddleware:
         assert isinstance(result, str)
         assert result == "Error: file_not_found"
 
+    def test_read_file_handles_str_from_backend(self):
+        """Test that read_file works when backend.read() returns a plain str."""
+
+        class StrReadBackend(StateBackend):
+            def read(self, path, *, offset=0, limit=100):
+                return "     1\tline one\n     2\tline two"
+
+        middleware = FilesystemMiddleware(backend=lambda rt: StrReadBackend(rt))  # noqa: PLW0108
+        state = FilesystemState(messages=[], files={})
+        runtime = ToolRuntime(
+            state=state,
+            context=None,
+            tool_call_id="str-read",
+            store=None,
+            stream_writer=lambda _: None,
+            config={},
+        )
+
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+        result = read_file_tool.invoke({"file_path": "/app/file.txt", "runtime": runtime})
+
+        assert isinstance(result, str)
+        assert "line one" in result
+
     def test_execute_tool_returns_error_when_backend_doesnt_support(self):
         """Test that execute tool returns friendly error instead of raising exception."""
         state = FilesystemState(messages=[], files={})

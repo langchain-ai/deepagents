@@ -247,6 +247,49 @@ class RemoteAgent:
             )
             raise
 
+    async def aensure_thread(self, config: dict[str, Any]) -> None:
+        """Ensure the remote thread record exists before mutating state.
+
+        In the LangGraph dev server, checkpoint persistence and HTTP thread
+        registration are separate. After a server restart, a thread may still
+        have checkpointed state on disk while `POST /threads/{id}/state`
+        returns 404 because the server has not yet materialized that thread in
+        its live store.
+
+        This method performs the idempotent HTTP-side registration with
+        `if_exists='do_nothing'` so callers that recovered state from
+        persistence can safely follow up with `aupdate_state`.
+
+        Args:
+            config: Config with `configurable.thread_id` and optional metadata.
+
+        Raises:
+            ValueError: If `thread_id` is not present in `config`.
+        """  # noqa: DOC502 — raised by _require_thread_id
+        _require_thread_id(config)
+
+        graph = self._get_graph()
+        prepared = _prepare_config(config)
+        thread_id = prepared["configurable"]["thread_id"]
+        metadata = prepared.get("metadata")
+        thread_metadata = metadata if isinstance(metadata, dict) else None
+
+        try:
+            client = graph._validate_client()
+            await client.threads.create(
+                thread_id=thread_id,
+                if_exists="do_nothing",
+                metadata=thread_metadata,
+                graph_id=self._graph_name,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to ensure thread %s exists on remote server",
+                thread_id,
+                exc_info=True,
+            )
+            raise
+
     def with_config(self, config: dict[str, Any]) -> RemoteAgent:  # noqa: ARG002
         """Return self (config is passed per-call, not stored).
 

@@ -1785,7 +1785,7 @@ class TestFetchThreadHistoryData:
         empty_state = MagicMock()
         empty_state.values = {}
 
-        # spec=RemoteAgent so _is_remote() isinstance check passes
+        # spec=RemoteAgent so _remote_agent() isinstance check passes
         mock_agent = MagicMock(spec=RemoteAgent)
         mock_agent.aget_state = AsyncMock(return_value=empty_state)
 
@@ -1810,28 +1810,29 @@ class TestFetchThreadHistoryData:
         assert result[1].content == "world"
 
 
-class TestIsRemote:
-    """Tests for DeepAgentsApp._is_remote()."""
+class TestRemoteAgent:
+    """Tests for DeepAgentsApp._remote_agent()."""
 
-    def test_true_with_remote_agent(self) -> None:
+    def test_returns_instance_with_remote_agent(self) -> None:
         from deepagents_cli.remote_client import RemoteAgent
 
         app = DeepAgentsApp()
-        app._agent = RemoteAgent("http://test:0")
-        assert app._is_remote() is True
+        agent = RemoteAgent("http://test:0")
+        app._agent = agent
+        assert app._remote_agent() is agent
 
-    def test_false_when_agent_is_none(self) -> None:
+    def test_none_when_agent_is_none(self) -> None:
         app = DeepAgentsApp()
-        assert app._is_remote() is False
+        assert app._remote_agent() is None
 
-    def test_false_with_non_remote_agent(self) -> None:
-        """Local Pregel-like agent returns False."""
+    def test_none_with_non_remote_agent(self) -> None:
+        """Local Pregel-like agent returns None."""
         app = DeepAgentsApp()
         app._agent = MagicMock()
-        assert app._is_remote() is False
+        assert app._remote_agent() is None
 
-    def test_false_with_mock_spec_pregel(self) -> None:
-        """MagicMock without RemoteAgent spec returns False."""
+    def test_none_with_mock_spec_pregel(self) -> None:
+        """MagicMock without RemoteAgent spec returns None."""
         app = DeepAgentsApp()
         app._agent = MagicMock(spec=[])
-        assert app._is_remote() is False
+        assert app._remote_agent() is None

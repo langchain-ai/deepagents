@@ -956,6 +956,7 @@ class TestCompactRemoteFallback:
 
             app._agent = MagicMock(spec=RemoteAgent)
             app._agent.aget_state = AsyncMock(return_value=empty_state)
+            app._agent.aensure_thread = AsyncMock()
             app._agent.aupdate_state = AsyncMock()
             app._backend = MagicMock()
             app._lc_thread_id = "test-thread"
@@ -986,6 +987,9 @@ class TestCompactRemoteFallback:
             mock_mw._apply_event_to_messages.assert_called_once_with(
                 messages,
                 prior_event,
+            )
+            app._agent.aensure_thread.assert_awaited_once_with(
+                {"configurable": {"thread_id": "test-thread"}}
             )
 
             update_values = app._agent.aupdate_state.call_args_list[0][0][1]

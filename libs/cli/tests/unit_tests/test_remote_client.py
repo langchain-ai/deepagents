@@ -535,6 +535,41 @@ class TestRemoteAgentUpdateState:
         uuid.UUID(call_config["configurable"]["thread_id"])
 
 
+class TestRemoteAgentEnsureThread:
+    """Verify remote thread registration before state writes."""
+
+    async def test_creates_thread_with_do_nothing(self) -> None:
+        """Creates the remote thread idempotently before cold-resume updates."""
+        agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
+        mock_threads = MagicMock()
+        mock_threads.create = AsyncMock()
+        mock_client = MagicMock()
+        mock_client.threads = mock_threads
+        mock_graph = MagicMock()
+        mock_graph._validate_client.return_value = mock_client
+        agent._graph = mock_graph
+
+        await agent.aensure_thread(
+            {
+                "configurable": {"thread_id": "short"},
+                "metadata": {"assistant_id": "agent"},
+            }
+        )
+
+        kwargs = mock_threads.create.call_args.kwargs
+        uuid.UUID(kwargs["thread_id"])
+        assert kwargs["if_exists"] == "do_nothing"
+        assert kwargs["metadata"] == {"assistant_id": "agent"}
+        assert kwargs["graph_id"] == "agent"
+
+    async def test_raises_when_thread_id_missing(self) -> None:
+        """Rejects ensure-thread calls that omit `configurable.thread_id`."""
+        agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
+
+        with pytest.raises(ValueError, match="thread_id"):
+            await agent.aensure_thread({"configurable": {}})
+
+
 # ---------------------------------------------------------------------------
 # RemoteAgent — with_config
 # ---------------------------------------------------------------------------

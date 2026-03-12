@@ -94,6 +94,7 @@ if TYPE_CHECKING:
 
     from deepagents_cli.ask_user import AskUserWidgetResult, Question
     from deepagents_cli.mcp_tools import MCPServerInfo
+    from deepagents_cli.remote_client import RemoteAgent
     from deepagents_cli.server import ServerProcess
 
 # iTerm2 Cursor Guide Workaround
@@ -661,10 +662,10 @@ class DeepAgentsApp(App):
 
         self._image_tracker = MediaTracker()
 
-    def _is_remote(self) -> bool:
-        """Whether the session is backed by a remote LangGraph server.
+    def _remote_agent(self) -> RemoteAgent | None:
+        """Return the agent narrowed to `RemoteAgent`, or `None`.
 
-        Returns `False` when:
+        Returns `None` when:
 
         - No agent is configured (`self._agent is None`).
         - The agent is a local `Pregel` graph (e.g. ACP mode, test harnesses).
@@ -675,11 +676,11 @@ class DeepAgentsApp(App):
         both CLI-spawned servers and externally managed ones.
 
         Returns:
-            `True` when the agent is a `RemoteAgent`.
+            The `RemoteAgent` instance, or `None` for local agents.
         """
         from deepagents_cli.remote_client import RemoteAgent
 
-        return isinstance(self._agent, RemoteAgent)
+        return self._agent if isinstance(self._agent, RemoteAgent) else None
 
     def compose(self) -> ComposeResult:
         """Compose the application layout.
@@ -2192,6 +2193,12 @@ class DeepAgentsApp(App):
                 "file_path": file_path,
             }
 
+            if remote := self._remote_agent():
+                # After a dev-server restart, SQLite checkpoints may exist even
+                # when the remote thread record has not yet been re-created.
+                # Ensure the HTTP-side thread exists before updating state.
+                await remote.aensure_thread(config)  # ty: ignore[invalid-argument-type]
+
             await self._agent.aupdate_state(config, {"_summarization_event": new_event})
 
             await self._mount_message(
@@ -2563,7 +2570,7 @@ class DeepAgentsApp(App):
         messages = values.get("messages")
         if isinstance(messages, list) and messages:
             return values
-        if not self._is_remote():
+        if not self._remote_agent():
             return values
 
         fallback_values = await self._read_channel_values_from_checkpointer(thread_id)
@@ -3496,7 +3503,7 @@ class DeepAgentsApp(App):
             # Strip leading colon — treat ":claude-opus-4-6" as "claude-opus-4-6"
             model_spec = model_spec.removeprefix(":")
 
-            if not self._is_remote():
+            if not self._remote_agent():
                 await self._mount_message(
                     ErrorMessage("Model switching requires a server-backed session.")
                 )

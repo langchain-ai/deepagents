@@ -1117,12 +1117,10 @@ class TestFilesystemMiddleware:
         assert isinstance(result, Command)
         # Check that the file contains actual text, not stringified dict
         file_content = result.update["files"]["/large_tool_results/test_single"]["content"]
-        # v1 format stores content as list[str]
-        assert isinstance(file_content, list)
-        joined = "\n".join(file_content)
+        assert isinstance(file_content, str)
         # Should start with the actual text, not with "[{" which would indicate stringified dict
-        assert joined.startswith("Hello world!")
-        assert not joined.startswith("[{")
+        assert file_content.startswith("Hello world!")
+        assert not file_content.startswith("[{")
 
     def test_multiple_text_blocks_joins_text(self):
         """Test that multiple text blocks are joined, not stringified."""
@@ -1139,12 +1137,10 @@ class TestFilesystemMiddleware:
 
         assert isinstance(result, Command)
         file_content = result.update["files"]["/large_tool_results/test_multi"]["content"]
-        # v1 format stores content as list[str]
-        assert isinstance(file_content, list)
-        joined = "\n".join(file_content)
-        assert joined.startswith("First block")
-        assert "Second block" in joined
-        assert not joined.startswith("[{")
+        assert isinstance(file_content, str)
+        assert file_content.startswith("First block")
+        assert "Second block" in file_content
+        assert not file_content.startswith("[{")
 
     def test_mixed_content_blocks_preserves_non_text(self):
         """Test that mixed content blocks (text + image) evict text but preserve image blocks."""
@@ -1162,8 +1158,8 @@ class TestFilesystemMiddleware:
 
         assert isinstance(result, Command)
         file_content = result.update["files"]["/large_tool_results/test_mixed"]["content"]
-        file_text = "\n".join(file_content)
-        assert file_text.startswith("Some text")
+        assert isinstance(file_content, str)
+        assert file_content.startswith("Some text")
 
         returned_content = result.update["messages"][0].content
         assert isinstance(returned_content, list)

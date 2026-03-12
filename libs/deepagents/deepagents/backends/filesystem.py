@@ -313,7 +313,7 @@ class FilesystemBackend(BackendProtocol):
         resolved_path = self._resolve_path(file_path)
 
         if not resolved_path.exists() or not resolved_path.is_file():
-            return ReadResult(error=f"File '{file_path}' not found")
+            return self._version_read_result(ReadResult(error=f"File '{file_path}' not found"))
 
         try:
             fd = os.open(resolved_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
@@ -321,27 +321,27 @@ class FilesystemBackend(BackendProtocol):
                 with os.fdopen(fd, "rb") as f:
                     raw = f.read()
                 encoded = base64.standard_b64encode(raw).decode("ascii")
-                return ReadResult(file_data=create_file_data(encoded, encoding="base64"))
+                return self._version_read_result(ReadResult(file_data=create_file_data(encoded, encoding="base64")))
 
             with os.fdopen(fd, "r", encoding="utf-8") as f:
                 content = f.read()
 
             empty_msg = check_empty_content(content)
             if empty_msg:
-                return ReadResult(file_data=create_file_data(empty_msg))
+                return self._version_read_result(ReadResult(file_data=create_file_data(empty_msg)))
 
             lines = content.splitlines()
             start_idx = offset
             end_idx = min(start_idx + limit, len(lines))
 
             if start_idx >= len(lines):
-                return ReadResult(error=f"Line offset {offset} exceeds file length ({len(lines)} lines)")
+                return self._version_read_result(ReadResult(error=f"Line offset {offset} exceeds file length ({len(lines)} lines)"))
 
             selected_lines = lines[start_idx:end_idx]
             formatted = format_content_with_line_numbers(selected_lines, start_line=start_idx + 1)
-            return ReadResult(file_data=create_file_data(formatted))
+            return self._version_read_result(ReadResult(file_data=create_file_data(formatted)))
         except OSError as e:
-            return ReadResult(error=f"Error reading file '{file_path}': {e}")
+            return self._version_read_result(ReadResult(error=f"Error reading file '{file_path}': {e}"))
 
     def write(
         self,

@@ -114,7 +114,7 @@ class StoreBackend(BackendProtocol):
         runtime: "ToolRuntime",
         *,
         namespace: NamespaceFactory | None = None,
-        file_format: FileFormat = "v1",
+        file_format: FileFormat = "v2",
     ) -> None:
         r"""Initialize StoreBackend with runtime.
 
@@ -130,17 +130,18 @@ class StoreBackend(BackendProtocol):
                 !!!! Warning:
                     This API is subject to change in a minor version.
 
-            file_format: Storage format version. `"v1"` (default) stores
-                content as `list[str]` (lines split on `\\n`) without an
-                `encoding` field.  `"v2"` stores content as a plain `str`
-                with an `encoding` field.
+            file_format: Storage and read format version. `"v2"` (default)
+                stores content as a plain `str` with an `encoding` field and
+                `read()` returns `ReadResult`.  `"v1"` stores content as
+                `list[str]` (lines split on `\\n`) without an `encoding`
+                field and `read()` returns a plain `str`.
 
         Example:
                     namespace=lambda ctx: ("filesystem", ctx.runtime.context.user_id)
         """
         self.runtime = runtime
         self._namespace = namespace
-        self._file_format = file_format
+        self.file_format = file_format
 
     def _get_store(self) -> BaseStore:
         """Get the store instance.
@@ -271,7 +272,7 @@ class StoreBackend(BackendProtocol):
         Returns:
             Dictionary with content, encoding, created_at, and modified_at fields.
         """
-        if self._file_format == "v1":
+        if self.file_format == "v1":
             return _to_legacy_file_data(file_data)
         return {
             "content": file_data["content"],
@@ -408,23 +409,25 @@ class StoreBackend(BackendProtocol):
         item: Item | None = store.get(namespace, file_path)
 
         if item is None:
-            return ReadResult(error=f"File '{file_path}' not found")
+            return self._version_read_result(ReadResult(error=f"File '{file_path}' not found"))
 
         try:
             file_data = self._convert_store_item_to_file_data(item)
         except ValueError as e:
-            return ReadResult(error=str(e))
+            return self._version_read_result(ReadResult(error=str(e)))
 
         if _get_file_type(file_path) != "text":
-            return ReadResult(file_data=file_data)
+            return self._version_read_result(ReadResult(file_data=file_data))
 
         formatted = format_read_response(file_data, offset, limit)
-        return ReadResult(
-            file_data=FileData(
-                content=formatted,
-                encoding=file_data.get("encoding", "utf-8"),
-                created_at=file_data.get("created_at", ""),
-                modified_at=file_data.get("modified_at", ""),
+        return self._version_read_result(
+            ReadResult(
+                file_data=FileData(
+                    content=formatted,
+                    encoding=file_data.get("encoding", "utf-8"),
+                    created_at=file_data.get("created_at", ""),
+                    modified_at=file_data.get("modified_at", ""),
+                )
             )
         )
 
@@ -443,23 +446,25 @@ class StoreBackend(BackendProtocol):
         item: Item | None = await store.aget(namespace, file_path)
 
         if item is None:
-            return ReadResult(error=f"File '{file_path}' not found")
+            return self._version_read_result(ReadResult(error=f"File '{file_path}' not found"))
 
         try:
             file_data = self._convert_store_item_to_file_data(item)
         except ValueError as e:
-            return ReadResult(error=str(e))
+            return self._version_read_result(ReadResult(error=str(e)))
 
         if _get_file_type(file_path) != "text":
-            return ReadResult(file_data=file_data)
+            return self._version_read_result(ReadResult(file_data=file_data))
 
         formatted = format_read_response(file_data, offset, limit)
-        return ReadResult(
-            file_data=FileData(
-                content=formatted,
-                encoding=file_data.get("encoding", "utf-8"),
-                created_at=file_data.get("created_at", ""),
-                modified_at=file_data.get("modified_at", ""),
+        return self._version_read_result(
+            ReadResult(
+                file_data=FileData(
+                    content=formatted,
+                    encoding=file_data.get("encoding", "utf-8"),
+                    created_at=file_data.get("created_at", ""),
+                    modified_at=file_data.get("modified_at", ""),
+                )
             )
         )
 

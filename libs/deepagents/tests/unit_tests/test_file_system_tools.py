@@ -64,9 +64,9 @@ def test_parallel_write_file_calls_trigger_list_reducer() -> None:
     assert "/test1.txt" in result["files"], "File /test1.txt should exist in the final state"
     assert "/test2.txt" in result["files"], "File /test2.txt should exist in the final state"
 
-    # Verify the content of the files (v1 format stores content as list[str])
-    assert result["files"]["/test1.txt"]["content"] == ["hello"], "Content of /test1.txt should be ['hello']"
-    assert result["files"]["/test2.txt"]["content"] == ["world"], "Content of /test2.txt should be ['world']"
+    # v2 format stores content as str
+    assert result["files"]["/test1.txt"]["content"] == "hello", "Content of /test1.txt should be 'hello'"
+    assert result["files"]["/test2.txt"]["content"] == "world", "Content of /test2.txt should be 'world'"
 
 
 def test_edit_file_single_replacement() -> None:
@@ -118,12 +118,11 @@ def test_edit_file_single_replacement() -> None:
 
     # Verify the file was edited correctly
     assert "/code.py" in result["files"], "File /code.py should exist"
-    # Content is stored as list[str] in v1 format (default)
+    # v2 format stores content as str
     full_content = result["files"]["/code.py"]["content"]
-    assert isinstance(full_content, list)
-    joined = "\n".join(full_content)
-    assert "hello universe" in joined, f"Content should be updated, got: {joined}"
-    assert "hello world" not in joined, "Old content should be replaced"
+    assert isinstance(full_content, str)
+    assert "hello universe" in full_content, f"Content should be updated, got: {full_content}"
+    assert "hello world" not in full_content, "Old content should be replaced"
 
 
 def test_edit_file_replace_all() -> None:
@@ -180,7 +179,7 @@ def test_edit_file_replace_all() -> None:
     # Verify all occurrences were replaced
     assert "/data.txt" in result["files"], "File /data.txt should exist"
     content = result["files"]["/data.txt"]["content"]
-    assert content == ["qux bar qux baz qux"], "All occurrences of 'foo' should be replaced with 'qux'"
+    assert content == "qux bar qux baz qux", "All occurrences of 'foo' should be replaced with 'qux'"
 
 
 def test_edit_file_nonexistent_file() -> None:

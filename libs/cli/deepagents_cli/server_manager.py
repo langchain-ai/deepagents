@@ -144,7 +144,12 @@ async def create_checkpointer():
     """
     from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
-    db_path = os.environ["DA_SERVER_DB_PATH"]
+    db_path = os.environ.get("DA_SERVER_DB_PATH")
+    if not db_path:
+        raise RuntimeError(
+            "DA_SERVER_DB_PATH not set. The CLI must set this env var before "
+            "server startup."
+        )
     async with AsyncSqliteSaver.from_conn_string(db_path) as saver:
         yield saver
 '''

@@ -33,7 +33,8 @@ def _build_tools(
 ) -> tuple[list[Any], list[Any] | None]:
     """Assemble the tool list based on server config.
 
-    Loads built-in tools unconditionally and MCP tools when enabled.
+    Loads built-in tools (conditionally including web search when Tavily is
+    available) and MCP tools when enabled.
 
     MCP discovery runs synchronously via `asyncio.run` because this function is
     called during module-level graph construction (before the server's async

@@ -784,7 +784,7 @@ class DeepAgentsApp(App):
         # This check must come first because _lc_thread_id and _agent are
         # always set (even for brand-new sessions), so an elif after the
         # thread-history branch would never execute.
-        # When connecting, defer until _on_server_ready fires.
+        # When connecting, defer until on_deep_agents_app_server_ready fires.
         if not self._connecting:
             if self._initial_prompt and self._initial_prompt.strip():
                 prompt = self._initial_prompt
@@ -853,9 +853,20 @@ class DeepAgentsApp(App):
 
         agent, server_proc, _ = server_result
 
+        # Assign immediately so the finally block in run_textual_app can
+        # clean up the server even if the ServerReady message is never
+        # processed (e.g. user quits during startup).
+        self._server_proc = server_proc
+
         mcp_info = None
         if len(results) > 1 and not isinstance(results[1], BaseException):
             mcp_info = results[1]
+        elif len(results) > 1 and isinstance(results[1], BaseException):
+            logger.warning(
+                "MCP metadata preload failed: %s",
+                results[1],
+                exc_info=results[1],
+            )
 
         self.post_message(
             self.ServerReady(
@@ -2628,10 +2639,13 @@ class DeepAgentsApp(App):
         try:
             from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
+            from deepagents_cli.remote_client import _to_uuid
             from deepagents_cli.sessions import get_db_path
 
             db_path = str(get_db_path())
-            config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
+            config: RunnableConfig = {
+                "configurable": {"thread_id": _to_uuid(thread_id)}
+            }
             async with AsyncSqliteSaver.from_conn_string(db_path) as saver:
                 tup = await saver.aget_tuple(config)
                 if tup and tup.checkpoint:
@@ -3500,7 +3514,8 @@ class DeepAgentsApp(App):
 
         self._model_switching = True
         try:
-            # Strip leading colon — treat ":claude-opus-4-6" as "claude-opus-4-6"
+            # Defensively strip leading colon in case of empty provider,
+            # treat ":claude-opus-4-6" as "claude-opus-4-6"
             model_spec = model_spec.removeprefix(":")
 
             if not self._remote_agent():

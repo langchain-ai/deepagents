@@ -30,13 +30,16 @@ class ProjectContext:
     project_root: Path | None = None
 
     def __post_init__(self) -> None:
-        """Validate that `user_cwd` is an absolute path.
+        """Validate that path fields are absolute.
 
         Raises:
-            ValueError: If `user_cwd` is not absolute.
+            ValueError: If `user_cwd` or `project_root` is not absolute.
         """
         if not self.user_cwd.is_absolute():
             msg = f"user_cwd must be absolute, got {self.user_cwd!r}"
+            raise ValueError(msg)
+        if self.project_root is not None and not self.project_root.is_absolute():
+            msg = f"project_root must be absolute, got {self.project_root!r}"
             raise ValueError(msg)
 
     @classmethod

@@ -791,7 +791,7 @@ async def run_non_interactive(
                 )
             )
         except Exception:
-            logger.debug("MCP metadata preload failed", exc_info=True)
+            logger.warning("MCP metadata preload task creation failed", exc_info=True)
 
     try:
         enable_shell = bool(settings.shell_allow_list)
@@ -830,7 +830,7 @@ async def run_non_interactive(
                                 f"[green]✓ Loaded {tool_count} {label}[/green]"
                             )
                 except Exception:
-                    logger.debug("MCP metadata preload failed", exc_info=True)
+                    logger.warning("MCP metadata preload failed", exc_info=True)
 
             if not quiet:
                 console.print("[green]✓ Server ready[/green]")

@@ -24,6 +24,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_DEFAULT_ASSISTANT_ID = "agent"
+
 
 def _read_env_bool(suffix: str, *, default: bool = False) -> bool:
     """Read a `DA_SERVER_*` boolean from the environment.
@@ -110,7 +112,7 @@ class ServerConfig:
 
     model: str | None = None
     model_params: dict[str, Any] | None = None
-    assistant_id: str = "agent"
+    assistant_id: str = _DEFAULT_ASSISTANT_ID
     system_prompt: str | None = None
     auto_approve: bool = False
     interactive: bool = True
@@ -191,7 +193,7 @@ class ServerConfig:
         return cls(
             model=_read_env_str("MODEL"),
             model_params=_read_env_json("MODEL_PARAMS"),
-            assistant_id=_read_env_str("ASSISTANT_ID") or "agent",
+            assistant_id=_read_env_str("ASSISTANT_ID") or _DEFAULT_ASSISTANT_ID,
             system_prompt=_read_env_str("SYSTEM_PROMPT"),
             auto_approve=_read_env_bool("AUTO_APPROVE"),
             interactive=_read_env_bool("INTERACTIVE", default=True),

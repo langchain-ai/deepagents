@@ -204,7 +204,7 @@ async def wait_for_server_healthy(
                     return
                 last_status = resp.status_code
                 logger.debug("Health check returned status %d", resp.status_code)
-        except (httpx.ConnectError, httpx.TimeoutException, OSError) as exc:
+        except (httpx.TransportError, OSError) as exc:
             logger.debug("Health check attempt failed: %s", exc)
             last_exc = exc
 
@@ -461,7 +461,7 @@ class ServerProcess:
             import shutil
 
             try:
-                shutil.rmtree(self.config_dir, ignore_errors=True)
+                shutil.rmtree(self.config_dir)
             except OSError:
                 logger.debug(
                     "Failed to clean up config dir %s", self.config_dir, exc_info=True

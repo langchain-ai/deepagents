@@ -86,13 +86,13 @@ class ModelSpec:
 
     @classmethod
     def try_parse(cls, spec: str) -> ModelSpec | None:
-        """Try to parse a model specification, returning None on failure.
+        """Non-raising variant of `parse`.
 
         Args:
-            spec: Model specification to parse.
+            spec: Model specification in `provider:model` format.
 
         Returns:
-            Parsed ModelSpec if valid, None otherwise.
+            Parsed `ModelSpec`, or `None` when *spec* is not valid.
         """
         try:
             return cls.parse(spec)

@@ -576,8 +576,8 @@ async def run_textual_cli_async(
 ) -> "AppResult":
     """Run the Textual CLI interface (async version).
 
-    Starts a LangGraph server in a subprocess and connects the TUI to it
-    via the `langgraph-sdk` client.
+    Starts a LangGraph server in a subprocess and connects the TUI to it via the
+    `langgraph-sdk` client.
 
     Args:
         assistant_id: Agent identifier for memory storage

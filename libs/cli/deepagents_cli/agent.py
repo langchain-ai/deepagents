@@ -607,8 +607,10 @@ def create_cli_agent(
         enable_ask_user: Enable the `ask_user` tool for interactive questioning.
         checkpointer: Optional checkpointer for session persistence.
 
-            If `None`, uses `InMemorySaver`. Pass `False` to compile without any
-            checkpointer (e.g., when the platform manages persistence).
+            If `None`, uses `InMemorySaver`.
+
+            Pass `False` to compile without any checkpointer (e.g., when the
+            platform manages persistence).
         mcp_server_info: MCP server metadata to surface in the system prompt.
         cwd: Override the working directory for the agent's filesystem backend
             and system prompt.

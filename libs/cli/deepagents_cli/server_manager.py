@@ -1,6 +1,7 @@
 """Server lifecycle orchestration for the CLI.
 
 Provides `start_server_and_get_agent` which handles the full flow of:
+
 1. Setting up environment variables for the server graph
 2. Generating `langgraph.json`
 3. Copying the server graph entry point
@@ -90,7 +91,7 @@ async def start_server_and_get_agent(
         port: Server port.
 
     Returns:
-        Tuple of (remote_agent, server_process, mcp_session_manager).
+        Tuple of `(remote_agent, server_process, mcp_session_manager)`.
     """
     from deepagents_cli.remote_client import RemoteAgent
     from deepagents_cli.server import ServerProcess, generate_langgraph_json
@@ -159,8 +160,8 @@ def _set_server_env(
 ) -> None:
     """Set environment variables for the server graph process.
 
-    The server graph runs in a separate Python interpreter, so env vars
-    are the communication channel for CLI configuration.
+    The server graph runs in a separate Python interpreter, so env vars are the
+    communication channel for CLI configuration.
 
     Args:
         project_context: Explicit user/project path context for the server.
@@ -228,8 +229,8 @@ def _set_server_env(
 def _write_checkpointer(work_dir: Path) -> None:
     """Write a checkpointer module that persists to ~/.deepagents/sessions.db.
 
-    This makes the LangGraph server store checkpoints on disk so thread
-    history survives server restarts and `/threads` / `-r` work correctly.
+    This makes the LangGraph server store checkpoints on disk so thread history
+    survives server restarts and `/threads` / `-r` work correctly.
 
     Args:
         work_dir: Server working directory.

@@ -200,8 +200,8 @@ def discover_mcp_configs(
     2. `<project-root>/.deepagents/.mcp.json` (project subdir)
     3. `<project-root>/.mcp.json` (project root, Claude Code compat)
 
-    Project root is determined from `project_context` when provided,
-    otherwise by `find_project_root()`, falling back to CWD.
+    Project root is determined from `project_context` when provided, otherwise
+    by `find_project_root()`, falling back to CWD.
 
     Returns:
         List of existing config file paths, ordered lowest-to-highest precedence.

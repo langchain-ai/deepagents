@@ -1,7 +1,7 @@
 """LangGraph server lifecycle management for the CLI.
 
-Handles starting/stopping a `langgraph dev` server process and generating
-the required `langgraph.json` configuration file.
+Handles starting/stopping a `langgraph dev` server process and generatin the
+required `langgraph.json` configuration file.
 """
 
 from __future__ import annotations
@@ -107,9 +107,9 @@ def generate_langgraph_json(
         output_dir: Directory to write the config file.
         graph_ref: Python module:variable reference to the graph.
         env_file: Optional path to an env file.
-        checkpointer_path: Import path to an async context manager
-            that yields a `BaseCheckpointSaver`. When set, the server
-            persists checkpoint data to disk instead of in-memory.
+        checkpointer_path: Import path to an async context manager that yields a
+            `BaseCheckpointSaver`. When set, the server persists checkpoint data
+            to disk instead of in-memory.
 
     Returns:
         Path to the generated config file.

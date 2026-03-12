@@ -1,8 +1,8 @@
 """Remote agent client using the LangGraph SDK.
 
-Provides `RemoteAgent` which wraps the `langgraph-sdk` client to
-communicate with a LangGraph server over HTTP+SSE, matching the
-interface used by the CLI's streaming and state management code.
+Provides `RemoteAgent` which wraps the `langgraph-sdk` client to communicate
+with a LangGraph server over HTTP+SSE, matching the interface used by the CLI's
+streaming and state management code.
 """
 
 from __future__ import annotations
@@ -42,9 +42,8 @@ def _to_uuid(short_id: str) -> str:
     """Convert a thread ID string to a valid UUID string.
 
     Args:
-        short_id: Thread ID (typically a UUID7 from `generate_thread_id`,
-            but shorter non-UUID strings are also accepted and converted
-            via uuid5).
+        short_id: Thread ID (typically a UUID7 from `generate_thread_id`, but
+            shorter non-UUID strings are also accepted and converted via uuid5).
 
     Returns:
         Valid UUID string. Already-valid UUIDs are returned as-is.
@@ -178,8 +177,8 @@ class RemoteAgent:
         """Get the current state of a thread.
 
         Uses `_ensure_thread` so that threads persisted in the SQLite
-        checkpointer (from a previous server session) are registered in
-        the server's in-memory thread registry before reading state.
+        checkpointer (from a previous server session) are registered in the
+        server's in-memory thread registry before reading state.
 
         Args:
             config: Config with `configurable.thread_id`.
@@ -293,8 +292,8 @@ class RemoteAgent:
 class _StateWrapper:
     """Wraps a server thread state dict to provide attribute access.
 
-    Makes the server response compatible with code that accesses
-    `state.values`, `state.next`, etc.
+    Makes the server response compatible with code that accesses `state.values`,
+    `state.next`, etc.
     """
 
     def __init__(self, state: dict[str, Any]) -> None:
@@ -315,7 +314,7 @@ class _StateWrapper:
 
 
 def _is_command(input: Any) -> bool:  # noqa: A002, ANN401
-    """Check if input is a LangGraph Command object.
+    """Check if input is a LangGraph `Command` object.
 
     Args:
         input: The input to check.
@@ -332,7 +331,7 @@ def _is_command(input: Any) -> bool:  # noqa: A002, ANN401
 
 
 def _command_to_dict(cmd: Any) -> dict[str, Any]:  # noqa: ANN401
-    """Convert a LangGraph Command to a dict for the server API.
+    """Convert a LangGraph `Command` to a dict for the server API.
 
     Args:
         cmd: A `Command` instance.
@@ -522,8 +521,8 @@ class _StreamConverter:
         """Extract messages from an `updates` event as a fallback.
 
         The `updates` event contains node outputs like
-        `{"agent": {"messages": [...]}}`. This extracts any messages
-        that haven't already been seen via `messages/partial` or
+        `{"agent": {"messages": [...]}}`. This extracts any messages that
+        haven't already been seen via `messages/partial` or
         `messages/complete` events.
 
         Args:
@@ -586,8 +585,8 @@ def _compute_tool_call_deltas(
 
     Uses `partial_json` from provider-specific content blocks (e.g.,
     Anthropic `tool_use`) when available, falling back to serialized
-    `tool_calls.args`. Computes string deltas so the textual adapter
-    receives incremental fragments for `tool_call_chunk` processing.
+    `tool_calls.args`. Computes string deltas so the textual adapter receives
+    incremental fragments for `tool_call_chunk` processing.
 
     Args:
         tool_calls: Accumulated tool calls from the server.

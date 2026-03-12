@@ -3475,8 +3475,9 @@ async def run_textual_app(
         cwd: Current working directory to display
         thread_id: Optional thread ID for session persistence
         initial_prompt: Optional prompt to auto-submit when session starts
-        checkpointer: Checkpointer for session persistence. Retained for
-            compatibility with direct app construction.
+        checkpointer: Checkpointer for session persistence.
+
+            Retained for compatibility with direct app construction.
         tools: Tools used to create the agent.
 
             Retained for compatibility with direct app construction.

@@ -1,12 +1,12 @@
 """Server-side graph entry point for `langgraph dev`.
 
-This module is referenced by the generated `langgraph.json` and exposes
-the CLI agent graph as a module-level variable that the LangGraph server
-can load and serve.
+This module is referenced by the generated `langgraph.json` and exposes the CLI
+agent graph as a module-level variable that the LangGraph server can load
+and serve.
 
-The graph is created lazily on first access via `make_graph()`, which
-reads configuration from environment variables set by the CLI before
-starting the server process.
+The graph is created lazily on first access via `make_graph()`, which reads
+configuration from environment variables set by the CLI before starting the
+server process.
 """
 
 from __future__ import annotations

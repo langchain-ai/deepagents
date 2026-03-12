@@ -136,8 +136,8 @@ def test_store_backend_intercept_large_tool_result():
 
     stored_content = rt.store.get(("filesystem",), "/large_tool_results/test_456")
     assert stored_content is not None
-    # v2 format stores content as str
-    assert stored_content.value["content"] == large_content
+    # v1 format stores content as list[str]
+    assert stored_content.value["content"] == [large_content]
 
 
 @dataclass

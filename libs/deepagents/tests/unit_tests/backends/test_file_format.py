@@ -367,9 +367,10 @@ def test_store_write_as_list_readable():
 
     be.write("/file.txt", "aaa\nbbb")
     result = be.read("/file.txt")
-    assert isinstance(result, str)
-    assert "aaa" in result
-    assert "bbb" in result
+    assert isinstance(result, ReadResult)
+    assert result.file_data is not None
+    assert "aaa" in result.file_data["content"]
+    assert "bbb" in result.file_data["content"]
 
 
 # ---------------------------------------------------------------------------

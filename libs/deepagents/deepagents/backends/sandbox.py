@@ -304,12 +304,12 @@ except PermissionError:
         try:
             data = json.loads(output)
         except json.JSONDecodeError:
-            return self._version_read_result(ReadResult(error=f"File '{file_path}' not found"))
+            return ReadResult(error=f"File '{file_path}' not found")
 
         if "error" in data:
-            return self._version_read_result(ReadResult(error=data["error"]))
+            return ReadResult(error=data["error"])
 
-        return self._version_read_result(ReadResult(file_data=create_file_data(data["content"], encoding=data.get("encoding", "utf-8"))))
+        return ReadResult(file_data=create_file_data(data["content"], encoding=data.get("encoding", "utf-8")))
 
     def write(
         self,

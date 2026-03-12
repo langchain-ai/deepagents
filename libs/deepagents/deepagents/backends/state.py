@@ -47,27 +47,26 @@ class StateBackend(BackendProtocol):
         self,
         runtime: "ToolRuntime",
         *,
-        file_format: FileFormat = "v2",
+        file_format: FileFormat = "v1",
     ) -> None:
         r"""Initialize StateBackend with runtime.
 
         Args:
             runtime: The ToolRuntime instance providing store access and configuration.
-            file_format: Storage and read format version. `"v2"` (default)
-                stores content as a plain `str` with an `encoding` field and
-                `read()` returns `ReadResult`.  `"v1"` stores content as
-                `list[str]` (lines split on `\\n`) without an `encoding`
-                field and `read()` returns a plain `str`.
+            file_format: Storage format version. `"v1"` (default) stores
+                content as `list[str]` (lines split on `\\n`) without an
+                `encoding` field.  `"v2"` stores content as a plain `str`
+                with an `encoding` field.
         """
         self.runtime = runtime
-        self.file_format = file_format
+        self._file_format = file_format
 
     def _prepare_for_storage(self, file_data: FileData) -> dict[str, Any]:
         """Convert FileData to the format used for state storage.
 
         When `file_format="v1"`, returns the legacy format.
         """
-        if self.file_format == "v1":
+        if self._file_format == "v1":
             return _to_legacy_file_data(file_data)
         return {**file_data}
 
@@ -142,20 +141,18 @@ class StateBackend(BackendProtocol):
         file_data = files.get(file_path)
 
         if file_data is None:
-            return self._version_read_result(ReadResult(error=f"File '{file_path}' not found"))
+            return ReadResult(error=f"File '{file_path}' not found")
 
         if _get_file_type(file_path) != "text":
-            return self._version_read_result(ReadResult(file_data=file_data))
+            return ReadResult(file_data=file_data)
 
         formatted = format_read_response(file_data, offset, limit)
-        return self._version_read_result(
-            ReadResult(
-                file_data=FileData(
-                    content=formatted,
-                    encoding=file_data.get("encoding", "utf-8"),
-                    created_at=file_data.get("created_at", ""),
-                    modified_at=file_data.get("modified_at", ""),
-                )
+        return ReadResult(
+            file_data=FileData(
+                content=formatted,
+                encoding=file_data.get("encoding", "utf-8"),
+                created_at=file_data.get("created_at", ""),
+                modified_at=file_data.get("modified_at", ""),
             )
         )
 

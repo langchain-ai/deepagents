@@ -72,9 +72,10 @@ class TestV1StyleWritesStateBackend:
         be2 = StateBackend(rt2, file_format="v1")
 
         read_result = be2.read("/project/main.py")
-        assert isinstance(read_result, str)
-        assert "import os" in read_result
-        assert "print('hello')" in read_result
+        assert isinstance(read_result, ReadResult)
+        assert read_result.file_data is not None
+        assert "import os" in read_result.file_data["content"]
+        assert "print('hello')" in read_result.file_data["content"]
 
     def test_write_edit_read_lifecycle(self):
         """Write → edit → read cycle works entirely in v1 mode."""
@@ -102,9 +103,10 @@ class TestV1StyleWritesStateBackend:
         be3 = StateBackend(rt3, file_format="v1")
 
         read_result = be3.read("/app.py")
-        assert isinstance(read_result, str)
-        assert "'hello'" in read_result
-        assert "'hi'" not in read_result
+        assert isinstance(read_result, ReadResult)
+        assert read_result.file_data is not None
+        assert "'hello'" in read_result.file_data["content"]
+        assert "'hi'" not in read_result.file_data["content"]
 
     def test_grep_works_with_v1_data(self):
         """Grep can search through v1-formatted file data."""
@@ -202,9 +204,10 @@ class TestV1StyleWritesStoreBackend:
             warnings.simplefilter("always")
             read_result = be.read("/project/main.py")
 
-        assert isinstance(read_result, str)
-        assert "import os" in read_result
-        assert "print('hello')" in read_result
+        assert isinstance(read_result, ReadResult)
+        assert read_result.file_data is not None
+        assert "import os" in read_result.file_data["content"]
+        assert "print('hello')" in read_result.file_data["content"]
 
     def test_write_edit_read_lifecycle(self):
         """Write → edit → read cycle works entirely in v1 mode."""
@@ -226,9 +229,10 @@ class TestV1StyleWritesStoreBackend:
             warnings.simplefilter("always")
             read_result = be.read("/app.py")
 
-        assert isinstance(read_result, str)
-        assert "'hello'" in read_result
-        assert "'hi'" not in read_result
+        assert isinstance(read_result, ReadResult)
+        assert read_result.file_data is not None
+        assert "'hello'" in read_result.file_data["content"]
+        assert "'hi'" not in read_result.file_data["content"]
 
     def test_grep_works_with_v1_data(self):
         """Grep can search through v1-formatted store data."""

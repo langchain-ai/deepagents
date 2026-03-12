@@ -224,32 +224,6 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         `DeprecationWarning`.
     """
 
-    file_format: FileFormat = "v2"
-    """Storage and read format version.
-
-    - `"v1"`: Legacy — `read()` returns a plain `str` (formatted text with
-      line numbers). Storage uses `list[str]` content without `encoding`.
-    - `"v2"`: Current — `read()` returns a `ReadResult` dataclass. Storage
-      uses plain `str` content with an `encoding` field.
-    """
-
-    def _version_read_result(self, result: ReadResult) -> ReadResult:
-        """Apply file_format versioning to a ReadResult.
-
-        When `file_format="v1"`, returns the formatted content string (or
-        error string) cast to `ReadResult`. The type annotation is wrong on
-        purpose — v1 callers expect `str`.
-
-        When `file_format="v2"`, returns the ReadResult unchanged.
-        """
-        if self.file_format != "v1":
-            return result
-        if result.error is not None:
-            return result.error  # type: ignore[return-value]
-        if result.file_data is not None:
-            return result.file_data["content"]  # type: ignore[return-value]
-        return result
-
     def ls_info(self, path: str) -> list["FileInfo"]:
         """List all files in a directory with metadata.
 

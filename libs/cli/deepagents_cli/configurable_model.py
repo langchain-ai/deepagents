@@ -40,6 +40,28 @@ class CLIContext(TypedDict, total=False):
     into `model_settings`."""
 
 
+def _is_anthropic_model(model: object) -> bool:
+    """Check whether a resolved model is an Anthropic `ChatAnthropic` instance.
+
+    Returns `False` if `langchain-anthropic` is not installed.
+
+    Returns:
+        `True` if the model is a `ChatAnthropic` instance.
+    """
+    try:
+        from langchain_anthropic import ChatAnthropic
+    except ImportError:
+        logger.debug("langchain_anthropic not installed; assuming non-Anthropic model")
+        return False
+    return isinstance(model, ChatAnthropic)
+
+
+_ANTHROPIC_ONLY_SETTINGS: set[str] = {"cache_control"}
+"""Keys injected by Anthropic-specific middleware (e.g.
+`AnthropicPromptCachingMiddleware`) that are not accepted by other providers and
+must be stripped on cross-provider swap."""
+
+
 def _apply_overrides(request: ModelRequest) -> ModelRequest:
     """Apply model/param overrides from `CLIContext` on the runtime.
 
@@ -58,23 +80,41 @@ def _apply_overrides(request: ModelRequest) -> ModelRequest:
     overrides: dict[str, Any] = {}
 
     # Model swap
+    new_model = None
     model = ctx.get("model")
     if model and not model_matches_spec(request.model, model):
         logger.debug("Overriding model to %s", model)
-        overrides["model"] = resolve_model(model)
+        new_model = resolve_model(model)
+        overrides["model"] = new_model
 
     # Param merge
     model_params = ctx.get("model_params", {})
     if model_params:
         overrides["model_settings"] = {**request.model_settings, **model_params}
 
-    return request.override(**overrides) if overrides else request
+    if not overrides:
+        return request
+
+    # When switching away from Anthropic, strip provider-specific settings
+    # that would cause errors on other providers (e.g. cache_control passed
+    # to the OpenAI SDK raises TypeError).
+    if new_model is not None and not _is_anthropic_model(new_model):
+        settings = overrides.get("model_settings", request.model_settings)
+        dropped = settings.keys() & _ANTHROPIC_ONLY_SETTINGS
+        if dropped:
+            logger.debug(
+                "Stripped Anthropic-only settings %s for non-Anthropic model",
+                dropped,
+            )
+            overrides["model_settings"] = {
+                k: v for k, v in settings.items() if k not in dropped
+            }
+
+    return request.override(**overrides)
 
 
 class ConfigurableModelMiddleware(AgentMiddleware):
     """Swap the model or per-call settings from `runtime.context`."""
-
-    _deepagents_prepend = True
 
     def wrap_model_call(  # noqa: PLR6301
         self,

@@ -1,6 +1,6 @@
 """Tests for ConfigurableModelMiddleware."""
 
-import asyncio
+import sys
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import MagicMock, patch
@@ -9,7 +9,11 @@ from langchain.agents.middleware.types import ModelRequest, ModelResponse
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 
-from deepagents_cli.configurable_model import CLIContext, ConfigurableModelMiddleware
+from deepagents_cli.configurable_model import (
+    CLIContext,
+    ConfigurableModelMiddleware,
+    _is_anthropic_model,
+)
 
 
 def _make_model(name: str) -> MagicMock:
@@ -160,6 +164,189 @@ class TestModelSwap:
             await _mw.awrap_model_call(request, handler)
 
         assert captured[0].model is override
+
+
+class TestAnthropicSettingsStripped:
+    """Anthropic-specific model_settings stripped on cross-provider swap.
+
+    When swapping from Anthropic to a non-Anthropic model, provider-specific
+    settings like `cache_control` must be stripped to avoid TypeError on the
+    target provider's API (e.g. OpenAI/Groq).
+    """
+
+    def test_cache_control_stripped_on_swap(self) -> None:
+        override = _make_model("gpt-4o")
+        request = _make_request(
+            _make_model("claude-sonnet-4-6"),
+            context=CLIContext(model="openai:gpt-4o"),
+            model_settings={"cache_control": {"type": "ephemeral", "ttl": "5m"}},
+        )
+        captured: list[ModelRequest] = []
+        with (
+            patch(
+                "deepagents_cli.configurable_model.resolve_model", return_value=override
+            ),
+            patch(
+                "deepagents_cli.configurable_model._is_anthropic_model",
+                return_value=False,
+            ),
+        ):
+            _mw.wrap_model_call(
+                request, lambda r: (captured.append(r), _make_response())[1]
+            )
+
+        assert "cache_control" not in captured[0].model_settings
+
+    def test_cache_control_preserved_for_anthropic_swap(self) -> None:
+        override = _make_model("claude-opus-4-6")
+        request = _make_request(
+            _make_model("claude-sonnet-4-6"),
+            context=CLIContext(model="anthropic:claude-opus-4-6"),
+            model_settings={"cache_control": {"type": "ephemeral", "ttl": "5m"}},
+        )
+        captured: list[ModelRequest] = []
+        with (
+            patch(
+                "deepagents_cli.configurable_model.resolve_model", return_value=override
+            ),
+            patch(
+                "deepagents_cli.configurable_model._is_anthropic_model",
+                return_value=True,
+            ),
+        ):
+            _mw.wrap_model_call(
+                request, lambda r: (captured.append(r), _make_response())[1]
+            )
+
+        assert captured[0].model_settings["cache_control"] == {
+            "type": "ephemeral",
+            "ttl": "5m",
+        }
+
+    def test_other_settings_preserved_on_swap(self) -> None:
+        override = _make_model("gpt-4o")
+        request = _make_request(
+            _make_model("claude-sonnet-4-6"),
+            context=CLIContext(model="openai:gpt-4o"),
+            model_settings={
+                "cache_control": {"type": "ephemeral"},
+                "max_tokens": 2048,
+            },
+        )
+        captured: list[ModelRequest] = []
+        with (
+            patch(
+                "deepagents_cli.configurable_model.resolve_model", return_value=override
+            ),
+            patch(
+                "deepagents_cli.configurable_model._is_anthropic_model",
+                return_value=False,
+            ),
+        ):
+            _mw.wrap_model_call(
+                request, lambda r: (captured.append(r), _make_response())[1]
+            )
+
+        assert captured[0].model_settings == {"max_tokens": 2048}
+
+    async def test_async_cache_control_stripped(self) -> None:
+        override = _make_model("gpt-4o")
+        request = _make_request(
+            _make_model("claude-sonnet-4-6"),
+            context=CLIContext(model="openai:gpt-4o"),
+            model_settings={"cache_control": {"type": "ephemeral"}},
+        )
+        captured: list[ModelRequest] = []
+
+        async def handler(r: ModelRequest) -> ModelResponse[Any]:  # noqa: RUF029
+            captured.append(r)
+            return _make_response()
+
+        with (
+            patch(
+                "deepagents_cli.configurable_model.resolve_model", return_value=override
+            ),
+            patch(
+                "deepagents_cli.configurable_model._is_anthropic_model",
+                return_value=False,
+            ),
+        ):
+            await _mw.awrap_model_call(request, handler)
+
+        assert "cache_control" not in captured[0].model_settings
+
+    def test_swap_with_model_params_and_cache_control(self) -> None:
+        """Stripping operates on the merged settings, not the original."""
+        override = _make_model("gpt-4o")
+        request = _make_request(
+            _make_model("claude-sonnet-4-6"),
+            context=CLIContext(
+                model="openai:gpt-4o",
+                model_params={"temperature": 0.7},
+            ),
+            model_settings={
+                "cache_control": {"type": "ephemeral"},
+                "max_tokens": 2048,
+            },
+        )
+        captured: list[ModelRequest] = []
+        with (
+            patch(
+                "deepagents_cli.configurable_model.resolve_model", return_value=override
+            ),
+            patch(
+                "deepagents_cli.configurable_model._is_anthropic_model",
+                return_value=False,
+            ),
+        ):
+            _mw.wrap_model_call(
+                request, lambda r: (captured.append(r), _make_response())[1]
+            )
+
+        assert captured[0].model_settings == {
+            "max_tokens": 2048,
+            "temperature": 0.7,
+        }
+
+    def test_only_cache_control_results_in_empty_settings(self) -> None:
+        override = _make_model("gpt-4o")
+        request = _make_request(
+            _make_model("claude-sonnet-4-6"),
+            context=CLIContext(model="openai:gpt-4o"),
+            model_settings={"cache_control": {"type": "ephemeral"}},
+        )
+        captured: list[ModelRequest] = []
+        with (
+            patch(
+                "deepagents_cli.configurable_model.resolve_model", return_value=override
+            ),
+            patch(
+                "deepagents_cli.configurable_model._is_anthropic_model",
+                return_value=False,
+            ),
+        ):
+            _mw.wrap_model_call(
+                request, lambda r: (captured.append(r), _make_response())[1]
+            )
+
+        assert captured[0].model_settings == {}
+
+
+class TestIsAnthropicModel:
+    """Direct tests for the `_is_anthropic_model` helper."""
+
+    def test_returns_true_for_anthropic(self) -> None:
+        from langchain_anthropic import ChatAnthropic
+
+        model = ChatAnthropic(model_name="claude-sonnet-4-6")
+        assert _is_anthropic_model(model) is True
+
+    def test_returns_false_for_non_anthropic(self) -> None:
+        assert _is_anthropic_model(_make_model("gpt-4o")) is False
+
+    def test_returns_false_when_import_missing(self) -> None:
+        with patch.dict("sys.modules", {"langchain_anthropic": None}):
+            assert _is_anthropic_model(_make_model("anything")) is False
 
 
 class TestModelParams:

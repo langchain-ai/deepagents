@@ -47,10 +47,15 @@ class TestAsyncSubAgentMiddleware:
         with pytest.raises(ValueError, match="At least one async subagent"):
             AsyncSubAgentMiddleware(async_subagents=[])
 
-    def test_init_creates_three_tools(self) -> None:
+    def test_init_creates_four_tools(self) -> None:
         mw = AsyncSubAgentMiddleware(async_subagents=[_make_spec()])
         tool_names = {t.name for t in mw.tools}
-        assert tool_names == {"launch_async_subagent", "check_async_subagent", "update_async_subagent"}
+        assert tool_names == {
+            "launch_async_subagent",
+            "check_async_subagent",
+            "update_async_subagent",
+            "list_async_subagent_jobs",
+        }
 
     def test_system_prompt_includes_agent_descriptions(self) -> None:
         mw = AsyncSubAgentMiddleware(
@@ -162,11 +167,16 @@ class TestJobsReducer:
 
 
 class TestBuildAsyncSubagentTools:
-    def test_returns_three_tools(self) -> None:
+    def test_returns_four_tools(self) -> None:
         tools = _build_async_subagent_tools([_make_spec()])
-        assert len(tools) == 3
+        assert len(tools) == 4
         names = [t.name for t in tools]
-        assert names == ["launch_async_subagent", "check_async_subagent", "update_async_subagent"]
+        assert names == [
+            "launch_async_subagent",
+            "check_async_subagent",
+            "update_async_subagent",
+            "list_async_subagent_jobs",
+        ]
 
     def test_launch_description_includes_agent_info(self) -> None:
         tools = _build_async_subagent_tools([_make_spec("researcher", description="Research agent")])
@@ -336,6 +346,56 @@ class TestUpdateTool:
             input={"messages": [{"role": "user", "content": "Focus on security issues only"}]},
             multitask_strategy="interrupt",
         )
+
+
+class TestListJobsTool:
+    def test_empty_state_returns_no_jobs(self) -> None:
+        tools = _build_async_subagent_tools([_make_spec()])
+        list_tool = tools[3]
+        rt = _make_runtime()
+        result = list_tool.func(runtime=rt)
+        assert "No async subagent jobs tracked" in result
+
+    def test_returns_tracked_jobs(self) -> None:
+        tools = _build_async_subagent_tools([_make_spec()])
+        list_tool = tools[3]
+        jobs: dict[str, AsyncSubAgentJob] = {
+            "alpha::t1::r1": {
+                "job_id": "alpha::t1::r1",
+                "agent_name": "alpha",
+                "thread_id": "t1",
+                "run_id": "r1",
+                "status": "running",
+            },
+            "beta::t2::r2": {
+                "job_id": "beta::t2::r2",
+                "agent_name": "beta",
+                "thread_id": "t2",
+                "run_id": "r2",
+                "status": "success",
+            },
+        }
+        rt = ToolRuntime(
+            state={"async_subagent_jobs": jobs},
+            context=None,
+            tool_call_id="tc_list",
+            store=None,
+            stream_writer=lambda _: None,
+            config={},
+        )
+        result = list_tool.func(runtime=rt)
+        assert "2 tracked job(s)" in result
+        assert "alpha::t1::r1" in result
+        assert "beta::t2::r2" in result
+        assert "running" in result
+        assert "success" in result
+
+    async def test_async_list_returns_same_result(self) -> None:
+        tools = _build_async_subagent_tools([_make_spec()])
+        list_tool = tools[3]
+        rt = _make_runtime()
+        result = await list_tool.coroutine(runtime=rt)
+        assert "No async subagent jobs tracked" in result
 
 
 def _async_return(value: Any) -> Any:  # noqa: ANN401

@@ -775,6 +775,23 @@ async def run_non_interactive(
 
     from deepagents_cli.server_manager import server_session
 
+    if not no_mcp and not quiet:
+        try:
+            from deepagents_cli.main import _preload_session_mcp_server_info
+
+            mcp_info = await _preload_session_mcp_server_info(
+                mcp_config_path=mcp_config_path,
+                no_mcp=no_mcp,
+                trust_project_mcp=trust_project_mcp,
+            )
+            if mcp_info:
+                tool_count = sum(len(s.tools) for s in mcp_info)
+                if tool_count:
+                    label = "MCP tool" if tool_count == 1 else "MCP tools"
+                    console.print(f"[green]✓ Loaded {tool_count} {label}[/green]")
+        except Exception:
+            logger.debug("MCP metadata preload failed", exc_info=True)
+
     try:
         enable_shell = bool(settings.shell_allow_list)
         shell_is_unrestricted = isinstance(

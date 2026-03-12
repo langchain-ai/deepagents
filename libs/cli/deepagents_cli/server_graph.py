@@ -45,6 +45,10 @@ def _build_tools(
 
     Returns:
         Tuple of `(tools, mcp_server_info)`.
+
+    Raises:
+        FileNotFoundError: If the MCP config file is not found.
+        RuntimeError: If MCP tool loading fails.
     """
     from deepagents_cli.config import settings
     from deepagents_cli.tools import fetch_url, http_request, web_search
@@ -59,15 +63,27 @@ def _build_tools(
 
         from deepagents_cli.mcp_tools import resolve_and_load_mcp_tools
 
-        mcp_tools, _, mcp_server_info = asyncio.run(
-            resolve_and_load_mcp_tools(
-                explicit_config_path=config.mcp_config_path,
-                no_mcp=config.no_mcp,
-                trust_project_mcp=config.trust_project_mcp,
-                project_context=project_context,
+        try:
+            mcp_tools, _, mcp_server_info = asyncio.run(
+                resolve_and_load_mcp_tools(
+                    explicit_config_path=config.mcp_config_path,
+                    no_mcp=config.no_mcp,
+                    trust_project_mcp=config.trust_project_mcp,
+                    project_context=project_context,
+                )
             )
-        )
+        except FileNotFoundError:
+            logger.exception("MCP config file not found: %s", config.mcp_config_path)
+            raise
+        except RuntimeError:
+            logger.exception(
+                "Failed to load MCP tools (config: %s)", config.mcp_config_path
+            )
+            raise
+
         tools.extend(mcp_tools)
+        if mcp_tools:
+            logger.info("Loaded %d MCP tool(s)", len(mcp_tools))
 
     return tools, mcp_server_info
 
@@ -118,8 +134,16 @@ def make_graph() -> Any:  # noqa: ANN401
                     _sandbox_cm.__exit__(None, None, None)
 
             atexit.register(_cleanup_sandbox)
+        except ImportError:
+            logger.exception(
+                "Sandbox provider '%s' is not installed", config.sandbox_type
+            )
+            sys.exit(1)
+        except NotImplementedError:
+            logger.exception("Sandbox type '%s' is not supported", config.sandbox_type)
+            sys.exit(1)
         except Exception:
-            logger.exception("Sandbox creation failed")
+            logger.exception("Sandbox creation failed for '%s'", config.sandbox_type)
             sys.exit(1)
 
     agent, _ = create_cli_agent(

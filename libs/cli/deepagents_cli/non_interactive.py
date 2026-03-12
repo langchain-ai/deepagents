@@ -667,8 +667,8 @@ async def run_non_interactive(
     model_name: str | None = None,
     model_params: dict[str, Any] | None = None,
     sandbox_type: str = "none",  # str (not None) to match argparse choices
-    sandbox_id: str | None = None,  # noqa: ARG001
-    sandbox_setup: str | None = None,  # noqa: ARG001
+    sandbox_id: str | None = None,
+    sandbox_setup: str | None = None,
     *,
     profile_override: dict[str, Any] | None = None,
     quiet: bool = False,
@@ -727,6 +727,11 @@ async def run_non_interactive(
     Returns:
         Exit code: 0 for success, 1 for error, 130 for keyboard interrupt.
     """
+    if sandbox_id:
+        logger.warning("--sandbox-id is not yet supported in server mode; ignoring")
+    if sandbox_setup:
+        logger.warning("--sandbox-setup is not yet supported in server mode; ignoring")
+
     # stderr=True routes all console.print() to stderr; agent response text
     # uses _write_text() -> sys.stdout directly.
     console = Console(stderr=True) if quiet else Console()
@@ -793,6 +798,7 @@ async def run_non_interactive(
             model_params=model_params,
             auto_approve=use_auto_approve,
             sandbox_type=sandbox_type,
+            enable_shell=enable_shell,
             enable_ask_user=False,
             mcp_config_path=mcp_config_path,
             no_mcp=no_mcp,

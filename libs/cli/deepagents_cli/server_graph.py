@@ -16,9 +16,9 @@ import logging
 import os
 from typing import Any
 
-logger = logging.getLogger(__name__)
+from deepagents_cli._server_constants import ENV_PREFIX as _ENV_PREFIX
 
-_ENV_PREFIX = "DA_SERVER_"
+logger = logging.getLogger(__name__)
 
 
 def _read_env_json(key: str) -> Any:  # noqa: ANN401
@@ -45,16 +45,21 @@ def make_graph() -> Any:  # noqa: ANN401
 
     Environment variables (set by the CLI before server start):
         DA_SERVER_MODEL: Model spec string (e.g., `anthropic:claude-sonnet-4-6`).
+        DA_SERVER_MODEL_PARAMS: JSON-encoded extra model kwargs.
         DA_SERVER_ASSISTANT_ID: Agent identifier.
         DA_SERVER_SYSTEM_PROMPT: Optional system prompt override.
         DA_SERVER_AUTO_APPROVE: `"true"` to auto-approve all tools.
-        DA_SERVER_TOOLS_JSON: JSON-encoded list of tool configs.
+        DA_SERVER_INTERACTIVE: `"true"` to enable interactive mode.
+        DA_SERVER_CWD: Working directory for the agent.
         DA_SERVER_SANDBOX_TYPE: Sandbox type string.
         DA_SERVER_ENABLE_MEMORY: `"true"` to enable memory middleware.
         DA_SERVER_ENABLE_SKILLS: `"true"` to enable skills middleware.
         DA_SERVER_ENABLE_SHELL: `"true"` to enable shell execution.
         DA_SERVER_ENABLE_ASK_USER: `"true"` to enable ask_user tool.
         DA_SERVER_MCP_CONFIG_PATH: Path to MCP config file.
+        DA_SERVER_NO_MCP: `"true"` to disable all MCP tool loading.
+        DA_SERVER_TRUST_PROJECT_MCP: `"true"` or `"false"` to control
+            project-level MCP server trust.
 
     Returns:
         Compiled LangGraph agent graph.
@@ -84,7 +89,8 @@ def make_graph() -> Any:  # noqa: ANN401
     interactive = interactive_str.lower() == "true"
     cwd = os.environ.get(f"{_ENV_PREFIX}CWD")
 
-    result = create_model(model_spec)
+    model_params = _read_env_json(f"{_ENV_PREFIX}MODEL_PARAMS")
+    result = create_model(model_spec, extra_kwargs=model_params)
     model = result.model
     result.apply_to_settings()
 
@@ -92,18 +98,26 @@ def make_graph() -> Any:  # noqa: ANN401
     if settings.has_tavily:
         tools.append(web_search)
 
+    no_mcp = os.environ.get(f"{_ENV_PREFIX}NO_MCP", "").lower() == "true"
+    trust_project_mcp_raw = os.environ.get(f"{_ENV_PREFIX}TRUST_PROJECT_MCP")
+    trust_project_mcp = (
+        trust_project_mcp_raw.lower() == "true" if trust_project_mcp_raw else None
+    )
+
     mcp_server_info = None
     mcp_config_path = os.environ.get(f"{_ENV_PREFIX}MCP_CONFIG_PATH")
-    if mcp_config_path:
+    if mcp_config_path and not no_mcp:
         import asyncio
 
         from deepagents_cli.mcp_tools import resolve_and_load_mcp_tools
 
-        mcp_tools, _, mcp_server_info = asyncio.get_event_loop().run_until_complete(
+        mcp_tools, _, mcp_server_info = asyncio.run(
             resolve_and_load_mcp_tools(
                 explicit_config_path=mcp_config_path,
-                no_mcp=False,
-                trust_project_mcp=True,
+                no_mcp=no_mcp,
+                trust_project_mcp=(
+                    trust_project_mcp if trust_project_mcp is not None else True
+                ),
             )
         )
         tools.extend(mcp_tools)

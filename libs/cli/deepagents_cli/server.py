@@ -137,6 +137,7 @@ class ServerProcess:
         host: str = _DEFAULT_HOST,
         port: int = _DEFAULT_PORT,
         config_dir: str | Path | None = None,
+        owns_config_dir: bool = False,
     ) -> None:
         """Initialize server process manager.
 
@@ -144,10 +145,13 @@ class ServerProcess:
             host: Host to bind the server to.
             port: Port to bind the server to.
             config_dir: Directory containing `langgraph.json`.
+            owns_config_dir: When `True`, the server will delete `config_dir`
+                on `stop()`.
         """
         self.host = host
         self.port = port
         self.config_dir = Path(config_dir) if config_dir else None
+        self._owns_config_dir = owns_config_dir
         self._process: subprocess.Popen | None = None
         self._temp_dir: tempfile.TemporaryDirectory | None = None
         self._log_file: tempfile.NamedTemporaryFile | None = None  # type: ignore[type-arg]
@@ -268,6 +272,7 @@ class ServerProcess:
 
         url = f"{self.url}/ok"
         deadline = time.monotonic() + timeout
+        last_status: int | None = None
 
         while time.monotonic() < deadline:
             if self._process and self._process.poll() is not None:
@@ -283,12 +288,16 @@ class ServerProcess:
                     if resp.status_code == 200:  # noqa: PLR2004
                         logger.info("Server is healthy at %s", self.url)
                         return
+                    last_status = resp.status_code
+                    logger.debug("Health check returned status %d", resp.status_code)
             except (httpx.ConnectError, httpx.TimeoutException, OSError):
                 pass
 
             await asyncio.sleep(_HEALTH_POLL_INTERVAL)
 
         msg = f"Server did not become healthy within {timeout}s"
+        if last_status is not None:
+            msg += f" (last status: {last_status})"
         raise RuntimeError(msg)
 
     def stop(self) -> None:
@@ -315,7 +324,7 @@ class ServerProcess:
                 self._log_file.close()
                 Path(self._log_file.name).unlink()
             except OSError:
-                pass
+                logger.debug("Failed to clean up log file", exc_info=True)
             self._log_file = None
 
         if self._temp_dir is not None:
@@ -324,6 +333,17 @@ class ServerProcess:
             except OSError:
                 logger.debug("Failed to clean up temp dir", exc_info=True)
             self._temp_dir = None
+
+        if self._owns_config_dir and self.config_dir is not None:
+            import shutil
+
+            try:
+                shutil.rmtree(self.config_dir, ignore_errors=True)
+            except OSError:
+                logger.debug(
+                    "Failed to clean up config dir %s", self.config_dir, exc_info=True
+                )
+            self._owns_config_dir = False
 
     async def __aenter__(self) -> Self:
         """Async context manager entry.

@@ -39,10 +39,12 @@ _THREAD_UUID_NAMESPACE = uuid.UUID("a1b2c3d4-e5f6-7890-abcd-ef1234567890")
 
 
 def _to_uuid(short_id: str) -> str:
-    """Convert a short hex thread ID to a valid UUID string.
+    """Convert a thread ID string to a valid UUID string.
 
     Args:
-        short_id: Hex string (e.g., 8-char from `generate_thread_id`).
+        short_id: Thread ID (typically a UUID7 from `generate_thread_id`,
+            but shorter non-UUID strings are also accepted and converted
+            via uuid5).
 
     Returns:
         Valid UUID string. Already-valid UUIDs are returned as-is.
@@ -54,11 +56,11 @@ def _to_uuid(short_id: str) -> str:
 
 
 class RemoteAgent:
-    """Client that talks to a LangGraph server, mimicking the `Pregel` interface.
+    """Client that talks to a LangGraph server over HTTP+SSE.
 
-    Wraps `langgraph-sdk`'s async client to provide `astream()`,
-    `aget_state()`, and `aupdate_state()` with signatures compatible
-    with the CLI's existing streaming code.
+    Provides `astream()`, `aget_state()`, and `aupdate_state()` with signatures
+    compatible with the compiled graph interface used by the CLI's streaming and
+    state management code.
     """
 
     def __init__(
@@ -118,7 +120,7 @@ class RemoteAgent:
             3-tuples of `(namespace, stream_mode, data)`.
 
         Raises:
-            ValueError: If ``thread_id`` is not present in *config*.
+            ValueError: If `thread_id` is not present in `config`.
         """
         client = self._get_client()
         config = config or {}
@@ -179,7 +181,8 @@ class RemoteAgent:
             config: Config with `configurable.thread_id`.
 
         Returns:
-            Thread state object with `values` and `next` attributes.
+            Thread state object with `values` and `next` attributes, or `None`
+                if the thread does not exist.
         """
         client = self._get_client()
         thread_id = config.get("configurable", {}).get("thread_id")
@@ -193,7 +196,9 @@ class RemoteAgent:
             state = await client.threads.get_state(thread_id)
             return _StateWrapper(state)
         except Exception:
-            logger.debug("Failed to get state for thread %s", thread_id, exc_info=True)
+            logger.warning(
+                "Failed to get state for thread %s", thread_id, exc_info=True
+            )
             return None
 
     async def aupdate_state(
@@ -218,7 +223,7 @@ class RemoteAgent:
                 return
             await client.threads.update_state(thread_id, values)
         except Exception:
-            logger.debug(
+            logger.warning(
                 "Failed to update state for thread %s", thread_id, exc_info=True
             )
 
@@ -242,7 +247,18 @@ class RemoteAgent:
 
         try:
             return await client.threads.get(server_tid)
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            # Only create a new thread if the server says "not found".
+            # For other errors (network, auth, 500) let the caller handle it.
+            import httpx
+
+            is_not_found = isinstance(exc, httpx.HTTPStatusError) and (
+                exc.response.status_code == 404  # noqa: PLR2004
+            )
+            if not is_not_found:
+                logger.warning(
+                    "Unexpected error looking up thread %s: %s", thread_id, exc
+                )
             logger.debug("Thread %s not found, creating new one", thread_id)
 
         thread_metadata = dict(metadata or {})
@@ -255,7 +271,7 @@ class RemoteAgent:
             cwd = str(Path.cwd())
             thread_metadata.setdefault("cwd", cwd)
         except OSError:
-            pass
+            logger.debug("Could not determine cwd for thread metadata")
 
         return await client.threads.create(
             thread_id=server_tid,
@@ -275,7 +291,8 @@ class RemoteAgent:
         try:
             thread = await client.threads.get(_to_uuid(thread_id))
             return thread["thread_id"]
-        except Exception:  # noqa: BLE001
+        except Exception:
+            logger.debug("Thread %s not found or unreachable", thread_id, exc_info=True)
             return None
 
     def with_config(self, config: dict[str, Any]) -> RemoteAgent:  # noqa: ARG002
@@ -634,7 +651,7 @@ def _convert_stream_chunk(
     chunk: Any,  # noqa: ANN401
     modes: list[str],
 ) -> list[tuple[tuple[str, ...], str, Any]]:
-    """Stateless conversion for backward compatibility (used in tests).
+    """Stateless convenience wrapper around `_StreamConverter.convert` for tests.
 
     Args:
         chunk: A `StreamPart` from `client.runs.stream()`.

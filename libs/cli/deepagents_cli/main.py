@@ -507,8 +507,8 @@ async def run_textual_cli_async(
     *,
     auto_approve: bool = False,
     sandbox_type: str = "none",  # str (not None) to match argparse choices
-    sandbox_id: str | None = None,  # noqa: ARG001
-    sandbox_setup: str | None = None,  # noqa: ARG001
+    sandbox_id: str | None = None,
+    sandbox_setup: str | None = None,
     model_name: str | None = None,
     model_params: dict[str, Any] | None = None,
     profile_override: dict[str, Any] | None = None,
@@ -530,9 +530,13 @@ async def run_textual_cli_async(
         auto_approve: Whether to auto-approve tool usage
         sandbox_type: Type of sandbox
             ("none", "modal", "runloop", "daytona", "langsmith")
-        sandbox_id: Optional existing sandbox ID to reuse
+        sandbox_id: Optional existing sandbox ID to reuse.
+
+            Not yet supported in server mode; logs a warning if set.
         sandbox_setup: Optional path to setup script to run in the sandbox
             after creation.
+
+            Not yet supported in server mode; logs a warning if set.
         model_name: Optional model name to use
         model_params: Extra kwargs from `--model-params` to pass to the model.
 
@@ -561,6 +565,11 @@ async def run_textual_cli_async(
     from deepagents_cli.config import console, create_model
     from deepagents_cli.model_config import ModelConfigError
 
+    if sandbox_id:
+        logger.warning("--sandbox-id is not yet supported in server mode; ignoring")
+    if sandbox_setup:
+        logger.warning("--sandbox-setup is not yet supported in server mode; ignoring")
+
     try:
         result = create_model(
             model_name,
@@ -585,29 +594,37 @@ async def run_textual_cli_async(
         msg.append(str(thread_id), style="dim")
         console.print(msg)
 
+    from deepagents_cli.app import AppResult
     from deepagents_cli.server_manager import start_server_and_get_agent
 
     server_proc = None
     mcp_session_manager = None
     try:
         console.print("[dim]Starting LangGraph server...[/dim]")
-        agent, server_proc, mcp_session_manager = await start_server_and_get_agent(
-            assistant_id=assistant_id,
-            model_name=model_name,
-            model_params=model_params,
-            auto_approve=auto_approve,
-            sandbox_type=sandbox_type,
-            enable_ask_user=enable_ask_user,
-            mcp_config_path=mcp_config_path,
-            no_mcp=no_mcp,
-            trust_project_mcp=trust_project_mcp,
-            interactive=True,
-        )
+        try:
+            agent, server_proc, mcp_session_manager = await start_server_and_get_agent(
+                assistant_id=assistant_id,
+                model_name=model_name,
+                model_params=model_params,
+                auto_approve=auto_approve,
+                sandbox_type=sandbox_type,
+                enable_ask_user=enable_ask_user,
+                mcp_config_path=mcp_config_path,
+                no_mcp=no_mcp,
+                trust_project_mcp=trust_project_mcp,
+                interactive=True,
+            )
+        except Exception as e:
+            logger.debug("Failed to start server", exc_info=True)
+            error_text = Text("Failed to start server: ", style="red")
+            error_text.append(str(e))
+            console.print(error_text)
+            if logger.isEnabledFor(logging.DEBUG):
+                console.print(Text(traceback.format_exc(), style="dim"))
+            return AppResult(return_code=1, thread_id=None)
+
         console.print("[green]✓ Server ready[/green]")
 
-        from deepagents_cli.app import AppResult
-
-        result = AppResult(return_code=1, thread_id=None)
         try:
             result = await run_textual_app(
                 agent=agent,
@@ -625,20 +642,15 @@ async def run_textual_cli_async(
                 mcp_server_info=None,
                 profile_override=profile_override,
             )
-        finally:
-            pass
+        except Exception as e:
+            logger.debug("App error", exc_info=True)
+            error_text = Text("Application error: ", style="red")
+            error_text.append(str(e))
+            console.print(error_text)
+            if logger.isEnabledFor(logging.DEBUG):
+                console.print(Text(traceback.format_exc(), style="dim"))
+            return AppResult(return_code=1, thread_id=None)
 
-    except Exception as e:
-        logger.debug("Failed to start server or run app", exc_info=True)
-        from deepagents_cli.app import AppResult
-
-        error_text = Text("Failed to start server: ", style="red")
-        error_text.append(str(e))
-        console.print(error_text)
-        if logger.isEnabledFor(logging.DEBUG):
-            console.print(Text(traceback.format_exc(), style="dim"))
-        return AppResult(return_code=1, thread_id=None)
-    else:
         return result
     finally:
         if mcp_session_manager is not None:

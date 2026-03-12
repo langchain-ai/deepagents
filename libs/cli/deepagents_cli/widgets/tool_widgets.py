@@ -40,7 +40,7 @@ class ToolApprovalWidget(Vertical):
         Yields:
             Static widget with placeholder message.
         """
-        yield Static("Tool details not available", classes="approval-description")
+        yield Static("工具详情不可用", classes="approval-description")
 
 
 class GenericApprovalWidget(ToolApprovalWidget):
@@ -78,7 +78,7 @@ class WriteFileApprovalWidget(ToolApprovalWidget):
         file_extension = self.data.get("file_extension", "text")
 
         # File path header
-        yield Static(f"File: {file_path}", markup=False, classes="approval-file-path")
+        yield Static(f"文件：{file_path}", markup=False, classes="approval-file-path")
         yield Static("")
 
         # Content with syntax highlighting via Markdown code block
@@ -90,7 +90,7 @@ class WriteFileApprovalWidget(ToolApprovalWidget):
             shown_lines = lines[:_MAX_LINES]
             remaining = total_lines - _MAX_LINES
             truncated_content = (
-                "\n".join(shown_lines) + f"\n... ({remaining} more lines)"
+                "\n".join(shown_lines) + f"\n... (还有 {remaining} 行)"
             )
             yield Markdown(f"```{file_extension}\n{truncated_content}\n```")
         else:
@@ -120,7 +120,7 @@ class EditFileApprovalWidget(ToolApprovalWidget):
         yield Static("")
 
         if not diff_lines and not old_string and not new_string:
-            yield Static("No changes to display", classes="approval-description")
+            yield Static("无变更", classes="approval-description")
         elif diff_lines:
             # Render content
             yield from self._render_diff_lines_only(diff_lines)
@@ -177,7 +177,7 @@ class EditFileApprovalWidget(ToolApprovalWidget):
         for line in diff_lines:
             if lines_shown >= _MAX_DIFF_LINES:
                 yield Static(
-                    f"[dim]... ({len(diff_lines) - lines_shown} more lines)[/dim]"
+                    f"[dim]... (还有 {len(diff_lines) - lines_shown} 行)[/dim]"
                 )
                 break
 
@@ -196,12 +196,12 @@ class EditFileApprovalWidget(ToolApprovalWidget):
             Static widgets showing removed and added content with styling.
         """
         if old_string:
-            yield Static("[bold red]Removing:[/bold red]")
+            yield Static("[bold red]删除：[/bold red]")
             yield from self._render_string_lines(old_string, is_addition=False)
             yield Static("")
 
         if new_string:
-            yield Static("[bold green]Adding:[/bold green]")
+            yield Static("[bold green]新增：[/bold green]")
             yield from self._render_string_lines(new_string, is_addition=True)
 
     @staticmethod
@@ -242,4 +242,4 @@ class EditFileApprovalWidget(ToolApprovalWidget):
 
         if len(lines) > _MAX_PREVIEW_LINES:
             remaining = len(lines) - _MAX_PREVIEW_LINES
-            yield Static(f"[dim]... ({remaining} more lines)[/dim]")
+            yield Static(f"[dim]... (还有 {remaining} 行)[/dim]")

@@ -1315,7 +1315,7 @@ class DeepAgentsApp(App):
                 )
             except TimeoutError:
                 await self._kill_shell_process()
-                await self._mount_message(ErrorMessage("Command timed out (60s limit)"))
+                await self._mount_message(ErrorMessage("命令超时（60秒限制）"))
                 return
             except asyncio.CancelledError:
                 await self._kill_shell_process()
@@ -1331,10 +1331,10 @@ class DeepAgentsApp(App):
                 await self._mount_message(msg)
                 await msg.write_initial_content()
             else:
-                await self._mount_message(AppMessage("Command completed (no output)"))
+                await self._mount_message(AppMessage("命令已完成（无输出）"))
 
             if proc.returncode and proc.returncode != 0:
-                await self._mount_message(ErrorMessage(f"Exit code: {proc.returncode}"))
+                await self._mount_message(ErrorMessage(f"退出代码：{proc.returncode}"))
 
             # Scroll to show the output (user-initiated command, so scroll is expected)
             chat = self.query_one("#chat", VerticalScroll)
@@ -1342,7 +1342,7 @@ class DeepAgentsApp(App):
 
         except OSError as e:
             logger.exception("Failed to execute shell command: %s", command)
-            err_msg = f"Failed to run command: {e}"
+            err_msg = f"命令执行失败：{e}"
             await self._mount_message(ErrorMessage(err_msg))
         finally:
             await self._cleanup_shell_task()
@@ -1356,7 +1356,7 @@ class DeepAgentsApp(App):
         self._shell_running = False
         self._shell_worker = None
         if was_interrupted:
-            await self._mount_message(AppMessage("Command interrupted"))
+            await self._mount_message(AppMessage("命令已中断"))
         if self._chat_input:
             self._chat_input.set_cursor_active(active=True)
         await self._process_next_from_queue()
@@ -1564,7 +1564,7 @@ class DeepAgentsApp(App):
                 except NoMatches:
                     pass
                 await self._mount_message(
-                    AppMessage(f"Started new thread: {new_thread_id}")
+                    AppMessage(f"已创建新会话：{new_thread_id}")
                 )
         elif cmd == "/compact":
             await self._mount_message(UserMessage(command))
@@ -1711,7 +1711,7 @@ class DeepAgentsApp(App):
             await self._mount_message(AppMessage(report))
         else:
             await self._mount_message(UserMessage(command))
-            await self._mount_message(AppMessage(f"Unknown command: {cmd}"))
+            await self._mount_message(AppMessage(f"未知命令：{cmd}"))
 
         # Scroll to bottom after command output is rendered.
         # Use call_after_refresh so the layout pass completes first;
@@ -2168,8 +2168,8 @@ class DeepAgentsApp(App):
             # Ensure any in-flight tool calls don't remain stuck in "Running..."
             # when streaming aborts before tool results arrive.
             if self._ui_adapter:
-                self._ui_adapter.finalize_pending_tools_with_error(f"Agent error: {e}")
-            await self._mount_message(ErrorMessage(f"Agent error: {e}"))
+                self._ui_adapter.finalize_pending_tools_with_error(f"智能体错误：{e}")
+            await self._mount_message(ErrorMessage(f"智能体错误：{e}"))
         finally:
             # Clean up loading widget and agent state
             await self._cleanup_agent_task()
@@ -2490,7 +2490,7 @@ class DeepAgentsApp(App):
                         )
 
             # 9. Add footer immediately and resolve link asynchronously
-            thread_msg_widget = AppMessage(f"Resumed thread: {history_thread_id}")
+            thread_msg_widget = AppMessage(f"已恢复会话：{history_thread_id}")
             await self._mount_message(thread_msg_widget)
             self._schedule_thread_message_link(
                 thread_msg_widget,
@@ -3291,7 +3291,7 @@ class DeepAgentsApp(App):
 
         config_saved = save_recent_model(display)
         if config_saved:
-            await self._mount_message(AppMessage(f"Switched to {display}"))
+            await self._mount_message(AppMessage(f"已切换至 {display}"))
         else:
             await self._mount_message(
                 AppMessage(

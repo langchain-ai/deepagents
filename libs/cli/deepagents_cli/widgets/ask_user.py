@@ -29,7 +29,7 @@ from deepagents_cli.config import (
     get_glyphs,
 )
 
-OTHER_CHOICE_LABEL = "Other (type your answer)"
+OTHER_CHOICE_LABEL = "其他（输入您的回答）"
 logger = logging.getLogger(__name__)
 
 
@@ -83,9 +83,9 @@ class AskUserMenu(Container):
     def compose(self) -> ComposeResult:  # noqa: D102
         glyphs = get_glyphs()
         count = len(self._questions)
-        label = "Question" if count == 1 else "Questions"
+        label = "个问题"
         yield Static(
-            f"{glyphs.cursor} Agent has {count} {label} for you",
+            f"{glyphs.cursor} 智能体有 {count} {label}",
             classes="ask-user-title",
         )
         yield Static("")
@@ -98,12 +98,12 @@ class AskUserMenu(Container):
 
         yield Static("")
         parts = [
-            f"{glyphs.arrow_up}/{glyphs.arrow_down} Select",
-            "Enter to continue",
+            f"{glyphs.arrow_up}/{glyphs.arrow_down} 选择",
+            "回车继续",
         ]
         if len(self._questions) > 1:
-            parts.append("Tab/Shift+Tab switch question")
-        parts.append("Esc to cancel")
+            parts.append("Tab/Shift+Tab 切换问题")
+        parts.append("Esc 取消")
         yield Static(
             f" {glyphs.bullet} ".join(parts),
             classes="ask-user-help",
@@ -291,14 +291,14 @@ class _QuestionWidget(Vertical):
             yield other_cw
 
             self._other_input = Input(
-                placeholder="Type your answer...",
+                placeholder="请输入您的回答...",
                 classes="ask-user-other-input",
             )
             self._other_input.display = False
             yield self._other_input
         else:
             self._text_input = Input(
-                placeholder="Type your answer...",
+                placeholder="请输入您的回答...",
                 classes="ask-user-text-input",
             )
             yield self._text_input

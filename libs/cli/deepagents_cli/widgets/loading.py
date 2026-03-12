@@ -81,7 +81,7 @@ class LoadingWidget(Static):
     }
     """
 
-    def __init__(self, status: str = "Thinking") -> None:
+    def __init__(self, status: str = "思考中") -> None:
         """Initialize loading widget.
 
         Args:
@@ -114,7 +114,7 @@ class LoadingWidget(Static):
             )
             yield self._status_widget
 
-            self._hint_widget = Static("(0s, esc to interrupt)", classes="loading-hint")
+            self._hint_widget = Static("(0s，esc 中断)", classes="loading-hint")
             yield self._hint_widget
 
     def on_mount(self) -> None:
@@ -133,7 +133,7 @@ class LoadingWidget(Static):
 
         if self._hint_widget and self._start_time is not None:
             elapsed = int(time() - self._start_time)
-            self._hint_widget.update(f"({elapsed}s, esc to interrupt)")
+            self._hint_widget.update(f"({elapsed}s，esc 中断)")
 
     def set_status(self, status: str) -> None:
         """Update the status text.
@@ -145,7 +145,7 @@ class LoadingWidget(Static):
         if self._status_widget:
             self._status_widget.update(f" {self._status}... ")
 
-    def pause(self, status: str = "Awaiting decision") -> None:
+    def pause(self, status: str = "等待决策") -> None:
         """Pause the animation and update status.
 
         Args:
@@ -158,14 +158,14 @@ class LoadingWidget(Static):
         if self._status_widget:
             self._status_widget.update(f" {status}... ")
         if self._hint_widget:
-            self._hint_widget.update(f"(paused at {self._paused_elapsed}s)")
+            self._hint_widget.update(f"(已暂停 {self._paused_elapsed}s)")
         if self._spinner_widget:
             self._spinner_widget.update(f"[dim]{get_glyphs().pause}[/dim]")
 
     def resume(self) -> None:
         """Resume the animation."""
         self._paused = False
-        self._status = "Thinking"
+        self._status = "思考中"
         if self._status_widget:
             self._status_widget.update(f" {self._status}... ")
 

@@ -117,7 +117,7 @@ class WelcomeBanner(Static):
 
         if self._project_name:
             banner.append(f"{get_glyphs().checkmark} ", style="green")
-            banner.append("LangSmith tracing: ")
+            banner.append("LangSmith 追踪：")
             if project_url:
                 banner.append(
                     f"'{self._project_name}'",
@@ -137,18 +137,18 @@ class WelcomeBanner(Static):
                     "?utm_source=deepagents-cli"
                 )
                 thread_line = Text.assemble(
-                    ("Thread: ", "dim"),
+                    ("会话：", "dim"),
                     (self._cli_thread_id, Style(dim=True, link=thread_url)),
                     ("\n", "dim"),
                 )
                 banner.append_text(thread_line)
             else:
-                banner.append(f"Thread: {self._cli_thread_id}\n", style="dim")
+                banner.append(f"会话：{self._cli_thread_id}\n", style="dim")
 
         if self._mcp_tool_count > 0:
             banner.append(f"{get_glyphs().checkmark} ", style="green")
-            label = "MCP tool" if self._mcp_tool_count == 1 else "MCP tools"
-            banner.append(f"Loaded {self._mcp_tool_count} {label}\n")
+            label = "个 MCP 工具"
+            banner.append(f"已加载 {self._mcp_tool_count} {label}\n")
 
         banner.append_text(build_welcome_footer())
         return banner
@@ -162,14 +162,6 @@ def build_welcome_footer() -> Text:
     """
     footer = Text()
     footer.append(
-        "\nReady to code! What would you like to build?\n", style=COLORS["primary"]
-    )
-    bullet = get_glyphs().bullet
-    footer.append(
-        (
-            f"Enter send {bullet} {newline_shortcut()} newline "
-            f"{bullet} @ files {bullet} / commands"
-        ),
-        style="dim",
+        "\n民心智能体已就绪，请问有什么可以帮您？\n", style=COLORS["primary"]
     )
     return footer

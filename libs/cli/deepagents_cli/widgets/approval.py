@@ -175,7 +175,7 @@ class ApprovalMenu(Container):
         escaped_truncated = escape_markup(command_display)
         display = f"[bold #f59e0b]{escaped_truncated}[/bold #f59e0b]"
         if not expanded and len(command) > _SHELL_COMMAND_TRUNCATE_LENGTH:
-            display += " [dim](press 'e' to expand)[/dim]"
+            display += " [dim](按 'e' 展开)[/dim]"
 
         if not issues:
             return display
@@ -189,7 +189,7 @@ class ApprovalMenu(Container):
 
         return (
             f"{display}\n"
-            f"[yellow]Warning:[/yellow] hidden chars detected ({issue_summary})\n"
+            f"[yellow]警告：[/yellow] 检测到隐藏字符 ({issue_summary})\n"
             f"[dim]raw: {raw_with_markers}[/dim]"
         )
 
@@ -205,20 +205,20 @@ class ApprovalMenu(Container):
         # Title - show count if multiple tools
         count = len(self._action_requests)
         if count == 1:
-            title = f">>> {self._tool_names[0]} Requires Approval <<<"
+            title = f">>> {self._tool_names[0]} 需要审批 <<<"
         else:
-            title = f">>> {count} Tool Calls Require Approval <<<"
+            title = f">>> {count} 个工具调用需要审批 <<<"
         yield Static(title, classes="approval-title")
 
         if self._security_warnings:
-            warning_lines = ["[yellow]Warning:[/yellow] Potentially deceptive text"]
+            warning_lines = ["[yellow]警告：[/yellow] 疑似欺骗性文本"]
             warning_lines.extend(
                 f"[dim]- {escape_markup(warning)}[/dim]"
                 for warning in self._security_warnings[:_WARNING_PREVIEW_LIMIT]
             )
             if len(self._security_warnings) > _WARNING_PREVIEW_LIMIT:
                 remaining = len(self._security_warnings) - _WARNING_PREVIEW_LIMIT
-                warning_lines.append(f"[dim]- +{remaining} more warning(s)[/dim]")
+                warning_lines.append(f"[dim]- 还有 {remaining} 条警告[/dim]")
             yield Static(
                 "\n".join(warning_lines),
                 classes="approval-security-warning",
@@ -253,11 +253,11 @@ class ApprovalMenu(Container):
         # Help text at the very bottom
         glyphs = get_glyphs()
         help_text = (
-            f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate {glyphs.bullet} "
-            f"Enter select {glyphs.bullet} y/a/n quick keys {glyphs.bullet} Esc reject"
+            f"{glyphs.arrow_up}/{glyphs.arrow_down} 导航 {glyphs.bullet} "
+            f"回车 选择 {glyphs.bullet} y/a/n 快捷键 {glyphs.bullet} Esc 拒绝"
         )
         if self._has_expandable_command:
-            help_text += f" {glyphs.bullet} e expand"
+            help_text += f" {glyphs.bullet} e 展开"
         yield Static(help_text, classes="approval-help")
 
     async def on_mount(self) -> None:
@@ -308,15 +308,15 @@ class ApprovalMenu(Container):
         count = len(self._action_requests)
         if count == 1:
             options = [
-                "1. Approve (y)",
-                "2. Auto-approve for this thread (a)",
-                "3. Reject (n)",
+                "1. 批准 (y)",
+                "2. 本次会话自动批准 (a)",
+                "3. 拒绝 (n)",
             ]
         else:
             options = [
-                f"1. Approve all {count} (y)",
-                "2. Auto-approve for this thread (a)",
-                f"3. Reject all {count} (n)",
+                f"1. 批准全部 {count} 项 (y)",
+                "2. 本次会话自动批准 (a)",
+                f"3. 拒绝全部 {count} 项 (n)",
             ]
 
         for i, (text, widget) in enumerate(

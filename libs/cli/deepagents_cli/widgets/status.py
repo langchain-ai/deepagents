@@ -191,7 +191,7 @@ class StatusBar(Horizontal):
         """
         yield Static("", classes="status-mode normal", id="mode-indicator")
         yield Static(
-            "manual | shift+tab to cycle",
+            "手动 | shift+tab 切换",
             classes="status-auto-approve off",
             id="auto-approve-indicator",
         )
@@ -239,10 +239,10 @@ class StatusBar(Horizontal):
         indicator.remove_class("normal", "shell", "command")
 
         if mode == "shell":
-            indicator.update("SHELL")
+            indicator.update("命令行")
             indicator.add_class("shell")
         elif mode == "command":
-            indicator.update("CMD")
+            indicator.update("指令")
             indicator.add_class("command")
         else:
             indicator.update("")
@@ -257,10 +257,10 @@ class StatusBar(Horizontal):
         indicator.remove_class("on", "off")
 
         if new_value:
-            indicator.update("auto | shift+tab to cycle")
+            indicator.update("自动 | shift+tab 切换")
             indicator.add_class("on")
         else:
-            indicator.update("manual | shift+tab to cycle")
+            indicator.update("手动 | shift+tab 切换")
             indicator.add_class("off")
 
     def watch_cwd(self, new_value: str) -> None:
@@ -345,9 +345,9 @@ class StatusBar(Horizontal):
         if new_value > 0:
             # Format with K suffix for thousands
             if new_value >= 1000:  # noqa: PLR2004  # Count formatting threshold
-                display.update(f"{new_value / 1000:.1f}K tokens")
+                display.update(f"{new_value / 1000:.1f}K 令牌")
             else:
-                display.update(f"{new_value} tokens")
+                display.update(f"{new_value} 令牌")
         else:
             display.update("")
 

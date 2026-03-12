@@ -128,10 +128,11 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
             `init_chat_model("openai:...", use_responses_api=True, store=False, include=["reasoning.encrypted_content"])`
             and pass the initialized model instance here.
 
-            To override the model or per-call model settings at invocation time,
-            pass `config={"configurable": {"model": "...", "model_params": {...}}}`.
-            `model_params` are merged into the request's `model_settings` for
-            that invocation only.
+            The default middleware stack includes `ConfigurableModelMiddleware`,
+            which allows overriding the model or per-call settings at invocation
+            time via `config={"configurable": {"model": "...", "model_params": {...}}}`.
+
+            See `ConfigurableModelMiddleware` for details.
         tools: The tools the agent should have access to.
 
             In addition to custom tools you provide, deep agents include built-in tools for planning,

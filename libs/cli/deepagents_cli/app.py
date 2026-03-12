@@ -893,6 +893,15 @@ class DeepAgentsApp(App):
                 lambda: asyncio.create_task(self._load_thread_history())
             )
 
+        # Drain any messages the user typed while the server was starting.
+        # (If an initial prompt exists, its cleanup path will drain the queue.)
+        if self._pending_messages and not (
+            self._initial_prompt and self._initial_prompt.strip()
+        ):
+            self.call_after_refresh(
+                lambda: asyncio.create_task(self._process_next_from_queue())
+            )
+
     def on_deep_agents_app_server_start_failed(self, event: ServerStartFailed) -> None:
         """Handle background server startup failure."""
         self._connecting = False
@@ -908,6 +917,13 @@ class DeepAgentsApp(App):
             banner.set_connected(0)
         except NoMatches:
             pass
+
+        # Discard any messages queued while the server was starting
+        if self._pending_messages:
+            self._pending_messages.clear()
+            for w in self._queued_widgets:
+                w.remove()
+            self._queued_widgets.clear()
 
     async def _prewarm_threads_cache(self) -> None:  # noqa: PLR6301  # Worker hook kept as instance method
         """Prewarm thread selector cache without blocking app startup."""
@@ -1412,8 +1428,10 @@ class DeepAgentsApp(App):
             )
             return
 
-        # If agent or shell command is running, enqueue instead of processing
-        if self._agent_running or self._shell_running:
+        # If agent/shell is running or server is still starting up, enqueue
+        # instead of processing. Messages queued during connection are drained
+        # once the server is ready (see on_deep_agents_app_server_ready).
+        if self._agent_running or self._shell_running or self._connecting:
             self._pending_messages.append(QueuedMessage(text=value, mode=mode))
             queued_widget = QueuedUserMessage(value)
             self._queued_widgets.append(queued_widget)

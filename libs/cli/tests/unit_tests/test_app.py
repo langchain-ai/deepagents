@@ -843,6 +843,21 @@ class TestMessageQueue:
             assert app._pending_messages[0].text == "queued msg"
             assert app._pending_messages[0].mode == "normal"
 
+    async def test_message_queued_while_connecting(self) -> None:
+        """Messages submitted during server startup should be queued."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+
+            app.post_message(ChatInput.Submitted("early msg", "normal"))
+            await pilot.pause()
+
+            assert len(app._pending_messages) == 1
+            assert app._pending_messages[0].text == "early msg"
+            widgets = app.query(QueuedUserMessage)
+            assert len(widgets) == 1
+
     async def test_message_blocked_while_thread_switching(self) -> None:
         """Submissions should be ignored while thread switching is in-flight."""
         app = DeepAgentsApp()

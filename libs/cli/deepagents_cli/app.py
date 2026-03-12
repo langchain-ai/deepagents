@@ -651,6 +651,26 @@ class DeepAgentsApp(App):
 
         self._image_tracker = MediaTracker()
 
+    def _is_remote(self) -> bool:
+        """Whether the session is backed by a remote LangGraph server.
+
+        Returns `False` when:
+
+        - No agent is configured (`self._agent is None`).
+        - The agent is a local `Pregel` graph (e.g. ACP mode, test harnesses).
+
+        Used to gate features that require a server-backed agent (e.g. model
+        switching via `ConfigurableModelMiddleware`, checkpointer fallback).
+        Checks the agent type rather than server ownership so this works for
+        both CLI-spawned servers and externally managed ones.
+
+        Returns:
+            `True` when the agent is a `RemoteAgent`.
+        """
+        from deepagents_cli.remote_client import RemoteAgent
+
+        return isinstance(self._agent, RemoteAgent)
+
     def compose(self) -> ComposeResult:
         """Compose the application layout.
 
@@ -2409,7 +2429,7 @@ class DeepAgentsApp(App):
         # In server mode the dev server may return empty state for threads
         # that were persisted in a previous session.  Read the SQLite
         # checkpointer directly as a fallback.
-        if not messages and self._server_proc is not None:
+        if not messages and self._is_remote():
             messages = await self._read_messages_from_checkpointer(thread_id)
 
         if not messages:
@@ -3294,7 +3314,7 @@ class DeepAgentsApp(App):
             # Strip leading colon — treat ":claude-opus-4-6" as "claude-opus-4-6"
             model_spec = model_spec.removeprefix(":")
 
-            if self._server_proc is None:
+            if not self._is_remote():
                 await self._mount_message(
                     ErrorMessage("Model switching requires a server-backed session.")
                 )

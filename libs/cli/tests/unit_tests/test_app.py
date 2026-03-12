@@ -1763,16 +1763,18 @@ class TestFetchThreadHistoryData:
         """When the server returns empty state, read SQLite checkpointer directly."""
         from langchain_core.messages import AIMessage, HumanMessage
 
+        from deepagents_cli.remote_client import RemoteAgent
         from deepagents_cli.widgets.message_store import MessageData, MessageType
 
         # Server returns empty state (fresh restart, thread not loaded)
         empty_state = MagicMock()
         empty_state.values = {}
 
-        mock_agent = AsyncMock()
-        mock_agent.aget_state.return_value = empty_state
+        # spec=RemoteAgent so _is_remote() isinstance check passes
+        mock_agent = MagicMock(spec=RemoteAgent)
+        mock_agent.aget_state = AsyncMock(return_value=empty_state)
 
-        app = DeepAgentsApp(agent=mock_agent, thread_id="t-1", server_proc=MagicMock())
+        app = DeepAgentsApp(agent=mock_agent, thread_id="t-1")
 
         # Patch the checkpointer fallback to return messages
         checkpointer_msgs = [

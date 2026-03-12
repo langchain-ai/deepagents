@@ -1,7 +1,7 @@
 """Tests for model switching functionality."""
 
 from collections.abc import Iterator
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -9,14 +9,13 @@ from deepagents_cli import model_config
 from deepagents_cli.app import DeepAgentsApp, _extract_model_params_flag
 from deepagents_cli.config import settings
 from deepagents_cli.model_config import clear_caches
+from deepagents_cli.remote_client import RemoteAgent
 from deepagents_cli.widgets.messages import AppMessage, ErrorMessage
 
 
-def _make_mock_server_proc() -> MagicMock:
-    """Create a mock ServerProcess with an async restart method."""
-    proc = MagicMock()
-    proc.restart = AsyncMock()
-    return proc
+def _make_remote_agent() -> RemoteAgent:
+    """Create a RemoteAgent pointing at a dummy URL for test scaffolding."""
+    return RemoteAgent("http://test:0")
 
 
 @pytest.fixture(autouse=True)
@@ -44,7 +43,7 @@ class TestModelSwitchNoOp:
         app = DeepAgentsApp()
         # Replace method with mock to track calls (hence ignore)
         app._mount_message = AsyncMock()  # type: ignore[method-assign]
-        app._server_proc = _make_mock_server_proc()
+        app._agent = _make_remote_agent()
 
         # Set current model
         settings.model_name = "claude-opus-4-5"
@@ -83,7 +82,7 @@ class TestModelSwitchErrorHandling:
         """_switch_model shows error when provider credentials are missing."""
         app = DeepAgentsApp()
         app._mount_message = AsyncMock()  # type: ignore[method-assign]
-        app._server_proc = _make_mock_server_proc()
+        app._agent = _make_remote_agent()
 
         # Set a different current model
         settings.model_name = "gpt-4o"
@@ -115,12 +114,11 @@ class TestModelSwitchErrorHandling:
         assert "ANTHROPIC_API_KEY" in captured_errors[0]
         assert app._model_switching is False
 
-    async def test_server_proc_sets_model_override(self) -> None:
-        """With server_proc, sets model override for ConfigurableModelMiddleware."""
+    async def test_remote_agent_sets_model_override(self) -> None:
+        """With remote agent, sets model override for ConfigurableModelMiddleware."""
         app = DeepAgentsApp()
         app._mount_message = AsyncMock()  # type: ignore[method-assign]
-        mock_proc = _make_mock_server_proc()
-        app._server_proc = mock_proc
+        app._agent = _make_remote_agent()
 
         settings.model_name = "gpt-4o"
         settings.model_provider = "openai"
@@ -144,8 +142,6 @@ class TestModelSwitchErrorHandling:
         ):
             await app._switch_model("anthropic:claude-sonnet-4-5")
 
-        # No server restart — model override is set for next stream call
-        mock_proc.restart.assert_not_awaited()
         assert app._model_override == "anthropic:claude-sonnet-4-5"
         assert app._model_params_override is None
         mock_save.assert_called_once()
@@ -153,12 +149,11 @@ class TestModelSwitchErrorHandling:
         assert settings.model_provider == "anthropic"
         assert any("Switched to" in m for m in captured_messages)
 
-    async def test_server_proc_sets_model_params_override(self) -> None:
-        """With server_proc, extra_kwargs are stored as _model_params_override."""
+    async def test_remote_agent_sets_model_params_override(self) -> None:
+        """With remote agent, extra_kwargs are stored as _model_params_override."""
         app = DeepAgentsApp()
         app._mount_message = AsyncMock()  # type: ignore[method-assign]
-        mock_proc = _make_mock_server_proc()
-        app._server_proc = mock_proc
+        app._agent = _make_remote_agent()
 
         settings.model_name = "gpt-4o"
         settings.model_provider = "openai"
@@ -209,8 +204,7 @@ class TestModelSwitchConcurrencyGuard:
         """_model_switching resets to False after a successful switch."""
         app = DeepAgentsApp()
         app._mount_message = AsyncMock()  # type: ignore[method-assign]
-        mock_proc = _make_mock_server_proc()
-        app._server_proc = mock_proc
+        app._agent = _make_remote_agent()
 
         settings.model_name = "gpt-4o"
         settings.model_provider = "openai"
@@ -248,8 +242,7 @@ api_key_env = "FIREWORKS_API_KEY"
 """)
         app = DeepAgentsApp()
         app._mount_message = AsyncMock()  # type: ignore[method-assign]
-        mock_proc = _make_mock_server_proc()
-        app._server_proc = mock_proc
+        app._agent = _make_remote_agent()
 
         settings.model_name = "gpt-4o"
         settings.model_provider = "openai"
@@ -271,7 +264,6 @@ api_key_env = "FIREWORKS_API_KEY"
         ):
             await app._switch_model("fireworks:llama-v3p1-70b")
 
-        mock_proc.restart.assert_not_awaited()
         mock_save.assert_called_once_with("fireworks:llama-v3p1-70b")
         assert app._model_override == "fireworks:llama-v3p1-70b"
         assert settings.model_name == "llama-v3p1-70b"
@@ -292,7 +284,7 @@ api_key_env = "FIREWORKS_API_KEY"
 """)
         app = DeepAgentsApp()
         app._mount_message = AsyncMock()  # type: ignore[method-assign]
-        app._server_proc = _make_mock_server_proc()
+        app._agent = _make_remote_agent()
 
         settings.model_name = "gpt-4o"
         settings.model_provider = "openai"
@@ -325,8 +317,7 @@ models = ["llama3"]
 """)
         app = DeepAgentsApp()
         app._mount_message = AsyncMock()  # type: ignore[method-assign]
-        mock_proc = _make_mock_server_proc()
-        app._server_proc = mock_proc
+        app._agent = _make_remote_agent()
 
         settings.model_name = "gpt-4o"
         settings.model_provider = "openai"
@@ -347,7 +338,6 @@ models = ["llama3"]
         ):
             await app._switch_model("ollama:llama3")
 
-        mock_proc.restart.assert_not_awaited()
         mock_save.assert_called_once_with("ollama:llama3")
         assert app._model_override == "ollama:llama3"
         assert settings.model_name == "llama3"
@@ -362,8 +352,7 @@ class TestModelSwitchBareModelName:
         """Bare model name like 'gpt-4o' auto-detects provider and switches."""
         app = DeepAgentsApp()
         app._mount_message = AsyncMock()  # type: ignore[method-assign]
-        mock_proc = _make_mock_server_proc()
-        app._server_proc = mock_proc
+        app._agent = _make_remote_agent()
 
         settings.model_name = "claude-sonnet-4-5"
         settings.model_provider = "anthropic"
@@ -388,7 +377,6 @@ class TestModelSwitchBareModelName:
         ):
             await app._switch_model("gpt-4o")
 
-        mock_proc.restart.assert_not_awaited()
         mock_save.assert_called_once_with("openai:gpt-4o")
         assert app._model_override == "openai:gpt-4o"
         assert settings.model_name == "gpt-4o"
@@ -399,7 +387,7 @@ class TestModelSwitchBareModelName:
         """Bare model name shows credential error when provider creds are missing."""
         app = DeepAgentsApp()
         app._mount_message = AsyncMock()  # type: ignore[method-assign]
-        app._server_proc = _make_mock_server_proc()
+        app._agent = _make_remote_agent()
 
         settings.model_name = "claude-sonnet-4-5"
         settings.model_provider = "anthropic"
@@ -434,7 +422,7 @@ class TestModelSwitchBareModelName:
         """Bare model name matching current model shows 'Already using'."""
         app = DeepAgentsApp()
         app._mount_message = AsyncMock()  # type: ignore[method-assign]
-        app._server_proc = _make_mock_server_proc()
+        app._agent = _make_remote_agent()
 
         settings.model_name = "gpt-4o"
         settings.model_provider = "openai"

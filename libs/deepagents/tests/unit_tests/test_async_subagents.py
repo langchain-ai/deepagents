@@ -10,6 +10,7 @@ from deepagents.middleware.async_subagents import (
     AsyncSubAgent,
     AsyncSubAgentMiddleware,
     _build_async_subagent_tools,
+    _parse_job_id,
     _resolve_headers,
 )
 
@@ -70,6 +71,28 @@ class TestResolveHeaders:
         assert headers["x-auth-scheme"] == "custom"
 
 
+class TestParseJobId:
+    def test_canonical_format(self) -> None:
+        assert _parse_job_id("thread_abc::run_xyz") == ("thread_abc", "run_xyz")
+
+    def test_full_launch_output(self) -> None:
+        assert _parse_job_id("Launched async subagent. job_id: thread_abc::run_xyz") == (
+            "thread_abc",
+            "run_xyz",
+        )
+
+    def test_legacy_json_format(self) -> None:
+        job_id = json.dumps({"thread_id": "thread_abc", "run_id": "run_xyz"})
+        assert _parse_job_id(job_id) == ("thread_abc", "run_xyz")
+
+    def test_whitespace_stripped(self) -> None:
+        assert _parse_job_id("  thread_abc::run_xyz  ") == ("thread_abc", "run_xyz")
+
+    def test_invalid_format_raises(self) -> None:
+        with pytest.raises(ValueError, match="Invalid job_id format"):
+            _parse_job_id("not-a-valid-job-id")
+
+
 class TestBuildAsyncSubagentTools:
     def test_returns_three_tools(self) -> None:
         tools = _build_async_subagent_tools([_make_spec()])
@@ -108,9 +131,8 @@ class TestLaunchTool:
             headers={"x-auth-scheme": "langsmith"},
         )
 
-        parsed = json.loads(result)
-        assert parsed["thread_id"] == "thread_abc"
-        assert parsed["run_id"] == "run_xyz"
+        assert "thread_abc::run_xyz" in result
+        assert "job_id:" in result
 
         mock_client.threads.create.assert_called_once()
         mock_client.runs.create.assert_called_once_with(
@@ -132,8 +154,7 @@ class TestCheckTool:
 
         tools = _build_async_subagent_tools([_make_spec()])
         check = tools[1]
-        job_id = json.dumps({"thread_id": "thread_abc", "run_id": "run_xyz"})
-        result = check.invoke({"job_id": job_id})
+        result = check.invoke({"job_id": "thread_abc::run_xyz"})
 
         parsed = json.loads(result)
         assert parsed["status"] == "running"
@@ -157,8 +178,7 @@ class TestCheckTool:
 
         tools = _build_async_subagent_tools([_make_spec()])
         check = tools[1]
-        job_id = json.dumps({"thread_id": "thread_abc", "run_id": "run_xyz"})
-        result = check.invoke({"job_id": job_id})
+        result = check.invoke({"job_id": "thread_abc::run_xyz"})
 
         parsed = json.loads(result)
         assert parsed["status"] == "success"
@@ -175,8 +195,7 @@ class TestCheckTool:
 
         tools = _build_async_subagent_tools([_make_spec()])
         check = tools[1]
-        job_id = json.dumps({"thread_id": "thread_abc", "run_id": "run_xyz"})
-        result = check.invoke({"job_id": job_id})
+        result = check.invoke({"job_id": "thread_abc::run_xyz"})
 
         parsed = json.loads(result)
         assert parsed["status"] == "error"
@@ -192,8 +211,7 @@ class TestUpdateTool:
 
         tools = _build_async_subagent_tools([_make_spec()])
         update = tools[2]
-        job_id = json.dumps({"thread_id": "thread_abc", "run_id": "run_xyz"})
-        result = update.invoke({"job_id": job_id, "update": "Focus on security issues only"})
+        result = update.invoke({"job_id": "thread_abc::run_xyz", "update": "Focus on security issues only"})
 
         parsed = json.loads(result)
         assert parsed["status"] == "updated"
@@ -227,9 +245,8 @@ class TestAsyncTools:
         launch = tools[0]
         result = await launch.ainvoke({"description": "analyze data", "subagent_type": "alpha"})
 
-        parsed = json.loads(result)
-        assert parsed["thread_id"] == "thread_abc"
-        assert parsed["run_id"] == "run_xyz"
+        assert "thread_abc::run_xyz" in result
+        assert "job_id:" in result
 
     @patch("deepagents.middleware.async_subagents.get_client")
     async def test_async_check_completed_job(self, mock_get_client) -> None:
@@ -240,8 +257,7 @@ class TestAsyncTools:
 
         tools = _build_async_subagent_tools([_make_spec()])
         check = tools[1]
-        job_id = json.dumps({"thread_id": "thread_abc", "run_id": "run_xyz"})
-        result = await check.ainvoke({"job_id": job_id})
+        result = await check.ainvoke({"job_id": "thread_abc::run_xyz"})
 
         parsed = json.loads(result)
         assert parsed["status"] == "success"
@@ -255,8 +271,7 @@ class TestAsyncTools:
 
         tools = _build_async_subagent_tools([_make_spec()])
         update = tools[2]
-        job_id = json.dumps({"thread_id": "thread_abc", "run_id": "run_xyz"})
-        result = await update.ainvoke({"job_id": job_id, "update": "New instructions"})
+        result = await update.ainvoke({"job_id": "thread_abc::run_xyz", "update": "New instructions"})
 
         parsed = json.loads(result)
         assert parsed["status"] == "updated"

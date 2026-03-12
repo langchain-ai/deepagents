@@ -122,13 +122,39 @@ class _ClientCache:
         return self._async[name]
 
 
+_JOB_ID_SEP = "::"
+
+
 def _format_job_id(thread_id: str, run_id: str) -> str:
-    return json.dumps({"thread_id": thread_id, "run_id": run_id})
+    return f"{thread_id}{_JOB_ID_SEP}{run_id}"
+
+
+_JOB_ID_PREFIX = "job_id: "
 
 
 def _parse_job_id(job_id: str) -> tuple[str, str]:
-    data = json.loads(job_id)
-    return data["thread_id"], data["run_id"]
+    """Parse a job ID into (thread_id, run_id).
+
+    Handles multiple formats the LLM might pass:
+    - `thread_abc::run_xyz` (canonical)
+    - `Launched async subagent. job_id: thread_abc::run_xyz` (full launch output)
+    - `{"thread_id": "...", "run_id": "..."}` (legacy JSON)
+    """
+    raw = job_id.strip()
+    idx = raw.find(_JOB_ID_PREFIX)
+    if idx != -1:
+        raw = raw[idx + len(_JOB_ID_PREFIX) :].strip()
+    if _JOB_ID_SEP in raw:
+        parts = raw.split(_JOB_ID_SEP, maxsplit=1)
+        return parts[0], parts[1]
+    try:
+        data = json.loads(raw)
+        if isinstance(data, dict):
+            return data["thread_id"], data["run_id"]
+    except (json.JSONDecodeError, KeyError):
+        pass
+    msg = f"Invalid job_id format: {job_id!r}. Expected the exact job_id string returned by launch_async_subagent."
+    raise ValueError(msg)
 
 
 def _validate_agent_type(agent_map: dict[str, AsyncSubAgent], agent_type: str) -> str | None:
@@ -160,7 +186,8 @@ def _build_launch_tool(
             assistant_id=spec["graph_id"],
             input={"messages": [{"role": "user", "content": description}]},
         )
-        return _format_job_id(thread["thread_id"], run["run_id"])
+        job_id = _format_job_id(thread["thread_id"], run["run_id"])
+        return f"Launched async subagent. job_id: {job_id}"
 
     async def alaunch_async_subagent(
         description: Annotated[str, "A detailed description of the task for the async subagent to perform."],
@@ -177,7 +204,8 @@ def _build_launch_tool(
             assistant_id=spec["graph_id"],
             input={"messages": [{"role": "user", "content": description}]},
         )
-        return _format_job_id(thread["thread_id"], run["run_id"])
+        job_id = _format_job_id(thread["thread_id"], run["run_id"])
+        return f"Launched async subagent. job_id: {job_id}"
 
     return StructuredTool.from_function(
         name="launch_async_subagent",
@@ -195,7 +223,7 @@ def _build_check_tool(
     first_name = next(iter(agent_map))
 
     def check_async_subagent(
-        job_id: Annotated[str, "The job ID returned by launch_async_subagent."],
+        job_id: Annotated[str, "The exact job_id string returned by launch_async_subagent. Pass it verbatim."],
     ) -> str:
         thread_id, run_id = _parse_job_id(job_id)
         client = clients.sync(first_name)
@@ -213,7 +241,7 @@ def _build_check_tool(
         return json.dumps(result)
 
     async def acheck_async_subagent(
-        job_id: Annotated[str, "The job ID returned by launch_async_subagent."],
+        job_id: Annotated[str, "The exact job_id string returned by launch_async_subagent. Pass it verbatim."],
     ) -> str:
         thread_id, run_id = _parse_job_id(job_id)
         client = clients.async_(first_name)
@@ -246,7 +274,7 @@ def _build_update_tool(
     first_name = next(iter(agent_map))
 
     def update_async_subagent(
-        job_id: Annotated[str, "The job ID returned by launch_async_subagent."],
+        job_id: Annotated[str, "The exact job_id string returned by launch_async_subagent. Pass it verbatim."],
         update: Annotated[str, "New instructions or context to send to the running subagent."],
     ) -> str:
         thread_id, _run_id = _parse_job_id(job_id)
@@ -258,7 +286,7 @@ def _build_update_tool(
         return json.dumps({"status": "updated", "thread_id": thread_id})
 
     async def aupdate_async_subagent(
-        job_id: Annotated[str, "The job ID returned by launch_async_subagent."],
+        job_id: Annotated[str, "The exact job_id string returned by launch_async_subagent. Pass it verbatim."],
         update: Annotated[str, "New instructions or context to send to the running subagent."],
     ) -> str:
         thread_id, _run_id = _parse_job_id(job_id)

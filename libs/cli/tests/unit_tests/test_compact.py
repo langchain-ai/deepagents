@@ -805,6 +805,37 @@ class TestOffloadMessagesForCompact:
             assert result is not None
             mock_backend.awrite.assert_called_once()
 
+    async def test_uses_explicit_backend_when_app_backend_missing(self) -> None:
+        """Should use the provided backend when `self._backend` is unset."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _setup_compact_app(app)
+            app._backend = None
+
+            mock_mw = MagicMock()
+            messages = _make_messages(2)
+            mock_mw._filter_summary_messages.return_value = messages
+
+            resp = MagicMock()
+            resp.content = None
+            resp.error = None
+            explicit_backend = MagicMock()
+            explicit_backend.adownload_files = AsyncMock(return_value=[resp])
+            write_result = MagicMock()
+            write_result.error = None
+            explicit_backend.awrite = AsyncMock(return_value=write_result)
+
+            with patch(_GET_BUFFER_STRING_PATH, return_value="msg text"):
+                result = await app._offload_messages_for_compact(
+                    messages,
+                    mock_mw,
+                    backend=explicit_backend,
+                )
+
+            assert result is not None
+            explicit_backend.awrite.assert_called_once()
+
     async def test_read_failure_returns_none(self) -> None:
         """Should return None when reading existing file fails."""
         app = DeepAgentsApp()
@@ -897,6 +928,73 @@ class TestCompactRouting:
 
             msgs = app.query(AppMessage)
             assert any("Nothing to compact" in str(w._content) for w in msgs)
+
+
+class TestCompactRemoteFallback:
+    """Verify `/compact` handles resumed remote threads."""
+
+    async def test_resumed_remote_thread_uses_checkpointer_state(self) -> None:
+        """Should compact using checkpoint fallback when remote state is empty."""
+        from deepagents_cli.remote_client import RemoteAgent
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            messages = _make_messages(15)
+            prior_summary = MagicMock()
+            prior_summary.content = "Old summary."
+            prior_summary.additional_kwargs = {"lc_source": "summarization"}
+            prior_event = {
+                "cutoff_index": 5,
+                "summary_message": prior_summary,
+                "file_path": None,
+            }
+
+            empty_state = MagicMock()
+            empty_state.values = {}
+
+            app._agent = MagicMock(spec=RemoteAgent)
+            app._agent.aget_state = AsyncMock(return_value=empty_state)
+            app._agent.aensure_thread = AsyncMock()
+            app._agent.aupdate_state = AsyncMock()
+            app._backend = MagicMock()
+            app._lc_thread_id = "test-thread"
+            app._agent_running = False
+
+            with (
+                patch.object(
+                    DeepAgentsApp,
+                    "_read_channel_values_from_checkpointer",
+                    return_value={
+                        "messages": messages,
+                        "_summarization_event": prior_event,
+                    },
+                ) as checkpointer_mock,
+                _mock_middleware(cutoff=3, summary="New summary.") as mock_mw,
+                patch.object(
+                    app,
+                    "_offload_messages_for_compact",
+                    new_callable=AsyncMock,
+                    return_value=None,
+                ),
+                patch(_TOKEN_COUNT_PATH, return_value=500),
+            ):
+                await app._handle_compact()
+                await pilot.pause()
+
+            checkpointer_mock.assert_awaited_once_with("test-thread")
+            mock_mw._apply_event_to_messages.assert_called_once_with(
+                messages,
+                prior_event,
+            )
+            app._agent.aensure_thread.assert_awaited_once_with(
+                {"configurable": {"thread_id": "test-thread"}}
+            )
+
+            update_values = app._agent.aupdate_state.call_args_list[0][0][1]
+            event = update_values["_summarization_event"]
+            assert event["cutoff_index"] == 7
 
 
 class TestFormatTokenCount:

@@ -137,14 +137,16 @@ class TestReloadFromEnvironment:
     def test_calls_dotenv_load(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        """Reload should call dotenv with override enabled."""
+        """Reload should anchor dotenv loading to the explicit start path."""
         settings = Settings.from_environment(start_path=tmp_path)
         mock_load = MagicMock(return_value=False)
+        env_file = tmp_path / ".env"
+        env_file.write_text("OPENAI_API_KEY=sk-test\n")
         monkeypatch.setattr("deepagents_cli.config.dotenv.load_dotenv", mock_load)
 
         settings.reload_from_environment(start_path=tmp_path)
 
-        mock_load.assert_called_once_with(override=True)
+        mock_load.assert_called_once_with(dotenv_path=env_file, override=True)
 
     def test_multiple_simultaneous_changes(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path

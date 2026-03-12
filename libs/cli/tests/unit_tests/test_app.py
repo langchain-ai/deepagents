@@ -1925,6 +1925,8 @@ class TestDeferredShowApproval:
         await app._deferred_show_approval(placeholder, menu)
 
         assert not mount_called, "_mount_approval_widget should NOT have been called"
+
+
 class TestFetchThreadHistoryData:
     """Verify _fetch_thread_history_data handles server-mode resume scenarios."""
 

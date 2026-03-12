@@ -8,6 +8,7 @@ from textual.containers import Container
 from textual.screen import ModalScreen
 from textual.widgets import Input, Static
 
+from deepagents_cli.model_config import ModelProfileEntry
 from deepagents_cli.widgets.model_selector import ModelSelectorScreen
 
 
@@ -676,6 +677,103 @@ class TestFilteredModelsWidgetSync:
         # navigating to widget index 1 (openai:gpt-4) would look up
         # _filtered_models[1] = anthropic:claude-opus — wrong model.
         assert screen._filtered_models[1] != grouped[1]
+
+
+class TestFormatOptionLabel:
+    """Tests for _format_option_label."""
+
+    def test_deprecated_model_shows_tag(self) -> None:
+        """Deprecated models should show a red (deprecated) tag."""
+        label = ModelSelectorScreen._format_option_label(
+            "anthropic:old-model",
+            selected=False,
+            current=False,
+            has_creds=True,
+            status="deprecated",
+        )
+        assert "(deprecated)" in label
+        assert "[red]" in label
+
+    def test_non_deprecated_model_no_tag(self) -> None:
+        """Models without deprecated status should not show the tag."""
+        label = ModelSelectorScreen._format_option_label(
+            "anthropic:claude-sonnet-4-5",
+            selected=False,
+            current=False,
+            has_creds=True,
+            status=None,
+        )
+        assert "(deprecated)" not in label
+
+    def test_other_status_renders_dimmed(self) -> None:
+        """Non-deprecated statuses (e.g., beta) render dimmed, not red."""
+        label = ModelSelectorScreen._format_option_label(
+            "anthropic:new-model",
+            selected=False,
+            current=False,
+            has_creds=True,
+            status="beta",
+        )
+        assert "(deprecated)" not in label
+        assert "(beta)" in label
+        assert "[dim]" in label
+
+    def test_all_suffixes_coexist(self) -> None:
+        """Current + default + deprecated all render together."""
+        label = ModelSelectorScreen._format_option_label(
+            "anthropic:old-model",
+            selected=False,
+            current=True,
+            has_creds=True,
+            is_default=True,
+            status="deprecated",
+        )
+        assert "(current)" in label
+        assert "(default)" in label
+        assert "(deprecated)" in label
+
+
+class TestGetModelStatus:
+    """Tests for _get_model_status profile lookup."""
+
+    def test_returns_status_when_present(self) -> None:
+        """Status is returned when profile entry has the key."""
+        screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
+        screen._profiles = {
+            "anthropic:old-model": ModelProfileEntry(
+                profile={"status": "deprecated"},
+                overridden_keys=frozenset(),
+            ),
+        }
+        assert screen._get_model_status("anthropic:old-model") == "deprecated"
+
+    def test_returns_none_when_no_profile_entry(self) -> None:
+        """None is returned when model spec is not in profiles."""
+        screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
+        screen._profiles = {}
+        assert screen._get_model_status("anthropic:missing") is None
+
+    def test_returns_none_when_no_status_key(self) -> None:
+        """None is returned when profile exists but has no status key."""
+        screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
+        screen._profiles = {
+            "anthropic:model": ModelProfileEntry(
+                profile={"max_input_tokens": 200000},
+                overridden_keys=frozenset(),
+            ),
+        }
+        assert screen._get_model_status("anthropic:model") is None
+
+    def test_returns_none_when_profile_empty(self) -> None:
+        """None is returned when profile dict is empty."""
+        screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
+        screen._profiles = {
+            "anthropic:model": ModelProfileEntry(
+                profile={},
+                overridden_keys=frozenset(),
+            ),
+        }
+        assert screen._get_model_status("anthropic:model") is None
 
 
 class TestModelDetailFooter:

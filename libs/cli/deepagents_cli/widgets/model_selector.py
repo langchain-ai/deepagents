@@ -462,6 +462,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                     current=is_current,
                     has_creds=has_creds,
                     is_default=model_spec == self._default_spec,
+                    status=self._get_model_status(model_spec),
                 )
                 widget = ModelOption(
                     label=label,
@@ -501,6 +502,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         current: bool,
         has_creds: bool | None,
         is_default: bool = False,
+        status: str | None = None,
     ) -> str:
         """Build the display label for a model option.
 
@@ -510,6 +512,9 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             current: Whether this is the active model.
             has_creds: Credential status (True/False/None).
             is_default: Whether this is the configured default model.
+            status: Model status from profile (e.g., `'deprecated'`,
+                `'beta'`). `'deprecated'` renders in red; other non-None
+                values render dimmed.
 
         Returns:
             Rich-markup label string.
@@ -524,7 +529,13 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             spec_text = model_spec
         suffix = " [dim](current)[/dim]" if current else ""
         default_suffix = " [cyan](default)[/cyan]" if is_default else ""
-        return f"{cursor}{spec_text}{suffix}{default_suffix}"
+        if status == "deprecated":
+            status_suffix = " [red](deprecated)[/red]"
+        elif status:
+            status_suffix = f" [dim]({status})[/dim]"
+        else:
+            status_suffix = ""
+        return f"{cursor}{spec_text}{suffix}{default_suffix}{status_suffix}"
 
     @staticmethod
     def _format_footer(
@@ -618,6 +629,24 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
 
         return f"{line1}\n{line2}\n{line3}\n{line4}"
 
+    def _get_model_status(self, model_spec: str) -> str | None:
+        """Look up the status field for a model from its profile.
+
+        Args:
+            model_spec: The `provider:model` string.
+
+        Returns:
+            Status string (e.g., `'deprecated'`) if the model has a profile
+            with a `status` key, otherwise None.
+        """
+        entry = self._profiles.get(model_spec)
+        if entry is None:
+            return None
+        profile = entry.get("profile")
+        if not profile:
+            return None
+        return profile.get("status")
+
     def _update_footer(self) -> None:
         """Update the detail footer for the currently highlighted model."""
         footer = self.query_one("#model-detail-footer", Static)
@@ -658,6 +687,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 current=old_widget.model_spec == self._current_spec,
                 has_creds=old_widget.has_creds,
                 is_default=old_widget.model_spec == self._default_spec,
+                status=self._get_model_status(old_widget.model_spec),
             )
         )
 
@@ -671,6 +701,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 current=new_widget.model_spec == self._current_spec,
                 has_creds=new_widget.has_creds,
                 is_default=new_widget.model_spec == self._default_spec,
+                status=self._get_model_status(new_widget.model_spec),
             )
         )
 

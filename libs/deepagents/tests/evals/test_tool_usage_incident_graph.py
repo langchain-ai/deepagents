@@ -647,7 +647,7 @@ async def test_two_tools_current_incident_service_name(model: BaseChatModel) -> 
             tool_call_requests=2,
             tool_calls=[
                 tool_call(name="get_current_incident_id", step=1),
-                tool_call(name="get_incident_service", step=2, args_contains={"incident_id": 101}),
+                tool_call(name="get_incident_service", step=2, args_contains={"incident_id": 41017}),
             ],
         ),
     )
@@ -667,8 +667,8 @@ async def test_three_tools_find_service_owner_team(model: BaseChatModel) -> None
             tool_call_requests=3,
             tool_calls=[
                 tool_call(name="find_services_by_name", step=1, args_contains={"name": "checkout-web"}),
-                tool_call(name="get_service_team", step=2, args_contains={"service_id": 2}),
-                tool_call(name="get_team_name", step=3, args_contains={"team_id": 2}),
+                tool_call(name="get_service_team", step=2, args_contains={"service_id": 8514}),
+                tool_call(name="get_team_name", step=3, args_contains={"team_id": 562}),
             ],
         ),
     )
@@ -687,10 +687,10 @@ async def test_four_tools_incident_to_oncall_name(model: BaseChatModel) -> None:
             agent_steps=5,
             tool_call_requests=4,
             tool_calls=[
-                tool_call(name="get_incident_service", step=1, args_contains={"incident_id": 102}),
-                tool_call(name="get_service_team", step=2, args_contains={"service_id": 2}),
-                tool_call(name="get_team_oncall_engineer", step=3, args_contains={"team_id": 2}),
-                tool_call(name="get_engineer_name", step=4, args_contains={"engineer_id": 3}),
+                tool_call(name="get_incident_service", step=1, args_contains={"incident_id": 41029}),
+                tool_call(name="get_service_team", step=2, args_contains={"service_id": 8514}),
+                tool_call(name="get_team_oncall_engineer", step=3, args_contains={"team_id": 562}),
+                tool_call(name="get_engineer_name", step=4, args_contains={"engineer_id": 7381}),
             ],
         ),
     )
@@ -710,8 +710,8 @@ async def test_four_tools_service_runbook_url(model: BaseChatModel) -> None:
             tool_call_requests=3,
             tool_calls=[
                 tool_call(name="find_services_by_name", step=1, args_contains={"name": "payments-api"}),
-                tool_call(name="get_service_runbook", step=2, args_contains={"service_id": 1}),
-                tool_call(name="get_runbook_url", step=3, args_contains={"runbook_id": 1}),
+                tool_call(name="get_service_runbook", step=2, args_contains={"service_id": 8401}),
+                tool_call(name="get_runbook_url", step=3, args_contains={"runbook_id": 12041}),
             ],
         ),
     )
@@ -733,11 +733,11 @@ async def test_five_tools_incident_latest_deploy_and_repo(model: BaseChatModel) 
             agent_steps=5,
             tool_call_requests=5,
             tool_calls=[
-                tool_call(name="get_incident_service", step=1, args_contains={"incident_id": 101}),
-                tool_call(name="get_service_repo", step=2, args_contains={"service_id": 1}),
-                tool_call(name="get_latest_deploy_for_service", step=2, args_contains={"service_id": 1}),
-                tool_call(name="get_repo_name", step=3, args_contains={"repo_id": 1}),
-                tool_call(name="get_deploy_version", step=3, args_contains={"deploy_id": 301}),
+                tool_call(name="get_incident_service", step=1, args_contains={"incident_id": 41017}),
+                tool_call(name="get_service_repo", step=2, args_contains={"service_id": 8401}),
+                tool_call(name="get_latest_deploy_for_service", step=2, args_contains={"service_id": 8401}),
+                tool_call(name="get_repo_name", step=3, args_contains={"repo_id": 9104}),
+                tool_call(name="get_deploy_version", step=3, args_contains={"deploy_id": 66011}),
             ],
         ),
     )
@@ -759,10 +759,10 @@ async def test_five_tools_incident_environment_name_and_region(model: BaseChatMo
             agent_steps=4,
             tool_call_requests=4,
             tool_calls=[
-                tool_call(name="get_incident_service", step=1, args_contains={"incident_id": 104}),
-                tool_call(name="get_service_environment", step=2, args_contains={"service_id": 4}),
-                tool_call(name="get_environment_name", step=3, args_contains={"environment_id": 2}),
-                tool_call(name="get_environment_region", step=3, args_contains={"environment_id": 2}),
+                tool_call(name="get_incident_service", step=1, args_contains={"incident_id": 41058}),
+                tool_call(name="get_service_environment", step=2, args_contains={"service_id": 8799}),
+                tool_call(name="get_environment_name", step=3, args_contains={"environment_id": 442}),
+                tool_call(name="get_environment_region", step=3, args_contains={"environment_id": 442}),
             ],
         ),
     )
@@ -785,9 +785,9 @@ async def test_five_tools_service_dependency_names_parallel(model: BaseChatModel
             tool_call_requests=4,
             tool_calls=[
                 tool_call(name="find_services_by_name", step=1, args_contains={"name": "checkout-web"}),
-                tool_call(name="list_service_dependencies", step=2, args_contains={"service_id": 2}),
-                tool_call(name="get_service_name", step=3, args_contains={"service_id": 1}),
-                tool_call(name="get_service_name", step=3, args_contains={"service_id": 3}),
+                tool_call(name="list_service_dependencies", step=2, args_contains={"service_id": 8514}),
+                tool_call(name="get_service_name", step=3, args_contains={"service_id": 8401}),
+                tool_call(name="get_service_name", step=3, args_contains={"service_id": 8627}),
             ],
         ),
     )
@@ -810,9 +810,9 @@ async def test_five_tools_service_alert_names_parallel(model: BaseChatModel) -> 
             tool_call_requests=4,
             tool_calls=[
                 tool_call(name="find_services_by_name", step=1, args_contains={"name": "payments-api"}),
-                tool_call(name="list_service_alert_ids", step=2, args_contains={"service_id": 1}),
-                tool_call(name="get_alert_name", step=3, args_contains={"alert_id": 201}),
-                tool_call(name="get_alert_name", step=3, args_contains={"alert_id": 202}),
+                tool_call(name="list_service_alert_ids", step=2, args_contains={"service_id": 8401}),
+                tool_call(name="get_alert_name", step=3, args_contains={"alert_id": 55101}),
+                tool_call(name="get_alert_name", step=3, args_contains={"alert_id": 55114}),
             ],
         ),
     )
@@ -835,11 +835,11 @@ async def test_six_tools_current_incident_oncall_name_and_email(model: BaseChatM
             tool_call_requests=6,
             tool_calls=[
                 tool_call(name="get_current_incident_id", step=1),
-                tool_call(name="get_incident_service", step=2, args_contains={"incident_id": 101}),
-                tool_call(name="get_service_team", step=3, args_contains={"service_id": 1}),
-                tool_call(name="get_team_oncall_engineer", step=4, args_contains={"team_id": 1}),
-                tool_call(name="get_engineer_name", step=5, args_contains={"engineer_id": 2}),
-                tool_call(name="get_engineer_email", step=5, args_contains={"engineer_id": 2}),
+                tool_call(name="get_incident_service", step=2, args_contains={"incident_id": 41017}),
+                tool_call(name="get_service_team", step=3, args_contains={"service_id": 8401}),
+                tool_call(name="get_team_oncall_engineer", step=4, args_contains={"team_id": 481}),
+                tool_call(name="get_engineer_name", step=5, args_contains={"engineer_id": 7243}),
+                tool_call(name="get_engineer_email", step=5, args_contains={"engineer_id": 7243}),
             ],
         ),
     )
@@ -862,9 +862,9 @@ async def test_six_tools_service_repo_and_branch(model: BaseChatModel) -> None:
             tool_call_requests=4,
             tool_calls=[
                 tool_call(name="find_services_by_name", step=1, args_contains={"name": "identity-api"}),
-                tool_call(name="get_service_repo", step=2, args_contains={"service_id": 3}),
-                tool_call(name="get_repo_name", step=3, args_contains={"repo_id": 3}),
-                tool_call(name="get_repo_default_branch", step=3, args_contains={"repo_id": 3}),
+                tool_call(name="get_service_repo", step=2, args_contains={"service_id": 8627}),
+                tool_call(name="get_repo_name", step=3, args_contains={"repo_id": 9346}),
+                tool_call(name="get_repo_default_branch", step=3, args_contains={"repo_id": 9346}),
             ],
         ),
     )
@@ -887,9 +887,9 @@ async def test_six_tools_incident_title_severity_and_status(model: BaseChatModel
             agent_steps=3,
             tool_call_requests=3,
             tool_calls=[
-                tool_call(name="get_incident_title", step=1, args_contains={"incident_id": 103}),
-                tool_call(name="get_incident_severity", step=1, args_contains={"incident_id": 103}),
-                tool_call(name="get_incident_status", step=1, args_contains={"incident_id": 103}),
+                tool_call(name="get_incident_title", step=1, args_contains={"incident_id": 41043}),
+                tool_call(name="get_incident_severity", step=1, args_contains={"incident_id": 41043}),
+                tool_call(name="get_incident_status", step=1, args_contains={"incident_id": 41043}),
             ],
         ),
     )
@@ -912,9 +912,9 @@ async def test_six_tools_current_incident_metrics_parallel(model: BaseChatModel)
             tool_call_requests=4,
             tool_calls=[
                 tool_call(name="get_current_incident_id", step=1),
-                tool_call(name="get_incident_service", step=2, args_contains={"incident_id": 101}),
-                tool_call(name="get_metric_value", step=3, args_contains={"service_id": 1, "metric_name": "error_rate"}),
-                tool_call(name="get_metric_value", step=3, args_contains={"service_id": 1, "metric_name": "latency_p95"}),
+                tool_call(name="get_incident_service", step=2, args_contains={"incident_id": 41017}),
+                tool_call(name="get_metric_value", step=3, args_contains={"service_id": 8401, "metric_name": "error_rate"}),
+                tool_call(name="get_metric_value", step=3, args_contains={"service_id": 8401, "metric_name": "latency_p95"}),
             ],
         ),
     )

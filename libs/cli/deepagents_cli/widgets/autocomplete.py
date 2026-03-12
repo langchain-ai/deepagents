@@ -107,7 +107,7 @@ SLASH_COMMANDS: list[tuple[str, str, str]] = [
     ("/reload", "Reload config from environment variables and .env", "refresh"),
     ("/remember", "Update memory and skills from conversation", ""),
     ("/tokens", "Token usage", "cost"),
-    ("/threads", "Browse and resume previous threads", "continue history"),
+    ("/threads", "Browse and resume previous threads", "continue history sessions"),
     ("/trace", "Open current thread in LangSmith", ""),
     ("/version", "Show version", ""),
 ]

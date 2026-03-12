@@ -9,7 +9,6 @@ Textual adapter expects.
 from __future__ import annotations
 
 import logging
-import uuid
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -19,9 +18,6 @@ from deepagents_cli._debug import configure_debug_logging
 
 logger = logging.getLogger(__name__)
 configure_debug_logging(logger)
-
-
-_THREAD_UUID_NAMESPACE = uuid.UUID("a1b2c3d4-e5f6-7890-abcd-ef1234567890")
 
 
 def _require_thread_id(config: dict[str, Any] | None) -> str:
@@ -41,22 +37,6 @@ def _require_thread_id(config: dict[str, Any] | None) -> str:
         msg = "thread_id is required in config.configurable"
         raise ValueError(msg)
     return thread_id
-
-
-def _to_uuid(short_id: str) -> str:
-    """Convert a thread ID string to a valid UUID string.
-
-    Args:
-        short_id: Thread ID (typically a UUID7 from `generate_thread_id`, but
-            shorter non-UUID strings are also accepted and converted via uuid5).
-
-    Returns:
-        Valid UUID string. Already-valid UUIDs are returned as-is.
-    """
-    try:
-        return str(uuid.UUID(short_id))
-    except ValueError:
-        return str(uuid.uuid5(_THREAD_UUID_NAMESPACE, short_id))
 
 
 class RemoteAgent:
@@ -146,6 +126,7 @@ class RemoteAgent:
 
         graph = self._get_graph()
         config = _prepare_config(config)
+        dropped_count = 0
 
         async for ns, mode, data in graph.astream(
             input,
@@ -161,6 +142,8 @@ class RemoteAgent:
                     msg_obj = _convert_message_data(msg_dict)
                     if msg_obj is not None:
                         yield (ns, "messages", (msg_obj, meta or {}))
+                    else:
+                        dropped_count += 1
                 elif isinstance(msg_dict, BaseMessage):
                     # Already a LangChain message object (pre-deserialized)
                     yield (ns, "messages", (msg_dict, meta or {}))
@@ -182,6 +165,12 @@ class RemoteAgent:
                 continue
 
             yield (ns, mode, data)
+
+        if dropped_count:
+            logger.warning(
+                "Dropped %d message(s) during stream due to conversion failures",
+                dropped_count,
+            )
 
     async def aget_state(
         self,
@@ -308,19 +297,16 @@ class RemoteAgent:
 
 
 def _prepare_config(config: dict[str, Any] | None) -> dict[str, Any]:
-    """Normalize config, converting `thread_id` to a valid UUID.
+    """Shallow-copy config so callers' dicts are not mutated.
 
     Args:
         config: Raw config dict.
 
     Returns:
-        A shallow copy with `configurable.thread_id` as a UUID string.
+        A shallow copy of the config.
     """
     config = dict(config or {})
     configurable = dict(config.get("configurable", {}))
-    thread_id = configurable.get("thread_id")
-    if thread_id:
-        configurable["thread_id"] = _to_uuid(thread_id)
     config["configurable"] = configurable
     return config
 

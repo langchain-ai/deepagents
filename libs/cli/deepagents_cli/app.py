@@ -2642,13 +2642,10 @@ class DeepAgentsApp(App):
         try:
             from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
-            from deepagents_cli.remote_client import _to_uuid
             from deepagents_cli.sessions import get_db_path
 
             db_path = str(get_db_path())
-            config: RunnableConfig = {
-                "configurable": {"thread_id": _to_uuid(thread_id)}
-            }
+            config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
             async with AsyncSqliteSaver.from_conn_string(db_path) as saver:
                 tup = await saver.aget_tuple(config)
                 if tup and tup.checkpoint:

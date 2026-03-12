@@ -1,4 +1,4 @@
-"""Tests for RemoteAgent, _to_uuid, _convert_message_data, and helpers."""
+"""Tests for RemoteAgent, _convert_message_data, and helpers."""
 
 import uuid
 from typing import Any
@@ -15,26 +15,9 @@ from deepagents_cli.remote_client import (
     _convert_message_data,
     _convert_tool_message,
     _prepare_config,
-    _to_uuid,
 )
 
-# ---------------------------------------------------------------------------
-# _to_uuid
-# ---------------------------------------------------------------------------
-
-
-class TestToUuid:
-    def test_short_id_becomes_valid_uuid(self) -> None:
-        result = _to_uuid("461bc7c2")
-        uuid.UUID(result)
-        assert "0000-0000-0000-000000000000" not in result
-
-    def test_full_uuid_passthrough(self) -> None:
-        full = str(uuid.uuid4())
-        assert _to_uuid(full) == full
-
-    def test_deterministic(self) -> None:
-        assert _to_uuid("abcd1234") == _to_uuid("abcd1234")
+_TEST_THREAD_ID = "01966f3a-0000-7000-8000-000000000001"
 
 
 # ---------------------------------------------------------------------------
@@ -43,25 +26,20 @@ class TestToUuid:
 
 
 class TestPrepareConfig:
-    def test_converts_thread_id_to_uuid(self) -> None:
-        config = {"configurable": {"thread_id": "short"}}
+    def test_preserves_thread_id(self) -> None:
+        config = {"configurable": {"thread_id": _TEST_THREAD_ID}}
         result = _prepare_config(config)
-        uuid.UUID(result["configurable"]["thread_id"])
-
-    def test_preserves_valid_uuid(self) -> None:
-        tid = str(uuid.uuid4())
-        config = {"configurable": {"thread_id": tid}}
-        result = _prepare_config(config)
-        assert result["configurable"]["thread_id"] == tid
+        assert result["configurable"]["thread_id"] == _TEST_THREAD_ID
 
     def test_none_config(self) -> None:
         result = _prepare_config(None)
         assert result == {"configurable": {}}
 
     def test_does_not_mutate_original(self) -> None:
-        config = {"configurable": {"thread_id": "abc"}}
+        tid = str(uuid.uuid4())
+        config = {"configurable": {"thread_id": tid}}
         _prepare_config(config)
-        assert config["configurable"]["thread_id"] == "abc"
+        assert config["configurable"]["thread_id"] == tid
 
     def test_missing_configurable_key(self) -> None:
         result = _prepare_config({"other": "value"})
@@ -268,7 +246,7 @@ def _make_agent(
 
 
 def _config() -> dict[str, Any]:
-    return {"configurable": {"thread_id": "t1"}}
+    return {"configurable": {"thread_id": _TEST_THREAD_ID}}
 
 
 # ---------------------------------------------------------------------------
@@ -488,7 +466,7 @@ class TestRemoteAgentGetState:
         mock_graph.aget_state = AsyncMock(return_value=None)
         agent._graph = mock_graph
 
-        await agent.aget_state({"configurable": {"thread_id": "short"}})
+        await agent.aget_state({"configurable": {"thread_id": _TEST_THREAD_ID}})
         call_config = mock_graph.aget_state.call_args[0][0]
         uuid.UUID(call_config["configurable"]["thread_id"])
 
@@ -529,7 +507,7 @@ class TestRemoteAgentUpdateState:
         agent._graph = mock_graph
 
         await agent.aupdate_state(
-            {"configurable": {"thread_id": "short"}}, {"key": "val"}
+            {"configurable": {"thread_id": _TEST_THREAD_ID}}, {"key": "val"}
         )
         call_config = mock_graph.aupdate_state.call_args[0][0]
         uuid.UUID(call_config["configurable"]["thread_id"])
@@ -551,7 +529,7 @@ class TestRemoteAgentEnsureThread:
 
         await agent.aensure_thread(
             {
-                "configurable": {"thread_id": "short"},
+                "configurable": {"thread_id": _TEST_THREAD_ID},
                 "metadata": {"assistant_id": "agent"},
             }
         )

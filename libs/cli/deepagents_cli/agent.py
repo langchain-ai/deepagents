@@ -805,10 +805,6 @@ def create_cli_agent(
             routes={},
         )
 
-    from deepagents.graph import resolve_model
-
-    model = resolve_model(model)
-
     from deepagents.middleware.summarization import create_summarization_tool_middleware
 
     agent_middleware.append(

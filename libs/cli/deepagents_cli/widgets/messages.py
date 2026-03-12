@@ -774,7 +774,7 @@ class ToolCallMessage(Vertical):
             return FormattedOutput(content=escape_markup(output))
 
         if not items:
-            return FormattedOutput(content="    [dim]No todos[/dim]")
+            return FormattedOutput(content="    [dim]暂无任务[/dim]")
 
         lines: list[str] = []
         max_items = 4 if is_preview else len(items)
@@ -827,11 +827,11 @@ class ToolCallMessage(Vertical):
 
         parts = []
         if active:
-            parts.append(f"[yellow]{active} active[/yellow]")
+            parts.append(f"[yellow]{active} 进行中[/yellow]")
         if pending:
-            parts.append(f"{pending} pending")
+            parts.append(f"{pending} 待处理")
         if completed:
-            parts.append(f"[green]{completed} done[/green]")
+            parts.append(f"[green]{completed} 已完成[/green]")
         return " | ".join(parts)
 
     def _format_single_todo(self, item: dict | str) -> str:  # noqa: PLR6301  # Grouped as method for widget cohesion
@@ -853,10 +853,10 @@ class ToolCallMessage(Vertical):
         glyphs = get_glyphs()
         escaped = escape_markup(content)
         if status == "completed":
-            return f"    [green]{glyphs.checkmark} done[/green]   [dim]{escaped}[/dim]"
+            return f"    [green]{glyphs.checkmark} 已完成[/green]   [dim]{escaped}[/dim]"
         if status == "in_progress":
-            return f"    [yellow]{glyphs.circle_filled} active[/yellow] {escaped}"
-        return f"    [dim]{glyphs.circle_empty} todo[/dim]   {escaped}"
+            return f"    [yellow]{glyphs.circle_filled} 进行中[/yellow] {escaped}"
+        return f"    [dim]{glyphs.circle_empty} 待处理[/dim]   {escaped}"
 
     def _format_ls_output(  # noqa: PLR6301  # Grouped as method for widget cohesion
         self, output: str, *, is_preview: bool = False

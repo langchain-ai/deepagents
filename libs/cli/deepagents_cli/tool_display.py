@@ -233,7 +233,7 @@ def format_tool_display(tool_name: str, tool_args: dict) -> str:
     elif tool_name == "write_todos":
         if "todos" in tool_args and isinstance(tool_args["todos"], list):
             count = len(tool_args["todos"])
-            return f"{prefix} {tool_name}({count} items)"
+            return f"{prefix} {tool_name}({count} 项任务)"
 
     # Fallback: generic formatting for unknown tools
     # Show all arguments in key=value format

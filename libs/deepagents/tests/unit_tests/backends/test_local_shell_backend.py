@@ -158,8 +158,9 @@ def test_local_shell_backend_ls_info() -> None:
         backend.write("/file2.txt", "content2")
 
         # List files
-        files = backend.ls_info("/")
+        files = backend.ls_info("/").entries
 
+        assert files is not None
         assert len(files) == 2
         paths = [f["path"] for f in files]
         assert "/file1.txt" in paths
@@ -176,9 +177,9 @@ def test_local_shell_backend_grep() -> None:
         backend.write("/file2.txt", "DONE: completed")
 
         # Search for TODO
-        matches = backend.grep_raw("TODO")
+        matches = backend.grep_raw("TODO").matches
 
-        assert isinstance(matches, list)
+        assert matches is not None
         assert len(matches) == 1
         assert matches[0]["text"] == "TODO: implement this"
 
@@ -194,8 +195,9 @@ def test_local_shell_backend_glob() -> None:
         backend.write("/file3.txt", "content")
 
         # Find all .txt files
-        txt_files = backend.glob_info("*.txt")
+        txt_files = backend.glob_info("*.txt").matches
 
+        assert txt_files is not None
         assert len(txt_files) == 2
         paths = [f["path"] for f in txt_files]
         assert "/file1.txt" in paths

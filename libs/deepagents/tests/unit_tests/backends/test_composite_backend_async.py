@@ -78,18 +78,21 @@ async def test_composite_state_backend_routes_and_search_async(tmp_path: Path): 
     assert isinstance(msg, WriteResult) and msg.error is None and msg.files_update is None
 
     # als_info at root returns both
-    infos = await be.als_info("/")
+    infos = (await be.als_info("/")).entries
+    assert infos is not None
     paths = {i["path"] for i in infos}
     assert "/file.txt" in paths and "/memories/" in paths
 
     # agrep across both
-    matches = await be.agrep_raw("alpha", path="/")
+    matches = (await be.agrep_raw("alpha", path="/")).matches
+    assert matches is not None
     assert any(m["path"] == "/file.txt" for m in matches)
-    matches2 = await be.agrep_raw("beta", path="/")
+    matches2 = (await be.agrep_raw("beta", path="/")).matches
+    assert matches2 is not None
     assert any(m["path"] == "/memories/readme.md" for m in matches2)
 
     # aglob across both
-    g = await be.aglob_info("**/*.md", path="/")
+    g = (await be.aglob_info("**/*.md", path="/")).matches
     assert any(i["path"] == "/memories/readme.md" for i in g)
 
 
@@ -108,30 +111,36 @@ async def test_composite_backend_filesystem_plus_store_async(tmp_path: Path):
     assert isinstance(r2, WriteResult) and r2.error is None and r2.files_update is None
 
     # als_info path routing
-    infos_root = await comp.als_info("/")
+    infos_root = (await comp.als_info("/")).entries
+    assert infos_root is not None
     assert any(i["path"] == "/hello.txt" for i in infos_root)
-    infos_mem = await comp.als_info("/memories/")
+    infos_mem = (await comp.als_info("/memories/")).entries
+    assert infos_mem is not None
     assert any(i["path"] == "/memories/notes.md" for i in infos_mem)
 
-    infos_mem_no_slash = await comp.als_info("/memories")
+    infos_mem_no_slash = (await comp.als_info("/memories")).entries
+    assert infos_mem_no_slash is not None
     assert any(i["path"] == "/memories/notes.md" for i in infos_mem_no_slash)
 
     # agrep_raw route targeting should accept /memories as the route root
-    gm_mem = await comp.agrep_raw("note", path="/memories")
+    gm_mem = (await comp.agrep_raw("note", path="/memories")).matches
+    assert gm_mem is not None
     assert any(m["path"] == "/memories/notes.md" for m in gm_mem)
 
     # aglob_info route targeting should accept /memories as the route root
-    gl_mem = await comp.aglob_info("*.md", path="/memories")
+    gl_mem = (await comp.aglob_info("*.md", path="/memories")).matches
     assert any(i["path"] == "/memories/notes.md" for i in gl_mem)
 
     # agrep_raw merges
-    gm = await comp.agrep_raw("hello", path="/")
+    gm = (await comp.agrep_raw("hello", path="/")).matches
+    assert gm is not None
     assert any(m["path"] == "/hello.txt" for m in gm)
-    gm2 = await comp.agrep_raw("note", path="/")
+    gm2 = (await comp.agrep_raw("note", path="/")).matches
+    assert gm2 is not None
     assert any(m["path"] == "/memories/notes.md" for m in gm2)
 
     # aglob_info
-    gl = await comp.aglob_info("*.md", path="/")
+    gl = (await comp.aglob_info("*.md", path="/")).matches
     assert any(i["path"] == "/memories/notes.md" for i in gl)
 
 
@@ -163,16 +172,19 @@ async def test_composite_backend_store_to_store_async():
     assert "routed store content" in content2.file_data["content"]
 
     # als_info at root should show both
-    infos = await comp.als_info("/")
+    infos = (await comp.als_info("/")).entries
+    assert infos is not None
     paths = {i["path"] for i in infos}
     assert "/notes.txt" in paths
     assert "/memories/" in paths
 
     # agrep across both stores
-    matches = await comp.agrep_raw("default", path="/")
+    matches = (await comp.agrep_raw("default", path="/")).matches
+    assert matches is not None
     assert any(m["path"] == "/notes.txt" for m in matches)
 
-    matches2 = await comp.agrep_raw("routed", path="/")
+    matches2 = (await comp.agrep_raw("routed", path="/")).matches
+    assert matches2 is not None
     assert any(m["path"] == "/memories/important.txt" for m in matches2)
 
 
@@ -210,7 +222,8 @@ async def test_composite_backend_multiple_routes_async():
     assert res_cache.path == "/cache/session.json"
 
     # als_info at root should aggregate all
-    infos = await comp.als_info("/")
+    infos = (await comp.als_info("/")).entries
+    assert infos is not None
     paths = {i["path"] for i in infos}
     assert "/temp.txt" in paths
     assert "/memories/" in paths
@@ -218,7 +231,8 @@ async def test_composite_backend_multiple_routes_async():
     assert "/cache/" in paths
 
     # als_info at specific route
-    mem_infos = await comp.als_info("/memories/")
+    mem_infos = (await comp.als_info("/memories/")).entries
+    assert mem_infos is not None
     mem_paths = {i["path"] for i in mem_infos}
     assert "/memories/important.md" in mem_paths
     assert "/temp.txt" not in mem_paths
@@ -226,14 +240,15 @@ async def test_composite_backend_multiple_routes_async():
 
     # agrep across all backends with literal text search
     # Note: All written content contains 'm' character
-    all_matches = await comp.agrep_raw("m", path="/")  # Match literal 'm'
+    all_matches = (await comp.agrep_raw("m", path="/")).matches  # Match literal 'm'
+    assert all_matches is not None
     paths_with_content = {m["path"] for m in all_matches}
     assert "/temp.txt" in paths_with_content  # "ephemeral" contains 'm'
     # Note: Store routes might share state in tests, so just verify default backend works
     assert len(paths_with_content) >= 1  # At least temp.txt should match
 
     # aglob across all backends
-    glob_results = await comp.aglob_info("**/*.md", path="/")
+    glob_results = (await comp.aglob_info("**/*.md", path="/")).matches
     assert any(i["path"] == "/memories/important.md" for i in glob_results)
 
     # Edit in routed backend
@@ -271,7 +286,8 @@ async def test_composite_backend_als_nested_directories_async(tmp_path: Path):
     await comp.awrite("/memories/deep/note2.txt", "note 2")
     await comp.awrite("/memories/deep/nested/note3.txt", "note 3")
 
-    root_listing = await comp.als_info("/")
+    root_listing = (await comp.als_info("/")).entries
+    assert root_listing is not None
     root_paths = [fi["path"] for fi in root_listing]
     assert "/local.txt" in root_paths
     assert "/src/" in root_paths
@@ -279,19 +295,22 @@ async def test_composite_backend_als_nested_directories_async(tmp_path: Path):
     assert "/src/main.py" not in root_paths
     assert "/memories/note1.txt" not in root_paths
 
-    src_listing = await comp.als_info("/src/")
+    src_listing = (await comp.als_info("/src/")).entries
+    assert src_listing is not None
     src_paths = [fi["path"] for fi in src_listing]
     assert "/src/main.py" in src_paths
     assert "/src/utils/" in src_paths
     assert "/src/utils/helper.py" not in src_paths
 
-    mem_listing = await comp.als_info("/memories/")
+    mem_listing = (await comp.als_info("/memories/")).entries
+    assert mem_listing is not None
     mem_paths = [fi["path"] for fi in mem_listing]
     assert "/memories/note1.txt" in mem_paths
     assert "/memories/deep/" in mem_paths
     assert "/memories/deep/note2.txt" not in mem_paths
 
-    deep_listing = await comp.als_info("/memories/deep/")
+    deep_listing = (await comp.als_info("/memories/deep/")).entries
+    assert deep_listing is not None
     deep_paths = [fi["path"] for fi in deep_listing]
     assert "/memories/deep/note2.txt" in deep_paths
     assert "/memories/deep/nested/" in deep_paths
@@ -336,7 +355,8 @@ async def test_composite_backend_als_multiple_routes_nested_async():
     for path, content in archive_files.items():
         await comp.awrite(path, content)
 
-    root_listing = await comp.als_info("/")
+    root_listing = (await comp.als_info("/")).entries
+    assert root_listing is not None
     root_paths = [fi["path"] for fi in root_listing]
     assert "/temp.txt" in root_paths
     assert "/work/" in root_paths
@@ -345,19 +365,22 @@ async def test_composite_backend_als_multiple_routes_nested_async():
     assert "/work/file1.txt" not in root_paths
     assert "/memories/important.txt" not in root_paths
 
-    work_listing = await comp.als_info("/work/")
+    work_listing = (await comp.als_info("/work/")).entries
+    assert work_listing is not None
     work_paths = [fi["path"] for fi in work_listing]
     assert "/work/file1.txt" in work_paths
     assert "/work/projects/" in work_paths
     assert "/work/projects/proj1.txt" not in work_paths
 
-    mem_listing = await comp.als_info("/memories/")
+    mem_listing = (await comp.als_info("/memories/")).entries
+    assert mem_listing is not None
     mem_paths = [fi["path"] for fi in mem_listing]
     assert "/memories/important.txt" in mem_paths
     assert "/memories/diary/" in mem_paths
     assert "/memories/diary/entry1.txt" not in mem_paths
 
-    arch_listing = await comp.als_info("/archive/")
+    arch_listing = (await comp.als_info("/archive/")).entries
+    assert arch_listing is not None
     arch_paths = [fi["path"] for fi in arch_listing]
     assert "/archive/old.txt" in arch_paths
     assert "/archive/2023/" in arch_paths
@@ -651,8 +674,8 @@ async def test_composite_agrep_targeting_specific_route_async(tmp_path: Path) ->
     await comp.awrite("/memories/note2.txt", "memory content beta")
 
     # Grep with path="/memories/" should only search memories backend
-    matches = await comp.agrep_raw("memory", path="/memories/")
-    assert isinstance(matches, list)
+    matches = (await comp.agrep_raw("memory", path="/memories/")).matches
+    assert matches is not None
     match_paths = [m["path"] for m in matches]
 
     # Should find matches in /memories/
@@ -683,8 +706,8 @@ async def test_composite_agrep_with_glob_filter_async(tmp_path: Path) -> None:
     await comp.awrite("/memories/data.json", "json data here")
 
     # Grep with glob="*.py" should only search Python files
-    matches = await comp.agrep_raw("here", path="/", glob="*.py")
-    assert isinstance(matches, list)
+    matches = (await comp.agrep_raw("here", path="/", glob="*.py")).matches
+    assert matches is not None
     match_paths = [m["path"] for m in matches]
 
     # Should find .py files
@@ -713,8 +736,8 @@ async def test_composite_agrep_with_glob_in_specific_route_async(tmp_path: Path)
     await comp.awrite("/memories/data.txt", "text data")
 
     # Grep memories with glob="*.md"
-    matches = await comp.agrep_raw("notes", path="/memories/", glob="*.md")
-    assert isinstance(matches, list)
+    matches = (await comp.agrep_raw("notes", path="/memories/", glob="*.md")).matches
+    assert matches is not None
     match_paths = [m["path"] for m in matches]
 
     # Should find .md file in memories
@@ -740,12 +763,12 @@ async def test_composite_agrep_with_path_none_async(tmp_path: Path) -> None:
     await comp.awrite("/memories/file2.txt", "searchable memory")
 
     # Grep with path=None
-    matches_none = await comp.agrep_raw("searchable", path=None)
-    assert isinstance(matches_none, list)
+    matches_none = (await comp.agrep_raw("searchable", path=None)).matches
+    assert matches_none is not None
 
     # Grep with path="/"
-    matches_root = await comp.agrep_raw("searchable", path="/")
-    assert isinstance(matches_root, list)
+    matches_root = (await comp.agrep_raw("searchable", path="/")).matches
+    assert matches_root is not None
 
     # Both should return same results
     paths_none = sorted([m["path"] for m in matches_none])
@@ -765,7 +788,7 @@ async def test_composite_agrep_invalid_regex_async(tmp_path: Path) -> None:
 
     # Special characters are treated literally (not regex), should return empty list
     result = await comp.agrep_raw("[invalid(", path="/")
-    assert isinstance(result, list)  # Returns empty list, not error
+    assert result.matches is not None  # Returns empty list, not error
 
 
 async def test_composite_agrep_nested_path_in_route_async(tmp_path: Path) -> None:
@@ -786,8 +809,8 @@ async def test_composite_agrep_nested_path_in_route_async(tmp_path: Path) -> Non
     await comp.awrite("/memories/notes.txt", "notes here")
 
     # Grep with nested path
-    matches = await comp.agrep_raw("here", path="/memories/docs/")
-    assert isinstance(matches, list)
+    matches = (await comp.agrep_raw("here", path="/memories/docs/")).matches
+    assert matches is not None
     match_paths = [m["path"] for m in matches]
 
     # Should find files in /memories/docs/
@@ -814,8 +837,8 @@ async def test_composite_agrep_empty_results_async(tmp_path: Path) -> None:
     await comp.awrite("/memories/note.txt", "memory content")
 
     # Search for pattern that doesn't exist
-    matches = await comp.agrep_raw("nonexistent_pattern_xyz", path="/")
-    assert isinstance(matches, list)
+    matches = (await comp.agrep_raw("nonexistent_pattern_xyz", path="/")).matches
+    assert matches is not None
     assert len(matches) == 0
 
 
@@ -834,8 +857,8 @@ async def test_composite_agrep_route_prefix_restoration_async(tmp_path: Path) ->
     await comp.awrite("/memories/beta.txt", "test content beta")
 
     # Grep in memories route
-    matches = await comp.agrep_raw("test", path="/memories/")
-    assert isinstance(matches, list)
+    matches = (await comp.agrep_raw("test", path="/memories/")).matches
+    assert matches is not None
     assert len(matches) > 0
 
     # All paths should start with /memories/
@@ -844,8 +867,8 @@ async def test_composite_agrep_route_prefix_restoration_async(tmp_path: Path) ->
         assert not match["path"].startswith("/memories//")  # No double slashes
 
     # Grep across all backends (path="/")
-    matches_all = await comp.agrep_raw("test", path="/")
-    assert isinstance(matches_all, list)
+    matches_all = (await comp.agrep_raw("test", path="/")).matches
+    assert matches_all is not None
 
     # Filter matches from memories
     memory_matches = [m for m in matches_all if "/memories/" in m["path"]]
@@ -864,8 +887,8 @@ async def test_composite_agrep_multiple_matches_per_file_async(tmp_path: Path) -
     fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
     comp = CompositeBackend(default=fs, routes={})
 
-    matches = await comp.agrep_raw("pattern", path="/")
-    assert isinstance(matches, list)
+    matches = (await comp.agrep_raw("pattern", path="/")).matches
+    assert matches is not None
 
     # Should have 2 matches from the same file
     multi_matches = [m for m in matches if "multi.txt" in m["path"]]
@@ -904,8 +927,8 @@ async def test_composite_agrep_multiple_routes_aggregation_async(tmp_path: Path)
     await comp.awrite("/archive/arch.txt", "archive findme")
 
     # Grep across all backends
-    matches = await comp.agrep_raw("findme", path="/")
-    assert isinstance(matches, list)
+    matches = (await comp.agrep_raw("findme", path="/")).matches
+    assert matches is not None
     match_paths = sorted([m["path"] for m in matches])
 
     # Expected: each file appears only in its own route
@@ -935,7 +958,7 @@ async def test_composite_agrep_error_in_routed_backend_async() -> None:
 
     # When searching a specific route that errors, return the error
     result = await comp.agrep_raw("test", path="/errors/")
-    assert result == "Invalid regex pattern error"
+    assert result.error == "Invalid regex pattern error"
 
 
 async def test_composite_agrep_error_in_routed_backend_at_root_async() -> None:
@@ -954,7 +977,7 @@ async def test_composite_agrep_error_in_routed_backend_at_root_async() -> None:
 
     # When searching from root and a routed backend errors, return the error
     result = await comp.agrep_raw("test", path="/")
-    assert result == "Backend error occurred"
+    assert result.error == "Backend error occurred"
 
 
 async def test_composite_agrep_error_in_default_backend_at_root_async() -> None:
@@ -973,7 +996,7 @@ async def test_composite_agrep_error_in_default_backend_at_root_async() -> None:
 
     # When searching from root and default backend errors, return the error
     result = await comp.agrep_raw("test", path="/")
-    assert result == "Default backend error"
+    assert result.error == "Default backend error"
 
 
 async def test_composite_agrep_non_root_path_on_default_backend_async(tmp_path: Path) -> None:
@@ -992,7 +1015,8 @@ async def test_composite_agrep_non_root_path_on_default_backend_async(tmp_path: 
     comp = CompositeBackend(default=fs, routes={"/memories/": store})
 
     # Search in /work directory (doesn't match any route)
-    matches = await comp.agrep_raw("content", path="/work")
+    matches = (await comp.agrep_raw("content", path="/work")).matches
+    assert matches is not None
     match_paths = [m["path"] for m in matches]
 
     # Should only find files in /work, not /other.txt
@@ -1017,7 +1041,7 @@ async def test_composite_aglob_info_targeting_specific_route_async() -> None:
     await state_backend.awrite("/local.py", "local python")
 
     # Glob in specific route with pattern - should only find .py files in memories
-    results = await comp.aglob_info("**/*.py", path="/memories/")
+    results = (await comp.aglob_info("**/*.py", path="/memories/")).matches
     result_paths = [fi["path"] for fi in results]
 
     assert result_paths == ["/memories/test.py"]
@@ -1039,7 +1063,7 @@ async def test_composite_aglob_info_nested_path_in_route_async() -> None:
     await comp.awrite("/archive/notes.txt", "general notes")
 
     # Glob in nested path within route - should only find .log files in /archive/2024/
-    results = await comp.aglob_info("*.log", path="/archive/2024/")
+    results = (await comp.aglob_info("*.log", path="/archive/2024/")).matches
     result_paths = sorted([fi["path"] for fi in results])
 
     assert result_paths == ["/archive/2024/feb.log", "/archive/2024/jan.log"]

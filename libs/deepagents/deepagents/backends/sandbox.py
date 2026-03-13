@@ -22,6 +22,7 @@ from deepagents.backends.protocol import (
     FileUploadResponse,
     GlobResult,
     GrepMatch,
+    LsResult,
     ReadResult,
     SandboxBackendProtocol,
     WriteResult,
@@ -238,7 +239,7 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
             ExecuteResponse with combined output, exit code, and truncation flag.
         """
 
-    def ls_info(self, path: str) -> list[FileInfo]:
+    def ls_info(self, path: str) -> LsResult:
         """Structured listing with file metadata using os.scandir."""
         path_b64 = base64.b64encode(path.encode("utf-8")).decode("ascii")
         cmd = f"""python3 -c "
@@ -274,7 +275,7 @@ except PermissionError:
             except json.JSONDecodeError:
                 continue
 
-        return file_infos
+        return LsResult(entries=file_infos)
 
     def read(
         self,

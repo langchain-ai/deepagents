@@ -41,7 +41,8 @@ def test_store_backend_crud_and_search():
     assert isinstance(msg2, EditResult) and msg2.error is None and msg2.occurrences == 1
 
     # ls_info (path prefix filter)
-    infos = be.ls_info("/docs/")
+    infos = be.ls_info("/docs/").entries
+    assert infos is not None
     assert any(i["path"] == "/docs/readme.md" for i in infos)
 
     # grep_raw
@@ -73,7 +74,8 @@ def test_store_backend_ls_nested_directories():
         res = be.write(path, content)
         assert res.error is None
 
-    root_listing = be.ls_info("/")
+    root_listing = be.ls_info("/").entries
+    assert root_listing is not None
     root_paths = [fi["path"] for fi in root_listing]
     assert "/config.json" in root_paths
     assert "/src/" in root_paths
@@ -83,20 +85,22 @@ def test_store_backend_ls_nested_directories():
     assert "/docs/readme.md" not in root_paths
     assert "/docs/api/reference.md" not in root_paths
 
-    src_listing = be.ls_info("/src/")
+    src_listing = be.ls_info("/src/").entries
+    assert src_listing is not None
     src_paths = [fi["path"] for fi in src_listing]
     assert "/src/main.py" in src_paths
     assert "/src/utils/" in src_paths
     assert "/src/utils/helper.py" not in src_paths
 
-    utils_listing = be.ls_info("/src/utils/")
+    utils_listing = be.ls_info("/src/utils/").entries
+    assert utils_listing is not None
     utils_paths = [fi["path"] for fi in utils_listing]
     assert "/src/utils/helper.py" in utils_paths
     assert "/src/utils/common.py" in utils_paths
     assert len(utils_paths) == 2
 
     empty_listing = be.ls_info("/nonexistent/")
-    assert empty_listing == []
+    assert empty_listing.entries == []
 
 
 def test_store_backend_ls_trailing_slash():
@@ -112,11 +116,14 @@ def test_store_backend_ls_trailing_slash():
         res = be.write(path, content)
         assert res.error is None
 
-    listing_from_root = be.ls_info("/")
+    listing_from_root = be.ls_info("/").entries
+    assert listing_from_root is not None
     assert len(listing_from_root) > 0
 
-    listing1 = be.ls_info("/dir/")
-    listing2 = be.ls_info("/dir")
+    listing1 = be.ls_info("/dir/").entries
+    listing2 = be.ls_info("/dir").entries
+    assert listing1 is not None
+    assert listing2 is not None
     assert len(listing1) == len(listing2)
     assert [fi["path"] for fi in listing1] == [fi["path"] for fi in listing2]
 

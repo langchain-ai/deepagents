@@ -158,8 +158,9 @@ def test_local_shell_backend_ls_info() -> None:
         backend.write("/file2.txt", "content2")
 
         # List files
-        files = backend.ls_info("/")
+        files = backend.ls_info("/").entries
 
+        assert files is not None
         assert len(files) == 2
         paths = [f["path"] for f in files]
         assert "/file1.txt" in paths

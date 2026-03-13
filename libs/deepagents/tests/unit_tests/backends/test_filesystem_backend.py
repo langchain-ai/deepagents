@@ -24,7 +24,8 @@ def test_filesystem_backend_normal_mode(tmp_path: Path):
     be = FilesystemBackend(root_dir=str(root), virtual_mode=False)
 
     # ls_info absolute path - should only list files in root, not subdirectories
-    infos = be.ls_info(str(root))
+    infos = be.ls_info(str(root)).entries
+    assert infos is not None
     paths = {i["path"] for i in infos}
     assert str(f1) in paths  # File in root should be listed
     assert str(f2) not in paths  # File in subdirectory should NOT be listed
@@ -60,7 +61,8 @@ def test_filesystem_backend_virtual_mode(tmp_path: Path, monkeypatch: pytest.Mon
     be = FilesystemBackend(root_dir=str(root), virtual_mode=True)
 
     # ls_info from virtual root - should only list files in root, not subdirectories
-    infos = be.ls_info("/")
+    infos = be.ls_info("/").entries
+    assert infos is not None
     paths = {i["path"] for i in infos}
     assert "/a.txt" in paths  # File in root should be listed
     assert "/dir/b.md" not in paths  # File in subdirectory should NOT be listed
@@ -112,7 +114,8 @@ def test_filesystem_backend_ls_nested_directories(tmp_path: Path):
 
     be = FilesystemBackend(root_dir=str(root), virtual_mode=True)
 
-    root_listing = be.ls_info("/")
+    root_listing = be.ls_info("/").entries
+    assert root_listing is not None
     root_paths = [fi["path"] for fi in root_listing]
     assert "/config.json" in root_paths
     assert "/src/" in root_paths
@@ -120,20 +123,22 @@ def test_filesystem_backend_ls_nested_directories(tmp_path: Path):
     assert "/src/main.py" not in root_paths
     assert "/src/utils/helper.py" not in root_paths
 
-    src_listing = be.ls_info("/src/")
+    src_listing = be.ls_info("/src/").entries
+    assert src_listing is not None
     src_paths = [fi["path"] for fi in src_listing]
     assert "/src/main.py" in src_paths
     assert "/src/utils/" in src_paths
     assert "/src/utils/helper.py" not in src_paths
 
-    utils_listing = be.ls_info("/src/utils/")
+    utils_listing = be.ls_info("/src/utils/").entries
+    assert utils_listing is not None
     utils_paths = [fi["path"] for fi in utils_listing]
     assert "/src/utils/helper.py" in utils_paths
     assert "/src/utils/common.py" in utils_paths
     assert len(utils_paths) == 2
 
     empty_listing = be.ls_info("/nonexistent/")
-    assert empty_listing == []
+    assert empty_listing.entries == []
 
 
 def test_filesystem_backend_ls_normal_mode_nested(tmp_path: Path):
@@ -151,14 +156,16 @@ def test_filesystem_backend_ls_normal_mode_nested(tmp_path: Path):
 
     be = FilesystemBackend(root_dir=str(root), virtual_mode=False)
 
-    root_listing = be.ls_info(str(root))
+    root_listing = be.ls_info(str(root)).entries
+    assert root_listing is not None
     root_paths = [fi["path"] for fi in root_listing]
 
     assert str(root / "file1.txt") in root_paths
     assert str(root / "subdir") + "/" in root_paths
     assert str(root / "subdir" / "file2.txt") not in root_paths
 
-    subdir_listing = be.ls_info(str(root / "subdir"))
+    subdir_listing = be.ls_info(str(root / "subdir")).entries
+    assert subdir_listing is not None
     subdir_paths = [fi["path"] for fi in subdir_listing]
     assert str(root / "subdir" / "file2.txt") in subdir_paths
     assert str(root / "subdir" / "nested") + "/" in subdir_paths
@@ -179,20 +186,24 @@ def test_filesystem_backend_ls_trailing_slash(tmp_path: Path):
 
     be = FilesystemBackend(root_dir=str(root), virtual_mode=True)
 
-    listing_with_slash = be.ls_info("/")
+    listing_with_slash = be.ls_info("/").entries
+    assert listing_with_slash is not None
     assert len(listing_with_slash) > 0
 
-    listing = be.ls_info("/")
+    listing = be.ls_info("/").entries
+    assert listing is not None
     paths = [fi["path"] for fi in listing]
     assert paths == sorted(paths)
 
-    listing1 = be.ls_info("/dir/")
-    listing2 = be.ls_info("/dir")
+    listing1 = be.ls_info("/dir/").entries
+    listing2 = be.ls_info("/dir").entries
+    assert listing1 is not None
+    assert listing2 is not None
     assert len(listing1) == len(listing2)
     assert [fi["path"] for fi in listing1] == [fi["path"] for fi in listing2]
 
     empty = be.ls_info("/nonexistent/")
-    assert empty == []
+    assert empty.entries == []
 
 
 def test_filesystem_backend_intercept_large_tool_result(tmp_path: Path):
@@ -562,7 +573,8 @@ class TestWindowsPathHandling:
 
     def test_ls_info_paths(self, backend):
         """ls_info should return forward-slash paths."""
-        infos = backend.ls_info("/src")
+        infos = backend.ls_info("/src").entries
+        assert infos is not None
         for info in infos:
             assert "\\" not in info["path"], f"Backslash in ls_info path: {info['path']}"
 
@@ -586,6 +598,7 @@ class TestWindowsPathHandling:
         deep.mkdir(parents=True)
         (deep / "file.txt").write_text("content")
         be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
-        infos = be.ls_info("/a/b/c/d")
+        infos = be.ls_info("/a/b/c/d").entries
+        assert infos is not None
         for info in infos:
             assert "\\" not in info["path"], f"Backslash in deep path: {info['path']}"

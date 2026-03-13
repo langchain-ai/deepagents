@@ -159,7 +159,8 @@ class TestV1StyleWritesStateBackend:
         rt2 = _make_state_runtime(files=write_res.files_update)
         be2 = StateBackend(rt2, file_format="v1")
 
-        infos = be2.ls_info("/dir")
+        infos = be2.ls_info("/dir").entries
+        assert infos is not None
         assert len(infos) == 1
         assert infos[0]["path"] == "/dir/file.txt"
 
@@ -353,7 +354,8 @@ class TestV2LoadsV1CheckpointStateBackend:
         rt = _make_state_runtime(files={"/dir/file.txt": v1_data})
         be = StateBackend(rt, file_format="v2")
 
-        infos = be.ls_info("/dir")
+        infos = be.ls_info("/dir").entries
+        assert infos is not None
         assert len(infos) == 1
         assert infos[0]["path"] == "/dir/file.txt"
         # size should still be computed correctly from list content

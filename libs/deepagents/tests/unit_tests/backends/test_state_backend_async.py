@@ -52,7 +52,8 @@ async def test_awrite_aread_aedit_als_agrep_aglob_state_backend():
     assert "hi world" in read_result2.file_data["content"]
 
     # als_info should include the file
-    listing = await be.als_info("/")
+    listing = (await be.als_info("/")).entries
+    assert listing is not None
     assert any(fi["path"] == "/notes.txt" for fi in listing)
 
     # agrep_raw
@@ -104,7 +105,8 @@ async def test_state_backend_als_nested_directories():
         assert res.error is None
         rt.state["files"].update(res.files_update)
 
-    root_listing = await be.als_info("/")
+    root_listing = (await be.als_info("/")).entries
+    assert root_listing is not None
     root_paths = [fi["path"] for fi in root_listing]
     assert "/config.json" in root_paths
     assert "/src/" in root_paths
@@ -112,20 +114,22 @@ async def test_state_backend_als_nested_directories():
     assert "/src/main.py" not in root_paths
     assert "/src/utils/helper.py" not in root_paths
 
-    src_listing = await be.als_info("/src/")
+    src_listing = (await be.als_info("/src/")).entries
+    assert src_listing is not None
     src_paths = [fi["path"] for fi in src_listing]
     assert "/src/main.py" in src_paths
     assert "/src/utils/" in src_paths
     assert "/src/utils/helper.py" not in src_paths
 
-    utils_listing = await be.als_info("/src/utils/")
+    utils_listing = (await be.als_info("/src/utils/")).entries
+    assert utils_listing is not None
     utils_paths = [fi["path"] for fi in utils_listing]
     assert "/src/utils/helper.py" in utils_paths
     assert "/src/utils/common.py" in utils_paths
     assert len(utils_paths) == 2
 
     empty_listing = await be.als_info("/nonexistent/")
-    assert empty_listing == []
+    assert empty_listing.entries == []
 
 
 async def test_state_backend_als_trailing_slash():
@@ -143,12 +147,14 @@ async def test_state_backend_als_trailing_slash():
         assert res.error is None
         rt.state["files"].update(res.files_update)
 
-    listing_with_slash = await be.als_info("/")
+    listing_with_slash = (await be.als_info("/")).entries
+    assert listing_with_slash is not None
     assert len(listing_with_slash) == 2
     assert "/file.txt" in [fi["path"] for fi in listing_with_slash]
     assert "/dir/" in [fi["path"] for fi in listing_with_slash]
 
-    listing_from_dir = await be.als_info("/dir/")
+    listing_from_dir = (await be.als_info("/dir/")).entries
+    assert listing_from_dir is not None
     assert len(listing_from_dir) == 1
     assert listing_from_dir[0]["path"] == "/dir/nested.txt"
 

@@ -1077,6 +1077,8 @@ SummarizationMiddleware = _DeepAgentsSummarizationMiddleware
 def create_summarization_middleware(
     model: BaseChatModel,
     backend: BACKEND_TYPES,
+    *,
+    history_path_prefix: str = "/conversation_history",
 ) -> _DeepAgentsSummarizationMiddleware:
     """Create a `SummarizationMiddleware` with model-aware defaults.
 
@@ -1086,6 +1088,7 @@ def create_summarization_middleware(
     Args:
         model: Resolved chat model instance.
         backend: Backend instance or factory for persisting conversation history.
+        history_path_prefix: Path prefix for storing conversation history.
 
     Returns:
         Configured `SummarizationMiddleware` instance.
@@ -1104,12 +1107,15 @@ def create_summarization_middleware(
         keep=defaults["keep"],
         trim_tokens_to_summarize=None,
         truncate_args_settings=defaults["truncate_args_settings"],
+        history_path_prefix=history_path_prefix,
     )
 
 
 def create_summarization_tool_middleware(
     model: str | BaseChatModel,
     backend: BACKEND_TYPES,
+    *,
+    history_path_prefix: str = "/conversation_history",
 ) -> SummarizationToolMiddleware:
     """Create a `SummarizationToolMiddleware` with model-aware defaults.
 
@@ -1120,6 +1126,7 @@ def create_summarization_tool_middleware(
     Args:
         model: Chat model instance or model string (e.g., `"anthropic:claude-sonnet-4-20250514"`).
         backend: Backend instance or factory for persisting conversation history.
+        history_path_prefix: Path prefix for storing conversation history.
 
     Returns:
         Configured `SummarizationToolMiddleware` instance.
@@ -1169,7 +1176,11 @@ def create_summarization_tool_middleware(
 
     if isinstance(model, str):
         model = resolve_model(model)
-    summarization = create_summarization_middleware(model, backend)
+    summarization = create_summarization_middleware(
+        model,
+        backend,
+        history_path_prefix=history_path_prefix,
+    )
     return SummarizationToolMiddleware(summarization)
 
 

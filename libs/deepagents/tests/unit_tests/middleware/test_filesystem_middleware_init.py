@@ -28,6 +28,12 @@ def build_composite_state_backend(runtime: ToolRuntime, *, routes: dict[str, Any
 class TestFilesystemMiddlewareInit:
     """Tests for FilesystemMiddleware initialization that don't require LLM invocation."""
 
+    def test_large_tool_results_path_prefix_is_stored(self) -> None:
+        """Test that custom large tool result prefixes are normalized and stored."""
+        middleware = FilesystemMiddleware(large_tool_results_path_prefix="/artifacts/large_tool_results/")
+
+        assert middleware._large_tool_results_path_prefix == "/artifacts/large_tool_results"
+
     def test_filesystem_tool_prompt_override(self) -> None:
         """Test that custom tool descriptions can be set via FilesystemMiddleware."""
         agent = create_agent(

@@ -635,3 +635,17 @@ def test_create_summarization_tool_middleware_returns_instance() -> None:
 
     assert isinstance(mw, SummarizationToolMiddleware)
     assert mw.tools[0].name == "compact_conversation"
+
+
+def test_create_summarization_tool_middleware_accepts_history_prefix() -> None:
+    """Factory forwards a custom conversation history prefix to summarization middleware."""
+    model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+    model.profile = {"max_input_tokens": 120_000}
+    mw = create_summarization_tool_middleware(
+        model,
+        MagicMock(),
+        history_path_prefix="/artifacts/conversation_history",
+    )
+
+    assert mw._summarization._history_path_prefix == "/artifacts/conversation_history"
+    assert mw.tools[0].name == "compact_conversation"

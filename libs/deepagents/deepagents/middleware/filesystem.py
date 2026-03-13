@@ -461,6 +461,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         system_prompt: str | None = None,
         custom_tool_descriptions: dict[str, str] | None = None,
         tool_token_limit_before_evict: int | None = 20000,
+        large_tool_results_path_prefix: str = "/large_tool_results",
         max_execute_timeout: int = 3600,
     ) -> None:
         """Initialize the filesystem middleware.
@@ -471,6 +472,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             system_prompt: Optional custom system prompt override.
             custom_tool_descriptions: Optional custom tool descriptions override.
             tool_token_limit_before_evict: Optional token limit before evicting a tool result to the filesystem.
+            large_tool_results_path_prefix: Path prefix for storing evicted large tool results.
             max_execute_timeout: Maximum allowed value in seconds for per-command timeout
                 overrides on the execute tool.
 
@@ -490,6 +492,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         self._custom_system_prompt = system_prompt
         self._custom_tool_descriptions = custom_tool_descriptions or {}
         self._tool_token_limit_before_evict = tool_token_limit_before_evict
+        self._large_tool_results_path_prefix = large_tool_results_path_prefix.rstrip("/") or "/large_tool_results"
         self._max_execute_timeout = max_execute_timeout
 
         self.tools = [
@@ -1159,7 +1162,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
         # Write content to filesystem
         sanitized_id = sanitize_tool_call_id(message.tool_call_id)
-        file_path = f"/large_tool_results/{sanitized_id}"
+        file_path = f"{self._large_tool_results_path_prefix}/{sanitized_id}"
         result = resolved_backend.write(file_path, content_str)
         if result.error:
             return message, None
@@ -1206,7 +1209,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
         # Write content to filesystem using async method
         sanitized_id = sanitize_tool_call_id(message.tool_call_id)
-        file_path = f"/large_tool_results/{sanitized_id}"
+        file_path = f"{self._large_tool_results_path_prefix}/{sanitized_id}"
         result = await resolved_backend.awrite(file_path, content_str)
         if result.error:
             return message, None

@@ -4,12 +4,12 @@ from deepagents.graph import create_deep_agent
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.tools import tool
 
-from langchain_quickjs.middleware import QuickJSMiddleware
+from langchain_lisp.middleware import LispMiddleware
 from tests.unit_tests.chat_model import GenericFakeChatModel
 
 
-def test_deepagent_with_quickjs_interpreter() -> None:
-    """Basic test with QuickJS interpreter."""
+def test_deepagent_with_lisp_interpreter() -> None:
+    """Basic test with Lisp interpreter."""
     model = GenericFakeChatModel(
         messages=iter(
             [
@@ -18,7 +18,7 @@ def test_deepagent_with_quickjs_interpreter() -> None:
                     tool_calls=[
                         {
                             "name": "repl",
-                            "args": {"code": "print(6 * 7)"},
+                            "args": {"code": "(print (* 6 7))"},
                             "id": "call_1",
                             "type": "tool_call",
                         }
@@ -31,7 +31,7 @@ def test_deepagent_with_quickjs_interpreter() -> None:
 
     agent = create_deep_agent(
         model=model,
-        middleware=[QuickJSMiddleware()],
+        middleware=[LispMiddleware()],
     )
 
     result = agent.invoke(
@@ -51,11 +51,11 @@ def test_deepagent_with_quickjs_interpreter() -> None:
 
 @tool
 def foo_tool(value: str) -> str:
-    """Return a formatted value for testing QuickJS tool interop."""
+    """Return a formatted value for testing Lisp tool interop."""
     return f"foo returned {value}!"
 
 
-def test_deepagent_with_quickjs_langchain_tool_single_arg_foreign_function() -> None:
+def test_deepagent_with_lisp_langchain_tool_single_arg_foreign_function() -> None:
     """Verify the repl maps a single positional arg to a single-field tool payload."""
     model = GenericFakeChatModel(
         messages=iter(
@@ -65,7 +65,7 @@ def test_deepagent_with_quickjs_langchain_tool_single_arg_foreign_function() -> 
                     tool_calls=[
                         {
                             "name": "repl",
-                            "args": {"code": "print(foo('bar'))"},
+                            "args": {"code": "(print (foo \"bar\"))"},
                             "id": "call_1",
                             "type": "tool_call",
                         }
@@ -79,7 +79,7 @@ def test_deepagent_with_quickjs_langchain_tool_single_arg_foreign_function() -> 
     agent = create_deep_agent(
         model=model,
         middleware=[
-            QuickJSMiddleware(
+            LispMiddleware(
                 external_functions=["foo"],
                 external_function_implementations={"foo": foo_tool},
             )
@@ -114,13 +114,7 @@ def list_user_ids() -> list[str]:
     return ["user_1", "user_2", "user_3"]
 
 
-@tool
-def get_user_profile() -> dict[str, str | int]:
-    """Return example user profile data for testing object bridging."""
-    return {"id": "user_1", "name": "Ada", "age": 37}
-
-
-def test_deepagent_with_quickjs_langchain_tool_multi_arg_foreign_function() -> None:
+def test_deepagent_with_lisp_langchain_tool_multi_arg_foreign_function() -> None:
     """Verify the repl maps multiple positional args onto matching tool fields."""
     model = GenericFakeChatModel(
         messages=iter(
@@ -130,7 +124,7 @@ def test_deepagent_with_quickjs_langchain_tool_multi_arg_foreign_function() -> N
                     tool_calls=[
                         {
                             "name": "repl",
-                            "args": {"code": "print(join_values('left', 'right'))"},
+                            "args": {"code": "(print (join_values \"left\" \"right\"))"},
                             "id": "call_1",
                             "type": "tool_call",
                         }
@@ -144,7 +138,7 @@ def test_deepagent_with_quickjs_langchain_tool_multi_arg_foreign_function() -> N
     agent = create_deep_agent(
         model=model,
         middleware=[
-            QuickJSMiddleware(
+            LispMiddleware(
                 external_functions=["join_values"],
                 external_function_implementations={"join_values": join_tool},
             )
@@ -163,7 +157,8 @@ def test_deepagent_with_quickjs_langchain_tool_multi_arg_foreign_function() -> N
     assert result["messages"][-1].content_blocks == [{"type": "text", "text": "done"}]
 
 
-def test_deepagent_with_quickjs_langchain_tool_list_of_ints_foreign_function() -> None:
+
+def test_deepagent_with_lisp_langchain_tool_list_of_ints_foreign_function() -> None:
     """Verify the repl can print array output from a foreign tool returning ints."""
     model = GenericFakeChatModel(
         messages=iter(
@@ -187,7 +182,7 @@ def test_deepagent_with_quickjs_langchain_tool_list_of_ints_foreign_function() -
     agent = create_deep_agent(
         model=model,
         middleware=[
-            QuickJSMiddleware(
+            LispMiddleware(
                 external_functions=["numbers"],
                 external_function_implementations={"numbers": list_numbers},
             )
@@ -202,12 +197,12 @@ def test_deepagent_with_quickjs_langchain_tool_list_of_ints_foreign_function() -
     tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
 
     assert len(tool_messages) == 1
-    assert tool_messages[0].content_blocks == [{"type": "text", "text": "[0,1,2,3]"}]
+    assert tool_messages[0].content_blocks == [{"type": "text", "text": "[0, 1, 2, 3]"}]
     assert result["messages"][-1].content_blocks == [{"type": "text", "text": "done"}]
 
 
-def test_deepagent_with_quickjs_langchain_tool_json_stringify_foreign_function() -> None:
-    """Verify the repl transparently bridges Python list returns into JS arrays."""
+def test_deepagent_with_lisp_langchain_tool_json_stringify_foreign_function() -> None:
+    """Verify the repl can stringify foreign tool output before printing it."""
     model = GenericFakeChatModel(
         messages=iter(
             [
@@ -217,7 +212,7 @@ def test_deepagent_with_quickjs_langchain_tool_json_stringify_foreign_function()
                         {
                             "name": "repl",
                             "args": {
-                                "code": "const ids = list_user_ids();\nprint(JSON.stringify(ids));"
+                                "code": "(print (list_user_ids))"
                             },
                             "id": "call_1",
                             "type": "tool_call",
@@ -232,7 +227,7 @@ def test_deepagent_with_quickjs_langchain_tool_json_stringify_foreign_function()
     agent = create_deep_agent(
         model=model,
         middleware=[
-            QuickJSMiddleware(
+            LispMiddleware(
                 external_functions=["list_user_ids"],
                 external_function_implementations={"list_user_ids": list_user_ids},
             )
@@ -252,51 +247,8 @@ def test_deepagent_with_quickjs_langchain_tool_json_stringify_foreign_function()
 
     assert len(tool_messages) == 1
     assert tool_messages[0].content_blocks == [
-        {"type": "text", "text": '["user_1","user_2","user_3"]'}
+        {"type": "text", "text": "['user_1', 'user_2', 'user_3']"}
     ]
     assert result["messages"][-1].content_blocks == [{"type": "text", "text": "done"}]
 
 
-def test_deepagent_with_quickjs_langchain_tool_dict_foreign_function() -> None:
-    """Verify the repl transparently bridges Python dict returns into JS objects."""
-    model = GenericFakeChatModel(
-        messages=iter(
-            [
-                AIMessage(
-                    content="",
-                    tool_calls=[
-                        {
-                            "name": "repl",
-                            "args": {
-                                "code": "const profile = get_user_profile();\nprint(profile.name + ':' + profile.age);"
-                            },
-                            "id": "call_1",
-                            "type": "tool_call",
-                        }
-                    ],
-                ),
-                AIMessage(content="done"),
-            ]
-        )
-    )
-
-    agent = create_deep_agent(
-        model=model,
-        middleware=[
-            QuickJSMiddleware(
-                external_functions=["get_user_profile"],
-                external_function_implementations={"get_user_profile": get_user_profile},
-            )
-        ],
-    )
-
-    result = agent.invoke(
-        {"messages": [HumanMessage(content="Use the repl to inspect the user profile")]}
-    )
-
-    assert "messages" in result
-    tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
-
-    assert len(tool_messages) == 1
-    assert tool_messages[0].content_blocks == [{"type": "text", "text": "Ada:37"}]
-    assert result["messages"][-1].content_blocks == [{"type": "text", "text": "done"}]

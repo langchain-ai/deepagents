@@ -13,6 +13,11 @@ on:
         required: true
         type: string
         description: "Python version to use"
+      os:
+        required: false
+        type: string
+        default: "ubuntu-latest"
+        description: "Runner OS (e.g. ubuntu-latest or windows-latest)"
       coverage:
         required: false
         type: boolean
@@ -30,7 +35,7 @@ jobs:
     defaults:
       run:
         working-directory: ${{ inputs.working-directory }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.os }}
     timeout-minutes: 20
     name: "Python ${{ inputs.python-version }}"
     steps:
@@ -50,6 +55,7 @@ jobs:
         run: uv sync --group test --locked
 
       - name: "🧪 Run Unit Tests"
+        if: runner.os != 'Windows'
         shell: bash
         env:
           RUN_SANDBOX_TESTS: "true"
@@ -58,6 +64,18 @@ jobs:
             make test COV_ARGS=
           else
             make test
+          fi
+
+      - name: "🧪 Run Unit Tests (Windows)"
+        if: runner.os == 'Windows'
+        shell: bash
+        env:
+          RUN_SANDBOX_TESTS: "true"
+        run: |
+          if [ "${{ inputs.coverage }}" = "false" ]; then
+            uv run --group test pytest -n auto -vvv --disable-socket --allow-unix-socket tests/unit_tests/
+          else
+            uv run --group test pytest -n auto -vvv --disable-socket --allow-unix-socket tests/unit_tests/ --cov=deepagents --cov-report=term-missing
           fi
 
       - name: "🧹 Verify Clean Working Directory"

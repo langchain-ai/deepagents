@@ -9,8 +9,8 @@ from tests.unit_tests.chat_model import GenericFakeChatModel
 
 
 @tool
-async def list_user_ids() -> list[str]:
-    """Return example user identifiers for async QuickJS bridging tests."""
+def list_user_ids() -> list[str]:
+    """Return example user identifiers for QuickJS bridging tests."""
     return ["user_1", "user_2", "user_3"]
 
 

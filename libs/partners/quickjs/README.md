@@ -36,4 +36,5 @@ With this middleware installed, the agent receives a `repl` tool that runs each 
 ## Current limitations
 
 - Does not work with HIL in the REPL.
+- Does not support async foreign functions in the REPL yet.
 - Does not support `ToolRuntime` yet.

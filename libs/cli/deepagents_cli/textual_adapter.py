@@ -751,10 +751,6 @@ async def execute_task_textual(
                         tool_content = format_tool_message_content(message.content)
                         record = file_op_tracker.complete_with_message(message)
 
-                        # Reshow spinner after tool result
-                        if adapter._set_spinner:
-                            await adapter._set_spinner("Thinking")
-
                         # Update tool call status with output
                         tool_id = getattr(message, "tool_call_id", None)
                         if tool_id and tool_id in adapter._current_tool_messages:
@@ -770,6 +766,11 @@ async def execute_task_textual(
                                 )
                             # Clean up - remove from tracking dict after status update
                             adapter._current_tool_messages.pop(tool_id, None)
+
+                        # Reshow spinner only when all in-flight tools have completed
+                        # (avoids premature "Thinking..." with parallel subtasks)
+                        if adapter._set_spinner and not adapter._current_tool_messages:
+                            await adapter._set_spinner("Thinking")
 
                         # Show file operation results - always show diffs in chat
                         if record:

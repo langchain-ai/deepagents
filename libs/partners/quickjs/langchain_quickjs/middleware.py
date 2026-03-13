@@ -248,12 +248,12 @@ class QuickJSMiddleware(AgentMiddleware[AgentState[Any], ContextT, ResponseT]):
 
         async def _async_quickjs(
             code: Annotated[str, "Code string to evaluate in QuickJS."],
-            execution_timeout: Annotated[
+            timeout: Annotated[
                 int | None, "Optional timeout in seconds for this evaluation."
             ] = None,
         ) -> str:
             """Execute a single QuickJS program in the async tool path."""
-            return self._evaluate(code, timeout=execution_timeout)
+            return self._evaluate(code, timeout=timeout)
 
         tool_description = REPL_TOOL_DESCRIPTION.format(
             external_functions_section=self._format_external_functions_section()

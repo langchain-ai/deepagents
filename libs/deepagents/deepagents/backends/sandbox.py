@@ -20,6 +20,7 @@ from deepagents.backends.protocol import (
     FileDownloadResponse,
     FileInfo,
     FileUploadResponse,
+    GlobResult,
     GrepMatch,
     ReadResult,
     SandboxBackendProtocol,
@@ -410,8 +411,8 @@ except PermissionError:
 
         return matches
 
-    def glob_info(self, pattern: str, path: str = "/") -> list[FileInfo]:
-        """Structured glob matching returning FileInfo dicts."""
+    def glob_info(self, pattern: str, path: str = "/") -> GlobResult:
+        """Structured glob matching returning GlobResult."""
         # Encode pattern and path as base64 to avoid escaping issues
         pattern_b64 = base64.b64encode(pattern.encode("utf-8")).decode("ascii")
         path_b64 = base64.b64encode(path.encode("utf-8")).decode("ascii")
@@ -421,7 +422,7 @@ except PermissionError:
 
         output = result.output.strip()
         if not output:
-            return []
+            return GlobResult(matches=[])
 
         # Parse JSON output into FileInfo dicts
         file_infos: list[FileInfo] = []
@@ -437,7 +438,7 @@ except PermissionError:
             except json.JSONDecodeError:
                 continue
 
-        return file_infos
+        return GlobResult(matches=file_infos)
 
     @property
     @abstractmethod

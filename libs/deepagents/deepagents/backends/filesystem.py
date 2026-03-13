@@ -18,6 +18,7 @@ from deepagents.backends.protocol import (
     FileDownloadResponse,
     FileInfo,
     FileUploadResponse,
+    GlobResult,
     GrepMatch,
     ReadResult,
     WriteResult,
@@ -583,7 +584,7 @@ class FilesystemBackend(BackendProtocol):
 
         return results
 
-    def glob_info(self, pattern: str, path: str = "/") -> list[FileInfo]:  # noqa: C901, PLR0912  # Complex virtual_mode logic
+    def glob_info(self, pattern: str, path: str = "/") -> GlobResult:  # noqa: C901, PLR0912  # Complex virtual_mode logic
         """Find files matching a glob pattern.
 
         Args:
@@ -591,8 +592,7 @@ class FilesystemBackend(BackendProtocol):
             path: Base directory to search from. Defaults to root (`/`).
 
         Returns:
-            List of `FileInfo` dicts for matching files, sorted by path. Each dict
-                contains `path`, `is_dir`, `size`, and `modified_at` fields.
+            GlobResult with matching files or error.
         """
         if pattern.startswith("/"):
             pattern = pattern.lstrip("/")
@@ -603,7 +603,7 @@ class FilesystemBackend(BackendProtocol):
 
         search_path = self.cwd if path == "/" else self._resolve_path(path)
         if not search_path.exists() or not search_path.is_dir():
-            return []
+            return GlobResult(matches=[])
 
         results: list[FileInfo] = []
         try:
@@ -660,7 +660,7 @@ class FilesystemBackend(BackendProtocol):
             pass
 
         results.sort(key=lambda x: x.get("path", ""))
-        return results
+        return GlobResult(matches=results)
 
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
         """Upload multiple files to the filesystem.

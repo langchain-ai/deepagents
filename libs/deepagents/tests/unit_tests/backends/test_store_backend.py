@@ -49,10 +49,10 @@ def test_store_backend_crud_and_search():
     assert isinstance(matches, list) and any(m["path"] == "/docs/readme.md" for m in matches)
 
     # glob_info
-    g = be.glob_info("*.md", path="/")
+    g = be.glob_info("*.md", path="/").matches
     assert len(g) == 0
 
-    g2 = be.glob_info("**/*.md", path="/")
+    g2 = be.glob_info("**/*.md", path="/").matches
     assert any(i["path"] == "/docs/readme.md" for i in g2)
 
 

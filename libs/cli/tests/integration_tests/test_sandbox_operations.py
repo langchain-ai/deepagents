@@ -950,8 +950,9 @@ class TestSandboxOperations:
 
         result = sandbox.glob_info("*.txt", path=base_dir)
 
-        assert len(result) == 2
-        paths = [info["path"] for info in result]
+        assert result.matches is not None
+        assert len(result.matches) == 2
+        paths = [info["path"] for info in result.matches]
         assert "file1.txt" in paths
         assert "file2.txt" in paths
         assert not any(".py" in p for p in paths)
@@ -966,8 +967,9 @@ class TestSandboxOperations:
 
         result = sandbox.glob_info("**/*.txt", path=base_dir)
 
-        assert len(result) >= 2  # At least the nested files
-        paths = [info["path"] for info in result]
+        assert result.matches is not None
+        assert len(result.matches) >= 2  # At least the nested files
+        paths = [info["path"] for info in result.matches]
         assert any("nested1.txt" in p for p in paths)
         assert any("nested2.txt" in p for p in paths)
 
@@ -979,7 +981,8 @@ class TestSandboxOperations:
 
         result = sandbox.glob_info("*.py", path=base_dir)
 
-        assert result == []
+        assert result.matches is not None
+        assert result.matches == []
 
     def test_glob_with_directories(self, sandbox: SandboxBackendProtocol) -> None:
         """Test that glob includes directories in results."""
@@ -989,10 +992,11 @@ class TestSandboxOperations:
 
         result = sandbox.glob_info("*", path=base_dir)
 
-        assert len(result) == 3
+        assert result.matches is not None
+        assert len(result.matches) == 3
         # Check is_dir flags
-        dir_count = sum(1 for info in result if info["is_dir"])
-        file_count = sum(1 for info in result if not info["is_dir"])
+        dir_count = sum(1 for info in result.matches if info["is_dir"])
+        file_count = sum(1 for info in result.matches if not info["is_dir"])
         assert dir_count == 2
         assert file_count == 1
 
@@ -1006,8 +1010,9 @@ class TestSandboxOperations:
 
         result = sandbox.glob_info("*.py", path=base_dir)
 
-        assert len(result) == 1
-        assert "test.py" in result[0]["path"]
+        assert result.matches is not None
+        assert len(result.matches) == 1
+        assert "test.py" in result.matches[0]["path"]
 
     def test_glob_hidden_files_explicitly(
         self, sandbox: SandboxBackendProtocol
@@ -1022,7 +1027,8 @@ class TestSandboxOperations:
         result = sandbox.glob_info(".*", path=base_dir)
 
         # Should only match hidden files
-        paths = [info["path"] for info in result]
+        assert result.matches is not None
+        paths = [info["path"] for info in result.matches]
         assert ".hidden1" in paths or ".hidden2" in paths
         # Should not match visible.txt
         assert not any("visible" in p for p in paths)
@@ -1038,8 +1044,9 @@ class TestSandboxOperations:
 
         result = sandbox.glob_info("file[1-2].txt", path=base_dir)
 
-        assert len(result) == 2
-        paths = [info["path"] for info in result]
+        assert result.matches is not None
+        assert len(result.matches) == 2
+        paths = [info["path"] for info in result.matches]
         assert "file1.txt" in paths
         assert "file2.txt" in paths
         assert "file3.txt" not in paths
@@ -1056,8 +1063,9 @@ class TestSandboxOperations:
         result = sandbox.glob_info("file?.txt", path=base_dir)
 
         # Should match file1.txt and file2.txt, but not file10.txt
-        assert len(result) == 2
-        paths = [info["path"] for info in result]
+        assert result.matches is not None
+        assert len(result.matches) == 2
+        paths = [info["path"] for info in result.matches]
         assert "file10.txt" not in paths
 
     def test_glob_multiple_extensions(self, sandbox: SandboxBackendProtocol) -> None:
@@ -1073,8 +1081,10 @@ class TestSandboxOperations:
         result_txt = sandbox.glob_info("*.txt", path=base_dir)
         result_py = sandbox.glob_info("*.py", path=base_dir)
 
-        assert len(result_txt) == 1
-        assert len(result_py) == 1
+        assert result_txt.matches is not None
+        assert result_py.matches is not None
+        assert len(result_txt.matches) == 1
+        assert len(result_py.matches) == 1
 
     def test_glob_deeply_nested_pattern(self, sandbox: SandboxBackendProtocol) -> None:
         """Test glob with deeply nested directory structure."""
@@ -1085,7 +1095,8 @@ class TestSandboxOperations:
 
         result = sandbox.glob_info("**/deep.txt", path=base_dir)
 
-        assert len(result) >= 1
+        assert result.matches is not None
+        assert len(result.matches) >= 1
         # Should find the deeply nested file
 
     def test_glob_with_no_path_argument(self, sandbox: SandboxBackendProtocol) -> None:
@@ -1098,7 +1109,7 @@ class TestSandboxOperations:
         result = sandbox.glob_info("*.txt", path=base_dir)
 
         # Should work with explicit path
-        assert isinstance(result, list)
+        assert result.matches is not None
 
     # ==================== Integration tests ====================
 
@@ -1150,7 +1161,8 @@ class TestSandboxOperations:
 
         # Glob for txt files
         glob_result = sandbox.glob_info("**/*.txt", path=base_dir)
-        assert len(glob_result) == 3
+        assert glob_result.matches is not None
+        assert len(glob_result.matches) == 3
 
         # Grep for a pattern
         grep_result = sandbox.grep_raw("file", path=base_dir)

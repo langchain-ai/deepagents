@@ -44,7 +44,7 @@ def test_filesystem_backend_normal_mode(tmp_path: Path):
     assert isinstance(matches, list) and any(m["path"].endswith("a.txt") for m in matches)
 
     # glob_info
-    g = be.glob_info("*.py", path=str(root))
+    g = be.glob_info("*.py", path=str(root)).matches
     assert any(i["path"] == str(f2) for i in g)
 
 
@@ -83,7 +83,7 @@ def test_filesystem_backend_virtual_mode(tmp_path: Path, monkeypatch: pytest.Mon
     assert isinstance(matches, list) and any(m["path"] == "/a.txt" for m in matches)
 
     # glob_info
-    g = be.glob_info("**/*.md", path="/")
+    g = be.glob_info("**/*.md", path="/").matches
     assert any(i["path"] == "/dir/b.md" for i in g)
 
     # literal search should work with special regex chars like "[" and "("
@@ -569,8 +569,8 @@ class TestWindowsPathHandling:
     def test_glob_info_paths(self, backend):
         """glob_info should return forward-slash paths."""
         result = backend.glob_info("**/*.py", path="/")
-        assert isinstance(result, list)
-        for info in result:
+        assert result.matches is not None
+        for info in result.matches:
             assert "\\" not in info["path"], f"Backslash in glob_info path: {info['path']}"
 
     def test_grep_raw_paths(self, backend):

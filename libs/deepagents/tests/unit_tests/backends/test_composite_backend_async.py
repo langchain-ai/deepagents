@@ -89,7 +89,7 @@ async def test_composite_state_backend_routes_and_search_async(tmp_path: Path): 
     assert any(m["path"] == "/memories/readme.md" for m in matches2)
 
     # aglob across both
-    g = await be.aglob_info("**/*.md", path="/")
+    g = (await be.aglob_info("**/*.md", path="/")).matches
     assert any(i["path"] == "/memories/readme.md" for i in g)
 
 
@@ -121,7 +121,7 @@ async def test_composite_backend_filesystem_plus_store_async(tmp_path: Path):
     assert any(m["path"] == "/memories/notes.md" for m in gm_mem)
 
     # aglob_info route targeting should accept /memories as the route root
-    gl_mem = await comp.aglob_info("*.md", path="/memories")
+    gl_mem = (await comp.aglob_info("*.md", path="/memories")).matches
     assert any(i["path"] == "/memories/notes.md" for i in gl_mem)
 
     # agrep_raw merges
@@ -131,7 +131,7 @@ async def test_composite_backend_filesystem_plus_store_async(tmp_path: Path):
     assert any(m["path"] == "/memories/notes.md" for m in gm2)
 
     # aglob_info
-    gl = await comp.aglob_info("*.md", path="/")
+    gl = (await comp.aglob_info("*.md", path="/")).matches
     assert any(i["path"] == "/memories/notes.md" for i in gl)
 
 
@@ -233,7 +233,7 @@ async def test_composite_backend_multiple_routes_async():
     assert len(paths_with_content) >= 1  # At least temp.txt should match
 
     # aglob across all backends
-    glob_results = await comp.aglob_info("**/*.md", path="/")
+    glob_results = (await comp.aglob_info("**/*.md", path="/")).matches
     assert any(i["path"] == "/memories/important.md" for i in glob_results)
 
     # Edit in routed backend
@@ -1017,7 +1017,7 @@ async def test_composite_aglob_info_targeting_specific_route_async() -> None:
     await state_backend.awrite("/local.py", "local python")
 
     # Glob in specific route with pattern - should only find .py files in memories
-    results = await comp.aglob_info("**/*.py", path="/memories/")
+    results = (await comp.aglob_info("**/*.py", path="/memories/")).matches
     result_paths = [fi["path"] for fi in results]
 
     assert result_paths == ["/memories/test.py"]
@@ -1039,7 +1039,7 @@ async def test_composite_aglob_info_nested_path_in_route_async() -> None:
     await comp.awrite("/archive/notes.txt", "general notes")
 
     # Glob in nested path within route - should only find .log files in /archive/2024/
-    results = await comp.aglob_info("*.log", path="/archive/2024/")
+    results = (await comp.aglob_info("*.log", path="/archive/2024/")).matches
     result_paths = sorted([fi["path"] for fi in results])
 
     assert result_paths == ["/archive/2024/feb.log", "/archive/2024/jan.log"]

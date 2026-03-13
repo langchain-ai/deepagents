@@ -29,6 +29,7 @@ from deepagents.backends.protocol import (
     FileDownloadResponse,
     FileInfo,
     FileUploadResponse,
+    GlobResult,
     GrepMatch,
     ReadResult,
     SandboxBackendProtocol,
@@ -355,7 +356,7 @@ class CompositeBackend(BackendProtocol):
         # Path specified but doesn't match a route - search only default
         return await self.default.agrep_raw(pattern, path, glob)
 
-    def glob_info(self, pattern: str, path: str = "/") -> list[FileInfo]:
+    def glob_info(self, pattern: str, path: str = "/") -> GlobResult:
         """Find files matching a glob pattern, routing by path prefix."""
         results: list[FileInfo] = []
 
@@ -365,21 +366,27 @@ class CompositeBackend(BackendProtocol):
             path=path,
         )
         if route_prefix is not None:
-            infos = backend.glob_info(pattern, backend_path)
-            return [_remap_file_info_path(fi, route_prefix) for fi in infos]
+            glob_result = backend.glob_info(pattern, backend_path)
+            matches = glob_result.matches if isinstance(glob_result, GlobResult) else glob_result
+            if isinstance(glob_result, GlobResult) and glob_result.error:
+                return glob_result
+            return GlobResult(matches=[_remap_file_info_path(fi, route_prefix) for fi in (matches or [])])
 
         # Path doesn't match any specific route - search default backend AND all routed backends
-        results.extend(self.default.glob_info(pattern, path))
+        default_result = self.default.glob_info(pattern, path)
+        default_matches = default_result.matches if isinstance(default_result, GlobResult) else default_result
+        results.extend(default_matches or [])
 
         for route_prefix, backend in self.routes.items():
-            infos = backend.glob_info(pattern, "/")
-            results.extend(_remap_file_info_path(fi, route_prefix) for fi in infos)
+            sub_result = backend.glob_info(pattern, "/")
+            sub_matches = sub_result.matches if isinstance(sub_result, GlobResult) else sub_result
+            results.extend(_remap_file_info_path(fi, route_prefix) for fi in (sub_matches or []))
 
         # Deterministic ordering
         results.sort(key=lambda x: x.get("path", ""))
-        return results
+        return GlobResult(matches=results)
 
-    async def aglob_info(self, pattern: str, path: str = "/") -> list[FileInfo]:
+    async def aglob_info(self, pattern: str, path: str = "/") -> GlobResult:
         """Async version of glob_info."""
         results: list[FileInfo] = []
 
@@ -389,19 +396,25 @@ class CompositeBackend(BackendProtocol):
             path=path,
         )
         if route_prefix is not None:
-            infos = await backend.aglob_info(pattern, backend_path)
-            return [_remap_file_info_path(fi, route_prefix) for fi in infos]
+            glob_result = await backend.aglob_info(pattern, backend_path)
+            matches = glob_result.matches if isinstance(glob_result, GlobResult) else glob_result
+            if isinstance(glob_result, GlobResult) and glob_result.error:
+                return glob_result
+            return GlobResult(matches=[_remap_file_info_path(fi, route_prefix) for fi in (matches or [])])
 
         # Path doesn't match any specific route - search default backend AND all routed backends
-        results.extend(await self.default.aglob_info(pattern, path))
+        default_result = await self.default.aglob_info(pattern, path)
+        default_matches = default_result.matches if isinstance(default_result, GlobResult) else default_result
+        results.extend(default_matches or [])
 
         for route_prefix, backend in self.routes.items():
-            infos = await backend.aglob_info(pattern, "/")
-            results.extend(_remap_file_info_path(fi, route_prefix) for fi in infos)
+            sub_result = await backend.aglob_info(pattern, "/")
+            sub_matches = sub_result.matches if isinstance(sub_result, GlobResult) else sub_result
+            results.extend(_remap_file_info_path(fi, route_prefix) for fi in (sub_matches or []))
 
         # Deterministic ordering
         results.sort(key=lambda x: x.get("path", ""))
-        return results
+        return GlobResult(matches=results)
 
     def write(
         self,

@@ -26,7 +26,7 @@ from pathlib import Path
 
 import pytest
 
-from deepagents.backends.protocol import EditResult, ExecuteResponse, FileInfo, GrepMatch, ReadResult, WriteResult
+from deepagents.backends.protocol import EditResult, ExecuteResponse, FileInfo, GlobResult, GrepMatch, ReadResult, WriteResult
 from deepagents.backends.sandbox import BaseSandbox
 
 # Skip all tests in this module unless RUN_SANDBOX_TESTS=true
@@ -175,7 +175,7 @@ class LocalSubprocessSandbox(BaseSandbox):
             match["path"] = self._to_virtual_path(match["path"])
         return result
 
-    def glob_info(self, pattern: str, path: str = "/") -> list[FileInfo]:
+    def glob_info(self, pattern: str, path: str = "/") -> GlobResult:
         """Run glob against mapped real paths."""
         return super().glob_info(pattern, path=self._to_real_path(path))
 
@@ -1060,8 +1060,9 @@ class TestLocalSandboxOperations:
         sandbox.write(f"{base_dir}/file2.txt", "content")
         sandbox.write(f"{base_dir}/file3.py", "content")
 
-        result = sandbox.glob_info("*.txt", path=base_dir)
+        result = sandbox.glob_info("*.txt", path=base_dir).matches
 
+        assert result is not None
         assert len(result) == 2
         paths = [info["path"] for info in result]
         assert "file1.txt" in paths
@@ -1076,8 +1077,9 @@ class TestLocalSandboxOperations:
         sandbox.write(f"{base_dir}/subdir1/nested1.txt", "content")
         sandbox.write(f"{base_dir}/subdir2/nested2.txt", "content")
 
-        result = sandbox.glob_info("**/*.txt", path=base_dir)
+        result = sandbox.glob_info("**/*.txt", path=base_dir).matches
 
+        assert result is not None
         assert len(result) >= 2  # At least the nested files
         paths = [info["path"] for info in result]
         assert any("nested1.txt" in p for p in paths)
@@ -1089,7 +1091,7 @@ class TestLocalSandboxOperations:
         sandbox.execute(f"mkdir -p {base_dir}")
         sandbox.write(f"{base_dir}/file.txt", "content")
 
-        result = sandbox.glob_info("*.py", path=base_dir)
+        result = sandbox.glob_info("*.py", path=base_dir).matches
 
         assert result == []
 
@@ -1099,8 +1101,9 @@ class TestLocalSandboxOperations:
         sandbox.execute(f"mkdir -p {base_dir}/dir1 {base_dir}/dir2")
         sandbox.write(f"{base_dir}/file.txt", "content")
 
-        result = sandbox.glob_info("*", path=base_dir)
+        result = sandbox.glob_info("*", path=base_dir).matches
 
+        assert result is not None
         assert len(result) == 3
         # Check is_dir flags
         dir_count = sum(1 for info in result if info["is_dir"])
@@ -1116,8 +1119,9 @@ class TestLocalSandboxOperations:
         sandbox.write(f"{base_dir}/test.txt", "content")
         sandbox.write(f"{base_dir}/test.md", "content")
 
-        result = sandbox.glob_info("*.py", path=base_dir)
+        result = sandbox.glob_info("*.py", path=base_dir).matches
 
+        assert result is not None
         assert len(result) == 1
         assert "test.py" in result[0]["path"]
 
@@ -1129,8 +1133,9 @@ class TestLocalSandboxOperations:
         sandbox.write(f"{base_dir}/.hidden2", "content")
         sandbox.write(f"{base_dir}/visible.txt", "content")
 
-        result = sandbox.glob_info(".*", path=base_dir)
+        result = sandbox.glob_info(".*", path=base_dir).matches
 
+        assert result is not None
         # Should only match hidden files
         paths = [info["path"] for info in result]
         assert ".hidden1" in paths or ".hidden2" in paths
@@ -1146,8 +1151,9 @@ class TestLocalSandboxOperations:
         sandbox.write(f"{base_dir}/file3.txt", "content")
         sandbox.write(f"{base_dir}/fileA.txt", "content")
 
-        result = sandbox.glob_info("file[1-2].txt", path=base_dir)
+        result = sandbox.glob_info("file[1-2].txt", path=base_dir).matches
 
+        assert result is not None
         assert len(result) == 2
         paths = [info["path"] for info in result]
         assert "file1.txt" in paths
@@ -1163,8 +1169,9 @@ class TestLocalSandboxOperations:
         sandbox.write(f"{base_dir}/file2.txt", "content")
         sandbox.write(f"{base_dir}/file10.txt", "content")
 
-        result = sandbox.glob_info("file?.txt", path=base_dir)
+        result = sandbox.glob_info("file?.txt", path=base_dir).matches
 
+        assert result is not None
         # Should match file1.txt and file2.txt, but not file10.txt
         assert len(result) == 2
         paths = [info["path"] for info in result]
@@ -1180,10 +1187,12 @@ class TestLocalSandboxOperations:
         sandbox.write(f"{base_dir}/file.js", "content")
 
         # Using separate patterns (implementation may support brace expansion)
-        result_txt = sandbox.glob_info("*.txt", path=base_dir)
-        result_py = sandbox.glob_info("*.py", path=base_dir)
+        result_txt = sandbox.glob_info("*.txt", path=base_dir).matches
+        result_py = sandbox.glob_info("*.py", path=base_dir).matches
 
+        assert result_txt is not None
         assert len(result_txt) == 1
+        assert result_py is not None
         assert len(result_py) == 1
 
     def test_glob_deeply_nested_pattern(self, sandbox: LocalSubprocessSandbox) -> None:
@@ -1193,8 +1202,9 @@ class TestLocalSandboxOperations:
         sandbox.write(f"{base_dir}/a/b/c/d/deep.txt", "content")
         sandbox.write(f"{base_dir}/a/b/other.txt", "content")
 
-        result = sandbox.glob_info("**/deep.txt", path=base_dir)
+        result = sandbox.glob_info("**/deep.txt", path=base_dir).matches
 
+        assert result is not None
         assert len(result) >= 1
         # Should find the deeply nested file
 
@@ -1208,7 +1218,7 @@ class TestLocalSandboxOperations:
         result = sandbox.glob_info("*.txt", path=base_dir)
 
         # Should work with explicit path
-        assert isinstance(result, list)
+        assert result.matches is not None
 
     # ==================== Integration tests ====================
 
@@ -1254,7 +1264,8 @@ class TestLocalSandboxOperations:
         assert f"{base_dir}/subdir2" in paths
 
         # Glob for txt files
-        glob_result = sandbox.glob_info("**/*.txt", path=base_dir)
+        glob_result = sandbox.glob_info("**/*.txt", path=base_dir).matches
+        assert glob_result is not None
         assert len(glob_result) == 3
 
         # Grep for a pattern

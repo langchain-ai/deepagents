@@ -11,6 +11,7 @@ from deepagents.backends.protocol import (
     FileFormat,
     FileInfo,
     FileUploadResponse,
+    GlobResult,
     GrepMatch,
     ReadResult,
     WriteResult,
@@ -213,12 +214,12 @@ class StateBackend(BackendProtocol):
         files = self.runtime.state.get("files", {})
         return grep_matches_from_files(files, pattern, path if path is not None else "/", glob)
 
-    def glob_info(self, pattern: str, path: str = "/") -> list[FileInfo]:
+    def glob_info(self, pattern: str, path: str = "/") -> GlobResult:
         """Get FileInfo for files matching glob pattern."""
         files = self.runtime.state.get("files", {})
         result = _glob_search_files(files, pattern, path)
         if result == "No files found":
-            return []
+            return GlobResult(matches=[])
         paths = result.split("\n")
         infos: list[FileInfo] = []
         for p in paths:
@@ -237,7 +238,7 @@ class StateBackend(BackendProtocol):
                     "modified_at": fd.get("modified_at", "") if fd else "",
                 }
             )
-        return infos
+        return GlobResult(matches=infos)
 
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
         """Upload multiple files to state.

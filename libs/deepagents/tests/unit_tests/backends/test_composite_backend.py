@@ -1141,6 +1141,26 @@ def test_composite_glob_info_targeting_specific_route() -> None:
     assert result_paths == ["/memories/test.py"]
 
 
+def test_composite_glob_info_leading_slash_pattern() -> None:
+    """Test glob_info with a leading-slash pattern from the root path."""
+    rt = make_runtime("t_glob_slash")
+
+    store = StoreBackend(rt)
+    state_backend = StateBackend(rt)
+
+    comp = CompositeBackend(default=state_backend, routes={"/memories/": store})
+
+    comp.write("/memories/note.md", "markdown note")
+    comp.write("/memories/data.txt", "text data")
+    state_backend.write("/local.md", "local markdown")
+
+    results = comp.glob_info("/memories/**/*.md", path="/")
+    result_paths = [fi["path"] for fi in results]
+
+    assert "/memories/note.md" in result_paths
+    assert "/memories/data.txt" not in result_paths
+
+
 def test_composite_glob_info_nested_path_in_route() -> None:
     """Test glob_info with nested path within route."""
     rt = make_runtime("t_glob2")

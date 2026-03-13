@@ -140,6 +140,24 @@ class TestGlobSearchFiles:
         result = _glob_search_files(sample_files, "*.py", "../etc/")
         assert result == "No files found"
 
+    def test_leading_slash_in_pattern(self, sample_files: dict[str, Any]) -> None:
+        """Patterns with a leading slash should still match (models often produce them)."""
+        result = _glob_search_files(sample_files, "/src/**/*.py", "/")
+        assert "/src/main.py" in result
+        assert "/src/utils/helper.py" in result
+
+    def test_leading_slash_pattern_with_subdir_path(self) -> None:
+        """Leading-slash pattern scoped to a subdirectory path."""
+        files = {
+            "/foo/a.md": {"modified_at": "2024-01-01T10:00:00"},
+            "/foo/b.txt": {"modified_at": "2024-01-01T09:00:00"},
+            "/foo/c.md": {"modified_at": "2024-01-01T08:00:00"},
+        }
+        result = _glob_search_files(files, "/foo/**/*.md", "/")
+        assert "/foo/a.md" in result
+        assert "/foo/c.md" in result
+        assert "/foo/b.txt" not in result
+
 
 _content_block_adapter = TypeAdapter(ContentBlock)
 

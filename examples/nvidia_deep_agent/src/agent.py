@@ -51,7 +51,7 @@ frontier_model = init_chat_model(
 # Subagents: NVIDIA Nemotron Super via NIM
 # Fast, efficient OSS model for research, data analysis, and optimization tasks.
 nemotron_super = ChatNVIDIA(
-    model="private/nvidia/nemotron-3-super-120b-a12b"
+    model="nvidia/nemotron-3-super-120b-a12b"
 )
 
 # --- Tools ---

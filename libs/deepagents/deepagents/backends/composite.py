@@ -52,6 +52,28 @@ def _remap_grep_path(m: GrepMatch, route_prefix: str) -> GrepMatch:
     )
 
 
+def _strip_route_from_pattern(pattern: str, route_prefix: str) -> str:
+    """Strip a route prefix from a glob pattern when the pattern targets that route.
+
+    If the pattern (ignoring a leading `/`) starts with the route prefix
+    (also ignoring its leading `/`), the overlapping prefix is removed so
+    the pattern is relative to the backend's internal root.
+
+    Args:
+        pattern: The glob pattern, possibly absolute (e.g. `/memories/**/*.md`).
+        route_prefix: The route prefix (e.g. `/memories/`).
+
+    Returns:
+        The pattern with the route prefix stripped, or the original pattern
+        if it doesn't match the route.
+    """
+    bare_pattern = pattern.lstrip("/")
+    bare_prefix = route_prefix.strip("/") + "/"
+    if bare_pattern.startswith(bare_prefix):
+        return bare_pattern[len(bare_prefix) :]
+    return pattern
+
+
 def _remap_file_info_path(fi: FileInfo, route_prefix: str) -> FileInfo:
     """Create a new FileInfo with the route prefix prepended to the path."""
     return cast(
@@ -396,7 +418,8 @@ class CompositeBackend(BackendProtocol):
         results.extend(default_matches or [])
 
         for route_prefix, backend in self.routes.items():
-            sub_result = backend.glob_info(pattern, "/")
+            route_pattern = _strip_route_from_pattern(pattern, route_prefix)
+            sub_result = backend.glob_info(route_pattern, "/")
             sub_matches = sub_result.matches if isinstance(sub_result, GlobResult) else sub_result
             results.extend(_remap_file_info_path(fi, route_prefix) for fi in (sub_matches or []))
 
@@ -426,7 +449,8 @@ class CompositeBackend(BackendProtocol):
         results.extend(default_matches or [])
 
         for route_prefix, backend in self.routes.items():
-            sub_result = await backend.aglob_info(pattern, "/")
+            route_pattern = _strip_route_from_pattern(pattern, route_prefix)
+            sub_result = await backend.aglob_info(route_pattern, "/")
             sub_matches = sub_result.matches if isinstance(sub_result, GlobResult) else sub_result
             results.extend(_remap_file_info_path(fi, route_prefix) for fi in (sub_matches or []))
 

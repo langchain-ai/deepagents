@@ -4,11 +4,13 @@ This module contains async versions of skills middleware tests.
 """
 
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 
 from langchain.agents import create_agent
 from langchain_core.messages import AIMessage, HumanMessage
 
 from deepagents.backends.filesystem import FilesystemBackend
+from deepagents.backends.protocol import FileDownloadResponse, FileInfo
 from deepagents.middleware.skills import SkillsMiddleware, _alist_skills
 from tests.unit_tests.chat_model import GenericFakeChatModel
 
@@ -404,3 +406,31 @@ async def test_agent_with_skills_middleware_empty_sources_async(tmp_path: Path) 
 
     assert "Skills System" in content
     assert "No skills available" in content
+
+
+async def test_alist_skills_with_windows_style_paths() -> None:
+    """Test that skills load correctly even when backend returns Windows-style backslash paths."""
+    skill_content = make_skill_content("my-skill", "My test skill")
+
+    # Simulate FilesystemBackend on Windows returning backslash paths
+    backend = MagicMock()
+    backend.als_info = AsyncMock(
+        return_value=[
+            FileInfo(path="C:\\Users\\project\\skills\\my-skill\\", is_dir=True),
+        ]
+    )
+    backend.adownload_files = AsyncMock(
+        return_value=[
+            FileDownloadResponse(
+                path="C:\\Users\\project\\skills\\my-skill/SKILL.md",
+                content=skill_content.encode("utf-8"),
+                error=None,
+            )
+        ]
+    )
+
+    skills = await _alist_skills(backend, "C:\\Users\\project\\skills\\")
+
+    assert len(skills) == 1
+    assert skills[0]["name"] == "my-skill"
+    assert skills[0]["description"] == "My test skill"

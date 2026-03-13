@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
+from unittest.mock import MagicMock
 
 from langchain.agents import create_agent
 from langchain.tools import ToolRuntime
@@ -20,6 +21,7 @@ if TYPE_CHECKING:
 from langgraph.store.memory import InMemoryStore
 
 from deepagents.backends.filesystem import FilesystemBackend
+from deepagents.backends.protocol import FileDownloadResponse, FileInfo
 from deepagents.backends.state import StateBackend
 from deepagents.backends.store import StoreBackend
 from deepagents.graph import create_deep_agent
@@ -707,6 +709,34 @@ def test_list_skills_from_backend_with_helper_files(tmp_path: Path) -> None:
             "allowed_tools": [],
         }
     ]
+
+
+def test_list_skills_with_windows_style_paths() -> None:
+    """Test that skills load correctly even when backend returns Windows-style backslash paths."""
+    skill_content = make_skill_content("my-skill", "My test skill")
+
+    # Simulate FilesystemBackend on Windows returning backslash paths
+    backend = MagicMock()
+    backend.ls_info = MagicMock(
+        return_value=[
+            FileInfo(path="C:\\Users\\project\\skills\\my-skill\\", is_dir=True),
+        ]
+    )
+    backend.download_files = MagicMock(
+        return_value=[
+            FileDownloadResponse(
+                path="C:\\Users\\project\\skills\\my-skill/SKILL.md",
+                content=skill_content.encode("utf-8"),
+                error=None,
+            )
+        ]
+    )
+
+    skills = _list_skills(backend, "C:\\Users\\project\\skills\\")
+
+    assert len(skills) == 1
+    assert skills[0]["name"] == "my-skill"
+    assert skills[0]["description"] == "My test skill"
 
 
 def test_format_skills_locations_single_registry() -> None:

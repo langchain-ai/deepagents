@@ -438,8 +438,8 @@ def _list_skills(backend: BackendProtocol, source_path: str) -> list[SkillMetada
     # For each skill directory, check if SKILL.md exists and download it
     skill_md_paths = []
     for skill_dir_path in skill_dirs:
-        # Construct SKILL.md path using PurePosixPath for safe, standardized path operations
-        skill_dir = PurePosixPath(skill_dir_path)
+        # Normalize separators then construct SKILL.md path using PurePosixPath
+        skill_dir = PurePosixPath(skill_dir_path.replace("\\", "/"))
         skill_md_path = str(skill_dir / "SKILL.md")
         skill_md_paths.append((skill_dir_path, skill_md_path))
 
@@ -463,7 +463,7 @@ def _list_skills(backend: BackendProtocol, source_path: str) -> list[SkillMetada
             continue
 
         # Extract directory name from path using PurePosixPath
-        directory_name = PurePosixPath(skill_dir_path).name
+        directory_name = PurePosixPath(skill_dir_path.replace("\\", "/")).name
 
         # Parse metadata
         skill_metadata = _parse_skill_metadata(
@@ -515,8 +515,8 @@ async def _alist_skills(backend: BackendProtocol, source_path: str) -> list[Skil
     # For each skill directory, check if SKILL.md exists and download it
     skill_md_paths = []
     for skill_dir_path in skill_dirs:
-        # Construct SKILL.md path using PurePosixPath for safe, standardized path operations
-        skill_dir = PurePosixPath(skill_dir_path)
+        # Normalize separators then construct SKILL.md path using PurePosixPath
+        skill_dir = PurePosixPath(skill_dir_path.replace("\\", "/"))
         skill_md_path = str(skill_dir / "SKILL.md")
         skill_md_paths.append((skill_dir_path, skill_md_path))
 
@@ -540,7 +540,7 @@ async def _alist_skills(backend: BackendProtocol, source_path: str) -> list[Skil
             continue
 
         # Extract directory name from path using PurePosixPath
-        directory_name = PurePosixPath(skill_dir_path).name
+        directory_name = PurePosixPath(skill_dir_path.replace("\\", "/")).name
 
         # Parse metadata
         skill_metadata = _parse_skill_metadata(
@@ -677,7 +677,7 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         locations = []
 
         for i, source_path in enumerate(self.sources):
-            name = PurePosixPath(source_path.rstrip("/")).name.capitalize()
+            name = PurePosixPath(source_path.replace("\\", "/").rstrip("/")).name.capitalize()
             suffix = " (higher priority)" if i == len(self.sources) - 1 else ""
             locations.append(f"**{name} Skills**: `{source_path}`{suffix}")
 

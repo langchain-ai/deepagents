@@ -19,13 +19,13 @@ def _system_message_as_text(message: SystemMessage) -> str:
 
 def _assert_snapshot(snapshot_path: Path, actual: str, *, update_snapshots: bool) -> None:
     if update_snapshots or not snapshot_path.exists():
-        snapshot_path.write_text(actual)
+        snapshot_path.write_text(actual, encoding="utf-8")
         if update_snapshots:
             return
         msg = f"Created snapshot at {snapshot_path}. Re-run tests."
         raise AssertionError(msg)
 
-    expected = snapshot_path.read_text()
+    expected = snapshot_path.read_text(encoding="utf-8")
     assert actual == expected
 
 

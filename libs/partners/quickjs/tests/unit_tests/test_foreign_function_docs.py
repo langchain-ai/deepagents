@@ -200,5 +200,5 @@ type UserLookup = {
   id: number
   name: string
 }
-```"""
+```"""  # noqa: E501
     )

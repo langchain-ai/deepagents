@@ -414,6 +414,7 @@ evals = [
     { name = "langchain-mistralai" },
     { name = "langchain-ollama" },
     { name = "langchain-xai" },
+    { name = "langsmith" },
     { name = "nltk", specifier = ">=3.9.0" },
     { name = "tiktoken", specifier = ">=0.8.0" },
 ]

@@ -62,7 +62,9 @@ def test_render_foreign_function_section() -> None:
         }
     )
 
-    assert actual == """Available foreign functions:
+    assert (
+        actual
+        == """Available foreign functions:
 
 ```python
 def find_users_by_name(name: str) -> list[UserLookup]:
@@ -99,3 +101,4 @@ class UserLookup(TypedDict):
     id: int
     name: str
 ```"""
+    )

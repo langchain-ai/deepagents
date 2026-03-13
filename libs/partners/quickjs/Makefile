@@ -1,4 +1,4 @@
-.PHONY: format lint type typecheck test tests integration_test integration_tests test_watch help lint_package coverage
+.PHONY: format lint type typecheck test tests integration_test integration_tests test_watch help lint_package coverage update_snapshots
 
 .DEFAULT_GOAL := help
 
@@ -31,6 +31,9 @@ integration_test integration_tests:
 
 test_watch: ## Run tests in watch mode
 	uv run --group test ptw --now . -- -vv $(TEST_FILE)
+
+update_snapshots: ## Update smoke test prompt snapshots
+	uv run --group test pytest tests/unit_tests/smoke_tests/test_system_prompt.py --update-snapshots
 
 ######################
 # LINTING AND FORMATTING

@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import SystemMessage
 from langchain_core.tools import tool
 from typing_extensions import TypedDict
 
-from deepagents.graph import create_deep_agent
 from langchain_quickjs.middleware import QuickJSMiddleware
-from tests.unit_tests.chat_model import GenericFakeChatModel
 
 
 class UserLookup(TypedDict):
@@ -65,38 +63,25 @@ def _system_message_as_text(message: SystemMessage) -> str:
 
 
 def test_system_prompt_includes_rendered_foreign_function_docs() -> None:
-    model = GenericFakeChatModel(messages=iter([AIMessage(content="hello!")]))
-    agent = create_deep_agent(
-        model=model,
-        middleware=[
-            QuickJSMiddleware(
-                external_functions=[
-                    "find_users_by_name",
-                    "get_user_location",
-                    "get_city_for_location",
-                    "normalize_name",
-                    "fetch_weather",
-                ],
-                external_function_implementations={
-                    "find_users_by_name": find_users_by_name,
-                    "get_user_location": get_user_location,
-                    "get_city_for_location": get_city_for_location,
-                    "normalize_name": normalize_name,
-                    "fetch_weather": fetch_weather,
-                },
-                auto_include=True,
-            )
+    middleware = QuickJSMiddleware(
+        external_functions=[
+            "find_users_by_name",
+            "get_user_location",
+            "get_city_for_location",
+            "normalize_name",
+            "fetch_weather",
         ],
+        external_function_implementations={
+            "find_users_by_name": find_users_by_name,
+            "get_user_location": get_user_location,
+            "get_city_for_location": get_city_for_location,
+            "normalize_name": normalize_name,
+            "fetch_weather": fetch_weather,
+        },
+        auto_include=True,
     )
 
-    agent.invoke({"messages": [HumanMessage(content="hi")]})
-
-    history = model.call_history
-    assert len(history) >= 1
-    messages = history[0]["messages"]
-    system_messages = [m for m in messages if isinstance(m, SystemMessage)]
-    assert len(system_messages) >= 1
-    prompt = _system_message_as_text(system_messages[0])
+    prompt = middleware._format_repl_system_prompt()
     assert "Available foreign functions:" in prompt
     assert "```python" in prompt
     assert "def find_users_by_name(name: str) -> list[UserLookup]:" in prompt

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from deepagents.graph import create_deep_agent
 from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.tools import tool
 
 from langchain_quickjs.middleware import QuickJSMiddleware
 from tests.unit_tests.chat_model import GenericFakeChatModel
@@ -46,3 +47,99 @@ def test_deepagent_with_quickjs_interpreter() -> None:
         model.call_history[0]["messages"][-1].content
         == "Use the repl to calculate 6 * 7"
     )
+
+
+@tool
+def foo_tool(value: str) -> str:
+    """Return a formatted value for testing QuickJS tool interop."""
+    return f"foo returned {value}!"
+
+
+def test_deepagent_with_quickjs_langchain_tool_single_arg_foreign_function() -> None:
+    """Verify the repl maps a single positional arg to a single-field tool payload."""
+    model = GenericFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "repl",
+                            "args": {"code": "print(foo('bar'))"},
+                            "id": "call_1",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="foo returned bar!"),
+            ]
+        )
+    )
+
+    agent = create_deep_agent(
+        model=model,
+        middleware=[
+            QuickJSMiddleware(
+                external_functions=["foo"],
+                external_function_implementations={"foo": foo_tool},
+            )
+        ],
+    )
+
+    result = agent.invoke(
+        {"messages": [HumanMessage(content="Use the repl to call foo on bar")]}
+    )
+
+    assert "messages" in result
+    tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+    assert [msg.content for msg in tool_messages] == ["foo returned bar!"]
+    assert result["messages"][-1].content == "foo returned bar!"
+
+
+@tool
+def join_tool(left: str, right: str) -> str:
+    """Join two values for testing positional argument payload mapping."""
+    return f"{left}:{right}"
+
+
+def test_deepagent_with_quickjs_langchain_tool_multi_arg_foreign_function() -> None:
+    """Verify the repl maps multiple positional args onto matching tool fields."""
+    model = GenericFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "repl",
+                            "args": {"code": "print(join_values('left', 'right'))"},
+                            "id": "call_1",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="done"),
+            ]
+        )
+    )
+
+    agent = create_deep_agent(
+        model=model,
+        middleware=[
+            QuickJSMiddleware(
+                external_functions=["join_values"],
+                external_function_implementations={"join_values": join_tool},
+            )
+        ],
+    )
+
+    result = agent.invoke(
+        {"messages": [HumanMessage(content="Use the repl to join left and right")]}
+    )
+
+    assert "messages" in result
+    tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+
+    assert len(tool_messages) == 1
+    assert tool_messages[0].content_blocks == [{"type": "text", "text": "left:right"}]
+    assert result["messages"][-1].content_blocks == [{"type": "text", "text": "done"}]

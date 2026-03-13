@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from deepagents.graph import create_deep_agent
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from deepagents.graph import BASE_AGENT_PROMPT
+from deepagents.middleware._utils import append_to_system_message
+from langchain_core.messages import SystemMessage
 from langchain_core.tools import tool
 from typing_extensions import TypedDict
 
 from langchain_quickjs.middleware import QuickJSMiddleware
-from tests.unit_tests.chat_model import GenericFakeChatModel
 
 
 class UserLookup(TypedDict):
@@ -81,16 +81,11 @@ def _assert_snapshot(
 
 
 def _capture_system_prompt(middleware: QuickJSMiddleware) -> str:
-    model = GenericFakeChatModel(messages=iter([AIMessage(content="hello!")]))
-    agent = create_deep_agent(model=model, middleware=[middleware])
-    agent.invoke({"messages": [HumanMessage(content="hi")]})
-
-    history = model.call_history
-    assert len(history) >= 1
-    messages = history[0]["messages"]
-    system_messages = [m for m in messages if isinstance(m, SystemMessage)]
-    assert len(system_messages) >= 1
-    return _system_message_as_text(system_messages[0])
+    system_message = append_to_system_message(None, BASE_AGENT_PROMPT)
+    system_message = append_to_system_message(
+        system_message, middleware._format_repl_system_prompt()
+    )
+    return _system_message_as_text(system_message)
 
 
 def test_system_prompt_snapshot_no_tools(

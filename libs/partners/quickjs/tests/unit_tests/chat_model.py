@@ -135,15 +135,11 @@ class GenericFakeChatModel(BaseChatModel):
             content = ""
 
         if self.stream_delimiter is None:
-            content_chunks = cast(list[str], [content])
+            content_chunks = cast("list[str]", [content])
         else:
             content_chunks = cast(
-                list[str],
-                [
-                    part
-                    for part in re.split(self.stream_delimiter, content)
-                    if part
-                ],
+                "list[str]",
+                [part for part in re.split(self.stream_delimiter, content) if part],
             )
 
         role = "assistant"

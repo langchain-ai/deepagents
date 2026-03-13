@@ -65,7 +65,7 @@ def test_composite_state_backend_routes_and_search(tmp_path: Path):  # noqa: ARG
     assert any(m["path"] == "/memories/readme.md" for m in matches2)
 
     # glob across both
-    g = be.glob_info("**/*.md", path="/")
+    g = be.glob_info("**/*.md", path="/").matches
     assert any(i["path"] == "/memories/readme.md" for i in g)
 
 
@@ -97,7 +97,7 @@ def test_composite_backend_filesystem_plus_store(tmp_path: Path):
     assert any(m["path"] == "/memories/notes.md" for m in gm_mem)
 
     # glob_info route targeting should accept /memories as the route root
-    gl_mem = comp.glob_info("*.md", path="/memories")
+    gl_mem = comp.glob_info("*.md", path="/memories").matches
     assert any(i["path"] == "/memories/notes.md" for i in gl_mem)
 
     # grep_raw merges
@@ -107,7 +107,7 @@ def test_composite_backend_filesystem_plus_store(tmp_path: Path):
     assert any(m["path"] == "/memories/notes.md" for m in gm2)
 
     # glob_info
-    gl = comp.glob_info("*.md", path="/")
+    gl = comp.glob_info("*.md", path="/").matches
     assert any(i["path"] == "/memories/notes.md" for i in gl)
 
 
@@ -210,7 +210,7 @@ def test_composite_backend_multiple_routes():
     assert len(paths_with_content) >= 1  # At least temp.txt should match
 
     # glob across all backends
-    glob_results = comp.glob_info("**/*.md", path="/")
+    glob_results = comp.glob_info("**/*.md", path="/").matches
     assert any(i["path"] == "/memories/important.md" for i in glob_results)
 
     # Edit in routed backend
@@ -1107,7 +1107,7 @@ def test_composite_glob_info_targeting_specific_route() -> None:
     state_backend.write("/local.py", "local python")
 
     # Glob in specific route with pattern - should only find .py files in memories
-    results = comp.glob_info("**/*.py", path="/memories/")
+    results = comp.glob_info("**/*.py", path="/memories/").matches
     result_paths = [fi["path"] for fi in results]
 
     assert result_paths == ["/memories/test.py"]
@@ -1129,7 +1129,7 @@ def test_composite_glob_info_nested_path_in_route() -> None:
     comp.write("/archive/notes.txt", "general notes")
 
     # Glob in nested path within route - should only find .log files in /archive/2024/
-    results = comp.glob_info("*.log", path="/archive/2024/")
+    results = comp.glob_info("*.log", path="/archive/2024/").matches
     result_paths = sorted([fi["path"] for fi in results])
 
     assert result_paths == ["/archive/2024/feb.log", "/archive/2024/jan.log"]
@@ -1167,7 +1167,7 @@ def test_glob_info_path_stripping_matches_get_backend_and_key() -> None:
     comp.write("/memories/notes.txt", "content")
 
     # Glob with trailing slash
-    results = comp.glob_info("*.txt", path="/memories/")
+    results = comp.glob_info("*.txt", path="/memories/").matches
     assert any(fi["path"] == "/memories/notes.txt" for fi in results)
 
 

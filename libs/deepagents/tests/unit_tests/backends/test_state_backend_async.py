@@ -64,7 +64,7 @@ async def test_awrite_aread_aedit_als_agrep_aglob_state_backend():
     assert isinstance(result, list)  # Returns empty list, not error
 
     # aglob_info
-    infos = await be.aglob_info("*.txt", path="/")
+    infos = (await be.aglob_info("*.txt", path="/")).matches
     assert any(i["path"] == "/notes.txt" for i in infos)
 
 
@@ -253,7 +253,7 @@ async def test_state_backend_aglob_recursive():
         rt.state["files"].update(res.files_update)
 
     # Recursive glob for all .py files
-    infos = await be.aglob_info("**/*.py", path="/")
+    infos = (await be.aglob_info("**/*.py", path="/")).matches
     py_files = [i["path"] for i in infos]
     assert "/src/main.py" in py_files
     assert "/src/utils/helper.py" in py_files
@@ -322,7 +322,8 @@ Total projects: 3
     assert "Project Beta" in matches_exact[0]["text"]
 
     # Test 3: Verify glob also works with exact file paths
-    glob_matches = await be.aglob_info("*", path=evicted_path)
+    glob_matches = (await be.aglob_info("*", path=evicted_path)).matches
+    assert glob_matches is not None
     assert len(glob_matches) == 1
     assert glob_matches[0]["path"] == evicted_path
 
@@ -362,17 +363,20 @@ async def test_state_backend_apath_edge_cases() -> None:
     assert matches_no_slash[0]["path"] == "/dir/nested.txt"
 
     # Test 4: Glob with exact file path
-    glob_exact = await be.aglob_info("*.txt", path="/file.txt")
+    glob_exact = (await be.aglob_info("*.txt", path="/file.txt")).matches
+    assert glob_exact is not None
     assert len(glob_exact) == 1
     assert glob_exact[0]["path"] == "/file.txt"
 
     # Test 5: Glob with directory and pattern
-    glob_dir = await be.aglob_info("*.txt", path="/dir/")
+    glob_dir = (await be.aglob_info("*.txt", path="/dir/")).matches
+    assert glob_dir is not None
     assert len(glob_dir) == 1  # Only nested.txt, not deep.txt (non-recursive)
     assert glob_dir[0]["path"] == "/dir/nested.txt"
 
     # Test 6: Glob with recursive pattern
-    glob_recursive = await be.aglob_info("**/*.txt", path="/dir/")
+    glob_recursive = (await be.aglob_info("**/*.txt", path="/dir/")).matches
+    assert glob_recursive is not None
     assert len(glob_recursive) == 2  # Both nested.txt and deep.txt
     paths = {g["path"] for g in glob_recursive}
     assert "/dir/nested.txt" in paths

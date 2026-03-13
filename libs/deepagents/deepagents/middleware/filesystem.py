@@ -31,6 +31,7 @@ from deepagents.backends.protocol import (
     BackendProtocol,
     EditResult,
     FileData as FileData,  # Re-export for backwards compatibility
+    GlobResult,
     ReadResult,
     SandboxBackendProtocol,
     WriteResult,
@@ -781,7 +782,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             coroutine=async_edit_file,
         )
 
-    def _create_glob_tool(self) -> BaseTool:
+    def _create_glob_tool(self) -> BaseTool:  # noqa: C901
         """Create the glob tool."""
         tool_description = self._custom_tool_descriptions.get("glob") or GLOB_TOOL_DESCRIPTION
 
@@ -799,9 +800,22 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
                 future = executor.submit(resolved_backend.glob_info, pattern, path=validated_path)
                 try:
-                    infos = future.result(timeout=GLOB_TIMEOUT)
+                    glob_result = future.result(timeout=GLOB_TIMEOUT)
                 except concurrent.futures.TimeoutError:
                     return f"Error: glob timed out after {GLOB_TIMEOUT}s. Try a more specific pattern or a narrower path."
+            if isinstance(glob_result, GlobResult):
+                if glob_result.error:
+                    return f"Error: {glob_result.error}"
+                infos = glob_result.matches or []
+            else:
+                warnings.warn(
+                    "Returning a plain `list` from `backend.glob_info()` is deprecated. "
+                    "Return a `GlobResult` instead. Returning `list` will not be "
+                    "supported in a future version.",
+                    DeprecationWarning,
+                    stacklevel=1,
+                )
+                infos = glob_result
             paths = [fi.get("path", "") for fi in infos]
             result = truncate_if_too_long(paths)
             return str(result)
@@ -818,12 +832,25 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             except ValueError as e:
                 return f"Error: {e}"
             try:
-                infos = await asyncio.wait_for(
+                glob_result = await asyncio.wait_for(
                     resolved_backend.aglob_info(pattern, path=validated_path),
                     timeout=GLOB_TIMEOUT,
                 )
             except TimeoutError:
                 return f"Error: glob timed out after {GLOB_TIMEOUT}s. Try a more specific pattern or a narrower path."
+            if isinstance(glob_result, GlobResult):
+                if glob_result.error:
+                    return f"Error: {glob_result.error}"
+                infos = glob_result.matches or []
+            else:
+                warnings.warn(
+                    "Returning a plain `list` from `backend.glob_info()` is deprecated. "
+                    "Return a `GlobResult` instead. Returning `list` will not be "
+                    "supported in a future version.",
+                    DeprecationWarning,
+                    stacklevel=1,
+                )
+                infos = glob_result
             paths = [fi.get("path", "") for fi in infos]
             result = truncate_if_too_long(paths)
             return str(result)

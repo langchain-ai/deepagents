@@ -202,6 +202,19 @@ class EditResult:
     occurrences: int | None = None
 
 
+@dataclass
+class GlobResult:
+    """Result from backend glob operations.
+
+    Attributes:
+        error: Error message on failure, None on success.
+        matches: List of matching file info dicts on success, None on failure.
+    """
+
+    error: str | None = None
+    matches: list["FileInfo"] | None = None
+
+
 # @abstractmethod to avoid breaking subclasses that only implement a subset
 class BackendProtocol(abc.ABC):  # noqa: B024
     r"""Protocol for pluggable memory backends (single, unified).
@@ -331,7 +344,7 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         """Async version of grep_raw."""
         return await asyncio.to_thread(self.grep_raw, pattern, path, glob)
 
-    def glob_info(self, pattern: str, path: str = "/") -> list["FileInfo"]:
+    def glob_info(self, pattern: str, path: str = "/") -> "GlobResult":
         """Find files matching a glob pattern.
 
         Args:
@@ -346,11 +359,11 @@ class BackendProtocol(abc.ABC):  # noqa: B024
                   The pattern is applied relative to this path.
 
         Returns:
-            list of FileInfo
+            GlobResult with matching files or error.
         """
         raise NotImplementedError
 
-    async def aglob_info(self, pattern: str, path: str = "/") -> list["FileInfo"]:
+    async def aglob_info(self, pattern: str, path: str = "/") -> "GlobResult":
         """Async version of glob_info."""
         return await asyncio.to_thread(self.glob_info, pattern, path)
 

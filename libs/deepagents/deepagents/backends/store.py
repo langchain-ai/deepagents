@@ -22,6 +22,7 @@ from deepagents.backends.protocol import (
     FileFormat,
     FileInfo,
     FileUploadResponse,
+    GlobResult,
     GrepMatch,
     ReadResult,
     WriteResult,
@@ -610,7 +611,7 @@ class StoreBackend(BackendProtocol):
                 continue
         return grep_matches_from_files(files, pattern, path, glob)
 
-    def glob_info(self, pattern: str, path: str = "/") -> list[FileInfo]:
+    def glob_info(self, pattern: str, path: str = "/") -> GlobResult:
         """Find files matching a glob pattern in the store."""
         store = self._get_store()
         namespace = self._get_namespace()
@@ -623,7 +624,7 @@ class StoreBackend(BackendProtocol):
                 continue
         result = _glob_search_files(files, pattern, path)
         if result == "No files found":
-            return []
+            return GlobResult(matches=[])
         paths = result.split("\n")
         infos: list[FileInfo] = []
         for p in paths:
@@ -642,7 +643,7 @@ class StoreBackend(BackendProtocol):
                     "modified_at": fd.get("modified_at", "") if fd else "",
                 }
             )
-        return infos
+        return GlobResult(matches=infos)
 
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
         """Upload multiple files to the store.

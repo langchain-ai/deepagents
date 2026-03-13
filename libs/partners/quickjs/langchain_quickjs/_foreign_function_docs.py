@@ -324,7 +324,10 @@ def render_foreign_function_section(
     ]
     sections = [
         "Available foreign functions:\n",
-        "These are JavaScript-callable foreign functions exposed inside QuickJS. The TypeScript-style signatures below document argument and return shapes.",
+        (
+            "These are JavaScript-callable foreign functions exposed inside QuickJS. "
+            "The TypeScript-style signatures below document argument and return shapes."
+        ),
         "",
         "```ts",
         "\n\n".join(function_blocks),

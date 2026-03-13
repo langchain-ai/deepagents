@@ -219,7 +219,10 @@ def test_deepagent_with_quickjs_langchain_tool_json_stringify_foreign_function()
                         {
                             "name": "repl",
                             "args": {
-                                "code": "const ids = list_user_ids();\nprint(JSON.stringify(ids));"
+                                "code": (
+                                    "const ids = list_user_ids();\n"
+                                    "print(JSON.stringify(ids));"
+                                )
                             },
                             "id": "call_1",
                             "type": "tool_call",
@@ -270,7 +273,10 @@ def test_deepagent_with_quickjs_langchain_tool_dict_foreign_function() -> None:
                         {
                             "name": "repl",
                             "args": {
-                                "code": "const profile = get_user_profile();\nprint(profile.name + ':' + profile.age);"
+                                "code": (
+                                    "const profile = get_user_profile();\n"
+                                    "print(profile.name + ':' + profile.age);"
+                                )
                             },
                             "id": "call_1",
                             "type": "tool_call",

@@ -56,7 +56,7 @@ async def test_deepagent_with_quickjs_interpreter() -> None:
 
 
 async def test_deepagent_with_quickjs_json_stringify_foreign_function() -> None:
-    """Verify async repl calls transparently bridge Python list returns into JS arrays."""
+    """Verify async repl calls bridge Python list returns into JS arrays."""
     model = GenericFakeChatModel(
         messages=iter(
             [
@@ -66,7 +66,10 @@ async def test_deepagent_with_quickjs_json_stringify_foreign_function() -> None:
                         {
                             "name": "repl",
                             "args": {
-                                "code": "const ids = list_user_ids();\nprint(JSON.stringify(ids));"
+                                "code": (
+                                    "const ids = list_user_ids();\n"
+                                    "print(JSON.stringify(ids));"
+                                )
                             },
                             "id": "call_1",
                             "type": "tool_call",

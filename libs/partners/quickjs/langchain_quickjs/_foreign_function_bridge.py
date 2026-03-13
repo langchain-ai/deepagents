@@ -10,11 +10,14 @@ functions behave more naturally from JavaScript.
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import quickjs
 from langchain_core.tools import BaseTool
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    import quickjs
 
 
 def _wrap_tool_for_js(

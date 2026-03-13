@@ -155,9 +155,9 @@ def _list(
     """List all available skills for the specified agent.
 
     Args:
-        agent: Agent identifier for skills (default: agent).
+        agent: Agent identifier for skills (retained for CLI compatibility).
         project: If True, show only project skills.
-            If False, show all skills (user + project).
+            If False, show built-in and project skills.
         output_format: Output format — `'text'` (Rich) or `'json'`.
     """
     # Deferred: skills.load imports the deepagents SDK. This module is
@@ -166,10 +166,7 @@ def _list(
     from deepagents_cli.skills.load import list_skills
 
     settings = Settings.from_environment()
-    user_skills_dir = settings.get_user_skills_dir(agent)
     project_skills_dir = settings.get_project_skills_dir()
-    user_agent_skills_dir = settings.get_user_agent_skills_dir()
-    project_agent_skills_dir = settings.get_project_agent_skills_dir()
 
     # If --project flag is used, only show project skills
     if project:
@@ -187,17 +184,11 @@ def _list(
             )
             return
 
-        # Check both project skill directories
-        has_deepagents_skills = project_skills_dir.exists() and any(
+        has_project_skills = project_skills_dir.exists() and any(
             project_skills_dir.iterdir()
         )
-        has_agent_skills = (
-            project_agent_skills_dir
-            and project_agent_skills_dir.exists()
-            and any(project_agent_skills_dir.iterdir())
-        )
 
-        if not has_deepagents_skills and not has_agent_skills:
+        if not has_project_skills:
             if output_format == "json":
                 from deepagents_cli.output import write_json
 
@@ -216,12 +207,7 @@ def _list(
             )
             return
 
-        skills = list_skills(
-            user_skills_dir=None,
-            project_skills_dir=project_skills_dir,
-            user_agent_skills_dir=None,
-            project_agent_skills_dir=project_agent_skills_dir,
-        )
+        skills = list_skills(project_skills_dir=project_skills_dir)
 
         if output_format == "json":
             from deepagents_cli.output import write_json
@@ -234,10 +220,7 @@ def _list(
         # Load skills from all directories (including built-in)
         skills = list_skills(
             built_in_skills_dir=settings.get_built_in_skills_dir(),
-            user_skills_dir=user_skills_dir,
             project_skills_dir=project_skills_dir,
-            user_agent_skills_dir=user_agent_skills_dir,
-            project_agent_skills_dir=project_agent_skills_dir,
         )
 
         if output_format == "json":
@@ -253,11 +236,8 @@ def _list(
             console.print(
                 "[dim]Skills are loaded from these directories "
                 "(highest precedence first):\n"
-                "  1. .agents/skills/                 project skills\n"
-                "  2. .deepagents/skills/             project skills (alias)\n"
-                "  3. ~/.agents/skills/               user skills\n"
-                "  4. ~/.deepagents/<agent>/skills/   user skills (alias)\n"
-                "  5. <package>/built_in_skills/      built-in skills[/dim]",
+                "  1. .deepagents/skills/             project skills\n"
+                "  2. <package>/built_in_skills/      built-in skills[/dim]",
                 style=COLORS["dim"],
             )
             console.print(
@@ -270,27 +250,11 @@ def _list(
         console.print("\n[bold]Available Skills:[/bold]\n", style=COLORS["primary"])
 
     # Group skills by source
-    user_skills = [s for s in skills if s["source"] == "user"]
     project_skills_list = [s for s in skills if s["source"] == "project"]
     built_in_skills_list = [s for s in skills if s["source"] == "built-in"]
 
-    # Show user skills
-    if user_skills and not project:
-        console.print("[bold cyan]User Skills:[/bold cyan]", style=COLORS["primary"])
-        bullet = get_glyphs().bullet
-        for skill in user_skills:
-            skill_path = Path(skill["path"])
-            name = skill["name"]
-            console.print(f"  {bullet} [bold]{name}[/bold]", style=COLORS["primary"])
-            console.print(f"    {skill_path.parent}/", style=COLORS["dim"])
-            console.print()
-            console.print(f"    {skill['description']}", style=COLORS["dim"])
-            console.print()
-
     # Show project skills
     if project_skills_list:
-        if not project and user_skills:
-            console.print()
         console.print(
             "[bold green]Project Skills:[/bold green]", style=COLORS["primary"]
         )
@@ -306,7 +270,7 @@ def _list(
 
     # Show built-in skills
     if built_in_skills_list and not project:
-        if user_skills or project_skills_list:
+        if project_skills_list:
             console.print()
         console.print(
             "[bold magenta]Built-in Skills:[/bold magenta]", style=COLORS["primary"]
@@ -403,9 +367,9 @@ def _create(
 
     Args:
         skill_name: Name of the skill to create.
-        agent: Agent identifier for skills
-        project: If True, create in project skills directory.
-            If False, create in user skills directory.
+        agent: Agent identifier for skills (retained for CLI compatibility).
+        project: Retained for CLI compatibility. Skills are created in the
+            project skills directory.
         output_format: Output format — `'text'` (Rich) or `'json'`.
     """
     # Validate skill name first (per Agent Skills spec)
@@ -422,23 +386,20 @@ def _create(
 
     # Determine target directory
     settings = Settings.from_environment()
-    if project:
-        if not settings.project_root:
-            console.print("[bold red]Error:[/bold red] Not in a project directory.")
-            console.print(
-                "[dim]Project skills require a .git directory "
-                "in the project root.[/dim]",
-                style=COLORS["dim"],
-            )
-            return
-        skills_dir = settings.ensure_project_skills_dir()
-        if skills_dir is None:
-            console.print(
-                "[bold red]Error:[/bold red] Could not create project skills directory."
-            )
-            return
-    else:
-        skills_dir = settings.ensure_user_skills_dir(agent)
+    if not settings.project_root:
+        console.print("[bold red]Error:[/bold red] Not in a project directory.")
+        console.print(
+            "[dim]Project skills require a .git directory "
+            "in the project root.[/dim]",
+            style=COLORS["dim"],
+        )
+        return
+    skills_dir = settings.ensure_project_skills_dir()
+    if skills_dir is None:
+        console.print(
+            "[bold red]Error:[/bold red] Could not create project skills directory."
+        )
+        return
 
     skill_dir = skills_dir / skill_name
 
@@ -470,7 +431,7 @@ def _create(
             {
                 "name": skill_name,
                 "path": str(skill_dir),
-                "project": project,
+                "project": True,
             },
         )
         return
@@ -494,7 +455,7 @@ def _create(
         "   - langgraph-docs: LangGraph documentation lookup\n"
         "\n"
         "   Copy an example:\n"
-        "   cp -r examples/skills/web-research ~/.deepagents/agent/skills/\n",
+        "   cp -r examples/skills/web-research .deepagents/skills/\n",
         style=COLORS["dim"],
     )
 
@@ -510,9 +471,9 @@ def _info(
 
     Args:
         skill_name: Name of the skill to show info for.
-        agent: Agent identifier for skills (default: agent).
+        agent: Agent identifier for skills (retained for CLI compatibility).
         project: If True, only search in project skills.
-            If False, search in both user and project skills.
+            If False, search in built-in and project skills.
         output_format: Output format — `'text'` (Rich) or `'json'`.
     """
     # Deferred: skills.load imports the deepagents SDK. This module is
@@ -521,29 +482,18 @@ def _info(
     from deepagents_cli.skills.load import list_skills
 
     settings = Settings.from_environment()
-    user_skills_dir = settings.get_user_skills_dir(agent)
     project_skills_dir = settings.get_project_skills_dir()
-    user_agent_skills_dir = settings.get_user_agent_skills_dir()
-    project_agent_skills_dir = settings.get_project_agent_skills_dir()
 
     # Load skills based on --project flag
     if project:
         if not project_skills_dir:
             console.print("[bold red]Error:[/bold red] Not in a project directory.")
             return
-        skills = list_skills(
-            user_skills_dir=None,
-            project_skills_dir=project_skills_dir,
-            user_agent_skills_dir=None,
-            project_agent_skills_dir=project_agent_skills_dir,
-        )
+        skills = list_skills(project_skills_dir=project_skills_dir)
     else:
         skills = list_skills(
             built_in_skills_dir=settings.get_built_in_skills_dir(),
-            user_skills_dir=user_skills_dir,
             project_skills_dir=project_skills_dir,
-            user_agent_skills_dir=user_agent_skills_dir,
-            project_agent_skills_dir=project_agent_skills_dir,
         )
 
     # Find the skill
@@ -574,33 +524,12 @@ def _info(
     }
     source_label, source_color = source_labels.get(skill["source"], ("Skill", "dim"))
 
-    # Check if this project skill shadows a user skill with the same name.
-    # This is a cosmetic hint — if the second list_skills() call fails
-    # (e.g. permission error reading user dirs) we silently skip the warning
-    # rather than crashing the entire `skills info` display.
-    shadowed_user_skill = False
-    if skill["source"] == "project" and not project:
-        try:
-            user_only = list_skills(
-                user_skills_dir=user_skills_dir,
-                project_skills_dir=None,
-                user_agent_skills_dir=user_agent_skills_dir,
-                project_agent_skills_dir=None,
-            )
-            shadowed_user_skill = any(s["name"] == skill_name for s in user_only)
-        except Exception:  # noqa: BLE001, S110  # Shadow detection is cosmetic, safe to swallow
-            pass
 
     console.print(
         f"\n[bold]Skill: {skill['name']}[/bold] "
         f"[bold {source_color}]({source_label})[/bold {source_color}]\n",
         style=COLORS["primary"],
     )
-    if shadowed_user_skill:
-        console.print(
-            f"[yellow]Note: Overrides user skill '{skill_name}' "
-            "of the same name[/yellow]\n"
-        )
     console.print(f"[bold]Location:[/bold] {skill_path.parent}/\n", style=COLORS["dim"])
     console.print(
         f"[bold]Description:[/bold] {skill['description']}\n", style=COLORS["dim"]
@@ -642,10 +571,9 @@ def _delete(
 
     Args:
         skill_name: Name of the skill to delete.
-        agent: Agent identifier for skills.
-        project: If `True`, only search in project skills.
-
-            If `False`, search in both user and project skills.
+        agent: Agent identifier for skills (retained for CLI compatibility).
+        project: Retained for CLI compatibility. Deletion is limited to
+            project skills.
         force: If `True`, skip confirmation prompt.
         output_format: Output format — `'text'` (Rich) or `'json'`.
 
@@ -664,29 +592,12 @@ def _delete(
     from deepagents_cli.skills.load import list_skills
 
     settings = Settings.from_environment()
-    user_skills_dir = settings.get_user_skills_dir(agent)
     project_skills_dir = settings.get_project_skills_dir()
-    user_agent_skills_dir = settings.get_user_agent_skills_dir()
-    project_agent_skills_dir = settings.get_project_agent_skills_dir()
 
-    # Load skills based on --project flag
-    if project:
-        if not project_skills_dir:
-            console.print("[bold red]Error:[/bold red] Not in a project directory.")
-            return
-        skills = list_skills(
-            user_skills_dir=None,
-            project_skills_dir=project_skills_dir,
-            user_agent_skills_dir=None,
-            project_agent_skills_dir=project_agent_skills_dir,
-        )
-    else:
-        skills = list_skills(
-            user_skills_dir=user_skills_dir,
-            project_skills_dir=project_skills_dir,
-            user_agent_skills_dir=user_agent_skills_dir,
-            project_agent_skills_dir=project_agent_skills_dir,
-        )
+    if not project_skills_dir:
+        console.print("[bold red]Error:[/bold red] Not in a project directory.")
+        return
+    skills = list_skills(project_skills_dir=project_skills_dir)
 
     # Find the skill
     skill = next((s for s in skills if s["name"] == skill_name), None)
@@ -695,15 +606,14 @@ def _delete(
         console.print(f"[bold red]Error:[/bold red] Skill '{skill_name}' not found.")
         console.print("\n[dim]Available skills:[/dim]", style=COLORS["dim"])
         for s in skills:
-            source_tag = "[project]" if s["source"] == "project" else "[user]"
-            console.print(f"  - {s['name']} {source_tag}", style=COLORS["dim"])
+            console.print(f"  - {s['name']} [project]", style=COLORS["dim"])
         return
 
     skill_path = Path(skill["path"])
     skill_dir = skill_path.parent
 
     # Validate the path is safe to delete
-    base_dir = project_skills_dir if skill["source"] == "project" else user_skills_dir
+    base_dir = project_skills_dir
     if not base_dir:
         console.print(
             "[bold red]Error:[/bold red] Cannot determine base skills directory. "
@@ -717,8 +627,8 @@ def _delete(
 
     # Display confirmation summary (text mode only)
     if output_format != "json":
-        source_label = "Project Skill" if skill["source"] == "project" else "User Skill"
-        source_color = "green" if skill["source"] == "project" else "cyan"
+        source_label = "Project Skill"
+        source_color = "green"
 
         # Count files for the confirmation summary (display-only; a permission
         # error in a subdirectory should not abort the entire delete flow).
@@ -852,8 +762,8 @@ def setup_skills_parser(
         aliases=["ls"],
         help="List all available skills",
         description=(
-            "List skills from all four skill directories "
-            "(user, user alias, project, project alias)."
+            "List skills from the built-in directory and the project's "
+            ".deepagents/skills directory."
         ),
         add_help=False,
         parents=help_parent(show_skills_list_help),
@@ -863,7 +773,7 @@ def setup_skills_parser(
     list_parser.add_argument(
         "--agent",
         default="agent",
-        help="Agent identifier for skills (default: agent)",
+        help="Agent identifier for skills (compatibility only)",
     )
     list_parser.add_argument(
         "--project",
@@ -876,11 +786,8 @@ def setup_skills_parser(
         "create",
         help="Create a new skill",
         description=(
-            "Create a new skill with a template SKILL.md file. "
-            "By default, skills are created in "
-            "~/.deepagents/<agent>/skills/. "
-            "Use --project to create in the project's "
-            ".deepagents/skills/ directory."
+            "Create a new skill with a template SKILL.md file in the "
+            "project's .deepagents/skills/ directory."
         ),
         add_help=False,
         parents=help_parent(show_skills_create_help),
@@ -894,12 +801,12 @@ def setup_skills_parser(
     create_parser.add_argument(
         "--agent",
         default="agent",
-        help="Agent identifier for skills (default: agent)",
+        help="Agent identifier for skills (compatibility only)",
     )
     create_parser.add_argument(
         "--project",
         action="store_true",
-        help="Create skill in project directory instead of user directory",
+        help="Create skill in the project's .deepagents/skills directory",
     )
 
     # Skills info
@@ -916,7 +823,7 @@ def setup_skills_parser(
     info_parser.add_argument(
         "--agent",
         default="agent",
-        help="Agent identifier for skills (default: agent)",
+        help="Agent identifier for skills (compatibility only)",
     )
     info_parser.add_argument(
         "--project",

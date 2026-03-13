@@ -43,7 +43,11 @@ from deepagents_cli.config import (
 from deepagents_cli.configurable_model import ConfigurableModelMiddleware
 from deepagents_cli.integrations.sandbox_factory import get_default_working_dir
 from deepagents_cli.local_context import LocalContextMiddleware, _ExecutableBackend
-from deepagents_cli.project_utils import ProjectContext, get_server_project_context
+from deepagents_cli.project_utils import (
+    ProjectContext,
+    find_project_root,
+    get_server_project_context,
+)
 from deepagents_cli.subagents import list_subagents
 from deepagents_cli.unicode_security import (
     check_url_safety,
@@ -231,7 +235,18 @@ def get_system_prompt(
     """
     template = (Path(__file__).parent / "system_prompt.md").read_text()
 
-    skills_path = f"~/.deepagents/{assistant_id}/skills"
+    try:
+        prompt_cwd = (
+            Path(cwd).expanduser().resolve() if cwd is not None else Path.cwd()
+        )
+    except OSError:
+        logger.warning(
+            "Could not determine working directory for system prompt",
+            exc_info=True,
+        )
+        prompt_cwd = Path()
+    project_root = find_project_root(prompt_cwd) or prompt_cwd
+    skills_path = str(project_root / ".deepagents" / "skills")
 
     if interactive:
         mode_description = "an interactive CLI on the user's computer"
@@ -627,7 +642,7 @@ def create_cli_agent(
     )
 
     # Setup agent directory for persistent memory (if enabled)
-    if enable_memory or enable_skills:
+    if enable_memory:
         agent_dir = settings.ensure_agent_dir(assistant_id)
         agent_md = agent_dir / "AGENTS.md"
         if not agent_md.exists():
@@ -636,22 +651,12 @@ def create_cli_agent(
             agent_md.touch()
 
     # Skills directories (if enabled)
-    skills_dir = None
-    user_agent_skills_dir = None
     project_skills_dir = None
-    project_agent_skills_dir = None
     if enable_skills:
-        skills_dir = settings.ensure_user_skills_dir(assistant_id)
-        user_agent_skills_dir = settings.get_user_agent_skills_dir()
         project_skills_dir = (
             project_context.project_skills_dir()
             if project_context is not None
             else settings.get_project_skills_dir()
-        )
-        project_agent_skills_dir = (
-            project_context.project_agent_skills_dir()
-            if project_context is not None
-            else settings.get_project_agent_skills_dir()
         )
 
     # Load custom subagents from filesystem
@@ -705,14 +710,10 @@ def create_cli_agent(
     # Add skills middleware
     if enable_skills:
         # Lowest to highest precedence:
-        # built-in -> user .deepagents -> user .agents
-        # -> project .deepagents -> project .agents
+        # built-in -> project .deepagents
         sources = [str(settings.get_built_in_skills_dir())]
-        sources.extend([str(skills_dir), str(user_agent_skills_dir)])
         if project_skills_dir:
             sources.append(str(project_skills_dir))
-        if project_agent_skills_dir:
-            sources.append(str(project_agent_skills_dir))
 
         agent_middleware.append(
             SkillsMiddleware(

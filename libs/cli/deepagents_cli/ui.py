@@ -223,8 +223,8 @@ def show_skills_help() -> None:
     console.print("  delete <name>     Delete a skill")
     console.print()
     _print_option_section(
-        "  --agent <name>    Specify agent identifier (default: agent)",
-        "  --project         Use project-level skills instead of user-level",
+        "  --agent <name>    Agent identifier (compatibility only)",
+        "  --project         Show only project-level skills",
         title="Common options",
     )
     console.print()
@@ -232,7 +232,6 @@ def show_skills_help() -> None:
     console.print("  deepagents skills list")
     console.print("  deepagents skills list --project")
     console.print("  deepagents skills create my-skill")
-    console.print("  deepagents skills create my-skill --agent myagent")
     console.print("  deepagents skills info my-skill")
     console.print("  deepagents skills delete my-skill")
     console.print("  deepagents skills delete my-skill --force --project")
@@ -243,11 +242,8 @@ def show_skills_help() -> None:
         style=COLORS["primary"],
     )
     console.print(
-        "  1. .agents/skills/                 project skills\n"
-        "  2. .deepagents/skills/             project skills (alias)\n"
-        "  3. ~/.agents/skills/               user skills\n"
-        "  4. ~/.deepagents/<agent>/skills/   user skills (alias)\n"
-        "  5. <package>/built_in_skills/      built-in skills",
+        "  1. .deepagents/skills/             project skills\n"
+        "  2. <package>/built_in_skills/      built-in skills",
     )
     console.print()
 
@@ -259,7 +255,7 @@ def show_skills_list_help() -> None:
     console.print("  deepagents skills list [options]")
     console.print()
     _print_option_section(
-        "  --agent NAME            Agent identifier (default: agent)",
+        "  --agent NAME            Agent identifier (compatibility only)",
         "  --project               Show only project-level skills",
     )
     console.print()
@@ -272,9 +268,8 @@ def show_skills_create_help() -> None:
     console.print("  deepagents skills create <name> [options]")
     console.print()
     _print_option_section(
-        "  --agent NAME            Agent identifier (default: agent)",
-        "  --project               Create in project directory "
-        "instead of user directory",
+        "  --agent NAME            Agent identifier (compatibility only)",
+        "  --project               Create in the project skill directory",
     )
     console.print()
     console.print("[bold]Examples:[/bold]", style=COLORS["primary"])

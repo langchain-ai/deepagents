@@ -156,7 +156,7 @@ conn.close()
 
 你的技能存储在：`{skills_path}`
 技能可能包含脚本或支持文件。使用 bash 执行技能脚本时，使用真实文件系统路径：
-示例：`bash python {skills_path}/daily-report/script.py`
+示例：`python {skills_path}/daily-report/script.py`
 
 ### 工具审批
 

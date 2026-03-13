@@ -829,24 +829,13 @@ class TestCreateCliAgentSkillsSources:
         """
         agent_dir = tmp_path / "agent"
         agent_dir.mkdir()
-        skills_dir = tmp_path / "skills"
-        skills_dir.mkdir()
-        user_agent_skills_dir = tmp_path / "user-agent-skills"
-        user_agent_skills_dir.mkdir()
         project_skills_dir = tmp_path / "project-skills"
         project_skills_dir.mkdir()
-        project_agent_skills_dir = tmp_path / "project-agent-skills"
-        project_agent_skills_dir.mkdir()
         built_in_dir = Settings.get_built_in_skills_dir()
 
         mock_settings = Mock()
         mock_settings.ensure_agent_dir.return_value = agent_dir
-        mock_settings.ensure_user_skills_dir.return_value = skills_dir
-        mock_settings.get_user_agent_skills_dir.return_value = user_agent_skills_dir
         mock_settings.get_project_skills_dir.return_value = project_skills_dir
-        mock_settings.get_project_agent_skills_dir.return_value = (
-            project_agent_skills_dir
-        )
         mock_settings.get_built_in_skills_dir.return_value = built_in_dir
         mock_settings.get_user_agent_md_path.return_value = agent_dir / "AGENTS.md"
         mock_settings.get_project_agent_md_path.return_value = []
@@ -892,10 +881,7 @@ class TestCreateCliAgentSkillsSources:
         sources = captured_sources[0]
         assert sources == [
             str(built_in_dir),
-            str(skills_dir),
-            str(user_agent_skills_dir),
             str(project_skills_dir),
-            str(project_agent_skills_dir),
         ]
 
 
@@ -1060,17 +1046,11 @@ class TestCreateCliAgentProjectContext:
 
         agent_dir = tmp_path / "agent"
         agent_dir.mkdir()
-        user_skills_dir = tmp_path / "user-skills"
-        user_skills_dir.mkdir()
-        user_agent_skills_dir = tmp_path / "user-agent-skills"
-        user_agent_skills_dir.mkdir()
+
 
         mock_settings = Mock()
         mock_settings.ensure_agent_dir.return_value = agent_dir
-        mock_settings.ensure_user_skills_dir.return_value = user_skills_dir
-        mock_settings.get_user_agent_skills_dir.return_value = user_agent_skills_dir
         mock_settings.get_project_skills_dir.return_value = None
-        mock_settings.get_project_agent_skills_dir.return_value = None
         mock_settings.get_built_in_skills_dir.return_value = (
             Settings.get_built_in_skills_dir()
         )
@@ -1115,8 +1095,7 @@ class TestCreateCliAgentProjectContext:
 
         assert len(captured_sources) == 1
         sources = captured_sources[0]
-        assert str(project_skills_dir) in sources
-        assert str(project_agent_skills_dir) in sources
+        assert sources == [str(Settings.get_built_in_skills_dir()), str(project_skills_dir)]
         mock_list.assert_called_once_with(
             user_agents_dir=tmp_path / "agents",
             project_agents_dir=project_agents_dir,

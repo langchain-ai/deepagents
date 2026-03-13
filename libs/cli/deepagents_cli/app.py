@@ -434,7 +434,7 @@ If we established best practices around a workflow or process, capture them in a
 **Example:** If we discussed best practices for code review, create a `code-review` skill that encodes those practices into a reusable workflow.
 
 ### Skill Location
-`~/.deepagents/agent/skills/<skill-name>/SKILL.md`
+`<project>/.deepagents/skills/<skill-name>/SKILL.md`
 
 ### Skill Structure
 ```

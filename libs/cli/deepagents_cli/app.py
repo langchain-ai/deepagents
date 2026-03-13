@@ -535,6 +535,13 @@ class DeepAgentsApp(App):
             show=False,
             priority=True,
         ),
+        Binding(
+            "ctrl+x",
+            "open_editor",
+            "Open Editor",
+            show=False,
+            priority=True,
+        ),
         # Approval menu keys (handled at App level for reliability)
         Binding("up", "approval_up", "Up", show=False),
         Binding("k", "approval_up", "Up", show=False),
@@ -1706,12 +1713,13 @@ class DeepAgentsApp(App):
         elif cmd == "/help":
             await self._mount_message(UserMessage(command))
             help_text = Text(
-                "Commands: /quit, /clear, /compact, /mcp, "
+                "Commands: /quit, /clear, /compact, /editor, /mcp, "
                 "/model [--model-params JSON] [--default], /reload, /remember, "
                 "/tokens, /threads, /trace, /changelog, /docs, /feedback, /help\n\n"
                 "Interactive Features:\n"
                 "  Enter           Submit your message\n"
                 f"  {newline_shortcut():<15} Insert newline\n"
+                "  Ctrl+X          Open prompt in external editor\n"
                 "  Shift+Tab       Toggle auto-approve mode\n"
                 "  @filename       Auto-complete files and inject content\n"
                 "  /command        Slash commands (/help, /clear, /quit)\n"
@@ -1773,6 +1781,8 @@ class DeepAgentsApp(App):
                 await self._mount_message(
                     AppMessage(f"Started new thread: {new_thread_id}")
                 )
+        elif cmd == "/editor":
+            await self.action_open_editor()
         elif cmd == "/compact":
             await self._mount_message(UserMessage(command))
             await self._handle_compact()
@@ -3222,6 +3232,24 @@ class DeepAgentsApp(App):
         """Handle escape in approval menu - reject."""
         if self._pending_approval_widget:
             self._pending_approval_widget.action_select_reject()
+
+    async def action_open_editor(self) -> None:
+        """Open the current prompt text in an external editor ($EDITOR/$VISUAL)."""
+        from deepagents_cli.editor import open_in_editor
+
+        chat_input = self._chat_input
+        if not chat_input or not chat_input._text_area:
+            return
+
+        current_text = chat_input._text_area.text or ""
+
+        edited: str | None = None
+        with self.suspend():
+            edited = open_in_editor(current_text)
+
+        if edited is not None:
+            chat_input._text_area.text = edited
+        chat_input.focus_input()
 
     def on_paste(self, event: Paste) -> None:
         """Route unfocused paste events to chat input for drag/drop reliability."""

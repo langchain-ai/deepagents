@@ -188,6 +188,7 @@ PROVIDER_API_KEY_ENV: dict[str, str] = {
     "litellm": "LITELLM_API_KEY",
     "mistralai": "MISTRAL_API_KEY",
     "nvidia": "NVIDIA_API_KEY",
+    "novita": "NOVITA_API_KEY",
     "openai": "OPENAI_API_KEY",
     "openrouter": "OPENROUTER_API_KEY",
     "perplexity": "PPLX_API_KEY",

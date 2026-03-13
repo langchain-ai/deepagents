@@ -420,6 +420,7 @@ class TestProviderApiKeyEnv:
         assert PROVIDER_API_KEY_ENV["ibm"] == "WATSONX_APIKEY"
         assert PROVIDER_API_KEY_ENV["mistralai"] == "MISTRAL_API_KEY"
         assert PROVIDER_API_KEY_ENV["nvidia"] == "NVIDIA_API_KEY"
+        assert PROVIDER_API_KEY_ENV["novita"] == "NOVITA_API_KEY"
         assert PROVIDER_API_KEY_ENV["openai"] == "OPENAI_API_KEY"
         assert PROVIDER_API_KEY_ENV["openrouter"] == "OPENROUTER_API_KEY"
         assert PROVIDER_API_KEY_ENV["perplexity"] == "PPLX_API_KEY"

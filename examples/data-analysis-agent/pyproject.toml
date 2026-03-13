@@ -1,0 +1,24 @@
+[project]
+name = "data-analysis-agent"
+version = "0.1.0"
+description = "A CSV data analysis agent that explores datasets, runs pandas scripts, and produces structured reports"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "deepagents>=0.3.5",
+    "langchain-anthropic>=1.3.1",
+    "python-dotenv>=1.0.0",
+    "rich>=13.0.0",
+    "pandas>=2.0.0",
+    "matplotlib>=3.7.0",
+]
+
+[tool.setuptools]
+py-modules = []
+
+[project.urls]
+Repository = "https://github.com/langchain-ai/deepagents/tree/main/examples/data-analysis-agent"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"

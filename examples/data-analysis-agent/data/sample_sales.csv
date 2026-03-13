@@ -1,0 +1,104 @@
+date,product,region,quantity,revenue,customer_id
+2025-01-03,Widget Pro,North America,12,599.88,C-1001
+2025-01-05,Widget Pro,Europe,8,399.92,C-1042
+2025-01-05,Data Suite,North America,3,1497.00,C-1003
+2025-01-07,Widget Pro,Asia Pacific,15,749.85,C-1078
+2025-01-08,Cloud Platform,North America,1,2999.00,C-1012
+2025-01-10,Widget Pro,Europe,6,299.94,C-1044
+2025-01-11,Data Suite,Asia Pacific,2,998.00,C-1080
+2025-01-12,Cloud Platform,Europe,1,2999.00,C-1045
+2025-01-14,Widget Pro,North America,20,999.80,C-1005
+2025-01-15,Data Suite,North America,5,2495.00,C-1008
+2025-01-17,Widget Pro,Asia Pacific,10,499.90,C-1082
+2025-01-19,Cloud Platform,Asia Pacific,2,5998.00,C-1079
+2025-01-20,Data Suite,Europe,4,1996.00,C-1046
+2025-01-22,Widget Pro,North America,18,899.82,C-1002
+2025-01-24,Widget Pro,Europe,7,349.93,C-1043
+2025-01-25,Cloud Platform,North America,3,8997.00,C-1010
+2025-01-27,Data Suite,Asia Pacific,1,499.00,C-1083
+2025-01-28,Widget Pro,North America,14,699.86,C-1006
+2025-01-30,Data Suite,Europe,3,1497.00,C-1047
+2025-02-01,Widget Pro,Asia Pacific,11,549.89,C-1084
+2025-02-03,Cloud Platform,Europe,2,5998.00,C-1048
+2025-02-04,Widget Pro,North America,9,449.91,C-1004
+2025-02-06,Data Suite,North America,6,2994.00,C-1009
+2025-02-07,Widget Pro,Europe,13,649.87,C-1049
+2025-02-09,Cloud Platform,Asia Pacific,1,2999.00,C-1085
+2025-02-10,Data Suite,Asia Pacific,3,1497.00,C-1081
+2025-02-12,Widget Pro,North America,22,1099.78,C-1001
+2025-02-14,Widget Pro,Europe,5,249.95,C-1050
+2025-02-15,Cloud Platform,North America,2,5998.00,C-1011
+2025-02-17,Data Suite,Europe,7,3493.00,C-1051
+2025-02-18,Widget Pro,Asia Pacific,16,799.84,C-1086
+2025-02-20,Widget Pro,North America,8,399.92,C-1007
+2025-02-21,Cloud Platform,Europe,1,2999.00,C-1052
+2025-02-23,Data Suite,North America,4,1996.00,C-1003
+2025-02-25,Widget Pro,Asia Pacific,19,949.81,C-1087
+2025-02-26,Cloud Platform,North America,1,2999.00,C-1013
+2025-02-28,Data Suite,Europe,2,998.00,C-1053
+2025-03-02,Widget Pro,North America,25,1249.75,C-1002
+2025-03-03,Widget Pro,Europe,11,549.89,C-1042
+2025-03-05,Cloud Platform,Asia Pacific,3,8997.00,C-1088
+2025-03-06,Data Suite,North America,8,3992.00,C-1008
+2025-03-08,Widget Pro,Asia Pacific,14,699.86,C-1089
+2025-03-09,Widget Pro,North America,7,349.93,C-1005
+2025-03-11,Cloud Platform,Europe,2,5998.00,C-1044
+2025-03-12,Data Suite,Asia Pacific,5,2495.00,C-1080
+2025-03-14,Widget Pro,Europe,9,449.91,C-1054
+2025-03-15,Cloud Platform,North America,4,11996.00,C-1010
+2025-03-17,Widget Pro,North America,30,1499.70,C-1006
+2025-03-18,Data Suite,Europe,6,2994.00,C-1055
+2025-03-20,Widget Pro,Asia Pacific,12,599.88,C-1090
+2025-03-21,Cloud Platform,North America,1,2999.00,C-1014
+2025-03-23,Data Suite,North America,3,1497.00,C-1009
+2025-03-25,Widget Pro,Europe,15,749.85,C-1056
+2025-03-26,Widget Pro,North America,10,499.90,C-1004
+2025-03-28,Cloud Platform,Asia Pacific,2,5998.00,C-1091
+2025-03-29,Data Suite,Europe,4,1996.00,C-1057
+2025-03-31,Widget Pro,Asia Pacific,8,399.92,C-1082
+2025-04-01,Cloud Platform,North America,2,5998.00,C-1012
+2025-04-03,Widget Pro,North America,17,849.83,C-1001
+2025-04-04,Data Suite,Asia Pacific,6,2994.00,C-1092
+2025-04-06,Widget Pro,Europe,10,499.90,C-1058
+2025-04-07,Cloud Platform,Europe,3,8997.00,C-1045
+2025-04-09,Data Suite,North America,9,4491.00,C-1003
+2025-04-10,Widget Pro,Asia Pacific,21,1049.79,C-1093
+2025-04-12,Widget Pro,North America,6,299.94,C-1007
+2025-04-13,Cloud Platform,Asia Pacific,1,2999.00,C-1094
+2025-04-15,Data Suite,Europe,5,2495.00,C-1059
+2025-04-16,Widget Pro,Europe,13,649.87,C-1060
+2025-04-18,Cloud Platform,North America,2,5998.00,C-1015
+2025-04-19,Widget Pro,North America,28,1399.72,C-1002
+2025-04-21,Data Suite,North America,7,3493.00,C-1008
+2025-04-22,Widget Pro,Asia Pacific,11,549.89,C-1095
+2025-04-24,Cloud Platform,Europe,1,2999.00,C-1061
+2025-04-25,Data Suite,Asia Pacific,3,1497.00,C-1083
+2025-04-27,Widget Pro,North America,15,749.85,C-1005
+2025-04-28,Widget Pro,Europe,7,349.93,C-1062
+2025-04-30,Cloud Platform,North America,3,8997.00,C-1011
+2025-05-01,Data Suite,Europe,8,3992.00,C-1063
+2025-05-03,Widget Pro,Asia Pacific,18,899.82,C-1096
+2025-05-04,Widget Pro,North America,12,599.88,C-1006
+2025-05-06,Cloud Platform,Asia Pacific,2,5998.00,C-1097
+2025-05-07,Data Suite,North America,4,1996.00,C-1009
+2025-05-09,Widget Pro,Europe,16,799.84,C-1064
+2025-05-10,Cloud Platform,North America,1,2999.00,C-1016
+2025-05-12,Widget Pro,North America,20,999.80,C-1004
+2025-05-13,Data Suite,Asia Pacific,5,2495.00,C-1098
+2025-05-15,Widget Pro,Asia Pacific,9,449.91,C-1099
+2025-05-16,Cloud Platform,Europe,2,5998.00,C-1065
+2025-05-18,Data Suite,North America,10,4990.00,C-1003
+2025-05-19,Widget Pro,Europe,14,699.86,C-1066
+2025-05-21,Cloud Platform,North America,2,5998.00,C-1013
+2025-05-22,Widget Pro,North America,23,1149.77,C-1001
+2025-05-24,Data Suite,Europe,3,1497.00,C-1067
+2025-05-25,Widget Pro,Asia Pacific,7,349.93,C-1100
+2025-05-27,Cloud Platform,Asia Pacific,1,2999.00,C-1085
+2025-05-28,Data Suite,North America,6,2994.00,C-1008
+2025-05-30,Widget Pro,Europe,11,549.89,C-1068
+2025-06-01,Widget Pro,North America,19,949.81,C-1002
+2025-06-02,Cloud Platform,Europe,3,8997.00,C-1048
+2025-06-04,Data Suite,Asia Pacific,4,1996.00,C-1092
+2025-06-05,Widget Pro,Asia Pacific,13,649.87,C-1101
+2025-06-07,Cloud Platform,North America,5,14995.00,C-1010
+2025-06-08,Data Suite,North America,11,5489.00,C-1009

@@ -2,14 +2,21 @@ from __future__ import annotations
 
 import contextlib
 import inspect
-from collections.abc import Callable
-from typing import Any, get_args, get_origin, get_type_hints
+from typing import TYPE_CHECKING, Any, get_args, get_origin, get_type_hints
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 from langchain_core.tools import BaseTool
 
 
 def format_annotation(annotation: Any) -> str:
     """Render a concise string form for a type annotation."""
+    if annotation is Any or annotation is inspect.Signature.empty:
+        return "Any"
+    if isinstance(annotation, type):
+        return annotation.__name__
+
     origin = get_origin(annotation)
     if origin is not None:
         args = get_args(annotation)
@@ -19,29 +26,49 @@ def format_annotation(annotation: Any) -> str:
         formatted_args = ", ".join(format_annotation(arg) for arg in args)
         return f"{origin_name}[{formatted_args}]"
 
-    if annotation is Any:
-        return "Any"
-    if annotation is inspect.Signature.empty:
-        return "Any"
-    if isinstance(annotation, type):
-        return annotation.__name__
-
     rendered = str(annotation).replace("typing.", "").replace("'", "")
     if "." in rendered and "[" not in rendered:
         return rendered.rsplit(".", maxsplit=1)[-1]
     return rendered
 
 
-def format_typed_dict_structure(annotation: Any) -> str | None:
-    """Render a compact field listing for a TypedDict annotation."""
+def _unwrap_typed_dict_annotation(annotation: Any) -> tuple[Any, str]:
+    """Extract a TypedDict annotation from supported container types."""
     container_prefix = ""
     origin = get_origin(annotation)
-    if origin in (list, tuple, set, frozenset):
-        args = get_args(annotation)
-        if args:
-            annotation = args[0]
-            container_prefix = f"Contained `{annotation.__name__}` structure:\n"
+    if origin not in (list, tuple, set, frozenset):
+        return annotation, container_prefix
 
+    args = get_args(annotation)
+    if not args:
+        return annotation, container_prefix
+
+    unwrapped = args[0]
+    container_prefix = f"Contained `{unwrapped.__name__}` structure:\n"
+    return unwrapped, container_prefix
+
+
+def _render_typed_dict_fields(
+    annotation: type[Any], field_types: dict[str, Any]
+) -> str | None:
+    """Render field lines for a TypedDict annotation."""
+    if not field_types:
+        return None
+
+    required_keys = getattr(annotation, "__required_keys__", frozenset())
+    optional_keys = getattr(annotation, "__optional_keys__", frozenset())
+    lines = [f"Return structure `{annotation.__name__}`:"]
+    for key, value in field_types.items():
+        marker = "required" if key in required_keys else "optional"
+        if key not in required_keys and key not in optional_keys:
+            marker = "field"
+        lines.append(f"- {key}: {format_annotation(value)} ({marker})")
+    return "\n".join(lines)
+
+
+def format_typed_dict_structure(annotation: Any) -> str | None:
+    """Render a compact field listing for a TypedDict annotation."""
+    annotation, container_prefix = _unwrap_typed_dict_annotation(annotation)
     if not isinstance(annotation, type):
         return None
     if not hasattr(annotation, "__annotations__") or not hasattr(
@@ -49,24 +76,14 @@ def format_typed_dict_structure(annotation: Any) -> str | None:
     ):
         return None
 
-    try:
+    field_types = getattr(annotation, "__annotations__", {})
+    with contextlib.suppress(TypeError, NameError):
         field_types = get_type_hints(annotation)
-    except Exception:
-        field_types = getattr(annotation, "__annotations__", {})
 
-    required_keys = getattr(annotation, "__required_keys__", frozenset())
-    optional_keys = getattr(annotation, "__optional_keys__", frozenset())
-    if not field_types:
+    rendered_fields = _render_typed_dict_fields(annotation, field_types)
+    if rendered_fields is None:
         return None
-
-    lines = [f"Return structure `{annotation.__name__}`:"]
-    for key, value in field_types.items():
-        marker = "required" if key in required_keys else "optional"
-        if key not in required_keys and key not in optional_keys:
-            marker = "field"
-        type_name = format_annotation(value)
-        lines.append(f"- {key}: {type_name} ({marker})")
-    return container_prefix + "\n".join(lines)
+    return container_prefix + rendered_fields
 
 
 def get_tool_doc_target(tool: BaseTool) -> Callable[..., Any] | None:
@@ -116,7 +133,10 @@ def _render_function_stub(
         inspected_signature = inspect.signature(target)
         resolved_hints = get_type_hints(target)
         parameter_parts = [
-            f"{param.name}: {format_annotation(resolved_hints.get(param.name, param.annotation))}"
+            (
+                f"{param.name}: "
+                f"{format_annotation(resolved_hints.get(param.name, param.annotation))}"
+            )
             if param.annotation is not inspect.Signature.empty
             or param.name in resolved_hints
             else param.name
@@ -128,7 +148,8 @@ def _render_function_stub(
         if return_annotation is inspect.Signature.empty:
             signature = f"({', '.join(parameter_parts)})"
         else:
-            signature = f"({', '.join(parameter_parts)}) -> {format_annotation(return_annotation)}"
+            rendered_return = format_annotation(return_annotation)
+            signature = f"({', '.join(parameter_parts)}) -> {rendered_return}"
 
     prefix = "async def" if function_mode == "async" else "def"
     doc = inspect.getdoc(target) or inspect.getdoc(implementation)
@@ -140,7 +161,8 @@ def _render_function_stub(
         return f'{prefix} {name}{signature}:\n    """{doc_lines[0]}"""'
 
     indented_doc = "\n".join(f"    {line}" if line else "" for line in doc_lines)
-    return f'{prefix} {name}{signature}:\n    """{indented_doc.removeprefix("    ")}\n    """'
+    rendered_doc = indented_doc.removeprefix("    ")
+    return f'{prefix} {name}{signature}:\n    """{rendered_doc}\n    """'
 
 
 def _collect_referenced_types(
@@ -177,10 +199,17 @@ def _collect_referenced_types(
 
 def _render_typed_dict_definition(annotation: type[Any]) -> str:
     """Render a Python-like TypedDict class definition."""
-    try:
+    with contextlib.suppress(TypeError, NameError):
         field_types = get_type_hints(annotation)
-    except Exception:
-        field_types = getattr(annotation, "__annotations__", {})
+        lines = [f"class {annotation.__name__}(TypedDict):"]
+        if not field_types:
+            lines.append("    pass")
+            return "\n".join(lines)
+        for key, value in field_types.items():
+            lines.append(f"    {key}: {format_annotation(value)}")
+        return "\n".join(lines)
+
+    field_types = getattr(annotation, "__annotations__", {})
     lines = [f"class {annotation.__name__}(TypedDict):"]
     if not field_types:
         lines.append("    pass")

@@ -155,7 +155,7 @@ class QuickJSMiddleware(AgentMiddleware[AgentState[Any], ContextT, ResponseT]):
     def _build_tool_payload(
         self, tool: BaseTool, args: tuple[Any, ...], kwargs: dict[str, Any]
     ) -> str | dict[str, Any]:
-        """Convert QuickJS call arguments into a payload suitable for a LangChain tool."""
+        """Convert QuickJS call arguments into a LangChain tool payload."""
         if kwargs:
             return kwargs
         if len(args) == 1 and isinstance(args[0], str | dict):
@@ -216,7 +216,7 @@ class QuickJSMiddleware(AgentMiddleware[AgentState[Any], ContextT, ResponseT]):
         return context
 
     def _evaluate(self, code: str, *, timeout: int | None) -> str:
-        """Execute JavaScript and return printed output or the final expression value."""
+        """Execute JavaScript and return printed output or final value."""
         printed_lines: list[str] = []
         try:
             context = self._create_context(timeout, printed_lines)
@@ -248,12 +248,12 @@ class QuickJSMiddleware(AgentMiddleware[AgentState[Any], ContextT, ResponseT]):
 
         async def _async_quickjs(
             code: Annotated[str, "Code string to evaluate in QuickJS."],
-            timeout: Annotated[
+            execution_timeout: Annotated[
                 int | None, "Optional timeout in seconds for this evaluation."
             ] = None,
         ) -> str:
             """Execute a single QuickJS program in the async tool path."""
-            return self._evaluate(code, timeout=timeout)
+            return self._evaluate(code, timeout=execution_timeout)
 
         tool_description = REPL_TOOL_DESCRIPTION.format(
             external_functions_section=self._format_external_functions_section()

@@ -1,12 +1,16 @@
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 from deepagents.graph import BASE_AGENT_PROMPT
 from deepagents.middleware._utils import append_to_system_message
-from langchain_core.messages import SystemMessage
 from langchain_core.tools import tool
 from typing_extensions import TypedDict
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from langchain_core.messages import SystemMessage
 
 from langchain_quickjs.middleware import QuickJSMiddleware
 

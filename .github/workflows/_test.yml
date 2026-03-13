@@ -73,9 +73,9 @@ jobs:
           RUN_SANDBOX_TESTS: "true"
         run: |
           if [ "${{ inputs.coverage }}" = "false" ]; then
-            uv run --group test pytest -n auto -vvv --disable-socket --allow-unix-socket tests/unit_tests/
+            uv run --group test pytest -n auto -vvv tests/unit_tests/
           else
-            uv run --group test pytest -n auto -vvv --disable-socket --allow-unix-socket tests/unit_tests/ --cov=deepagents --cov-report=term-missing
+            uv run --group test pytest -n auto -vvv tests/unit_tests/ --cov=deepagents --cov-report=term-missing
           fi
 
       - name: "🧹 Verify Clean Working Directory"

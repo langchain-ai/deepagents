@@ -301,6 +301,7 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
                 check=False,
                 shell=True,  # Intentional: designed for LLM-controlled shell execution
                 capture_output=True,
+                stdin=subprocess.DEVNULL,  # No stdin interaction
                 text=True,
                 timeout=effective_timeout,
                 env=self._env,

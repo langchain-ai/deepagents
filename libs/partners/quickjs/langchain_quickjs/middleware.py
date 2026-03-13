@@ -53,13 +53,6 @@ Do NOT assume variables, functions, imports, or helper objects from prior `repl`
 {external_functions_section}
 """  # noqa: E501  # preserve prompt text formatting exactly for the model
 
-_PRINT_SETUP = """
-const __deepagents_print_buffer__ = [];
-function print(...args) {
-  __deepagents_print_buffer__.push(args.map((arg) => String(arg)).join(" "));
-}
-"""
-
 
 class QuickJSMiddleware(AgentMiddleware[AgentState[Any], ContextT, ResponseT]):
     """Provide a QuickJS-backed `repl` tool to an agent."""
@@ -159,14 +152,28 @@ class QuickJSMiddleware(AgentMiddleware[AgentState[Any], ContextT, ResponseT]):
         modified_request = self.modify_request(request)
         return await handler(modified_request)
 
+    def _build_tool_payload(
+        self, tool: BaseTool, args: tuple[Any, ...], kwargs: dict[str, Any]
+    ) -> str | dict[str, Any]:
+        """Convert QuickJS call arguments into a payload suitable for a LangChain tool."""
+        if kwargs:
+            return kwargs
+        if len(args) == 1 and isinstance(args[0], str | dict):
+            return args[0]
+
+        input_schema = tool.get_input_schema()
+        fields = list(getattr(input_schema, "__annotations__", {}))
+        if len(args) == 1 and len(fields) == 1:
+            return {fields[0]: args[0]}
+        if len(args) == len(fields) and fields:
+            return dict(zip(fields, args, strict=False))
+        return {"args": list(args)}
+
     def _wrap_tool_for_js(self, tool: BaseTool) -> Callable[..., Any]:
         """Adapt a LangChain tool invocation into a plain callable for QuickJS."""
 
-        def tool_wrapper(*args: Any) -> Any:
-            if len(args) == 1 and isinstance(args[0], str | dict):
-                payload: str | dict[str, Any] = args[0]
-            else:
-                payload = {"args": list(args)}
+        def tool_wrapper(*args: Any, **kwargs: Any) -> Any:
+            payload = self._build_tool_payload(tool, args, kwargs)
             return tool.invoke(payload)
 
         return tool_wrapper
@@ -183,7 +190,9 @@ class QuickJSMiddleware(AgentMiddleware[AgentState[Any], ContextT, ResponseT]):
                 external_functions[name] = implementation
         return external_functions
 
-    def _create_context(self, timeout: int | None) -> quickjs.Context:
+    def _create_context(
+        self, timeout: int | None, printed_lines: list[str]
+    ) -> quickjs.Context:
         """Create a configured QuickJS context for a single evaluation."""
         context = quickjs.Context()
         effective_timeout = timeout if timeout is not None else self._timeout
@@ -197,26 +206,30 @@ class QuickJSMiddleware(AgentMiddleware[AgentState[Any], ContextT, ResponseT]):
                 msg = f"memory_limit must be positive, got {self._memory_limit}."
                 raise ValueError(msg)
             context.set_memory_limit(self._memory_limit)
-        context.eval(_PRINT_SETUP)
+
+        def _print(*args: Any) -> None:
+            printed_lines.append(" ".join(map(str, args)))
+
+        context.add_callable("print", _print)
         for name, implementation in self._build_external_functions().items():
             context.add_callable(name, implementation)
         return context
 
     def _evaluate(self, code: str, *, timeout: int | None) -> str:
         """Execute JavaScript and return printed output or the final expression value."""
+        printed_lines: list[str] = []
         try:
-            context = self._create_context(timeout)
+            context = self._create_context(timeout, printed_lines)
         except ValueError as exc:
             return f"Error: {exc}"
 
         try:
             value = context.eval(code)
-            printed = context.eval("__deepagents_print_buffer__.join('\\n')")
         except quickjs.JSException as exc:
             return str(exc)
 
-        if isinstance(printed, str) and printed:
-            return printed.rstrip()
+        if printed_lines:
+            return "\n".join(printed_lines).rstrip()
         if value is None:
             return ""
         return str(value)

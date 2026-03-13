@@ -126,32 +126,38 @@ def _resolve_headers(spec: AsyncSubAgent) -> dict[str, str]:
 
 
 class _ClientCache:
-    """Lazily-created, cached LangGraph SDK clients keyed by agent name."""
+    """Lazily-created, cached LangGraph SDK clients keyed by (url, headers)."""
 
     def __init__(self, agents: dict[str, AsyncSubAgent]) -> None:
         self._agents = agents
-        self._sync: dict[str, SyncLangGraphClient] = {}
-        self._async: dict[str, LangGraphClient] = {}
+        self._sync: dict[tuple[str | None, frozenset[tuple[str, str]]], SyncLangGraphClient] = {}
+        self._async: dict[tuple[str | None, frozenset[tuple[str, str]]], LangGraphClient] = {}
+
+    def _cache_key(self, spec: AsyncSubAgent) -> tuple[str | None, frozenset[tuple[str, str]]]:
+        """Build a cache key from the agent spec's url and resolved headers."""
+        return (spec.get("url"), frozenset(_resolve_headers(spec).items()))
 
     def get_sync(self, name: str) -> SyncLangGraphClient:
         """Get or create a sync client for the named agent."""
-        if name not in self._sync:
-            spec = self._agents[name]
-            self._sync[name] = get_sync_client(
+        spec = self._agents[name]
+        key = self._cache_key(spec)
+        if key not in self._sync:
+            self._sync[key] = get_sync_client(
                 url=spec.get("url"),
                 headers=_resolve_headers(spec),
             )
-        return self._sync[name]
+        return self._sync[key]
 
     def get_async(self, name: str) -> LangGraphClient:
         """Get or create an async client for the named agent."""
-        if name not in self._async:
-            spec = self._agents[name]
-            self._async[name] = get_client(
+        spec = self._agents[name]
+        key = self._cache_key(spec)
+        if key not in self._async:
+            self._async[key] = get_client(
                 url=spec.get("url"),
                 headers=_resolve_headers(spec),
             )
-        return self._async[name]
+        return self._async[key]
 
 
 _JOB_ID_SEP = "::"

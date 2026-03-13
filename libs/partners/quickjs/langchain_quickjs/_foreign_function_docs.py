@@ -10,7 +10,7 @@ if TYPE_CHECKING:
 from langchain_core.tools import BaseTool
 
 
-def format_annotation(annotation: Any) -> str:
+def _format_annotation(annotation: Any) -> str:
     """Render a concise TypeScript-like string form for a type annotation."""
     if annotation is Any or annotation is inspect.Signature.empty:
         return "any"
@@ -31,23 +31,23 @@ def format_annotation(annotation: Any) -> str:
     if origin is not None:
         args = get_args(annotation)
         if origin in (list, set, frozenset):
-            item = format_annotation(args[0]) if args else "any"
+            item = _format_annotation(args[0]) if args else "any"
             return f"{item}[]"
         if origin is tuple:
             if len(args) == 2 and args[1] is Ellipsis:
-                return f"{format_annotation(args[0])}[]"
-            return f"[{', '.join(format_annotation(arg) for arg in args)}]"
+                return f"{_format_annotation(args[0])}[]"
+            return f"[{', '.join(_format_annotation(arg) for arg in args)}]"
         if origin is dict:
-            key_type = format_annotation(args[0]) if args else "string"
-            value_type = format_annotation(args[1]) if len(args) > 1 else "any"
+            key_type = _format_annotation(args[0]) if args else "string"
+            value_type = _format_annotation(args[1]) if len(args) > 1 else "any"
             return f"Record<{key_type}, {value_type}>"
         if origin is type:
-            inner = format_annotation(args[0]) if args else "any"
+            inner = _format_annotation(args[0]) if args else "any"
             return f"new (...args: any[]) => {inner}"
         if origin_name := getattr(origin, "__name__", None):
             if origin_name in {"Union", "UnionType"}:
-                return " | ".join(format_annotation(arg) for arg in args)
-            formatted_args = ", ".join(format_annotation(arg) for arg in args)
+                return " | ".join(_format_annotation(arg) for arg in args)
+            formatted_args = ", ".join(_format_annotation(arg) for arg in args)
             return f"{origin_name}<{formatted_args}>"
 
     rendered = str(annotation).replace("typing.", "").replace("'", "")
@@ -88,11 +88,11 @@ def _render_typed_dict_fields(
         marker = "required" if key in required_keys else "optional"
         if key not in required_keys and key not in optional_keys:
             marker = "field"
-        lines.append(f"- {key}: {format_annotation(value)} ({marker})")
+        lines.append(f"- {key}: {_format_annotation(value)} ({marker})")
     return "\n".join(lines)
 
 
-def format_typed_dict_structure(annotation: Any) -> str | None:
+def _format_typed_dict_structure(annotation: Any) -> str | None:
     """Render a compact field listing for a TypedDict annotation."""
     annotation, container_prefix = _unwrap_typed_dict_annotation(annotation)
     if not isinstance(annotation, type):
@@ -112,7 +112,7 @@ def format_typed_dict_structure(annotation: Any) -> str | None:
     return container_prefix + rendered_fields
 
 
-def get_tool_doc_target(tool: BaseTool) -> Callable[..., Any] | None:
+def _get_tool_doc_target(tool: BaseTool) -> Callable[..., Any] | None:
     """Return the most useful callable to inspect for tool documentation."""
     target = getattr(tool, "func", None)
     if callable(target):
@@ -123,7 +123,7 @@ def get_tool_doc_target(tool: BaseTool) -> Callable[..., Any] | None:
     return None
 
 
-def get_foreign_function_mode(implementation: Callable[..., Any] | BaseTool) -> str:
+def _get_foreign_function_mode(implementation: Callable[..., Any] | BaseTool) -> str:
     """Return whether a foreign function should be treated as sync or async."""
     if isinstance(implementation, BaseTool):
         coroutine = getattr(implementation, "coroutine", None)
@@ -177,9 +177,9 @@ def _render_function_stub(
     name: str, implementation: Callable[..., Any] | BaseTool
 ) -> str:
     """Render a TypeScript-like declaration with attached JSDoc for one function."""
-    function_mode = get_foreign_function_mode(implementation)
+    function_mode = _get_foreign_function_mode(implementation)
     target = (
-        get_tool_doc_target(implementation)
+        _get_tool_doc_target(implementation)
         if isinstance(implementation, BaseTool)
         else implementation
     )
@@ -195,7 +195,7 @@ def _render_function_stub(
         parameter_parts = [
             (
                 f"{param.name}: "
-                f"{format_annotation(resolved_hints.get(param.name, param.annotation))}"
+                f"{_format_annotation(resolved_hints.get(param.name, param.annotation))}"
             )
             if param.annotation is not inspect.Signature.empty
             or param.name in resolved_hints
@@ -208,7 +208,7 @@ def _render_function_stub(
         )
 
     rendered_return = (
-        format_annotation(return_annotation)
+        _format_annotation(return_annotation)
         if return_annotation is not inspect.Signature.empty
         else "any"
     )
@@ -230,7 +230,7 @@ def _collect_referenced_types(
     seen: set[type[Any]] = set()
     for implementation in implementations.values():
         target = (
-            get_tool_doc_target(implementation)
+            _get_tool_doc_target(implementation)
             if isinstance(implementation, BaseTool)
             else implementation
         )
@@ -260,14 +260,14 @@ def _render_typed_dict_definition(annotation: type[Any]) -> str:
         field_types = get_type_hints(annotation)
         lines = [f"type {annotation.__name__} = {{"]
         for key, value in field_types.items():
-            lines.append(f"  {key}: {format_annotation(value)}")
+            lines.append(f"  {key}: {_format_annotation(value)}")
         lines.append("}")
         return "\n".join(lines)
 
     field_types = getattr(annotation, "__annotations__", {})
     lines = [f"type {annotation.__name__} = {{"]
     for key, value in field_types.items():
-        lines.append(f"  {key}: {format_annotation(value)}")
+        lines.append(f"  {key}: {_format_annotation(value)}")
     lines.append("}")
     return "\n".join(lines)
 
@@ -312,3 +312,6 @@ def format_foreign_function_docs(
 ) -> str:
     """Render a compact signature and docstring block for a foreign function."""
     return _render_function_stub(name, implementation)
+
+
+__all__ = ["format_foreign_function_docs", "render_foreign_function_section"]

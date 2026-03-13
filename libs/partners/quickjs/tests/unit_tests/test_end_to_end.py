@@ -206,7 +206,9 @@ def test_deepagent_with_quickjs_langchain_tool_list_of_ints_foreign_function() -
     assert result["messages"][-1].content_blocks == [{"type": "text", "text": "done"}]
 
 
-def test_deepagent_with_quickjs_langchain_tool_json_stringify_foreign_function() -> None:
+def test_deepagent_with_quickjs_langchain_tool_json_stringify_foreign_function() -> (
+    None
+):
     """Verify the repl transparently bridges Python list returns into JS arrays."""
     model = GenericFakeChatModel(
         messages=iter(
@@ -285,7 +287,9 @@ def test_deepagent_with_quickjs_langchain_tool_dict_foreign_function() -> None:
         middleware=[
             QuickJSMiddleware(
                 external_functions=["get_user_profile"],
-                external_function_implementations={"get_user_profile": get_user_profile},
+                external_function_implementations={
+                    "get_user_profile": get_user_profile
+                },
             )
         ],
     )

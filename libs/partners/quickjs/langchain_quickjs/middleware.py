@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from typing import TYPE_CHECKING, Annotated, Any
 
 import quickjs
@@ -17,6 +16,10 @@ from langchain.agents.middleware.types import (
 )
 from langchain_core.tools import BaseTool, StructuredTool
 
+from langchain_quickjs._foreign_function_bridge import (
+    build_external_functions,
+    inject_external_function_shims,
+)
 from langchain_quickjs._foreign_function_docs import (
     format_foreign_function_docs,
     render_foreign_function_section,
@@ -170,71 +173,6 @@ class QuickJSMiddleware(AgentMiddleware[AgentState[Any], ContextT, ResponseT]):
             return dict(zip(fields, args, strict=False))
         return {"args": list(args)}
 
-    def _wrap_tool_for_js(self, tool: BaseTool) -> Callable[..., Any]:
-        """Adapt a LangChain tool invocation into a plain callable for QuickJS."""
-
-        def tool_wrapper(*args: Any, **kwargs: Any) -> Any:
-            payload = self._build_tool_payload(tool, args, kwargs)
-            return tool.invoke(payload)
-
-        return tool_wrapper
-
-    def _serialize_for_js(self, value: Any) -> Any:
-        """Convert Python return values into QuickJS-compatible primitives."""
-        if value is None or isinstance(value, str | int | float | bool):
-            return value
-        return json.dumps(value)
-
-    def _wrap_function_for_js(self, implementation: Callable[..., Any]) -> Callable[..., Any]:
-        """Serialize complex Python return values for transparent JS consumption."""
-
-        def function_wrapper(*args: Any, **kwargs: Any) -> Any:
-            return self._serialize_for_js(implementation(*args, **kwargs))
-
-        return function_wrapper
-
-    def _raw_function_name(self, name: str) -> str:
-        """Return the hidden callable name used for JSON-bridged foreign functions."""
-        return f"__python_{name}"
-
-    def _build_external_functions(self) -> dict[str, Callable[..., Any]]:
-        """Normalize foreign implementations into plain sync callables for QuickJS."""
-        external_functions: dict[str, Callable[..., Any]] = {}
-        for name, implementation in (
-            self._external_function_implementations or {}
-        ).items():
-            callable_implementation = (
-                self._wrap_tool_for_js(implementation)
-                if isinstance(implementation, BaseTool)
-                else implementation
-            )
-            external_functions[self._raw_function_name(name)] = self._wrap_function_for_js(
-                callable_implementation
-            )
-        return external_functions
-
-    def _inject_external_function_shims(self, context: quickjs.Context) -> None:
-        """Install JS wrappers that deserialize JSON-encoded Python return values."""
-        external_functions = self._external_functions or []
-        if not external_functions:
-            return
-
-        shim_lines = []
-        for name in external_functions:
-            raw_name = self._raw_function_name(name)
-            shim_lines.append(
-                f"globalThis[{json.dumps(name)}] = (...args) => {{"
-                f"const value = globalThis[{json.dumps(raw_name)}](...args);"
-                "if (typeof value !== 'string') { return value; }"
-                "const trimmed = value.trim();"
-                "if (!trimmed) { return value; }"
-                "const first = trimmed[0];"
-                "if (first !== '[' && first !== '{') { return value; }"
-                "return JSON.parse(value);"
-                "};"
-            )
-        context.eval("".join(shim_lines))
-
     def _create_context(
         self, timeout: int | None, printed_lines: list[str]
     ) -> quickjs.Context:
@@ -256,9 +194,12 @@ class QuickJSMiddleware(AgentMiddleware[AgentState[Any], ContextT, ResponseT]):
             printed_lines.append(" ".join(map(str, args)))
 
         context.add_callable("print", _print)
-        for name, implementation in self._build_external_functions().items():
+        for name, implementation in build_external_functions(
+            self._external_function_implementations,
+            payload_builder=self._build_tool_payload,
+        ).items():
             context.add_callable(name, implementation)
-        self._inject_external_function_shims(context)
+        inject_external_function_shims(context, self._external_functions)
         return context
 
     def _evaluate(self, code: str, *, timeout: int | None) -> str:

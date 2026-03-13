@@ -89,7 +89,11 @@ async def test_deepagent_with_quickjs_json_stringify_foreign_function() -> None:
     )
 
     result = await agent.ainvoke(
-        {"messages": [HumanMessage(content="Use the repl to print the available user ids")]}
+        {
+            "messages": [
+                HumanMessage(content="Use the repl to print the available user ids")
+            ]
+        }
     )
 
     assert "messages" in result

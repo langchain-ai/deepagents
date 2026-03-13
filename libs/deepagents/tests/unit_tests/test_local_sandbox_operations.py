@@ -26,7 +26,7 @@ from pathlib import Path
 
 import pytest
 
-from deepagents.backends.protocol import EditResult, ExecuteResponse, GlobResult, GrepMatch, LsResult, ReadResult, WriteResult
+from deepagents.backends.protocol import EditResult, ExecuteResponse, GlobResult, GrepResult, LsResult, ReadResult, WriteResult
 from deepagents.backends.sandbox import BaseSandbox
 
 # Skip all tests in this module unless RUN_SANDBOX_TESTS=true
@@ -166,14 +166,15 @@ class LocalSubprocessSandbox(BaseSandbox):
             result.error = self._to_virtual_path(result.error)
         return result
 
-    def grep_raw(self, pattern: str, path: str | None = None, glob: str | None = None) -> list[GrepMatch] | str:
+    def grep_raw(self, pattern: str, path: str | None = None, glob: str | None = None) -> GrepResult:
         """Run grep against mapped real paths and return virtual paths."""
         mapped_path = self._to_real_path(path) if path is not None else None
         result = super().grep_raw(pattern, path=mapped_path, glob=glob)
-        if isinstance(result, str):
-            return self._to_virtual_path(result)
-        for match in result:
-            match["path"] = self._to_virtual_path(match["path"])
+        if result.error is not None:
+            result.error = self._to_virtual_path(result.error)
+        if result.matches is not None:
+            for match in result.matches:
+                match["path"] = self._to_virtual_path(match["path"])
         return result
 
     def glob_info(self, pattern: str, path: str = "/") -> GlobResult:
@@ -903,9 +904,9 @@ class TestLocalSandboxOperations:
         sandbox.write(f"{base_dir}/file1.txt", "Hello world\nGoodbye world")
         sandbox.write(f"{base_dir}/file2.txt", "Hello there\nGoodbye friend")
 
-        result = sandbox.grep_raw("Hello", path=base_dir)
+        result = sandbox.grep_raw("Hello", path=base_dir).matches
 
-        assert isinstance(result, list)
+        assert result is not None
         assert len(result) == 2
         # Check that both files matched
         paths = [match["path"] for match in result]
@@ -924,9 +925,9 @@ class TestLocalSandboxOperations:
         sandbox.write(f"{base_dir}/test.py", "pattern")
         sandbox.write(f"{base_dir}/test.md", "pattern")
 
-        result = sandbox.grep_raw("pattern", path=base_dir, glob="*.py")
+        result = sandbox.grep_raw("pattern", path=base_dir, glob="*.py").matches
 
-        assert isinstance(result, list)
+        assert result is not None
         assert len(result) == 1
         assert "test.py" in result[0]["path"]
 
@@ -936,9 +937,9 @@ class TestLocalSandboxOperations:
         sandbox.execute(f"mkdir -p {base_dir}")
         sandbox.write(f"{base_dir}/file.txt", "Hello world")
 
-        result = sandbox.grep_raw("nonexistent", path=base_dir)
+        result = sandbox.grep_raw("nonexistent", path=base_dir).matches
 
-        assert isinstance(result, list)
+        assert result is not None
         assert len(result) == 0
 
     def test_grep_multiple_matches_per_file(self, sandbox: LocalSubprocessSandbox) -> None:
@@ -948,9 +949,9 @@ class TestLocalSandboxOperations:
         content = "apple\nbanana\napple\norange\napple"
         sandbox.write(f"{base_dir}/fruits.txt", content)
 
-        result = sandbox.grep_raw("apple", path=base_dir)
+        result = sandbox.grep_raw("apple", path=base_dir).matches
 
-        assert isinstance(result, list)
+        assert result is not None
         assert len(result) == 3
         # Check line numbers
         line_numbers = [match["line"] for match in result]
@@ -963,9 +964,9 @@ class TestLocalSandboxOperations:
         sandbox.write(f"{base_dir}/numbers.txt", "test123\ntest456\nabcdef")
 
         # Pattern is treated as literal string, not regex
-        result = sandbox.grep_raw("test123", path=base_dir)
+        result = sandbox.grep_raw("test123", path=base_dir).matches
 
-        assert isinstance(result, list)
+        assert result is not None
         assert len(result) == 1
         assert "test123" in result[0]["text"]
 
@@ -975,9 +976,9 @@ class TestLocalSandboxOperations:
         sandbox.execute(f"mkdir -p {base_dir}")
         sandbox.write(f"{base_dir}/unicode.txt", "Hello 世界\nПривет мир\n测试 pattern")
 
-        result = sandbox.grep_raw("世界", path=base_dir)
+        result = sandbox.grep_raw("世界", path=base_dir).matches
 
-        assert isinstance(result, list)
+        assert result is not None
         assert len(result) == 1
         assert "世界" in result[0]["text"]
 
@@ -987,9 +988,9 @@ class TestLocalSandboxOperations:
         sandbox.execute(f"mkdir -p {base_dir}")
         sandbox.write(f"{base_dir}/case.txt", "Hello\nhello\nHELLO")
 
-        result = sandbox.grep_raw("Hello", path=base_dir)
+        result = sandbox.grep_raw("Hello", path=base_dir).matches
 
-        assert isinstance(result, list)
+        assert result is not None
         # Should only match "Hello", not "hello" or "HELLO"
         assert len(result) == 1
         assert "Hello" in result[0]["text"]
@@ -1001,14 +1002,14 @@ class TestLocalSandboxOperations:
         sandbox.write(f"{base_dir}/special.txt", "Price: $100\nPath: /usr/bin\nPattern: [a-z]*")
 
         # Test with dollar sign (treated as literal)
-        result = sandbox.grep_raw("$100", path=base_dir)
-        assert isinstance(result, list)
+        result = sandbox.grep_raw("$100", path=base_dir).matches
+        assert result is not None
         assert len(result) == 1
         assert "$100" in result[0]["text"]
 
         # Test with brackets (treated as literal)
-        result = sandbox.grep_raw("[a-z]*", path=base_dir)
-        assert isinstance(result, list)
+        result = sandbox.grep_raw("[a-z]*", path=base_dir).matches
+        assert result is not None
         assert len(result) == 1
         assert "[a-z]*" in result[0]["text"]
 
@@ -1017,9 +1018,9 @@ class TestLocalSandboxOperations:
         base_dir = "/tmp/test_sandbox_ops/grep_empty_dir"
         sandbox.execute(f"mkdir -p {base_dir}")
 
-        result = sandbox.grep_raw("anything", path=base_dir)
+        result = sandbox.grep_raw("anything", path=base_dir).matches
 
-        assert isinstance(result, list)
+        assert result is not None
         assert len(result) == 0
 
     def test_grep_across_nested_directories(self, sandbox: LocalSubprocessSandbox) -> None:
@@ -1030,9 +1031,9 @@ class TestLocalSandboxOperations:
         sandbox.write(f"{base_dir}/sub1/level1.txt", "target here")
         sandbox.write(f"{base_dir}/sub1/sub2/level2.txt", "target here")
 
-        result = sandbox.grep_raw("target", path=base_dir)
+        result = sandbox.grep_raw("target", path=base_dir).matches
 
-        assert isinstance(result, list)
+        assert result is not None
         assert len(result) == 3
         # Should find matches in all nested levels
 
@@ -1042,7 +1043,7 @@ class TestLocalSandboxOperations:
         sandbox.write(f"{base_dir}/a/b/target.py", "needle")
         sandbox.write(f"{base_dir}/a/ignore.txt", "needle")
 
-        result = sandbox.grep_raw("needle", path=base_dir, glob="*.py")
+        result = sandbox.grep_raw("needle", path=base_dir, glob="*.py").matches
 
         assert result == [{"path": f"{base_dir}/a/b/target.py", "line": 1, "text": "needle"}]
 
@@ -1053,9 +1054,9 @@ class TestLocalSandboxOperations:
         content = "\n".join([f"Line {i}" for i in range(1, 101)])
         sandbox.write(f"{base_dir}/long.txt", content)
 
-        result = sandbox.grep_raw("Line 50", path=base_dir)
+        result = sandbox.grep_raw("Line 50", path=base_dir).matches
 
-        assert isinstance(result, list)
+        assert result is not None
         assert len(result) == 1
         assert result[0]["line"] == 50
 
@@ -1279,5 +1280,6 @@ class TestLocalSandboxOperations:
         assert len(glob_result) == 3
 
         # Grep for a pattern
-        grep_result = sandbox.grep_raw("file", path=base_dir)
+        grep_result = sandbox.grep_raw("file", path=base_dir).matches
+        assert grep_result is not None
         assert len(grep_result) >= 3  # At least 3 matches

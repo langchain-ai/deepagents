@@ -121,9 +121,9 @@ class TestV1StyleWritesStateBackend:
 
         with warnings.catch_warnings(record=True):
             warnings.simplefilter("always")
-            matches = be2.grep_raw("import", path="/")
+            matches = be2.grep_raw("import", path="/").matches
 
-        assert isinstance(matches, list)
+        assert matches is not None
         assert len(matches) == 2
         paths = {m["text"] for m in matches}
         assert "import sys" in paths
@@ -244,9 +244,9 @@ class TestV1StyleWritesStoreBackend:
 
         with warnings.catch_warnings(record=True):
             warnings.simplefilter("always")
-            matches = be.grep_raw("import", path="/")
+            matches = be.grep_raw("import", path="/").matches
 
-        assert isinstance(matches, list)
+        assert matches is not None
         assert len(matches) == 2
 
     def test_download_works_with_v1_data(self):
@@ -327,9 +327,9 @@ class TestV2LoadsV1CheckpointStateBackend:
 
         with warnings.catch_warnings(record=True):
             warnings.simplefilter("always")
-            matches = be.grep_raw("def", path="/")
+            matches = be.grep_raw("def", path="/").matches
 
-        assert isinstance(matches, list)
+        assert matches is not None
         assert len(matches) == 2
         assert matches[0]["text"] == "def foo():"
         assert matches[1]["text"] == "def bar():"
@@ -519,9 +519,9 @@ class TestV2LoadsV1CheckpointStoreBackend:
 
         with warnings.catch_warnings(record=True):
             warnings.simplefilter("always")
-            matches = be.grep_raw("def", path="/")
+            matches = be.grep_raw("def", path="/").matches
 
-        assert isinstance(matches, list)
+        assert matches is not None
         assert len(matches) == 2
 
     def test_download_v1_store_data(self):

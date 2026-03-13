@@ -32,6 +32,7 @@ from deepagents.backends.protocol import (
     EditResult,
     FileData as FileData,  # Re-export for backwards compatibility
     GlobResult,
+    GrepResult,
     LsResult,
     ReadResult,
     SandboxBackendProtocol,
@@ -905,10 +906,30 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         ) -> str:
             """Synchronous wrapper for grep tool."""
             resolved_backend = self._get_backend(runtime)
-            raw = resolved_backend.grep_raw(pattern, path=path, glob=glob)
-            if isinstance(raw, str):
-                return raw
-            formatted = format_grep_matches(raw, output_mode)
+            grep_result = resolved_backend.grep_raw(pattern, path=path, glob=glob)
+            if isinstance(grep_result, GrepResult):
+                if grep_result.error:
+                    return grep_result.error
+                matches = grep_result.matches or []
+            elif isinstance(grep_result, str):
+                warnings.warn(
+                    "Returning a plain `str` from `backend.grep_raw()` is deprecated. "
+                    "Return a `GrepResult` instead. Returning `str` will not be "
+                    "supported in a future version.",
+                    DeprecationWarning,
+                    stacklevel=1,
+                )
+                return grep_result
+            else:
+                warnings.warn(
+                    "Returning a plain `list` from `backend.grep_raw()` is deprecated. "
+                    "Return a `GrepResult` instead. Returning `list` will not be "
+                    "supported in a future version.",
+                    DeprecationWarning,
+                    stacklevel=1,
+                )
+                matches = grep_result
+            formatted = format_grep_matches(matches, output_mode)
             return truncate_if_too_long(formatted)
 
         async def async_grep(
@@ -923,10 +944,30 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         ) -> str:
             """Asynchronous wrapper for grep tool."""
             resolved_backend = self._get_backend(runtime)
-            raw = await resolved_backend.agrep_raw(pattern, path=path, glob=glob)
-            if isinstance(raw, str):
-                return raw
-            formatted = format_grep_matches(raw, output_mode)
+            grep_result = await resolved_backend.agrep_raw(pattern, path=path, glob=glob)
+            if isinstance(grep_result, GrepResult):
+                if grep_result.error:
+                    return grep_result.error
+                matches = grep_result.matches or []
+            elif isinstance(grep_result, str):
+                warnings.warn(
+                    "Returning a plain `str` from `backend.agrep_raw()` is deprecated. "
+                    "Return a `GrepResult` instead. Returning `str` will not be "
+                    "supported in a future version.",
+                    DeprecationWarning,
+                    stacklevel=1,
+                )
+                return grep_result
+            else:
+                warnings.warn(
+                    "Returning a plain `list` from `backend.agrep_raw()` is deprecated. "
+                    "Return a `GrepResult` instead. Returning `list` will not be "
+                    "supported in a future version.",
+                    DeprecationWarning,
+                    stacklevel=1,
+                )
+                matches = grep_result
+            formatted = format_grep_matches(matches, output_mode)
             return truncate_if_too_long(formatted)
 
         return StructuredTool.from_function(

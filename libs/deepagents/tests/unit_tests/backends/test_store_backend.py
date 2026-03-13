@@ -46,8 +46,8 @@ def test_store_backend_crud_and_search():
     assert any(i["path"] == "/docs/readme.md" for i in infos)
 
     # grep_raw
-    matches = be.grep_raw("hi", path="/")
-    assert isinstance(matches, list) and any(m["path"] == "/docs/readme.md" for m in matches)
+    matches = be.grep_raw("hi", path="/").matches
+    assert matches is not None and any(m["path"] == "/docs/readme.md" for m in matches)
 
     # glob_info
     g = be.glob_info("*.md", path="/").matches
@@ -370,8 +370,8 @@ def test_store_backend_grep_literal_search_special_chars(pattern: str, expected_
         assert res.error is None
 
     # Test literal search with the pattern
-    matches = be.grep_raw(pattern, path="/")
-    assert isinstance(matches, list)
+    matches = be.grep_raw(pattern, path="/").matches
+    assert matches is not None
     assert any(expected_file in m["path"] for m in matches), f"Pattern '{pattern}' not found in {expected_file}"
 
 

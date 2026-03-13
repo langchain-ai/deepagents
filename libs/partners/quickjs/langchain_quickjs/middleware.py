@@ -128,7 +128,7 @@ class QuickJSMiddleware(AgentMiddleware[AgentState[Any], ContextT, ResponseT]):
         """Convert QuickJS call arguments into a LangChain tool payload."""
         if kwargs:
             return kwargs
-        if len(args) == 1 and isinstance(args[0], str | dict):
+        if len(args) == 1 and isinstance(args[0], (str, dict)):
             return args[0]
 
         input_schema = tool.get_input_schema()

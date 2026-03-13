@@ -57,7 +57,7 @@ def _serialize_for_js(value: Any) -> Any:
     Returns:
         Either the original primitive value or a JSON string representation.
     """
-    if value is None or isinstance(value, str | int | float | bool):
+    if value is None or isinstance(value, (str, int, float, bool)):
         return value
     return json.dumps(value)
 

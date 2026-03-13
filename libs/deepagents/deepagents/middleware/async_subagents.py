@@ -304,11 +304,23 @@ def _build_check_tool(
     def check_async_subagent(
         job_id: Annotated[str, "The exact job_id string returned by launch_async_subagent. Pass it verbatim."],
         runtime: ToolRuntime,
-    ) -> Command:
-        agent_name, thread_id, run_id = _parse_job_id(job_id)
-        name = _resolve_client_name(agent_name, agent_map)
+    ) -> str | Command:
+        try:
+            agent_name, thread_id, run_id = _parse_job_id(job_id)
+        except ValueError as e:
+            return str(e)
+
+        try:
+            name = _resolve_client_name(agent_name, agent_map)
+        except ValueError as e:
+            return str(e)
+
         client = clients.get_sync(name)
-        run = client.runs.get(thread_id=thread_id, run_id=run_id)
+
+        try:
+            run = client.runs.get(thread_id=thread_id, run_id=run_id)
+        except Exception as e:
+            return f"Failed to get run status: {e}"
         result: dict[str, Any] = {"status": run["status"], "run_id": run["run_id"], "thread_id": thread_id}
         if run["status"] == "success":
             thread = client.threads.get(thread_id=thread_id)
@@ -337,11 +349,23 @@ def _build_check_tool(
     async def acheck_async_subagent(
         job_id: Annotated[str, "The exact job_id string returned by launch_async_subagent. Pass it verbatim."],
         runtime: ToolRuntime,
-    ) -> Command:
-        agent_name, thread_id, run_id = _parse_job_id(job_id)
-        name = _resolve_client_name(agent_name, agent_map)
+    ) -> str | Command:
+        try:
+            agent_name, thread_id, run_id = _parse_job_id(job_id)
+        except ValueError as e:
+            return str(e)
+
+        try:
+            name = _resolve_client_name(agent_name, agent_map)
+        except ValueError as e:
+            return str(e)
+
         client = clients.get_async(name)
-        run = await client.runs.get(thread_id=thread_id, run_id=run_id)
+
+        try:
+            run = await client.runs.get(thread_id=thread_id, run_id=run_id)
+        except Exception as e:
+            return f"Failed to get run status: {e}"
         result: dict[str, Any] = {"status": run["status"], "run_id": run["run_id"], "thread_id": thread_id}
         if run["status"] == "success":
             thread = await client.threads.get(thread_id=thread_id)

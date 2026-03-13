@@ -793,14 +793,14 @@ class TestSandboxOperations:
 
         result = sandbox.grep_raw("Hello", path=base_dir)
 
-        assert isinstance(result, list)
-        assert len(result) == 2
+        assert result.matches is not None
+        assert len(result.matches) == 2
         # Check that both files matched
-        paths = [match["path"] for match in result]
+        paths = [match["path"] for match in result.matches]
         assert any("file1.txt" in p for p in paths)
         assert any("file2.txt" in p for p in paths)
         # Check line numbers
-        for match in result:
+        for match in result.matches:
             assert match["line"] == 1
             assert "Hello" in match["text"]
 
@@ -814,9 +814,9 @@ class TestSandboxOperations:
 
         result = sandbox.grep_raw("pattern", path=base_dir, glob="*.py")
 
-        assert isinstance(result, list)
-        assert len(result) == 1
-        assert "test.py" in result[0]["path"]
+        assert result.matches is not None
+        assert len(result.matches) == 1
+        assert "test.py" in result.matches[0]["path"]
 
     def test_grep_no_matches(self, sandbox: SandboxBackendProtocol) -> None:
         """Test grep when no matches are found."""
@@ -826,8 +826,8 @@ class TestSandboxOperations:
 
         result = sandbox.grep_raw("nonexistent", path=base_dir)
 
-        assert isinstance(result, list)
-        assert len(result) == 0
+        assert result.matches is not None
+        assert len(result.matches) == 0
 
     def test_grep_multiple_matches_per_file(
         self, sandbox: SandboxBackendProtocol
@@ -840,10 +840,10 @@ class TestSandboxOperations:
 
         result = sandbox.grep_raw("apple", path=base_dir)
 
-        assert isinstance(result, list)
-        assert len(result) == 3
+        assert result.matches is not None
+        assert len(result.matches) == 3
         # Check line numbers
-        line_numbers = [match["line"] for match in result]
+        line_numbers = [match["line"] for match in result.matches]
         assert line_numbers == [1, 3, 5]
 
     def test_grep_literal_string_matching(
@@ -857,9 +857,9 @@ class TestSandboxOperations:
         # Pattern is treated as literal string, not regex
         result = sandbox.grep_raw("test123", path=base_dir)
 
-        assert isinstance(result, list)
-        assert len(result) == 1
-        assert "test123" in result[0]["text"]
+        assert result.matches is not None
+        assert len(result.matches) == 1
+        assert "test123" in result.matches[0]["text"]
 
     def test_grep_unicode_pattern(self, sandbox: SandboxBackendProtocol) -> None:
         """Test grep with unicode pattern and content."""
@@ -869,9 +869,9 @@ class TestSandboxOperations:
 
         result = sandbox.grep_raw("世界", path=base_dir)
 
-        assert isinstance(result, list)
-        assert len(result) == 1
-        assert "世界" in result[0]["text"]
+        assert result.matches is not None
+        assert len(result.matches) == 1
+        assert "世界" in result.matches[0]["text"]
 
     def test_grep_case_sensitivity(self, sandbox: SandboxBackendProtocol) -> None:
         """Test that grep is case-sensitive by default."""
@@ -881,10 +881,10 @@ class TestSandboxOperations:
 
         result = sandbox.grep_raw("Hello", path=base_dir)
 
-        assert isinstance(result, list)
+        assert result.matches is not None
         # Should only match "Hello", not "hello" or "HELLO"
-        assert len(result) == 1
-        assert "Hello" in result[0]["text"]
+        assert len(result.matches) == 1
+        assert "Hello" in result.matches[0]["text"]
 
     def test_grep_with_special_characters(
         self, sandbox: SandboxBackendProtocol
@@ -898,15 +898,15 @@ class TestSandboxOperations:
 
         # Test with dollar sign (treated as literal)
         result = sandbox.grep_raw("$100", path=base_dir)
-        assert isinstance(result, list)
-        assert len(result) == 1
-        assert "$100" in result[0]["text"]
+        assert result.matches is not None
+        assert len(result.matches) == 1
+        assert "$100" in result.matches[0]["text"]
 
         # Test with brackets (treated as literal)
         result = sandbox.grep_raw("[a-z]*", path=base_dir)
-        assert isinstance(result, list)
-        assert len(result) == 1
-        assert "[a-z]*" in result[0]["text"]
+        assert result.matches is not None
+        assert len(result.matches) == 1
+        assert "[a-z]*" in result.matches[0]["text"]
 
     def test_grep_empty_directory(self, sandbox: SandboxBackendProtocol) -> None:
         """Test grep in a directory with no files."""
@@ -915,8 +915,8 @@ class TestSandboxOperations:
 
         result = sandbox.grep_raw("anything", path=base_dir)
 
-        assert isinstance(result, list)
-        assert len(result) == 0
+        assert result.matches is not None
+        assert len(result.matches) == 0
 
     def test_grep_across_nested_directories(
         self, sandbox: SandboxBackendProtocol
@@ -930,8 +930,8 @@ class TestSandboxOperations:
 
         result = sandbox.grep_raw("target", path=base_dir)
 
-        assert isinstance(result, list)
-        assert len(result) == 3
+        assert result.matches is not None
+        assert len(result.matches) == 3
         # Should find matches in all nested levels
 
     def test_grep_with_multiline_matches(self, sandbox: SandboxBackendProtocol) -> None:
@@ -943,9 +943,9 @@ class TestSandboxOperations:
 
         result = sandbox.grep_raw("Line 50", path=base_dir)
 
-        assert isinstance(result, list)
-        assert len(result) == 1
-        assert result[0]["line"] == 50
+        assert result.matches is not None
+        assert len(result.matches) == 1
+        assert result.matches[0]["line"] == 50
 
     # ==================== glob_info() tests ====================
 
@@ -1176,4 +1176,5 @@ class TestSandboxOperations:
 
         # Grep for a pattern
         grep_result = sandbox.grep_raw("file", path=base_dir)
-        assert len(grep_result) >= 3  # At least 3 matches
+        assert grep_result.matches is not None
+        assert len(grep_result.matches) >= 3  # At least 3 matches

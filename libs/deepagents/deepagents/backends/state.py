@@ -12,7 +12,7 @@ from deepagents.backends.protocol import (
     FileInfo,
     FileUploadResponse,
     GlobResult,
-    GrepMatch,
+    GrepResult,
     LsResult,
     ReadResult,
     WriteResult,
@@ -210,7 +210,7 @@ class StateBackend(BackendProtocol):
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
-    ) -> list[GrepMatch] | str:
+    ) -> GrepResult:
         """Search state files for a literal text pattern."""
         files = self.runtime.state.get("files", {})
         return grep_matches_from_files(files, pattern, path if path is not None else "/", glob)

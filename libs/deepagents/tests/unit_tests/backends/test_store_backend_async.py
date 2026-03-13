@@ -47,8 +47,8 @@ async def test_store_backend_async_crud_and_search():
     assert any(i["path"] == "/docs/readme.md" for i in infos)
 
     # agrep_raw
-    matches = await be.agrep_raw("hi", path="/")
-    assert isinstance(matches, list) and any(m["path"] == "/docs/readme.md" for m in matches)
+    matches = (await be.agrep_raw("hi", path="/")).matches
+    assert matches is not None and any(m["path"] == "/docs/readme.md" for m in matches)
 
     # aglob_info
     g = (await be.aglob_info("*.md", path="/")).matches
@@ -216,8 +216,8 @@ async def test_store_backend_agrep_with_glob():
         assert res.error is None
 
     # agrep_raw with glob filter for .py files only
-    matches = await be.agrep_raw("import", path="/", glob="*.py")
-    assert isinstance(matches, list)
+    matches = (await be.agrep_raw("import", path="/", glob="*.py")).matches
+    assert matches is not None
     py_matches = [m["path"] for m in matches if m["path"].endswith(".py")]
     assert len(py_matches) >= 2  # Should match test.py and main.py
 
@@ -287,7 +287,7 @@ async def test_store_backend_agrep_invalid_regex():
 
     # Special characters are treated literally, not regex
     result = await be.agrep_raw("[invalid", path="/")
-    assert isinstance(result, list)  # Returns empty list, not error
+    assert result.matches is not None  # Returns empty list, not error
 
 
 @pytest.mark.parametrize("file_format", ["v1", "v2"])

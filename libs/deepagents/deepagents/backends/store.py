@@ -23,7 +23,7 @@ from deepagents.backends.protocol import (
     FileInfo,
     FileUploadResponse,
     GlobResult,
-    GrepMatch,
+    GrepResult,
     LsResult,
     ReadResult,
     WriteResult,
@@ -599,7 +599,7 @@ class StoreBackend(BackendProtocol):
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
-    ) -> list[GrepMatch] | str:
+    ) -> GrepResult:
         """Search store files for a literal text pattern."""
         store = self._get_store()
         namespace = self._get_namespace()

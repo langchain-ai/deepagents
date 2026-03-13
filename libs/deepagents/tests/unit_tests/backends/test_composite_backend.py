@@ -60,9 +60,11 @@ def test_composite_state_backend_routes_and_search(tmp_path: Path):  # noqa: ARG
     assert "/file.txt" in paths and "/memories/" in paths
 
     # grep across both
-    matches = be.grep_raw("alpha", path="/")
+    matches = be.grep_raw("alpha", path="/").matches
+    assert matches is not None
     assert any(m["path"] == "/file.txt" for m in matches)
-    matches2 = be.grep_raw("beta", path="/")
+    matches2 = be.grep_raw("beta", path="/").matches
+    assert matches2 is not None
     assert any(m["path"] == "/memories/readme.md" for m in matches2)
 
     # glob across both
@@ -97,7 +99,8 @@ def test_composite_backend_filesystem_plus_store(tmp_path: Path):
     assert any(i["path"] == "/memories/notes.md" for i in infos_mem_no_slash)
 
     # grep_raw route targeting should accept /memories as the route root
-    gm_mem = comp.grep_raw("note", path="/memories")
+    gm_mem = comp.grep_raw("note", path="/memories").matches
+    assert gm_mem is not None
     assert any(m["path"] == "/memories/notes.md" for m in gm_mem)
 
     # glob_info route targeting should accept /memories as the route root
@@ -105,9 +108,11 @@ def test_composite_backend_filesystem_plus_store(tmp_path: Path):
     assert any(i["path"] == "/memories/notes.md" for i in gl_mem)
 
     # grep_raw merges
-    gm = comp.grep_raw("hello", path="/")
+    gm = comp.grep_raw("hello", path="/").matches
+    assert gm is not None
     assert any(m["path"] == "/hello.txt" for m in gm)
-    gm2 = comp.grep_raw("note", path="/")
+    gm2 = comp.grep_raw("note", path="/").matches
+    assert gm2 is not None
     assert any(m["path"] == "/memories/notes.md" for m in gm2)
 
     # glob_info
@@ -150,10 +155,12 @@ def test_composite_backend_store_to_store():
     assert "/memories/" in paths
 
     # grep across both stores
-    matches = comp.grep_raw("default", path="/")
+    matches = comp.grep_raw("default", path="/").matches
+    assert matches is not None
     assert any(m["path"] == "/notes.txt" for m in matches)
 
-    matches2 = comp.grep_raw("routed", path="/")
+    matches2 = comp.grep_raw("routed", path="/").matches
+    assert matches2 is not None
     assert any(m["path"] == "/memories/important.txt" for m in matches2)
 
 
@@ -210,7 +217,8 @@ def test_composite_backend_multiple_routes():
 
     # grep across all backends with literal text search
     # Note: All written content contains 'm' character
-    all_matches = comp.grep_raw("m", path="/")  # Match literal 'm'
+    all_matches = comp.grep_raw("m", path="/").matches  # Match literal 'm'
+    assert all_matches is not None
     paths_with_content = {m["path"] for m in all_matches}
     assert "/temp.txt" in paths_with_content  # "ephemeral" contains 'm'
     # Note: Store routes might share state in tests, so just verify default backend works
@@ -250,8 +258,9 @@ def test_composite_backend_grep_path_isolation():
     comp.write("/memories/notes.txt", "remember to buy tools")
 
     # Grep for "tool" in /tools directory - should NOT return /memories results
-    matches = comp.grep_raw("tool", path="/tools")
-    match_paths = [m["path"] for m in matches] if isinstance(matches, list) else []
+    result = comp.grep_raw("tool", path="/tools")
+    matches = result.matches
+    match_paths = [m["path"] for m in matches] if matches is not None else []
 
     # Should find results in /tools
     assert any("/tools/hammer.txt" in p for p in match_paths)
@@ -759,8 +768,8 @@ def test_composite_grep_targeting_specific_route(tmp_path: Path) -> None:
     comp.write("/memories/note2.txt", "memory content beta")
 
     # Grep with path="/memories/" should only search memories backend
-    matches = comp.grep_raw("memory", path="/memories/")
-    assert isinstance(matches, list)
+    matches = comp.grep_raw("memory", path="/memories/").matches
+    assert matches is not None
     match_paths = [m["path"] for m in matches]
 
     # Should find matches in /memories/
@@ -791,8 +800,8 @@ def test_composite_grep_with_glob_filter(tmp_path: Path) -> None:
     comp.write("/memories/data.json", "json data here")
 
     # Grep with glob="*.py" should only search Python files
-    matches = comp.grep_raw("here", path="/", glob="*.py")
-    assert isinstance(matches, list)
+    matches = comp.grep_raw("here", path="/", glob="*.py").matches
+    assert matches is not None
     match_paths = [m["path"] for m in matches]
 
     # Should find .py files
@@ -821,8 +830,8 @@ def test_composite_grep_with_glob_in_specific_route(tmp_path: Path) -> None:
     comp.write("/memories/data.txt", "text data")
 
     # Grep memories with glob="*.md"
-    matches = comp.grep_raw("notes", path="/memories/", glob="*.md")
-    assert isinstance(matches, list)
+    matches = comp.grep_raw("notes", path="/memories/", glob="*.md").matches
+    assert matches is not None
     match_paths = [m["path"] for m in matches]
 
     # Should find .md file in memories
@@ -848,12 +857,12 @@ def test_composite_grep_with_path_none(tmp_path: Path) -> None:
     comp.write("/memories/file2.txt", "searchable memory")
 
     # Grep with path=None
-    matches_none = comp.grep_raw("searchable", path=None)
-    assert isinstance(matches_none, list)
+    matches_none = comp.grep_raw("searchable", path=None).matches
+    assert matches_none is not None
 
     # Grep with path="/"
-    matches_root = comp.grep_raw("searchable", path="/")
-    assert isinstance(matches_root, list)
+    matches_root = comp.grep_raw("searchable", path="/").matches
+    assert matches_root is not None
 
     # Both should return same results
     paths_none = sorted([m["path"] for m in matches_none])
@@ -873,7 +882,7 @@ def test_composite_grep_invalid_regex(tmp_path: Path) -> None:
 
     # Special characters are treated literally (not regex), should return empty list
     result = comp.grep_raw("[invalid(", path="/")
-    assert isinstance(result, list)  # Returns empty list, not error
+    assert result.matches is not None  # Returns empty list, not error
 
 
 def test_composite_grep_nested_path_in_route(tmp_path: Path) -> None:
@@ -894,8 +903,8 @@ def test_composite_grep_nested_path_in_route(tmp_path: Path) -> None:
     comp.write("/memories/notes.txt", "notes here")
 
     # Grep with nested path
-    matches = comp.grep_raw("here", path="/memories/docs/")
-    assert isinstance(matches, list)
+    matches = comp.grep_raw("here", path="/memories/docs/").matches
+    assert matches is not None
     match_paths = [m["path"] for m in matches]
 
     # Should find files in /memories/docs/
@@ -922,8 +931,8 @@ def test_composite_grep_empty_results(tmp_path: Path) -> None:
     comp.write("/memories/note.txt", "memory content")
 
     # Search for pattern that doesn't exist
-    matches = comp.grep_raw("nonexistent_pattern_xyz", path="/")
-    assert isinstance(matches, list)
+    matches = comp.grep_raw("nonexistent_pattern_xyz", path="/").matches
+    assert matches is not None
     assert len(matches) == 0
 
 
@@ -942,8 +951,8 @@ def test_composite_grep_route_prefix_restoration(tmp_path: Path) -> None:
     comp.write("/memories/beta.txt", "test content beta")
 
     # Grep in memories route
-    matches = comp.grep_raw("test", path="/memories/")
-    assert isinstance(matches, list)
+    matches = comp.grep_raw("test", path="/memories/").matches
+    assert matches is not None
     assert len(matches) > 0
 
     # All paths should start with /memories/
@@ -952,8 +961,8 @@ def test_composite_grep_route_prefix_restoration(tmp_path: Path) -> None:
         assert not match["path"].startswith("/memories//")  # No double slashes
 
     # Grep across all backends (path="/")
-    matches_all = comp.grep_raw("test", path="/")
-    assert isinstance(matches_all, list)
+    matches_all = comp.grep_raw("test", path="/").matches
+    assert matches_all is not None
 
     # Filter matches from memories
     memory_matches = [m for m in matches_all if "/memories/" in m["path"]]
@@ -972,8 +981,8 @@ def test_composite_grep_multiple_matches_per_file(tmp_path: Path) -> None:
     fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
     comp = CompositeBackend(default=fs, routes={})
 
-    matches = comp.grep_raw("pattern", path="/")
-    assert isinstance(matches, list)
+    matches = comp.grep_raw("pattern", path="/").matches
+    assert matches is not None
 
     # Should have 2 matches from the same file
     multi_matches = [m for m in matches if "multi.txt" in m["path"]]
@@ -1012,8 +1021,8 @@ def test_composite_grep_multiple_routes_aggregation(tmp_path: Path) -> None:
     comp.write("/archive/arch.txt", "archive findme")
 
     # Grep across all backends
-    matches = comp.grep_raw("findme", path="/")
-    assert isinstance(matches, list)
+    matches = comp.grep_raw("findme", path="/").matches
+    assert matches is not None
     match_paths = sorted([m["path"] for m in matches])
 
     # Expected: each file appears only in its own route
@@ -1043,7 +1052,7 @@ def test_composite_grep_error_in_routed_backend() -> None:
 
     # When searching a specific route that errors, return the error
     result = comp.grep_raw("test", path="/errors/")
-    assert result == "Invalid regex pattern error"
+    assert result.error == "Invalid regex pattern error"
 
 
 def test_composite_grep_error_in_routed_backend_at_root() -> None:
@@ -1062,7 +1071,7 @@ def test_composite_grep_error_in_routed_backend_at_root() -> None:
 
     # When searching from root and a routed backend errors, return the error
     result = comp.grep_raw("test", path="/")
-    assert result == "Backend error occurred"
+    assert result.error == "Backend error occurred"
 
 
 def test_composite_grep_error_in_default_backend_at_root() -> None:
@@ -1081,7 +1090,7 @@ def test_composite_grep_error_in_default_backend_at_root() -> None:
 
     # When searching from root and default backend errors, return the error
     result = comp.grep_raw("test", path="/")
-    assert result == "Default backend error"
+    assert result.error == "Default backend error"
 
 
 def test_composite_grep_non_root_path_on_default_backend(tmp_path: Path) -> None:
@@ -1100,7 +1109,8 @@ def test_composite_grep_non_root_path_on_default_backend(tmp_path: Path) -> None
     comp = CompositeBackend(default=fs, routes={"/memories/": store})
 
     # Search in /work directory (doesn't match any route)
-    matches = comp.grep_raw("content", path="/work")
+    matches = comp.grep_raw("content", path="/work").matches
+    assert matches is not None
     match_paths = [m["path"] for m in matches]
 
     # Should only find files in /work, not /other.txt
@@ -1166,13 +1176,13 @@ def test_grep_raw_path_stripping_matches_get_backend_and_key() -> None:
     comp.write("/memories/readme.md", "hello world")
 
     # Search with trailing slash (exact route prefix)
-    matches = comp.grep_raw("hello", path="/memories/")
-    assert isinstance(matches, list)
+    matches = comp.grep_raw("hello", path="/memories/").matches
+    assert matches is not None
     assert any(m["path"] == "/memories/readme.md" for m in matches)
 
     # Search with nested path inside route
-    matches2 = comp.grep_raw("hello", path="/memories/readme.md")
-    assert isinstance(matches2, list)
+    matches2 = comp.grep_raw("hello", path="/memories/readme.md").matches
+    assert matches2 is not None
 
 
 def test_glob_info_path_stripping_matches_get_backend_and_key() -> None:

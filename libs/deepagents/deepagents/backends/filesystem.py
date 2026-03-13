@@ -20,6 +20,7 @@ from deepagents.backends.protocol import (
     FileUploadResponse,
     GlobResult,
     GrepMatch,
+    GrepResult,
     LsResult,
     ReadResult,
     WriteResult,
@@ -436,7 +437,7 @@ class FilesystemBackend(BackendProtocol):
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
-    ) -> list[GrepMatch] | str:
+    ) -> GrepResult:
         """Search for a literal text pattern in files.
 
         Uses ripgrep if available, falling back to Python search.
@@ -447,16 +448,16 @@ class FilesystemBackend(BackendProtocol):
             glob: Optional glob pattern to filter which files to search.
 
         Returns:
-            List of GrepMatch dicts containing path, line number, and matched text.
+            GrepResult with matches or error.
         """
         # Resolve base path
         try:
             base_full = self._resolve_path(path or ".")
         except ValueError:
-            return []
+            return GrepResult(matches=[])
 
         if not base_full.exists():
-            return []
+            return GrepResult(matches=[])
 
         # Try ripgrep first (with -F flag for literal search)
         results = self._ripgrep_search(pattern, base_full, glob)
@@ -468,7 +469,7 @@ class FilesystemBackend(BackendProtocol):
         for fpath, items in results.items():
             for line_num, line_text in items:
                 matches.append({"path": fpath, "line": int(line_num), "text": line_text})
-        return matches
+        return GrepResult(matches=matches)
 
     def _ripgrep_search(self, pattern: str, base_full: Path, include_glob: str | None) -> dict[str, list[tuple[int, str]]] | None:  # noqa: C901  # Split except clauses for logging
         """Search using ripgrep with fixed-string (literal) mode.

@@ -15,7 +15,7 @@ from typing import Any, Literal, overload
 
 import wcmatch.glob as wcglob
 
-from deepagents.backends.protocol import FileData, FileInfo as _FileInfo, GrepMatch as _GrepMatch, ReadResult
+from deepagents.backends.protocol import FileData, FileInfo as _FileInfo, GrepMatch as _GrepMatch, GrepResult, ReadResult
 
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
 
@@ -663,19 +663,19 @@ def grep_matches_from_files(
     pattern: str,
     path: str | None = None,
     glob: str | None = None,
-) -> list[GrepMatch] | str:
+) -> GrepResult:
     """Return structured grep matches from an in-memory files mapping.
 
     Performs literal text search (not regex).
 
-    Returns a list of GrepMatch on success, or a string for invalid inputs.
+    Returns a GrepResult with matches on success.
     We deliberately do not raise here to keep backends non-throwing in tool
     contexts and preserve user-facing error messages.
     """
     try:
         normalized_path = _normalize_path(path)
     except ValueError:
-        return []
+        return GrepResult(matches=[])
 
     filtered = _filter_files_by_path(files, normalized_path)
 
@@ -688,7 +688,7 @@ def grep_matches_from_files(
         for line_num, line in enumerate(content_str.split("\n"), 1):
             if pattern in line:  # Simple substring search for literal matching
                 matches.append({"path": file_path, "line": int(line_num), "text": line})
-    return matches
+    return GrepResult(matches=matches)
 
 
 def build_grep_results_dict(matches: list[GrepMatch]) -> dict[str, list[tuple[int, str]]]:

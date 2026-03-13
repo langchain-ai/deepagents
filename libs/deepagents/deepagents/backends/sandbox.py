@@ -22,6 +22,7 @@ from deepagents.backends.protocol import (
     FileUploadResponse,
     GlobResult,
     GrepMatch,
+    GrepResult,
     LsResult,
     ReadResult,
     SandboxBackendProtocol,
@@ -374,7 +375,7 @@ except PermissionError:
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
-    ) -> list[GrepMatch] | str:
+    ) -> GrepResult:
         """Structured search results or error string for invalid input."""
         search_path = shlex.quote(path or ".")
 
@@ -394,7 +395,7 @@ except PermissionError:
 
         output = result.output.rstrip()
         if not output:
-            return []
+            return GrepResult(matches=[])
 
         # Parse grep output into GrepMatch objects
         matches: list[GrepMatch] = []
@@ -410,7 +411,7 @@ except PermissionError:
                     }
                 )
 
-        return matches
+        return GrepResult(matches=matches)
 
     def glob_info(self, pattern: str, path: str = "/") -> GlobResult:
         """Structured glob matching returning GlobResult."""

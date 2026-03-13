@@ -44,8 +44,8 @@ async def test_filesystem_backend_async_normal_mode(tmp_path: Path):
     assert isinstance(msg2, WriteResult) and msg2.error is None and msg2.path.endswith("new.txt")
 
     # agrep_raw
-    matches = await be.agrep_raw("hello", path=str(root))
-    assert isinstance(matches, list) and any(m["path"].endswith("a.txt") for m in matches)
+    matches = (await be.agrep_raw("hello", path=str(root))).matches
+    assert matches is not None and any(m["path"].endswith("a.txt") for m in matches)
 
     # aglob_info
     g = (await be.aglob_info("*.py", path=str(root))).matches
@@ -83,16 +83,16 @@ async def test_filesystem_backend_async_virtual_mode(tmp_path: Path):
     assert (root / "new.txt").exists()
 
     # agrep_raw limited to path
-    matches = await be.agrep_raw("virt", path="/")
-    assert isinstance(matches, list) and any(m["path"] == "/a.txt" for m in matches)
+    matches = (await be.agrep_raw("virt", path="/")).matches
+    assert matches is not None and any(m["path"] == "/a.txt" for m in matches)
 
     # aglob_info
     g = (await be.aglob_info("**/*.md", path="/")).matches
     assert any(i["path"] == "/dir/b.md" for i in g)
 
     # literal search should work with special regex chars like "[" and "("
-    matches_bracket = await be.agrep_raw("[", path="/")
-    assert isinstance(matches_bracket, list)  # Should not error, returns empty list or matches
+    result_bracket = await be.agrep_raw("[", path="/")
+    assert result_bracket.matches is not None  # Should not error, returns empty list or matches
 
     # path traversal blocked
     with pytest.raises(ValueError, match="traversal"):
@@ -501,8 +501,8 @@ async def test_filesystem_agrep_with_glob(tmp_path: Path):
     (root / "main.py").write_text("import sys")
 
     # agrep_raw with glob filter
-    matches = await be.agrep_raw("import", path="/", glob="*.py")
-    assert isinstance(matches, list)
+    matches = (await be.agrep_raw("import", path="/", glob="*.py")).matches
+    assert matches is not None
     py_files = [m["path"] for m in matches]
     assert any("test.py" in p for p in py_files)
     assert any("main.py" in p for p in py_files)

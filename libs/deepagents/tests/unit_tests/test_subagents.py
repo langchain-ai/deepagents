@@ -71,7 +71,7 @@ class TestSubAgents:
                                 "name": "task",
                                 "args": {
                                     "description": "Calculate the sum of 2 and 3",
-                                    "subagent_type": "general-purpose",
+                                    "subagent_type": "math-calculator",
                                 },
                                 "id": "call_calculate_sum",
                                 "type": "tool_call",
@@ -102,8 +102,8 @@ class TestSubAgents:
             checkpointer=InMemorySaver(),
             subagents=[
                 CompiledSubAgent(
-                    name="general-purpose",
-                    description="A general-purpose agent for various tasks.",
+                    name="math-calculator",
+                    description="A math calculator agent for arithmetic tasks.",
                     runnable=compiled_subagent,
                 )
             ],

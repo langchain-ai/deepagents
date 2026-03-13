@@ -706,6 +706,9 @@ class FilesystemBackend(BackendProtocol):
         for path in paths:
             try:
                 resolved_path = self._resolve_path(path)
+                if os.path.isdir(resolved_path):
+                    responses.append(FileDownloadResponse(path=path, content=None, error="is_directory"))
+                    continue
                 # Use flags to optionally prevent symlink following if
                 # supported by the OS
                 fd = os.open(resolved_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))

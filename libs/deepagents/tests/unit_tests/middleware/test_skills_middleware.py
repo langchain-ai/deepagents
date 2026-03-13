@@ -525,14 +525,14 @@ def test_list_skills_from_backend_single_skill(tmp_path: Path) -> None:
 
     # Create skill using backend's upload_files interface
     skills_dir = tmp_path / "skills"
-    skill_path = str(skills_dir / "my-skill" / "SKILL.md")
+    skill_path = (skills_dir / "my-skill" / "SKILL.md").as_posix()
     skill_content = make_skill_content("my-skill", "My test skill")
 
     responses = backend.upload_files([(skill_path, skill_content.encode("utf-8"))])
     assert responses[0].error is None
 
     # List skills using the full absolute path
-    skills = _list_skills(backend, str(skills_dir))
+    skills = _list_skills(backend, skills_dir.as_posix())
 
     assert skills == [
         {
@@ -608,8 +608,8 @@ def test_list_skills_from_backend_missing_skill_md(tmp_path: Path) -> None:
 
     # Create a valid skill and an invalid one (missing SKILL.md)
     skills_dir = tmp_path / "skills"
-    valid_skill_path = str(skills_dir / "valid-skill" / "SKILL.md")
-    invalid_dir_file = str(skills_dir / "invalid-skill" / "readme.txt")
+    valid_skill_path = (skills_dir / "valid-skill" / "SKILL.md").as_posix()
+    invalid_dir_file = (skills_dir / "invalid-skill" / "readme.txt").as_posix()
 
     valid_content = make_skill_content("valid-skill", "Valid skill")
 
@@ -621,7 +621,7 @@ def test_list_skills_from_backend_missing_skill_md(tmp_path: Path) -> None:
     )
 
     # List skills - should only get the valid one
-    skills = _list_skills(backend, str(skills_dir))
+    skills = _list_skills(backend, skills_dir.as_posix())
 
     assert skills == [
         {
@@ -641,8 +641,8 @@ def test_list_skills_from_backend_invalid_frontmatter(tmp_path: Path) -> None:
     backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
 
     skills_dir = tmp_path / "skills"
-    valid_skill_path = str(skills_dir / "valid-skill" / "SKILL.md")
-    invalid_skill_path = str(skills_dir / "invalid-skill" / "SKILL.md")
+    valid_skill_path = (skills_dir / "valid-skill" / "SKILL.md").as_posix()
+    invalid_skill_path = (skills_dir / "invalid-skill" / "SKILL.md").as_posix()
 
     valid_content = make_skill_content("valid-skill", "Valid skill")
     invalid_content = """---
@@ -661,7 +661,7 @@ Content
     )
 
     # Should only get the valid skill
-    skills = _list_skills(backend, str(skills_dir))
+    skills = _list_skills(backend, skills_dir.as_posix())
 
     assert skills == [
         {
@@ -682,8 +682,8 @@ def test_list_skills_from_backend_with_helper_files(tmp_path: Path) -> None:
 
     # Create a skill with helper files
     skills_dir = tmp_path / "skills"
-    skill_path = str(skills_dir / "my-skill" / "SKILL.md")
-    helper_path = str(skills_dir / "my-skill" / "helper.py")
+    skill_path = (skills_dir / "my-skill" / "SKILL.md").as_posix()
+    helper_path = (skills_dir / "my-skill" / "helper.py").as_posix()
 
     skill_content = make_skill_content("my-skill", "My test skill")
     helper_content = "def helper(): pass"
@@ -696,7 +696,7 @@ def test_list_skills_from_backend_with_helper_files(tmp_path: Path) -> None:
     )
 
     # List skills - should find the skill and not be confused by helper files
-    skills = _list_skills(backend, str(skills_dir))
+    skills = _list_skills(backend, skills_dir.as_posix())
 
     assert skills == [
         {
@@ -1000,8 +1000,8 @@ def test_before_agent_skill_override(tmp_path: Path) -> None:
     base_dir = tmp_path / "skills" / "base"
     user_dir = tmp_path / "skills" / "user"
 
-    base_skill_path = str(base_dir / "shared-skill" / "SKILL.md")
-    user_skill_path = str(user_dir / "shared-skill" / "SKILL.md")
+    base_skill_path = (base_dir / "shared-skill" / "SKILL.md").as_posix()
+    user_skill_path = (user_dir / "shared-skill" / "SKILL.md").as_posix()
 
     base_content = make_skill_content("shared-skill", "Base description")
     user_content = make_skill_content("shared-skill", "User description")
@@ -1014,8 +1014,8 @@ def test_before_agent_skill_override(tmp_path: Path) -> None:
     )
 
     sources = [
-        str(base_dir),
-        str(user_dir),
+        base_dir.as_posix(),
+        user_dir.as_posix(),
     ]
     middleware = SkillsMiddleware(
         backend=backend,

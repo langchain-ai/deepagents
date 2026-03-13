@@ -118,7 +118,7 @@ class ServerConfig:
     interactive: bool = True
     enable_shell: bool = True
     enable_ask_user: bool = False
-    enable_memory: bool = True
+    enable_memory: bool = False
     enable_skills: bool = True
     sandbox_type: str | None = None
     sandbox_id: str | None = None
@@ -195,7 +195,7 @@ class ServerConfig:
             interactive=_read_env_bool("INTERACTIVE", default=True),
             enable_shell=_read_env_bool("ENABLE_SHELL", default=True),
             enable_ask_user=_read_env_bool("ENABLE_ASK_USER"),
-            enable_memory=_read_env_bool("ENABLE_MEMORY", default=True),
+            enable_memory=_read_env_bool("ENABLE_MEMORY", default=False),
             enable_skills=_read_env_bool("ENABLE_SKILLS", default=True),
             sandbox_type=_read_env_str("SANDBOX_TYPE"),
             sandbox_id=_read_env_str("SANDBOX_ID"),

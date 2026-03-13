@@ -61,6 +61,7 @@ evals = [
   "langchain-groq",
   "langchain-ollama",
   "langchain-fireworks",
+  "langchain-baseten",
   "datasets>=3.0.0",
   "nltk>=3.9.0",
   "tiktoken>=0.8.0",

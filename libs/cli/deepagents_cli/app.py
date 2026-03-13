@@ -1916,6 +1916,8 @@ class DeepAgentsApp(App):
                 report = "Configuration reloaded. No changes detected."
             report += "\nModel config caches cleared."
             await self._mount_message(AppMessage(report))
+        elif cmd == "/mcp":
+            await self._show_mcp_screen()
         else:
             await self._mount_message(UserMessage(command))
             await self._mount_message(AppMessage(f"Unknown command: {cmd}"))
@@ -3361,6 +3363,17 @@ class DeepAgentsApp(App):
                 logger.warning(missing_message, thread_id)
             else:
                 logger.debug(missing_message, thread_id)
+
+    async def _show_mcp_screen(self) -> None:
+        """Show MCP server screen as a modal."""
+        from deepagents_cli.widgets.mcp_screen import MCPScreen
+
+        def handle_result(_result: None) -> None:
+            """Refocus input after modal closes."""
+            if self._chat_input:
+                self._chat_input.focus_input()
+
+        self.push_screen(MCPScreen(), handle_result)
 
     async def _resume_thread(self, thread_id: str) -> None:
         """Resume a previously saved thread.

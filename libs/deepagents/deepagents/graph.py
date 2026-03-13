@@ -5,7 +5,7 @@ from typing import Any
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig, TodoListMiddleware
-from langchain.agents.middleware.types import AgentMiddleware
+from langchain.agents.middleware.types import AgentMiddleware, ResponseT
 from langchain.agents.structured_output import ResponseFormat
 from langchain_anthropic import ChatAnthropic
 from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
@@ -16,6 +16,7 @@ from langgraph.cache.base import BaseCache
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.store.base import BaseStore
 from langgraph.types import Checkpointer
+from langgraph.typing import ContextT
 
 from deepagents._models import resolve_model
 from deepagents.backends import StateBackend
@@ -83,12 +84,12 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
     tools: Sequence[BaseTool | Callable | dict[str, Any]] | None = None,
     *,
     system_prompt: str | SystemMessage | None = None,
-    middleware: Sequence[AgentMiddleware] = (),
+    middleware: Sequence[AgentMiddleware[Any, ContextT]] = (),
     subagents: list[SubAgent | CompiledSubAgent] | None = None,
     skills: list[str] | None = None,
     memory: list[str] | None = None,
-    response_format: ResponseFormat | None = None,
-    context_schema: type[Any] | None = None,
+    response_format: ResponseFormat[ResponseT] | None = None,
+    context_schema: type[ContextT] | None = None,
     checkpointer: Checkpointer | None = None,
     store: BaseStore | None = None,
     backend: BackendProtocol | BackendFactory | None = None,
@@ -162,7 +163,7 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
 
             Memory is loaded at agent startup and added into the system prompt.
         response_format: A structured output response format to use for the agent.
-        context_schema: The schema of the deep agent.
+        context_schema: The context schema for the deep agent.
         checkpointer: Optional `Checkpointer` for persisting agent state between runs.
         store: Optional store for persistent storage (required if backend uses `StoreBackend`).
         backend: Optional backend for file storage and execution.

@@ -637,8 +637,9 @@ class TestSandboxOperations:
         sandbox.execute(f"mkdir -p {base_dir}")
         sandbox.write(f"{base_dir}/file.txt", "content")
         result = sandbox.ls_info(base_dir)
-        assert len(result) == 1
-        assert result[0]["path"] == "/tmp/test_sandbox_ops/ls_absolute/file.txt"
+        assert result.entries is not None
+        assert len(result.entries) == 1
+        assert result.entries[0]["path"] == "/tmp/test_sandbox_ops/ls_absolute/file.txt"
 
     def test_ls_info_basic_directory(self, sandbox: SandboxBackendProtocol) -> None:
         """Test listing a directory with files and subdirectories."""
@@ -650,13 +651,14 @@ class TestSandboxOperations:
 
         result = sandbox.ls_info(base_dir)
 
-        assert len(result) == 3
-        paths = [info["path"] for info in result]
+        assert result.entries is not None
+        assert len(result.entries) == 3
+        paths = [info["path"] for info in result.entries]
         assert f"{base_dir}/file1.txt" in paths
         assert f"{base_dir}/file2.txt" in paths
         assert f"{base_dir}/subdir" in paths
         # Check is_dir flag
-        for info in result:
+        for info in result.entries:
             if info["path"] == f"{base_dir}/subdir":
                 assert info["is_dir"] is True
             else:
@@ -669,7 +671,7 @@ class TestSandboxOperations:
 
         result = sandbox.ls_info(empty_dir)
 
-        assert result == []
+        assert result.entries == []
 
     def test_ls_info_nonexistent_directory(
         self, sandbox: SandboxBackendProtocol
@@ -679,7 +681,7 @@ class TestSandboxOperations:
 
         result = sandbox.ls_info(nonexistent_dir)
 
-        assert result == []
+        assert result.entries == []
 
     def test_ls_info_hidden_files(self, sandbox: SandboxBackendProtocol) -> None:
         """Test that ls_info includes hidden files (starting with .)."""
@@ -690,7 +692,8 @@ class TestSandboxOperations:
 
         result = sandbox.ls_info(base_dir)
 
-        paths = [info["path"] for info in result]
+        assert result.entries is not None
+        paths = [info["path"] for info in result.entries]
         assert f"{base_dir}/.hidden" in paths
         assert f"{base_dir}/visible.txt" in paths
 
@@ -705,7 +708,8 @@ class TestSandboxOperations:
 
         result = sandbox.ls_info(base_dir)
 
-        paths = [info["path"] for info in result]
+        assert result.entries is not None
+        paths = [info["path"] for info in result.entries]
         assert f"{base_dir}/file with spaces.txt" in paths
         assert f"{base_dir}/dir with spaces" in paths
 
@@ -718,7 +722,8 @@ class TestSandboxOperations:
 
         result = sandbox.ls_info(base_dir)
 
-        paths = [info["path"] for info in result]
+        assert result.entries is not None
+        paths = [info["path"] for info in result.entries]
         # Should contain the unicode filenames
         assert len(paths) == 2
 
@@ -736,8 +741,9 @@ class TestSandboxOperations:
 
         result = sandbox.ls_info(base_dir)
 
-        assert len(result) == 50
-        paths = [info["path"] for info in result]
+        assert result.entries is not None
+        assert len(result.entries) == 50
+        paths = [info["path"] for info in result.entries]
         assert f"{base_dir}/file_000.txt" in paths
         assert f"{base_dir}/file_049.txt" in paths
 
@@ -753,7 +759,9 @@ class TestSandboxOperations:
         result = sandbox.ls_info(f"{base_dir}/")
 
         # Should work the same as without trailing slash
-        assert len(result) >= 1 or result == []  # Implementation dependent
+        assert (
+            result.entries is not None and len(result.entries) >= 1
+        ) or result.entries == []  # Implementation dependent
 
     def test_ls_info_special_characters_in_filenames(
         self, sandbox: SandboxBackendProtocol
@@ -768,7 +776,8 @@ class TestSandboxOperations:
 
         result = sandbox.ls_info(base_dir)
 
-        paths = [info["path"] for info in result]
+        assert result.entries is not None
+        paths = [info["path"] for info in result.entries]
         assert f"{base_dir}/file(1).txt" in paths
         assert f"{base_dir}/file[2].txt" in paths
         assert f"{base_dir}/file-3.txt" in paths
@@ -1154,7 +1163,8 @@ class TestSandboxOperations:
 
         # List root directory
         ls_result = sandbox.ls_info(base_dir)
-        paths = [info["path"] for info in ls_result]
+        assert ls_result.entries is not None
+        paths = [info["path"] for info in ls_result.entries]
         assert f"{base_dir}/root.txt" in paths
         assert f"{base_dir}/subdir1" in paths
         assert f"{base_dir}/subdir2" in paths

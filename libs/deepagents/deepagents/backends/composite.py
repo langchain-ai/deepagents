@@ -31,6 +31,7 @@ from deepagents.backends.protocol import (
     FileUploadResponse,
     GlobResult,
     GrepMatch,
+    LsResult,
     ReadResult,
     SandboxBackendProtocol,
     WriteResult,
@@ -142,7 +143,14 @@ class CompositeBackend(BackendProtocol):
         )
         return backend, stripped_key
 
-    def ls_info(self, path: str) -> list[FileInfo]:
+    @staticmethod
+    def _coerce_ls_result(raw: LsResult | list[FileInfo]) -> LsResult:
+        """Normalize legacy ``list[FileInfo]`` returns to `LsResult`."""
+        if isinstance(raw, LsResult):
+            return raw
+        return LsResult(entries=raw)
+
+    def ls_info(self, path: str) -> LsResult:
         """List directory contents (non-recursive).
 
         If path matches a route, lists only that backend. If path is "/", aggregates
@@ -152,13 +160,12 @@ class CompositeBackend(BackendProtocol):
             path: Absolute directory path starting with "/".
 
         Returns:
-            List of FileInfo dicts. Directories have trailing "/" and is_dir=True.
-            Route prefixes are restored in returned paths.
+            LsResult with directory entries or error.
 
         Examples:
             ```python
-            infos = composite.ls_info("/")
-            infos = composite.ls_info("/memories/")
+            result = composite.ls_info("/")
+            result = composite.ls_info("/memories/")
             ```
         """
         backend, backend_path, route_prefix = _route_for_path(
@@ -167,13 +174,16 @@ class CompositeBackend(BackendProtocol):
             path=path,
         )
         if route_prefix is not None:
-            infos = backend.ls_info(backend_path)
-            return [_remap_file_info_path(fi, route_prefix) for fi in infos]
+            ls_result = self._coerce_ls_result(backend.ls_info(backend_path))
+            if ls_result.error:
+                return ls_result
+            return LsResult(entries=[_remap_file_info_path(fi, route_prefix) for fi in (ls_result.entries or [])])
 
         # At root, aggregate default and all routed backends
         if path == "/":
             results: list[FileInfo] = []
-            results.extend(self.default.ls_info(path))
+            default_result = self._coerce_ls_result(self.default.ls_info(path))
+            results.extend(default_result.entries or [])
             for route_prefix, _backend in self.sorted_routes:
                 # Add the route itself as a directory (e.g., /memories/)
                 results.append(
@@ -186,12 +196,12 @@ class CompositeBackend(BackendProtocol):
                 )
 
             results.sort(key=lambda x: x.get("path", ""))
-            return results
+            return LsResult(entries=results)
 
         # Path doesn't match a route: query only default backend
-        return self.default.ls_info(path)
+        return self._coerce_ls_result(self.default.ls_info(path))
 
-    async def als_info(self, path: str) -> list[FileInfo]:
+    async def als_info(self, path: str) -> LsResult:
         """Async version of ls_info."""
         backend, backend_path, route_prefix = _route_for_path(
             default=self.default,
@@ -199,13 +209,16 @@ class CompositeBackend(BackendProtocol):
             path=path,
         )
         if route_prefix is not None:
-            infos = await backend.als_info(backend_path)
-            return [_remap_file_info_path(fi, route_prefix) for fi in infos]
+            ls_result = self._coerce_ls_result(await backend.als_info(backend_path))
+            if ls_result.error:
+                return ls_result
+            return LsResult(entries=[_remap_file_info_path(fi, route_prefix) for fi in (ls_result.entries or [])])
 
         # At root, aggregate default and all routed backends
         if path == "/":
             results: list[FileInfo] = []
-            results.extend(await self.default.als_info(path))
+            default_result = self._coerce_ls_result(await self.default.als_info(path))
+            results.extend(default_result.entries or [])
             for route_prefix, _backend in self.sorted_routes:
                 # Add the route itself as a directory (e.g., /memories/)
                 results.append(
@@ -218,10 +231,10 @@ class CompositeBackend(BackendProtocol):
                 )
 
             results.sort(key=lambda x: x.get("path", ""))
-            return results
+            return LsResult(entries=results)
 
         # Path doesn't match a route: query only default backend
-        return await self.default.als_info(path)
+        return self._coerce_ls_result(await self.default.als_info(path))
 
     def read(
         self,

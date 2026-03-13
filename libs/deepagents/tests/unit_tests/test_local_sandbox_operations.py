@@ -26,7 +26,7 @@ from pathlib import Path
 
 import pytest
 
-from deepagents.backends.protocol import EditResult, ExecuteResponse, FileInfo, GlobResult, GrepMatch, ReadResult, WriteResult
+from deepagents.backends.protocol import EditResult, ExecuteResponse, GlobResult, GrepMatch, LsResult, ReadResult, WriteResult
 from deepagents.backends.sandbox import BaseSandbox
 
 # Skip all tests in this module unless RUN_SANDBOX_TESTS=true
@@ -120,12 +120,13 @@ class LocalSubprocessSandbox(BaseSandbox):
                 truncated=False,
             )
 
-    def ls_info(self, path: str) -> list[FileInfo]:
+    def ls_info(self, path: str) -> LsResult:
         """List files while preserving virtual-path expectations in tests."""
-        results = super().ls_info(self._to_real_path(path))
-        for entry in results:
-            entry["path"] = self._to_virtual_path(entry["path"])
-        return results
+        result = super().ls_info(self._to_real_path(path))
+        if result.entries is not None:
+            for entry in result.entries:
+                entry["path"] = self._to_virtual_path(entry["path"])
+        return result
 
     def read(self, file_path: str, offset: int = 0, limit: int = 2000) -> ReadResult:
         """Read file content from the mapped real path."""
@@ -748,7 +749,8 @@ class TestLocalSandboxOperations:
         base_dir = "/tmp/test_sandbox_ops/ls_absolute"
         sandbox.execute(f"mkdir -p {base_dir}")
         sandbox.write(f"{base_dir}/file.txt", "content")
-        result = sandbox.ls_info(base_dir)
+        result = sandbox.ls_info(base_dir).entries
+        assert result is not None
         assert len(result) == 1
         assert result[0]["path"] == "/tmp/test_sandbox_ops/ls_absolute/file.txt"
 
@@ -760,8 +762,9 @@ class TestLocalSandboxOperations:
         sandbox.write(f"{base_dir}/file2.txt", "content2")
         sandbox.execute(f"mkdir -p {base_dir}/subdir")
 
-        result = sandbox.ls_info(base_dir)
+        result = sandbox.ls_info(base_dir).entries
 
+        assert result is not None
         assert len(result) == 3
         paths = [info["path"] for info in result]
         assert f"{base_dir}/file1.txt" in paths
@@ -781,7 +784,7 @@ class TestLocalSandboxOperations:
 
         result = sandbox.ls_info(empty_dir)
 
-        assert result == []
+        assert result.entries == []
 
     def test_ls_info_nonexistent_directory(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test listing a directory that doesn't exist."""
@@ -789,7 +792,7 @@ class TestLocalSandboxOperations:
 
         result = sandbox.ls_info(nonexistent_dir)
 
-        assert result == []
+        assert result.entries == []
 
     def test_ls_info_hidden_files(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test that ls_info includes hidden files (starting with .)."""
@@ -798,8 +801,9 @@ class TestLocalSandboxOperations:
         sandbox.write(f"{base_dir}/.hidden", "hidden content")
         sandbox.write(f"{base_dir}/visible.txt", "visible content")
 
-        result = sandbox.ls_info(base_dir)
+        result = sandbox.ls_info(base_dir).entries
 
+        assert result is not None
         paths = [info["path"] for info in result]
         assert f"{base_dir}/.hidden" in paths
         assert f"{base_dir}/visible.txt" in paths
@@ -811,8 +815,9 @@ class TestLocalSandboxOperations:
         sandbox.write(f"{base_dir}/file with spaces.txt", "content")
         sandbox.execute(f"mkdir -p '{base_dir}/dir with spaces'")
 
-        result = sandbox.ls_info(base_dir)
+        result = sandbox.ls_info(base_dir).entries
 
+        assert result is not None
         paths = [info["path"] for info in result]
         assert f"{base_dir}/file with spaces.txt" in paths
         assert f"{base_dir}/dir with spaces" in paths
@@ -824,8 +829,9 @@ class TestLocalSandboxOperations:
         sandbox.write(f"{base_dir}/测试文件.txt", "content")
         sandbox.write(f"{base_dir}/файл.txt", "content")
 
-        result = sandbox.ls_info(base_dir)
+        result = sandbox.ls_info(base_dir).entries
 
+        assert result is not None
         paths = [info["path"] for info in result]
         # Should contain the unicode filenames
         assert len(paths) == 2
@@ -837,8 +843,9 @@ class TestLocalSandboxOperations:
         # Note: Using $(seq 0 49) instead of {0..49} for better shell compatibility
         sandbox.execute(f"mkdir -p {base_dir} && cd {base_dir} && for i in $(seq 0 49); do echo 'content' > file_$(printf '%03d' $i).txt; done")
 
-        result = sandbox.ls_info(base_dir)
+        result = sandbox.ls_info(base_dir).entries
 
+        assert result is not None
         assert len(result) == 50
         paths = [info["path"] for info in result]
         assert f"{base_dir}/file_000.txt" in paths
@@ -851,9 +858,10 @@ class TestLocalSandboxOperations:
         sandbox.write(f"{base_dir}/file.txt", "content")
 
         # List with trailing slash
-        result = sandbox.ls_info(f"{base_dir}/")
+        result = sandbox.ls_info(f"{base_dir}/").entries
 
         # Should work the same as without trailing slash
+        assert result is not None
         assert len(result) >= 1 or result == []  # Implementation dependent
 
     def test_ls_info_special_characters_in_filenames(self, sandbox: LocalSubprocessSandbox) -> None:
@@ -865,8 +873,9 @@ class TestLocalSandboxOperations:
         sandbox.write(f"{base_dir}/file[2].txt", "content")
         sandbox.write(f"{base_dir}/file-3.txt", "content")
 
-        result = sandbox.ls_info(base_dir)
+        result = sandbox.ls_info(base_dir).entries
 
+        assert result is not None
         paths = [info["path"] for info in result]
         assert f"{base_dir}/file(1).txt" in paths
         assert f"{base_dir}/file[2].txt" in paths
@@ -876,7 +885,7 @@ class TestLocalSandboxOperations:
         """Test that ls_info base64-encodes paths to prevent injection."""
         malicious_path = "'; import os; os.system('echo INJECTED'); #"
         result = sandbox.ls_info(malicious_path)
-        assert result == []
+        assert result.entries == []
 
     def test_read_path_is_sanitized(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test that read base64-encodes paths to prevent injection."""
@@ -1257,7 +1266,8 @@ class TestLocalSandboxOperations:
         sandbox.write(f"{base_dir}/subdir2/file3.txt", "file 3")
 
         # List root directory
-        ls_result = sandbox.ls_info(base_dir)
+        ls_result = sandbox.ls_info(base_dir).entries
+        assert ls_result is not None
         paths = [info["path"] for info in ls_result]
         assert f"{base_dir}/root.txt" in paths
         assert f"{base_dir}/subdir1" in paths

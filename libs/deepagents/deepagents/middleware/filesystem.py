@@ -32,6 +32,7 @@ from deepagents.backends.protocol import (
     EditResult,
     FileData as FileData,  # Re-export for backwards compatibility
     GlobResult,
+    LsResult,
     ReadResult,
     SandboxBackendProtocol,
     WriteResult,
@@ -511,7 +512,20 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 validated_path = validate_path(path)
             except ValueError as e:
                 return f"Error: {e}"
-            infos = resolved_backend.ls_info(validated_path)
+            ls_result = resolved_backend.ls_info(validated_path)
+            if isinstance(ls_result, LsResult):
+                if ls_result.error:
+                    return f"Error: {ls_result.error}"
+                infos = ls_result.entries or []
+            else:
+                warnings.warn(
+                    "Returning a plain `list` from `backend.ls_info()` is deprecated. "
+                    "Return an `LsResult` instead. Returning `list` will not be "
+                    "supported in a future version.",
+                    DeprecationWarning,
+                    stacklevel=1,
+                )
+                infos = ls_result
             paths = [fi.get("path", "") for fi in infos]
             result = truncate_if_too_long(paths)
             return str(result)
@@ -526,7 +540,20 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 validated_path = validate_path(path)
             except ValueError as e:
                 return f"Error: {e}"
-            infos = await resolved_backend.als_info(validated_path)
+            ls_result = await resolved_backend.als_info(validated_path)
+            if isinstance(ls_result, LsResult):
+                if ls_result.error:
+                    return f"Error: {ls_result.error}"
+                infos = ls_result.entries or []
+            else:
+                warnings.warn(
+                    "Returning a plain `list` from `backend.als_info()` is deprecated. "
+                    "Return an `LsResult` instead. Returning `list` will not be "
+                    "supported in a future version.",
+                    DeprecationWarning,
+                    stacklevel=1,
+                )
+                infos = ls_result
             paths = [fi.get("path", "") for fi in infos]
             result = truncate_if_too_long(paths)
             return str(result)

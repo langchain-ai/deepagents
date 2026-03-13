@@ -203,6 +203,19 @@ class EditResult:
 
 
 @dataclass
+class LsResult:
+    """Result from backend ls operations.
+
+    Attributes:
+        error: Error message on failure, None on success.
+        entries: List of file info dicts on success, None on failure.
+    """
+
+    error: str | None = None
+    entries: list["FileInfo"] | None = None
+
+
+@dataclass
 class GlobResult:
     """Result from backend glob operations.
 
@@ -237,23 +250,18 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         `DeprecationWarning`.
     """
 
-    def ls_info(self, path: str) -> list["FileInfo"]:
+    def ls_info(self, path: str) -> "LsResult":
         """List all files in a directory with metadata.
 
         Args:
             path: Absolute path to the directory to list. Must start with '/'.
 
         Returns:
-            List of FileInfo dicts containing file metadata:
-
-            - `path` (required): Absolute file path
-            - `is_dir` (optional): True if directory
-            - `size` (optional): File size in bytes
-            - `modified_at` (optional): ISO 8601 timestamp
+            LsResult with directory entries or error.
         """
         raise NotImplementedError
 
-    async def als_info(self, path: str) -> list["FileInfo"]:
+    async def als_info(self, path: str) -> "LsResult":
         """Async version of ls_info."""
         return await asyncio.to_thread(self.ls_info, path)
 

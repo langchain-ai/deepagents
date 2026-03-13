@@ -20,6 +20,7 @@ from deepagents.backends.protocol import (
     FileUploadResponse,
     GlobResult,
     GrepMatch,
+    LsResult,
     ReadResult,
     WriteResult,
 )
@@ -189,7 +190,7 @@ class FilesystemBackend(BackendProtocol):
         """
         return "/" + path.resolve().relative_to(self.cwd).as_posix()
 
-    def ls_info(self, path: str) -> list[FileInfo]:  # noqa: C901, PLR0912, PLR0915  # Complex virtual_mode logic
+    def ls_info(self, path: str) -> LsResult:  # noqa: C901, PLR0912, PLR0915  # Complex virtual_mode logic
         """List files and directories in the specified directory (non-recursive).
 
         Args:
@@ -202,7 +203,7 @@ class FilesystemBackend(BackendProtocol):
         """
         dir_path = self._resolve_path(path)
         if not dir_path.exists() or not dir_path.is_dir():
-            return []
+            return LsResult(entries=[])
 
         results: list[FileInfo] = []
 
@@ -292,7 +293,7 @@ class FilesystemBackend(BackendProtocol):
 
         # Keep deterministic order by path
         results.sort(key=lambda x: x.get("path", ""))
-        return results
+        return LsResult(entries=results)
 
     def read(
         self,

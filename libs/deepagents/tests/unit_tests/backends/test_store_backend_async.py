@@ -42,7 +42,8 @@ async def test_store_backend_async_crud_and_search():
     assert isinstance(msg2, EditResult) and msg2.error is None and msg2.occurrences == 1
 
     # als_info (path prefix filter)
-    infos = await be.als_info("/docs/")
+    infos = (await be.als_info("/docs/")).entries
+    assert infos is not None
     assert any(i["path"] == "/docs/readme.md" for i in infos)
 
     # agrep_raw
@@ -75,7 +76,8 @@ async def test_store_backend_als_nested_directories():
         res = await be.awrite(path, content)
         assert res.error is None
 
-    root_listing = await be.als_info("/")
+    root_listing = (await be.als_info("/")).entries
+    assert root_listing is not None
     root_paths = [fi["path"] for fi in root_listing]
     assert "/config.json" in root_paths
     assert "/src/" in root_paths
@@ -85,20 +87,22 @@ async def test_store_backend_als_nested_directories():
     assert "/docs/readme.md" not in root_paths
     assert "/docs/api/reference.md" not in root_paths
 
-    src_listing = await be.als_info("/src/")
+    src_listing = (await be.als_info("/src/")).entries
+    assert src_listing is not None
     src_paths = [fi["path"] for fi in src_listing]
     assert "/src/main.py" in src_paths
     assert "/src/utils/" in src_paths
     assert "/src/utils/helper.py" not in src_paths
 
-    utils_listing = await be.als_info("/src/utils/")
+    utils_listing = (await be.als_info("/src/utils/")).entries
+    assert utils_listing is not None
     utils_paths = [fi["path"] for fi in utils_listing]
     assert "/src/utils/helper.py" in utils_paths
     assert "/src/utils/common.py" in utils_paths
     assert len(utils_paths) == 2
 
     empty_listing = await be.als_info("/nonexistent/")
-    assert empty_listing == []
+    assert empty_listing.entries == []
 
 
 async def test_store_backend_als_trailing_slash():
@@ -115,11 +119,14 @@ async def test_store_backend_als_trailing_slash():
         res = await be.awrite(path, content)
         assert res.error is None
 
-    listing_from_root = await be.als_info("/")
+    listing_from_root = (await be.als_info("/")).entries
+    assert listing_from_root is not None
     assert len(listing_from_root) > 0
 
-    listing1 = await be.als_info("/dir/")
-    listing2 = await be.als_info("/dir")
+    listing1 = (await be.als_info("/dir/")).entries
+    listing2 = (await be.als_info("/dir")).entries
+    assert listing1 is not None
+    assert listing2 is not None
     assert len(listing1) == len(listing2)
     assert [fi["path"] for fi in listing1] == [fi["path"] for fi in listing2]
 

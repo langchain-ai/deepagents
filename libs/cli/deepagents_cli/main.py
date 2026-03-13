@@ -756,6 +756,7 @@ async def _run_acp_cli_async(
             tools=tools,
             mcp_server_info=mcp_server_info,
             checkpointer=InMemorySaver(),
+            enable_memory=False,
         )
     except Exception as exc:
         sys.stderr.write(f"Error: failed to create agent: {exc}\n")

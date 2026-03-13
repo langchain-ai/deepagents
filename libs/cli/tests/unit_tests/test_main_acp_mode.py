@@ -118,6 +118,7 @@ def test_acp_mode_loads_tools_and_mcp_and_runs_server() -> None:
     assert call_kwargs["tools"] == [http_tool, fetch_tool, search_tool, mcp_tool]
     assert call_kwargs["mcp_server_info"] is mcp_server_info
     assert call_kwargs["checkpointer"] is not None
+    assert call_kwargs["enable_memory"] is False
     mock_server_cls.assert_called_once_with("graph")
     run_agent.assert_awaited_once_with(server)
     mcp_manager.cleanup.assert_awaited_once_with()
@@ -171,6 +172,7 @@ def test_acp_mode_omits_web_search_without_tavily() -> None:
     assert call_kwargs["tools"] == [http_tool, fetch_tool]
     assert call_kwargs["mcp_server_info"] == []
     assert call_kwargs["checkpointer"] is not None
+    assert call_kwargs["enable_memory"] is False
 
 
 def test_non_acp_mode_checks_dependencies_before_parsing() -> None:

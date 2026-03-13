@@ -69,7 +69,7 @@ class QuickJSMiddleware(AgentMiddleware[AgentState[Any], ContextT, ResponseT]):
         self,
         *,
         ptc: list[PtcImplementation] | None = None,
-        auto_include: bool = False,
+        add_ptc_docs: bool = False,
         timeout: int | None = None,
         memory_limit: int | None = None,
     ) -> None:
@@ -77,13 +77,13 @@ class QuickJSMiddleware(AgentMiddleware[AgentState[Any], ContextT, ResponseT]):
 
         Args:
             ptc: Functions or LangChain tools to expose inside the REPL.
-            auto_include: Whether to automatically include function signatures and
-                docstrings for foreign functions in the system prompt.
+            add_ptc_docs: Whether to add signatures and docstrings for exposed PTC
+                functions to the system prompt.
             timeout: Optional timeout in seconds for each evaluation.
             memory_limit: Optional memory limit in bytes for each evaluation.
         """
         self._ptc = ptc or []
-        self._auto_include = auto_include
+        self._add_ptc_docs = add_ptc_docs
         self._timeout = timeout
         self._memory_limit = memory_limit
         self.tools = [self._create_repl_tool()]
@@ -102,7 +102,7 @@ class QuickJSMiddleware(AgentMiddleware[AgentState[Any], ContextT, ResponseT]):
 
     def _format_foreign_function_docs(self, name: str) -> str | None:
         """Render a compact signature and docstring block for a foreign function."""
-        if not self._auto_include:
+        if not self._add_ptc_docs:
             return None
         implementation = self._ptc_implementations().get(name)
         if implementation is None:
@@ -122,7 +122,7 @@ class QuickJSMiddleware(AgentMiddleware[AgentState[Any], ContextT, ResponseT]):
         if not implementations:
             return ""
 
-        if not self._auto_include:
+        if not self._add_ptc_docs:
             formatted_functions = "\n".join(f"- {name}" for name in implementations)
             return f"\n\nAvailable foreign functions:\n{formatted_functions}"
 

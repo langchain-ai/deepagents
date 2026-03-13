@@ -75,7 +75,7 @@ def test_system_prompt_includes_rendered_foreign_function_docs() -> None:
             normalize_name,
             fetch_weather,
         ],
-        auto_include=True,
+        add_ptc_docs=True,
     )
 
     prompt = middleware._format_repl_system_prompt()

@@ -112,7 +112,7 @@ def test_system_prompt_snapshot_with_mixed_foreign_functions(
                 normalize_name,
                 fetch_weather,
             ],
-            auto_include=True,
+            add_ptc_docs=True,
         )
     )
     snapshot_path = snapshots_dir / "quickjs_system_prompt_mixed_foreign_functions.md"

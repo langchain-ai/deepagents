@@ -69,8 +69,6 @@ jobs:
       - name: "🧪 Run Unit Tests (Windows)"
         if: runner.os == 'Windows'
         shell: bash
-        env:
-          RUN_SANDBOX_TESTS: "true"
         run: |
           if [ "${{ inputs.coverage }}" = "false" ]; then
             uv run --group test pytest -n auto -vvv tests/unit_tests/

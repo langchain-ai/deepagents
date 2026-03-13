@@ -7,7 +7,7 @@ from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
 
 from deepagents.backends.filesystem import FilesystemBackend
-from deepagents.backends.protocol import EditResult, WriteResult
+from deepagents.backends.protocol import EditResult, ReadResult, WriteResult
 from deepagents.middleware.filesystem import FilesystemMiddleware
 
 
@@ -34,8 +34,9 @@ async def test_filesystem_backend_async_normal_mode(tmp_path: Path):
     assert (str(root) + "/dir/") in paths  # Directory should be listed
 
     # aread, aedit, awrite
-    txt = await be.aread(str(f1))
-    assert "hello fs" in txt
+    read_result = await be.aread(str(f1))
+    assert isinstance(read_result, ReadResult) and read_result.file_data is not None
+    assert "hello fs" in read_result.file_data["content"]
     msg = await be.aedit(str(f1), "fs", "filesystem", replace_all=False)
     assert isinstance(msg, EditResult) and msg.error is None and msg.occurrences == 1
     msg2 = await be.awrite(str(root / "new.txt"), "new content")
@@ -68,8 +69,9 @@ async def test_filesystem_backend_async_virtual_mode(tmp_path: Path):
     assert "/dir/" in paths  # Directory should be listed
 
     # aread and aedit via virtual path
-    txt = await be.aread("/a.txt")
-    assert "hello virtual" in txt
+    read_result = await be.aread("/a.txt")
+    assert isinstance(read_result, ReadResult) and read_result.file_data is not None
+    assert "hello virtual" in read_result.file_data["content"]
     msg = await be.aedit("/a.txt", "virtual", "virt", replace_all=False)
     assert isinstance(msg, EditResult) and msg.error is None and msg.occurrences == 1
 
@@ -444,15 +446,17 @@ async def test_filesystem_aedit_replace_all(tmp_path: Path):
     res2 = await be.aedit("/test.txt", "foo", "qux", replace_all=True)
     assert res2.error is None
     assert res2.occurrences == 2
-    content = await be.aread("/test.txt")
-    assert "qux bar qux baz" in content
+    read_result = await be.aread("/test.txt")
+    assert read_result.file_data is not None
+    assert "qux bar qux baz" in read_result.file_data["content"]
 
     # Now test replace_all=False with unique string (should succeed)
     res3 = await be.aedit("/test.txt", "bar", "xyz", replace_all=False)
     assert res3.error is None
     assert res3.occurrences == 1
-    content2 = await be.aread("/test.txt")
-    assert "qux xyz qux baz" in content2
+    read_result2 = await be.aread("/test.txt")
+    assert read_result2.file_data is not None
+    assert "qux xyz qux baz" in read_result2.file_data["content"]
 
 
 async def test_filesystem_aread_with_offset_and_limit(tmp_path: Path):
@@ -466,7 +470,8 @@ async def test_filesystem_aread_with_offset_and_limit(tmp_path: Path):
     test_file.write_text(lines)
 
     # Read with offset and limit
-    content = await be.aread("/multi.txt", offset=2, limit=3)
+    result = await be.aread("/multi.txt", offset=2, limit=3)
+    content = result.file_data["content"]
     assert "Line 3" in content
     assert "Line 4" in content
     assert "Line 5" in content

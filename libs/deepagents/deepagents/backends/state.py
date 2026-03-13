@@ -12,16 +12,18 @@ from deepagents.backends.protocol import (
     FileInfo,
     FileUploadResponse,
     GrepMatch,
+    ReadResult,
     WriteResult,
 )
 from deepagents.backends.utils import (
+    _get_file_type,
     _glob_search_files,
     _to_legacy_file_data,
     create_file_data,
     file_data_to_string,
-    format_read_response,
     grep_matches_from_files,
     perform_string_replacement,
+    slice_read_response,
     update_file_data,
 )
 
@@ -45,7 +47,7 @@ class StateBackend(BackendProtocol):
         self,
         runtime: "ToolRuntime",
         *,
-        file_format: FileFormat = "v1",
+        file_format: FileFormat = "v2",
     ) -> None:
         r"""Initialize StateBackend with runtime.
 
@@ -124,8 +126,8 @@ class StateBackend(BackendProtocol):
         file_path: str,
         offset: int = 0,
         limit: int = 2000,
-    ) -> str:
-        """Read file content with line numbers.
+    ) -> ReadResult:
+        """Read file content for the requested line range.
 
         Args:
             file_path: Absolute file path.
@@ -133,15 +135,29 @@ class StateBackend(BackendProtocol):
             limit: Maximum number of lines to read.
 
         Returns:
-            Formatted file content with line numbers, or error message.
+            ReadResult with raw (unformatted) content for the requested
+            window. Line-number formatting is applied by the middleware.
         """
         files = self.runtime.state.get("files", {})
         file_data = files.get(file_path)
 
         if file_data is None:
-            return f"Error: File '{file_path}' not found"
+            return ReadResult(error=f"File '{file_path}' not found")
 
-        return format_read_response(file_data, offset, limit)
+        if _get_file_type(file_path) != "text":
+            return ReadResult(file_data=file_data)
+
+        sliced = slice_read_response(file_data, offset, limit)
+        if isinstance(sliced, ReadResult):
+            return sliced
+        return ReadResult(
+            file_data=FileData(
+                content=sliced,
+                encoding=file_data.get("encoding", "utf-8"),
+                created_at=file_data.get("created_at", ""),
+                modified_at=file_data.get("modified_at", ""),
+            )
+        )
 
     def write(
         self,

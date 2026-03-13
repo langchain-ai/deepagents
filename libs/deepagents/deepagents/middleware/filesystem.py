@@ -2,8 +2,9 @@
 # ruff: noqa: E501
 
 import asyncio
-import base64
 import concurrent.futures
+import mimetypes
+import warnings
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Annotated, Any, Literal, NotRequired, cast
@@ -19,7 +20,7 @@ from langchain.agents.middleware.types import (
 from langchain.tools import ToolRuntime
 from langchain.tools.tool_node import ToolCallRequest
 from langchain_core.messages import ToolMessage
-from langchain_core.messages.content import ContentBlock, create_image_block
+from langchain_core.messages.content import ContentBlock
 from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.types import Command
 
@@ -30,11 +31,13 @@ from deepagents.backends.protocol import (
     BackendProtocol,
     EditResult,
     FileData as FileData,  # Re-export for backwards compatibility
+    ReadResult,
     SandboxBackendProtocol,
     WriteResult,
     execute_accepts_timeout,
 )
 from deepagents.backends.utils import (
+    _get_file_type,
     format_content_with_line_numbers,
     format_grep_matches,
     sanitize_tool_call_id,
@@ -48,16 +51,6 @@ GLOB_TIMEOUT = 20.0  # seconds
 LINE_NUMBER_WIDTH = 6
 DEFAULT_READ_OFFSET = 0
 DEFAULT_READ_LIMIT = 100
-IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp"})
-IMAGE_MEDIA_TYPES = {
-    ".png": "image/png",
-    ".jpg": "image/jpeg",
-    ".jpeg": "image/jpeg",
-    ".gif": "image/gif",
-    ".webp": "image/webp",
-}
-
-
 # Template for truncation message in read_file
 # {file_path} will be filled in at runtime
 READ_FILE_TRUNCATION_MSG = (
@@ -548,6 +541,55 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         tool_description = self._custom_tool_descriptions.get("read_file") or READ_FILE_TOOL_DESCRIPTION
         token_limit = self._tool_token_limit_before_evict
 
+        def _handle_read_result(
+            read_result: ReadResult | str,
+            validated_path: str,
+            tool_call_id: str | None,
+            offset: int,
+            limit: int,
+        ) -> ToolMessage | str:
+            if isinstance(read_result, str):
+                warnings.warn(
+                    "Returning a plain `str` from `backend.read()` is deprecated. "
+                    "Return a `ReadResult` instead. Returning `str` will not be "
+                    "supported in a future version.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+                return read_result
+            if read_result.error:
+                return f"Error: {read_result.error}"
+
+            if read_result.file_data is None:
+                return f"Error: no data returned for '{validated_path}'"
+
+            file_type = _get_file_type(validated_path)
+            content = read_result.file_data["content"]
+
+            if file_type != "text":
+                mime_type = mimetypes.guess_type("file" + Path(validated_path).suffix)[0] or "application/octet-stream"
+                return ToolMessage(
+                    content_blocks=cast("list[ContentBlock]", [{"type": file_type, "base64": content, "mime_type": mime_type}]),
+                    name="read_file",
+                    tool_call_id=tool_call_id,
+                    additional_kwargs={"read_file_path": validated_path, "read_file_media_type": mime_type},
+                )
+
+            content = format_content_with_line_numbers(content, start_line=offset + 1)
+
+            lines = content.splitlines(keepends=True)
+            if len(lines) > limit:
+                lines = lines[:limit]
+                content = "".join(lines)
+
+            if token_limit and len(content) >= NUM_CHARS_PER_TOKEN * token_limit:
+                truncation_msg = READ_FILE_TRUNCATION_MSG.format(file_path=validated_path)
+                max_content_length = NUM_CHARS_PER_TOKEN * token_limit - len(truncation_msg)
+                content = content[:max_content_length]
+                content += truncation_msg
+
+            return content
+
         def sync_read_file(
             file_path: Annotated[str, "Absolute path to the file to read. Must be absolute, not relative."],
             runtime: ToolRuntime[None, FilesystemState],
@@ -561,41 +603,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             except ValueError as e:
                 return f"Error: {e}"
 
-            ext = Path(validated_path).suffix.lower()
-            if ext in IMAGE_EXTENSIONS:
-                responses = resolved_backend.download_files([validated_path])
-                if responses and responses[0].content is not None:
-                    media_type = IMAGE_MEDIA_TYPES.get(ext, "image/png")
-                    image_b64 = base64.standard_b64encode(responses[0].content).decode("utf-8")
-                    return ToolMessage(
-                        content_blocks=[create_image_block(base64=image_b64, mime_type=media_type)],
-                        name="read_file",
-                        tool_call_id=runtime.tool_call_id,
-                        additional_kwargs={
-                            "read_file_path": validated_path,
-                            "read_file_media_type": media_type,
-                        },
-                    )
-                if responses and responses[0].error:
-                    return f"Error reading image: {responses[0].error}"
-                return "Error reading image: unknown error"
-
-            result = resolved_backend.read(validated_path, offset=offset, limit=limit)
-
-            lines = result.splitlines(keepends=True)
-            if len(lines) > limit:
-                lines = lines[:limit]
-                result = "".join(lines)
-
-            # Check if result exceeds token threshold and truncate if necessary
-            if token_limit and len(result) >= NUM_CHARS_PER_TOKEN * token_limit:
-                # Calculate truncation message length to ensure final result stays under threshold
-                truncation_msg = READ_FILE_TRUNCATION_MSG.format(file_path=validated_path)
-                max_content_length = NUM_CHARS_PER_TOKEN * token_limit - len(truncation_msg)
-                result = result[:max_content_length]
-                result += truncation_msg
-
-            return result
+            read_result = resolved_backend.read(validated_path, offset=offset, limit=limit)
+            return _handle_read_result(read_result, validated_path, runtime.tool_call_id, offset, limit)
 
         async def async_read_file(
             file_path: Annotated[str, "Absolute path to the file to read. Must be absolute, not relative."],
@@ -610,41 +619,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             except ValueError as e:
                 return f"Error: {e}"
 
-            ext = Path(validated_path).suffix.lower()
-            if ext in IMAGE_EXTENSIONS:
-                responses = await resolved_backend.adownload_files([validated_path])
-                if responses and responses[0].content is not None:
-                    media_type = IMAGE_MEDIA_TYPES.get(ext, "image/png")
-                    image_b64 = base64.standard_b64encode(responses[0].content).decode("utf-8")
-                    return ToolMessage(
-                        content_blocks=[create_image_block(base64=image_b64, mime_type=media_type)],
-                        name="read_file",
-                        tool_call_id=runtime.tool_call_id,
-                        additional_kwargs={
-                            "read_file_path": validated_path,
-                            "read_file_media_type": media_type,
-                        },
-                    )
-                if responses and responses[0].error:
-                    return f"Error reading image: {responses[0].error}"
-                return "Error reading image: unknown error"
-
-            result = await resolved_backend.aread(validated_path, offset=offset, limit=limit)
-
-            lines = result.splitlines(keepends=True)
-            if len(lines) > limit:
-                lines = lines[:limit]
-                result = "".join(lines)
-
-            # Check if result exceeds token threshold and truncate if necessary
-            if token_limit and len(result) >= NUM_CHARS_PER_TOKEN * token_limit:
-                # Calculate truncation message length to ensure final result stays under threshold
-                truncation_msg = READ_FILE_TRUNCATION_MSG.format(file_path=validated_path)
-                max_content_length = NUM_CHARS_PER_TOKEN * token_limit - len(truncation_msg)
-                result = result[:max_content_length]
-                result += truncation_msg
-
-            return result
+            read_result = await resolved_backend.aread(validated_path, offset=offset, limit=limit)
+            return _handle_read_result(read_result, validated_path, runtime.tool_call_id, offset, limit)
 
         return StructuredTool.from_function(
             name="read_file",

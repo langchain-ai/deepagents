@@ -1,5 +1,7 @@
 """Async tests for StateBackend."""
 
+from functools import partial
+
 import pytest
 from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
@@ -37,8 +39,8 @@ async def test_awrite_aread_aedit_als_agrep_aglob_state_backend():
     rt.state["files"].update(res.files_update)
 
     # aread
-    content = await be.aread("/notes.txt")
-    assert "hello world" in content
+    read_result = await be.aread("/notes.txt")
+    assert "hello world" in read_result.file_data["content"]
 
     # aedit unique occurrence
     res2 = await be.aedit("/notes.txt", "hello", "hi", replace_all=False)
@@ -46,8 +48,8 @@ async def test_awrite_aread_aedit_als_agrep_aglob_state_backend():
     assert res2.error is None and res2.files_update is not None
     rt.state["files"].update(res2.files_update)
 
-    content2 = await be.aread("/notes.txt")
-    assert "hi world" in content2
+    read_result2 = await be.aread("/notes.txt")
+    assert "hi world" in read_result2.file_data["content"]
 
     # als_info should include the file
     listing = await be.als_info("/")
@@ -172,8 +174,8 @@ async def test_state_backend_aedit_replace_all():
     assert res3.occurrences == 2
     rt.state["files"].update(res3.files_update)
 
-    content = await be.aread("/test.txt")
-    assert "hi world hi universe" in content
+    read_result = await be.aread("/test.txt")
+    assert "hi world hi universe" in read_result.file_data["content"]
 
     # Now test replace_all=False with unique string (should succeed)
     res4 = await be.aedit("/test.txt", "world", "galaxy", replace_all=False)
@@ -181,8 +183,8 @@ async def test_state_backend_aedit_replace_all():
     assert res4.occurrences == 1
     rt.state["files"].update(res4.files_update)
 
-    content2 = await be.aread("/test.txt")
-    assert "hi galaxy hi universe" in content2
+    read_result2 = await be.aread("/test.txt")
+    assert "hi galaxy hi universe" in read_result2.file_data["content"]
 
 
 async def test_state_backend_aread_with_offset_and_limit():
@@ -197,12 +199,13 @@ async def test_state_backend_aread_with_offset_and_limit():
     rt.state["files"].update(res.files_update)
 
     # Read with offset
-    content_offset = await be.aread("/multi.txt", offset=2, limit=3)
-    assert "Line 3" in content_offset
-    assert "Line 4" in content_offset
-    assert "Line 5" in content_offset
-    assert "Line 1" not in content_offset
-    assert "Line 6" not in content_offset
+    result = await be.aread("/multi.txt", offset=2, limit=3)
+    content = result.file_data["content"]
+    assert "Line 3" in content
+    assert "Line 4" in content
+    assert "Line 5" in content
+    assert "Line 1" not in content
+    assert "Line 6" not in content
 
 
 async def test_state_backend_agrep_with_pattern_and_glob():
@@ -258,10 +261,14 @@ async def test_state_backend_aglob_recursive():
     assert "/readme.txt" not in py_files
 
 
-async def test_state_backend_intercept_large_tool_result_async():
+@pytest.mark.parametrize("file_format", ["v1", "v2"])
+async def test_state_backend_intercept_large_tool_result_async(file_format):
     """Test that StateBackend properly handles large tool result interception in async context."""
     rt = make_runtime()
-    middleware = FilesystemMiddleware(backend=StateBackend, tool_token_limit_before_evict=1000)
+    middleware = FilesystemMiddleware(
+        backend=partial(StateBackend, file_format=file_format),
+        tool_token_limit_before_evict=1000,
+    )
 
     large_content = "x" * 5000
     tool_message = ToolMessage(content=large_content, tool_call_id="test_123")
@@ -269,8 +276,8 @@ async def test_state_backend_intercept_large_tool_result_async():
 
     assert isinstance(result, Command)
     assert "/large_tool_results/test_123" in result.update["files"]
-    # v1 format stores content as list[str]
-    assert result.update["files"]["/large_tool_results/test_123"]["content"] == [large_content]
+    expected = [large_content] if file_format == "v1" else large_content
+    assert result.update["files"]["/large_tool_results/test_123"]["content"] == expected
     assert "Tool result too large" in result.update["messages"][0].content
 
 

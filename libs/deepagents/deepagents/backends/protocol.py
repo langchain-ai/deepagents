@@ -138,6 +138,19 @@ class FileData(TypedDict):
 
 
 @dataclass
+class ReadResult:
+    """Result from backend read operations.
+
+    Attributes:
+        error: Error message on failure, None on success.
+        file_data: FileData dict on success, None on failure.
+    """
+
+    error: str | None = None
+    file_data: FileData | None = None
+
+
+@dataclass
 class WriteResult:
     """Result from backend write operations.
 
@@ -236,7 +249,7 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         file_path: str,
         offset: int = 0,
         limit: int = 2000,
-    ) -> str:
+    ) -> ReadResult:
         """Read file content with line numbers.
 
         Args:
@@ -264,7 +277,7 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         file_path: str,
         offset: int = 0,
         limit: int = 2000,
-    ) -> str:
+    ) -> ReadResult:
         """Async version of read."""
         return await asyncio.to_thread(self.read, file_path, offset, limit)
 

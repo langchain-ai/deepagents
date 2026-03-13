@@ -21,9 +21,11 @@ from deepagents.backends.protocol import (
     FileInfo,
     FileUploadResponse,
     GrepMatch,
+    ReadResult,
     SandboxBackendProtocol,
     WriteResult,
 )
+from deepagents.backends.utils import _get_file_type, create_file_data
 
 _GLOB_COMMAND_TEMPLATE = """python3 -c "
 import glob
@@ -149,7 +151,10 @@ print(count)
 __DEEPAGENTS_EOF__\n"""
 
 # Use heredoc to pass read parameters via stdin, matching write/edit pattern.
-# Stdin format: base64-encoded JSON with {"path": str, "offset": int, "limit": int}.
+# Stdin format: base64-encoded JSON with
+#   {"path": str, "offset": int, "limit": int, "file_type": str}.
+# Output: JSON with {"encoding": str, "content": str} on success,
+#   {"error": str} on failure.
 _READ_COMMAND_TEMPLATE = """python3 -c "
 import os
 import sys
@@ -158,7 +163,7 @@ import json
 
 payload_b64 = sys.stdin.read().strip()
 if not payload_b64:
-    print('Error: No payload received for read operation', file=sys.stderr)
+    print(json.dumps({{'error': 'No payload received for read operation'}}))
     sys.exit(1)
 
 try:
@@ -167,35 +172,40 @@ try:
     file_path = data['path']
     offset = int(data['offset'])
     limit = int(data['limit'])
+    file_type = data.get('file_type', 'text')
 except Exception as e:
-    print(f'Error: Failed to decode read payload: {{e}}', file=sys.stderr)
+    print(json.dumps({{'error': f'Failed to decode read payload: {{e}}'}}))
     sys.exit(1)
 
-# Check if file exists
 if not os.path.isfile(file_path):
-    print('Error: File not found')
+    print(json.dumps({{'error': 'File not found'}}))
     sys.exit(1)
 
-# Check if file is empty
 if os.path.getsize(file_path) == 0:
-    print('System reminder: File exists but has empty contents')
+    print(json.dumps({{'encoding': 'utf-8', 'content': 'System reminder: File exists but has empty contents'}}))
     sys.exit(0)
 
-# Read file with offset and limit
-with open(file_path, 'r') as f:
-    lines = f.readlines()
+with open(file_path, 'rb') as f:
+    raw = f.read()
 
-# Apply offset and limit
-start_idx = offset
-end_idx = offset + limit
-selected_lines = lines[start_idx:end_idx]
+try:
+    content = raw.decode('utf-8')
+    encoding = 'utf-8'
+except UnicodeDecodeError:
+    content = base64.b64encode(raw).decode('ascii')
+    encoding = 'base64'
 
-# Format with line numbers (1-indexed, starting from offset + 1)
-for i, line in enumerate(selected_lines):
-    line_num = offset + i + 1
-    # Remove trailing newline for formatting, then add it back
-    line_content = line.rstrip('\\n')
-    print(f'{{line_num:6d}}\\t{{line_content}}')
+if encoding == 'utf-8' and file_type == 'text':
+    lines = content.splitlines()
+    start_idx = offset
+    end_idx = offset + limit
+    if start_idx >= len(lines):
+        print(json.dumps({{'error': f'Line offset {{offset}} exceeds file length ({{len(lines)}} lines)'}}))
+        sys.exit(1)
+    selected = lines[start_idx:end_idx]
+    content = '\\n'.join(selected)
+
+print(json.dumps({{'encoding': encoding, 'content': content}}))
 " <<'__DEEPAGENTS_EOF__'
 {payload_b64}
 __DEEPAGENTS_EOF__\n"""
@@ -270,13 +280,15 @@ except PermissionError:
         file_path: str,
         offset: int = 0,
         limit: int = 2000,
-    ) -> str:
-        """Read file content with line numbers using a single shell command."""
+    ) -> ReadResult:
+        """Read file content using a single shell command."""
+        file_type = _get_file_type(file_path)
         payload = json.dumps(
             {
                 "path": file_path,
                 "offset": int(offset),
                 "limit": int(limit),
+                "file_type": file_type,
             }
         )
         payload_b64 = base64.b64encode(payload.encode("utf-8")).decode("ascii")
@@ -284,12 +296,16 @@ except PermissionError:
         result = self.execute(cmd)
 
         output = result.output.rstrip()
-        exit_code = result.exit_code
 
-        if exit_code != 0 or "Error: File not found" in output:
-            return f"Error: File '{file_path}' not found"
+        try:
+            data = json.loads(output)
+        except json.JSONDecodeError:
+            return ReadResult(error=f"File '{file_path}' not found")
 
-        return output
+        if "error" in data:
+            return ReadResult(error=data["error"])
+
+        return ReadResult(file_data=create_file_data(data["content"], encoding=data.get("encoding", "utf-8")))
 
     def write(
         self,

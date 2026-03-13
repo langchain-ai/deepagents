@@ -23,16 +23,18 @@ from deepagents.backends.protocol import (
     FileInfo,
     FileUploadResponse,
     GrepMatch,
+    ReadResult,
     WriteResult,
 )
 from deepagents.backends.utils import (
+    _get_file_type,
     _glob_search_files,
     _to_legacy_file_data,
     create_file_data,
     file_data_to_string,
-    format_read_response,
     grep_matches_from_files,
     perform_string_replacement,
+    slice_read_response,
     update_file_data,
 )
 
@@ -112,7 +114,7 @@ class StoreBackend(BackendProtocol):
         runtime: "ToolRuntime",
         *,
         namespace: NamespaceFactory | None = None,
-        file_format: FileFormat = "v1",
+        file_format: FileFormat = "v2",
     ) -> None:
         r"""Initialize StoreBackend with runtime.
 
@@ -390,8 +392,8 @@ class StoreBackend(BackendProtocol):
         file_path: str,
         offset: int = 0,
         limit: int = 2000,
-    ) -> str:
-        """Read file content with line numbers.
+    ) -> ReadResult:
+        """Read file content for the requested line range.
 
         Args:
             file_path: Absolute file path.
@@ -399,28 +401,42 @@ class StoreBackend(BackendProtocol):
             limit: Maximum number of lines to read.
 
         Returns:
-            Formatted file content with line numbers, or error message.
+            ReadResult with raw (unformatted) content for the requested
+            window. Line-number formatting is applied by the middleware.
         """
         store = self._get_store()
         namespace = self._get_namespace()
         item: Item | None = store.get(namespace, file_path)
 
         if item is None:
-            return f"Error: File '{file_path}' not found"
+            return ReadResult(error=f"File '{file_path}' not found")
 
         try:
             file_data = self._convert_store_item_to_file_data(item)
         except ValueError as e:
-            return f"Error: {e}"
+            return ReadResult(error=str(e))
 
-        return format_read_response(file_data, offset, limit)
+        if _get_file_type(file_path) != "text":
+            return ReadResult(file_data=file_data)
+
+        sliced = slice_read_response(file_data, offset, limit)
+        if isinstance(sliced, ReadResult):
+            return sliced
+        return ReadResult(
+            file_data=FileData(
+                content=sliced,
+                encoding=file_data.get("encoding", "utf-8"),
+                created_at=file_data.get("created_at", ""),
+                modified_at=file_data.get("modified_at", ""),
+            )
+        )
 
     async def aread(
         self,
         file_path: str,
         offset: int = 0,
         limit: int = 2000,
-    ) -> str:
+    ) -> ReadResult:
         """Async version of read using native store async methods.
 
         This avoids sync calls in async context by using store.aget directly.
@@ -430,14 +446,27 @@ class StoreBackend(BackendProtocol):
         item: Item | None = await store.aget(namespace, file_path)
 
         if item is None:
-            return f"Error: File '{file_path}' not found"
+            return ReadResult(error=f"File '{file_path}' not found")
 
         try:
             file_data = self._convert_store_item_to_file_data(item)
         except ValueError as e:
-            return f"Error: {e}"
+            return ReadResult(error=str(e))
 
-        return format_read_response(file_data, offset, limit)
+        if _get_file_type(file_path) != "text":
+            return ReadResult(file_data=file_data)
+
+        sliced = slice_read_response(file_data, offset, limit)
+        if isinstance(sliced, ReadResult):
+            return sliced
+        return ReadResult(
+            file_data=FileData(
+                content=sliced,
+                encoding=file_data.get("encoding", "utf-8"),
+                created_at=file_data.get("created_at", ""),
+                modified_at=file_data.get("modified_at", ""),
+            )
+        )
 
     def write(
         self,

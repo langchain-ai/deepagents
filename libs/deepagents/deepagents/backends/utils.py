@@ -15,9 +15,52 @@ from typing import Any, Literal, overload
 
 import wcmatch.glob as wcglob
 
-from deepagents.backends.protocol import FileData, FileInfo as _FileInfo, GrepMatch as _GrepMatch
+from deepagents.backends.protocol import FileData, FileInfo as _FileInfo, GrepMatch as _GrepMatch, ReadResult
 
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
+
+FileType = Literal["text", "image", "audio", "video", "file"]
+"""Classification of a file by extension."""
+
+_EXTENSION_TO_FILE_TYPE: dict[str, FileType] = {
+    # Images (https://ai.google.dev/gemini-api/docs/image-understanding)
+    ".png": "image",
+    ".jpeg": "image",
+    ".jpg": "image",
+    ".webp": "image",
+    ".heic": "image",
+    ".heif": "image",
+    # Video (https://ai.google.dev/gemini-api/docs/video-understanding)
+    ".mp4": "video",
+    ".mpeg": "video",
+    ".mov": "video",
+    ".avi": "video",
+    ".flv": "video",
+    ".mpg": "video",
+    ".webm": "video",
+    ".wmv": "video",
+    ".3gpp": "video",
+    # Audio (https://ai.google.dev/gemini-api/docs/audio)
+    ".wav": "audio",
+    ".mp3": "audio",
+    ".aiff": "audio",
+    ".aac": "audio",
+    ".ogg": "audio",
+    ".flac": "audio",
+    # Files
+    ".pdf": "file",
+    ".ppt": "file",
+    ".pptx": "file",
+}
+"""Extension-to-type mapping for non-text files.
+
+Derived from Google's multimodal API supported formats:
+
+- Images: https://ai.google.dev/gemini-api/docs/image-understanding
+- Video: https://ai.google.dev/gemini-api/docs/video-understanding
+- Audio: https://ai.google.dev/gemini-api/docs/audio
+"""
+
 MAX_LINE_LENGTH = 5000
 LINE_NUMBER_WIDTH = 6
 TOOL_RESULT_TOKEN_LIMIT = 20000  # Same threshold as eviction
@@ -120,6 +163,19 @@ def check_empty_content(content: str) -> str | None:
     return None
 
 
+def _get_file_type(path: str) -> FileType:
+    """Classify a file by its extension.
+
+    Args:
+        path: File path to classify.
+
+    Returns:
+        One of `"text"`, `"image"`, `"audio"`, `"video"`, or `"file"`.
+        Defaults to `"text"` for unrecognized extensions.
+    """
+    return _EXTENSION_TO_FILE_TYPE.get(PurePosixPath(path).suffix.lower(), "text")
+
+
 def _to_legacy_file_data(file_data: FileData) -> dict[str, Any]:
     r"""Convert a FileData dict to the legacy (v1) storage format.
 
@@ -200,12 +256,51 @@ def update_file_data(file_data: FileData, content: str) -> FileData:
     }
 
 
+def slice_read_response(
+    file_data: FileData,
+    offset: int,
+    limit: int,
+) -> str | ReadResult:
+    """Slice file data to the requested line range without formatting.
+
+    Returns raw text for the requested window. Line-number formatting
+    is applied downstream by the middleware layer.
+
+    Args:
+        file_data: FileData dict.
+        offset: Line offset (0-indexed).
+        limit: Maximum number of lines.
+
+    Returns:
+        Raw sliced content string on success, or `ReadResult` with
+        `error` set when the offset exceeds the file length.
+    """
+    content = file_data_to_string(file_data)
+    empty_msg = check_empty_content(content)
+    if empty_msg:
+        return empty_msg
+
+    lines = content.splitlines()
+    start_idx = offset
+    end_idx = min(start_idx + limit, len(lines))
+
+    if start_idx >= len(lines):
+        return ReadResult(error=f"Line offset {offset} exceeds file length ({len(lines)} lines)")
+
+    selected_lines = lines[start_idx:end_idx]
+    return "\n".join(selected_lines)
+
+
 def format_read_response(
     file_data: FileData,
     offset: int,
     limit: int,
 ) -> str:
     """Format file data for read response with line numbers.
+
+    .. deprecated::
+        Use `slice_read_response` and apply
+        `format_content_with_line_numbers` separately.
 
     Args:
         file_data: FileData dict

@@ -14,6 +14,14 @@ from typing import Optional
 
 from deepagents import create_deep_agent
 
+from deepagents_harbor.infra import (
+    FailureCategory,
+    classify_failure,
+    extract_exit_codes,
+    format_ci,
+    min_detectable_effect,
+)
+
 
 def scan_dataset_for_solutions(dataset_path: Path) -> dict[str, Path]:
     """Scan a dataset directory and create a mapping from task names to solution paths.
@@ -103,6 +111,7 @@ class Trial:
     solution_path: Optional[Path] = None
     trial_dir: Optional[Path] = None
     tool_usage: Optional[dict[str, int]] = None
+    failure_category: FailureCategory | None = None
 
 
 async def parse_reward(reward_path: Path) -> bool:
@@ -306,8 +315,36 @@ async def analyze_trial(
 
     # Count tool usage if trajectory exists
     tool_usage = None
+    trajectory_text = None
     if traj_exists:
         tool_usage = count_tool_usage(trajectory_path)
+        trajectory_text = trajectory_path.read_text()
+
+    # Classify failure category for non-completed trials
+    failure_category = None
+    if status == TrialStatus.FAILED:
+        exception_text = None
+        if exception_exists:
+            try:
+                exception_text = exception_path.read_text()
+            except UnicodeDecodeError:
+                try:
+                    exception_text = exception_path.read_bytes().decode(
+                        "utf-8", errors="replace"
+                    )
+                except OSError:
+                    print(f"  Warning: Could not read {exception_path}")
+            except OSError as exc:
+                print(f"  Warning: Could not read {exception_path}: {exc}")
+
+        # Extract non-zero exit codes from trajectory observations
+        exit_codes = extract_exit_codes(trajectory_text) if trajectory_text else []
+
+        failure_category = classify_failure(
+            exception_text=exception_text,
+            exit_codes=exit_codes,
+            trajectory_text=trajectory_text,
+        )
 
     trial_id = trial_dir.name
     return Trial(
@@ -320,6 +357,7 @@ async def analyze_trial(
         solution_path=solution_path if solution_exists else None,
         trial_dir=trial_dir,
         tool_usage=tool_usage,
+        failure_category=failure_category,
     )
 
 
@@ -367,14 +405,52 @@ def print_summary(trials: list[Trial]) -> None:
     if trials:
         complete_trials = completed + failed
         if complete_trials > 0:
-            success_rate = (completed / complete_trials) * 100
-            print(f"Success rate (excluding pending): {success_rate:.1f}%")
+            print(f"\nSuccess rate (excluding pending): {format_ci(completed, complete_trials)}")
 
-        # Also show success rate including pending trials
         total_trials = len(trials)
         if total_trials > 0:
-            overall_success_rate = (completed / total_trials) * 100
-            print(f"Success rate (of all trials): {overall_success_rate:.1f}%")
+            print(f"Success rate (of all trials):     {format_ci(completed, total_trials)}")
+
+        # MDE for comparing two runs at this sample size
+        if complete_trials > 0:
+            mde = min_detectable_effect(complete_trials)
+            print(f"\nMin detectable effect (vs another run): {mde * 100:.1f}pp")
+
+    # Failure classification breakdown
+    failed_trials = [t for t in trials if t.status == TrialStatus.FAILED]
+    if failed_trials:
+        print(f"\n{'=' * 80}")
+        print("FAILURE CLASSIFICATION")
+        print(f"{'=' * 80}")
+
+        category_counts: dict[str, int] = {}
+        for trial in failed_trials:
+            cat = trial.failure_category.value if trial.failure_category else "unknown"
+            category_counts[cat] = category_counts.get(cat, 0) + 1
+
+        infra_count = sum(
+            1
+            for t in failed_trials
+            if t.failure_category and t.failure_category.is_infrastructure
+        )
+        capability_count = category_counts.get("capability", 0)
+        unknown_count = category_counts.get("unknown", 0)
+
+        print(f"Infrastructure failures: {infra_count}")
+        for cat, count in sorted(category_counts.items()):
+            if cat.startswith("infra_"):
+                print(f"  {cat}: {count}")
+        print(f"Capability failures: {capability_count}")
+        print(f"Unknown: {unknown_count}")
+
+        # Success rate excluding infrastructure failures
+        if infra_count > 0:
+            non_infra_total = complete_trials - infra_count
+            if non_infra_total > 0:
+                print(
+                    f"\nSuccess rate (excluding infra failures): "
+                    f"{format_ci(completed, non_infra_total)}"
+                )
 
     # Compute overall tool usage across all trials
     overall_tool_usage: dict[str, int] = {}
@@ -408,7 +484,8 @@ def print_summary(trials: list[Trial]) -> None:
         if trial.status == TrialStatus.COMPLETED:
             status = "✓ COMPLETED"
         elif trial.status == TrialStatus.FAILED:
-            status = "✗ FAILED"
+            cat_label = f" [{trial.failure_category.value}]" if trial.failure_category else ""
+            status = f"✗ FAILED{cat_label}"
         else:
             status = "⋯ PENDING"
 

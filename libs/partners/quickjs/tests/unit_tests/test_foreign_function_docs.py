@@ -145,8 +145,7 @@ def test_render_foreign_function_section() -> None:
         actual
         == """Available foreign functions:
 
-These are JavaScript-callable foreign functions exposed inside QuickJS.
-The TypeScript-style signatures below document argument and return shapes.
+These are JavaScript-callable foreign functions exposed inside QuickJS. The TypeScript-style signatures below document argument and return shapes.
 
 ```ts
 /**

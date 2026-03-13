@@ -8,13 +8,14 @@ and child agents.
 import warnings
 from pathlib import Path
 from typing import Any, TypedDict
+from unittest.mock import Mock
 
 import pytest
 from langchain.agents import create_agent
 from langchain.agents.middleware import TodoListMiddleware
 from langchain.agents.structured_output import ToolStrategy
 from langchain.tools import ToolRuntime
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig, RunnableLambda
 from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
@@ -1645,3 +1646,165 @@ class TestSubAgentMiddlewareValidation:
         assert len(w) == 1
         assert issubclass(w[0].category, DeprecationWarning)
         assert "deprecated" in str(w[0].message).lower()
+
+
+class TestMessageExtractionFromSubagents:
+    """Tests for robust message extraction from subagents (issue #979)."""
+
+    @staticmethod
+    def _mock_message(message_type: str, text_content: str) -> Mock:
+        mock = Mock()
+        mock.type = message_type
+        mock.text = text_content
+        return mock
+
+    def test_extracts_from_ai_message_when_last_is_tool_message(self) -> None:
+        """When last message is a ToolMessage, should walk back to find AIMessage."""
+        parent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {"description": "Do work", "subagent_type": "worker"},
+                                "id": "call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Work complete."),
+                ]
+            )
+        )
+
+        def subagent_ending_with_tool_message(state: dict[str, Any]) -> dict[str, Any]:
+            """Simulate subagent whose last step is a tool call (e.g. todo)."""
+            ai_msg = AIMessage(content="Here are the results of my research.")
+            tool_call_msg = AIMessage(
+                content="",
+                tool_calls=[{"name": "todo", "args": {"items": ["task1"]}, "id": "todo_1", "type": "tool_call"}],
+            )
+            tool_result = ToolMessage(content="Todo updated.", tool_call_id="todo_1")
+            return {"messages": state["messages"] + [ai_msg, tool_call_msg, tool_result]}
+
+        parent_agent = create_deep_agent(
+            model=parent_chat_model,
+            checkpointer=InMemorySaver(),
+            subagents=[
+                CompiledSubAgent(
+                    name="worker",
+                    description="Worker subagent.",
+                    runnable=RunnableLambda(subagent_ending_with_tool_message),
+                )
+            ],
+        )
+
+        result = parent_agent.invoke(
+            {"messages": [HumanMessage(content="Do work")]},
+            config={"configurable": {"thread_id": "test_tool_last"}},
+        )
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert tool_messages, "Should have ToolMessage from subagent"
+        # Should have extracted content from either the ToolMessage or walking back to AIMessage
+        content = tool_messages[0].content
+        assert content, "Content should not be empty"
+
+    def test_toolmessage_fallback_for_toolstrategy(self) -> None:
+        """When subagent ends with ToolMessage and no AIMessage has content, use ToolMessage."""
+        parent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {"description": "Get data", "subagent_type": "fetcher"},
+                                "id": "call_2",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Data retrieved."),
+                ]
+            )
+        )
+
+        def toolstrategy_subagent(state: dict[str, Any]) -> dict[str, Any]:
+            ai_with_toolcall = AIMessage(
+                content="",
+                tool_calls=[{"name": "Schema", "args": {"value": 42}, "id": "s1", "type": "tool_call"}],
+            )
+            tool_result = ToolMessage(content="Structured response: value=42", tool_call_id="s1")
+            return {"messages": state["messages"] + [ai_with_toolcall, tool_result]}
+
+        parent_agent = create_deep_agent(
+            model=parent_chat_model,
+            checkpointer=InMemorySaver(),
+            subagents=[
+                CompiledSubAgent(
+                    name="fetcher",
+                    description="Fetcher subagent.",
+                    runnable=RunnableLambda(toolstrategy_subagent),
+                )
+            ],
+        )
+
+        result = parent_agent.invoke(
+            {"messages": [HumanMessage(content="Get data")]},
+            config={"configurable": {"thread_id": "test_toolstrategy"}},
+        )
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool" and msg.tool_call_id == "call_2"]
+        assert tool_messages, "Should have ToolMessage from subagent"
+        content = tool_messages[0].content
+        assert "Structured response" in content
+
+    def test_empty_content_returns_error_gracefully(self) -> None:
+        """When subagent returns only empty messages, should return error string, not crash."""
+        parent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {"description": "Process", "subagent_type": "proc"},
+                                "id": "call_3",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="I received an error from the subagent."),
+                ]
+            )
+        )
+
+        def empty_subagent(state: dict[str, Any]) -> dict[str, Any]:
+            return {"messages": state["messages"] + [AIMessage(content="")]}
+
+        parent_agent = create_deep_agent(
+            model=parent_chat_model,
+            checkpointer=InMemorySaver(),
+            subagents=[
+                CompiledSubAgent(
+                    name="proc",
+                    description="Processor.",
+                    runnable=RunnableLambda(empty_subagent),
+                )
+            ],
+        )
+
+        result = parent_agent.invoke(
+            {"messages": [HumanMessage(content="Process")]},
+            config={"configurable": {"thread_id": "test_empty"}},
+        )
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert tool_messages, "Should have ToolMessage even after error"
+        assert "Error:" in tool_messages[0].content
+        assert "No content found" in tool_messages[0].content

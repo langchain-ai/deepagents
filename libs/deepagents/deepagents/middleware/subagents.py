@@ -16,6 +16,7 @@ from langchain_core.tools import StructuredTool
 from langgraph.types import Command
 
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
+from deepagents.exceptions import EmptyContentError
 from deepagents.middleware._utils import append_to_system_message
 
 
@@ -371,6 +372,23 @@ def _get_subagents_legacy(
     return specs
 
 
+def _extract_message_content(messages: list) -> str:
+    """Extract text content from subagent messages via backward iteration.
+
+    Tier 1: Last AIMessage with text content
+    Tier 2: Last ToolMessage with text content
+    Tier 3: Raise EmptyContentError
+    """
+    for msg in reversed(messages):
+        msg_type = getattr(msg, "type", None)
+        if msg_type in ("ai", "tool"):
+            text = getattr(msg, "text", None)
+            if text and isinstance(text, str) and (stripped := text.strip()):
+                return stripped
+
+    raise EmptyContentError
+
+
 def _build_task_tool(  # noqa: C901
     subagents: list[_SubagentSpec],
     task_description: str | None = None,
@@ -410,8 +428,7 @@ def _build_task_tool(  # noqa: C901
             raise ValueError(error_msg)
 
         state_update = {k: v for k, v in result.items() if k not in _EXCLUDED_STATE_KEYS}
-        # Strip trailing whitespace to prevent API errors with Anthropic
-        message_text = result["messages"][-1].text.rstrip() if result["messages"][-1].text else ""
+        message_text = _extract_message_content(result["messages"])
         return Command(
             update={
                 **state_update,
@@ -443,7 +460,10 @@ def _build_task_tool(  # noqa: C901
             raise ValueError(value_error_msg)
         subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
         result = subagent.invoke(subagent_state)
-        return _return_command_with_state_update(result, runtime.tool_call_id)
+        try:
+            return _return_command_with_state_update(result, runtime.tool_call_id)
+        except EmptyContentError as e:
+            return f"Error: {e}"
 
     async def atask(
         description: Annotated[
@@ -461,7 +481,10 @@ def _build_task_tool(  # noqa: C901
             raise ValueError(value_error_msg)
         subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
         result = await subagent.ainvoke(subagent_state)
-        return _return_command_with_state_update(result, runtime.tool_call_id)
+        try:
+            return _return_command_with_state_update(result, runtime.tool_call_id)
+        except EmptyContentError as e:
+            return f"Error: {e}"
 
     return StructuredTool.from_function(
         name="task",

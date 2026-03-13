@@ -404,7 +404,7 @@ wheels = [
 
 [[package]]
 name = "deepagents"
-version = "0.4.10"
+version = "0.4.11"
 source = { directory = "../../deepagents" }
 dependencies = [
     { name = "langchain" },
@@ -426,6 +426,7 @@ requires-dist = [
 [package.metadata.requires-dev]
 evals = [
     { name = "datasets", specifier = ">=3.0.0" },
+    { name = "langchain-baseten" },
     { name = "langchain-deepseek" },
     { name = "langchain-fireworks" },
     { name = "langchain-groq" },

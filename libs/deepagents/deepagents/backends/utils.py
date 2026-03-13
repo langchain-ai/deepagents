@@ -544,7 +544,8 @@ def _glob_search_files(
     # - Patterns without path separators (e.g., "*.py") match only in the current
     #   directory (non-recursive) relative to `path`.
     # - Use "**" explicitly for recursive matching.
-    effective_pattern = pattern
+    # Strip leading "/" from pattern since matching is done against relative paths.
+    effective_pattern = pattern.lstrip("/")
 
     matches = []
     for file_path, file_data in filtered.items():

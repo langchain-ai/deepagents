@@ -228,7 +228,9 @@ def _render_function_stub(
         parameter_parts = [
             (
                 f"{param.name}: "
-                f"{_format_annotation(resolved_hints.get(param.name, param.annotation))}"
+                f"{
+                    _format_annotation(resolved_hints.get(param.name, param.annotation))
+                }"
             )
             if param.annotation is not inspect.Signature.empty
             or param.name in resolved_hints

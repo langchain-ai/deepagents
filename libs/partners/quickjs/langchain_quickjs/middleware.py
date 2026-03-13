@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Annotated, Any
 
 import quickjs
@@ -26,7 +27,10 @@ from langchain_quickjs._foreign_function_docs import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable
+
+
+PtcImplementation = Callable[..., Any] | BaseTool
 
 
 REPL_TOOL_DESCRIPTION = """Evaluates code using a QuickJS-backed JavaScript REPL.
@@ -64,9 +68,7 @@ class QuickJSMiddleware(AgentMiddleware[AgentState[Any], ContextT, ResponseT]):
     def __init__(
         self,
         *,
-        external_functions: list[str] | None = None,
-        external_function_implementations: dict[str, Callable[..., Any] | BaseTool]
-        | None = None,
+        ptc: list[PtcImplementation] | None = None,
         auto_include: bool = False,
         timeout: int | None = None,
         memory_limit: int | None = None,
@@ -74,28 +76,35 @@ class QuickJSMiddleware(AgentMiddleware[AgentState[Any], ContextT, ResponseT]):
         """Initialize the middleware.
 
         Args:
-            external_functions: Names of external functions available to the REPL.
-            external_function_implementations: Implementations for allowed external
-                functions. Values may be plain callables or LangChain tools.
+            ptc: Functions or LangChain tools to expose inside the REPL.
             auto_include: Whether to automatically include function signatures and
                 docstrings for foreign functions in the system prompt.
             timeout: Optional timeout in seconds for each evaluation.
             memory_limit: Optional memory limit in bytes for each evaluation.
         """
-        self._external_functions = external_functions
-        self._external_function_implementations = external_function_implementations
+        self._ptc = ptc or []
         self._auto_include = auto_include
         self._timeout = timeout
         self._memory_limit = memory_limit
         self.tools = [self._create_repl_tool()]
 
+    def _ptc_implementations(self) -> dict[str, PtcImplementation]:
+        """Return configured PTC implementations keyed by exported function name."""
+        implementations: dict[str, PtcImplementation] = {}
+        for implementation in self._ptc:
+            if isinstance(implementation, BaseTool):
+                implementations[implementation.name] = implementation
+                continue
+            name = getattr(implementation, "__name__", None)
+            if isinstance(name, str):
+                implementations[name] = implementation
+        return implementations
+
     def _format_foreign_function_docs(self, name: str) -> str | None:
         """Render a compact signature and docstring block for a foreign function."""
         if not self._auto_include:
             return None
-        if not self._external_function_implementations:
-            return None
-        implementation = self._external_function_implementations.get(name)
+        implementation = self._ptc_implementations().get(name)
         if implementation is None:
             return None
         return format_foreign_function_docs(name, implementation)
@@ -109,23 +118,14 @@ class QuickJSMiddleware(AgentMiddleware[AgentState[Any], ContextT, ResponseT]):
 
     def _format_external_functions_section(self) -> str:
         """Build the optional prompt section describing foreign functions."""
-        external_functions = self._external_functions or []
-        if not external_functions:
+        implementations = self._ptc_implementations()
+        if not implementations:
             return ""
 
-        if not self._auto_include or not self._external_function_implementations:
-            formatted_functions = "\n".join(f"- {name}" for name in external_functions)
+        if not self._auto_include:
+            formatted_functions = "\n".join(f"- {name}" for name in implementations)
             return f"\n\nAvailable foreign functions:\n{formatted_functions}"
 
-        implementations = {
-            name: implementation
-            for name in external_functions
-            if (implementation := self._external_function_implementations.get(name))
-            is not None
-        }
-        if not implementations:
-            formatted_functions = "\n".join(f"- {name}" for name in external_functions)
-            return f"\n\nAvailable foreign functions:\n{formatted_functions}"
         return f"\n\n{render_foreign_function_section(implementations)}"
 
     def modify_request(self, request: ModelRequest[ContextT]) -> ModelRequest[ContextT]:
@@ -194,12 +194,13 @@ class QuickJSMiddleware(AgentMiddleware[AgentState[Any], ContextT, ResponseT]):
             printed_lines.append(" ".join(map(str, args)))
 
         context.add_callable("print", _print)
+        implementations = self._ptc_implementations()
         for name, implementation in build_external_functions(
-            self._external_function_implementations,
+            implementations,
             payload_builder=self._build_tool_payload,
         ).items():
             context.add_callable(name, implementation)
-        inject_external_function_shims(context, self._external_functions)
+        inject_external_function_shims(context, list(implementations))
         return context
 
     def _evaluate(self, code: str, *, timeout: int | None) -> str:

@@ -83,12 +83,7 @@ async def test_deepagent_with_quickjs_json_stringify_foreign_function() -> None:
 
     agent = create_deep_agent(
         model=model,
-        middleware=[
-            QuickJSMiddleware(
-                external_functions=["list_user_ids"],
-                external_function_implementations={"list_user_ids": list_user_ids},
-            )
-        ],
+        middleware=[QuickJSMiddleware(ptc=[list_user_ids])],
     )
 
     result = await agent.ainvoke(

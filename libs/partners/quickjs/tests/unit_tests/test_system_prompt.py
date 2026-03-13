@@ -68,20 +68,13 @@ def _system_message_as_text(message: SystemMessage) -> str:
 
 def test_system_prompt_includes_rendered_foreign_function_docs() -> None:
     middleware = QuickJSMiddleware(
-        external_functions=[
-            "find_users_by_name",
-            "get_user_location",
-            "get_city_for_location",
-            "normalize_name",
-            "fetch_weather",
+        ptc=[
+            find_users_by_name,
+            get_user_location,
+            get_city_for_location,
+            normalize_name,
+            fetch_weather,
         ],
-        external_function_implementations={
-            "find_users_by_name": find_users_by_name,
-            "get_user_location": get_user_location,
-            "get_city_for_location": get_city_for_location,
-            "normalize_name": normalize_name,
-            "fetch_weather": fetch_weather,
-        },
         auto_include=True,
     )
 

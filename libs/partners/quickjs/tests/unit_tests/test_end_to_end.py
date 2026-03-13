@@ -49,7 +49,7 @@ def test_deepagent_with_quickjs_interpreter() -> None:
     )
 
 
-@tool
+@tool("foo")
 def foo_tool(value: str) -> str:
     """Return a formatted value for testing QuickJS tool interop."""
     return f"foo returned {value}!"
@@ -78,12 +78,7 @@ def test_deepagent_with_quickjs_langchain_tool_single_arg_foreign_function() -> 
 
     agent = create_deep_agent(
         model=model,
-        middleware=[
-            QuickJSMiddleware(
-                external_functions=["foo"],
-                external_function_implementations={"foo": foo_tool},
-            )
-        ],
+        middleware=[QuickJSMiddleware(ptc=[foo_tool])],
     )
 
     result = agent.invoke(
@@ -96,13 +91,13 @@ def test_deepagent_with_quickjs_langchain_tool_single_arg_foreign_function() -> 
     assert result["messages"][-1].content == "foo returned bar!"
 
 
-@tool
+@tool("join_values")
 def join_tool(left: str, right: str) -> str:
     """Join two values for testing positional argument payload mapping."""
     return f"{left}:{right}"
 
 
-@tool
+@tool("numbers")
 def list_numbers(limit: int) -> list[int]:
     """Return a list of integers from zero up to the provided limit."""
     return list(range(limit))
@@ -143,12 +138,7 @@ def test_deepagent_with_quickjs_langchain_tool_multi_arg_foreign_function() -> N
 
     agent = create_deep_agent(
         model=model,
-        middleware=[
-            QuickJSMiddleware(
-                external_functions=["join_values"],
-                external_function_implementations={"join_values": join_tool},
-            )
-        ],
+        middleware=[QuickJSMiddleware(ptc=[join_tool])],
     )
 
     result = agent.invoke(
@@ -186,12 +176,7 @@ def test_deepagent_with_quickjs_langchain_tool_list_of_ints_foreign_function() -
 
     agent = create_deep_agent(
         model=model,
-        middleware=[
-            QuickJSMiddleware(
-                external_functions=["numbers"],
-                external_function_implementations={"numbers": list_numbers},
-            )
-        ],
+        middleware=[QuickJSMiddleware(ptc=[list_numbers])],
     )
 
     result = agent.invoke(
@@ -236,12 +221,7 @@ def test_deepagent_with_quickjs_langchain_tool_json_stringify_foreign_function()
 
     agent = create_deep_agent(
         model=model,
-        middleware=[
-            QuickJSMiddleware(
-                external_functions=["list_user_ids"],
-                external_function_implementations={"list_user_ids": list_user_ids},
-            )
-        ],
+        middleware=[QuickJSMiddleware(ptc=[list_user_ids])],
     )
 
     result = agent.invoke(
@@ -290,14 +270,7 @@ def test_deepagent_with_quickjs_langchain_tool_dict_foreign_function() -> None:
 
     agent = create_deep_agent(
         model=model,
-        middleware=[
-            QuickJSMiddleware(
-                external_functions=["get_user_profile"],
-                external_function_implementations={
-                    "get_user_profile": get_user_profile
-                },
-            )
-        ],
+        middleware=[QuickJSMiddleware(ptc=[get_user_profile])],
     )
 
     result = agent.invoke(

@@ -3,8 +3,7 @@
 Runs the MemoryAgentBench benchmark (ICLR 2026) using the deepagents runner.
 Data is loaded from the `ai-hyz/MemoryAgentBench` HuggingFace dataset.
 Each test feeds context chunks to the agent, then poses questions and evaluates
-responses against ground-truth answers using normalized exact-match, F1, and
-substring-match metrics.
+responses against ground-truth answers using normalized substring matching.
 
 Reference: https://github.com/HUST-AI-HYZ/MemoryAgentBench
 
@@ -38,8 +37,8 @@ from tests.evals.memory_agent_bench.data_utils import (
     chunk_text,
     load_benchmark_data,
 )
-from tests.evals.memory_agent_bench.eval_utils import calculate_metrics
-from tests.evals.utils import AgentTrajectory, run_agent
+from tests.evals.memory_agent_bench.eval_utils import substring_match_any
+from tests.evals.utils import run_agent
 
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
@@ -93,7 +92,6 @@ class _SampleOutput:
     """Raw output from running a benchmark sample through the agent."""
 
     predictions: list[_QAPrediction] = field(default_factory=list)
-    trajectories: list[AgentTrajectory] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -117,18 +115,27 @@ def _run_benchmark_sample(
         model: The chat model to use.
 
     Returns:
-        Raw predictions and agent trajectories.
+        Raw predictions for each question.
     """
     checkpointer = MemorySaver()
     agent = create_deep_agent(model=model, checkpointer=checkpointer)
     thread_id = str(uuid.uuid4())
 
     chunks = chunk_text(sample.context, chunk_size=config.chunk_size)
+
+    questions = sample.questions
+    answers = sample.answers
+    qa_pair_ids = sample.qa_pair_ids
+    if config.max_questions is not None:
+        questions = questions[: config.max_questions]
+        answers = answers[: config.max_questions]
+        qa_pair_ids = qa_pair_ids[: config.max_questions]
+
     logger.info(
         "Sample source=%s: %d chunks, %d questions",
         sample.source,
         len(chunks),
-        len(sample.questions),
+        len(questions),
     )
 
     for chunk in chunks:
@@ -140,18 +147,16 @@ def _run_benchmark_sample(
         )
 
     predictions: list[_QAPrediction] = []
-    trajectories: list[AgentTrajectory] = []
-    for idx, (question, answer) in enumerate(zip(sample.questions, sample.answers, strict=True)):
+    for idx, (question, answer) in enumerate(zip(questions, answers, strict=True)):
         trajectory = run_agent(
             agent,
             model=model,
             thread_id=thread_id,
             query=QUERY_PREFIX + question,
         )
-        trajectories.append(trajectory)
 
         ground_truths = answer if isinstance(answer, list) else [answer]
-        qa_pair_id = sample.qa_pair_ids[idx] if idx < len(sample.qa_pair_ids) else None
+        qa_pair_id = qa_pair_ids[idx] if idx < len(qa_pair_ids) else None
         predictions.append(
             _QAPrediction(
                 question=question,
@@ -161,7 +166,7 @@ def _run_benchmark_sample(
             )
         )
 
-    return _SampleOutput(predictions=predictions, trajectories=trajectories)
+    return _SampleOutput(predictions=predictions)
 
 
 # ---------------------------------------------------------------------------
@@ -169,29 +174,16 @@ def _run_benchmark_sample(
 # ---------------------------------------------------------------------------
 
 
-def _score_predictions(output: _SampleOutput) -> list[dict[str, object]]:
-    """Compute QA metrics for each prediction in a sample output.
+def _score_predictions(output: _SampleOutput) -> list[bool]:
+    """Compute substring match for each prediction in a sample output.
 
     Args:
         output: Raw output from `_run_benchmark_sample`.
 
     Returns:
-        List of dicts, one per question, each containing computed metrics
-        and the raw prediction/answer pair.
+        List of booleans, one per question, indicating substring match.
     """
-    results: list[dict[str, object]] = []
-    for pred in output.predictions:
-        metrics = calculate_metrics(pred.prediction, pred.ground_truths)
-        results.append(
-            {
-                **metrics,
-                "prediction": pred.prediction,
-                "answer": pred.ground_truths,
-                "question": pred.question,
-                "qa_pair_id": pred.qa_pair_id,
-            }
-        )
-    return results
+    return [substring_match_any(pred.prediction, pred.ground_truths) for pred in output.predictions]
 
 
 # ---------------------------------------------------------------------------
@@ -199,46 +191,20 @@ def _score_predictions(output: _SampleOutput) -> list[dict[str, object]]:
 # ---------------------------------------------------------------------------
 
 
-def _log_sample_feedback(
-    results: list[dict[str, object]],
-    trajectories: list[AgentTrajectory],
-    *,
-    metric: str = "f1",
-) -> None:
-    """Log per-question and aggregate metrics to LangSmith.
+def _log_sample_feedback(results: list[bool]) -> None:
+    """Log aggregate question-level metrics to LangSmith.
 
     Does **not** fail the test — evals are tracking-only so regressions
     surface in dashboards rather than blocking CI.
 
     Args:
-        results: Per-question result dicts from `_score_predictions`.
-        trajectories: Agent trajectories from the query phase.
-        metric: Which metric to aggregate.
+        results: Per-question substring match booleans from `_score_predictions`.
     """
-    for idx, result in enumerate(results):
-        _log_feedback(key=f"q{idx}_exact_match", value=result["exact_match"])
-        _log_feedback(key=f"q{idx}_f1", value=result["f1"])
-        _log_feedback(key=f"q{idx}_substring_match", value=result["substring_exact_match"])
-
-    total_steps = sum(len(traj.steps) for traj in trajectories)
-    total_tool_calls = sum(len(s.action.tool_calls) for traj in trajectories for s in traj.steps)
-    _log_feedback(key="agent_steps", value=total_steps)
-    _log_feedback(key="tool_call_requests", value=total_tool_calls)
-
-    if not results:
-        _log_feedback(key="correctness", value=0)
-        return
-
-    scores = [float(r[metric]) for r in results]
-    avg_score = sum(scores) / len(scores)
-    passed = sum(1 for s in scores if s > 0)
-    ratio = passed / len(scores)
-
-    _log_feedback(key=f"avg_{metric}", value=avg_score)
-    _log_feedback(key="num_questions", value=len(results))
+    passed = sum(results)
+    total = len(results)
     _log_feedback(key="questions_passed", value=passed)
-    _log_feedback(key="questions_total", value=len(scores))
-    _log_feedback(key="correctness", value=ratio)
+    _log_feedback(key="questions_total", value=total)
+    _log_feedback(key="correctness", value=1.0 if total > 0 and passed == total else 0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -277,7 +243,7 @@ def test_conflict_resolution(model: BaseChatModel, config: DatasetConfig) -> Non
     for sample in samples:
         output = _run_benchmark_sample(sample, config, model)
         results = _score_predictions(output)
-        _log_sample_feedback(results, output.trajectories)
+        _log_sample_feedback(results)
 
 
 # ---------------------------------------------------------------------------
@@ -305,7 +271,7 @@ def test_time_learning(model: BaseChatModel, config: DatasetConfig) -> None:
     for sample in samples:
         output = _run_benchmark_sample(sample, config, model)
         results = _score_predictions(output)
-        _log_sample_feedback(results, output.trajectories)
+        _log_sample_feedback(results)
 
 
 # ---------------------------------------------------------------------------
@@ -333,4 +299,4 @@ def test_memory_agent_bench_ci(model: BaseChatModel, config: DatasetConfig) -> N
     for sample in samples:
         output = _run_benchmark_sample(sample, config, model)
         results = _score_predictions(output)
-        _log_sample_feedback(results, output.trajectories)
+        _log_sample_feedback(results)

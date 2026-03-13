@@ -1,3 +1,12 @@
+"""Render compact prompt-facing documentation for QuickJS foreign functions.
+
+QuickJS foreign functions are Python callables or LangChain tools exposed inside
+JavaScript. The model needs a concise description of their names, argument
+shapes, return types, and any referenced structured types. This module converts
+Python signatures and docstrings into small TypeScript-like stubs and prompt
+sections that are easy for the model to consume.
+"""
+
 from __future__ import annotations
 
 import contextlib
@@ -11,7 +20,14 @@ from langchain_core.tools import BaseTool
 
 
 def _format_annotation(annotation: Any) -> str:
-    """Render a concise TypeScript-like string form for a type annotation."""
+    """Render one Python type annotation in a TypeScript-like form.
+
+    Args:
+        annotation: The Python annotation to render.
+
+    Returns:
+        A compact string suitable for prompt-facing function signatures.
+    """
     if annotation is Any or annotation is inspect.Signature.empty:
         return "any"
     if annotation is str:
@@ -113,7 +129,15 @@ def _format_typed_dict_structure(annotation: Any) -> str | None:
 
 
 def _get_tool_doc_target(tool: BaseTool) -> Callable[..., Any] | None:
-    """Return the most useful callable to inspect for tool documentation."""
+    """Choose the underlying callable that best represents a LangChain tool.
+
+    Args:
+        tool: The LangChain tool being documented.
+
+    Returns:
+        The sync function or coroutine that provides the most useful signature
+        and docstring for prompt generation, or `None` if neither is available.
+    """
     target = getattr(tool, "func", None)
     if callable(target):
         return target
@@ -176,7 +200,16 @@ def _render_jsdoc(doc: str) -> str:
 def _render_function_stub(
     name: str, implementation: Callable[..., Any] | BaseTool
 ) -> str:
-    """Render a TypeScript-like declaration with attached JSDoc for one function."""
+    """Render one prompt-facing function declaration for a foreign function.
+
+    Args:
+        name: The JavaScript-visible foreign function name.
+        implementation: The Python callable or LangChain tool backing that name.
+
+    Returns:
+        A TypeScript-like function declaration, optionally prefixed with a small
+        JSDoc block derived from the Python docstring.
+    """
     function_mode = _get_foreign_function_mode(implementation)
     target = (
         _get_tool_doc_target(implementation)
@@ -225,7 +258,16 @@ def _render_function_stub(
 def _collect_referenced_types(
     implementations: dict[str, Callable[..., Any] | BaseTool],
 ) -> list[type[Any]]:
-    """Collect unique referenced TypedDict-like return types from implementations."""
+    """Collect unique structured return types that should be documented.
+
+    Args:
+        implementations: Mapping of JavaScript-visible function names to Python
+            callables or LangChain tools.
+
+    Returns:
+        A list of TypedDict-like annotations referenced by foreign function
+        return types, preserving first-seen order.
+    """
     collected: list[type[Any]] = []
     seen: set[type[Any]] = set()
     for implementation in implementations.values():

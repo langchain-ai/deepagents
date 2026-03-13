@@ -49,38 +49,45 @@ Do NOT assume variables, functions, imports, or helper objects from prior `repl`
 
 Available foreign functions:
 
-```python
-def find_users_by_name(name: str) -> list[UserLookup]:
-    """Find users with the given name.
+These are JavaScript-callable foreign functions exposed inside QuickJS. The TypeScript-style signatures below document argument and return shapes.
 
-    Args:
-        name: The user name to search for.
-    """
+```ts
+/**
+ * Find users with the given name.
+ *
+ * @param name The user name to search for.
+ */
+function find_users_by_name(name: string): UserLookup[]
 
-def get_user_location(user_id: int) -> int:
-    """Get the location id for a user.
+/**
+ * Get the location id for a user.
+ *
+ * @param user_id The user identifier.
+ */
+function get_user_location(user_id: number): number
 
-    Args:
-        user_id: The user identifier.
-    """
+/**
+ * Get the city for a location.
+ *
+ * @param location_id The location identifier.
+ */
+function get_city_for_location(location_id: number): string
 
-def get_city_for_location(location_id: int) -> str:
-    """Get the city for a location.
+/**
+ * Normalize a user name for matching.
+ */
+function normalize_name(name: string): string
 
-    Args:
-        location_id: The location identifier.
-    """
-
-def normalize_name(name: str) -> str:
-    """Normalize a user name for matching."""
-
-async def fetch_weather(city: str) -> str:
-    """Fetch the current weather for a city."""
+/**
+ * Fetch the current weather for a city.
+ */
+async function fetch_weather(city: string): Promise<string>
 ```
 
 Referenced types:
-```python
-class UserLookup(TypedDict):
-    id: int
-    name: str
+```ts
+type UserLookup = {
+  id: number
+  name: string
+}
 ```

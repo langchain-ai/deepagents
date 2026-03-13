@@ -87,8 +87,8 @@ def test_system_prompt_includes_rendered_foreign_function_docs() -> None:
 
     prompt = middleware._format_repl_system_prompt()
     assert "Available foreign functions:" in prompt
-    assert "```python" in prompt
-    assert "def find_users_by_name(name: str) -> list[UserLookup]:" in prompt
-    assert "async def fetch_weather(city: str) -> str:" in prompt
+    assert "```ts" in prompt
+    assert "function find_users_by_name(name: string): UserLookup[]" in prompt
+    assert "async function fetch_weather(city: string): Promise<string>" in prompt
     assert "Referenced types:" in prompt
-    assert "class UserLookup(TypedDict):" in prompt
+    assert "type UserLookup = {" in prompt

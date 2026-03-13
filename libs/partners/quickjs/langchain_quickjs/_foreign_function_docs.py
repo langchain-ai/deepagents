@@ -11,22 +11,48 @@ from langchain_core.tools import BaseTool
 
 
 def format_annotation(annotation: Any) -> str:
-    """Render a concise string form for a type annotation."""
+    """Render a concise TypeScript-like string form for a type annotation."""
     if annotation is Any or annotation is inspect.Signature.empty:
-        return "Any"
+        return "any"
+    if annotation is str:
+        return "string"
+    if annotation in (int, float):
+        return "number"
+    if annotation is bool:
+        return "boolean"
+    if annotation is type(None):
+        return "null"
+    if annotation is dict:
+        return "Record<string, any>"
     if isinstance(annotation, type):
         return annotation.__name__
 
     origin = get_origin(annotation)
     if origin is not None:
         args = get_args(annotation)
-        origin_name = getattr(origin, "__name__", str(origin).replace("typing.", ""))
-        if not args:
-            return origin_name
-        formatted_args = ", ".join(format_annotation(arg) for arg in args)
-        return f"{origin_name}[{formatted_args}]"
+        if origin in (list, set, frozenset):
+            item = format_annotation(args[0]) if args else "any"
+            return f"{item}[]"
+        if origin is tuple:
+            if len(args) == 2 and args[1] is Ellipsis:
+                return f"{format_annotation(args[0])}[]"
+            return f"[{', '.join(format_annotation(arg) for arg in args)}]"
+        if origin is dict:
+            key_type = format_annotation(args[0]) if args else "string"
+            value_type = format_annotation(args[1]) if len(args) > 1 else "any"
+            return f"Record<{key_type}, {value_type}>"
+        if origin is type:
+            inner = format_annotation(args[0]) if args else "any"
+            return f"new (...args: any[]) => {inner}"
+        if origin_name := getattr(origin, "__name__", None):
+            if origin_name in {"Union", "UnionType"}:
+                return " | ".join(format_annotation(arg) for arg in args)
+            formatted_args = ", ".join(format_annotation(arg) for arg in args)
+            return f"{origin_name}<{formatted_args}>"
 
     rendered = str(annotation).replace("typing.", "").replace("'", "")
+    if rendered.endswith(" | None"):
+        return f"{rendered.removesuffix(' | None')} | null"
     if "." in rendered and "[" not in rendered:
         return rendered.rsplit(".", maxsplit=1)[-1]
     return rendered
@@ -114,10 +140,43 @@ def _get_return_annotation(target: Callable[..., Any]) -> Any:
     return inspect.Signature.empty
 
 
+def _render_jsdoc(doc: str) -> str:
+    """Convert a Python docstring into a compact JSDoc block."""
+    lines = inspect.cleandoc(doc).splitlines()
+    summary: list[str] = []
+    params: list[tuple[str, str]] = []
+    in_args = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped == "Args:":
+            in_args = True
+            continue
+        if in_args:
+            if not stripped:
+                continue
+            if line.startswith("    ") and ":" in stripped:
+                name, description = stripped.split(":", maxsplit=1)
+                params.append((name.strip(), description.strip()))
+                continue
+            in_args = False
+        if stripped:
+            summary.append(stripped)
+
+    rendered = ["/**"]
+    for line in summary:
+        rendered.append(f" * {line}")
+    if summary and params:
+        rendered.append(" *")
+    for name, description in params:
+        rendered.append(f" * @param {name} {description}")
+    rendered.append(" */")
+    return "\n".join(rendered)
+
+
 def _render_function_stub(
     name: str, implementation: Callable[..., Any] | BaseTool
 ) -> str:
-    """Render a Python-like stub with attached docstring for one foreign function."""
+    """Render a TypeScript-like declaration with attached JSDoc for one function."""
     function_mode = get_foreign_function_mode(implementation)
     target = (
         get_tool_doc_target(implementation)
@@ -125,10 +184,11 @@ def _render_function_stub(
         else implementation
     )
     if target is None:
-        prefix = "async def" if function_mode == "async" else "def"
-        return f"{prefix} {name}(...)"
+        prefix = "async function" if function_mode == "async" else "function"
+        return f"{prefix} {name}(...args: any[]): any"
 
-    signature = "(...)"
+    signature = "(...args: any[])"
+    return_annotation = inspect.Signature.empty
     with contextlib.suppress(TypeError, ValueError, NameError):
         inspected_signature = inspect.signature(target)
         resolved_hints = get_type_hints(target)
@@ -139,30 +199,27 @@ def _render_function_stub(
             )
             if param.annotation is not inspect.Signature.empty
             or param.name in resolved_hints
-            else param.name
+            else f"{param.name}: any"
             for param in inspected_signature.parameters.values()
         ]
+        signature = f"({', '.join(parameter_parts)})"
         return_annotation = resolved_hints.get(
             "return", inspected_signature.return_annotation
         )
-        if return_annotation is inspect.Signature.empty:
-            signature = f"({', '.join(parameter_parts)})"
-        else:
-            rendered_return = format_annotation(return_annotation)
-            signature = f"({', '.join(parameter_parts)}) -> {rendered_return}"
 
-    prefix = "async def" if function_mode == "async" else "def"
+    rendered_return = (
+        format_annotation(return_annotation)
+        if return_annotation is not inspect.Signature.empty
+        else "any"
+    )
+    if function_mode == "async":
+        rendered_return = f"Promise<{rendered_return}>"
+    prefix = "async function" if function_mode == "async" else "function"
+    declaration = f"{prefix} {name}{signature}: {rendered_return}"
     doc = inspect.getdoc(target) or inspect.getdoc(implementation)
     if not doc:
-        return f"{prefix} {name}{signature}"
-
-    doc_lines = doc.splitlines()
-    if len(doc_lines) == 1:
-        return f'{prefix} {name}{signature}:\n    """{doc_lines[0]}"""'
-
-    indented_doc = "\n".join(f"    {line}" if line else "" for line in doc_lines)
-    rendered_doc = indented_doc.removeprefix("    ")
-    return f'{prefix} {name}{signature}:\n    """{rendered_doc}\n    """'
+        return declaration
+    return f"{_render_jsdoc(doc)}\n{declaration}"
 
 
 def _collect_referenced_types(
@@ -198,24 +255,20 @@ def _collect_referenced_types(
 
 
 def _render_typed_dict_definition(annotation: type[Any]) -> str:
-    """Render a Python-like TypedDict class definition."""
+    """Render a TypeScript-like type definition for a TypedDict."""
     with contextlib.suppress(TypeError, NameError):
         field_types = get_type_hints(annotation)
-        lines = [f"class {annotation.__name__}(TypedDict):"]
-        if not field_types:
-            lines.append("    pass")
-            return "\n".join(lines)
+        lines = [f"type {annotation.__name__} = {{"]
         for key, value in field_types.items():
-            lines.append(f"    {key}: {format_annotation(value)}")
+            lines.append(f"  {key}: {format_annotation(value)}")
+        lines.append("}")
         return "\n".join(lines)
 
     field_types = getattr(annotation, "__annotations__", {})
-    lines = [f"class {annotation.__name__}(TypedDict):"]
-    if not field_types:
-        lines.append("    pass")
-        return "\n".join(lines)
+    lines = [f"type {annotation.__name__} = {{"]
     for key, value in field_types.items():
-        lines.append(f"    {key}: {format_annotation(value)}")
+        lines.append(f"  {key}: {format_annotation(value)}")
+    lines.append("}")
     return "\n".join(lines)
 
 
@@ -229,7 +282,9 @@ def render_foreign_function_section(
     ]
     sections = [
         "Available foreign functions:\n",
-        "```python",
+        "These are JavaScript-callable foreign functions exposed inside QuickJS. The TypeScript-style signatures below document argument and return shapes.",
+        "",
+        "```ts",
         "\n\n".join(function_blocks),
         "```",
     ]
@@ -243,7 +298,7 @@ def render_foreign_function_section(
             [
                 "",
                 "Referenced types:",
-                "```python",
+                "```ts",
                 "\n\n".join(type_blocks),
                 "```",
             ]

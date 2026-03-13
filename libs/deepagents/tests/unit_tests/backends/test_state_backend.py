@@ -1,3 +1,5 @@
+from functools import partial
+
 import pytest
 from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
@@ -34,8 +36,8 @@ def test_write_read_edit_ls_grep_glob_state_backend():
     rt.state["files"].update(res.files_update)
 
     # read
-    content = be.read("/notes.txt")
-    assert "hello world" in content
+    read_result = be.read("/notes.txt")
+    assert "hello world" in read_result.file_data["content"]
 
     # edit unique occurrence
     res2 = be.edit("/notes.txt", "hello", "hi", replace_all=False)
@@ -43,8 +45,8 @@ def test_write_read_edit_ls_grep_glob_state_backend():
     assert res2.error is None and res2.files_update is not None
     rt.state["files"].update(res2.files_update)
 
-    content2 = be.read("/notes.txt")
-    assert "hi world" in content2
+    read_result2 = be.read("/notes.txt")
+    assert "hi world" in read_result2.file_data["content"]
 
     # ls_info should include the file
     listing = be.ls_info("/")
@@ -145,10 +147,12 @@ def test_state_backend_ls_trailing_slash():
     assert listing_from_dir[0]["path"] == "/dir/nested.txt"
 
 
-def test_state_backend_intercept_large_tool_result():
+@pytest.mark.parametrize("file_format", ["v1", "v2"])
+def test_state_backend_intercept_large_tool_result(file_format):
     """Test that StateBackend properly handles large tool result interception."""
     rt = make_runtime()
-    middleware = FilesystemMiddleware(backend=StateBackend, tool_token_limit_before_evict=1000)
+    backend_factory = partial(StateBackend, file_format=file_format)
+    middleware = FilesystemMiddleware(backend=backend_factory, tool_token_limit_before_evict=1000)
 
     large_content = "x" * 5000
     tool_message = ToolMessage(content=large_content, tool_call_id="test_123")
@@ -156,7 +160,11 @@ def test_state_backend_intercept_large_tool_result():
 
     assert isinstance(result, Command)
     assert "/large_tool_results/test_123" in result.update["files"]
-    assert result.update["files"]["/large_tool_results/test_123"]["content"] == [large_content]
+    content = result.update["files"]["/large_tool_results/test_123"]["content"]
+    if file_format == "v1":
+        assert content == [large_content]
+    else:
+        assert content == large_content
     assert "Tool result too large" in result.update["messages"][0].content
 
 

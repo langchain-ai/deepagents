@@ -7,7 +7,7 @@ from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
 from langgraph.store.memory import InMemoryStore
 
-from deepagents.backends.protocol import EditResult, WriteResult
+from deepagents.backends.protocol import EditResult, ReadResult, WriteResult
 from deepagents.backends.store import BackendContext, StoreBackend, _validate_namespace
 from deepagents.middleware.filesystem import FilesystemMiddleware
 
@@ -32,8 +32,9 @@ def test_store_backend_crud_and_search():
     assert isinstance(msg, WriteResult) and msg.error is None and msg.path == "/docs/readme.md"
 
     # read
-    txt = be.read("/docs/readme.md")
-    assert "hello store" in txt
+    read_result = be.read("/docs/readme.md")
+    assert isinstance(read_result, ReadResult) and read_result.file_data is not None
+    assert "hello store" in read_result.file_data["content"]
 
     # edit
     msg2 = be.edit("/docs/readme.md", "hello", "hi", replace_all=False)
@@ -120,10 +121,13 @@ def test_store_backend_ls_trailing_slash():
     assert [fi["path"] for fi in listing1] == [fi["path"] for fi in listing2]
 
 
-def test_store_backend_intercept_large_tool_result():
+@pytest.mark.parametrize("file_format", ["v1", "v2"])
+def test_store_backend_intercept_large_tool_result(file_format):
     """Test that StoreBackend properly handles large tool result interception."""
     rt = make_runtime()
-    middleware = FilesystemMiddleware(backend=lambda r: StoreBackend(r, namespace=lambda _ctx: ("filesystem",)), tool_token_limit_before_evict=1000)
+    middleware = FilesystemMiddleware(
+        backend=lambda r: StoreBackend(r, namespace=lambda _ctx: ("filesystem",), file_format=file_format), tool_token_limit_before_evict=1000
+    )
 
     large_content = "y" * 5000
     tool_message = ToolMessage(content=large_content, tool_call_id="test_456")
@@ -135,7 +139,8 @@ def test_store_backend_intercept_large_tool_result():
 
     stored_content = rt.store.get(("filesystem",), "/large_tool_results/test_456")
     assert stored_content is not None
-    assert stored_content.value["content"] == [large_content]
+    expected = [large_content] if file_format == "v1" else large_content
+    assert stored_content.value["content"] == expected
 
 
 @dataclass
@@ -168,8 +173,9 @@ def test_store_backend_namespace_user_scoped() -> None:
     assert items[0].key == "/test.txt"
 
     # Read it back
-    content = be.read("/test.txt")
-    assert "hello alice" in content
+    read_result = be.read("/test.txt")
+    assert read_result.file_data is not None
+    assert "hello alice" in read_result.file_data["content"]
 
 
 def test_store_backend_namespace_multi_level() -> None:
@@ -234,11 +240,13 @@ def test_store_backend_namespace_isolation() -> None:
     be_bob.write("/notes.txt", "bob notes")
 
     # Verify isolation
-    alice_content = be_alice.read("/notes.txt")
-    assert "alice notes" in alice_content
+    alice_result = be_alice.read("/notes.txt")
+    assert alice_result.file_data is not None
+    assert "alice notes" in alice_result.file_data["content"]
 
-    bob_content = be_bob.read("/notes.txt")
-    assert "bob notes" in bob_content
+    bob_result = be_bob.read("/notes.txt")
+    assert bob_result.file_data is not None
+    assert "bob notes" in bob_result.file_data["content"]
 
     # Verify they're in different namespaces
     alice_items = store.search(("filesystem", "alice"))

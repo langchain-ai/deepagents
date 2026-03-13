@@ -18,6 +18,67 @@ if TYPE_CHECKING:
 
 from langchain_core.tools import BaseTool
 
+_ELLIPSIS_TUPLE_ARG_COUNT = 2
+
+
+def _format_basic_annotation(annotation: Any) -> str | None:
+    """Render simple built-in annotations without container introspection."""
+    basic_types = {
+        Any: "any",
+        inspect.Signature.empty: "any",
+        str: "string",
+        bool: "boolean",
+        type(None): "null",
+        dict: "Record<string, any>",
+    }
+    if annotation in basic_types:
+        return basic_types[annotation]
+    if annotation in (int, float):
+        return "number"
+    if isinstance(annotation, type):
+        return annotation.__name__
+    return None
+
+
+def _format_collection_annotation(origin: Any, args: tuple[Any, ...]) -> str | None:
+    """Render collection-like generic annotations."""
+    if origin in (list, set, frozenset):
+        item = _format_annotation(args[0]) if args else "any"
+        return f"{item}[]"
+    if origin is tuple:
+        if len(args) == _ELLIPSIS_TUPLE_ARG_COUNT and args[1] is Ellipsis:
+            return f"{_format_annotation(args[0])}[]"
+        return f"[{', '.join(_format_annotation(arg) for arg in args)}]"
+    if origin is dict:
+        key_type = _format_annotation(args[0]) if args else "string"
+        value_type = _format_annotation(args[1]) if len(args) > 1 else "any"
+        return f"Record<{key_type}, {value_type}>"
+    return None
+
+
+def _format_generic_annotation(origin: Any, args: tuple[Any, ...]) -> str | None:
+    """Render non-collection generic annotations."""
+    if origin is type:
+        inner = _format_annotation(args[0]) if args else "any"
+        return f"new (...args: any[]) => {inner}"
+    origin_name = getattr(origin, "__name__", None)
+    if origin_name in {"Union", "UnionType"}:
+        return " | ".join(_format_annotation(arg) for arg in args)
+    if origin_name:
+        formatted_args = ", ".join(_format_annotation(arg) for arg in args)
+        return f"{origin_name}<{formatted_args}>"
+    return None
+
+
+def _format_stringified_annotation(annotation: Any) -> str:
+    """Render fallback annotations from their string representation."""
+    rendered = str(annotation).replace("typing.", "").replace("'", "")
+    if rendered.endswith(" | None"):
+        return f"{rendered.removesuffix(' | None')} | null"
+    if "." in rendered and "[" not in rendered:
+        return rendered.rsplit(".", maxsplit=1)[-1]
+    return rendered
+
 
 def _format_annotation(annotation: Any) -> str:
     """Render one Python type annotation in a TypeScript-like form.
@@ -28,50 +89,24 @@ def _format_annotation(annotation: Any) -> str:
     Returns:
         A compact string suitable for prompt-facing function signatures.
     """
-    if annotation is Any or annotation is inspect.Signature.empty:
-        return "any"
-    if annotation is str:
-        return "string"
-    if annotation in (int, float):
-        return "number"
-    if annotation is bool:
-        return "boolean"
-    if annotation is type(None):
-        return "null"
-    if annotation is dict:
-        return "Record<string, any>"
-    if isinstance(annotation, type):
-        return annotation.__name__
+    basic = _format_basic_annotation(annotation)
+    if basic is not None:
+        return basic
 
     origin = get_origin(annotation)
-    if origin is not None:
-        args = get_args(annotation)
-        if origin in (list, set, frozenset):
-            item = _format_annotation(args[0]) if args else "any"
-            return f"{item}[]"
-        if origin is tuple:
-            if len(args) == 2 and args[1] is Ellipsis:
-                return f"{_format_annotation(args[0])}[]"
-            return f"[{', '.join(_format_annotation(arg) for arg in args)}]"
-        if origin is dict:
-            key_type = _format_annotation(args[0]) if args else "string"
-            value_type = _format_annotation(args[1]) if len(args) > 1 else "any"
-            return f"Record<{key_type}, {value_type}>"
-        if origin is type:
-            inner = _format_annotation(args[0]) if args else "any"
-            return f"new (...args: any[]) => {inner}"
-        if origin_name := getattr(origin, "__name__", None):
-            if origin_name in {"Union", "UnionType"}:
-                return " | ".join(_format_annotation(arg) for arg in args)
-            formatted_args = ", ".join(_format_annotation(arg) for arg in args)
-            return f"{origin_name}<{formatted_args}>"
+    if origin is None:
+        return _format_stringified_annotation(annotation)
 
-    rendered = str(annotation).replace("typing.", "").replace("'", "")
-    if rendered.endswith(" | None"):
-        return f"{rendered.removesuffix(' | None')} | null"
-    if "." in rendered and "[" not in rendered:
-        return rendered.rsplit(".", maxsplit=1)[-1]
-    return rendered
+    args = get_args(annotation)
+    collection = _format_collection_annotation(origin, args)
+    if collection is not None:
+        return collection
+
+    generic = _format_generic_annotation(origin, args)
+    if generic is not None:
+        return generic
+
+    return _format_stringified_annotation(annotation)
 
 
 def _unwrap_typed_dict_annotation(annotation: Any) -> tuple[Any, str]:
@@ -187,8 +222,7 @@ def _render_jsdoc(doc: str) -> str:
             summary.append(stripped)
 
     rendered = ["/**"]
-    for line in summary:
-        rendered.append(f" * {line}")
+    rendered.extend(f" * {line}" for line in summary)
     if summary and params:
         rendered.append(" *")
     for name, description in params:

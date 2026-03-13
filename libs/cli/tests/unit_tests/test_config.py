@@ -28,8 +28,10 @@ from deepagents_cli.config import (
 )
 from deepagents_cli.model_config import ModelConfigError, clear_caches
 from deepagents_cli.project_utils import (
+    ProjectContext,
     find_project_agent_md as _find_project_agent_md,
     find_project_root as _find_project_root,
+    get_server_project_context,
 )
 
 
@@ -75,6 +77,46 @@ class TestProjectRootDetection:
         # Should find inner repo, not outer
         result = _find_project_root(inner_repo)
         assert result == inner_repo
+
+
+class TestProjectContext:
+    """Tests for explicit project context handling."""
+
+    def test_from_user_cwd_uses_explicit_path_not_process_cwd(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Project context should resolve from the provided user cwd."""
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        (project_root / ".git").mkdir()
+        user_cwd = project_root / "src"
+        user_cwd.mkdir()
+
+        other_cwd = tmp_path / "elsewhere"
+        other_cwd.mkdir()
+        monkeypatch.chdir(other_cwd)
+
+        context = ProjectContext.from_user_cwd(user_cwd)
+
+        assert context.user_cwd == user_cwd.resolve()
+        assert context.project_root == project_root
+
+    def test_get_server_project_context_from_env_mapping(self, tmp_path: Path) -> None:
+        """Server context should reconstruct explicit cwd and project root."""
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        user_cwd = project_root / "src"
+        user_cwd.mkdir()
+
+        env = {
+            "DA_SERVER_CWD": str(user_cwd),
+            "DA_SERVER_PROJECT_ROOT": str(project_root),
+        }
+        context = get_server_project_context(env)
+
+        assert context is not None
+        assert context.user_cwd == user_cwd.resolve()
+        assert context.project_root == project_root.resolve()
 
 
 class TestProjectAgentMdFinding:

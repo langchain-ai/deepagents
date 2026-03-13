@@ -25,11 +25,21 @@ def pytest_configure(config: pytest.Config) -> None:  # noqa: ARG001  # pytest h
     `LANGSMITH_TRACING=true`. Detect this early so the entire suite is skipped
     with a clear message instead of failing one-by-one.
     """
-    if os.environ.get("LANGSMITH_TRACING", "").lower() != "true":
+    tracing_enabled = any(
+        os.environ.get(var, "").lower() == "true"
+        for var in (
+            "LANGSMITH_TRACING_V2",
+            "LANGCHAIN_TRACING_V2",
+            "LANGSMITH_TRACING",
+            "LANGCHAIN_TRACING",
+        )
+    )
+    if not tracing_enabled:
         pytest.exit(
-            "Aborting: LANGSMITH_TRACING is not set to 'true'. "
+            "Aborting: LangSmith tracing is not enabled. "
             "All eval tests require LangSmith tracing. "
-            "Export LANGSMITH_TRACING=true and ensure a valid "
+            "Set one of LANGSMITH_TRACING / LANGSMITH_TRACING_V2 / "
+            "LANGCHAIN_TRACING_V2 to 'true' and ensure a valid "
             "LANGSMITH_API_KEY is set, then re-run.",
             returncode=1,
         )

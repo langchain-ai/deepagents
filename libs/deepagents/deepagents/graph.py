@@ -292,4 +292,11 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
         debug=debug,
         name=name,
         cache=cache,
-    ).with_config({"recursion_limit": 1000})
+    ).with_config(
+        {
+            "recursion_limit": 1000,
+            "metadata": {
+                "ls_integration": "deepagents",
+            },
+        }
+    )

@@ -279,7 +279,6 @@ async def list_threads(
         ValueError: If `sort_by` is not `"updated"` or `"created"`.
     """
     async with _connect() as conn:
-        # Return empty if table doesn't exist yet (fresh install)
         if not await _table_exists(conn, "checkpoints"):
             return []
 

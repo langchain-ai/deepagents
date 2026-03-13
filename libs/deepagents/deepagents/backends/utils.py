@@ -276,9 +276,9 @@ def slice_read_response(
         `error` set when the offset exceeds the file length.
     """
     content = file_data_to_string(file_data)
-    empty_msg = check_empty_content(content)
-    if empty_msg:
-        return empty_msg
+
+    if not content or content.strip() == "":
+        return content
 
     lines = content.splitlines()
     start_idx = offset

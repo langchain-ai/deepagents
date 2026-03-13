@@ -38,6 +38,7 @@ from deepagents.backends.protocol import (
 )
 from deepagents.backends.utils import (
     _get_file_type,
+    check_empty_content,
     format_content_with_line_numbers,
     format_grep_matches,
     sanitize_tool_call_id,
@@ -541,6 +542,19 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         tool_description = self._custom_tool_descriptions.get("read_file") or READ_FILE_TOOL_DESCRIPTION
         token_limit = self._tool_token_limit_before_evict
 
+        def _truncate(content: str, file_path: str, limit: int) -> str:
+            lines = content.splitlines(keepends=True)
+            if len(lines) > limit:
+                lines = lines[:limit]
+                content = "".join(lines)
+
+            if token_limit and len(content) >= NUM_CHARS_PER_TOKEN * token_limit:
+                truncation_msg = READ_FILE_TRUNCATION_MSG.format(file_path=file_path)
+                max_content_length = NUM_CHARS_PER_TOKEN * token_limit - len(truncation_msg)
+                content = content[:max_content_length] + truncation_msg
+
+            return content
+
         def _handle_read_result(
             read_result: ReadResult | str,
             validated_path: str,
@@ -556,7 +570,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     DeprecationWarning,
                     stacklevel=2,
                 )
-                return read_result
+                # Legacy backends already format with line numbers
+                return _truncate(read_result, validated_path, limit)
+
             if read_result.error:
                 return f"Error: {read_result.error}"
 
@@ -575,20 +591,14 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     additional_kwargs={"read_file_path": validated_path, "read_file_media_type": mime_type},
                 )
 
+            empty_msg = check_empty_content(content)
+            if empty_msg:
+                return empty_msg
+
             content = format_content_with_line_numbers(content, start_line=offset + 1)
-
-            lines = content.splitlines(keepends=True)
-            if len(lines) > limit:
-                lines = lines[:limit]
-                content = "".join(lines)
-
-            if token_limit and len(content) >= NUM_CHARS_PER_TOKEN * token_limit:
-                truncation_msg = READ_FILE_TRUNCATION_MSG.format(file_path=validated_path)
-                max_content_length = NUM_CHARS_PER_TOKEN * token_limit - len(truncation_msg)
-                content = content[:max_content_length]
-                content += truncation_msg
-
-            return content
+            # We apply truncation again after formatting content as continuation lines
+            # can increase line count
+            return _truncate(content, validated_path, limit)
 
         def sync_read_file(
             file_path: Annotated[str, "Absolute path to the file to read. Must be absolute, not relative."],

@@ -33,6 +33,8 @@ from deepagents.backends.utils import (
     update_file_data,
 )
 from deepagents.middleware.filesystem import (
+    EMPTY_CONTENT_WARNING,
+    NUM_CHARS_PER_TOKEN,
     FileData,
     FilesystemMiddleware,
     FilesystemState,
@@ -1283,6 +1285,86 @@ class TestFilesystemMiddleware:
 
         assert isinstance(result, str)
         assert "line one" in result
+
+    def test_read_file_str_backend_line_limit_truncation(self):
+        """Legacy str backend respects the line-count limit."""
+
+        class StrReadBackend(StateBackend):
+            def read(self, path, *, offset=0, limit=100):
+                return "\n".join(f"{i:6d}\tline {i}" for i in range(1, 201))
+
+        middleware = FilesystemMiddleware(backend=lambda rt: StrReadBackend(rt))  # noqa: PLW0108
+        state = FilesystemState(messages=[], files={})
+        runtime = ToolRuntime(
+            state=state,
+            context=None,
+            tool_call_id="str-trunc",
+            store=None,
+            stream_writer=lambda _: None,
+            config={},
+        )
+
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+        with pytest.warns(DeprecationWarning, match="Returning a plain `str`"):
+            result = read_file_tool.invoke({"file_path": "/app/big.txt", "limit": 50, "runtime": runtime})
+
+        assert isinstance(result, str)
+        output_lines = [ln for ln in result.splitlines() if ln.strip()]
+        assert len(output_lines) <= 50
+
+    def test_read_file_str_backend_token_truncation(self):
+        """Legacy str backend applies token-based truncation for huge content."""
+        token_limit = 500
+
+        class StrReadBackend(StateBackend):
+            def read(self, path, *, offset=0, limit=100):
+                return "x" * (NUM_CHARS_PER_TOKEN * token_limit + 1000)
+
+        middleware = FilesystemMiddleware(
+            backend=lambda rt: StrReadBackend(rt),  # noqa: PLW0108
+            tool_token_limit_before_evict=token_limit,
+        )
+        state = FilesystemState(messages=[], files={})
+        runtime = ToolRuntime(
+            state=state,
+            context=None,
+            tool_call_id="str-tok",
+            store=None,
+            stream_writer=lambda _: None,
+            config={},
+        )
+
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+        with pytest.warns(DeprecationWarning, match="Returning a plain `str`"):
+            result = read_file_tool.invoke({"file_path": "/app/huge.txt", "runtime": runtime})
+
+        assert isinstance(result, str)
+        assert "Output was truncated due to size limits" in result
+        assert len(result) <= NUM_CHARS_PER_TOKEN * token_limit
+
+    def test_read_file_empty_file_returns_warning(self):
+        """ReadResult with empty content returns the empty-content warning."""
+        middleware = FilesystemMiddleware()
+        state = FilesystemState(messages=[], files={})
+        runtime = ToolRuntime(
+            state=state,
+            context=None,
+            tool_call_id="empty-read",
+            store=None,
+            stream_writer=lambda _: None,
+            config={},
+        )
+
+        backend = middleware._get_backend(runtime)
+        res = backend.write("/empty.txt", "")
+        if hasattr(backend, "runtime"):
+            backend.runtime.state["files"].update(res.files_update)
+
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+        result = read_file_tool.invoke({"file_path": "/empty.txt", "runtime": runtime})
+
+        assert isinstance(result, str)
+        assert result == EMPTY_CONTENT_WARNING
 
     def test_execute_tool_returns_error_when_backend_doesnt_support(self):
         """Test that execute tool returns friendly error instead of raising exception."""

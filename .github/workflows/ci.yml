@@ -38,6 +38,7 @@ jobs:
       daytona: ${{ steps.filter.outputs.daytona }}
       modal: ${{ steps.filter.outputs.modal }}
       runloop: ${{ steps.filter.outputs.runloop }}
+      quickjs: ${{ steps.filter.outputs.quickjs }}
     steps:
       - name: "📋 Checkout Code"
         uses: actions/checkout@v6
@@ -91,6 +92,12 @@ jobs:
               - '.github/actions/**'
             runloop:
               - 'libs/partners/runloop/**'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/_lint.yml'
+              - '.github/workflows/_test.yml'
+              - '.github/actions/**'
+            quickjs:
+              - 'libs/partners/quickjs/**'
               - '.github/workflows/ci.yml'
               - '.github/workflows/_lint.yml'
               - '.github/workflows/_test.yml'
@@ -149,6 +156,15 @@ jobs:
     uses: ./.github/workflows/_lint.yml
     with:
       working-directory: "libs/partners/runloop"
+      python-version: "3.11"
+
+  lint-quickjs:
+    name: "🧹 Lint quickjs"
+    needs: changes
+    if: needs.changes.outputs.quickjs == 'true' || github.event_name == 'push'
+    uses: ./.github/workflows/_lint.yml
+    with:
+      working-directory: "libs/partners/quickjs"
       python-version: "3.11"
 
   # Run unit tests on changed packages
@@ -236,6 +252,20 @@ jobs:
       python-version: ${{ matrix.python-version }}
       coverage: ${{ matrix.python-version == '3.12' }}
 
+  test-quickjs:
+    name: "🧪 Test quickjs"
+    needs: changes
+    if: needs.changes.outputs.quickjs == 'true' || github.event_name == 'push'
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+      fail-fast: false
+    uses: ./.github/workflows/_test.yml
+    with:
+      working-directory: "libs/partners/quickjs"
+      python-version: ${{ matrix.python-version }}
+      coverage: ${{ matrix.python-version == '3.12' }}
+
   # Final status check - ensures all jobs passed
   ci_success:
     name: "✅ CI Success"
@@ -247,12 +277,14 @@ jobs:
       - lint-daytona
       - lint-modal
       - lint-runloop
+      - lint-quickjs
       - test-deepagents
       - test-cli
       - test-harbor
       - test-daytona
       - test-modal
       - test-runloop
+      - test-quickjs
     if: always()
     runs-on: ubuntu-latest
     steps:

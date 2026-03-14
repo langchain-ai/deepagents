@@ -13,6 +13,7 @@ import asyncio
 import datetime
 import json
 import os
+import sys
 import tempfile
 from pathlib import Path
 
@@ -157,19 +158,41 @@ def create_dataset(dataset_name: str, version: str = "head", overwrite: bool = F
     print(f"Dataset ID: {dataset.id}")
 
 
+def ensure_dataset(dataset_name: str, version: str = "head", overwrite: bool = False) -> None:
+    """Create the dataset if it does not already exist.
+
+    Args:
+        dataset_name: Dataset name to look up in LangSmith.
+        version: Harbor dataset version to use when creating the dataset.
+        overwrite: Whether to overwrite cached remote tasks when creating the dataset.
+    """
+    client = Client()
+    try:
+        dataset = client.read_dataset(dataset_name=dataset_name)
+    except Exception:
+        create_dataset(dataset_name=dataset_name, version=version, overwrite=overwrite)
+        return
+
+    print(f"Dataset '{dataset_name}' already exists with ID: {dataset.id}")
+
+
 # ============================================================================
 # CREATE EXPERIMENT
 # ============================================================================
 
 
 async def _create_experiment_session(
-    dataset_id: str, name: str, session: aiohttp.ClientSession
+    dataset_id: str,
+    name: str,
+    metadata: dict[str, str],
+    session: aiohttp.ClientSession,
 ) -> dict:
     """Create a LangSmith experiment session.
 
     Args:
         dataset_id: LangSmith dataset ID to associate with
         name: Name for the experiment session
+        metadata: Metadata to attach to the experiment session
         session: aiohttp ClientSession for making requests
 
     Returns:
@@ -182,6 +205,7 @@ async def _create_experiment_session(
             "start_time": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "reference_dataset_id": dataset_id,
             "name": name,
+            "metadata": metadata,
         },
     ) as experiment_response:
         if experiment_response.status == 200:
@@ -216,15 +240,21 @@ async def _get_dataset_by_name(dataset_name: str, session: aiohttp.ClientSession
             raise Exception(f"Failed to get dataset: {response.status} {await response.text()}")
 
 
-async def create_experiment_async(dataset_name: str, experiment_name: str | None = None) -> str:
+async def create_experiment_async(
+    dataset_name: str,
+    experiment_name: str | None = None,
+    *,
+    metadata: dict[str, str] | None = None,
+) -> str:
     """Create a LangSmith experiment session for the given dataset.
 
     Args:
         dataset_name: Name of the LangSmith dataset to create experiment for
         experiment_name: Optional name for the experiment (auto-generated if not provided)
+        metadata: Optional metadata to attach to the experiment session
 
     Returns:
-        The experiment session ID
+        The experiment name.
     """
     async with aiohttp.ClientSession() as session:
         # Get the dataset
@@ -235,28 +265,47 @@ async def create_experiment_async(dataset_name: str, experiment_name: str | None
         # Generate experiment name if not provided
         if experiment_name is None:
             timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d_%H-%M-%S")
-            experiment_name = f"harbor-experiment-{timestamp}"
+            experiment_name = f"{dataset_name}-{timestamp}"
+
+        experiment_metadata = metadata or {}
 
         # Create experiment session
         print(f"Creating experiment session: {experiment_name}")
-        experiment_session = await _create_experiment_session(dataset_id, experiment_name, session)
+        experiment_session = await _create_experiment_session(
+            dataset_id,
+            experiment_name,
+            experiment_metadata,
+            session,
+        )
         session_id = experiment_session["id"]
         tenant_id = experiment_session["tenant_id"]
 
-        print("✓ Experiment created successfully!")
-        print(f"  Session ID: {session_id}")
+        print("✓ Experiment created successfully!", file=sys.stderr)
+        print(f"  Session ID: {session_id}", file=sys.stderr)
         print(
-            f"  View at: https://smith.langchain.com/o/{tenant_id}/datasets/{dataset_id}/compare?selectedSessions={session_id}"
+            f"  View at: https://smith.langchain.com/o/{tenant_id}/datasets/{dataset_id}/compare?selectedSessions={session_id}",
+            file=sys.stderr,
         )
-        print("\nTo run Harbor with this experiment, use:")
-        print(f"  LANGSMITH_EXPERIMENT={experiment_name} harbor run ...")
+        print("\nTo run Harbor with this experiment, use:", file=sys.stderr)
+        print(f"  LANGSMITH_EXPERIMENT={experiment_name} harbor run ...", file=sys.stderr)
 
-        return session_id
+        return experiment_name
 
 
-def create_experiment(dataset_name: str, experiment_name: str | None = None) -> str:
+def create_experiment(
+    dataset_name: str,
+    experiment_name: str | None = None,
+    *,
+    metadata: dict[str, str] | None = None,
+) -> str:
     """Synchronous wrapper for create_experiment_async."""
-    return asyncio.run(create_experiment_async(dataset_name, experiment_name))
+    return asyncio.run(
+        create_experiment_async(
+            dataset_name,
+            experiment_name,
+            metadata=metadata,
+        )
+    )
 
 
 # ============================================================================
@@ -429,6 +478,30 @@ def main() -> None:
     )
 
     # ========================================================================
+    # ensure-dataset subcommand
+    # ========================================================================
+    ensure_dataset_parser = subparsers.add_parser(
+        "ensure-dataset",
+        help="Ensure a LangSmith dataset exists for Harbor tasks",
+    )
+    ensure_dataset_parser.add_argument(
+        "dataset_name",
+        type=str,
+        help="Dataset name (e.g., 'terminal-bench')",
+    )
+    ensure_dataset_parser.add_argument(
+        "--version",
+        type=str,
+        default="head",
+        help="Dataset version (default: 'head')",
+    )
+    ensure_dataset_parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Overwrite cached remote tasks when creating the dataset",
+    )
+
+    # ========================================================================
     # create-experiment subcommand
     # ========================================================================
     experiment_parser = subparsers.add_parser(
@@ -444,6 +517,12 @@ def main() -> None:
         "--name",
         type=str,
         help="Name for the experiment (auto-generated if not provided)",
+    )
+    experiment_parser.add_argument(
+        "--metadata",
+        type=str,
+        default="{}",
+        help="JSON metadata to attach to the experiment session",
     )
 
     # ========================================================================
@@ -479,10 +558,21 @@ def main() -> None:
             version=args.version,
             overwrite=args.overwrite,
         )
+    elif args.command == "ensure-dataset":
+        ensure_dataset(
+            dataset_name=args.dataset_name,
+            version=args.version,
+            overwrite=args.overwrite,
+        )
     elif args.command == "create-experiment":
+        metadata = json.loads(args.metadata)
+        if not isinstance(metadata, dict):
+            msg = "Experiment metadata must be a JSON object."
+            raise ValueError(msg)
         create_experiment(
             dataset_name=args.dataset_name,
             experiment_name=args.name,
+            metadata={str(key): str(value) for key, value in metadata.items()},
         )
     elif args.command == "add-feedback":
         if not args.job_folder.exists():

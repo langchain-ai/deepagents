@@ -49,6 +49,16 @@ Screen {
     border: solid $warning;
 }
 
+/* Placeholder shown while the user is actively typing (approval deferred) */
+.approval-placeholder {
+    height: auto;
+    margin: 1 0;
+    padding: 0 1;
+    border: solid $panel;
+    color: $text-muted;
+    text-style: italic;
+}
+
 .approval-menu .approval-title {
     text-style: bold;
     color: $warning;

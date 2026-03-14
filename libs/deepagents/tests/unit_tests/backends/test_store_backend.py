@@ -120,6 +120,35 @@ def test_store_backend_ls_trailing_slash():
     assert [fi["path"] for fi in listing1] == [fi["path"] for fi in listing2]
 
 
+def test_store_backend_handles_legacy_store_keys_without_leading_slash():
+    rt = make_runtime()
+    rt.store.put(
+        ("filesystem",),
+        "test.md",
+        {"content": ["hello legacy"], "created_at": "2023-01-01T00:00:00Z", "modified_at": "2023-01-01T00:00:00Z"},
+    )
+    rt.store.put(
+        ("filesystem",),
+        "subdir/file.txt",
+        {"content": ["nested legacy"], "created_at": "2023-01-01T00:00:00Z", "modified_at": "2023-01-01T00:00:00Z"},
+    )
+    be = StoreBackend(rt, namespace=lambda _ctx: ("filesystem",))
+
+    root_paths = [fi["path"] for fi in be.ls_info("/")]
+    assert "/test.md" in root_paths
+    assert "/subdir/" in root_paths
+
+    content = be.read("/test.md")
+    assert "hello legacy" in content
+
+    matches = be.grep_raw("hello", path="/")
+    assert isinstance(matches, list)
+    assert any(match["path"] == "/test.md" for match in matches)
+
+    glob_matches = be.glob_info("*.md", path="/")
+    assert any(match["path"] == "/test.md" for match in glob_matches)
+
+
 def test_store_backend_intercept_large_tool_result():
     """Test that StoreBackend properly handles large tool result interception."""
     rt = make_runtime()

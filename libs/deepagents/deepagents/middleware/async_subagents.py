@@ -430,7 +430,7 @@ def _build_update_tool(
         runtime: ToolRuntime,
     ) -> str | Command:
         try:
-            agent_name, thread_id, _run_id = _parse_job_id(job_id)
+            agent_name, thread_id, old_run_id = _parse_job_id(job_id)
         except ValueError as e:
             return str(e)
         try:
@@ -445,19 +445,27 @@ def _build_update_tool(
             input={"messages": [{"role": "user", "content": message}]},
             multitask_strategy="interrupt",
         )
+        old_canonical = _format_job_id(name, thread_id, old_run_id)
         new_job_id = _format_job_id(name, thread_id, run["run_id"])
-        job: AsyncSubAgentJob = {
+        old_job: AsyncSubAgentJob = {
+            "job_id": old_canonical,
+            "agent_name": name,
+            "thread_id": thread_id,
+            "run_id": old_run_id,
+            "status": "superseded",
+        }
+        new_job: AsyncSubAgentJob = {
             "job_id": new_job_id,
             "agent_name": name,
             "thread_id": thread_id,
             "run_id": run["run_id"],
             "status": "running",
         }
-        msg = f"Follow-up sent. New job_id: {new_job_id}"
+        msg = f"Updated async subagent. Old job superseded. New job_id: {new_job_id}"
         return Command(
             update={
                 "messages": [ToolMessage(msg, tool_call_id=runtime.tool_call_id)],
-                "async_subagent_jobs": {new_job_id: job},
+                "async_subagent_jobs": {old_canonical: old_job, new_job_id: new_job},
             }
         )
 
@@ -467,7 +475,7 @@ def _build_update_tool(
         runtime: ToolRuntime,
     ) -> str | Command:
         try:
-            agent_name, thread_id, _run_id = _parse_job_id(job_id)
+            agent_name, thread_id, old_run_id = _parse_job_id(job_id)
         except ValueError as e:
             return str(e)
         try:
@@ -482,19 +490,27 @@ def _build_update_tool(
             input={"messages": [{"role": "user", "content": message}]},
             multitask_strategy="interrupt",
         )
+        old_canonical = _format_job_id(name, thread_id, old_run_id)
         new_job_id = _format_job_id(name, thread_id, run["run_id"])
-        job: AsyncSubAgentJob = {
+        old_job: AsyncSubAgentJob = {
+            "job_id": old_canonical,
+            "agent_name": name,
+            "thread_id": thread_id,
+            "run_id": old_run_id,
+            "status": "superseded",
+        }
+        new_job: AsyncSubAgentJob = {
             "job_id": new_job_id,
             "agent_name": name,
             "thread_id": thread_id,
             "run_id": run["run_id"],
             "status": "running",
         }
-        msg = f"Follow-up sent. New job_id: {new_job_id}"
+        msg = f"Updated async subagent. Old job superseded. New job_id: {new_job_id}"
         return Command(
             update={
                 "messages": [ToolMessage(msg, tool_call_id=runtime.tool_call_id)],
-                "async_subagent_jobs": {new_job_id: job},
+                "async_subagent_jobs": {old_canonical: old_job, new_job_id: new_job},
             }
         )
 

@@ -47,13 +47,14 @@ class TestAsyncSubAgentMiddleware:
         with pytest.raises(ValueError, match="At least one async subagent"):
             AsyncSubAgentMiddleware(async_subagents=[])
 
-    def test_init_creates_four_tools(self) -> None:
+    def test_init_creates_five_tools(self) -> None:
         mw = AsyncSubAgentMiddleware(async_subagents=[_make_spec()])
         tool_names = {t.name for t in mw.tools}
         assert tool_names == {
             "launch_async_subagent",
             "check_async_subagent",
             "update_async_subagent",
+            "cancel_async_subagent",
             "list_async_subagent_jobs",
         }
 
@@ -167,14 +168,15 @@ class TestJobsReducer:
 
 
 class TestBuildAsyncSubagentTools:
-    def test_returns_four_tools(self) -> None:
+    def test_returns_five_tools(self) -> None:
         tools = _build_async_subagent_tools([_make_spec()])
-        assert len(tools) == 4
+        assert len(tools) == 5
         names = [t.name for t in tools]
         assert names == [
             "launch_async_subagent",
             "check_async_subagent",
             "update_async_subagent",
+            "cancel_async_subagent",
             "list_async_subagent_jobs",
         ]
 
@@ -331,10 +333,15 @@ class TestUpdateTool:
 
         assert isinstance(result, Command)
         jobs = result.update["async_subagent_jobs"]
+
         new_key = "test-agent::thread_abc::run_new"
         assert new_key in jobs
         assert jobs[new_key]["run_id"] == "run_new"
         assert jobs[new_key]["status"] == "running"
+
+        old_key = "test-agent::thread_abc::run_xyz"
+        assert old_key in jobs
+        assert jobs[old_key]["status"] == "superseded"
 
         msgs = result.update["messages"]
         assert msgs[0].tool_call_id == "tc_update"
@@ -351,14 +358,14 @@ class TestUpdateTool:
 class TestListJobsTool:
     def test_empty_state_returns_no_jobs(self) -> None:
         tools = _build_async_subagent_tools([_make_spec()])
-        list_tool = tools[3]
+        list_tool = tools[4]
         rt = _make_runtime()
         result = list_tool.func(runtime=rt)
         assert "No async subagent jobs tracked" in result
 
     def test_returns_tracked_jobs(self) -> None:
         tools = _build_async_subagent_tools([_make_spec()])
-        list_tool = tools[3]
+        list_tool = tools[4]
         jobs: dict[str, AsyncSubAgentJob] = {
             "alpha::t1::r1": {
                 "job_id": "alpha::t1::r1",
@@ -392,7 +399,7 @@ class TestListJobsTool:
 
     async def test_async_list_returns_same_result(self) -> None:
         tools = _build_async_subagent_tools([_make_spec()])
-        list_tool = tools[3]
+        list_tool = tools[4]
         rt = _make_runtime()
         result = await list_tool.coroutine(runtime=rt)
         assert "No async subagent jobs tracked" in result

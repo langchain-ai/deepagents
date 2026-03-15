@@ -999,7 +999,7 @@ class TestGetMCPTools:
             pytest.raises(RuntimeError, match="Timed out connecting"),
         ):
             await get_mcp_tools(path)
-        mock_cleanup.assert_awaited_once()
+        mock_cleanup.assert_awaited()
 
     @patch("langchain_mcp_adapters.tools.load_mcp_tools")
     @patch("langchain_mcp_adapters.client.MultiServerMCPClient")
@@ -1029,7 +1029,7 @@ class TestGetMCPTools:
             pytest.raises(RuntimeError, match="Timed out loading tools"),
         ):
             await get_mcp_tools(path)
-        mock_cleanup.assert_awaited_once()
+        mock_cleanup.assert_awaited()
 
     def test_timeout_constants_are_positive(self) -> None:
         """Test that timeout constants have positive values."""

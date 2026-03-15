@@ -487,10 +487,10 @@ async def _load_tools_from_config(
                     ],
                 )
             )
-    except RuntimeError:
-        raise
     except Exception as e:
         await manager.cleanup()
+        if isinstance(e, RuntimeError):
+            raise
         error_msg = (
             f"Failed to load tools from MCP server '{server_name}': {e}\n"
             "For stdio servers: Check that the command and args are correct,"

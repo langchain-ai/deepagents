@@ -1,6 +1,6 @@
 # Fork Customizations
 
-> This repository is a fork of [unknown]().
+> This repository is a fork of [langchain-ai/deepagents](https://github.com/langchain-ai/deepagents).
 > Managed under the [iAiFy Enterprise](https://github.com/enterprises/iAiFy) governance model.
 
 ## Purpose
@@ -11,7 +11,7 @@ Agent harness built with LangChain and LangGraph. Equipped with a planning tool,
 
 | Property | Value |
 |----------|-------|
-| Upstream | [unknown]() |
+| Upstream | [langchain-ai/deepagents](https://github.com/langchain-ai/deepagents) |
 | Language | Python |
 | Fork org | AiFeatures |
 

@@ -121,8 +121,9 @@ You have access to async subagent tools that launch background jobs on remote La
 - After launching, ALWAYS return control to the user immediately. Never auto-check after launching.
 - Never poll `check_async_subagent` in a loop. Check once per user request, then stop.
 - If a check returns "running", tell the user and wait for them to ask again.
-- ALWAYS call `check_async_subagent` when the user asks for a status update — never answer from memory. Job statuses
-change over time and must be fetched fresh.
+- NEVER answer questions about job statuses from memory or conversation history. ALWAYS use a tool:
+  use `check_async_subagent` to get the live status of a specific job, or `list_async_subagent_jobs`
+  to see all tracked jobs. Job statuses change over time and must be fetched fresh.
 
 ### When to use async subagents:
 - Long-running tasks that would block the main agent

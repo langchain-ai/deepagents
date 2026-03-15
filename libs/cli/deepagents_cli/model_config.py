@@ -192,6 +192,7 @@ PROVIDER_API_KEY_ENV: dict[str, str] = {
     "openrouter": "OPENROUTER_API_KEY",
     "perplexity": "PPLX_API_KEY",
     "together": "TOGETHER_API_KEY",
+    "minimax": "MINIMAX_API_KEY",
     "xai": "XAI_API_KEY",
 }
 """Well-known providers mapped to the env var that holds their API key.
@@ -203,6 +204,38 @@ time.
 
 Providers not listed here fall through to the config-file check or the langchain
 registry fallback.
+"""
+
+_BUILTIN_CUSTOM_PROVIDERS: dict[str, ProviderConfig] = {
+    "minimax": {
+        "class_path": "langchain_openai.chat_models:ChatOpenAI",
+        "models": ["MiniMax-M2.5", "MiniMax-M2.5-highspeed"],
+        "api_key_env": "MINIMAX_API_KEY",
+        "base_url": "https://api.minimax.io/v1",
+        "params": {"temperature": 1.0},
+        "profile": {
+            "MiniMax-M2.5": {
+                "max_input_tokens": 204800,
+                "max_output_tokens": 192000,
+                "tool_calling": True,
+                "text_inputs": True,
+                "text_outputs": True,
+            },
+            "MiniMax-M2.5-highspeed": {
+                "max_input_tokens": 204800,
+                "max_output_tokens": 192000,
+                "tool_calling": True,
+                "text_inputs": True,
+                "text_outputs": True,
+            },
+        },
+    },
+}
+"""Built-in custom providers that use OpenAI-compatible or other class_path-based
+integration.
+
+These are merged into the user's config as defaults — user config.toml entries
+take priority and can override any value.
 """
 
 
@@ -673,6 +706,30 @@ def get_credential_env_var(provider: str) -> str | None:
     return PROVIDER_API_KEY_ENV.get(provider)
 
 
+def _merge_builtin_providers(
+    user_providers: dict[str, Any],
+) -> dict[str, Any]:
+    """Merge built-in custom providers with user-provided config.
+
+    Built-in providers (e.g., MiniMax) act as defaults — user config.toml
+    entries take priority and fully replace the built-in entry for a given
+    provider name.
+
+    Args:
+        user_providers: Provider dict from the user's config.toml.
+
+    Returns:
+        Merged provider dict with built-in defaults for any providers
+        not overridden by the user.
+    """
+    merged = {}
+    for name, builtin_config in _BUILTIN_CUSTOM_PROVIDERS.items():
+        if name not in user_providers:
+            merged[name] = builtin_config
+    merged.update(user_providers)
+    return merged
+
+
 @dataclass(frozen=True)
 class ModelConfig:
     """Parsed model configuration from `config.toml`.
@@ -720,7 +777,7 @@ class ModelConfig:
             config_path = DEFAULT_CONFIG_PATH
 
         if not config_path.exists():
-            fallback = cls()
+            fallback = cls(providers=_merge_builtin_providers({}))
             if is_default:
                 _default_config_cache = fallback
             return fallback
@@ -735,22 +792,23 @@ class ModelConfig:
                 config_path,
                 e,
             )
-            fallback = cls()
+            fallback = cls(providers=_merge_builtin_providers({}))
             if is_default:
                 _default_config_cache = fallback
             return fallback
         except (PermissionError, OSError) as e:
             logger.warning("Could not read config file %s: %s", config_path, e)
-            fallback = cls()
+            fallback = cls(providers=_merge_builtin_providers({}))
             if is_default:
                 _default_config_cache = fallback
             return fallback
 
         models_section = data.get("models", {})
+        user_providers = models_section.get("providers", {})
         config = cls(
             default_model=models_section.get("default"),
             recent_model=models_section.get("recent"),
-            providers=models_section.get("providers", {}),
+            providers=_merge_builtin_providers(user_providers),
         )
 
         # Validate config consistency

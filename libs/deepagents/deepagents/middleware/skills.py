@@ -438,8 +438,10 @@ def _list_skills(backend: BackendProtocol, source_path: str) -> list[SkillMetada
     # For each skill directory, check if SKILL.md exists and download it
     skill_md_paths = []
     for skill_dir_path in skill_dirs:
+        # Normalize Windows backslashes before using PurePosixPath
+        normalized_path = skill_dir_path.replace("\\", "/")
         # Construct SKILL.md path using PurePosixPath for safe, standardized path operations
-        skill_dir = PurePosixPath(skill_dir_path)
+        skill_dir = PurePosixPath(normalized_path)
         skill_md_path = str(skill_dir / "SKILL.md")
         skill_md_paths.append((skill_dir_path, skill_md_path))
 
@@ -515,8 +517,10 @@ async def _alist_skills(backend: BackendProtocol, source_path: str) -> list[Skil
     # For each skill directory, check if SKILL.md exists and download it
     skill_md_paths = []
     for skill_dir_path in skill_dirs:
+        # Normalize Windows backslashes before using PurePosixPath
+        normalized_path = skill_dir_path.replace("\\", "/")
         # Construct SKILL.md path using PurePosixPath for safe, standardized path operations
-        skill_dir = PurePosixPath(skill_dir_path)
+        skill_dir = PurePosixPath(normalized_path)
         skill_md_path = str(skill_dir / "SKILL.md")
         skill_md_paths.append((skill_dir_path, skill_md_path))
 
@@ -677,7 +681,9 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         locations = []
 
         for i, source_path in enumerate(self.sources):
-            name = PurePosixPath(source_path.rstrip("/")).name.capitalize()
+            # Normalize Windows backslashes before using PurePosixPath
+            normalized_path = source_path.replace("\\", "/").rstrip("/")
+            name = PurePosixPath(normalized_path).name.capitalize()
             suffix = " (higher priority)" if i == len(self.sources) - 1 else ""
             locations.append(f"**{name} Skills**: `{source_path}`{suffix}")
 

@@ -1,0 +1,55 @@
+# Copilot Coding Agent — Environment Setup
+# This workflow configures the development environment for Copilot's coding agent.
+# It runs automatically when Copilot starts a coding session.
+# Docs: https://docs.github.com/en/copilot/customizing-copilot/customizing-the-development-environment-for-copilot-coding-agent
+
+name: "Copilot Setup Steps"
+
+on: workflow_dispatch
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── Node.js (JavaScript/TypeScript) ──
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install npm dependencies
+        run: |
+          if [ -f package-lock.json ] || [ -f package.json ]; then
+            npm ci --ignore-scripts 2>/dev/null || npm install --ignore-scripts 2>/dev/null || true
+          fi
+
+      # ── Python ──
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python dependencies
+        run: |
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt 2>/dev/null || true
+          elif [ -f pyproject.toml ]; then
+            pip install -e ".[dev]" 2>/dev/null || pip install -e . 2>/dev/null || true
+          fi
+
+      # ── Go ──
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "stable"
+
+      - name: Install Go modules
+        run: |
+          if [ -f go.mod ]; then
+            go mod download 2>/dev/null || true
+          fi

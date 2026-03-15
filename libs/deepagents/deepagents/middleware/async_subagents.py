@@ -88,10 +88,10 @@ Available async agent types:
 {available_agents}
 
 ## Usage notes:
-1. This tool launches a background job and returns immediately with a job ID (thread_id + run_id).
-2. Use `check_async_subagent` to poll for status and results.
-3. Use `update_async_subagent` to send updates or new instructions to a running job.
-4. Multiple async subagents can run concurrently — launch several and check them periodically.
+1. This tool launches a background job and returns immediately with a job ID. Report the job ID to the user and stop — do NOT immediately check status.
+2. Use `check_async_subagent` only when the user asks for a status update or result.
+3. Use `update_async_subagent` to send new instructions to a running job.
+4. Multiple async subagents can run concurrently — launch several and let them run in the background.
 5. The subagent runs on a remote LangGraph server, so it has its own tools and capabilities."""  # noqa: E501
 
 ASYNC_TASK_SYSTEM_PROMPT = """## Async subagents (remote LangGraph servers)
@@ -106,12 +106,17 @@ You have access to async subagent tools that launch background jobs on remote La
 - `list_async_subagent_jobs`: List all tracked jobs and their last-known statuses. Use this to recall job IDs.
 
 ### Workflow:
-1. **Launch** — Use `launch_async_subagent` to start a job. You get back a job ID.
-2. **Monitor** — Use `check_async_subagent` to poll for status. Jobs can be: pending, running, success, error, timeout, or interrupted.
+1. **Launch** — Use `launch_async_subagent` to start a job. Report the job ID to the user and stop. Do NOT immediately check the status — the job runs in the background while you and the user continue other work.
+2. **Check (on request)** — Only use `check_async_subagent` when the user explicitly asks for a status update or result. If the status is "running", report that and stop — do not poll in a loop.
 3. **Update** (optional) — Use `update_async_subagent` to send new context or instructions to a running job.
 4. **Cancel** (optional) — Use `cancel_async_subagent` to stop a job that is no longer needed.
-5. **Collect** — When status is "success", the result is included in the check response.
+5. **Collect** — When `check_async_subagent` returns status "success", the result is included in the response.
 6. **Recall** — Use `list_async_subagent_jobs` if you need to recall job IDs (e.g., after context compaction).
+
+### Critical rules:
+- After launching, ALWAYS return control to the user immediately. Never auto-check after launching.
+- Never poll `check_async_subagent` in a loop. Check once per user request, then stop.
+- If a check returns "running", tell the user and wait for them to ask again.
 
 ### When to use async subagents:
 - Long-running tasks that would block the main agent

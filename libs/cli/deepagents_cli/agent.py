@@ -605,6 +605,7 @@ def _add_interrupt_on() -> dict[str, InterruptOnConfig]:
         "task": task_interrupt_config,
         "launch_async_subagent": async_subagent_interrupt_config,
         "update_async_subagent": async_subagent_interrupt_config,
+        "cancel_async_subagent": async_subagent_interrupt_config,
     }
 
     if REQUIRE_COMPACT_TOOL_APPROVAL:

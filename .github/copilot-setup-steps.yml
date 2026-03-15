@@ -1,0 +1,34 @@
+name: Copilot Setup Steps
+on: workflow_dispatch
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+
+      - name: Install Node dependencies
+        run: |
+          if [ -f package-lock.json ]; then npm ci; fi
+          if [ -f package.json ] && [ ! -f package-lock.json ]; then npm install; fi
+
+      - name: Install Python dependencies
+        run: |
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f pyproject.toml ]; then pip install -e '.[dev]' 2>/dev/null || pip install -e .; fi
+
+      - name: Install Go dependencies
+        run: |
+          if [ -f go.mod ]; then go mod download; fi

@@ -25,6 +25,7 @@ if TYPE_CHECKING:
 
     from langchain.agents.middleware.types import ModelRequest
     from langgraph_sdk.client import LangGraphClient, SyncLangGraphClient
+    from langgraph_sdk.schema import Run
 
 
 class AsyncSubAgent(TypedDict):
@@ -309,7 +310,7 @@ def _resolve_client_name(agent_name: str, agent_map: dict[str, AsyncSubAgent]) -
 
 
 def _build_check_result(
-    run: Any,
+    run: Run,
     thread_id: str,
     thread_values: dict[str, Any],
 ) -> dict[str, Any]:

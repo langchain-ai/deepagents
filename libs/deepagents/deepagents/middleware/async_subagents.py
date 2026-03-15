@@ -108,7 +108,7 @@ You have access to async subagent tools that launch background jobs on remote La
 ### Workflow:
 1. **Launch** — Use `launch_async_subagent` to start a job. Report the job ID to the user and stop. Do NOT immediately check the status — the job runs in the background while you and the user continue other work.
 2. **Check (on request)** — Only use `check_async_subagent` when the user explicitly asks for a status update or result. If the status is "running", report that and stop — do not poll in a loop.
-3. **Update** (optional) — Use `update_async_subagent` to send new context or instructions to a running job.
+3. **Update** (optional) — Use `update_async_subagent` to send new instructions to a running job. This interrupts the current run and starts a fresh one on the same thread. Use the new job_id it returns going forward.
 4. **Cancel** (optional) — Use `cancel_async_subagent` to stop a job that is no longer needed.
 5. **Collect** — When `check_async_subagent` returns status "success", the result is included in the response.
 6. **Recall** — Use `list_async_subagent_jobs` if you need to recall job IDs (e.g., after context compaction).
@@ -503,9 +503,10 @@ def _build_update_tool(
         func=update_async_subagent,
         coroutine=aupdate_async_subagent,
         description=(
-            "Send a follow-up message to an async subagent. Creates a new run on the same thread "
-            "so the subagent sees the full conversation history plus your new message. "
-            "Returns a new job_id to track the follow-up."
+            "Send updated instructions to an async subagent. Interrupts the current run and starts "
+            "a new one on the same thread, so the subagent sees the full conversation history plus "
+            "your new message. The original job_id will show as 'interrupted'. "
+            "Returns a new job_id to track the updated run."
         ),
     )
 

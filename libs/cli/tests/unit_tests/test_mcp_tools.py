@@ -1,5 +1,6 @@
 """Tests for MCP tools configuration loading and validation."""
 
+import asyncio
 import json
 from collections.abc import Callable
 from pathlib import Path
@@ -8,6 +9,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from deepagents_cli.mcp_tools import (
+    MCP_CONNECTION_TIMEOUT,
+    MCP_TOOL_LOAD_TIMEOUT,
     MCPServerInfo,
     MCPSessionManager,
     MCPToolInfo,
@@ -22,6 +25,9 @@ from deepagents_cli.mcp_tools import (
     resolve_and_load_mcp_tools,
 )
 from deepagents_cli.project_utils import ProjectContext
+
+_MOCK_HANG_DURATION = 3600
+"""Sleep duration (seconds) used in test helpers to simulate a hanging MCP server."""
 
 # Test Fixtures
 
@@ -912,6 +918,123 @@ class TestGetMCPTools:
 
         # Clean up
         await manager.cleanup()
+
+    @patch("langchain_mcp_adapters.client.MultiServerMCPClient")
+    async def test_connection_timeout_raises_runtime_error(
+        self,
+        mock_client_class: MagicMock,
+        write_config: Callable[..., str],
+        valid_config_data: dict,
+        mock_mcp_client: tuple,
+    ) -> None:
+        """Test that a timeout during session connect raises RuntimeError."""
+        path = write_config(valid_config_data)
+        mock_client, _ = mock_mcp_client
+
+        # Make enter_async_context hang by replacing the context manager with
+        # one whose __aenter__ never completes.
+        async def _never_complete(*_args: object, **_kwargs: object) -> None:
+            await asyncio.sleep(_MOCK_HANG_DURATION)
+
+        mock_client.session.return_value.__aenter__ = _never_complete
+        mock_client_class.return_value = mock_client
+
+        with (
+            patch("deepagents_cli.mcp_tools.MCP_CONNECTION_TIMEOUT", 0.05),
+            pytest.raises(RuntimeError, match=r"Timed out connecting to MCP server"),
+        ):
+            await get_mcp_tools(path)
+
+    @patch("langchain_mcp_adapters.tools.load_mcp_tools")
+    @patch("langchain_mcp_adapters.client.MultiServerMCPClient")
+    async def test_tool_load_timeout_raises_runtime_error(
+        self,
+        mock_client_class: MagicMock,
+        mock_load_tools: AsyncMock,
+        write_config: Callable[..., str],
+        valid_config_data: dict,
+        mock_mcp_client: tuple,
+    ) -> None:
+        """Test that a timeout during tool listing raises RuntimeError."""
+        path = write_config(valid_config_data)
+        mock_client, _ = mock_mcp_client
+        mock_client_class.return_value = mock_client
+
+        async def _never_complete(*_args: object, **_kwargs: object) -> None:
+            await asyncio.sleep(_MOCK_HANG_DURATION)
+
+        mock_load_tools.side_effect = _never_complete
+
+        with (
+            patch("deepagents_cli.mcp_tools.MCP_TOOL_LOAD_TIMEOUT", 0.05),
+            pytest.raises(
+                RuntimeError, match=r"Timed out loading tools from MCP server"
+            ),
+        ):
+            await get_mcp_tools(path)
+
+    @patch("langchain_mcp_adapters.client.MultiServerMCPClient")
+    async def test_connection_timeout_triggers_cleanup(
+        self,
+        mock_client_class: MagicMock,
+        write_config: Callable[..., str],
+        valid_config_data: dict,
+        mock_mcp_client: tuple,
+    ) -> None:
+        """Test that manager.cleanup() is called when session connect times out."""
+        path = write_config(valid_config_data)
+        mock_client, _ = mock_mcp_client
+
+        async def _never_complete(*_args: object, **_kwargs: object) -> None:
+            await asyncio.sleep(_MOCK_HANG_DURATION)
+
+        mock_client.session.return_value.__aenter__ = _never_complete
+        mock_client_class.return_value = mock_client
+
+        with (
+            patch("deepagents_cli.mcp_tools.MCP_CONNECTION_TIMEOUT", 0.05),
+            patch.object(
+                MCPSessionManager, "cleanup", new_callable=AsyncMock
+            ) as mock_cleanup,
+            pytest.raises(RuntimeError, match="Timed out connecting"),
+        ):
+            await get_mcp_tools(path)
+        mock_cleanup.assert_awaited_once()
+
+    @patch("langchain_mcp_adapters.tools.load_mcp_tools")
+    @patch("langchain_mcp_adapters.client.MultiServerMCPClient")
+    async def test_tool_load_timeout_triggers_cleanup(
+        self,
+        mock_client_class: MagicMock,
+        mock_load_tools: AsyncMock,
+        write_config: Callable[..., str],
+        valid_config_data: dict,
+        mock_mcp_client: tuple,
+    ) -> None:
+        """Test that manager.cleanup() is called when tool listing times out."""
+        path = write_config(valid_config_data)
+        mock_client, _ = mock_mcp_client
+        mock_client_class.return_value = mock_client
+
+        async def _never_complete(*_args: object, **_kwargs: object) -> None:
+            await asyncio.sleep(_MOCK_HANG_DURATION)
+
+        mock_load_tools.side_effect = _never_complete
+
+        with (
+            patch("deepagents_cli.mcp_tools.MCP_TOOL_LOAD_TIMEOUT", 0.05),
+            patch.object(
+                MCPSessionManager, "cleanup", new_callable=AsyncMock
+            ) as mock_cleanup,
+            pytest.raises(RuntimeError, match="Timed out loading tools"),
+        ):
+            await get_mcp_tools(path)
+        mock_cleanup.assert_awaited_once()
+
+    def test_timeout_constants_are_positive(self) -> None:
+        """Test that timeout constants have positive values."""
+        assert MCP_CONNECTION_TIMEOUT > 0
+        assert MCP_TOOL_LOAD_TIMEOUT > 0
 
 
 class TestDiscoverMcpConfigs:

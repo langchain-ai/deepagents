@@ -8,6 +8,7 @@ and project-level locations.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from contextlib import AsyncExitStack
@@ -43,6 +44,21 @@ class MCPServerInfo:
 
 _SUPPORTED_REMOTE_TYPES = {"sse", "http"}
 """Supported transport types for remote MCP servers (SSE and HTTP)."""
+
+MCP_CONNECTION_TIMEOUT: float = 30.0
+"""Seconds to wait when establishing a session with an MCP server.
+
+Applies to each `client.session()` enter call in `_load_tools_from_config`.
+Raise this value if your MCP server is legitimately slow to start (e.g., a
+large stdio subprocess), but beware that a higher value also increases how
+long the CLI hangs when a server is truly unresponsive.
+"""
+
+MCP_TOOL_LOAD_TIMEOUT: float = 30.0
+"""Seconds to wait when listing tools from a connected MCP session.
+
+Applies to each `load_mcp_tools()` call in `_load_tools_from_config`.
+"""
 
 
 def _resolve_server_type(server_config: dict[str, Any]) -> str:
@@ -431,12 +447,35 @@ async def _load_tools_from_config(
         all_tools: list[BaseTool] = []
         server_infos: list[MCPServerInfo] = []
         for server_name, server_config in config["mcpServers"].items():
-            session = await manager.exit_stack.enter_async_context(
-                client.session(server_name)
-            )
-            tools = await load_mcp_tools(
-                session, server_name=server_name, tool_name_prefix=True
-            )
+            try:
+                session = await asyncio.wait_for(
+                    manager.exit_stack.enter_async_context(client.session(server_name)),
+                    timeout=MCP_CONNECTION_TIMEOUT,
+                )
+            except TimeoutError as e:
+                await manager.cleanup()
+                error_msg = (
+                    f"Timed out connecting to MCP server '{server_name}' "
+                    f"after {MCP_CONNECTION_TIMEOUT}s. "
+                    "The server may be unresponsive or slow to start."
+                )
+                raise RuntimeError(error_msg) from e
+            try:
+                tools = await asyncio.wait_for(
+                    load_mcp_tools(
+                        session, server_name=server_name, tool_name_prefix=True
+                    ),
+                    timeout=MCP_TOOL_LOAD_TIMEOUT,
+                )
+            except TimeoutError as e:
+                await manager.cleanup()
+                error_msg = (
+                    f"Timed out loading tools from MCP server '{server_name}' "
+                    f"after {MCP_TOOL_LOAD_TIMEOUT}s. "
+                    "The server connected but did not respond to the "
+                    "tools/list request."
+                )
+                raise RuntimeError(error_msg) from e
             all_tools.extend(tools)
             server_infos.append(
                 MCPServerInfo(
@@ -448,6 +487,8 @@ async def _load_tools_from_config(
                     ],
                 )
             )
+    except RuntimeError:
+        raise
     except Exception as e:
         await manager.cleanup()
         error_msg = (

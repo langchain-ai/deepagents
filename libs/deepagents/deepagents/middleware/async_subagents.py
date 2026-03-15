@@ -106,9 +106,12 @@ You have access to async subagent tools that launch background jobs on remote La
 - `list_async_subagent_jobs`: List all tracked jobs and their last-known statuses. Use this to recall job IDs.
 
 ### Workflow:
-1. **Launch** — Use `launch_async_subagent` to start a job. Report the job ID to the user and stop. Do NOT immediately check the status — the job runs in the background while you and the user continue other work.
-2. **Check (on request)** — Only use `check_async_subagent` when the user explicitly asks for a status update or result. If the status is "running", report that and stop — do not poll in a loop.
-3. **Update** (optional) — Use `update_async_subagent` to send new instructions to a running job. This interrupts the current run and starts a fresh one on the same thread. Use the new job_id it returns going forward.
+1. **Launch** — Use `launch_async_subagent` to start a job. Report the job ID to the user and stop.
+   Do NOT immediately check the status — the job runs in the background while you and the user continue other work.
+2. **Check (on request)** — Only use `check_async_subagent` when the user explicitly asks for a status update or
+   result. If the status is "running", report that and stop — do not poll in a loop.
+3. **Update** (optional) — Use `update_async_subagent` to send new instructions to a running job. This interrupts
+   the current run and starts a fresh one on the same thread. Use the new job_id it returns going forward.
 4. **Cancel** (optional) — Use `cancel_async_subagent` to stop a job that is no longer needed.
 5. **Collect** — When `check_async_subagent` returns status "success", the result is included in the response.
 6. **Recall** — Use `list_async_subagent_jobs` if you need to recall job IDs (e.g., after context compaction).
@@ -308,6 +311,67 @@ def _resolve_client_name(agent_name: str, agent_map: dict[str, AsyncSubAgent]) -
     return next(iter(agent_map))
 
 
+def _build_check_result(
+    run: dict[str, Any],
+    thread_id: str,
+    thread_values: dict[str, Any],
+) -> dict[str, Any]:
+    """Build the result dict from a completed run and its thread values."""
+    result: dict[str, Any] = {
+        "status": run["status"],
+        "run_id": run["run_id"],
+        "thread_id": thread_id,
+    }
+    if run["status"] == "success":
+        messages = thread_values.get("messages", []) if isinstance(thread_values, dict) else []
+        if messages:
+            last = messages[-1]
+            result["result"] = last.get("content", "") if isinstance(last, dict) else str(last)
+    elif run["status"] == "error":
+        result["error"] = "The async subagent encountered an error."
+    return result
+
+
+def _build_check_command(
+    result: dict[str, Any],
+    name: str,
+    thread_id: str,
+    run_id: str,
+    tool_call_id: str,
+) -> Command:
+    """Build the Command update for a check result."""
+    canonical = _format_job_id(name, thread_id, run_id)
+    job: AsyncSubAgentJob = {
+        "job_id": canonical,
+        "agent_name": name,
+        "thread_id": thread_id,
+        "run_id": run_id,
+        "status": result["status"],
+    }
+    return Command(
+        update={
+            "messages": [ToolMessage(json.dumps(result), tool_call_id=tool_call_id)],
+            "async_subagent_jobs": {canonical: job},
+        }
+    )
+
+
+def _parse_and_resolve(
+    job_id: str,
+    agent_map: dict[str, AsyncSubAgent],
+) -> tuple[str, str, str] | str:
+    """Parse a job_id and resolve the agent name. Returns (name, thread_id, run_id) or an error string."""
+    try:
+        agent_name, thread_id, run_id = _parse_job_id(job_id)
+    except ValueError as e:
+        return str(e)
+    try:
+        name = _resolve_client_name(agent_name, agent_map)
+    except ValueError as e:
+        return str(e)
+    return name, thread_id, run_id
+
+
 def _build_check_tool(
     agent_map: dict[str, AsyncSubAgent],
     clients: _ClientCache,
@@ -318,91 +382,47 @@ def _build_check_tool(
         job_id: Annotated[str, "The exact job_id string returned by launch_async_subagent. Pass it verbatim."],
         runtime: ToolRuntime,
     ) -> str | Command:
-        try:
-            agent_name, thread_id, run_id = _parse_job_id(job_id)
-        except ValueError as e:
-            return str(e)
-
-        try:
-            name = _resolve_client_name(agent_name, agent_map)
-        except ValueError as e:
-            return str(e)
+        parsed = _parse_and_resolve(job_id, agent_map)
+        if isinstance(parsed, str):
+            return parsed
+        name, thread_id, run_id = parsed
 
         client = clients.get_sync(name)
-
         try:
             run = client.runs.get(thread_id=thread_id, run_id=run_id)
         except Exception as e:
             return f"Failed to get run status: {e}"
-        result: dict[str, Any] = {"status": run["status"], "run_id": run["run_id"], "thread_id": thread_id}
+
+        thread_values: dict[str, Any] = {}
         if run["status"] == "success":
             thread = client.threads.get(thread_id=thread_id)
-            values = thread.get("values") or {}
-            messages = values.get("messages", []) if isinstance(values, dict) else []
-            if messages:
-                last = messages[-1]
-                result["result"] = last.get("content", "") if isinstance(last, dict) else str(last)
-        elif run["status"] == "error":
-            result["error"] = "The async subagent encountered an error."
-        canonical = _format_job_id(name, thread_id, run_id)
-        job: AsyncSubAgentJob = {
-            "job_id": canonical,
-            "agent_name": name,
-            "thread_id": thread_id,
-            "run_id": run_id,
-            "status": run["status"],
-        }
-        return Command(
-            update={
-                "messages": [ToolMessage(json.dumps(result), tool_call_id=runtime.tool_call_id)],
-                "async_subagent_jobs": {canonical: job},
-            }
-        )
+            thread_values = thread.get("values") or {}
+
+        result = _build_check_result(run, thread_id, thread_values)
+        return _build_check_command(result, name, thread_id, run_id, runtime.tool_call_id)
 
     async def acheck_async_subagent(
         job_id: Annotated[str, "The exact job_id string returned by launch_async_subagent. Pass it verbatim."],
         runtime: ToolRuntime,
     ) -> str | Command:
-        try:
-            agent_name, thread_id, run_id = _parse_job_id(job_id)
-        except ValueError as e:
-            return str(e)
-
-        try:
-            name = _resolve_client_name(agent_name, agent_map)
-        except ValueError as e:
-            return str(e)
+        parsed = _parse_and_resolve(job_id, agent_map)
+        if isinstance(parsed, str):
+            return parsed
+        name, thread_id, run_id = parsed
 
         client = clients.get_async(name)
-
         try:
             run = await client.runs.get(thread_id=thread_id, run_id=run_id)
         except Exception as e:
             return f"Failed to get run status: {e}"
-        result: dict[str, Any] = {"status": run["status"], "run_id": run["run_id"], "thread_id": thread_id}
+
+        thread_values: dict[str, Any] = {}
         if run["status"] == "success":
             thread = await client.threads.get(thread_id=thread_id)
-            values = thread.get("values") or {}
-            messages = values.get("messages", []) if isinstance(values, dict) else []
-            if messages:
-                last = messages[-1]
-                result["result"] = last.get("content", "") if isinstance(last, dict) else str(last)
-        elif run["status"] == "error":
-            result["error"] = "The async subagent encountered an error."
-        canonical = _format_job_id(name, thread_id, run_id)
-        job: AsyncSubAgentJob = {
-            "job_id": canonical,
-            "agent_name": name,
-            "thread_id": thread_id,
-            "run_id": run_id,
-            "status": run["status"],
-        }
-        return Command(
-            update={
-                "messages": [ToolMessage(json.dumps(result), tool_call_id=runtime.tool_call_id)],
-                "async_subagent_jobs": {canonical: job},
-            }
-        )
+            thread_values = thread.get("values") or {}
+
+        result = _build_check_result(run, thread_id, thread_values)
+        return _build_check_command(result, name, thread_id, run_id, runtime.tool_call_id)
 
     return StructuredTool.from_function(
         name="check_async_subagent",

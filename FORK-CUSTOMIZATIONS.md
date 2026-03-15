@@ -1,26 +1,40 @@
 # Fork Customizations
 
-> This file documents local modifications made to this forked repository.
-> It is REQUIRED for all forks in the iAiFy enterprise.
+> This repository is a fork of [unknown]().
+> Managed under the [iAiFy Enterprise](https://github.com/enterprises/iAiFy) governance model.
+
+## Purpose
+
+Agent harness built with LangChain and LangGraph. Equipped with a planning tool, a filesystem backend, and the ability to spawn subagents - well-equipped to handle complex agentic tasks.
 
 ## Upstream Source
 
-- **Repository:** https://github.com/langchain-ai/deepagents
-- **Last synced:** <!-- Update after each sync -->
-- **Sync method:** Ai-road-4-You/fork-sync workflow
+| Property | Value |
+|----------|-------|
+| Upstream | [unknown]() |
+| Language | Python |
+| Fork org | AiFeatures |
 
-## Local Modifications
+## Local Customizations
 
-<!-- Document each local change below -->
+<!-- Document any local changes made to this fork below -->
 
-### 1. [Change description]
+| Change | Files affected | Reason |
+|--------|----------------|--------|
+| Enterprise governance files | `.github/`, `CLAUDE.md`, `AGENTS.md` | iAiFy enterprise standard |
+| Copilot setup | `.github/copilot-setup-steps.yml` | Enterprise Copilot configuration |
+| CodeQL scanning | `.github/workflows/codeql.yml` | Enterprise security baseline |
 
-- **Files modified:** `path/to/file`
-- **Reason:** Why this change was needed
-- **Merge conflict risk:** Low / Medium / High
+## Sync Strategy
 
-## Sync Notes
+This fork follows the [Fork Governance Policy](https://github.com/Ai-road-4-You/governance/blob/main/docs/fork-governance.md).
 
-<!-- Any special instructions for syncing with upstream -->
+- **Sync frequency**: Monthly (via [fork-sync](https://github.com/Ai-road-4-You/fork-sync))
+- **Conflict resolution**: Prefer upstream, reapply local customizations
+- **Breaking changes**: Review upstream releases before syncing
 
-- No special instructions required
+## Maintenance
+
+- **Owner**: @ashsolei
+- **Last synced**: _Not yet synced_
+- **Last reviewed**: _Not yet reviewed_

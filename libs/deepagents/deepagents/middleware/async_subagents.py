@@ -102,14 +102,16 @@ You have access to async subagent tools that launch background jobs on remote La
 - `launch_async_subagent`: Start a new background job. Returns a job ID immediately.
 - `check_async_subagent`: Check the status of a running job. Returns status and result if complete.
 - `update_async_subagent`: Send an update or new instructions to a running job.
+- `cancel_async_subagent`: Cancel a running job that is no longer needed.
 - `list_async_subagent_jobs`: List all tracked jobs and their last-known statuses. Use this to recall job IDs.
 
 ### Workflow:
 1. **Launch** — Use `launch_async_subagent` to start a job. You get back a job ID.
 2. **Monitor** — Use `check_async_subagent` to poll for status. Jobs can be: pending, running, success, error, timeout, or interrupted.
 3. **Update** (optional) — Use `update_async_subagent` to send new context or instructions to a running job.
-4. **Collect** — When status is "success", the result is included in the check response.
-5. **Recall** — Use `list_async_subagent_jobs` if you need to recall job IDs (e.g., after context compaction).
+4. **Cancel** (optional) — Use `cancel_async_subagent` to stop a job that is no longer needed.
+5. **Collect** — When status is "success", the result is included in the check response.
+6. **Recall** — Use `list_async_subagent_jobs` if you need to recall job IDs (e.g., after context compaction).
 
 ### When to use async subagents:
 - Long-running tasks that would block the main agent
@@ -503,6 +505,86 @@ def _build_update_tool(
     )
 
 
+def _build_cancel_tool(
+    agent_map: dict[str, AsyncSubAgent],
+    clients: _ClientCache,
+) -> StructuredTool:
+    """Build the cancel_async_subagent tool."""
+
+    def cancel_async_subagent(
+        job_id: Annotated[str, "The exact job_id string returned by launch_async_subagent. Pass it verbatim."],
+        runtime: ToolRuntime,
+    ) -> str | Command:
+        try:
+            agent_name, thread_id, run_id = _parse_job_id(job_id)
+        except ValueError as e:
+            return str(e)
+        try:
+            name = _resolve_client_name(agent_name, agent_map)
+        except ValueError as e:
+            return str(e)
+        client = clients.get_sync(name)
+        try:
+            client.runs.cancel(thread_id=thread_id, run_id=run_id)
+        except Exception as e:
+            return f"Failed to cancel run: {e}"
+        canonical = _format_job_id(name, thread_id, run_id)
+        job: AsyncSubAgentJob = {
+            "job_id": canonical,
+            "agent_name": name,
+            "thread_id": thread_id,
+            "run_id": run_id,
+            "status": "cancelled",
+        }
+        msg = f"Cancelled async subagent job: {canonical}"
+        return Command(
+            update={
+                "messages": [ToolMessage(msg, tool_call_id=runtime.tool_call_id)],
+                "async_subagent_jobs": {canonical: job},
+            }
+        )
+
+    async def acancel_async_subagent(
+        job_id: Annotated[str, "The exact job_id string returned by launch_async_subagent. Pass it verbatim."],
+        runtime: ToolRuntime,
+    ) -> str | Command:
+        try:
+            agent_name, thread_id, run_id = _parse_job_id(job_id)
+        except ValueError as e:
+            return str(e)
+        try:
+            name = _resolve_client_name(agent_name, agent_map)
+        except ValueError as e:
+            return str(e)
+        client = clients.get_async(name)
+        try:
+            await client.runs.cancel(thread_id=thread_id, run_id=run_id)
+        except Exception as e:
+            return f"Failed to cancel run: {e}"
+        canonical = _format_job_id(name, thread_id, run_id)
+        job: AsyncSubAgentJob = {
+            "job_id": canonical,
+            "agent_name": name,
+            "thread_id": thread_id,
+            "run_id": run_id,
+            "status": "cancelled",
+        }
+        msg = f"Cancelled async subagent job: {canonical}"
+        return Command(
+            update={
+                "messages": [ToolMessage(msg, tool_call_id=runtime.tool_call_id)],
+                "async_subagent_jobs": {canonical: job},
+            }
+        )
+
+    return StructuredTool.from_function(
+        name="cancel_async_subagent",
+        func=cancel_async_subagent,
+        coroutine=acancel_async_subagent,
+        description="Cancel a running async subagent job. Use this to stop a job that is no longer needed.",
+    )
+
+
 def _build_list_jobs_tool() -> StructuredTool:
     """Build the list_async_subagent_jobs tool."""
 
@@ -547,6 +629,7 @@ def _build_async_subagent_tools(
         _build_launch_tool(agent_map, clients, launch_desc),
         _build_check_tool(agent_map, clients),
         _build_update_tool(agent_map, clients),
+        _build_cancel_tool(agent_map, clients),
         _build_list_jobs_tool(),
     ]
 

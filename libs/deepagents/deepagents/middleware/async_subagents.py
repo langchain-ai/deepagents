@@ -422,8 +422,14 @@ def _build_update_tool(
         message: Annotated[str, "Follow-up instructions or context to send to the subagent."],
         runtime: ToolRuntime,
     ) -> str | Command:
-        agent_name, thread_id, _run_id = _parse_job_id(job_id)
-        name = _resolve_client_name(agent_name, agent_map)
+        try:
+            agent_name, thread_id, _run_id = _parse_job_id(job_id)
+        except ValueError as e:
+            return str(e)
+        try:
+            name = _resolve_client_name(agent_name, agent_map)
+        except ValueError as e:
+            return str(e)
         spec = agent_map[name]
         client = clients.get_sync(name)
         run = client.runs.create(
@@ -453,8 +459,14 @@ def _build_update_tool(
         message: Annotated[str, "Follow-up instructions or context to send to the subagent."],
         runtime: ToolRuntime,
     ) -> str | Command:
-        agent_name, thread_id, _run_id = _parse_job_id(job_id)
-        name = _resolve_client_name(agent_name, agent_map)
+        try:
+            agent_name, thread_id, _run_id = _parse_job_id(job_id)
+        except ValueError as e:
+            return str(e)
+        try:
+            name = _resolve_client_name(agent_name, agent_map)
+        except ValueError as e:
+            return str(e)
         spec = agent_map[name]
         client = clients.get_async(name)
         run = await client.runs.create(

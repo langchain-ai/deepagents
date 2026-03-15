@@ -390,7 +390,7 @@ def _build_check_tool(
         client = clients.get_sync(name)
         try:
             run = client.runs.get(thread_id=thread_id, run_id=run_id)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
             return f"Failed to get run status: {e}"
 
         thread_values: dict[str, Any] = {}
@@ -413,7 +413,7 @@ def _build_check_tool(
         client = clients.get_async(name)
         try:
             run = await client.runs.get(thread_id=thread_id, run_id=run_id)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
             return f"Failed to get run status: {e}"
 
         thread_values: dict[str, Any] = {}
@@ -568,7 +568,7 @@ def _build_cancel_tool(
         client = clients.get_sync(name)
         try:
             client.runs.cancel(thread_id=thread_id, run_id=run_id)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
             return f"Failed to cancel run: {e}"
         canonical = _format_job_id(name, thread_id, run_id)
         job: AsyncSubAgentJob = {
@@ -601,7 +601,7 @@ def _build_cancel_tool(
         client = clients.get_async(name)
         try:
             await client.runs.cancel(thread_id=thread_id, run_id=run_id)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
             return f"Failed to cancel run: {e}"
         canonical = _format_job_id(name, thread_id, run_id)
         job: AsyncSubAgentJob = {

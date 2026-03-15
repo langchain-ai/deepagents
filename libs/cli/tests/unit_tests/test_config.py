@@ -1588,6 +1588,8 @@ class TestDetectProvider:
             ("gemini-3.1-pro-preview", "google_genai"),
             ("nemotron-3-nano-30b-a3b", "nvidia"),
             ("nvidia/nemotron-3-nano-30b-a3b", "nvidia"),
+            ("MiniMax-M2.5", "minimax"),
+            ("MiniMax-M2.5-highspeed", "minimax"),
             ("llama3", None),
             ("mistral-large", None),
             ("some-unknown-model", None),

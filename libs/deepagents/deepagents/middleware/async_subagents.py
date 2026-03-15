@@ -363,6 +363,28 @@ def _parse_and_resolve(
     return name, thread_id
 
 
+def _resolve_tracked_job(
+    job_id: str,
+    agent_map: dict[str, AsyncSubAgent],
+    runtime: ToolRuntime,
+) -> tuple[str, str, str, str] | str:
+    """Parse job_id, resolve agent, and look up the tracked job from state.
+
+    Returns:
+        `(name, thread_id, run_id, canonical_job_id)` on success, or an error string.
+    """
+    parsed = _parse_and_resolve(job_id, agent_map)
+    if isinstance(parsed, str):
+        return parsed
+    name, thread_id = parsed
+    canonical = _format_job_id(name, thread_id)
+    jobs: dict[str, AsyncSubAgentJob] = runtime.state.get("async_subagent_jobs") or {}
+    tracked = jobs.get(canonical)
+    if not tracked:
+        return f"No tracked job found for job_id: {job_id}"
+    return name, thread_id, tracked["run_id"], canonical
+
+
 def _build_check_tool(
     agent_map: dict[str, AsyncSubAgent],
     clients: _ClientCache,
@@ -373,18 +395,10 @@ def _build_check_tool(
         job_id: Annotated[str, "The exact job_id string returned by launch_async_subagent. Pass it verbatim."],
         runtime: ToolRuntime,
     ) -> str | Command:
-        parsed = _parse_and_resolve(job_id, agent_map)
-        if isinstance(parsed, str):
-            return parsed
-        name, thread_id = parsed
-
-        # Look up the current run_id from state
-        jobs: dict[str, AsyncSubAgentJob] = runtime.state.get("async_subagent_jobs") or {}
-        canonical = _format_job_id(name, thread_id)
-        tracked = jobs.get(canonical)
-        if not tracked:
-            return f"No tracked job found for job_id: {job_id}"
-        run_id = tracked["run_id"]
+        resolved = _resolve_tracked_job(job_id, agent_map, runtime)
+        if isinstance(resolved, str):
+            return resolved
+        name, thread_id, run_id, canonical = resolved
 
         client = clients.get_sync(name)
         try:
@@ -404,18 +418,10 @@ def _build_check_tool(
         job_id: Annotated[str, "The exact job_id string returned by launch_async_subagent. Pass it verbatim."],
         runtime: ToolRuntime,
     ) -> str | Command:
-        parsed = _parse_and_resolve(job_id, agent_map)
-        if isinstance(parsed, str):
-            return parsed
-        name, thread_id = parsed
-
-        # Look up the current run_id from state
-        jobs: dict[str, AsyncSubAgentJob] = runtime.state.get("async_subagent_jobs") or {}
-        canonical = _format_job_id(name, thread_id)
-        tracked = jobs.get(canonical)
-        if not tracked:
-            return f"No tracked job found for job_id: {job_id}"
-        run_id = tracked["run_id"]
+        resolved = _resolve_tracked_job(job_id, agent_map, runtime)
+        if isinstance(resolved, str):
+            return resolved
+        name, thread_id, run_id, canonical = resolved
 
         client = clients.get_async(name)
         try:
@@ -539,17 +545,10 @@ def _build_cancel_tool(
         job_id: Annotated[str, "The exact job_id string returned by launch_async_subagent. Pass it verbatim."],
         runtime: ToolRuntime,
     ) -> str | Command:
-        parsed = _parse_and_resolve(job_id, agent_map)
-        if isinstance(parsed, str):
-            return parsed
-        name, thread_id = parsed
-
-        jobs: dict[str, AsyncSubAgentJob] = runtime.state.get("async_subagent_jobs") or {}
-        canonical = _format_job_id(name, thread_id)
-        tracked = jobs.get(canonical)
-        if not tracked:
-            return f"No tracked job found for job_id: {job_id}"
-        run_id = tracked["run_id"]
+        resolved = _resolve_tracked_job(job_id, agent_map, runtime)
+        if isinstance(resolved, str):
+            return resolved
+        name, thread_id, run_id, canonical = resolved
 
         client = clients.get_sync(name)
         try:
@@ -575,17 +574,10 @@ def _build_cancel_tool(
         job_id: Annotated[str, "The exact job_id string returned by launch_async_subagent. Pass it verbatim."],
         runtime: ToolRuntime,
     ) -> str | Command:
-        parsed = _parse_and_resolve(job_id, agent_map)
-        if isinstance(parsed, str):
-            return parsed
-        name, thread_id = parsed
-
-        jobs: dict[str, AsyncSubAgentJob] = runtime.state.get("async_subagent_jobs") or {}
-        canonical = _format_job_id(name, thread_id)
-        tracked = jobs.get(canonical)
-        if not tracked:
-            return f"No tracked job found for job_id: {job_id}"
-        run_id = tracked["run_id"]
+        resolved = _resolve_tracked_job(job_id, agent_map, runtime)
+        if isinstance(resolved, str):
+            return resolved
+        name, thread_id, run_id, canonical = resolved
 
         client = clients.get_async(name)
         try:

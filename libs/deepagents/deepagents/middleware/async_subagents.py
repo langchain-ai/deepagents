@@ -151,10 +151,7 @@ class _ClientCache:
         """Get or create a sync client for the named agent."""
         spec = self._agents[name]
         if spec.get("url") is None:
-            msg = (
-                f"Async subagent '{name}' has no url configured. "
-                "ASGI transport (url=None) requires async invocation."
-            )
+            msg = f"Async subagent '{name}' has no url configured. ASGI transport (url=None) requires async invocation."
             raise ValueError(msg)
         key = self._cache_key(spec)
         if key not in self._sync:

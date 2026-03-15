@@ -309,7 +309,7 @@ def _resolve_client_name(agent_name: str, agent_map: dict[str, AsyncSubAgent]) -
 
 
 def _build_check_result(
-    run: dict[str, Any],
+    run: Any,
     thread_id: str,
     thread_values: dict[str, Any],
 ) -> dict[str, Any]:
@@ -334,7 +334,7 @@ def _build_check_command(
     name: str,
     thread_id: str,
     run_id: str,
-    tool_call_id: str,
+    tool_call_id: str | None,
 ) -> Command:
     """Build the Command update for a check result."""
     canonical = _format_job_id(name, thread_id, run_id)

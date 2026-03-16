@@ -433,7 +433,7 @@ class BackendProtocol(abc.ABC):  # noqa: B024
     def ls_info(self, path: str) -> list["FileInfo"]:
         """List all files in a directory with metadata.
 
-        .. deprecated::
+        !!! warning "Deprecated"
             Use `ls` instead.
         """
         warnings.warn(
@@ -446,7 +446,7 @@ class BackendProtocol(abc.ABC):  # noqa: B024
     async def als_info(self, path: str) -> list["FileInfo"]:
         """Async version of `ls_info`.
 
-        .. deprecated::
+        !!! warning "Deprecated"
             Use `als` instead.
         """
         warnings.warn(

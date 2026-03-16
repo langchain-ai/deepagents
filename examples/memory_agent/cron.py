@@ -5,8 +5,14 @@ and consolidate learnings into global and per-user memory. This is the
 "sleep-time compute" that makes the agent improve over time.
 
 Usage:
-    # One-shot consolidation
+    # One-shot consolidation (all users, parallel)
     python cron.py
+
+    # Single user only
+    python cron.py --user alice
+
+    # Control parallelism
+    python cron.py --max-workers 10
 
     # With a real scheduler (e.g., crontab)
     # 0 3 * * * cd /path/to/memory_agent && python cron.py
@@ -18,6 +24,7 @@ from __future__ import annotations
 
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 from langchain.chat_models import init_chat_model
@@ -163,13 +170,24 @@ def run_consolidation(
     store: BaseStore | None = None,
     user_ids: list[str] | None = None,
     model: str = "anthropic:claude-sonnet-4-6",
+    max_workers: int = 5,
 ) -> dict[str, dict[str, str]]:
-    """Run memory consolidation for all specified users.
+    """Run memory consolidation for all specified users in parallel.
+
+    Each user's consolidation is independent (reads their own threads,
+    writes to their own user namespace), so they run concurrently via
+    a thread pool. Global memory updates are last-write-wins per field;
+    in practice each user's consolidation merges into the existing global
+    memory so concurrent writes produce a reasonable result.
+
+    For very large deployments, run per-user consolidation as separate
+    cron invocations instead (e.g., `python cron.py --user alice`).
 
     Args:
         store: The LangGraph store. Defaults to InMemoryStore.
         user_ids: Users to consolidate. Defaults to discovering from store.
         model: Model to use for consolidation.
+        max_workers: Max parallel user consolidations.
 
     Returns:
         Dict mapping user_id to their consolidation results.
@@ -186,13 +204,53 @@ def run_consolidation(
     if not user_ids:
         user_ids = ["default"]
 
-    results = {}
-    for uid in user_ids:
-        results[uid] = consolidate_memories(store=store, user_id=uid, model=model)
+    if len(user_ids) == 1:
+        return {
+            user_ids[0]: consolidate_memories(
+                store=store, user_id=user_ids[0], model=model
+            )
+        }
+
+    logger.info(
+        "Consolidating %d users with max_workers=%d", len(user_ids), max_workers
+    )
+    results: dict[str, dict[str, str]] = {}
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(
+                consolidate_memories, store=store, user_id=uid, model=model
+            ): uid
+            for uid in user_ids
+        }
+        for future in as_completed(futures):
+            uid = futures[future]
+            try:
+                results[uid] = future.result()
+            except Exception:
+                logger.exception("Failed to consolidate user=%s", uid)
+                results[uid] = {"global_memory": "", "user_memory": ""}
 
     return results
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    run_consolidation()
+    import argparse
+
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+
+    parser = argparse.ArgumentParser(description="Run memory consolidation")
+    parser.add_argument("--user", type=str, default=None, help="Single user ID")
+    parser.add_argument(
+        "--max-workers", type=int, default=5, help="Max parallel consolidations"
+    )
+    parser.add_argument(
+        "--model",
+        type=str,
+        default="anthropic:claude-sonnet-4-6",
+        help="Model to use",
+    )
+    args = parser.parse_args()
+
+    uids = [args.user] if args.user else None
+    run_consolidation(user_ids=uids, model=args.model, max_workers=args.max_workers)

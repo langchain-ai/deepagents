@@ -140,7 +140,11 @@ class QuickJSMiddleware(AgentMiddleware[AgentState[Any], ContextT, ResponseT]):
         return {"args": list(args)}
 
     def _create_context(
-        self, timeout: int | None, printed_lines: list[str]
+        self,
+        timeout: int | None,
+        printed_lines: list[str],
+        *,
+        prefer_async: bool = False,
     ) -> quickjs.Context:
         """Create a configured QuickJS context for a single evaluation."""
         context = quickjs.Context()
@@ -164,16 +168,27 @@ class QuickJSMiddleware(AgentMiddleware[AgentState[Any], ContextT, ResponseT]):
         for name, implementation in build_external_functions(
             implementations,
             payload_builder=self._build_tool_payload,
+            prefer_async=prefer_async,
         ).items():
             context.add_callable(name, implementation)
         inject_external_function_shims(context, list(implementations))
         return context
 
-    def _evaluate(self, code: str, *, timeout: int | None) -> str:
+    def _evaluate(
+        self,
+        code: str,
+        *,
+        timeout: int | None,
+        prefer_async: bool = False,
+    ) -> str:
         """Execute JavaScript and return printed output or final value."""
         printed_lines: list[str] = []
         try:
-            context = self._create_context(timeout, printed_lines)
+            context = self._create_context(
+                timeout,
+                printed_lines,
+                prefer_async=prefer_async,
+            )
         except ValueError as exc:
             return f"Error: {exc}"
 
@@ -198,7 +213,7 @@ class QuickJSMiddleware(AgentMiddleware[AgentState[Any], ContextT, ResponseT]):
             ] = None,
         ) -> str:
             """Execute a single QuickJS program and return captured stdout."""
-            return self._evaluate(code, timeout=timeout)
+            return self._evaluate(code, timeout=timeout, prefer_async=False)
 
         async def _async_quickjs(
             code: Annotated[str, "Code string to evaluate in QuickJS."],
@@ -207,7 +222,7 @@ class QuickJSMiddleware(AgentMiddleware[AgentState[Any], ContextT, ResponseT]):
             ] = None,
         ) -> str:
             """Execute a single QuickJS program in the async tool path."""
-            return self._evaluate(code, timeout=timeout)
+            return self._evaluate(code, timeout=timeout, prefer_async=True)
 
         tool_description = REPL_TOOL_DESCRIPTION.format(
             external_functions_section=render_external_functions_section(

@@ -1577,6 +1577,36 @@ api_key_env = "FIREWORKS_API_KEY"
         ):
             assert has_provider_credentials("fireworks") is False
 
+    def test_class_path_provider_without_api_key_env_returns_true(self, tmp_path):
+        """Returns True for class_path provider with no api_key_env.
+
+        class_path providers manage their own auth (e.g., custom headers, JWT)
+        so they should be treated as having credentials available.
+        """
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.cis]
+class_path = "agent_forge.integrations:CISChat"
+models = ["aviato-turbo"]
+""")
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            assert has_provider_credentials("cis") is True
+
+    def test_class_path_with_api_key_env_respects_env_var(self, tmp_path):
+        """api_key_env takes precedence over class_path for credential check."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.cis]
+class_path = "agent_forge.integrations:CISChat"
+models = ["aviato-turbo"]
+api_key_env = "CIS_API_KEY"
+""")
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch.dict("os.environ", {}, clear=True),
+        ):
+            assert has_provider_credentials("cis") is False
+
     def test_returns_none_for_totally_unknown_provider(self):
         """Returns None for provider not in hardcoded map or config.
 

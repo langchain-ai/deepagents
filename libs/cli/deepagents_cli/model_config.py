@@ -131,6 +131,15 @@ class ProviderConfig(TypedDict, total=False):
         scripts — the user controls their own machine.
     """
 
+    enabled: bool
+    """Whether this provider appears in the model switcher.
+
+    Defaults to `True`. Set to `False` to hide a package-discovered provider
+    and all its models from the `/model` selector. Useful when a LangChain
+    provider package is installed as a transitive dependency but should not
+    be user-visible.
+    """
+
     models: list[str]
     """List of model identifiers available from this provider."""
 
@@ -371,6 +380,7 @@ def get_available_models() -> dict[str, list[str]]:
         return _available_models_cache
 
     available: dict[str, list[str]] = {}
+    config = ModelConfig.load()
 
     # Try to load from langchain provider profile data.
     # Build the list dynamically from langchain's supported-provider registry
@@ -380,6 +390,13 @@ def get_available_models() -> dict[str, list[str]]:
 
     for provider, module_path in provider_modules:
         registry_providers.add(provider)
+        # Skip providers explicitly disabled in config.
+        if not config.is_provider_enabled(provider):
+            logger.debug(
+                "Provider '%s' is disabled in config; skipping registry discovery",
+                provider,
+            )
+            continue
         try:
             profiles = _load_provider_profiles(module_path)
         except ImportError:
@@ -411,8 +428,15 @@ def get_available_models() -> dict[str, list[str]]:
             available[provider] = models
 
     # Merge in models from config file (custom providers like ollama, fireworks)
-    config = ModelConfig.load()
     for provider_name, provider_config in config.providers.items():
+        # Respect enabled = false (hide provider entirely).
+        if not config.is_provider_enabled(provider_name):
+            logger.debug(
+                "Provider '%s' is disabled in config; skipping",
+                provider_name,
+            )
+            continue
+
         config_models = list(provider_config.get("models", []))
 
         # For class_path providers not in the built-in registry, auto-discover
@@ -536,6 +560,13 @@ def get_model_profiles(
     registry_providers: set[str] = set()
     for provider, module_path in provider_modules:
         registry_providers.add(provider)
+        # Skip providers explicitly disabled in config.
+        if not config.is_provider_enabled(provider):
+            logger.debug(
+                "Provider '%s' is disabled in config; skipping profiles",
+                provider,
+            )
+            continue
         try:
             profiles = _load_provider_profiles(module_path)
         except ImportError:
@@ -562,6 +593,12 @@ def get_model_profiles(
 
     # Add config-only models and class_path provider profiles.
     for provider_name, provider_config in config.providers.items():
+        if not config.is_provider_enabled(provider_name):
+            logger.debug(
+                "Provider '%s' is disabled in config; skipping profiles",
+                provider_name,
+            )
+            continue
         # For class_path providers not in the built-in registry, load
         # upstream profiles from the package's _profiles.py.
         if provider_name not in registry_providers:
@@ -783,8 +820,17 @@ class ModelConfig:
                 self.recent_model,
             )
 
-        # Validate class_path format and params references
+        # Validate enabled field type and class_path format / params references
         for name, provider in self.providers.items():
+            enabled = provider.get("enabled")
+            if enabled is not None and not isinstance(enabled, bool):
+                logger.warning(
+                    "Provider '%s' has non-boolean 'enabled' value %r "
+                    "(expected true/false). Provider will remain visible.",
+                    name,
+                    enabled,
+                )
+
             class_path = provider.get("class_path")
             if class_path and ":" not in class_path:
                 logger.warning(
@@ -807,8 +853,30 @@ class ModelConfig:
                         key,
                     )
 
+    def is_provider_enabled(self, provider_name: str) -> bool:
+        """Check whether a provider should appear in the model switcher.
+
+        A provider is disabled when its config explicitly sets
+        `enabled = false`. Providers not present in the config file are
+        always considered enabled.
+
+        Args:
+            provider_name: The provider to check.
+
+        Returns:
+            `False` if the provider is explicitly disabled, `True` otherwise.
+        """
+        provider = self.providers.get(provider_name)
+        if not provider:
+            return True
+        return provider.get("enabled") is not False
+
     def get_all_models(self) -> list[tuple[str, str]]:
         """Get all models as `(model_name, provider_name)` tuples.
+
+        Returns raw config data — does not filter by `is_provider_enabled`.
+        For the filtered set shown in the model switcher, use
+        `get_available_models()`.
 
         Returns:
             List of tuples containing `(model_name, provider_name)`.
@@ -821,6 +889,8 @@ class ModelConfig:
 
     def get_provider_for_model(self, model_name: str) -> str | None:
         """Find the provider that contains this model.
+
+        Returns raw config data — does not filter by `is_provider_enabled`.
 
         Args:
             model_name: The model identifier to look up.

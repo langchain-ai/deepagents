@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 
 from deepagents_cli.config import (
     COLORS,
+    _get_editable_install_path,
     _is_editable_install,
     fetch_langsmith_project_url,
     get_banner,
@@ -163,6 +164,10 @@ class WelcomeBanner(Static):
                 TStyle(foreground=TColor.parse(banner_color), bold=True),
             )
         )
+
+        editable_path = _get_editable_install_path()
+        if editable_path:
+            parts.extend([("Installed from: ", "dim"), (editable_path, "dim"), "\n"])
 
         if self._project_name:
             parts.extend(

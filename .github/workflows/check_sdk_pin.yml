@@ -1,6 +1,6 @@
-# Advisory check: posts a PR comment when the CLI's deepagents SDK pin drifts
-# from the actual SDK version. Does not block merge — the release workflow
-# enforces the pin at publish time. Removes the comment once resolved.
+# Advisory check: posts a comment on CLI release PRs when the deepagents SDK
+# pin drifts from the actual SDK version. Does not block merge — the release
+# workflow enforces the pin at publish time. Removes the comment once resolved.
 # See also: release.yml "Verify CLI pins latest SDK version" step (hard gate).
 
 name: "🔗 Check SDK Pin"
@@ -21,6 +21,7 @@ permissions:
 
 jobs:
   check-sdk-pin:
+    if: startsWith(github.head_ref, 'release-please--branches--main--components--deepagents-cli')
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:

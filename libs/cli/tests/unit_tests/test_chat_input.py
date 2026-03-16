@@ -332,7 +332,7 @@ class TestHistoryNavigationFlag:
     """Test that _skip_history_change_events resets when history is exhausted."""
 
     async def test_down_arrow_at_bottom_resets_navigating_flag(self) -> None:
-        """Pressing down with no history should not leave _skip_history_change_events stuck."""
+        """Pressing down with no history should not leave the skip counter stuck."""
         app = _ChatInputTestApp()
         async with app.run_test() as pilot:
             chat_input = app.query_one(ChatInput)

@@ -1,0 +1,14 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "memory-agent": "./agent.py:agent"
+  },
+  "env": ".env",
+  "crons": {
+    "memory-consolidation": {
+      "graph": "./cron.py:run_consolidation",
+      "schedule": "0 3 * * *",
+      "description": "Nightly memory consolidation — processes recent threads and updates global + per-user memory"
+    }
+  }
+}

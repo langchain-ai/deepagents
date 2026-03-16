@@ -534,7 +534,7 @@ def _build_cancel_tool(
     )
 
 
-_TERMINAL_STATUSES = frozenset({"cancelled"})
+_TERMINAL_STATUSES = frozenset({"cancelled", "success", "error"})
 
 
 def _fetch_live_status(clients: _ClientCache, job: AsyncSubAgentJob) -> str:

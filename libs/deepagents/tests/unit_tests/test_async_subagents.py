@@ -439,7 +439,14 @@ class TestListJobsTool:
                 "agent_name": "test-agent",
                 "thread_id": "t2",
                 "run_id": "r2",
-                "status": "cancelled",
+                "status": "success",
+            },
+            "t3": {
+                "job_id": "t3",
+                "agent_name": "test-agent",
+                "thread_id": "t3",
+                "run_id": "r3",
+                "status": "error",
             },
         }
         rt = ToolRuntime(

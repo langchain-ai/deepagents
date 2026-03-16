@@ -7,8 +7,8 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from deepagents.middleware.skill_tools import MCPServerConfig
 from deepagents.middleware.skills import (
-    MCPServerConfig,
     SkillMetadata,
     _parse_skill_metadata,
 )

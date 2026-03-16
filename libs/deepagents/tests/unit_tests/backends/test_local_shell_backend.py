@@ -108,8 +108,9 @@ def test_local_shell_backend_filesystem_operations() -> None:
 
         # Read the file
         content = backend.read("/test.txt")
-        assert "Hello" in content
-        assert "World" in content
+        assert content.file_data is not None
+        assert "Hello" in content.file_data["content"]
+        assert "World" in content.file_data["content"]
 
         # Edit the file
         edit_result = backend.edit("/test.txt", "World", "Universe")
@@ -118,8 +119,9 @@ def test_local_shell_backend_filesystem_operations() -> None:
 
         # Verify edit
         content = backend.read("/test.txt")
-        assert "Universe" in content
-        assert "World" not in content
+        assert content.file_data is not None
+        assert "Universe" in content.file_data["content"]
+        assert "World" not in content.file_data["content"]
 
 
 def test_local_shell_backend_integration_shell_and_filesystem() -> None:
@@ -142,7 +144,8 @@ def test_local_shell_backend_integration_shell_and_filesystem() -> None:
 
         # Read via filesystem
         content = backend.read("/shell_file.txt")
-        assert "Shell created" in content
+        assert content.file_data is not None
+        assert "Shell created" in content.file_data["content"]
 
 
 def test_local_shell_backend_ls_info() -> None:
@@ -288,7 +291,8 @@ async def test_local_shell_backend_async_filesystem_operations() -> None:
 
         # Async read
         content = await backend.aread("/async_test.txt")
-        assert "async content" in content
+        assert content.file_data is not None
+        assert "async content" in content.file_data["content"]
 
         # Async edit
         edit_result = await backend.aedit("/async_test.txt", "async", "modified")
@@ -296,4 +300,5 @@ async def test_local_shell_backend_async_filesystem_operations() -> None:
 
         # Verify
         content = await backend.aread("/async_test.txt")
-        assert "modified content" in content
+        assert content.file_data is not None
+        assert "modified content" in content.file_data["content"]

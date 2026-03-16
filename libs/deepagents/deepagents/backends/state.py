@@ -1,23 +1,29 @@
 """StateBackend: Store files in LangGraph agent state (ephemeral)."""
 
-from typing import TYPE_CHECKING
+import base64
+from typing import TYPE_CHECKING, Any
 
 from deepagents.backends.protocol import (
     BackendProtocol,
     EditResult,
+    FileData,
     FileDownloadResponse,
+    FileFormat,
     FileInfo,
     FileUploadResponse,
     GrepMatch,
+    ReadResult,
     WriteResult,
 )
 from deepagents.backends.utils import (
+    _get_file_type,
     _glob_search_files,
+    _to_legacy_file_data,
     create_file_data,
     file_data_to_string,
-    format_read_response,
     grep_matches_from_files,
     perform_string_replacement,
+    slice_read_response,
     update_file_data,
 )
 
@@ -37,9 +43,32 @@ class StateBackend(BackendProtocol):
     This is indicated by the uses_state=True flag.
     """
 
-    def __init__(self, runtime: "ToolRuntime") -> None:
-        """Initialize StateBackend with runtime."""
+    def __init__(
+        self,
+        runtime: "ToolRuntime",
+        *,
+        file_format: FileFormat = "v2",
+    ) -> None:
+        r"""Initialize StateBackend with runtime.
+
+        Args:
+            runtime: The ToolRuntime instance providing store access and configuration.
+            file_format: Storage format version. `"v1"` (default) stores
+                content as `list[str]` (lines split on `\\n`) without an
+                `encoding` field.  `"v2"` stores content as a plain `str`
+                with an `encoding` field.
+        """
         self.runtime = runtime
+        self._file_format = file_format
+
+    def _prepare_for_storage(self, file_data: FileData) -> dict[str, Any]:
+        """Convert FileData to the format used for state storage.
+
+        When `file_format="v1"`, returns the legacy format.
+        """
+        if self._file_format == "v1":
+            return _to_legacy_file_data(file_data)
+        return {**file_data}
 
     def ls_info(self, path: str) -> list[FileInfo]:
         """List files and directories in the specified directory (non-recursive).
@@ -74,7 +103,9 @@ class StateBackend(BackendProtocol):
                 continue
 
             # This is a file directly in the current directory
-            size = len("\n".join(fd.get("content", [])))
+            # BACKWARDS COMPAT: handle legacy list[str] content for size computation
+            raw = fd.get("content", "")
+            size = len("\n".join(raw)) if isinstance(raw, list) else len(raw)
             infos.append(
                 {
                     "path": k,
@@ -95,8 +126,8 @@ class StateBackend(BackendProtocol):
         file_path: str,
         offset: int = 0,
         limit: int = 2000,
-    ) -> str:
-        """Read file content with line numbers.
+    ) -> ReadResult:
+        """Read file content for the requested line range.
 
         Args:
             file_path: Absolute file path.
@@ -104,15 +135,29 @@ class StateBackend(BackendProtocol):
             limit: Maximum number of lines to read.
 
         Returns:
-            Formatted file content with line numbers, or error message.
+            ReadResult with raw (unformatted) content for the requested
+            window. Line-number formatting is applied by the middleware.
         """
         files = self.runtime.state.get("files", {})
         file_data = files.get(file_path)
 
         if file_data is None:
-            return f"Error: File '{file_path}' not found"
+            return ReadResult(error=f"File '{file_path}' not found")
 
-        return format_read_response(file_data, offset, limit)
+        if _get_file_type(file_path) != "text":
+            return ReadResult(file_data=file_data)
+
+        sliced = slice_read_response(file_data, offset, limit)
+        if isinstance(sliced, ReadResult):
+            return sliced
+        return ReadResult(
+            file_data=FileData(
+                content=sliced,
+                encoding=file_data.get("encoding", "utf-8"),
+                created_at=file_data.get("created_at", ""),
+                modified_at=file_data.get("modified_at", ""),
+            )
+        )
 
     def write(
         self,
@@ -129,7 +174,7 @@ class StateBackend(BackendProtocol):
             return WriteResult(error=f"Cannot write to {file_path} because it already exists. Read and then make an edit, or write to a new path.")
 
         new_file_data = create_file_data(content)
-        return WriteResult(path=file_path, files_update={file_path: new_file_data})
+        return WriteResult(path=file_path, files_update={file_path: self._prepare_for_storage(new_file_data)})
 
     def edit(
         self,
@@ -156,7 +201,7 @@ class StateBackend(BackendProtocol):
 
         new_content, occurrences = result
         new_file_data = update_file_data(file_data, new_content)
-        return EditResult(path=file_path, files_update={file_path: new_file_data}, occurrences=int(occurrences))
+        return EditResult(path=file_path, files_update={file_path: self._prepare_for_storage(new_file_data)}, occurrences=int(occurrences))
 
     def grep_raw(
         self,
@@ -178,7 +223,12 @@ class StateBackend(BackendProtocol):
         infos: list[FileInfo] = []
         for p in paths:
             fd = files.get(p)
-            size = len("\n".join(fd.get("content", []))) if fd else 0
+            if fd:
+                # BACKWARDS COMPAT: handle legacy list[str] content for size computation
+                raw = fd.get("content", "")
+                size = len("\n".join(raw)) if isinstance(raw, list) else len(raw)
+            else:
+                size = 0
             infos.append(
                 {
                     "path": p,
@@ -223,10 +273,10 @@ class StateBackend(BackendProtocol):
                 responses.append(FileDownloadResponse(path=path, content=None, error="file_not_found"))
                 continue
 
-            # Convert file data to bytes
             content_str = file_data_to_string(file_data)
-            content_bytes = content_str.encode("utf-8")
 
+            encoding = file_data.get("encoding", "utf-8")
+            content_bytes = content_str.encode("utf-8") if encoding == "utf-8" else base64.standard_b64decode(content_str)
             responses.append(FileDownloadResponse(path=path, content=content_bytes, error=None))
 
         return responses

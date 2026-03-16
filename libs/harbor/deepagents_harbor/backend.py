@@ -10,9 +10,11 @@ from deepagents.backends.protocol import (
     ExecuteResponse,
     FileInfo,
     GrepMatch,
+    ReadResult,
     SandboxBackendProtocol,
     WriteResult,
 )
+from deepagents.backends.utils import check_empty_content, create_file_data
 from harbor.environments.base import BaseEnvironment
 
 _SYNC_NOT_SUPPORTED = "This backend only supports async execution. Use the async variant instead."
@@ -143,42 +145,46 @@ class HarborSandbox(SandboxBackendProtocol):
         file_path: str,
         offset: int = 0,
         limit: int = 2000,
-    ) -> str:
-        """Read file content with line numbers using shell commands."""
-        # Escape file path for shell
+    ) -> ReadResult:
+        """Read raw file content for the requested line range.
+
+        Line-number formatting is applied by the middleware, so this method
+        returns unformatted text matching the contract of `ReadResult`.
+        """
         safe_path = shlex.quote(file_path)
 
-        # Check if file exists and handle empty files
         cmd = f"""
 if [ ! -f {safe_path} ]; then
     echo "Error: File not found"
     exit 1
 fi
 if [ ! -s {safe_path} ]; then
-    echo "System reminder: File exists but has empty contents"
     exit 0
 fi
-# Use awk to add line numbers and handle offset/limit
 awk -v offset={offset} -v limit={limit} '
-    NR > offset && NR <= offset + limit {{
-        printf "%6d\\t%s\\n", NR, $0
-    }}
+    NR > offset && NR <= offset + limit {{ print }}
     NR > offset + limit {{ exit }}
 ' {safe_path}
 """
         result = await self.aexecute(cmd)
 
         if result.exit_code != 0 or "Error: File not found" in result.output:
-            return f"Error: File '{file_path}' not found"
+            return ReadResult(error=f"File '{file_path}' not found")
 
-        return result.output.rstrip()
+        content = result.output.rstrip()
+
+        empty_msg = check_empty_content(content)
+        if empty_msg:
+            return ReadResult(file_data=create_file_data(empty_msg))
+
+        return ReadResult(file_data=create_file_data(content))
 
     def read(
         self,
         file_path: str,
         offset: int = 0,
         limit: int = 2000,
-    ) -> str:
+    ) -> ReadResult:
         """Read file content with line numbers using shell commands."""
         raise NotImplementedError(_SYNC_NOT_SUPPORTED)
 

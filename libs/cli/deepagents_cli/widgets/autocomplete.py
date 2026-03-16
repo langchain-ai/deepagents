@@ -6,6 +6,8 @@ for slash commands (/) and file mentions (@).
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import shutil
 
 # S404: subprocess is required for git ls-files to get project file list
@@ -495,6 +497,16 @@ class FuzzyFileController:
     def refresh_cache(self) -> None:
         """Force refresh of file cache."""
         self._file_cache = None
+
+    async def warm_cache(self) -> None:
+        """Pre-populate the file cache off the event loop."""
+        if self._file_cache is not None:
+            return
+        # Best-effort; _get_files() falls back to sync on failure.
+        with contextlib.suppress(Exception):
+            self._file_cache = await asyncio.to_thread(
+                _get_project_files, self._project_root
+            )
 
     @staticmethod
     def can_handle(text: str, cursor_index: int) -> bool:

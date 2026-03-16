@@ -476,6 +476,29 @@ def _build_interrupted_ai_message(
     )
 
 
+def _read_mentioned_file(file_path: Path, max_embed_bytes: int) -> str:
+    """Read a mentioned file for inline embedding (sync, for use with to_thread).
+
+    Args:
+        file_path: Resolved path to the file.
+        max_embed_bytes: Size threshold; larger files get a reference only.
+
+    Returns:
+        Markdown snippet with the file content or a size-exceeded reference.
+    """
+    file_size = file_path.stat().st_size
+    if file_size > max_embed_bytes:
+        size_kb = file_size // 1024
+        return (
+            f"\n### {file_path.name}\n"
+            f"Path: `{file_path}`\n"
+            f"Size: {size_kb}KB (too large to embed, "
+            "use read_file tool to view)"
+        )
+    content = file_path.read_text(encoding="utf-8")
+    return f"\n### {file_path.name}\nPath: `{file_path}`\n```\n{content}\n```"
+
+
 async def execute_task_textual(
     user_input: str,
     agent: Any,  # noqa: ANN401  # Dynamic agent graph type
@@ -509,8 +532,10 @@ async def execute_task_textual(
     Raises:
         ValidationError: If HITL request validation fails (re-raised).
     """
-    # Parse file mentions and inject content if any
-    prompt_text, mentioned_files = parse_file_mentions(user_input)
+    # Parse file mentions and inject content if any — offload blocking I/O
+    prompt_text, mentioned_files = await asyncio.to_thread(
+        parse_file_mentions, user_input
+    )
 
     # Max file size to embed inline (256KB, matching mistral-vibe)
     # Larger files get a reference instead - use read_file tool to view them
@@ -520,22 +545,10 @@ async def execute_task_textual(
         context_parts = [prompt_text, "\n\n## Referenced Files\n"]
         for file_path in mentioned_files:
             try:
-                file_size = file_path.stat().st_size
-                if file_size > max_embed_bytes:
-                    # File too large - include reference instead of content
-                    size_kb = file_size // 1024
-                    context_parts.append(
-                        f"\n### {file_path.name}\n"
-                        f"Path: `{file_path}`\n"
-                        f"Size: {size_kb}KB (too large to embed, "
-                        "use read_file tool to view)"
-                    )
-                else:
-                    content = file_path.read_text()
-                    context_parts.append(
-                        f"\n### {file_path.name}\n"
-                        f"Path: `{file_path}`\n```\n{content}\n```"
-                    )
+                part = await asyncio.to_thread(
+                    _read_mentioned_file, file_path, max_embed_bytes
+                )
+                context_parts.append(part)
             except Exception as e:  # noqa: BLE001  # Resilient adapter error handling
                 context_parts.append(
                     f"\n### {file_path.name}\n[Error reading file: {e}]"

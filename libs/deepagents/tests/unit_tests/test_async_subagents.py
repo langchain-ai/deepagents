@@ -432,15 +432,15 @@ class TestListJobsTool:
         tools = _build_async_subagent_tools([_make_spec("test-agent")])
         list_tool = tools[4]
         jobs: dict[str, AsyncSubAgentJob] = {
-            "test-agent::t1::r1": {
-                "job_id": "test-agent::t1::r1",
+            "test-agent::t1": {
+                "job_id": "test-agent::t1",
                 "agent_name": "test-agent",
                 "thread_id": "t1",
                 "run_id": "r1",
-                "status": "superseded",
+                "status": "cancelled",
             },
-            "test-agent::t2::r2": {
-                "job_id": "test-agent::t2::r2",
+            "test-agent::t2": {
+                "job_id": "test-agent::t2",
                 "agent_name": "test-agent",
                 "thread_id": "t2",
                 "run_id": "r2",

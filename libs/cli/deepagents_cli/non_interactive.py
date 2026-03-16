@@ -36,6 +36,7 @@ from rich.console import Console
 from rich.style import Style
 from rich.text import Text
 
+from deepagents_cli._version import __version__
 from deepagents_cli.agent import DEFAULT_AGENT_NAME
 from deepagents_cli.config import (
     SHELL_ALLOW_ALL,
@@ -642,6 +643,8 @@ def _build_non_interactive_header(
     """
     default_label = " (default)" if assistant_id == DEFAULT_AGENT_NAME else ""
     parts: list[tuple[str, str | Style]] = [
+        (f"CLI: v{__version__}", "dim"),
+        (" | ", "dim"),
         (f"Agent: {assistant_id}{default_label}", "dim"),
     ]
 

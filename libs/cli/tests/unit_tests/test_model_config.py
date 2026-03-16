@@ -1,6 +1,7 @@
 """Tests for model_config module."""
 
 import logging
+import os
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, ClassVar
@@ -497,6 +498,10 @@ models = ["llama3"]
         assert config.providers == {}
         assert any("invalid TOML syntax" in r.message for r in caplog.records)
 
+    @pytest.mark.skipif(
+        os.getenv("CI") == "true",
+        reason="File permission tests require elevated privileges in CI",
+    )
     def test_unreadable_file_returns_empty_config(self, tmp_path, caplog):
         """Unreadable config file returns empty config and logs a warning."""
         config_path = tmp_path / "config.toml"

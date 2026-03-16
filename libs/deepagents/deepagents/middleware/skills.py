@@ -106,6 +106,9 @@ if TYPE_CHECKING:
 
     from deepagents.backends.protocol import BACKEND_TYPES, BackendProtocol
 
+    # Lazy import to avoid circular dependency
+    from deepagents.middleware.skill_tools import MCPServerConfig
+
 from typing import NotRequired, TypedDict
 
 from langchain.agents.middleware.types import (
@@ -188,6 +191,21 @@ class SkillMetadata(TypedDict):
     Constraints per Agent Skills specification:
 
     - Space-delimited list of tool names
+    """
+
+    mcp_servers: list[MCPServerConfig] | None
+    """MCP server configurations for this skill.
+
+    Optional list of MCP server configurations to connect to when this
+    skill is active. Each server config should specify:
+
+    - name: Unique identifier for the server
+    - transport: "stdio", "sse", or "http"
+    - command/args/env: For stdio servers
+    - url/headers: For SSE/HTTP servers
+
+    Servers are connected lazily when the skill becomes active via
+    SkillToolMiddleware.
     """
 
 
@@ -340,6 +358,12 @@ def _parse_skill_metadata(  # noqa: C901
         )
         compatibility_str = compatibility_str[:MAX_SKILL_COMPATIBILITY_LENGTH]
 
+    # Parse mcp-servers field (supports both kebab-case and snake_case)
+    raw_mcp_servers = frontmatter_data.get("mcp-servers") or frontmatter_data.get("mcp_servers")
+    mcp_servers = None
+    if raw_mcp_servers is not None:
+        mcp_servers = _parse_and_validate_mcp_servers(raw_mcp_servers, skill_path)
+
     return SkillMetadata(
         name=str(name),
         description=description_str,
@@ -348,6 +372,7 @@ def _parse_skill_metadata(  # noqa: C901
         license=str(frontmatter_data.get("license", "")).strip() or None,
         compatibility=compatibility_str,
         allowed_tools=allowed_tools,
+        mcp_servers=mcp_servers,
     )
 
 
@@ -377,6 +402,111 @@ def _validate_metadata(
             )
         return {}
     return {str(k): str(v) for k, v in raw.items()}
+
+
+def _parse_and_validate_mcp_servers(  # noqa: C901, PLR0912
+    raw_servers: object,
+    skill_path: str,
+) -> list[MCPServerConfig] | None:
+    """Parse and validate MCP server configurations from YAML frontmatter.
+
+    Args:
+        raw_servers: Raw value from `frontmatter_data.get("mcp-servers")`.
+        skill_path: Path to the SKILL.md file (for warning messages).
+
+    Returns:
+        List of validated MCP server configurations, or None if parsing fails.
+    """
+    if not isinstance(raw_servers, list):
+        if raw_servers is not None:
+            logger.warning(
+                "Ignoring non-list 'mcp-servers' in %s (got %s)",
+                skill_path,
+                type(raw_servers).__name__,
+            )
+        return None
+
+    if not raw_servers:
+        return None
+
+    validated_servers: list[MCPServerConfig] = []
+
+    for i, raw_server in enumerate(raw_servers):
+        if not isinstance(raw_server, dict):
+            continue
+
+        # Type narrow for ty - cast to dict[str, object]
+        server_dict: dict[str, object] = raw_server  # type: ignore[assignment]
+
+        # Validate required 'name' field
+        if "name" not in server_dict:
+            logger.warning(
+                "Skipping MCP server at index %d in %s (missing 'name' field)",
+                i,
+                skill_path,
+            )
+            continue
+
+        server_name = str(server_dict["name"]).strip()
+        if not server_name:
+            logger.warning(
+                "Skipping MCP server at index %d in %s (empty 'name' field)",
+                i,
+                skill_path,
+            )
+            continue
+
+        # Build validated config with defaults
+        server_config: MCPServerConfig = {"name": server_name}
+
+        # Transport (default: "stdio")
+        if "transport" in server_dict:
+            server_config["transport"] = str(server_dict["transport"])
+
+        # stdio-specific fields
+        if "command" in server_dict:
+            server_config["command"] = str(server_dict["command"])
+
+        if "args" in server_dict:
+            args = server_dict["args"]
+            if isinstance(args, list):
+                server_config["args"] = [str(a) for a in args]
+            else:
+                logger.warning(
+                    "Ignoring invalid 'args' for MCP server '%s' in %s (not a list)",
+                    server_name,
+                    skill_path,
+                )
+
+        if "env" in server_dict:
+            env = server_dict["env"]
+            if isinstance(env, dict):
+                server_config["env"] = {str(k): str(v) for k, v in env.items()}
+            else:
+                logger.warning(
+                    "Ignoring invalid 'env' for MCP server '%s' in %s (not a dict)",
+                    server_name,
+                    skill_path,
+                )
+
+        # SSE/HTTP-specific fields
+        if "url" in server_dict:
+            server_config["url"] = str(server_dict["url"])
+
+        if "headers" in server_dict:
+            headers = server_dict["headers"]
+            if isinstance(headers, dict):
+                server_config["headers"] = {str(k): str(v) for k, v in headers.items()}
+            else:
+                logger.warning(
+                    "Ignoring invalid 'headers' for MCP server '%s' in %s (not a dict)",
+                    server_name,
+                    skill_path,
+                )
+
+        validated_servers.append(server_config)
+
+    return validated_servers or None
 
 
 def _format_skill_annotations(skill: SkillMetadata) -> str:

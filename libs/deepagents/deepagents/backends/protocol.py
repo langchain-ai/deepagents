@@ -9,6 +9,7 @@ import abc
 import asyncio
 import inspect
 import logging
+import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import lru_cache
@@ -178,8 +179,11 @@ class BackendProtocol(abc.ABC):  # noqa: B024
     }
     """
 
-    def ls_info(self, path: str) -> list["FileInfo"]:
+    def ls(self, path: str) -> list["FileInfo"]:
         """List all files in a directory with metadata.
+
+        Subclasses should implement this method. Implementing `ls_info` is
+        deprecated.
 
         Args:
             path: Absolute path to the directory to list. Must start with '/'.
@@ -192,11 +196,19 @@ class BackendProtocol(abc.ABC):  # noqa: B024
             - `size` (optional): File size in bytes
             - `modified_at` (optional): ISO 8601 timestamp
         """
+        if type(self).ls_info is not BackendProtocol.ls_info:
+            warnings.warn(
+                "Implement `ls` instead of `ls_info`.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            return self.ls_info(path)
+
         raise NotImplementedError
 
-    async def als_info(self, path: str) -> list["FileInfo"]:
-        """Async version of ls_info."""
-        return await asyncio.to_thread(self.ls_info, path)
+    async def als(self, path: str) -> list["FileInfo"]:
+        """Async version of `ls`."""
+        return await asyncio.to_thread(self.ls, path)
 
     def read(
         self,
@@ -415,6 +427,34 @@ class BackendProtocol(abc.ABC):  # noqa: B024
     async def adownload_files(self, paths: list[str]) -> list[FileDownloadResponse]:
         """Async version of download_files."""
         return await asyncio.to_thread(self.download_files, paths)
+
+    # -- deprecated methods --------------------------------------------------
+
+    def ls_info(self, path: str) -> list["FileInfo"]:
+        """List all files in a directory with metadata.
+
+        .. deprecated::
+            Use `ls` instead.
+        """
+        warnings.warn(
+            "`ls_info` is deprecated; use `ls` instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.ls(path)
+
+    async def als_info(self, path: str) -> list["FileInfo"]:
+        """Async version of `ls_info`.
+
+        .. deprecated::
+            Use `als` instead.
+        """
+        warnings.warn(
+            "`als_info` is deprecated; use `als` instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return await self.als(path)
 
 
 @dataclass

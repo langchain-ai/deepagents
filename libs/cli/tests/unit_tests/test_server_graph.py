@@ -64,9 +64,16 @@ class TestServerGraph:
             web_search=object(),
         )
 
+        class FakeSessionPool:
+            """Simple stand-in for the module-level MCP session pool."""
+
+            async def cleanup(self) -> None:
+                return None
+
         resolve_mcp_tools = AsyncMock(return_value=([mcp_tool], None, mcp_server_info))
         mcp_module = _module_with_attrs(
             "deepagents_cli.mcp_tools",
+            MCPSessionPool=FakeSessionPool,
             resolve_and_load_mcp_tools=resolve_mcp_tools,
         )
 
@@ -104,13 +111,14 @@ class TestServerGraph:
 
             module = _import_fresh_server_graph()
 
-        resolve_mcp_tools.assert_awaited_once_with(
-            explicit_config_path=None,
-            no_mcp=False,
-            trust_project_mcp=None,
-            project_context=None,
-            stateless=True,
-        )
+        resolve_mcp_tools.assert_awaited_once()
+        kwargs = resolve_mcp_tools.await_args.kwargs
+        assert kwargs["explicit_config_path"] is None
+        assert kwargs["no_mcp"] is False
+        assert kwargs["trust_project_mcp"] is None
+        assert kwargs["project_context"] is None
+        assert kwargs["stateless"] is True
+        assert isinstance(kwargs["session_pool"], FakeSessionPool)
         create_cli_agent.assert_called_once_with(
             model=model_obj,
             assistant_id="agent",

@@ -1,15 +1,18 @@
 """Tests for MCP tools configuration loading and validation."""
 
+import asyncio
 import json
 from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from anyio import ClosedResourceError
 
 from deepagents_cli.mcp_tools import (
     MCPServerInfo,
     MCPSessionManager,
+    MCPSessionPool,
     MCPToolInfo,
     _filter_project_stdio_servers,
     _load_tools_from_config,
@@ -53,13 +56,19 @@ def write_config(tmp_path: Path) -> Callable[..., str]:
     return _write
 
 
+def _make_async_cm(session: AsyncMock) -> MagicMock:
+    """Build a generic async context manager that yields `session`."""
+    mock_session_cm = MagicMock()
+    mock_session_cm.__aenter__ = AsyncMock(return_value=session)
+    mock_session_cm.__aexit__ = AsyncMock(return_value=None)
+    return mock_session_cm
+
+
 @pytest.fixture
 def mock_mcp_session():
     """Fixture for creating a mock MCP session context manager."""
     mock_session = AsyncMock()
-    mock_session_cm = MagicMock()
-    mock_session_cm.__aenter__ = AsyncMock(return_value=mock_session)
-    mock_session_cm.__aexit__ = AsyncMock(return_value=None)
+    mock_session_cm = _make_async_cm(mock_session)
     return mock_session, mock_session_cm
 
 
@@ -446,6 +455,130 @@ class TestLoadMCPConfig:
             load_mcp_config(path)
 
 
+class TestMCPSessionPool:
+    """Tests for lazy pooled MCP runtime sessions."""
+
+    @patch("langchain_mcp_adapters.sessions.create_session")
+    async def test_reuses_single_session_for_concurrent_first_use(
+        self,
+        mock_create_session: MagicMock,
+    ) -> None:
+        """Concurrent first-use should only create one live session."""
+        session = AsyncMock()
+        session.initialize = AsyncMock()
+        mock_create_session.return_value = _make_async_cm(session)
+        pool = MCPSessionPool(
+            connections={
+                "filesystem": {
+                    "transport": "stdio",
+                    "command": "npx",
+                    "args": [],
+                }
+            }
+        )
+
+        first, second = await asyncio.gather(
+            pool.get_session("filesystem"),
+            pool.get_session("filesystem"),
+        )
+
+        assert first is session
+        assert second is session
+        mock_create_session.assert_called_once()
+        session.initialize.assert_awaited_once()
+
+    @patch("langchain_mcp_adapters.sessions.create_session")
+    async def test_retries_once_after_closed_resource_error(
+        self,
+        mock_create_session: MagicMock,
+    ) -> None:
+        """A dead cached session should be evicted, recreated, and retried once."""
+        stale_session = AsyncMock()
+        stale_session.initialize = AsyncMock()
+        stale_session.call_tool = AsyncMock(side_effect=ClosedResourceError())
+
+        fresh_session = AsyncMock()
+        fresh_session.initialize = AsyncMock()
+        fresh_session.call_tool = AsyncMock(return_value="ok")
+
+        stale_cm = _make_async_cm(stale_session)
+        fresh_cm = _make_async_cm(fresh_session)
+        mock_create_session.side_effect = [stale_cm, fresh_cm]
+
+        pool = MCPSessionPool(
+            connections={
+                "filesystem": {
+                    "transport": "stdio",
+                    "command": "npx",
+                    "args": [],
+                }
+            }
+        )
+
+        result = await pool.call_tool("filesystem", "read_file", {"path": "/tmp/demo"})
+
+        assert result == "ok"
+        assert mock_create_session.call_count == 2
+        stale_session.call_tool.assert_awaited_once()
+        fresh_session.call_tool.assert_awaited_once()
+        stale_cm.__aexit__.assert_awaited_once()
+
+    @patch("langchain_mcp_adapters.sessions.create_session")
+    async def test_non_retryable_tool_error_propagates(
+        self,
+        mock_create_session: MagicMock,
+    ) -> None:
+        """Normal tool failures should not discard or recreate the session."""
+        session = AsyncMock()
+        session.initialize = AsyncMock()
+        session.call_tool = AsyncMock(side_effect=RuntimeError("boom"))
+        mock_create_session.return_value = _make_async_cm(session)
+
+        pool = MCPSessionPool(
+            connections={
+                "filesystem": {
+                    "transport": "stdio",
+                    "command": "npx",
+                    "args": [],
+                }
+            }
+        )
+
+        with pytest.raises(RuntimeError, match="boom"):
+            await pool.call_tool("filesystem", "read_file")
+
+        mock_create_session.assert_called_once()
+        session.call_tool.assert_awaited_once()
+
+    @patch("langchain_mcp_adapters.sessions.create_session")
+    async def test_cleanup_closes_cached_sessions(
+        self,
+        mock_create_session: MagicMock,
+    ) -> None:
+        """Cleanup should close live sessions and block future creation."""
+        session = AsyncMock()
+        session.initialize = AsyncMock()
+        session_cm = _make_async_cm(session)
+        mock_create_session.return_value = session_cm
+
+        pool = MCPSessionPool(
+            connections={
+                "filesystem": {
+                    "transport": "stdio",
+                    "command": "npx",
+                    "args": [],
+                }
+            }
+        )
+
+        await pool.get_session("filesystem")
+        await pool.cleanup()
+
+        session_cm.__aexit__.assert_awaited_once()
+        with pytest.raises(RuntimeError, match="after pool cleanup"):
+            await pool.get_session("filesystem")
+
+
 class TestGetMCPTools:
     """Test MCP tools loading from configuration."""
 
@@ -547,6 +680,50 @@ class TestGetMCPTools:
             RuntimeError, match=r"Failed to load tools.*connection refused"
         ):
             await _load_tools_from_config(valid_config_data, stateless=True)
+
+    @patch("langchain_mcp_adapters.tools.convert_mcp_tool_to_langchain_tool")
+    @patch("deepagents_cli.mcp_tools._list_tools_from_connection")
+    async def test_stateless_with_pool_uses_pooled_runtime_sessions(
+        self,
+        mock_list_tools: AsyncMock,
+        mock_convert_tool: MagicMock,
+        valid_config_data: dict,
+        mock_tools: list,
+    ) -> None:
+        """Server-mode loading should discover tools without per-call sessions."""
+        raw_tool = MagicMock()
+        raw_tool.name = "read_file"
+        mock_list_tools.return_value = [raw_tool]
+        mock_convert_tool.return_value = mock_tools[0]
+        pool = MCPSessionPool()
+
+        tools, manager, server_infos = await _load_tools_from_config(
+            valid_config_data,
+            stateless=True,
+            session_pool=pool,
+        )
+
+        assert manager is None
+        mock_list_tools.assert_awaited_once()
+        mock_convert_tool.assert_called_once()
+        session_proxy = mock_convert_tool.call_args.args[0]
+        assert hasattr(session_proxy, "call_tool")
+        assert "connection" not in mock_convert_tool.call_args.kwargs
+        assert mock_convert_tool.call_args.kwargs["server_name"] == "filesystem"
+        assert mock_convert_tool.call_args.kwargs["tool_name_prefix"] is True
+        assert tools == [mock_tools[0]]
+        assert server_infos == [
+            MCPServerInfo(
+                name="filesystem",
+                transport="stdio",
+                tools=[
+                    MCPToolInfo(
+                        name=mock_tools[0].name,
+                        description=mock_tools[0].description,
+                    )
+                ],
+            )
+        ]
 
     @patch("langchain_mcp_adapters.client.MultiServerMCPClient")
     async def test_get_mcp_tools_server_spawn_failure(

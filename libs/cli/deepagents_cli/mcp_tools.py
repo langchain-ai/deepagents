@@ -8,16 +8,25 @@ and project-level locations.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
+
+from anyio import BrokenResourceError, ClosedResourceError, EndOfStream
 
 if TYPE_CHECKING:
+    from datetime import timedelta
+
     from langchain_core.tools import BaseTool
+    from langchain_mcp_adapters.callbacks import Callbacks
     from langchain_mcp_adapters.client import Connection, MultiServerMCPClient
+    from mcp import ClientSession
+    from mcp.shared.session import ProgressFnT
+    from mcp.types import CallToolResult, Tool as MCPTool
 
     from deepagents_cli.project_utils import ProjectContext
 
@@ -43,6 +52,268 @@ class MCPServerInfo:
 
 _SUPPORTED_REMOTE_TYPES = {"sse", "http"}
 """Supported transport types for remote MCP servers (SSE and HTTP)."""
+
+_RETRYABLE_SESSION_ERRORS = (
+    BrokenPipeError,
+    ConnectionResetError,
+    BrokenResourceError,
+    ClosedResourceError,
+    EndOfStream,
+)
+"""Connection errors that indicate a pooled MCP session should be recreated."""
+
+
+@dataclass
+class _MCPSessionEntry:
+    """Cached MCP session and its close stack."""
+
+    session: ClientSession
+    exit_stack: AsyncExitStack
+
+
+class MCPSessionPool:
+    """Lazy cache of persistent MCP sessions for server-mode tool execution.
+
+    The pool is configured with plain connection dictionaries during graph
+    construction, but it does not create any live sessions until a tool is
+    first invoked inside the server's long-lived event loop.
+    """
+
+    def __init__(
+        self,
+        *,
+        connections: dict[str, Connection] | None = None,
+        callbacks: Callbacks | None = None,
+    ) -> None:
+        """Initialize the pool.
+
+        Args:
+            connections: Optional initial server connection configs.
+            callbacks: Optional adapter callbacks used when creating sessions.
+        """
+        self._connections: dict[str, Connection] = dict(connections or {})
+        self._callbacks = callbacks
+        self._entries: dict[str, _MCPSessionEntry] = {}
+        self._locks: dict[str, asyncio.Lock] = {}
+        self._closed = False
+
+    def configure(self, connections: dict[str, Connection]) -> None:
+        """Set or validate the connection configs used by the pool.
+
+        Reconfiguration is allowed until a live session has been created. Once
+        sessions exist, only an identical config may be provided.
+
+        Args:
+            connections: Connection configs keyed by server name.
+
+        Raises:
+            RuntimeError: If the pool is closed or reconfigured incompatibly.
+        """
+        if self._closed:
+            msg = "Cannot configure a closed MCP session pool"
+            raise RuntimeError(msg)
+
+        if not self._entries:
+            self._connections = dict(connections)
+            return
+
+        if self._connections != connections:
+            msg = "Cannot reconfigure MCP session pool after sessions are active"
+            raise RuntimeError(msg)
+
+    async def get_session(self, server_name: str) -> ClientSession:
+        """Return a cached session for `server_name`, creating it lazily."""
+        entry = self._entries.get(server_name)
+        if entry is not None:
+            return entry.session
+
+        lock = self._get_lock(server_name)
+        async with lock:
+            entry = self._entries.get(server_name)
+            if entry is not None:
+                return entry.session
+
+            entry = await self._create_entry(server_name)
+            self._entries[server_name] = entry
+            return entry.session
+
+    async def call_tool(
+        self,
+        server_name: str,
+        name: str,
+        arguments: dict[str, Any] | None = None,
+        read_timeout_seconds: timedelta | None = None,
+        progress_callback: ProgressFnT | None = None,
+        *,
+        meta: dict[str, Any] | None = None,
+    ) -> CallToolResult:
+        """Call an MCP tool using a pooled session, reconnecting once if needed.
+
+        Args:
+            server_name: MCP server name.
+            name: MCP tool name.
+            arguments: Tool arguments.
+            read_timeout_seconds: Optional tool call timeout.
+            progress_callback: Optional MCP progress callback.
+            meta: Optional MCP request metadata.
+
+        Returns:
+            The MCP tool call result.
+
+        Raises:
+            RuntimeError: If both the original call and one reconnect retry fail.
+        """
+        for attempt in range(2):
+            session = await self.get_session(server_name)
+            try:
+                return await session.call_tool(
+                    name,
+                    arguments,
+                    read_timeout_seconds=read_timeout_seconds,
+                    progress_callback=progress_callback,
+                    meta=meta,
+                )
+            except _RETRYABLE_SESSION_ERRORS:
+                if attempt == 1:
+                    raise
+                logger.warning(
+                    "MCP session for '%s' closed during tool call; reconnecting",
+                    server_name,
+                )
+                await self.invalidate(server_name, expected_session=session)
+
+        msg = f"Failed to call MCP tool '{name}' for server '{server_name}'"
+        raise RuntimeError(msg)
+
+    async def invalidate(
+        self,
+        server_name: str,
+        *,
+        expected_session: ClientSession | None = None,
+    ) -> None:
+        """Evict and close a cached session if it still matches `expected_session`.
+
+        Args:
+            server_name: MCP server name.
+            expected_session: Optional identity check for race-safe eviction.
+        """
+        lock = self._get_lock(server_name)
+        async with lock:
+            entry = self._entries.get(server_name)
+            if entry is None:
+                return
+            if expected_session is not None and entry.session is not expected_session:
+                return
+            self._entries.pop(server_name, None)
+            await entry.exit_stack.aclose()
+
+    async def cleanup(self) -> None:
+        """Close all cached sessions and reject future creations."""
+        if self._closed and not self._entries:
+            return
+
+        self._closed = True
+        for server_name in list(self._entries):
+            await self.invalidate(server_name)
+
+    def _get_lock(self, server_name: str) -> asyncio.Lock:
+        """Return the per-server creation/eviction lock."""
+        lock = self._locks.get(server_name)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._locks[server_name] = lock
+        return lock
+
+    async def _create_entry(self, server_name: str) -> _MCPSessionEntry:
+        """Create and initialize a new pooled session entry.
+
+        Args:
+            server_name: MCP server name.
+
+        Returns:
+            A cached session entry containing the live session and close stack.
+
+        Raises:
+            RuntimeError: If the pool has already been cleaned up.
+            ValueError: If `server_name` is not configured in the pool.
+        """
+        if self._closed:
+            msg = "Cannot create an MCP session after pool cleanup"
+            raise RuntimeError(msg)
+
+        try:
+            connection = self._connections[server_name]
+        except KeyError as e:
+            msg = (
+                f"Couldn't find an MCP server named '{server_name}', "
+                f"expected one of {sorted(self._connections)}"
+            )
+            raise ValueError(msg) from e
+
+        from langchain_mcp_adapters.callbacks import CallbackContext
+        from langchain_mcp_adapters.sessions import create_session
+
+        mcp_callbacks = None
+        if self._callbacks is not None:
+            mcp_callbacks = self._callbacks.to_mcp_format(
+                context=CallbackContext(server_name=server_name)
+            )
+
+        exit_stack = AsyncExitStack()
+        try:
+            session = await exit_stack.enter_async_context(
+                create_session(connection, mcp_callbacks=mcp_callbacks)
+            )
+            await session.initialize()
+        except Exception:
+            await exit_stack.aclose()
+            raise
+
+        return _MCPSessionEntry(session=session, exit_stack=exit_stack)
+
+
+class _PooledClientSessionProxy:
+    """Duck-typed session proxy that routes calls through `MCPSessionPool`."""
+
+    def __init__(self, *, pool: MCPSessionPool, server_name: str) -> None:
+        """Initialize the proxy.
+
+        Args:
+            pool: Backing lazy session pool.
+            server_name: MCP server name for all routed calls.
+        """
+        self._pool = pool
+        self._server_name = server_name
+
+    async def call_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any] | None = None,
+        read_timeout_seconds: timedelta | None = None,
+        progress_callback: ProgressFnT | None = None,
+        *,
+        meta: dict[str, Any] | None = None,
+    ) -> CallToolResult:
+        """Route tool execution through the pooled session for this server.
+
+        Args:
+            name: MCP tool name.
+            arguments: Tool arguments.
+            read_timeout_seconds: Optional tool call timeout.
+            progress_callback: Optional MCP progress callback.
+            meta: Optional MCP request metadata.
+
+        Returns:
+            The MCP tool call result.
+        """
+        return await self._pool.call_tool(
+            self._server_name,
+            name,
+            arguments,
+            read_timeout_seconds=read_timeout_seconds,
+            progress_callback=progress_callback,
+            meta=meta,
+        )
 
 
 def _resolve_server_type(server_config: dict[str, Any]) -> str:
@@ -361,10 +632,146 @@ class MCPSessionManager:
         await self.exit_stack.aclose()
 
 
+def _build_server_info(
+    server_name: str,
+    server_config: dict[str, Any],
+    tools: list[BaseTool],
+) -> MCPServerInfo:
+    """Build metadata for one MCP server and its converted tools.
+
+    Returns:
+        MCP metadata for the server and its converted tool list.
+    """
+    return MCPServerInfo(
+        name=server_name,
+        transport=_resolve_server_type(server_config),
+        tools=[
+            MCPToolInfo(name=t.name, description=t.description or "") for t in tools
+        ],
+    )
+
+
+def _build_tool_load_error_message(server_name: str, error: Exception) -> str:
+    """Build an actionable error message for MCP discovery/connection failures.
+
+    Returns:
+        Human-readable error text with troubleshooting guidance.
+    """
+    return (
+        f"Failed to load tools from MCP server '{server_name}': {error}\n"
+        "For stdio servers: Check that the command and args are correct,"
+        " and that the MCP server is installed"
+        " (e.g., run 'npx -y <package>' manually to test).\n"
+        "For sse/http servers: Check that the URL is correct"
+        " and the server is running."
+    )
+
+
+async def _list_tools_from_connection(
+    server_name: str,
+    connection: Connection,
+    *,
+    callbacks: Callbacks | None = None,
+) -> list[MCPTool]:
+    """List MCP tools using a temporary session tied to `connection`.
+
+    This is used only during import-time discovery, so the session must remain
+    throwaway and must never be captured by the returned tool closures.
+
+    Args:
+        server_name: MCP server name.
+        connection: MCP connection config.
+        callbacks: Optional adapter callbacks used when creating the session.
+
+    Returns:
+        Raw MCP tool definitions for the server.
+    """
+    from langchain_mcp_adapters.callbacks import CallbackContext
+    from langchain_mcp_adapters.sessions import create_session
+
+    mcp_callbacks = None
+    if callbacks is not None:
+        mcp_callbacks = callbacks.to_mcp_format(
+            context=CallbackContext(server_name=server_name)
+        )
+
+    all_tools: list[MCPTool] = []
+    current_cursor: str | None = None
+    async with create_session(connection, mcp_callbacks=mcp_callbacks) as session:
+        await session.initialize()
+        while True:
+            list_tools_page_result = await session.list_tools(cursor=current_cursor)
+            if list_tools_page_result.tools:
+                all_tools.extend(list_tools_page_result.tools)
+            if not list_tools_page_result.nextCursor:
+                break
+            current_cursor = list_tools_page_result.nextCursor
+
+    return all_tools
+
+
+async def _load_tools_pooled(
+    config: dict[str, Any],
+    connections: dict[str, Connection],
+    session_pool: MCPSessionPool,
+) -> tuple[list[BaseTool], None, list[MCPServerInfo]]:
+    """Load tools with stateless discovery and pooled runtime sessions.
+
+    Discovery still uses temporary sessions so the module-import event loop can
+    exit safely. Tool execution is routed through `session_pool`, which creates
+    the long-lived sessions lazily on first use inside the server event loop.
+
+    Args:
+        config: Validated MCP configuration dict with `mcpServers` key.
+        connections: Pre-built connection configs keyed by server name.
+        session_pool: Lazy session cache for runtime tool execution.
+
+    Returns:
+        Tuple of `(tools_list, None, server_infos)`.
+
+    Raises:
+        RuntimeError: If tool discovery fails for any server.
+    """
+    from langchain_mcp_adapters.tools import convert_mcp_tool_to_langchain_tool
+
+    session_pool.configure(connections)
+
+    all_tools: list[BaseTool] = []
+    server_infos: list[MCPServerInfo] = []
+    for server_name, server_config in config["mcpServers"].items():
+        try:
+            raw_tools = await _list_tools_from_connection(
+                server_name,
+                connections[server_name],
+            )
+            session_proxy = _PooledClientSessionProxy(
+                pool=session_pool,
+                server_name=server_name,
+            )
+            tools = [
+                convert_mcp_tool_to_langchain_tool(
+                    cast("ClientSession", session_proxy),
+                    tool,
+                    server_name=server_name,
+                    tool_name_prefix=True,
+                )
+                for tool in raw_tools
+            ]
+        except Exception as e:
+            error_msg = _build_tool_load_error_message(server_name, e)
+            raise RuntimeError(error_msg) from e
+
+        all_tools.extend(tools)
+        server_infos.append(_build_server_info(server_name, server_config, tools))
+
+    return all_tools, None, server_infos
+
+
 async def _load_tools_from_config(
     config: dict[str, Any],
     *,
     stateless: bool = False,
+    session_pool: MCPSessionPool | None = None,
 ) -> tuple[list[BaseTool], MCPSessionManager | None, list[MCPServerInfo]]:
     """Build MCP connections from a validated config and load tools.
 
@@ -378,6 +785,9 @@ async def _load_tools_from_config(
             calling event loop will not outlive the current coroutine
             (e.g., `asyncio.run` in `server_graph`), because persistent
             sessions die when the temporary loop closes.
+        session_pool: Optional lazy pool used to reuse runtime sessions while
+            keeping discovery stateless. When omitted, stateless mode falls
+            back to per-call session creation.
 
     Returns:
         Tuple of `(tools_list, session_manager, server_infos)`.
@@ -420,7 +830,11 @@ async def _load_tools_from_config(
             )
 
     if stateless:
-        return await _load_tools_stateless(config, connections)
+        return await _load_tools_stateless(
+            config,
+            connections,
+            session_pool=session_pool,
+        )
 
     return await _load_tools_stateful(config, connections)
 
@@ -428,6 +842,8 @@ async def _load_tools_from_config(
 async def _load_tools_stateless(
     config: dict[str, Any],
     connections: dict[str, Connection],
+    *,
+    session_pool: MCPSessionPool | None = None,
 ) -> tuple[list[BaseTool], None, list[MCPServerInfo]]:
     """Load tools using per-call sessions (no persistent session manager).
 
@@ -438,6 +854,7 @@ async def _load_tools_stateless(
     Args:
         config: Validated MCP configuration dict with `mcpServers` key.
         connections: Pre-built connection configs keyed by server name.
+        session_pool: Optional lazy pool for persistent runtime sessions.
 
     Returns:
         Tuple of `(tools_list, None, server_infos)`.
@@ -445,6 +862,9 @@ async def _load_tools_stateless(
     Raises:
         RuntimeError: If tool discovery fails for any server.
     """
+    if session_pool is not None:
+        return await _load_tools_pooled(config, connections, session_pool)
+
     from langchain_mcp_adapters.tools import load_mcp_tools
 
     all_tools: list[BaseTool] = []
@@ -458,27 +878,11 @@ async def _load_tools_stateless(
                 tool_name_prefix=True,
             )
         except Exception as e:
-            error_msg = (
-                f"Failed to load tools from MCP server '{server_name}': {e}\n"
-                "For stdio servers: Check that the command and args are correct,"
-                " and that the MCP server is installed"
-                " (e.g., run 'npx -y <package>' manually to test).\n"
-                "For sse/http servers: Check that the URL is correct"
-                " and the server is running."
-            )
+            error_msg = _build_tool_load_error_message(server_name, e)
             raise RuntimeError(error_msg) from e
 
         all_tools.extend(tools)
-        server_infos.append(
-            MCPServerInfo(
-                name=server_name,
-                transport=_resolve_server_type(server_config),
-                tools=[
-                    MCPToolInfo(name=t.name, description=t.description or "")
-                    for t in tools
-                ],
-            )
-        )
+        server_infos.append(_build_server_info(server_name, server_config, tools))
 
     return all_tools, None, server_infos
 
@@ -500,7 +904,7 @@ async def _load_tools_stateful(
         Tuple of `(tools_list, session_manager, server_infos)`.
 
     Raises:
-        RuntimeError: If MCP server fails to spawn or connect.
+        RuntimeError: If MCP server fails to spawn, connect, or list tools.
     """
     from langchain_mcp_adapters.client import MultiServerMCPClient
     from langchain_mcp_adapters.tools import load_mcp_tools
@@ -527,26 +931,10 @@ async def _load_tools_stateful(
                 session, server_name=server_name, tool_name_prefix=True
             )
             all_tools.extend(tools)
-            server_infos.append(
-                MCPServerInfo(
-                    name=server_name,
-                    transport=_resolve_server_type(server_config),
-                    tools=[
-                        MCPToolInfo(name=t.name, description=t.description or "")
-                        for t in tools
-                    ],
-                )
-            )
+            server_infos.append(_build_server_info(server_name, server_config, tools))
     except Exception as e:
         await manager.cleanup()
-        error_msg = (
-            f"Failed to load tools from MCP server '{server_name}': {e}\n"
-            "For stdio servers: Check that the command and args are correct,"
-            " and that the MCP server is installed"
-            " (e.g., run 'npx -y <package>' manually to test).\n"
-            "For sse/http servers: Check that the URL is correct"
-            " and the server is running."
-        )
+        error_msg = _build_tool_load_error_message(server_name, e)
         raise RuntimeError(error_msg) from e
 
     return all_tools, manager, server_infos
@@ -587,6 +975,7 @@ async def resolve_and_load_mcp_tools(
     trust_project_mcp: bool | None = None,
     project_context: ProjectContext | None = None,
     stateless: bool = False,
+    session_pool: MCPSessionPool | None = None,
 ) -> tuple[list[BaseTool], MCPSessionManager | None, list[MCPServerInfo]]:
     """Resolve MCP config and load tools.
 
@@ -611,6 +1000,8 @@ async def resolve_and_load_mcp_tools(
             instead of sharing a persistent session. Required when MCP
             discovery runs in a temporary event loop (e.g., `asyncio.run`)
             that will not outlive the tools themselves.
+        session_pool: Optional lazy pool used to reuse runtime sessions in
+            server mode while preserving stateless discovery semantics.
 
     Returns:
         Tuple of `(tools_list, session_manager, server_infos)`.
@@ -716,4 +1107,11 @@ async def resolve_and_load_mcp_tools(
         msg = f"Invalid MCP server configuration: {e}"
         raise RuntimeError(msg) from e
 
-    return await _load_tools_from_config(merged, stateless=stateless)
+    if session_pool is None:
+        return await _load_tools_from_config(merged, stateless=stateless)
+
+    return await _load_tools_from_config(
+        merged,
+        stateless=stateless,
+        session_pool=session_pool,
+    )

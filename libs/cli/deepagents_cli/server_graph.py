@@ -26,6 +26,37 @@ logger = logging.getLogger(__name__)
 # Module-level sandbox state kept alive for the server process lifetime.
 _sandbox_cm: Any = None
 _sandbox_backend: Any = None
+_mcp_session_pool: Any = None
+_mcp_pool_cleanup_registered = False
+
+
+def _cleanup_mcp_session_pool() -> None:
+    """Best-effort cleanup for the module-level MCP session pool."""
+    if _mcp_session_pool is None:
+        return
+
+    import asyncio
+
+    try:
+        asyncio.run(_mcp_session_pool.cleanup())
+    except Exception:
+        logger.warning("MCP session pool cleanup failed", exc_info=True)
+
+
+def _get_mcp_session_pool() -> Any:  # noqa: ANN401
+    """Return the process-wide MCP session pool singleton."""
+    global _mcp_session_pool, _mcp_pool_cleanup_registered  # noqa: PLW0603
+
+    if _mcp_session_pool is None:
+        from deepagents_cli.mcp_tools import MCPSessionPool
+
+        _mcp_session_pool = MCPSessionPool()
+
+    if not _mcp_pool_cleanup_registered:
+        atexit.register(_cleanup_mcp_session_pool)
+        _mcp_pool_cleanup_registered = True
+
+    return _mcp_session_pool
 
 
 def _build_tools(
@@ -76,6 +107,7 @@ def _build_tools(
                     trust_project_mcp=config.trust_project_mcp,
                     project_context=project_context,
                     stateless=True,
+                    session_pool=_get_mcp_session_pool(),
                 )
             )
         except FileNotFoundError:

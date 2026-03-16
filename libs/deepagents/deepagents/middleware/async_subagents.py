@@ -125,6 +125,7 @@ You have access to async subagent tools that launch background jobs on remote La
   NEVER report a status from a previous tool result. ALWAYS call a tool to get the current status:
   use `list_async_subagent_jobs` when the user asks about multiple jobs or "all jobs",
   use `check_async_subagent` when the user asks about a specific job.
+- Always show the full job_id — never truncate or abbreviate it.
 
 ### When to use async subagents:
 - Long-running tasks that would block the main agent

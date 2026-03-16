@@ -57,8 +57,7 @@ class RemoteBackend(BackendProtocol):
     """Backend that stores files in cloud object storage (S3, Azure Blob, GCS).
 
     Uses `fsspec <https://filesystem-spec.readthedocs.io>`_ as the underlying
-    abstraction — the same foundation as Apache Airflow's ObjectStorage path —
-    so any ``fsspec``-compatible filesystem (S3, GCS, Azure, SFTP, HTTP, …)
+    abstraction  so any ``fsspec``-compatible filesystem (S3, GCS, Azure, SFTP, HTTP, …)
     works without changes to this class.
 
     Files are stored as plain UTF-8 objects.  All agent-facing paths are

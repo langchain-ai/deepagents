@@ -741,6 +741,18 @@ class ToolCallMessage(Vertical):
         if formatter:
             return formatter(output, is_preview=is_preview)
 
+        if is_preview:
+            # Fallback for unknown tools: use generic truncation
+            lines = output.split("\n")
+            if len(lines) > self._PREVIEW_LINES:
+                return self._format_lines_output(lines, is_preview=True)
+            if len(output) > self._PREVIEW_CHARS:
+                # Truncate to max chars and escape
+                truncated = output[: self._PREVIEW_CHARS]
+                content = escape_markup(truncated)
+                truncation = f"{len(output) - self._PREVIEW_CHARS} more chars"
+                return FormattedOutput(content=content, truncation=truncation)
+
         # Default: return as-is but escape markup
         return FormattedOutput(content=escape_markup(output))
 

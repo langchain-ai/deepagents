@@ -323,7 +323,7 @@ class TestExecuteTaskTextualSummarizationFeedback:
     """Tests for summarization spinner and notification feedback."""
 
     async def test_spinner_transitions_for_summarization_stream(self) -> None:
-        """Spinner should move Thinking -> Summarizing -> Thinking."""
+        """Spinner should move Thinking -> Offloading -> Thinking."""
         statuses: list[str | None] = []
 
         async def record_spinner(status: str | None) -> None:
@@ -358,7 +358,7 @@ class TestExecuteTaskTextualSummarizationFeedback:
         )
 
         assert statuses[0] == "Thinking"
-        assert "Summarizing" in statuses
+        assert "Offloading" in statuses
         assert statuses[-1] == "Thinking"
 
     async def test_mounts_summarization_notification_on_regular_chunk(self) -> None:

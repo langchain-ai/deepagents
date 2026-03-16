@@ -542,10 +542,10 @@ def _add_interrupt_on() -> dict[str, InterruptOnConfig]:
         interrupt_map["compact_conversation"] = {
             "allowed_decisions": ["approve", "reject"],
             "description": (
-                "Summarizes older messages into a shorter summary "
-                "using an LLM call, then replaces them in context. "
-                "Recent messages are kept as-is. Full history is "
-                "written to backend storage for agent retrieval."
+                "Offloads older messages to backend storage and "
+                "replaces them with a summary, freeing context "
+                "window space. Recent messages are kept as-is. "
+                "Full history remains available for retrieval."
             ),
         }
 

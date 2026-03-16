@@ -376,23 +376,31 @@ class TestListJobsTool:
         result = list_tool.func(runtime=rt)
         assert "No async subagent jobs tracked" in result
 
-    def test_returns_tracked_jobs(self) -> None:
-        tools = _build_async_subagent_tools([_make_spec()])
+    @patch("deepagents.middleware.async_subagents.get_sync_client")
+    def test_returns_live_statuses(self, mock_get_client: MagicMock) -> None:
+        mock_client = MagicMock()
+        mock_client.runs.get.side_effect = [
+            {"run_id": "r1", "status": "success"},
+            {"run_id": "r2", "status": "running"},
+        ]
+        mock_get_client.return_value = mock_client
+
+        tools = _build_async_subagent_tools([_make_spec("test-agent")])
         list_tool = tools[4]
         jobs: dict[str, AsyncSubAgentJob] = {
-            "alpha::t1": {
-                "job_id": "alpha::t1",
-                "agent_name": "alpha",
+            "test-agent::t1::r1": {
+                "job_id": "test-agent::t1::r1",
+                "agent_name": "test-agent",
                 "thread_id": "t1",
                 "run_id": "r1",
-                "status": "running",
+                "status": "running",  # stale — SDK will return "success"
             },
-            "beta::t2": {
-                "job_id": "beta::t2",
-                "agent_name": "beta",
+            "test-agent::t2::r2": {
+                "job_id": "test-agent::t2::r2",
+                "agent_name": "test-agent",
                 "thread_id": "t2",
                 "run_id": "r2",
-                "status": "success",
+                "status": "running",
             },
         }
         rt = ToolRuntime(
@@ -404,13 +412,53 @@ class TestListJobsTool:
             config={},
         )
         result = list_tool.func(runtime=rt)
-        assert "2 tracked job(s)" in result
-        assert "alpha::t1" in result
-        assert "beta::t2" in result
-        assert "running" in result
-        assert "success" in result
+        assert isinstance(result, Command)
+        content = result.update["messages"][0].content
+        assert "2 tracked job(s)" in content
+        assert "test-agent::t1::r1" in content
+        assert "test-agent::t2::r2" in content
+        assert "success" in content
+        assert "running" in content
+        # state should be updated with fresh statuses
+        updated = result.update["async_subagent_jobs"]
+        assert updated["test-agent::t1::r1"]["status"] == "success"
+        assert updated["test-agent::t2::r2"]["status"] == "running"
 
-    async def test_async_list_returns_same_result(self) -> None:
+    @patch("deepagents.middleware.async_subagents.get_sync_client")
+    def test_skips_sdk_call_for_terminal_statuses(self, mock_get_client: MagicMock) -> None:
+        mock_client = MagicMock()
+        mock_get_client.return_value = mock_client
+
+        tools = _build_async_subagent_tools([_make_spec("test-agent")])
+        list_tool = tools[4]
+        jobs: dict[str, AsyncSubAgentJob] = {
+            "test-agent::t1::r1": {
+                "job_id": "test-agent::t1::r1",
+                "agent_name": "test-agent",
+                "thread_id": "t1",
+                "run_id": "r1",
+                "status": "superseded",
+            },
+            "test-agent::t2::r2": {
+                "job_id": "test-agent::t2::r2",
+                "agent_name": "test-agent",
+                "thread_id": "t2",
+                "run_id": "r2",
+                "status": "cancelled",
+            },
+        }
+        rt = ToolRuntime(
+            state={"async_subagent_jobs": jobs},
+            context=None,
+            tool_call_id="tc_list",
+            store=None,
+            stream_writer=lambda _: None,
+            config={},
+        )
+        list_tool.func(runtime=rt)
+        mock_client.runs.get.assert_not_called()
+
+    async def test_async_list_returns_no_jobs(self) -> None:
         tools = _build_async_subagent_tools([_make_spec()])
         list_tool = tools[4]
         rt = _make_runtime()

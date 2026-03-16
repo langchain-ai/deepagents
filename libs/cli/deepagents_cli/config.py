@@ -48,23 +48,58 @@ def _find_dotenv_from_start_path(start_path: Path) -> Path | None:
     return None
 
 
+_GLOBAL_DOTENV_PATH = Path.home() / ".deepagents" / ".env"
+"""Global user-level `.env` file (`~/.deepagents/.env`)."""
+
+
 def _load_dotenv(*, start_path: Path | None = None, override: bool = False) -> bool:
-    """Load environment variables, optionally anchored to an explicit path.
+    """Load environment variables from global and project `.env` files.
+
+    Loads in order:
+
+    1. `~/.deepagents/.env` — global defaults (always with `override=False`)
+    2. Project/CWD `.env` — project-specific values (uses caller's `override`)
+
+    When `override` is `True` (e.g., during `/reload`), project-level values
+    take precedence over global ones. When `override` is `False` (e.g.,
+    during bootstrap), the global file's values take precedence for keys
+    defined in both files because it is loaded first.
 
     Args:
-        start_path: Directory to use for `.env` discovery.
-        override: Whether loaded values should override existing env vars.
+        start_path: Directory to use for project `.env` discovery.
+        override: Whether project `.env` values should override existing
+            env vars (global `.env` always uses `override=False`).
 
     Returns:
-        `True` when a dotenv file was loaded, `False` otherwise.
+        `True` when at least one dotenv file was loaded, `False` otherwise.
     """
-    if start_path is None:
-        return dotenv.load_dotenv(override=override)
+    loaded = False
 
-    dotenv_path = _find_dotenv_from_start_path(start_path)
-    if dotenv_path is None:
-        return False
-    return dotenv.load_dotenv(dotenv_path=dotenv_path, override=override)
+    # 1. Global defaults (~/.deepagents/.env) — never override existing vars
+    try:
+        if _GLOBAL_DOTENV_PATH.is_file() and dotenv.load_dotenv(
+            dotenv_path=_GLOBAL_DOTENV_PATH, override=False
+        ):
+            loaded = True
+            logger.debug("Loaded global dotenv: %s", _GLOBAL_DOTENV_PATH)
+    except OSError:
+        logger.warning(
+            "Could not read global dotenv at %s; global defaults will not be applied",
+            _GLOBAL_DOTENV_PATH,
+            exc_info=True,
+        )
+
+    # 2. Project/CWD .env — may override global values
+    if start_path is None:
+        loaded = dotenv.load_dotenv(override=override) or loaded
+    else:
+        dotenv_path = _find_dotenv_from_start_path(start_path)
+        if dotenv_path is not None:
+            loaded = (
+                dotenv.load_dotenv(dotenv_path=dotenv_path, override=override) or loaded
+            )
+
+    return loaded
 
 
 _bootstrap_project_context = _get_server_project_context()

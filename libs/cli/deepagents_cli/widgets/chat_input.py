@@ -283,8 +283,9 @@ class ChatTextArea(TextArea):
 
     _skip_history_change_events: int
     """Counter incremented before a history-driven text replacement so the
-    resulting ``TextArea.Changed`` event (which fires asynchronously) can be
-    suppressed.  The handler decrements the counter.
+    resulting `TextArea.Changed` event (which fires on the next message-loop
+    iteration) can be suppressed.  `ChatInput.on_text_area_changed` decrements
+    the counter.
     """
 
     _in_history: bool
@@ -690,7 +691,10 @@ class ChatTextArea(TextArea):
     def clear_text(self) -> None:
         """Clear the text area."""
         self._in_history = False
-        self._skip_history_change_events = 0
+        # Increment (not reset) so any pending Changed event from a prior
+        # set_text_from_history is still suppressed, plus one for the
+        # self.text = "" assignment below.
+        self._skip_history_change_events += 1
         self._paste_burst_buffer = ""
         self._paste_burst_last_char_time = None
         self._cancel_paste_burst_timer()
@@ -1208,8 +1212,8 @@ class ChatInput(Vertical):
             mode, display_text = self._history_entry_mode_and_text(entry)
             self.mode = mode
             self._text_area.set_text_from_history(display_text)
-        elif self._text_area:
-            self._text_area._skip_history_change_events = 0
+        # No-match path: don't reset the counter — a pending Changed event
+        # from a prior set_text_from_history call may still be in flight.
         # Keep text area's _in_history in sync with the history manager.
         if self._text_area:
             self._text_area._in_history = self._history.in_history
@@ -1224,8 +1228,8 @@ class ChatInput(Vertical):
             mode, display_text = self._history_entry_mode_and_text(entry)
             self.mode = mode
             self._text_area.set_text_from_history(display_text)
-        elif self._text_area:
-            self._text_area._skip_history_change_events = 0
+        # No-match path: don't reset the counter — a pending Changed event
+        # from a prior set_text_from_history call may still be in flight.
         # Keep text area's _in_history in sync with the history manager.
         # When the user presses Down past the newest entry, get_next()
         # resets navigation internally, so in_history becomes False.

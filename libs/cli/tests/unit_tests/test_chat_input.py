@@ -411,6 +411,60 @@ class TestHistoryNavigationFlag:
             controller = chat_input._completion_manager._active
             assert controller is not None
 
+    async def test_multiple_rapid_recalls_drain_counter(self) -> None:
+        """Multiple set_text_from_history calls should each reserve a skip."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input._text_area
+            assert text_area is not None
+
+            # Call set_text_from_history twice without letting events process
+            text_area.set_text_from_history("first")
+            text_area.set_text_from_history("second")
+            assert text_area._skip_history_change_events == 2
+
+            # Let both Changed events fire and drain the counter
+            await pilot.pause()
+            await pilot.pause()
+            assert text_area._skip_history_change_events == 0
+            assert text_area.text == "second"
+
+    async def test_clear_text_suppresses_own_changed_event(self) -> None:
+        """clear_text increments the counter so its Changed event is skipped."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input._text_area
+            assert text_area is not None
+
+            # Recall a history entry, then immediately clear
+            chat_input._history._entries.append("recalled")
+            await pilot.press("up")
+            await pilot.pause()
+            assert text_area.text == "recalled"
+
+            text_area.clear_text()
+            # Counter should be 1 (for the clear's own Changed event)
+            assert text_area._skip_history_change_events == 1
+            await pilot.pause()
+            assert text_area._skip_history_change_events == 0
+
+    async def test_negative_counter_resets_with_warning(self) -> None:
+        """Defensive check: negative counter is logged and reset to 0."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input._text_area
+            assert text_area is not None
+
+            # Force counter negative (simulates a bug elsewhere)
+            text_area._skip_history_change_events = -1
+            text_area.insert("x")
+            await pilot.pause()
+
+            assert text_area._skip_history_change_events == 0
+
 
 class TestHistoryBoundaryNavigation:
     """Test that history navigation only triggers at input boundaries."""

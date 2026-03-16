@@ -329,7 +329,13 @@ def _build_check_command(
     tool_call_id: str | None,
 ) -> Command:
     """Build the Command update for a check result."""
-    updated_job: AsyncSubAgentJob = {**job, "status": result["status"]}
+    updated_job = AsyncSubAgentJob(
+        job_id=job["job_id"],
+        agent_name=job["agent_name"],
+        thread_id=job["thread_id"],
+        run_id=job["run_id"],
+        status=result["status"],
+    )
     return Command(
         update={
             "messages": [ToolMessage(json.dumps(result), tool_call_id=tool_call_id)],
@@ -546,7 +552,13 @@ def _build_cancel_tool(
             client.runs.cancel(thread_id=tracked["thread_id"], run_id=tracked["run_id"])
         except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
             return f"Failed to cancel run: {e}"
-        updated: AsyncSubAgentJob = {**tracked, "status": "cancelled"}
+        updated = AsyncSubAgentJob(
+            job_id=tracked["job_id"],
+            agent_name=tracked["agent_name"],
+            thread_id=tracked["thread_id"],
+            run_id=tracked["run_id"],
+            status="cancelled",
+        )
         msg = f"Cancelled async subagent job: {tracked['job_id']}"
         return Command(
             update={
@@ -569,7 +581,13 @@ def _build_cancel_tool(
             await client.runs.cancel(thread_id=tracked["thread_id"], run_id=tracked["run_id"])
         except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
             return f"Failed to cancel run: {e}"
-        updated: AsyncSubAgentJob = {**tracked, "status": "cancelled"}
+        updated = AsyncSubAgentJob(
+            job_id=tracked["job_id"],
+            agent_name=tracked["agent_name"],
+            thread_id=tracked["thread_id"],
+            run_id=tracked["run_id"],
+            status="cancelled",
+        )
         msg = f"Cancelled async subagent job: {tracked['job_id']}"
         return Command(
             update={

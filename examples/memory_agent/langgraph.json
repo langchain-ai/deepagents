@@ -6,9 +6,9 @@
   "env": ".env",
   "crons": {
     "memory-consolidation": {
-      "graph": "./cron.py:run_consolidation",
+      "graph": "./cron.py:consolidate_user",
       "schedule": "0 3 * * *",
-      "description": "Nightly memory consolidation — processes recent threads and updates global + per-user memory"
+      "description": "Per-user memory consolidation — each user gets an independent invocation"
     }
   }
 }

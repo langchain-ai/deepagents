@@ -4,20 +4,23 @@ Runs on a schedule (e.g., nightly) to process recent conversation threads
 and consolidate learnings into global and per-user memory. This is the
 "sleep-time compute" that makes the agent improve over time.
 
-Usage:
-    # One-shot consolidation (all users, parallel)
-    python cron.py
+The primary unit of work is `consolidate_user` — one user, one invocation.
+In production (LangGraph Cloud), this runs as a per-user cron job so each
+user's consolidation is an independent, horizontally scalable invocation.
 
-    # Single user only
+For local dev/testing, `run_all_users` is a convenience that discovers all
+users and consolidates them (in parallel via thread pool).
+
+Usage:
+    # Single user (production pattern)
     python cron.py --user alice
 
-    # Control parallelism
-    python cron.py --max-workers 10
+    # All users (local dev / small scale)
+    python cron.py --all
 
-    # With a real scheduler (e.g., crontab)
-    # 0 3 * * * cd /path/to/memory_agent && python cron.py
-
-    # Or use LangGraph's cron job support in langgraph.json
+    # With a real scheduler (e.g., crontab), one job per user:
+    # 0 3 * * * cd /path/to/memory_agent && python cron.py --user alice
+    # 0 3 * * * cd /path/to/memory_agent && python cron.py --user bob
 """
 
 from __future__ import annotations
@@ -89,17 +92,21 @@ def collect_threads(
     return [item.value for item in items]
 
 
-def consolidate_memories(
+def consolidate_user(
     *,
     store: BaseStore,
     user_id: str,
     model: str = "anthropic:claude-sonnet-4-6",
     threads: list[dict[str, Any]] | None = None,
 ) -> dict[str, str]:
-    """Run memory consolidation for a user.
+    """Consolidate memories for a single user.
 
-    Analyzes recent conversation threads and updates both global and
-    per-user memory in the store.
+    This is the primary unit of work — designed to run as one independent
+    invocation per user. In production, each user gets their own cron
+    trigger so consolidation scales horizontally.
+
+    Reads the user's recent threads, analyzes them with an LLM, and
+    updates both global memory and the user's personal memory.
 
     Args:
         store: The LangGraph store for reading/writing memories.
@@ -165,27 +172,23 @@ def consolidate_memories(
     return {"global_memory": new_global, "user_memory": new_user}
 
 
-def run_consolidation(
+def run_all_users(
     *,
     store: BaseStore | None = None,
-    user_ids: list[str] | None = None,
     model: str = "anthropic:claude-sonnet-4-6",
     max_workers: int = 5,
 ) -> dict[str, dict[str, str]]:
-    """Run memory consolidation for all specified users in parallel.
+    """Consolidate all users in parallel (convenience for local dev).
 
-    Each user's consolidation is independent (reads their own threads,
-    writes to their own user namespace), so they run concurrently via
-    a thread pool. Global memory updates are last-write-wins per field;
-    in practice each user's consolidation merges into the existing global
-    memory so concurrent writes produce a reasonable result.
+    For local dev and small-scale deployments. Discovers all users from
+    the store and runs `consolidate_user` for each via a thread pool.
 
-    For very large deployments, run per-user consolidation as separate
-    cron invocations instead (e.g., `python cron.py --user alice`).
+    For large-scale production, use per-user cron invocations instead —
+    each user gets their own scheduled job that calls `consolidate_user`
+    directly, so consolidation scales horizontally across workers.
 
     Args:
         store: The LangGraph store. Defaults to InMemoryStore.
-        user_ids: Users to consolidate. Defaults to discovering from store.
         model: Model to use for consolidation.
         max_workers: Max parallel user consolidations.
 
@@ -195,20 +198,15 @@ def run_consolidation(
     if store is None:
         store = InMemoryStore()
 
-    if user_ids is None:
-        namespaces = store.list_namespaces(
-            prefix=USER_MEMORY_NAMESPACE_PREFIX, max_depth=3
-        )
-        user_ids = list({ns[2] for ns in namespaces if len(ns) > 2})
+    namespaces = store.list_namespaces(prefix=USER_MEMORY_NAMESPACE_PREFIX, max_depth=3)
+    user_ids = list({ns[2] for ns in namespaces if len(ns) > 2})
 
     if not user_ids:
         user_ids = ["default"]
 
     if len(user_ids) == 1:
         return {
-            user_ids[0]: consolidate_memories(
-                store=store, user_id=user_ids[0], model=model
-            )
+            user_ids[0]: consolidate_user(store=store, user_id=user_ids[0], model=model)
         }
 
     logger.info(
@@ -219,7 +217,7 @@ def run_consolidation(
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {
             executor.submit(
-                consolidate_memories, store=store, user_id=uid, model=model
+                consolidate_user, store=store, user_id=uid, model=model
             ): uid
             for uid in user_ids
         }
@@ -240,9 +238,17 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
     parser = argparse.ArgumentParser(description="Run memory consolidation")
-    parser.add_argument("--user", type=str, default=None, help="Single user ID")
     parser.add_argument(
-        "--max-workers", type=int, default=5, help="Max parallel consolidations"
+        "--user", type=str, default=None, help="Consolidate a single user"
+    )
+    parser.add_argument(
+        "--all", action="store_true", help="Consolidate all users (local dev)"
+    )
+    parser.add_argument(
+        "--max-workers",
+        type=int,
+        default=5,
+        help="Max parallel consolidations (with --all)",
     )
     parser.add_argument(
         "--model",
@@ -252,5 +258,10 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    uids = [args.user] if args.user else None
-    run_consolidation(user_ids=uids, model=args.model, max_workers=args.max_workers)
+    if args.user:
+        store = InMemoryStore()
+        consolidate_user(store=store, user_id=args.user, model=args.model)
+    elif args.all:
+        run_all_users(model=args.model, max_workers=args.max_workers)
+    else:
+        parser.error("Specify --user <id> or --all")

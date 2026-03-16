@@ -42,11 +42,11 @@ A deep agent that **improves over time** through learned memory. Demonstrates th
    - **Global memory** — patterns learned across all users (e.g., "users prefer bullet points", "always include error handling in code reviews")
    - **Per-user memory** — personalized context (e.g., "this user leads the platform team", "prefers concise responses")
 
-2. **Cron Job** (`cron.py`) — Sleep-time compute that runs on a schedule to:
-   - Collect recent conversation threads
-   - Analyze them with an LLM to extract useful patterns
-   - Update global and per-user memory in the store
-   - Merge new learnings with existing memory (no duplicates)
+2. **Cron Job** (`cron.py`) — Sleep-time compute, designed as **one invocation per user**:
+   - `consolidate_user(store, user_id)` — the primary unit of work, runs independently per user
+   - Collects that user's recent threads, analyzes with an LLM, updates both global + user memory
+   - Scales horizontally — in production (LangGraph Cloud), each user gets their own cron trigger
+   - `run_all_users()` — convenience wrapper for local dev that discovers all users and parallelizes via thread pool
 
 3. **Eval** (`eval.py`) — Day-N evaluation framework that answers: *"Does the agent get better over time?"*
    - Simulates N days of usage with realistic conversations
@@ -93,7 +93,11 @@ The `langgraph.json` configures both the agent graph and the nightly cron job.
 ### Run memory consolidation manually
 
 ```bash
-python cron.py
+# Single user (production pattern — one invocation per user)
+python cron.py --user alice
+
+# All users (local dev convenience)
+python cron.py --all
 ```
 
 ### Run the day-N evaluation
@@ -136,13 +140,15 @@ Stored at namespace `("memory", "users", "<user_id>")`. Contains:
 ```
 
 ### Sleep-Time Consolidation
-The cron job uses an LLM to analyze conversation threads and extract memories. It:
-1. Reads all recent threads for each user
+The cron job uses an LLM to analyze conversation threads and extract memories. Each user's consolidation is an independent invocation:
+1. Reads that user's recent threads
 2. Loads current global + user memory
 3. Asks an LLM to produce updated, consolidated memories
 4. Writes the updated memories back to the store
 
-This is the key insight: **the agent doesn't need to be running to learn**. Background compute during "sleep time" processes raw conversations into structured, useful memory.
+This is designed to scale: in production, each user gets their own cron trigger (via LangGraph Cloud), so consolidation runs as many independent jobs in parallel as you have users. No single process bottleneck.
+
+The key insight: **the agent doesn't need to be running to learn**. Background compute during "sleep time" processes raw conversations into structured, useful memory.
 
 ## The Day-N Eval
 

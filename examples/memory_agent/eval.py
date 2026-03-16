@@ -267,9 +267,9 @@ def _run_consolidation(
     model: Any,
 ) -> None:
     """Run memory consolidation (inline version of cron.py logic)."""
-    from cron import consolidate_memories
+    from cron import consolidate_user
 
-    consolidate_memories(store=store, user_id=user_id, model=str(model.model))
+    consolidate_user(store=store, user_id=user_id, model=str(model.model))
 
 
 def run_eval(

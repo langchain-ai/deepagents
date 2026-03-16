@@ -104,7 +104,7 @@ You have access to async subagent tools that launch background jobs on remote La
 - `check_async_subagent`: Check the status of a running job. Returns status and result if complete.
 - `update_async_subagent`: Send an update or new instructions to a running job.
 - `cancel_async_subagent`: Cancel a running job that is no longer needed.
-- `list_async_subagent_jobs`: List all tracked jobs and their last-known statuses. Use this to recall job IDs.
+- `list_async_subagent_jobs`: List all tracked jobs with live statuses. Use this to check all jobs at once.
 
 ### Workflow:
 1. **Launch** — Use `launch_async_subagent` to start a job. Report the job ID to the user and stop.
@@ -115,15 +115,16 @@ You have access to async subagent tools that launch background jobs on remote La
    the current run and starts a fresh one on the same thread. The job_id stays the same.
 4. **Cancel** (optional) — Use `cancel_async_subagent` to stop a job that is no longer needed.
 5. **Collect** — When `check_async_subagent` returns status "success", the result is included in the response.
-6. **Recall** — Use `list_async_subagent_jobs` if you need to recall job IDs (e.g., after context compaction).
+6. **List** — Use `list_async_subagent_jobs` to see live statuses for all jobs at once, or to recall job IDs after context compaction.
 
 ### Critical rules:
 - After launching, ALWAYS return control to the user immediately. Never auto-check after launching.
 - Never poll `check_async_subagent` in a loop. Check once per user request, then stop.
 - If a check returns "running", tell the user and wait for them to ask again.
-- NEVER answer questions about job statuses from memory or conversation history. ALWAYS use a tool:
-  use `check_async_subagent` to get the live status of a specific job, or `list_async_subagent_jobs`
-  to see all tracked jobs. Job statuses change over time and must be fetched fresh.
+- Job statuses in conversation history are ALWAYS stale — a job that was "running" may now be done.
+  NEVER report a status from a previous tool result. ALWAYS call a tool to get the current status:
+  use `list_async_subagent_jobs` when the user asks about multiple jobs or "all jobs",
+  use `check_async_subagent` when the user asks about a specific job.
 
 ### When to use async subagents:
 - Long-running tasks that would block the main agent
@@ -607,26 +608,99 @@ def _build_cancel_tool(
     )
 
 
-def _build_list_jobs_tool() -> StructuredTool:
+_TERMINAL_STATUSES = frozenset({"superseded", "cancelled"})
+_SKIP_IN_LIST = frozenset({"superseded"})
+
+
+def _fetch_live_status(clients: _ClientCache, job: AsyncSubAgentJob) -> str:
+    """Fetch the current run status from the server, falling back to cached status on error."""
+    if job["status"] in _TERMINAL_STATUSES:
+        return job["status"]
+    try:
+        client = clients.get_sync(job["agent_name"])
+        run = client.runs.get(thread_id=job["thread_id"], run_id=job["run_id"])
+        return run["status"]
+    except Exception:  # noqa: BLE001  # LangGraph SDK raises untyped errors
+        return job["status"]
+
+
+async def _afetch_live_status(clients: _ClientCache, job: AsyncSubAgentJob) -> str:
+    """Async version of `_fetch_live_status`."""
+    if job["status"] in _TERMINAL_STATUSES:
+        return job["status"]
+    try:
+        client = clients.get_async(job["agent_name"])
+        run = await client.runs.get(thread_id=job["thread_id"], run_id=job["run_id"])
+        return run["status"]
+    except Exception:  # noqa: BLE001  # LangGraph SDK raises untyped errors
+        return job["status"]
+
+
+def _format_job_entry(job: AsyncSubAgentJob, status: str) -> str:
+    return f"- job_id: {job['job_id']}  agent: {job['agent_name']}  status: {status}"
+
+
+def _build_list_jobs_tool(clients: _ClientCache) -> StructuredTool:
     """Build the list_async_subagent_jobs tool."""
 
-    def list_async_subagent_jobs(runtime: ToolRuntime) -> str:
+    def list_async_subagent_jobs(runtime: ToolRuntime) -> str | Command:
         jobs: dict[str, AsyncSubAgentJob] = runtime.state.get("async_subagent_jobs") or {}
-        if not jobs:
+        active = [job for job in jobs.values() if job["status"] not in _SKIP_IN_LIST]
+        if not active:
             return "No async subagent jobs tracked."
-        entries = [f"- job_id: {job['job_id']}  agent: {job['agent_name']}  status: {job['status']}" for job in jobs.values()]
-        return f"{len(entries)} tracked job(s):\n" + "\n".join(entries)
+        updated_jobs: dict[str, AsyncSubAgentJob] = {}
+        entries: list[str] = []
+        for job in active:
+            status = _fetch_live_status(clients, job)
+            entries.append(_format_job_entry(job, status))
+            updated_jobs[job["job_id"]] = AsyncSubAgentJob(
+                job_id=job["job_id"],
+                agent_name=job["agent_name"],
+                thread_id=job["thread_id"],
+                run_id=job["run_id"],
+                status=status,
+            )
+        msg = f"{len(entries)} tracked job(s):\n" + "\n".join(entries)
+        return Command(
+            update={
+                "messages": [ToolMessage(msg, tool_call_id=runtime.tool_call_id)],
+                "async_subagent_jobs": updated_jobs,
+            }
+        )
 
-    async def alist_async_subagent_jobs(runtime: ToolRuntime) -> str:
-        return list_async_subagent_jobs(runtime=runtime)
+    async def alist_async_subagent_jobs(runtime: ToolRuntime) -> str | Command:
+        jobs: dict[str, AsyncSubAgentJob] = runtime.state.get("async_subagent_jobs") or {}
+        active = [job for job in jobs.values() if job["status"] not in _SKIP_IN_LIST]
+        if not active:
+            return "No async subagent jobs tracked."
+        updated_jobs: dict[str, AsyncSubAgentJob] = {}
+        entries: list[str] = []
+        for job in active:
+            status = await _afetch_live_status(clients, job)
+            entries.append(_format_job_entry(job, status))
+            updated_jobs[job["job_id"]] = AsyncSubAgentJob(
+                job_id=job["job_id"],
+                agent_name=job["agent_name"],
+                thread_id=job["thread_id"],
+                run_id=job["run_id"],
+                status=status,
+            )
+        msg = f"{len(entries)} tracked job(s):\n" + "\n".join(entries)
+        return Command(
+            update={
+                "messages": [ToolMessage(msg, tool_call_id=runtime.tool_call_id)],
+                "async_subagent_jobs": updated_jobs,
+            }
+        )
 
     return StructuredTool.from_function(
         name="list_async_subagent_jobs",
         func=list_async_subagent_jobs,
         coroutine=alist_async_subagent_jobs,
         description=(
-            "List all tracked async subagent jobs and their last-known statuses. "
-            "Use this to recall job IDs after context compaction or to see what jobs are in flight."
+            "List all tracked async subagent jobs with their current live statuses. "
+            "Use this to see the status of all jobs at once. "
+            "Use `check_async_subagent` to get the full result of a specific completed job."
         ),
     )
 
@@ -652,7 +726,7 @@ def _build_async_subagent_tools(
         _build_check_tool(agent_map, clients),
         _build_update_tool(agent_map, clients),
         _build_cancel_tool(agent_map, clients),
-        _build_list_jobs_tool(),
+        _build_list_jobs_tool(clients),
     ]
 
 

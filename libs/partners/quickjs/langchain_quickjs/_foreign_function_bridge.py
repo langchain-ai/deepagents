@@ -9,15 +9,88 @@ functions behave more naturally from JavaScript.
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import json
+import threading
 from typing import TYPE_CHECKING, Any
 
 from langchain_core.tools import BaseTool
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Coroutine
+    from concurrent.futures import Future
 
     import quickjs
+
+
+class _AsyncLoopThread:
+    """Run coroutines on a dedicated daemon-thread event loop.
+
+    QuickJS only accepts synchronous Python callbacks via
+    `quickjs.Context.add_callable()`. This helper provides a long-lived event
+    loop on a background daemon thread so async foreign functions can still be
+    exposed through the synchronous QuickJS callback interface.
+    """
+
+    def __init__(self) -> None:
+        self._ready = threading.Event()
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+        self._ready.wait()
+
+    def _run(self) -> None:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        self._loop = loop
+        self._ready.set()
+        loop.run_forever()
+
+    def submit(self, coroutine: Coroutine[Any, Any, Any]) -> Future[Any]:
+        loop = self._loop
+        if loop is None:
+            msg = "Async loop thread was not initialized."
+            raise RuntimeError(msg)
+        return asyncio.run_coroutine_threadsafe(coroutine, loop)
+
+
+_ASYNC_LOOP_THREAD = _AsyncLoopThread()
+
+
+def _await_if_needed(value: Any) -> Any:
+    """Resolve awaitable results on the background event loop when needed.
+
+    Args:
+        value: Either a plain return value or an awaitable produced by an async
+            foreign function or tool.
+
+    Returns:
+        The original value for synchronous call paths, or the completed result of
+        the awaitable after running it on the daemon-thread event loop.
+    """
+    if inspect.isawaitable(value):
+        return _ASYNC_LOOP_THREAD.submit(value).result()
+    return value
+
+
+def _invoke_tool(tool: BaseTool, payload: str | dict[str, Any]) -> Any:
+    """Invoke a tool through its sync or async entrypoint as appropriate.
+
+    Args:
+        tool: The tool to execute.
+        payload: Input payload already normalized for the tool schema.
+
+    Returns:
+        The tool result, awaiting `tool.ainvoke()` on the daemon-thread event
+        loop when the tool exposes only an async implementation.
+    """
+    if (
+        getattr(tool, "func", None) is None
+        and getattr(tool, "coroutine", None) is not None
+    ):
+        return _await_if_needed(tool.ainvoke(payload))
+    return _await_if_needed(tool.invoke(payload))
 
 
 def _wrap_tool_for_js(
@@ -31,15 +104,17 @@ def _wrap_tool_for_js(
     Args:
         tool: The LangChain tool to expose inside the QuickJS context.
         payload_builder: Helper that converts JavaScript positional and keyword
-            arguments into the payload shape expected by `tool.invoke()`.
+            arguments into the payload shape expected by the tool invocation.
 
     Returns:
         A Python callable that QuickJS can register via `Context.add_callable()`.
+        If the wrapped tool produces an awaitable, it is executed on the
+        daemon-thread event loop before the result is returned to QuickJS.
     """
 
     def tool_wrapper(*args: Any, **kwargs: Any) -> Any:
         payload = payload_builder(tool, args, kwargs)
-        return tool.invoke(payload)
+        return _invoke_tool(tool, payload)
 
     return tool_wrapper
 
@@ -69,12 +144,13 @@ def _wrap_function_for_js(implementation: Callable[..., Any]) -> Callable[..., A
         implementation: The Python callable to expose to QuickJS.
 
     Returns:
-        A callable that preserves invocation arguments and serializes any
+        A callable that preserves invocation arguments, resolves awaitables on
+        the daemon-thread event loop when necessary, and serializes any
         non-primitive return value through `_serialize_for_js()`.
     """
 
     def function_wrapper(*args: Any, **kwargs: Any) -> Any:
-        return _serialize_for_js(implementation(*args, **kwargs))
+        return _serialize_for_js(_await_if_needed(implementation(*args, **kwargs)))
 
     return function_wrapper
 

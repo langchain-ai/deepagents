@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
-import re
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.content import Content
 from textual.css.query import NoMatches
 from textual.message import Message
 from textual.reactive import reactive
@@ -18,11 +19,14 @@ from textual.widgets.text_area import Selection
 
 from deepagents_cli.config import (
     COLORS,
+    MODE_DISPLAY_GLYPHS,
     MODE_PREFIXES,
+    PREFIX_TO_MODE,
     CharsetMode,
     _detect_charset_mode,
     get_glyphs,
 )
+from deepagents_cli.input import IMAGE_PLACEHOLDER_PATTERN, VIDEO_PLACEHOLDER_PATTERN
 from deepagents_cli.widgets.autocomplete import (
     SLASH_COMMANDS,
     CompletionResult,
@@ -34,14 +38,6 @@ from deepagents_cli.widgets.history import HistoryManager
 
 logger = logging.getLogger(__name__)
 
-_PREFIX_TO_MODE: dict[str, str] = {v: k for k, v in MODE_PREFIXES.items()}
-"""Reverse lookup: trigger character -> mode name."""
-
-_IMAGE_PLACEHOLDER_PATTERN = re.compile(r"\[image \d+\]")
-"""Pattern for detecting image placeholder tokens in the text area.
-
-Used to locate tokens for atomic backspace/delete handling.
-"""
 
 _PASTE_BURST_CHAR_GAP_SECONDS = 0.03
 """Maximum time between chars to treat input as a paste-like burst."""
@@ -52,13 +48,23 @@ _PASTE_BURST_FLUSH_DELAY_SECONDS = 0.08
 _PASTE_BURST_START_CHARS = {"'", '"'}
 """Characters that can start dropped-path payloads."""
 
+_BACKSLASH_ENTER_GAP_SECONDS = 0.15
+"""Maximum gap between a `\\` key and a following `enter` key to treat the
+pair as a terminal-emitted shift+enter sequence.
+
+Some terminals (e.g. VSCode's built-in terminal) send a literal backslash
+followed by enter when the user presses shift+enter.  The gap is
+generous (150 ms) because the terminal emits both characters nearly
+simultaneously; a human deliberately typing `\\` then pressing Enter would
+have a much larger gap."""
+
 if TYPE_CHECKING:
     from textual import events
     from textual.app import ComposeResult
     from textual.events import Click
     from textual.timer import Timer
 
-    from deepagents_cli.input import ImageTracker, ParsedPastedPathPayload
+    from deepagents_cli.input import MediaTracker, ParsedPastedPathPayload
 
 
 class CompletionOption(Static):
@@ -125,11 +131,17 @@ class CompletionOption(Static):
         cursor = f"{glyphs.cursor} " if self._is_selected else "  "
 
         if self._description:
-            text = f"{cursor}[bold]{self._label}[/bold]  [dim]{self._description}[/dim]"
+            content = Content.from_markup(
+                f"{cursor}[bold]$label[/bold]  [dim]$desc[/dim]",
+                label=self._label,
+                desc=self._description,
+            )
         else:
-            text = f"{cursor}[bold]{self._label}[/bold]"
+            content = Content.from_markup(
+                f"{cursor}[bold]$label[/bold]", label=self._label
+            )
 
-        self.update(text)
+        self.update(content)
 
         if self._is_selected:
             self.add_class("completion-option-selected")
@@ -269,12 +281,11 @@ class ChatTextArea(TextArea):
         Binding("cmd+shift+z,super+shift+z", "redo", "Redo", show=False, priority=True),
     ]
 
-    _navigating_history: bool
-    """Transient guard set `True` only while `ChatInput` replaces text with a
-    history entry.
-
-    Prevents `watch_text` from treating the programmatic replacement as user
-    typing (which would trigger autocomplete, etc.).
+    _skip_history_change_events: int
+    """Counter incremented before a history-driven text replacement so the
+    resulting `TextArea.Changed` event (which fires on the next message-loop
+    iteration) can be suppressed.  `ChatInput.on_text_area_changed` decrements
+    the counter.
     """
 
     _in_history: bool
@@ -320,7 +331,7 @@ class ChatTextArea(TextArea):
         # Remove placeholder if passed, TextArea doesn't support it the same way
         kwargs.pop("placeholder", None)
         super().__init__(**kwargs)
-        self._navigating_history = False
+        self._skip_history_change_events = 0
         self._in_history = False
         self._completion_active = False
         self._app_has_focus = True
@@ -330,6 +341,8 @@ class ChatTextArea(TextArea):
         self._paste_burst_buffer = ""
         self._paste_burst_last_char_time: float | None = None
         self._paste_burst_timer: Timer | None = None
+        # See _BACKSLASH_ENTER_GAP_SECONDS for context.
+        self._backslash_pending_time: float | None = None
 
     def set_app_focus(self, *, has_focus: bool) -> None:
         """Set whether the app should show the cursor as active.
@@ -338,6 +351,7 @@ class ChatTextArea(TextArea):
         so the cursor doesn't flash while waiting for a response.
         """
         self._app_has_focus = has_focus
+        self._backslash_pending_time = None
         self.cursor_blink = has_focus
         if has_focus and not self.has_focus:
             self.call_after_refresh(self.focus)
@@ -402,7 +416,7 @@ class ChatTextArea(TextArea):
         row, col = self.cursor_location
         return row == 0 and col == 0
 
-    def _flush_paste_burst(self) -> None:
+    async def _flush_paste_burst(self) -> None:
         """Flush buffered burst text through dropped-path parsing.
 
         When parsing fails, the buffered text is inserted unchanged so regular
@@ -417,15 +431,60 @@ class ChatTextArea(TextArea):
 
         from deepagents_cli.input import parse_pasted_path_payload
 
-        parsed = parse_pasted_path_payload(payload)
+        try:
+            parsed = await asyncio.to_thread(parse_pasted_path_payload, payload)
+        except Exception:  # noqa: BLE001  # Treat thread failure as non-path text
+            parsed = None
         if parsed is not None:
             self.post_message(self.PastedPaths(payload, parsed.paths))
             return
 
         self.insert(payload)
 
+    def _delete_preceding_backslash(self) -> bool:
+        """Delete the backslash character immediately before the cursor.
+
+        Caller must ensure a backslash is expected at this position. The
+        method verifies the character before deleting it.
+
+        Returns:
+            `True` if a backslash was found and deleted, `False` otherwise.
+        """
+        row, col = self.cursor_location
+        if col > 0:
+            start = (row, col - 1)
+            if self.document.get_text_range(start, self.cursor_location) == "\\":
+                self.delete(start, self.cursor_location)
+                return True
+        elif row > 0:
+            prev_line = self.document.get_line(row - 1)
+            start = (row - 1, len(prev_line) - 1)
+            end = (row - 1, len(prev_line))
+            if self.document.get_text_range(start, end) == "\\":
+                self.delete(start, self.cursor_location)
+                return True
+        return False
+
     async def _on_key(self, event: events.Key) -> None:
         """Handle key events."""
+        # VS Code 1.110 incorrectly sends space as a CSI u escape code
+        # (`\x1b[32u`) instead of a plain ` ` character.  Textual parses
+        # this as Key(key='space', character=None, is_printable=False), so
+        # the TextArea never inserts the space.  Per the kitty keyboard
+        # protocol spec, keys that generate text (like space) should NOT
+        # use CSI u encoding — VS Code is the outlier here.
+        #
+        # This workaround should be safe to keep indefinitely: once VS Code or
+        # Textual fixes the issue upstream, `character` will be `' '` and
+        # this branch simply won't match.
+        #
+        # Upstream: https://github.com/Textualize/textual/issues/6408
+        if event.key == "space" and event.character is None:
+            event.prevent_default()
+            event.stop()
+            self.insert(" ")
+            return
+
         now = time.monotonic()
         if self._paste_burst_buffer:
             if event.key == "enter":
@@ -445,7 +504,7 @@ class ChatTextArea(TextArea):
                     event.stop()
                     return
 
-            self._flush_paste_burst()
+            await self._flush_paste_burst()
 
         if (
             event.is_printable
@@ -456,6 +515,26 @@ class ChatTextArea(TextArea):
             event.prevent_default()
             event.stop()
             return
+
+        # Some terminals (e.g. VSCode built-in) send a literal backslash
+        # followed by enter for shift+enter.  When enter arrives shortly
+        # after a backslash, delete the backslash and insert a newline.
+        if (
+            event.key == "enter"
+            and not self._completion_active
+            and self._backslash_pending_time is not None
+            and (now - self._backslash_pending_time) <= _BACKSLASH_ENTER_GAP_SECONDS
+        ):
+            self._backslash_pending_time = None
+            if self._delete_preceding_backslash():
+                event.prevent_default()
+                event.stop()
+                self.insert("\n")
+                return
+        self._backslash_pending_time = None
+
+        if event.key == "backslash" and event.character == "\\":
+            self._backslash_pending_time = now
 
         # Modifier+Enter inserts newline (Ctrl+J is most reliable across terminals)
         if event.key in {"shift+enter", "ctrl+j", "alt+enter", "ctrl+enter"}:
@@ -508,7 +587,6 @@ class ChatTextArea(TextArea):
             if navigate:
                 event.prevent_default()
                 event.stop()
-                self._navigating_history = True
                 if event.key == "up":
                     self.post_message(self.HistoryPrevious(self.text))
                 else:
@@ -553,33 +631,39 @@ class ChatTextArea(TextArea):
                 forwards (delete).
         """
         text = self.text
-        for match in _IMAGE_PLACEHOLDER_PATTERN.finditer(text):
-            start, end = match.span()
-            if backwards:
-                # Cursor is inside token or right after a trailing space inserted
-                # with the token.
-                if start < cursor_offset <= end:
+        # Check both image and video placeholders
+        for pattern in (IMAGE_PLACEHOLDER_PATTERN, VIDEO_PLACEHOLDER_PATTERN):
+            for match in pattern.finditer(text):
+                start, end = match.span()
+                if backwards:
+                    # Cursor is inside token or right after a trailing space inserted
+                    # with the token.
+                    if start < cursor_offset <= end:
+                        return start, end
+                    if cursor_offset > 0:
+                        previous_index = cursor_offset - 1
+                        if (
+                            previous_index < len(text)
+                            and previous_index == end
+                            and text[previous_index].isspace()
+                        ):
+                            return start, cursor_offset
+                elif start <= cursor_offset < end:
                     return start, end
-                if cursor_offset > 0:
-                    previous_index = cursor_offset - 1
-                    if (
-                        previous_index < len(text)
-                        and previous_index == end
-                        and text[previous_index].isspace()
-                    ):
-                        return start, cursor_offset
-            elif start <= cursor_offset < end:
-                return start, end
         return None
 
     async def _on_paste(self, event: events.Paste) -> None:
         """Handle paste events and detect dragged file paths."""
+        self._backslash_pending_time = None
         if self._paste_burst_buffer:
-            self._flush_paste_burst()
+            await self._flush_paste_burst()
 
         from deepagents_cli.input import parse_pasted_path_payload
 
-        parsed = parse_pasted_path_payload(event.text)
+        try:
+            parsed = await asyncio.to_thread(parse_pasted_path_payload, event.text)
+        except Exception:  # noqa: BLE001  # Treat thread failure as non-path text
+            parsed = None
         if parsed is None:
             # Don't call super() here — Textual's MRO dispatch already calls
             # TextArea._on_paste after this handler returns. Calling super()
@@ -595,21 +679,26 @@ class ChatTextArea(TextArea):
         self._paste_burst_buffer = ""
         self._paste_burst_last_char_time = None
         self._cancel_paste_burst_timer()
-        self._navigating_history = True
+        self._backslash_pending_time = None
+        self._skip_history_change_events += 1
         self.text = text
         # Move cursor to end
         lines = text.split("\n")
         last_row = len(lines) - 1
         last_col = len(lines[last_row])
         self.move_cursor((last_row, last_col))
-        self._navigating_history = False
 
     def clear_text(self) -> None:
         """Clear the text area."""
         self._in_history = False
+        # Increment (not reset) so any pending Changed event from a prior
+        # set_text_from_history is still suppressed, plus one for the
+        # self.text = "" assignment below.
+        self._skip_history_change_events += 1
         self._paste_burst_buffer = ""
         self._paste_burst_last_char_time = None
         self._cancel_paste_burst_timer()
+        self._backslash_pending_time = None
         self.text = ""
         self.move_cursor((0, 0))
 
@@ -645,7 +734,7 @@ class ChatInput(Vertical):
 
     Features:
     - Multi-line input with TextArea
-    - Enter to submit, Ctrl+J for newlines (reliable across terminals)
+    - Enter to submit, modifier key for newlines (see `config.newline_shortcut`)
     - Up/Down arrows for command history at input boundaries (start/end of text)
     - Autocomplete for @ (files) and / (commands)
     """
@@ -660,8 +749,8 @@ class ChatInput(Vertical):
         border: solid $primary;
     }
 
-    ChatInput.mode-bash {
-        border: solid __MODE_BASH__;
+    ChatInput.mode-shell {
+        border: solid __MODE_SHELL__;
     }
 
     ChatInput.mode-command {
@@ -681,8 +770,8 @@ class ChatInput(Vertical):
         text-style: bold;
     }
 
-    ChatInput.mode-bash .input-prompt {
-        color: __MODE_BASH__;
+    ChatInput.mode-shell .input-prompt {
+        color: __MODE_SHELL__;
     }
 
     ChatInput.mode-command .input-prompt {
@@ -702,7 +791,7 @@ class ChatInput(Vertical):
     ChatInput ChatTextArea:focus {
         border: none;
     }
-    """.replace("__MODE_BASH__", COLORS["mode_bash"]).replace(
+    """.replace("__MODE_SHELL__", COLORS["mode_shell"]).replace(
         "__MODE_CMD__", COLORS["mode_command"]
     )
 
@@ -729,7 +818,7 @@ class ChatInput(Vertical):
         self,
         cwd: str | Path | None = None,
         history_file: Path | None = None,
-        image_tracker: ImageTracker | None = None,
+        image_tracker: MediaTracker | None = None,
         **kwargs: Any,
     ) -> None:
         """Initialize the chat input widget.
@@ -755,14 +844,14 @@ class ChatInput(Vertical):
 
         # When the user submits, we clear the text area which fires a
         # text-change event. Without this guard the tracker would see the
-        # now-empty text, assume all images were deleted, and discard them
+        # now-empty text, assume all media were deleted, and discard them
         # before the app has a chance to send them. Each submit bumps the
         # counter by one; the next text-change event decrements it and
         # skips the sync.
-        self._skip_image_sync_events = 0
+        self._skip_media_sync_events = 0
 
         # Number of virtual prefix characters currently injected for
-        # completion controller calls (0 for normal, 1 for bash/command).
+        # completion controller calls (0 for normal, 1 for shell/command).
         self._completion_prefix_len = 0
 
         # Guard flag: set while replacing a dropped path payload with an
@@ -802,27 +891,42 @@ class ChatInput(Vertical):
         # Both controllers implement the CompletionController protocol but have
         # different concrete types; the list-item warning is a false positive.
         self._completion_view = _CompletionViewAdapter(self)
+        self._file_controller = FuzzyFileController(
+            self._completion_view, cwd=self._cwd
+        )
         self._completion_manager = MultiCompletionManager(
             [
                 SlashCommandController(SLASH_COMMANDS, self._completion_view),
-                FuzzyFileController(self._completion_view, cwd=self._cwd),
+                self._file_controller,
             ]  # type: ignore[list-item]  # Controller types are compatible at runtime
         )
 
+        self.run_worker(
+            self._file_controller.warm_cache(),
+            exclusive=False,
+            exit_on_error=False,
+        )
         self._text_area.focus()
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
         """Detect input mode and update completions."""
         text = event.text_area.text
-        self._sync_image_tracker_to_text(text)
+        self._sync_media_tracker_to_text(text)
 
         # History handlers explicitly decide mode and stripped display text.
         # Skip mode detection here so recalled entries don't inherit stale mode.
-        if self._text_area and self._text_area._navigating_history:
+        if self._text_area and self._text_area._skip_history_change_events > 0:
+            self._text_area._skip_history_change_events -= 1
             if self._completion_manager:
                 self._completion_manager.reset()
             self.scroll_visible()
             return
+        if self._text_area and self._text_area._skip_history_change_events < 0:
+            logger.warning(
+                "_skip_history_change_events is negative (%d); resetting to 0",
+                self._text_area._skip_history_change_events,
+            )
+            self._text_area._skip_history_change_events = 0
 
         if self._applying_inline_path_replacement:
             self._applying_inline_path_replacement = False
@@ -838,7 +942,7 @@ class ChatInput(Vertical):
         # a prefix character.
         if self._stripping_prefix:
             self._stripping_prefix = False
-        elif text and text[0] in _PREFIX_TO_MODE:
+        elif text and text[0] in PREFIX_TO_MODE:
             if text[0] == "/" and is_path_payload:
                 # Absolute dropped paths stay normal input, not slash-command mode.
                 if self.mode != "normal":
@@ -850,7 +954,7 @@ class ChatInput(Vertical):
                 # text that re-includes the trigger character.  The
                 # _stripping_prefix guard prevents the resulting change event
                 # from looping back here.
-                detected = _PREFIX_TO_MODE[text[0]]
+                detected = PREFIX_TO_MODE[text[0]]
                 if self.mode != detected:
                     self.mode = detected
                 self._strip_mode_prefix()
@@ -1067,27 +1171,27 @@ class ChatInput(Vertical):
 
         if self._text_area:
             # Preserve submission-time attachments until adapter consumes them.
-            self._skip_image_sync_events += 1
+            self._skip_media_sync_events += 1
             self._text_area.clear_text()
         self.mode = "normal"
 
-    def _sync_image_tracker_to_text(self, text: str) -> None:
-        """Keep tracked images aligned with placeholder tokens in input text.
+    def _sync_media_tracker_to_text(self, text: str) -> None:
+        """Keep tracked media aligned with placeholder tokens in input text.
 
         Args:
             text: Current text in the input area.
         """
         if not self._image_tracker:
             return
-        if self._skip_image_sync_events:
-            if self._skip_image_sync_events < 0:
+        if self._skip_media_sync_events:
+            if self._skip_media_sync_events < 0:
                 logger.warning(
-                    "_skip_image_sync_events is negative (%d); resetting to 0",
-                    self._skip_image_sync_events,
+                    "_skip_media_sync_events is negative (%d); resetting to 0",
+                    self._skip_media_sync_events,
                 )
-                self._skip_image_sync_events = 0
+                self._skip_media_sync_events = 0
             else:
-                self._skip_image_sync_events -= 1
+                self._skip_media_sync_events -= 1
             return
         self._image_tracker.sync_to_text(text)
 
@@ -1103,13 +1207,13 @@ class ChatInput(Vertical):
         self, event: ChatTextArea.HistoryPrevious
     ) -> None:
         """Handle history previous request."""
-        entry = self._history.get_previous(event.current_text)
+        entry = self._history.get_previous(event.current_text, query=event.current_text)
         if entry is not None and self._text_area:
             mode, display_text = self._history_entry_mode_and_text(entry)
             self.mode = mode
             self._text_area.set_text_from_history(display_text)
-        elif self._text_area:
-            self._text_area._navigating_history = False
+        # No-match path: don't reset the counter — a pending Changed event
+        # from a prior set_text_from_history call may still be in flight.
         # Keep text area's _in_history in sync with the history manager.
         if self._text_area:
             self._text_area._in_history = self._history.in_history
@@ -1124,8 +1228,8 @@ class ChatInput(Vertical):
             mode, display_text = self._history_entry_mode_and_text(entry)
             self.mode = mode
             self._text_area.set_text_from_history(display_text)
-        elif self._text_area:
-            self._text_area._navigating_history = False
+        # No-match path: don't reset the counter — a pending Changed event
+        # from a prior set_text_from_history call may still be in flight.
         # Keep text area's _in_history in sync with the history manager.
         # When the user presses Down past the newest entry, get_next()
         # resets navigation internally, so in_history becomes False.
@@ -1231,23 +1335,51 @@ class ChatInput(Vertical):
 
         Returns:
             Tuple of `(replacement, attached)` where `attached` indicates whether
-            at least one image attachment was created.
+            at least one media attachment (image or video) was created.
         """
         if not self._image_tracker:
             return raw_text, False
 
-        from deepagents_cli.image_utils import get_image_from_path
+        from deepagents_cli.media_utils import (
+            IMAGE_EXTENSIONS,
+            MAX_MEDIA_BYTES,
+            VIDEO_EXTENSIONS,
+            ImageData,
+            get_media_from_path,
+        )
 
         parts: list[str] = []
         attached = False
         for path in paths:
-            image_data = get_image_from_path(path)
-            if image_data is None:
-                logger.debug("Could not load image from dropped path: %s", path)
-                parts.append(str(path))
+            media = get_media_from_path(path)
+            if media is not None:
+                kind = "image" if isinstance(media, ImageData) else "video"
+                parts.append(self._image_tracker.add_media(media, kind))
+                attached = True
                 continue
-            parts.append(self._image_tracker.add_image(image_data))
-            attached = True
+
+            # Check if it looked like media but failed validation
+            suffix = path.suffix.lower()
+            if suffix in IMAGE_EXTENSIONS or suffix in VIDEO_EXTENSIONS:
+                label = "Video" if suffix in VIDEO_EXTENSIONS else "Image"
+                try:
+                    size = path.stat().st_size
+                    if size > MAX_MEDIA_BYTES:
+                        msg = (
+                            f"{label} too large: {path.name} "
+                            f"({size // (1024 * 1024)} MB, max "
+                            f"{MAX_MEDIA_BYTES // (1024 * 1024)} MB)"
+                        )
+                    else:
+                        msg = f"Could not attach {label.lower()}: {path.name}"
+                except OSError as exc:
+                    logger.debug("Failed to stat media file %s: %s", path, exc)
+                    msg = f"Could not attach {label.lower()}: {path.name}"
+                self.app.notify(msg, severity="warning", timeout=5)
+
+            # Not a supported media file, keep as path
+            logger.debug("Could not load media from dropped path: %s", path)
+            parts.append(str(path))
 
         if not attached:
             return raw_text, False
@@ -1317,7 +1449,7 @@ class ChatInput(Vertical):
             Tuple of `(mode, display_text)` where mode-trigger prefixes are
                 removed from `display_text`.
         """
-        for prefix, mode in _PREFIX_TO_MODE.items():
+        for prefix, mode in PREFIX_TO_MODE.items():
             # Small dict; loop is fine. No need to over-engineer right now
             if entry.startswith(prefix):
                 return mode, entry[len(prefix) :]
@@ -1328,11 +1460,14 @@ class ChatInput(Vertical):
         if not self._completion_manager or not self._text_area:
             return
 
-        # Backspace on empty input exits the current mode (e.g. command/bash)
+        # Backspace at cursor position 0 (or on empty input) exits the
+        # current mode (e.g. command/shell).  When the cursor is at the very
+        # start of the text area, backspace is a no-op for the underlying
+        # widget, so without this guard the user would be stuck in the mode.
         if (
             event.key == "backspace"
-            and not self._text_area.text
             and self.mode != "normal"
+            and self._get_cursor_offset() == 0
         ):
             self._completion_manager.reset()
             self.mode = "normal"
@@ -1352,7 +1487,7 @@ class ChatInput(Vertical):
                 event.stop()
                 self._submit_value(self._text_area.text.strip())
             case CompletionResult.IGNORED if event.key == "enter":
-                # Handle Enter when completion is not active (bash/normal modes)
+                # Handle Enter when completion is not active (shell/normal modes)
                 value = self._text_area.text.strip()
                 if value:
                     event.prevent_default()
@@ -1386,13 +1521,20 @@ class ChatInput(Vertical):
         try:
             prompt = self.query_one("#prompt", Static)
         except NoMatches:
+            logger.warning("watch_mode: #prompt widget not found")
+            self.post_message(self.ModeChanged(mode))
             return
-        self.remove_class("mode-bash", "mode-command")
-        prefix = MODE_PREFIXES.get(mode)
-        if prefix:
-            prompt.update(prefix)
+        self.remove_class("mode-shell", "mode-command")
+        glyph = MODE_DISPLAY_GLYPHS.get(mode)
+        if glyph:
+            prompt.update(glyph)
             self.add_class(f"mode-{mode}")
         else:
+            if mode != "normal":
+                logger.warning(
+                    "No display glyph for mode %r; falling back to '>'",
+                    mode,
+                )
             prompt.update(">")
         self.post_message(self.ModeChanged(mode))
 
@@ -1444,6 +1586,20 @@ class ChatInput(Vertical):
         """
         if self._text_area:
             self._text_area.set_app_focus(has_focus=active)
+
+    def exit_mode(self) -> bool:
+        """Exit the current input mode (command/shell) back to normal.
+
+        Returns:
+            True if mode was non-normal and has been reset.
+        """
+        if self.mode == "normal":
+            return False
+        self.mode = "normal"
+        if self._completion_manager:
+            self._completion_manager.reset()
+        self.clear_completion_suggestions()
+        return True
 
     def dismiss_completion(self) -> bool:
         """Dismiss completion: clear view and reset controller state.

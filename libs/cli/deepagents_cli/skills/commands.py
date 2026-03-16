@@ -20,6 +20,10 @@ if TYPE_CHECKING:
 
     from deepagents.middleware.skills import SkillMetadata
 
+    from deepagents_cli.output import OutputFormat
+
+from rich.markup import escape as escape_markup
+
 from deepagents_cli.config import COLORS, Settings, console, get_glyphs
 from deepagents_cli.ui import (
     build_help_parent,
@@ -147,13 +151,16 @@ def _format_info_fields(skill: SkillMetadata) -> list[tuple[str, str]]:
     return fields
 
 
-def _list(agent: str, *, project: bool = False) -> None:
+def _list(
+    agent: str, *, project: bool = False, output_format: OutputFormat = "text"
+) -> None:
     """List all available skills for the specified agent.
 
     Args:
         agent: Agent identifier for skills (default: agent).
         project: If True, show only project skills.
             If False, show all skills (user + project).
+        output_format: Output format — `'text'` (Rich) or `'json'`.
     """
     # Deferred: skills.load imports the deepagents SDK. This module is
     # imported at CLI startup for setup_skills_parser(), so a top-level
@@ -169,6 +176,11 @@ def _list(agent: str, *, project: bool = False) -> None:
     # If --project flag is used, only show project skills
     if project:
         if not project_skills_dir:
+            if output_format == "json":
+                from deepagents_cli.output import write_json
+
+                write_json("skills list", [])
+                return
             console.print("[yellow]Not in a project directory.[/yellow]")
             console.print(
                 "[dim]Project skills require a .git directory "
@@ -188,6 +200,11 @@ def _list(agent: str, *, project: bool = False) -> None:
         )
 
         if not has_deepagents_skills and not has_agent_skills:
+            if output_format == "json":
+                from deepagents_cli.output import write_json
+
+                write_json("skills list", [])
+                return
             console.print("[yellow]No project skills found.[/yellow]")
             console.print(
                 f"[dim]Project skills will be created in {project_skills_dir}/ "
@@ -207,6 +224,13 @@ def _list(agent: str, *, project: bool = False) -> None:
             user_agent_skills_dir=None,
             project_agent_skills_dir=project_agent_skills_dir,
         )
+
+        if output_format == "json":
+            from deepagents_cli.output import write_json
+
+            write_json("skills list", [dict(s) for s in skills])
+            return
+
         console.print("\n[bold]Project Skills:[/bold]\n", style=COLORS["primary"])
     else:
         # Load skills from all directories (including built-in)
@@ -217,6 +241,12 @@ def _list(agent: str, *, project: bool = False) -> None:
             user_agent_skills_dir=user_agent_skills_dir,
             project_agent_skills_dir=project_agent_skills_dir,
         )
+
+        if output_format == "json":
+            from deepagents_cli.output import write_json
+
+            write_json("skills list", [dict(s) for s in skills])
+            return
 
         if not skills:
             console.print()
@@ -252,11 +282,17 @@ def _list(agent: str, *, project: bool = False) -> None:
         bullet = get_glyphs().bullet
         for skill in user_skills:
             skill_path = Path(skill["path"])
-            name = skill["name"]
+            name = escape_markup(skill["name"])
             console.print(f"  {bullet} [bold]{name}[/bold]", style=COLORS["primary"])
-            console.print(f"    {skill_path.parent}/", style=COLORS["dim"])
+            console.print(
+                f"    {escape_markup(str(skill_path.parent))}/",
+                style=COLORS["dim"],
+            )
             console.print()
-            console.print(f"    {skill['description']}", style=COLORS["dim"])
+            console.print(
+                f"    {escape_markup(skill['description'])}",
+                style=COLORS["dim"],
+            )
             console.print()
 
     # Show project skills
@@ -269,11 +305,17 @@ def _list(agent: str, *, project: bool = False) -> None:
         bullet = get_glyphs().bullet
         for skill in project_skills_list:
             skill_path = Path(skill["path"])
-            name = skill["name"]
+            name = escape_markup(skill["name"])
             console.print(f"  {bullet} [bold]{name}[/bold]", style=COLORS["primary"])
-            console.print(f"    {skill_path.parent}/", style=COLORS["dim"])
+            console.print(
+                f"    {escape_markup(str(skill_path.parent))}/",
+                style=COLORS["dim"],
+            )
             console.print()
-            console.print(f"    {skill['description']}", style=COLORS["dim"])
+            console.print(
+                f"    {escape_markup(skill['description'])}",
+                style=COLORS["dim"],
+            )
             console.print()
 
     # Show built-in skills
@@ -285,10 +327,13 @@ def _list(agent: str, *, project: bool = False) -> None:
         )
         bullet = get_glyphs().bullet
         for skill in built_in_skills_list:
-            name = skill["name"]
+            name = escape_markup(skill["name"])
             console.print(f"  {bullet} [bold]{name}[/bold]", style=COLORS["primary"])
             console.print()
-            console.print(f"    {skill['description']}", style=COLORS["dim"])
+            console.print(
+                f"    {escape_markup(skill['description'])}",
+                style=COLORS["dim"],
+            )
             console.print()
 
 
@@ -364,7 +409,13 @@ description: "{description}"
 """
 
 
-def _create(skill_name: str, agent: str, project: bool = False) -> None:
+def _create(
+    skill_name: str,
+    agent: str,
+    project: bool = False,
+    *,
+    output_format: OutputFormat = "text",
+) -> None:
     """Create a new skill with a template SKILL.md file.
 
     Args:
@@ -372,6 +423,7 @@ def _create(skill_name: str, agent: str, project: bool = False) -> None:
         agent: Agent identifier for skills
         project: If True, create in project skills directory.
             If False, create in user skills directory.
+        output_format: Output format — `'text'` (Rich) or `'json'`.
     """
     # Validate skill name first (per Agent Skills spec)
     is_valid, error_msg = _validate_name(skill_name)
@@ -427,6 +479,19 @@ def _create(skill_name: str, agent: str, project: bool = False) -> None:
     skill_md = skill_dir / "SKILL.md"
     skill_md.write_text(template)
 
+    if output_format == "json":
+        from deepagents_cli.output import write_json
+
+        write_json(
+            "skills create",
+            {
+                "name": skill_name,
+                "path": str(skill_dir),
+                "project": project,
+            },
+        )
+        return
+
     checkmark = get_glyphs().checkmark
     console.print(
         f"\n[bold]{checkmark} Skill '{skill_name}' created successfully![/bold]",
@@ -451,7 +516,13 @@ def _create(skill_name: str, agent: str, project: bool = False) -> None:
     )
 
 
-def _info(skill_name: str, *, agent: str = "agent", project: bool = False) -> None:
+def _info(
+    skill_name: str,
+    *,
+    agent: str = "agent",
+    project: bool = False,
+    output_format: OutputFormat = "text",
+) -> None:
     """Show detailed information about a specific skill.
 
     Args:
@@ -459,6 +530,7 @@ def _info(skill_name: str, *, agent: str = "agent", project: bool = False) -> No
         agent: Agent identifier for skills (default: agent).
         project: If True, only search in project skills.
             If False, search in both user and project skills.
+        output_format: Output format — `'text'` (Rich) or `'json'`.
     """
     # Deferred: skills.load imports the deepagents SDK. This module is
     # imported at CLI startup for setup_skills_parser(), so a top-level
@@ -501,6 +573,12 @@ def _info(skill_name: str, *, agent: str = "agent", project: bool = False) -> No
             console.print(f"  - {s['name']}", style=COLORS["dim"])
         return
 
+    if output_format == "json":
+        from deepagents_cli.output import write_json
+
+        write_json("skills info", dict(skill))
+        return
+
     # Read the full SKILL.md file
     skill_path = Path(skill["path"])
     skill_content = skill_path.read_text(encoding="utf-8")
@@ -531,23 +609,30 @@ def _info(skill_name: str, *, agent: str = "agent", project: bool = False) -> No
             pass
 
     console.print(
-        f"\n[bold]Skill: {skill['name']}[/bold] "
+        f"\n[bold]Skill: {escape_markup(skill['name'])}[/bold] "
         f"[bold {source_color}]({source_label})[/bold {source_color}]\n",
         style=COLORS["primary"],
     )
     if shadowed_user_skill:
         console.print(
-            f"[yellow]Note: Overrides user skill '{skill_name}' "
+            f"[yellow]Note: Overrides user skill '{escape_markup(skill_name)}' "
             "of the same name[/yellow]\n"
         )
-    console.print(f"[bold]Location:[/bold] {skill_path.parent}/\n", style=COLORS["dim"])
     console.print(
-        f"[bold]Description:[/bold] {skill['description']}\n", style=COLORS["dim"]
+        f"[bold]Location:[/bold] {escape_markup(str(skill_path.parent))}/\n",
+        style=COLORS["dim"],
+    )
+    console.print(
+        f"[bold]Description:[/bold] {escape_markup(skill['description'])}\n",
+        style=COLORS["dim"],
     )
 
     # Show optional metadata fields
     for label, value in _format_info_fields(skill):
-        console.print(f"[bold]{label}:[/bold] {value}\n", style=COLORS["dim"])
+        console.print(
+            f"[bold]{label}:[/bold] {escape_markup(value)}\n",
+            style=COLORS["dim"],
+        )
 
     # List supporting files
     skill_dir = skill_path.parent
@@ -556,7 +641,7 @@ def _info(skill_name: str, *, agent: str = "agent", project: bool = False) -> No
     if supporting_files:
         console.print("[bold]Supporting Files:[/bold]", style=COLORS["dim"])
         for file in supporting_files:
-            console.print(f"  - {file.name}", style=COLORS["dim"])
+            console.print(f"  - {escape_markup(file.name)}", style=COLORS["dim"])
         console.print()
 
     # Show the full SKILL.md content
@@ -571,6 +656,7 @@ def _delete(
     agent: str = "agent",
     project: bool = False,
     force: bool = False,
+    output_format: OutputFormat = "text",
 ) -> None:
     """Delete a skill directory after validation and optional user confirmation.
 
@@ -585,6 +671,7 @@ def _delete(
 
             If `False`, search in both user and project skills.
         force: If `True`, skip confirmation prompt.
+        output_format: Output format — `'text'` (Rich) or `'json'`.
 
     Raises:
         SystemExit: If the deletion fails or a safety check is violated.
@@ -652,39 +739,40 @@ def _delete(
         console.print(f"[bold red]Error:[/bold red] {path_error}")
         return
 
-    # Determine source label
-    source_label = "Project Skill" if skill["source"] == "project" else "User Skill"
-    source_color = "green" if skill["source"] == "project" else "cyan"
+    # Display confirmation summary (text mode only)
+    if output_format != "json":
+        source_label = "Project Skill" if skill["source"] == "project" else "User Skill"
+        source_color = "green" if skill["source"] == "project" else "cyan"
 
-    # Count files for the confirmation summary (display-only; a permission
-    # error in a subdirectory should not abort the entire delete flow).
-    try:
-        file_count = sum(1 for f in skill_dir.rglob("*") if f.is_file())
-    except OSError:
-        file_count = -1
+        # Count files for the confirmation summary (display-only; a permission
+        # error in a subdirectory should not abort the entire delete flow).
+        try:
+            file_count = sum(1 for f in skill_dir.rglob("*") if f.is_file())
+        except OSError:
+            file_count = -1
 
-    console.print(
-        f"\n[bold]Skill:[/bold] {skill_name}"
-        f" [bold {source_color}]({source_label})[/bold {source_color}]",
-        style=COLORS["primary"],
-    )
-    console.print(
-        f"[bold]Location:[/bold] {skill_dir}/",
-        style=COLORS["dim"],
-    )
-    if file_count >= 0:
         console.print(
-            f"[bold]Files:[/bold] {file_count} file(s) will be deleted\n",
+            f"\n[bold]Skill:[/bold] {escape_markup(skill_name)}"
+            f" [bold {source_color}]({source_label})[/bold {source_color}]",
+            style=COLORS["primary"],
+        )
+        console.print(
+            f"[bold]Location:[/bold] {escape_markup(str(skill_dir))}/",
             style=COLORS["dim"],
         )
-    else:
-        console.print(
-            "[bold]Files:[/bold] (unable to count files)\n",
-            style=COLORS["dim"],
-        )
+        if file_count >= 0:
+            console.print(
+                f"[bold]Files:[/bold] {file_count} file(s) will be deleted\n",
+                style=COLORS["dim"],
+            )
+        else:
+            console.print(
+                "[bold]Files:[/bold] (unable to count files)\n",
+                style=COLORS["dim"],
+            )
 
-    # Confirmation
-    if not force:
+    # Confirmation (skip in JSON mode — no interactive prompt)
+    if not force and output_format != "json":
         console.print(
             "[yellow]Are you sure you want to delete this skill? (y/N)[/yellow] ",
             end="",
@@ -716,11 +804,6 @@ def _delete(
     # Delete the skill directory
     try:
         shutil.rmtree(skill_dir)
-        checkmark = get_glyphs().checkmark
-        console.print(
-            f"{checkmark} Skill '{skill_name}' deleted successfully!",
-            style=COLORS["primary"],
-        )
     except OSError as e:
         console.print(
             f"[bold red]Error:[/bold red] Failed to fully delete skill: {e}\n"
@@ -729,11 +812,31 @@ def _delete(
         )
         raise SystemExit(1) from e
 
+    if output_format == "json":
+        from deepagents_cli.output import write_json
+
+        write_json(
+            "skills delete",
+            {
+                "name": skill_name,
+                "path": str(skill_dir),
+                "deleted": True,
+            },
+        )
+        return
+
+    checkmark = get_glyphs().checkmark
+    console.print(
+        f"{checkmark} Skill '{skill_name}' deleted successfully!",
+        style=COLORS["primary"],
+    )
+
 
 def setup_skills_parser(
     subparsers: Any,  # noqa: ANN401  # argparse subparsers uses dynamic typing
     *,
     make_help_action: Callable[[Callable[[], None]], type[argparse.Action]],
+    add_output_args: Callable[[argparse.ArgumentParser], None] | None = None,
 ) -> argparse.ArgumentParser:
     """Setup the skills subcommand parser with all its subcommands.
 
@@ -745,6 +848,7 @@ def setup_skills_parser(
         subparsers: The parent subparsers object to add the skills parser to.
         make_help_action: Factory that accepts a zero-argument help
             callable and returns an argparse Action class wired to it.
+        add_output_args: Optional hook to add a shared `--json` flag.
 
     Returns:
         The skills subparser for argument handling.
@@ -760,6 +864,8 @@ def setup_skills_parser(
         add_help=False,
         parents=help_parent(show_skills_help),
     )
+    if add_output_args is not None:
+        add_output_args(skills_parser)
     skills_subparsers = skills_parser.add_subparsers(
         dest="skills_command", help="Skills command"
     )
@@ -776,6 +882,8 @@ def setup_skills_parser(
         add_help=False,
         parents=help_parent(show_skills_list_help),
     )
+    if add_output_args is not None:
+        add_output_args(list_parser)
     list_parser.add_argument(
         "--agent",
         default="agent",
@@ -801,6 +909,8 @@ def setup_skills_parser(
         add_help=False,
         parents=help_parent(show_skills_create_help),
     )
+    if add_output_args is not None:
+        add_output_args(create_parser)
     create_parser.add_argument(
         "name",
         help="Name of the skill to create (e.g., web-research)",
@@ -824,6 +934,8 @@ def setup_skills_parser(
         add_help=False,
         parents=help_parent(show_skills_info_help),
     )
+    if add_output_args is not None:
+        add_output_args(info_parser)
     info_parser.add_argument("name", help="Name of the skill to show info for")
     info_parser.add_argument(
         "--agent",
@@ -844,6 +956,8 @@ def setup_skills_parser(
         add_help=False,
         parents=help_parent(show_skills_delete_help),
     )
+    if add_output_args is not None:
+        add_output_args(delete_parser)
     delete_parser.add_argument("name", help="Name of the skill to delete")
     delete_parser.add_argument(
         "--agent",
@@ -884,16 +998,34 @@ def execute_skills_command(args: argparse.Namespace) -> None:
             )
             return
 
+    output_format = getattr(args, "output_format", "text")
+
     # "ls" is an argparse alias for "list" — argparse stores the alias
     # as-is in the namespace, so we must match both values.
     if args.skills_command in {"list", "ls"}:
-        _list(agent=args.agent, project=args.project)
+        _list(agent=args.agent, project=args.project, output_format=output_format)
     elif args.skills_command == "create":
-        _create(args.name, agent=args.agent, project=args.project)
+        _create(
+            args.name,
+            agent=args.agent,
+            project=args.project,
+            output_format=output_format,
+        )
     elif args.skills_command == "info":
-        _info(args.name, agent=args.agent, project=args.project)
+        _info(
+            args.name,
+            agent=args.agent,
+            project=args.project,
+            output_format=output_format,
+        )
     elif args.skills_command == "delete":
-        _delete(args.name, agent=args.agent, project=args.project, force=args.force)
+        _delete(
+            args.name,
+            agent=args.agent,
+            project=args.project,
+            force=args.force,
+            output_format=output_format,
+        )
     else:
         # No subcommand provided, show skills help screen
         show_skills_help()

@@ -1,6 +1,6 @@
 """Summarization middleware for automatic and tool-based conversation compaction.
 
-This module provides two middleware classes:
+This module provides two middleware classes and a convenience factory:
 
 - `SummarizationMiddleware` — automatically compacts the conversation when token
     usage exceeds a configurable threshold.
@@ -13,6 +13,8 @@ This module provides two middleware classes:
 
     Composes with a `SummarizationMiddleware` instance and reuses its
     summarization engine.
+- `create_summarization_tool_middleware` — convenience factory that creates both
+    middleware layers with model-aware defaults.
 
 ## Usage
 
@@ -42,7 +44,7 @@ agent = create_deep_agent(middleware=[summ, tool_mw])
 Offloaded messages are stored as markdown at `/conversation_history/{thread_id}.md`.
 
 Each summarization event appends a new section to this file, creating a running
-lo of all evicted messages.
+log of all evicted messages.
 """
 
 from __future__ import annotations
@@ -271,7 +273,7 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
             **deprecated_kwargs,
         )
 
-        # DeepAgents-specific attributes
+        # Deep Agents specific attributes
         self._backend = backend
         self._history_path_prefix = history_path_prefix
 
@@ -1105,6 +1107,72 @@ def create_summarization_middleware(
     )
 
 
+def create_summarization_tool_middleware(
+    model: str | BaseChatModel,
+    backend: BACKEND_TYPES,
+) -> SummarizationToolMiddleware:
+    """Create a `SummarizationToolMiddleware` with model-aware defaults.
+
+    Convenience factory that creates a `SummarizationMiddleware` via
+    `create_summarization_middleware` and wraps it in a
+    `SummarizationToolMiddleware`.
+
+    Args:
+        model: Chat model instance or model string (e.g., `"anthropic:claude-sonnet-4-20250514"`).
+        backend: Backend instance or factory for persisting conversation history.
+
+    Returns:
+        Configured `SummarizationToolMiddleware` instance.
+
+    Example:
+        Using the default `StateBackend`:
+
+        ```python
+        from deepagents import create_deep_agent
+        from deepagents.backends import StateBackend
+        from deepagents.middleware.summarization import (
+            create_summarization_tool_middleware,
+        )
+
+        model = "openai:gpt-5.4"
+        agent = create_deep_agent(
+            model=model,
+            middleware=[
+                create_summarization_tool_middleware(model, StateBackend),
+            ],
+        )
+        ```
+
+        Using a custom backend instance (e.g., Daytona Sandbox):
+
+        ```python
+        from daytona import Daytona
+        from deepagents import create_deep_agent
+        from deepagents.middleware.summarization import (
+            create_summarization_tool_middleware,
+        )
+        from langchain_daytona import DaytonaSandbox
+
+        sandbox = Daytona().create()
+        backend = DaytonaSandbox(sandbox=sandbox)
+        model = "openai:gpt-5.4"
+        agent = create_deep_agent(
+            model=model,
+            backend=backend,
+            middleware=[
+                create_summarization_tool_middleware(model, backend),
+            ],
+        )
+        ```
+    """
+    from deepagents._models import resolve_model  # noqa: PLC0415
+
+    if isinstance(model, str):
+        model = resolve_model(model)
+    summarization = create_summarization_middleware(model, backend)
+    return SummarizationToolMiddleware(summarization)
+
+
 class SummarizationToolMiddleware(AgentMiddleware):
     """Middleware that provides a `compact_conversation` tool for manual compaction.
 
@@ -1122,6 +1190,9 @@ class SummarizationToolMiddleware(AgentMiddleware):
 
     The tool and auto-summarization share the same `_summarization_event` state
     key, so they interoperate correctly.
+
+    For a simpler setup, use `create_summarization_tool_middleware` which
+    handles both steps.
 
     Example:
         ```python

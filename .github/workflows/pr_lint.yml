@@ -86,6 +86,7 @@ jobs:
             infra
             deps
             daytona
+            quickjs
           requireScope: false
           disallowScopes: |
             release

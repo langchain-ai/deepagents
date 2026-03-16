@@ -2,8 +2,7 @@
 
 import io
 import sys
-from collections.abc import AsyncIterator, Generator
-from contextlib import contextmanager
+from collections.abc import AsyncIterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -12,10 +11,11 @@ from rich.console import Console
 from rich.style import Style
 from rich.text import Text
 
-from deepagents_cli.config import ModelResult
+from deepagents_cli.config import SHELL_ALLOW_ALL, ModelResult
 from deepagents_cli.non_interactive import (
     ThreadUrlLookupState,
     _build_non_interactive_header,
+    _collect_action_request_warnings,
     _make_hitl_decision,
     _start_langsmith_thread_url_lookup,
     run_non_interactive,
@@ -114,6 +114,15 @@ class TestMakeHitlDecision:
             )
             assert result["type"] == "reject"
 
+    def test_shell_with_allow_all_approved(self, console: Console) -> None:
+        """Shell commands should be approved when SHELL_ALLOW_ALL is set."""
+        with patch("deepagents_cli.non_interactive.settings") as mock_settings:
+            mock_settings.shell_allow_list = SHELL_ALLOW_ALL
+            result = _make_hitl_decision(
+                {"name": "execute", "args": {"command": "rm -rf /"}}, console
+            )
+            assert result == {"type": "approve"}
+
     @pytest.mark.parametrize("tool_name", ["bash", "shell", "execute"])
     def test_all_shell_tool_names_recognised(
         self, tool_name: str, console: Console
@@ -125,6 +134,33 @@ class TestMakeHitlDecision:
                 {"name": tool_name, "args": {"command": "rm -rf /"}}, console
             )
             assert result["type"] == "reject"
+
+    def test_collect_action_request_warnings_for_hidden_unicode(self) -> None:
+        """Hidden Unicode in action args should generate warnings."""
+        warnings = _collect_action_request_warnings(
+            {"name": "execute", "args": {"command": "echo he\u200bllo"}}
+        )
+        assert warnings
+        assert any("hidden Unicode" in warning for warning in warnings)
+
+    def test_collect_action_request_warnings_for_suspicious_url(self) -> None:
+        """Suspicious URLs in action args should generate warnings."""
+        warnings = _collect_action_request_warnings(
+            {"name": "fetch_url", "args": {"url": "https://аpple.com"}}
+        )
+        assert warnings
+        assert any("URL warning" in warning for warning in warnings)
+
+    def test_collect_action_request_warnings_nested_values(self) -> None:
+        """Nested string values should be inspected recursively."""
+        warnings = _collect_action_request_warnings(
+            {
+                "name": "http_request",
+                "args": {"headers": {"Referer": "echo \u200bhello"}},
+            }
+        )
+        assert warnings
+        assert any("hidden Unicode" in warning for warning in warnings)
 
 
 class TestBuildNonInteractiveHeader:
@@ -202,31 +238,14 @@ class TestBuildNonInteractiveHeader:
         mock_build_url.assert_not_called()
 
 
-class TestSandboxSetupForwarding:
-    """Test that sandbox_setup is forwarded to create_sandbox."""
+class TestSandboxTypeForwarding:
+    """Test that sandbox_type is forwarded to start_server_and_get_agent."""
 
-    async def test_sandbox_setup_passed_to_create_sandbox(self) -> None:
-        """run_non_interactive should forward sandbox_setup to create_sandbox.
-
-        When both --sandbox and --sandbox-setup are provided, the
-        setup_script_path must reach create_sandbox so the setup script
-        actually runs inside the sandbox.
-        """
-        mock_backend = MagicMock()
-        mock_backend.id = "sandbox-123"
-
-        # Capture kwargs passed to create_sandbox
-        captured_kwargs: list[dict[str, object]] = []
-
-        @contextmanager
-        def fake_create_sandbox(
-            _provider: str,
-            *,
-            sandbox_id: str | None = None,  # noqa: ARG001 # match create_sandbox signature
-            setup_script_path: str | None = None,
-        ) -> Generator[MagicMock, None, None]:
-            captured_kwargs.append({"setup_script_path": setup_script_path})
-            yield mock_backend
+    async def test_sandbox_type_passed_to_server(self) -> None:
+        """run_non_interactive should forward sandbox_type to the server."""
+        mock_agent = MagicMock()
+        mock_agent.astream = MagicMock(return_value=_async_iter([]))
+        mock_server_proc = MagicMock()
 
         with (
             patch(
@@ -249,38 +268,22 @@ class TestSandboxSetupForwarding:
                 return_value=None,
             ),
             patch(
-                "deepagents_cli.integrations.sandbox_factory.create_sandbox",
-                side_effect=fake_create_sandbox,
-            ),
-            patch(
-                "deepagents_cli.non_interactive.get_checkpointer",
-            ) as mock_checkpointer,
-            patch(
-                "deepagents_cli.non_interactive.create_cli_agent",
-            ) as mock_create_agent,
+                "deepagents_cli.server_manager.start_server_and_get_agent",
+                new_callable=AsyncMock,
+                return_value=(mock_agent, mock_server_proc, None),
+            ) as mock_start_server,
         ):
             mock_settings.shell_allow_list = None
             mock_settings.has_tavily = False
             mock_settings.model_name = None
 
-            # Make the checkpointer async context manager return a mock
-            mock_cp = MagicMock()
-            mock_checkpointer.return_value.__aenter__ = MagicMock(return_value=mock_cp)
-            mock_checkpointer.return_value.__aexit__ = MagicMock(return_value=None)
-
-            # Make create_cli_agent return a mock agent that immediately finishes
-            mock_agent = MagicMock()
-            mock_agent.astream = MagicMock(return_value=_async_iter([]))
-            mock_create_agent.return_value = (mock_agent, MagicMock())
-
             await run_non_interactive(
                 message="test task",
                 sandbox_type="modal",
-                sandbox_setup="/path/to/setup.sh",
             )
 
-        assert len(captured_kwargs) == 1
-        assert captured_kwargs[0]["setup_script_path"] == "/path/to/setup.sh"
+        _, kwargs = mock_start_server.call_args
+        assert kwargs["sandbox_type"] == "modal"
 
 
 class TestQuietMode:
@@ -298,6 +301,9 @@ class TestQuietMode:
     ) -> None:
         """Console should use stderr when quiet=True, stdout otherwise."""
         mock_console = MagicMock(spec=Console)
+        mock_agent = MagicMock()
+        mock_agent.astream = MagicMock(return_value=_async_iter([]))
+        mock_server_proc = MagicMock()
 
         with (
             patch(
@@ -324,23 +330,14 @@ class TestQuietMode:
                 return_value=None,
             ),
             patch(
-                "deepagents_cli.non_interactive.get_checkpointer",
-            ) as mock_checkpointer,
-            patch(
-                "deepagents_cli.non_interactive.create_cli_agent",
-            ) as mock_create_agent,
+                "deepagents_cli.server_manager.start_server_and_get_agent",
+                new_callable=AsyncMock,
+                return_value=(mock_agent, mock_server_proc, None),
+            ),
         ):
             mock_settings.shell_allow_list = None
             mock_settings.has_tavily = False
             mock_settings.model_name = None
-
-            mock_cp = MagicMock()
-            mock_checkpointer.return_value.__aenter__ = MagicMock(return_value=mock_cp)
-            mock_checkpointer.return_value.__aexit__ = MagicMock(return_value=None)
-
-            mock_agent = MagicMock()
-            mock_agent.astream = MagicMock(return_value=_async_iter([]))
-            mock_create_agent.return_value = (mock_agent, MagicMock())
 
             await run_non_interactive(message="test", quiet=quiet)
 
@@ -362,10 +359,9 @@ class TestQuietMode:
         stdout_buf = io.StringIO()
         stderr_buf = io.StringIO()
 
-        mock_cp = MagicMock()
-        mock_checkpointer_cm = AsyncMock()
-        mock_checkpointer_cm.__aenter__.return_value = mock_cp
-        mock_checkpointer_cm.__aexit__.return_value = None
+        mock_agent = MagicMock()
+        mock_agent.astream = MagicMock(return_value=_async_iter(stream_chunks))
+        mock_server_proc = MagicMock()
 
         with (
             patch(
@@ -388,22 +384,16 @@ class TestQuietMode:
                 return_value=None,
             ),
             patch(
-                "deepagents_cli.non_interactive.get_checkpointer",
-                return_value=mock_checkpointer_cm,
+                "deepagents_cli.server_manager.start_server_and_get_agent",
+                new_callable=AsyncMock,
+                return_value=(mock_agent, mock_server_proc, None),
             ),
-            patch(
-                "deepagents_cli.non_interactive.create_cli_agent",
-            ) as mock_create_agent,
             patch.object(sys, "stdout", stdout_buf),
             patch.object(sys, "stderr", stderr_buf),
         ):
             mock_settings.shell_allow_list = None
             mock_settings.has_tavily = False
             mock_settings.model_name = None
-
-            mock_agent = MagicMock()
-            mock_agent.astream = MagicMock(return_value=_async_iter(stream_chunks))
-            mock_create_agent.return_value = (mock_agent, MagicMock())
 
             await run_non_interactive(message="test", quiet=True)
 
@@ -450,10 +440,9 @@ class TestNoStreamMode:
 
         stdout_buf = TrackingStringIO()
 
-        mock_cp = MagicMock()
-        mock_checkpointer_cm = AsyncMock()
-        mock_checkpointer_cm.__aenter__.return_value = mock_cp
-        mock_checkpointer_cm.__aexit__.return_value = None
+        mock_agent = MagicMock()
+        mock_agent.astream = MagicMock(return_value=_async_iter(stream_chunks))
+        mock_server_proc = MagicMock()
 
         with (
             patch(
@@ -476,21 +465,15 @@ class TestNoStreamMode:
                 return_value=None,
             ),
             patch(
-                "deepagents_cli.non_interactive.get_checkpointer",
-                return_value=mock_checkpointer_cm,
+                "deepagents_cli.server_manager.start_server_and_get_agent",
+                new_callable=AsyncMock,
+                return_value=(mock_agent, mock_server_proc, None),
             ),
-            patch(
-                "deepagents_cli.non_interactive.create_cli_agent",
-            ) as mock_create_agent,
             patch.object(sys, "stdout", stdout_buf),
         ):
             mock_settings.shell_allow_list = None
             mock_settings.has_tavily = False
             mock_settings.model_name = None
-
-            mock_agent = MagicMock()
-            mock_agent.astream = MagicMock(return_value=_async_iter(stream_chunks))
-            mock_create_agent.return_value = (mock_agent, MagicMock())
 
             await run_non_interactive(message="test", quiet=True, stream=False)
 
@@ -526,10 +509,9 @@ class TestNoStreamMode:
 
         stdout_buf = TrackingStringIO()
 
-        mock_cp = MagicMock()
-        mock_checkpointer_cm = AsyncMock()
-        mock_checkpointer_cm.__aenter__.return_value = mock_cp
-        mock_checkpointer_cm.__aexit__.return_value = None
+        mock_agent = MagicMock()
+        mock_agent.astream = MagicMock(return_value=_async_iter(stream_chunks))
+        mock_server_proc = MagicMock()
 
         with (
             patch(
@@ -552,21 +534,15 @@ class TestNoStreamMode:
                 return_value=None,
             ),
             patch(
-                "deepagents_cli.non_interactive.get_checkpointer",
-                return_value=mock_checkpointer_cm,
+                "deepagents_cli.server_manager.start_server_and_get_agent",
+                new_callable=AsyncMock,
+                return_value=(mock_agent, mock_server_proc, None),
             ),
-            patch(
-                "deepagents_cli.non_interactive.create_cli_agent",
-            ) as mock_create_agent,
             patch.object(sys, "stdout", stdout_buf),
         ):
             mock_settings.shell_allow_list = None
             mock_settings.has_tavily = False
             mock_settings.model_name = None
-
-            mock_agent = MagicMock()
-            mock_agent.astream = MagicMock(return_value=_async_iter(stream_chunks))
-            mock_create_agent.return_value = (mock_agent, MagicMock())
 
             await run_non_interactive(message="test", quiet=True, stream=True)
 
@@ -591,6 +567,10 @@ class TestFastFollowLangsmithLink:
         ready_state.url = (
             "https://smith.langchain.com/o/org/projects/p/proj/t/test-thread"
         )
+
+        mock_agent = MagicMock()
+        mock_agent.astream = MagicMock(return_value=_async_iter([]))
+        mock_server_proc = MagicMock()
 
         with (
             patch(
@@ -617,25 +597,14 @@ class TestFastFollowLangsmithLink:
                 return_value=ready_state,
             ),
             patch(
-                "deepagents_cli.non_interactive.get_checkpointer",
-            ) as mock_checkpointer,
-            patch(
-                "deepagents_cli.non_interactive.create_cli_agent",
-            ) as mock_create_agent,
+                "deepagents_cli.server_manager.start_server_and_get_agent",
+                new_callable=AsyncMock,
+                return_value=(mock_agent, mock_server_proc, None),
+            ),
         ):
             mock_settings.shell_allow_list = None
             mock_settings.has_tavily = False
             mock_settings.model_name = None
-
-            mock_cp = MagicMock()
-            mock_checkpointer_cm = AsyncMock()
-            mock_checkpointer_cm.__aenter__.return_value = mock_cp
-            mock_checkpointer_cm.__aexit__.return_value = None
-            mock_checkpointer.return_value = mock_checkpointer_cm
-
-            mock_agent = MagicMock()
-            mock_agent.astream = MagicMock(return_value=_async_iter([]))
-            mock_create_agent.return_value = (mock_agent, MagicMock())
 
             await run_non_interactive(message="test", quiet=False)
 
@@ -651,6 +620,10 @@ class TestFastFollowLangsmithLink:
         pending_state.url = (
             "https://smith.langchain.com/o/org/projects/p/proj/t/test-thread"
         )
+
+        mock_agent = MagicMock()
+        mock_agent.astream = MagicMock(return_value=_async_iter([]))
+        mock_server_proc = MagicMock()
 
         with (
             patch(
@@ -677,25 +650,14 @@ class TestFastFollowLangsmithLink:
                 return_value=pending_state,
             ),
             patch(
-                "deepagents_cli.non_interactive.get_checkpointer",
-            ) as mock_checkpointer,
-            patch(
-                "deepagents_cli.non_interactive.create_cli_agent",
-            ) as mock_create_agent,
+                "deepagents_cli.server_manager.start_server_and_get_agent",
+                new_callable=AsyncMock,
+                return_value=(mock_agent, mock_server_proc, None),
+            ),
         ):
             mock_settings.shell_allow_list = None
             mock_settings.has_tavily = False
             mock_settings.model_name = None
-
-            mock_cp = MagicMock()
-            mock_checkpointer_cm = AsyncMock()
-            mock_checkpointer_cm.__aenter__.return_value = mock_cp
-            mock_checkpointer_cm.__aexit__.return_value = None
-            mock_checkpointer.return_value = mock_checkpointer_cm
-
-            mock_agent = MagicMock()
-            mock_agent.astream = MagicMock(return_value=_async_iter([]))
-            mock_create_agent.return_value = (mock_agent, MagicMock())
 
             await run_non_interactive(message="test", quiet=False)
 
@@ -709,6 +671,10 @@ class TestFastFollowLangsmithLink:
         mock_console = MagicMock(spec=Console)
         done_no_url = ThreadUrlLookupState()
         done_no_url.done.set()
+
+        mock_agent = MagicMock()
+        mock_agent.astream = MagicMock(return_value=_async_iter([]))
+        mock_server_proc = MagicMock()
 
         with (
             patch(
@@ -735,25 +701,14 @@ class TestFastFollowLangsmithLink:
                 return_value=done_no_url,
             ),
             patch(
-                "deepagents_cli.non_interactive.get_checkpointer",
-            ) as mock_checkpointer,
-            patch(
-                "deepagents_cli.non_interactive.create_cli_agent",
-            ) as mock_create_agent,
+                "deepagents_cli.server_manager.start_server_and_get_agent",
+                new_callable=AsyncMock,
+                return_value=(mock_agent, mock_server_proc, None),
+            ),
         ):
             mock_settings.shell_allow_list = None
             mock_settings.has_tavily = False
             mock_settings.model_name = None
-
-            mock_cp = MagicMock()
-            mock_checkpointer_cm = AsyncMock()
-            mock_checkpointer_cm.__aenter__.return_value = mock_cp
-            mock_checkpointer_cm.__aexit__.return_value = None
-            mock_checkpointer.return_value = mock_checkpointer_cm
-
-            mock_agent = MagicMock()
-            mock_agent.astream = MagicMock(return_value=_async_iter([]))
-            mock_create_agent.return_value = (mock_agent, MagicMock())
 
             await run_non_interactive(message="test", quiet=False)
 
@@ -764,6 +719,10 @@ class TestFastFollowLangsmithLink:
 
     async def test_quiet_mode_skips_thread_url_lookup(self) -> None:
         """Should not start LangSmith URL lookup when quiet=True."""
+        mock_agent = MagicMock()
+        mock_agent.astream = MagicMock(return_value=_async_iter([]))
+        mock_server_proc = MagicMock()
+
         with (
             patch(
                 "deepagents_cli.non_interactive.Console",
@@ -788,25 +747,14 @@ class TestFastFollowLangsmithLink:
                 "deepagents_cli.non_interactive._start_langsmith_thread_url_lookup",
             ) as mock_lookup,
             patch(
-                "deepagents_cli.non_interactive.get_checkpointer",
-            ) as mock_checkpointer,
-            patch(
-                "deepagents_cli.non_interactive.create_cli_agent",
-            ) as mock_create_agent,
+                "deepagents_cli.server_manager.start_server_and_get_agent",
+                new_callable=AsyncMock,
+                return_value=(mock_agent, mock_server_proc, None),
+            ),
         ):
             mock_settings.shell_allow_list = None
             mock_settings.has_tavily = False
             mock_settings.model_name = None
-
-            mock_cp = MagicMock()
-            mock_checkpointer_cm = AsyncMock()
-            mock_checkpointer_cm.__aenter__.return_value = mock_cp
-            mock_checkpointer_cm.__aexit__.return_value = None
-            mock_checkpointer.return_value = mock_checkpointer_cm
-
-            mock_agent = MagicMock()
-            mock_agent.astream = MagicMock(return_value=_async_iter([]))
-            mock_create_agent.return_value = (mock_agent, MagicMock())
 
             await run_non_interactive(message="test", quiet=True)
 
@@ -846,6 +794,119 @@ class TestStartLangsmithThreadUrlLookup:
             state = _start_langsmith_thread_url_lookup("tid")
             assert state.done.wait(timeout=2.0)
         assert state.url is None
+
+
+class TestShellAllowListDecisionLogic:
+    """Tests for shell allow-list → auto_approve derivation."""
+
+    @pytest.mark.parametrize(
+        ("shell_allow_list", "expected_auto"),
+        [
+            pytest.param(
+                None,
+                True,
+                id="no-allow-list-auto-approves",
+            ),
+            pytest.param(
+                ["ls", "cat"],
+                False,
+                id="restrictive-list-disables-auto-approve",
+            ),
+            pytest.param(
+                SHELL_ALLOW_ALL,
+                True,
+                id="allow-all-auto-approves",
+            ),
+        ],
+    )
+    async def test_shell_auto_approve_branches(
+        self,
+        shell_allow_list: list[str] | None,
+        expected_auto: bool,
+    ) -> None:
+        """Verify start_server_and_get_agent receives correct auto_approve."""
+        mock_agent = MagicMock()
+        mock_agent.astream = MagicMock(return_value=_async_iter([]))
+        mock_server_proc = MagicMock()
+
+        with (
+            patch(
+                "deepagents_cli.non_interactive.create_model",
+                return_value=ModelResult(
+                    model=MagicMock(),
+                    model_name="test-model",
+                    provider="test",
+                ),
+            ),
+            patch(
+                "deepagents_cli.non_interactive.generate_thread_id",
+                return_value="test-thread",
+            ),
+            patch(
+                "deepagents_cli.non_interactive.settings",
+            ) as mock_settings,
+            patch(
+                "deepagents_cli.non_interactive.build_langsmith_thread_url",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_cli.server_manager.start_server_and_get_agent",
+                new_callable=AsyncMock,
+                return_value=(mock_agent, mock_server_proc, None),
+            ) as mock_start_server,
+        ):
+            mock_settings.shell_allow_list = shell_allow_list
+            mock_settings.has_tavily = False
+            mock_settings.model_name = None
+
+            await run_non_interactive(message="test task")
+
+        _, kwargs = mock_start_server.call_args
+        assert kwargs["auto_approve"] is expected_auto
+
+
+class TestNonInteractivePrompt:
+    """Tests that run_non_interactive passes interactive=False."""
+
+    async def test_passes_interactive_false(self) -> None:
+        mock_agent = MagicMock()
+        mock_agent.astream = MagicMock(return_value=_async_iter([]))
+        mock_server_proc = MagicMock()
+
+        with (
+            patch(
+                "deepagents_cli.non_interactive.create_model",
+                return_value=ModelResult(
+                    model=MagicMock(),
+                    model_name="test-model",
+                    provider="test",
+                ),
+            ),
+            patch(
+                "deepagents_cli.non_interactive.generate_thread_id",
+                return_value="test-thread",
+            ),
+            patch(
+                "deepagents_cli.non_interactive.settings",
+            ) as mock_settings,
+            patch(
+                "deepagents_cli.non_interactive.build_langsmith_thread_url",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_cli.server_manager.start_server_and_get_agent",
+                new_callable=AsyncMock,
+                return_value=(mock_agent, mock_server_proc, None),
+            ) as mock_start_server,
+        ):
+            mock_settings.shell_allow_list = None
+            mock_settings.has_tavily = False
+            mock_settings.model_name = None
+
+            await run_non_interactive(message="do the thing")
+
+        _, kwargs = mock_start_server.call_args
+        assert kwargs["interactive"] is False
 
 
 async def _async_iter(items: list[object]) -> AsyncIterator[object]:  # noqa: RUF029

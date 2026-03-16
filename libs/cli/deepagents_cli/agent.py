@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import tempfile
+import tomllib
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -19,6 +20,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
     from deepagents.backends.sandbox import SandboxBackendProtocol
+    from deepagents.middleware.async_subagents import AsyncSubAgent
     from deepagents.middleware.subagents import CompiledSubAgent, SubAgent
     from langchain.agents.middleware import InterruptOnConfig
     from langchain.agents.middleware.types import AgentState
@@ -61,6 +63,74 @@ DEFAULT_AGENT_NAME = "agent"
 
 REQUIRE_COMPACT_TOOL_APPROVAL: bool = True
 """When `True`, `compact_conversation` requires HITL approval like other gated tools."""
+
+
+def load_async_subagents(config_path: Path | None = None) -> list[AsyncSubAgent]:
+    """Load async subagent definitions from `config.toml`.
+
+    Reads the `[async_subagents]` section where each sub-table defines a remote
+    LangGraph deployment:
+
+    ```toml
+    [async_subagents.researcher]
+    description = "Research agent"
+    url = "https://my-deployment.langsmith.dev"
+    graph_id = "agent"
+    ```
+
+    Args:
+        config_path: Path to config file.
+
+            Defaults to `~/.deepagents/config.toml`.
+
+    Returns:
+        List of `AsyncSubAgent` specs (empty if section is absent or invalid).
+    """
+    if config_path is None:
+        config_path = Path.home() / ".deepagents" / "config.toml"
+
+    if not config_path.exists():
+        return []
+
+    try:
+        with config_path.open("rb") as f:
+            data = tomllib.load(f)
+    except (tomllib.TOMLDecodeError, PermissionError, OSError) as e:
+        logger.warning("Could not read async subagents from %s: %s", config_path, e)
+        console.print(
+            f"[bold yellow]Warning:[/bold yellow] Could not read async subagents "
+            f"from {config_path}: {e}",
+        )
+        return []
+
+    section = data.get("async_subagents")
+    if not isinstance(section, dict):
+        return []
+
+    required = {"description", "graph_id"}
+    agents: list[AsyncSubAgent] = []
+    for name, spec in section.items():
+        if not isinstance(spec, dict):
+            logger.warning("Skipping async subagent '%s': expected a table", name)
+            continue
+        missing = required - spec.keys()
+        if missing:
+            logger.warning(
+                "Skipping async subagent '%s': missing fields %s", name, missing
+            )
+            continue
+        agent: AsyncSubAgent = {
+            "name": name,
+            "description": spec["description"],
+            "graph_id": spec["graph_id"],
+        }
+        if "url" in spec and isinstance(spec["url"], str):
+            agent["url"] = spec["url"]
+        if "headers" in spec and isinstance(spec["headers"], dict):
+            agent["headers"] = spec["headers"]
+        agents.append(agent)
+
+    return agents
 
 
 def list_agents(*, output_format: OutputFormat = "text") -> None:
@@ -537,6 +607,11 @@ def _add_interrupt_on() -> dict[str, InterruptOnConfig]:
         "description": _format_task_description,  # type: ignore[typeddict-item]  # Callable description narrower than TypedDict expects
     }
 
+    async_subagent_interrupt_config: InterruptOnConfig = {
+        "allowed_decisions": ["approve", "reject"],
+        "description": "Launch, update, or cancel a remote async subagent.",
+    }
+
     interrupt_map: dict[str, InterruptOnConfig] = {
         "execute": execute_interrupt_config,
         "write_file": write_file_interrupt_config,
@@ -544,6 +619,9 @@ def _add_interrupt_on() -> dict[str, InterruptOnConfig]:
         "web_search": web_search_interrupt_config,
         "fetch_url": fetch_url_interrupt_config,
         "task": task_interrupt_config,
+        "launch_async_subagent": async_subagent_interrupt_config,
+        "update_async_subagent": async_subagent_interrupt_config,
+        "cancel_async_subagent": async_subagent_interrupt_config,
     }
 
     if REQUIRE_COMPACT_TOOL_APPROVAL:
@@ -577,6 +655,7 @@ def create_cli_agent(
     mcp_server_info: list[MCPServerInfo] | None = None,
     cwd: str | Path | None = None,
     project_context: ProjectContext | None = None,
+    async_subagents: list[AsyncSubAgent] | None = None,
 ) -> tuple[Pregel, CompositeBackend]:
     """Create a CLI-configured agent with flexible options.
 
@@ -619,6 +698,9 @@ def create_cli_agent(
         project_context: Explicit project path context for project-sensitive
             behavior such as project `AGENTS.md` files, skills, subagents, and
             MCP trust.
+        async_subagents: Remote LangGraph deployments to expose as async subagent tools.
+
+            Loaded from `[async_subagents]` in `config.toml` or passed directly.
 
     Returns:
         2-tuple of `(agent_graph, backend)`
@@ -826,5 +908,6 @@ def create_cli_agent(
         interrupt_on=interrupt_on,
         checkpointer=checkpointer,
         subagents=custom_subagents or None,
+        async_subagents=async_subagents or None,
     ).with_config(config)
     return agent, composite_backend

@@ -604,7 +604,7 @@ def _build_list_jobs_tool(clients: _ClientCache) -> StructuredTool:
         statuses = await asyncio.gather(*(_afetch_live_status(clients, job) for job in active))
         updated_jobs: dict[str, AsyncSubAgentJob] = {}
         entries: list[str] = []
-        for job, status in zip(active, statuses):
+        for job, status in zip(active, statuses, strict=True):
             entries.append(_format_job_entry(job, status))
             updated_jobs[job["job_id"]] = AsyncSubAgentJob(
                 job_id=job["job_id"],

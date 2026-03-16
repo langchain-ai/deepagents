@@ -205,7 +205,7 @@ class ApprovalMenu(Container):
         # Title - show count if multiple tools
         count = len(self._action_requests)
         if count == 1:
-            title = f">>> {self._tool_names[0]} Requires Approval <<<"
+            title = f">>> {escape_markup(self._tool_names[0])} Requires Approval <<<"
         else:
             title = f">>> {count} Tool Calls Require Approval <<<"
         yield Static(title, classes="approval-title")
@@ -285,14 +285,14 @@ class ApprovalMenu(Container):
 
             # Add tool header if multiple tools
             if len(self._action_requests) > 1:
-                header = Static(f"[bold]{i + 1}. {tool_name}[/bold]")
+                header = Static(f"[bold]{i + 1}. {escape_markup(tool_name)}[/bold]")
                 await self._tool_info_container.mount(header)
 
             # Show description if present
             description = action_request.get("description")
             if description:
                 desc_widget = Static(
-                    f"[dim]{description}[/dim]",
+                    f"[dim]{escape_markup(description)}[/dim]",
                     classes="approval-description",
                 )
                 await self._tool_info_container.mount(desc_widget)

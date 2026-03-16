@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, ClassVar
 
+from rich.markup import escape as escape_markup
 from textual.binding import Binding, BindingType
 from textual.containers import Vertical, VerticalScroll
 from textual.events import (
@@ -39,9 +40,9 @@ class MCPToolItem(Static):
             index: Flat index of this tool in the list.
             classes: CSS classes.
         """
-        label = f"  {name}"
+        label = f"  {escape_markup(name)}"
         if description:
-            label += f" [dim]{description}[/dim]"
+            label += f" [dim]{escape_markup(description)}[/dim]"
         super().__init__(label, classes=classes)
         self.tool_name = name
         self.tool_description = description
@@ -62,7 +63,7 @@ class MCPToolItem(Static):
             Rich-markup label.
         """
         if not description:
-            return f"  {name}"
+            return f"  {escape_markup(name)}"
         prefix_len = 2 + len(name) + 1
         avail = self.size.width - prefix_len - 1 if self.size.width else 0
         ellipsis = " (...)"
@@ -71,7 +72,7 @@ class MCPToolItem(Static):
             desc_text = description[:cut] + ellipsis
         else:
             desc_text = description
-        return f"  {name} [dim]{desc_text}[/dim]"
+        return f"  {escape_markup(name)} [dim]{escape_markup(desc_text)}[/dim]"
 
     @staticmethod
     def _format_expanded(name: str, description: str) -> str:
@@ -84,9 +85,9 @@ class MCPToolItem(Static):
         Returns:
             Rich-markup label with full description on next line.
         """
-        lines = f"  [bold]{name}[/bold]"
+        lines = f"  [bold]{escape_markup(name)}[/bold]"
         if description:
-            lines += f"\n    [dim]{description}[/dim]"
+            lines += f"\n    [dim]{escape_markup(description)}[/dim]"
         return lines
 
     def toggle_expand(self) -> None:
@@ -259,8 +260,8 @@ class MCPViewerScreen(ModalScreen[None]):
                         tool_count = len(server.tools)
                         t_label = "tool" if tool_count == 1 else "tools"
                         yield Static(
-                            f"[bold]{server.name}[/bold]"
-                            f" [dim]{server.transport}"
+                            f"[bold]{escape_markup(server.name)}[/bold]"
+                            f" [dim]{escape_markup(server.transport)}"
                             f" {glyphs.bullet}"
                             f" {tool_count} {t_label}[/dim]",
                             classes="mcp-server-header",

@@ -9,6 +9,7 @@ import sqlite3
 from typing import TYPE_CHECKING, ClassVar, cast
 
 from rich.cells import cell_len
+from rich.markup import escape as escape_markup
 from rich.style import Style
 from rich.text import Text
 from textual.binding import Binding, BindingType
@@ -401,7 +402,7 @@ class DeleteThreadConfirmScreen(ModalScreen[bool]):
         """
         with Vertical(id="delete-confirm"):
             yield Static(
-                f"Delete thread [bold]{self._delete_thread_id}[/bold]?",
+                f"Delete thread [bold]{escape_markup(self._delete_thread_id)}[/bold]?",
                 classes="thread-confirm-text",
             )
             yield Static(

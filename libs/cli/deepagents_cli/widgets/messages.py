@@ -877,17 +877,18 @@ class ToolCallMessage(Vertical):
                     path = Path(str(item))
                     name = path.name
                     # Color by file type
+                    escaped_name = escape_markup(name)
                     if path.suffix in {".py", ".pyx"}:
-                        lines.append(f"    [#3b82f6]{name}[/#3b82f6]")
+                        lines.append(f"    [#3b82f6]{escaped_name}[/#3b82f6]")
                     elif path.suffix in {".md", ".txt", ".rst"}:
-                        lines.append(f"    {name}")
+                        lines.append(f"    {escaped_name}")
                     elif path.suffix in {".json", ".yaml", ".yml", ".toml"}:
-                        lines.append(f"    [#f59e0b]{name}[/#f59e0b]")
+                        lines.append(f"    [#f59e0b]{escaped_name}[/#f59e0b]")
                     elif not path.suffix:
                         # Likely a directory or no extension
-                        lines.append(f"    [#10b981]{name}/[/#10b981]")
+                        lines.append(f"    [#10b981]{escaped_name}/[/#10b981]")
                     else:
-                        lines.append(f"    {name}")
+                        lines.append(f"    {escaped_name}")
 
                 truncation = None
                 if is_preview and len(items) > max_items:

@@ -7,6 +7,7 @@ from textual.content import Content
 from textual.style import Style as TStyle
 
 from deepagents_cli.widgets.welcome import (
+    _TIPS,
     WelcomeBanner,
     build_connecting_footer,
     build_failure_footer,
@@ -254,10 +255,21 @@ class TestBuildWelcomeFooter:
         assert "@ files" in plain
         assert "/ commands" in plain
 
-    def test_ready_line_is_second_to_last(self) -> None:
-        """The ready prompt must be the second-to-last line."""
+    def test_contains_tip(self) -> None:
+        """Footer should include a tip from the rotating tips list."""
+        plain = build_welcome_footer().plain
+        assert "Tip: " in plain
+        assert any(tip in plain for tip in _TIPS)
+
+    def test_tip_varies_across_calls(self) -> None:
+        """Tips should rotate (not always the same)."""
+        seen = {build_welcome_footer().plain for _ in range(50)}
+        assert len(seen) > 1, "Expected different tips across multiple calls"
+
+    def test_ready_line_is_first_content_line(self) -> None:
+        """The ready prompt must be the first non-blank line."""
         lines = build_welcome_footer().plain.strip().splitlines()
-        assert lines[-2].strip() == "Ready to code! What would you like to build?"
+        assert lines[0].strip() == "Ready to code! What would you like to build?"
 
     def test_shortcut_line_is_last(self) -> None:
         """The shortcut help line must be the very last line."""
@@ -266,19 +278,25 @@ class TestBuildWelcomeFooter:
         assert last.startswith("Enter send")
         assert last.endswith("/ commands")
 
+    def test_tip_line_between_ready_and_shortcuts(self) -> None:
+        """The tip line must sit between the ready prompt and shortcut hints."""
+        lines = build_welcome_footer().plain.strip().splitlines()
+        assert lines[1].strip().startswith("Tip: ")
+
     def test_blank_line_precedes_ready_prompt(self) -> None:
         """A blank line must precede the ready prompt (leading newline)."""
         raw = build_welcome_footer().plain
         assert raw.startswith("\n")
 
-    def test_exactly_three_lines_with_leading_blank(self) -> None:
-        """Footer text should be: blank line, ready prompt, shortcut help."""
+    def test_exactly_four_lines_with_leading_blank(self) -> None:
+        """Footer: blank line, ready prompt, tip, shortcut help."""
         lines = build_welcome_footer().plain.split("\n")
-        # Leading \n produces ['', 'Ready to code...', 'Enter send...']
+        # Leading \n produces ['', 'Ready to code...', 'Tip: ...', 'Enter send...']
         assert lines[0] == ""
         assert lines[1].startswith("Ready to code")
-        assert lines[2].startswith("Enter send")
-        assert len(lines) == 3
+        assert lines[2].startswith("Tip: ")
+        assert lines[3].startswith("Enter send")
+        assert len(lines) == 4
 
 
 class TestBannerFooterPosition:
@@ -288,21 +306,24 @@ class TestBannerFooterPosition:
         """With no thread/project/MCP, footer lines are still last."""
         widget = _make_banner()
         lines = widget._build_banner().plain.strip().splitlines()
-        assert "Ready to code" in lines[-2]
+        assert "Ready to code" in lines[-3]
+        assert lines[-2].strip().startswith("Tip: ")
         assert lines[-1].strip().startswith("Enter send")
 
     def test_footer_is_last_with_thread_id(self) -> None:
         """Footer remains last when a thread ID is displayed."""
         widget = _make_banner(thread_id="tid-123")
         lines = widget._build_banner().plain.strip().splitlines()
-        assert "Ready to code" in lines[-2]
+        assert "Ready to code" in lines[-3]
+        assert lines[-2].strip().startswith("Tip: ")
         assert lines[-1].strip().startswith("Enter send")
 
     def test_footer_is_last_with_langsmith_project(self) -> None:
         """Footer remains last when LangSmith project info is shown."""
         widget = _make_banner(project_name="my-proj")
         lines = widget._build_banner().plain.strip().splitlines()
-        assert "Ready to code" in lines[-2]
+        assert "Ready to code" in lines[-3]
+        assert lines[-2].strip().startswith("Tip: ")
         assert lines[-1].strip().startswith("Enter send")
 
     def test_footer_is_last_with_mcp_tools(self) -> None:
@@ -310,7 +331,8 @@ class TestBannerFooterPosition:
         with patch.dict("os.environ", {}, clear=True):
             widget = WelcomeBanner(mcp_tool_count=5)
         lines = widget._build_banner().plain.strip().splitlines()
-        assert "Ready to code" in lines[-2]
+        assert "Ready to code" in lines[-3]
+        assert lines[-2].strip().startswith("Tip: ")
         assert lines[-1].strip().startswith("Enter send")
 
     def test_footer_is_last_with_all_info(self) -> None:
@@ -323,7 +345,8 @@ class TestBannerFooterPosition:
         with patch.dict("os.environ", env, clear=True):
             widget = WelcomeBanner(thread_id="t-1", mcp_tool_count=3)
         lines = widget._build_banner().plain.strip().splitlines()
-        assert "Ready to code" in lines[-2]
+        assert "Ready to code" in lines[-3]
+        assert lines[-2].strip().startswith("Tip: ")
         assert lines[-1].strip().startswith("Enter send")
 
     def test_blank_line_separates_info_from_footer(self) -> None:

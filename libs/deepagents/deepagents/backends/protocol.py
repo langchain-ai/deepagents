@@ -202,6 +202,45 @@ class EditResult:
     occurrences: int | None = None
 
 
+@dataclass
+class LsResult:
+    """Result from backend ls operations.
+
+    Attributes:
+        error: Error message on failure, None on success.
+        entries: List of file info dicts on success, None on failure.
+    """
+
+    error: str | None = None
+    entries: list["FileInfo"] | None = None
+
+
+@dataclass
+class GrepResult:
+    """Result from backend grep operations.
+
+    Attributes:
+        error: Error message on failure, None on success.
+        matches: List of grep match dicts on success, None on failure.
+    """
+
+    error: str | None = None
+    matches: list["GrepMatch"] | None = None
+
+
+@dataclass
+class GlobResult:
+    """Result from backend glob operations.
+
+    Attributes:
+        error: Error message on failure, None on success.
+        matches: List of matching file info dicts on success, None on failure.
+    """
+
+    error: str | None = None
+    matches: list["FileInfo"] | None = None
+
+
 # @abstractmethod to avoid breaking subclasses that only implement a subset
 class BackendProtocol(abc.ABC):  # noqa: B024
     r"""Protocol for pluggable memory backends (single, unified).
@@ -224,23 +263,18 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         `DeprecationWarning`.
     """
 
-    def ls_info(self, path: str) -> list["FileInfo"]:
+    def ls_info(self, path: str) -> "LsResult":
         """List all files in a directory with metadata.
 
         Args:
             path: Absolute path to the directory to list. Must start with '/'.
 
         Returns:
-            List of FileInfo dicts containing file metadata:
-
-            - `path` (required): Absolute file path
-            - `is_dir` (optional): True if directory
-            - `size` (optional): File size in bytes
-            - `modified_at` (optional): ISO 8601 timestamp
+            LsResult with directory entries or error.
         """
         raise NotImplementedError
 
-    async def als_info(self, path: str) -> list["FileInfo"]:
+    async def als_info(self, path: str) -> "LsResult":
         """Async version of ls_info."""
         return await asyncio.to_thread(self.ls_info, path)
 
@@ -286,7 +320,7 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
-    ) -> list["GrepMatch"] | str:
+    ) -> "GrepResult":
         """Search for a literal text pattern in files.
 
         Args:
@@ -313,12 +347,7 @@ class BackendProtocol(abc.ABC):  # noqa: B024
                   - "test[0-9].txt" - search test0.txt, test1.txt, etc.
 
         Returns:
-            On success: list[GrepMatch] with structured results containing:
-                - path: Absolute file path
-                - line: Line number (1-indexed)
-                - text: Full line content containing the match
-
-            On error: str with error message (e.g., invalid path, permission denied)
+            GrepResult with matches or error.
         """
         raise NotImplementedError
 
@@ -327,11 +356,11 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
-    ) -> list["GrepMatch"] | str:
+    ) -> "GrepResult":
         """Async version of grep_raw."""
         return await asyncio.to_thread(self.grep_raw, pattern, path, glob)
 
-    def glob_info(self, pattern: str, path: str = "/") -> list["FileInfo"]:
+    def glob_info(self, pattern: str, path: str = "/") -> "GlobResult":
         """Find files matching a glob pattern.
 
         Args:
@@ -346,11 +375,11 @@ class BackendProtocol(abc.ABC):  # noqa: B024
                   The pattern is applied relative to this path.
 
         Returns:
-            list of FileInfo
+            GlobResult with matching files or error.
         """
         raise NotImplementedError
 
-    async def aglob_info(self, pattern: str, path: str = "/") -> list["FileInfo"]:
+    async def aglob_info(self, pattern: str, path: str = "/") -> "GlobResult":
         """Async version of glob_info."""
         return await asyncio.to_thread(self.glob_info, pattern, path)
 

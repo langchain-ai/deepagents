@@ -1154,7 +1154,7 @@ def test_composite_glob_info_leading_slash_pattern() -> None:
     comp.write("/memories/data.txt", "text data")
     state_backend.write("/local.md", "local markdown")
 
-    results = comp.glob_info("/memories/**/*.md", path="/")
+    results = comp.glob_info("/memories/**/*.md", path="/").matches
     result_paths = [fi["path"] for fi in results]
 
     assert "/memories/note.md" in result_paths

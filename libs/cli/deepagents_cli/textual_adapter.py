@@ -11,7 +11,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -52,6 +52,9 @@ configure_debug_logging(logger)
 
 _git_branch_cache: dict[str, str | None] = {}
 """Cache git-branch lookups by current working directory."""
+
+SpinnerStatus = Literal["Thinking", "Offloading"] | None
+"""Valid spinner display states, or `None` to hide."""
 
 
 @dataclass
@@ -353,14 +356,8 @@ class TextualUIAdapter:
     When awaited, returns a `Future` that resolves to user answers.
     """
 
-    _scroll_to_bottom: Callable[[], None] | None
-    """Callback to scroll chat to bottom."""
-
-    _set_spinner: Callable[[str | None], Awaitable[None]] | None
-    """Callback to show/hide loading spinner.
-
-    Pass `None` to hide, or a status string to show.
-    """
+    _set_spinner: Callable[[SpinnerStatus], Awaitable[None]] | None
+    """Callback to show/hide loading spinner."""
 
     _set_active_message: Callable[[str | None], None] | None
     """Callback to set the active streaming message ID (pass `None` to clear)."""
@@ -380,8 +377,7 @@ class TextualUIAdapter:
         update_status: Callable[[str], None],
         request_approval: Callable[..., Awaitable[Any]],
         on_auto_approve_enabled: Callable[[], None] | None = None,
-        scroll_to_bottom: Callable[[], None] | None = None,
-        set_spinner: Callable[[str | None], Awaitable[None]] | None = None,
+        set_spinner: Callable[[SpinnerStatus], Awaitable[None]] | None = None,
         set_active_message: Callable[[str | None], None] | None = None,
         sync_message_content: Callable[[str, str], None] | None = None,
         request_ask_user: (
@@ -402,7 +398,6 @@ class TextualUIAdapter:
                 "Auto-approve all" from an approval dialog.
 
                 Used by the app to sync the status bar indicator and session state.
-            scroll_to_bottom: Callback to scroll chat to bottom.
             set_spinner: Callback to show/hide loading spinner (pass `None` to hide).
             set_active_message: Callback to set the active streaming message ID.
             sync_message_content: Callback to sync final content back to the
@@ -414,7 +409,6 @@ class TextualUIAdapter:
         self._update_status = update_status
         self._request_approval = request_approval
         self._on_auto_approve_enabled = on_auto_approve_enabled
-        self._scroll_to_bottom = scroll_to_bottom
         self._set_spinner = set_spinner
         self._set_active_message = set_active_message
         self._sync_message_content = sync_message_content
@@ -482,6 +476,29 @@ def _build_interrupted_ai_message(
     )
 
 
+def _read_mentioned_file(file_path: Path, max_embed_bytes: int) -> str:
+    """Read a mentioned file for inline embedding (sync, for use with to_thread).
+
+    Args:
+        file_path: Resolved path to the file.
+        max_embed_bytes: Size threshold; larger files get a reference only.
+
+    Returns:
+        Markdown snippet with the file content or a size-exceeded reference.
+    """
+    file_size = file_path.stat().st_size
+    if file_size > max_embed_bytes:
+        size_kb = file_size // 1024
+        return (
+            f"\n### {file_path.name}\n"
+            f"Path: `{file_path}`\n"
+            f"Size: {size_kb}KB (too large to embed, "
+            "use read_file tool to view)"
+        )
+    content = file_path.read_text(encoding="utf-8")
+    return f"\n### {file_path.name}\nPath: `{file_path}`\n```\n{content}\n```"
+
+
 async def execute_task_textual(
     user_input: str,
     agent: Any,  # noqa: ANN401  # Dynamic agent graph type
@@ -515,8 +532,10 @@ async def execute_task_textual(
     Raises:
         ValidationError: If HITL request validation fails (re-raised).
     """
-    # Parse file mentions and inject content if any
-    prompt_text, mentioned_files = parse_file_mentions(user_input)
+    # Parse file mentions and inject content if any — offload blocking I/O
+    prompt_text, mentioned_files = await asyncio.to_thread(
+        parse_file_mentions, user_input
+    )
 
     # Max file size to embed inline (256KB, matching mistral-vibe)
     # Larger files get a reference instead - use read_file tool to view them
@@ -526,22 +545,10 @@ async def execute_task_textual(
         context_parts = [prompt_text, "\n\n## Referenced Files\n"]
         for file_path in mentioned_files:
             try:
-                file_size = file_path.stat().st_size
-                if file_size > max_embed_bytes:
-                    # File too large - include reference instead of content
-                    size_kb = file_size // 1024
-                    context_parts.append(
-                        f"\n### {file_path.name}\n"
-                        f"Path: `{file_path}`\n"
-                        f"Size: {size_kb}KB (too large to embed, "
-                        "use read_file tool to view)"
-                    )
-                else:
-                    content = file_path.read_text()
-                    context_parts.append(
-                        f"\n### {file_path.name}\n"
-                        f"Path: `{file_path}`\n```\n{content}\n```"
-                    )
+                part = await asyncio.to_thread(
+                    _read_mentioned_file, file_path, max_embed_bytes
+                )
+                context_parts.append(part)
             except Exception as e:  # noqa: BLE001  # Resilient adapter error handling
                 context_parts.append(
                     f"\n### {file_path.name}\n[Error reading file: {e}]"
@@ -714,7 +721,7 @@ async def execute_task_textual(
                         if not summarization_in_progress:
                             summarization_in_progress = True
                             if adapter._set_spinner:
-                                await adapter._set_spinner("Summarizing")
+                                await adapter._set_spinner("Offloading")
                         continue
 
                     # Regular (non-summarization) chunks resumed — summarization
@@ -861,12 +868,6 @@ async def execute_task_textual(
                                 # better performance)
                                 await current_msg.append_content(text)
 
-                                # Sticky scroll: scroll to bottom only if user is
-                                # near bottom. This lets users scroll away and
-                                # stay where they are
-                                if adapter._scroll_to_bottom:
-                                    adapter._scroll_to_bottom()
-
                         elif block_type in {"tool_call_chunk", "tool_call"}:
                             chunk_name = block.get("name")
                             chunk_args = block.get("args")
@@ -969,10 +970,6 @@ async def execute_task_textual(
                                 tool_msg = ToolCallMessage(buffer_name, parsed_args)
                                 await adapter._mount_message(tool_msg)
                                 adapter._current_tool_messages[buffer_id] = tool_msg
-
-                                # Sticky scroll after tool call is shown
-                                if adapter._scroll_to_bottom:
-                                    adapter._scroll_to_bottom()
 
                             tool_call_buffers.pop(buffer_key, None)
 
@@ -1261,7 +1258,7 @@ async def execute_task_textual(
         if adapter._set_active_message:
             adapter._set_active_message(None)
 
-        # Hide spinner (may still show "Summarizing" if interrupted mid-summary)
+        # Hide spinner (may still show "Offloading" if interrupted mid-offload)
         if adapter._set_spinner:
             await adapter._set_spinner(None)
 
@@ -1309,7 +1306,7 @@ async def execute_task_textual(
         if adapter._set_active_message:
             adapter._set_active_message(None)
 
-        # Hide spinner (may still show "Summarizing" if interrupted mid-summary)
+        # Hide spinner (may still show "Offloading" if interrupted mid-offload)
         if adapter._set_spinner:
             await adapter._set_spinner(None)
 

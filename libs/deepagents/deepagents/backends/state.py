@@ -14,6 +14,7 @@ from deepagents.backends.protocol import (
     GlobResult,
     GrepResult,
     LsResult,
+    GrepMatch,
     ReadResult,
     WriteResult,
 )

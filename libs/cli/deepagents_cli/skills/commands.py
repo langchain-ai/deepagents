@@ -22,6 +22,8 @@ if TYPE_CHECKING:
 
     from deepagents_cli.output import OutputFormat
 
+from rich.markup import escape as escape_markup
+
 from deepagents_cli.config import COLORS, Settings, console, get_glyphs
 from deepagents_cli.ui import (
     build_help_parent,
@@ -280,11 +282,17 @@ def _list(
         bullet = get_glyphs().bullet
         for skill in user_skills:
             skill_path = Path(skill["path"])
-            name = skill["name"]
+            name = escape_markup(skill["name"])
             console.print(f"  {bullet} [bold]{name}[/bold]", style=COLORS["primary"])
-            console.print(f"    {skill_path.parent}/", style=COLORS["dim"])
+            console.print(
+                f"    {escape_markup(str(skill_path.parent))}/",
+                style=COLORS["dim"],
+            )
             console.print()
-            console.print(f"    {skill['description']}", style=COLORS["dim"])
+            console.print(
+                f"    {escape_markup(skill['description'])}",
+                style=COLORS["dim"],
+            )
             console.print()
 
     # Show project skills
@@ -297,11 +305,17 @@ def _list(
         bullet = get_glyphs().bullet
         for skill in project_skills_list:
             skill_path = Path(skill["path"])
-            name = skill["name"]
+            name = escape_markup(skill["name"])
             console.print(f"  {bullet} [bold]{name}[/bold]", style=COLORS["primary"])
-            console.print(f"    {skill_path.parent}/", style=COLORS["dim"])
+            console.print(
+                f"    {escape_markup(str(skill_path.parent))}/",
+                style=COLORS["dim"],
+            )
             console.print()
-            console.print(f"    {skill['description']}", style=COLORS["dim"])
+            console.print(
+                f"    {escape_markup(skill['description'])}",
+                style=COLORS["dim"],
+            )
             console.print()
 
     # Show built-in skills
@@ -313,10 +327,13 @@ def _list(
         )
         bullet = get_glyphs().bullet
         for skill in built_in_skills_list:
-            name = skill["name"]
+            name = escape_markup(skill["name"])
             console.print(f"  {bullet} [bold]{name}[/bold]", style=COLORS["primary"])
             console.print()
-            console.print(f"    {skill['description']}", style=COLORS["dim"])
+            console.print(
+                f"    {escape_markup(skill['description'])}",
+                style=COLORS["dim"],
+            )
             console.print()
 
 
@@ -592,23 +609,30 @@ def _info(
             pass
 
     console.print(
-        f"\n[bold]Skill: {skill['name']}[/bold] "
+        f"\n[bold]Skill: {escape_markup(skill['name'])}[/bold] "
         f"[bold {source_color}]({source_label})[/bold {source_color}]\n",
         style=COLORS["primary"],
     )
     if shadowed_user_skill:
         console.print(
-            f"[yellow]Note: Overrides user skill '{skill_name}' "
+            f"[yellow]Note: Overrides user skill '{escape_markup(skill_name)}' "
             "of the same name[/yellow]\n"
         )
-    console.print(f"[bold]Location:[/bold] {skill_path.parent}/\n", style=COLORS["dim"])
     console.print(
-        f"[bold]Description:[/bold] {skill['description']}\n", style=COLORS["dim"]
+        f"[bold]Location:[/bold] {escape_markup(str(skill_path.parent))}/\n",
+        style=COLORS["dim"],
+    )
+    console.print(
+        f"[bold]Description:[/bold] {escape_markup(skill['description'])}\n",
+        style=COLORS["dim"],
     )
 
     # Show optional metadata fields
     for label, value in _format_info_fields(skill):
-        console.print(f"[bold]{label}:[/bold] {value}\n", style=COLORS["dim"])
+        console.print(
+            f"[bold]{label}:[/bold] {escape_markup(value)}\n",
+            style=COLORS["dim"],
+        )
 
     # List supporting files
     skill_dir = skill_path.parent
@@ -617,7 +641,7 @@ def _info(
     if supporting_files:
         console.print("[bold]Supporting Files:[/bold]", style=COLORS["dim"])
         for file in supporting_files:
-            console.print(f"  - {file.name}", style=COLORS["dim"])
+            console.print(f"  - {escape_markup(file.name)}", style=COLORS["dim"])
         console.print()
 
     # Show the full SKILL.md content
@@ -728,12 +752,12 @@ def _delete(
             file_count = -1
 
         console.print(
-            f"\n[bold]Skill:[/bold] {skill_name}"
+            f"\n[bold]Skill:[/bold] {escape_markup(skill_name)}"
             f" [bold {source_color}]({source_label})[/bold {source_color}]",
             style=COLORS["primary"],
         )
         console.print(
-            f"[bold]Location:[/bold] {skill_dir}/",
+            f"[bold]Location:[/bold] {escape_markup(str(skill_dir))}/",
             style=COLORS["dim"],
         )
         if file_count >= 0:

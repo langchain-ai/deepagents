@@ -654,10 +654,12 @@ def has_provider_credentials(provider: str) -> bool | None:
 
     Resolution order:
 
-    1. Config-file providers (`config.toml`) — takes priority so user
-        overrides (e.g., custom `api_key_env` or `base_url`) are respected.
-    2. Hardcoded `PROVIDER_API_KEY_ENV` mapping (anthropic, openai, etc.).
-    3. For any other provider (e.g., third-party langchain provider
+    1. Config-file providers (`config.toml`) with `api_key_env` — takes
+        priority so user overrides are respected.
+    2. Config-file providers with `class_path` but no `api_key_env` —
+        assumed to manage their own auth (e.g., custom headers, JWT, mTLS).
+    3. Hardcoded `PROVIDER_API_KEY_ENV` mapping (anthropic, openai, etc.).
+    4. For any other provider (e.g., third-party langchain provider
         packages), credential status is unknown — the provider itself will
         report auth failures at model-creation time.
 
@@ -665,15 +667,22 @@ def has_provider_credentials(provider: str) -> bool | None:
         provider: Provider name.
 
     Returns:
-        True if credentials are confirmed available, False if confirmed
-            missing, or None if credential status cannot be determined.
+        True if credentials are confirmed available or the provider is
+            expected to manage its own auth (e.g., `class_path` providers),
+            False if confirmed missing, or None if credential status cannot
+            be determined.
     """
     # Config-file providers take priority when api_key_env is specified.
     config = ModelConfig.load()
-    if config.providers.get(provider):
+    provider_config = config.providers.get(provider)
+    if provider_config:
         result = config.has_credentials(provider)
         if result is not None:
             return result
+        # class_path providers that omit api_key_env manage their own auth
+        # (e.g., custom headers, JWT, mTLS) — treat as available.
+        if provider_config.get("class_path"):
+            return True
         # No api_key_env in config — fall through to hardcoded map.
 
     # Fall back to hardcoded well-known providers.

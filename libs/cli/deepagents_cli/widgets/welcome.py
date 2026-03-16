@@ -5,8 +5,9 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING, Any
 
-from rich.style import Style
-from rich.text import Text
+from textual.color import Color as TColor
+from textual.content import Content
+from textual.style import Style as TStyle
 from textual.widgets import Static
 
 if TYPE_CHECKING:
@@ -121,11 +122,11 @@ class WelcomeBanner(Static):
         self.update(self._build_banner(self._project_url))
 
     def on_click(self, event: Click) -> None:  # noqa: PLR6301  # Textual event handler
-        """Open Rich-style hyperlinks on single click."""
+        """Open style-embedded hyperlinks on single click."""
         open_style_link(event)
 
-    def _build_banner(self, project_url: str | None = None) -> Text:
-        """Build the banner rich text.
+    def _build_banner(self, project_url: str | None = None) -> Content:
+        """Build the banner content.
 
         When a `project_url` is provided and a thread ID is set, the thread ID
         is rendered as a clickable hyperlink to the LangSmith thread view.
@@ -135,29 +136,40 @@ class WelcomeBanner(Static):
                 name and thread ID. When `None`, text is rendered without links.
 
         Returns:
-            Rich Text object containing the formatted banner.
+            Content object containing the formatted banner.
         """
-        banner = Text()
+        parts: list[str | tuple[str, str | TStyle] | Content] = []
         # Use orange for local, green for production
         banner_color = (
             COLORS["primary_dev"] if _is_editable_install() else COLORS["primary"]
         )
-        banner.append(get_banner() + "\n", style=Style(bold=True, color=banner_color))
+        parts.append(
+            (
+                get_banner() + "\n",
+                TStyle(foreground=TColor.parse(banner_color), bold=True),
+            )
+        )
 
         if self._project_name:
-            banner.append(f"{get_glyphs().checkmark} ", style="green")
-            banner.append("LangSmith tracing: ")
+            parts.extend(
+                [
+                    (f"{get_glyphs().checkmark} ", "green"),
+                    "LangSmith tracing: ",
+                ]
+            )
             if project_url:
-                banner.append(
-                    f"'{self._project_name}'",
-                    style=Style(
-                        color="cyan",
-                        link=f"{project_url}?utm_source=deepagents-cli",
-                    ),
+                parts.append(
+                    (
+                        f"'{self._project_name}'",
+                        TStyle(
+                            foreground=TColor.parse("cyan"),
+                            link=f"{project_url}?utm_source=deepagents-cli",
+                        ),
+                    )
                 )
             else:
-                banner.append(f"'{self._project_name}'", style="cyan")
-            banner.append("\n")
+                parts.append((f"'{self._project_name}'", "cyan"))
+            parts.append("\n")
 
         if self._cli_thread_id:
             if project_url:
@@ -165,72 +177,69 @@ class WelcomeBanner(Static):
                     f"{project_url.rstrip('/')}/t/{self._cli_thread_id}"
                     "?utm_source=deepagents-cli"
                 )
-                thread_line = Text.assemble(
-                    ("Thread: ", "dim"),
-                    (self._cli_thread_id, Style(dim=True, link=thread_url)),
-                    ("\n", "dim"),
+                parts.extend(
+                    [
+                        ("Thread: ", "dim"),
+                        (self._cli_thread_id, TStyle(dim=True, link=thread_url)),
+                        ("\n", "dim"),
+                    ]
                 )
-                banner.append_text(thread_line)
             else:
-                banner.append(f"Thread: {self._cli_thread_id}\n", style="dim")
+                parts.append((f"Thread: {self._cli_thread_id}\n", "dim"))
 
         if self._mcp_tool_count > 0:
-            banner.append(f"{get_glyphs().checkmark} ", style="green")
+            parts.append((f"{get_glyphs().checkmark} ", "green"))
             label = "MCP tool" if self._mcp_tool_count == 1 else "MCP tools"
-            banner.append(f"Loaded {self._mcp_tool_count} {label}\n")
+            parts.append(f"Loaded {self._mcp_tool_count} {label}\n")
 
         if self._failed:
-            banner.append_text(build_failure_footer(self._failure_error))
+            parts.append(build_failure_footer(self._failure_error))
         elif self._connecting:
-            banner.append_text(build_connecting_footer())
+            parts.append(build_connecting_footer())
         else:
-            banner.append_text(build_welcome_footer())
-        return banner
+            parts.append(build_welcome_footer())
+        return Content.assemble(*parts)
 
 
-def build_failure_footer(error: str) -> Text:
+def build_failure_footer(error: str) -> Content:
     """Build a footer shown when the server failed to start.
 
     Args:
         error: Error message describing the failure.
 
     Returns:
-        Rich Text with a persistent failure message.
+        Content with a persistent failure message.
     """
-    footer = Text()
-    footer.append("\nServer failed to start: ", style="bold red")
-    footer.append(error, style="red")
-    footer.append("\n", style="red")
-    return footer
+    return Content.assemble(
+        ("\nServer failed to start: ", "bold red"),
+        (error, "red"),
+        ("\n", "red"),
+    )
 
 
-def build_connecting_footer() -> Text:
+def build_connecting_footer() -> Content:
     """Build a footer shown while waiting for the server to connect.
 
     Returns:
-        Rich Text with a connecting status message.
+        Content with a connecting status message.
     """
-    footer = Text()
-    footer.append("\nConnecting to server...\n", style="dim")
-    return footer
+    return Content.styled("\nConnecting to server...\n", "dim")
 
 
-def build_welcome_footer() -> Text:
+def build_welcome_footer() -> Content:
     """Build the two-line footer shown at the bottom of the welcome banner.
 
     Returns:
-        Rich Text with the ready prompt and keyboard shortcut help line.
+        Content with the ready prompt and keyboard shortcut help line.
     """
-    footer = Text()
-    footer.append(
-        "\nReady to code! What would you like to build?\n", style=COLORS["primary"]
-    )
     bullet = get_glyphs().bullet
-    footer.append(
+    return Content.assemble(
+        ("\nReady to code! What would you like to build?\n", COLORS["primary"]),
         (
-            f"Enter send {bullet} {newline_shortcut()} newline "
-            f"{bullet} @ files {bullet} / commands"
+            (
+                f"Enter send {bullet} {newline_shortcut()} newline "
+                f"{bullet} @ files {bullet} / commands"
+            ),
+            "dim",
         ),
-        style="dim",
     )
-    return footer

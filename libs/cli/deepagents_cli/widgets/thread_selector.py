@@ -10,14 +10,15 @@ from typing import TYPE_CHECKING, ClassVar, cast
 
 from rich.cells import cell_len
 from rich.markup import escape as escape_markup
-from rich.style import Style
-from rich.text import Text
 from textual.binding import Binding, BindingType
+from textual.color import Color as TColor
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.content import Content
 from textual.css.query import NoMatches
 from textual.fuzzy import Matcher
 from textual.message import Message
 from textual.screen import ModalScreen
+from textual.style import Style as TStyle
 from textual.widgets import Checkbox, Input, Static
 
 if TYPE_CHECKING:
@@ -692,7 +693,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                 self._selected_index = i
                 break
 
-    def _build_title(self, thread_url: str | None = None) -> str | Text:
+    def _build_title(self, thread_url: str | None = None) -> str | Content:
         """Build the title, optionally with a clickable thread ID link.
 
         Args:
@@ -700,14 +701,17 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                 rendered as a clickable hyperlink.
 
         Returns:
-            Plain string or Rich `Text` with an embedded hyperlink.
+            Plain string or `Content` with an embedded hyperlink.
         """
         if not self._current_thread:
             return "Select Thread"
         if thread_url:
-            return Text.assemble(
+            return Content.assemble(
                 "Select Thread (current: ",
-                (self._current_thread, Style(color="cyan", link=thread_url)),
+                (
+                    self._current_thread,
+                    TStyle(foreground=TColor.parse("cyan"), link=thread_url),
+                ),
                 ")",
             )
         return f"Select Thread (current: {self._current_thread})"

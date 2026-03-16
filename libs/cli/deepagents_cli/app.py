@@ -18,13 +18,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
-from rich.text import Text
 from textual.app import App
 from textual.binding import Binding, BindingType
 from textual.containers import Container, VerticalScroll
+from textual.content import Content
 from textual.css.query import NoMatches
 from textual.message import Message
 from textual.screen import ModalScreen
+from textual.style import Style as TStyle
 
 from deepagents_cli.clipboard import copy_selection_to_clipboard
 from deepagents_cli.config import (
@@ -1586,12 +1587,11 @@ class DeepAgentsApp(App):
         url = _COMMAND_URLS[cmd]
         await self._mount_message(UserMessage(command))
         webbrowser.open(url)
-        link = Text(url, style="dim italic")
-        link.stylize(f"link {url}", 0)
+        link = Content.styled(url, TStyle(dim=True, italic=True, link=url))
         await self._mount_message(AppMessage(link))
 
     @staticmethod
-    async def _build_thread_message(prefix: str, thread_id: str) -> str | Text:
+    async def _build_thread_message(prefix: str, thread_id: str) -> str | Content:
         """Build a thread status message, hyperlinking the ID when possible.
 
         Attempts to resolve the LangSmith thread URL with a short timeout.
@@ -1603,7 +1603,7 @@ class DeepAgentsApp(App):
             thread_id: The thread identifier.
 
         Returns:
-            A Rich `Text` with a clickable thread ID, or a plain string.
+            `Content` with a clickable thread ID, or a plain string.
         """
         try:
             url = await asyncio.wait_for(
@@ -1614,9 +1614,9 @@ class DeepAgentsApp(App):
             url = None
 
         if url:
-            return Text.assemble(
+            return Content.assemble(
                 f"{prefix}: ",
-                (thread_id, f"link {url}"),
+                (thread_id, TStyle(link=url)),
             )
         return f"{prefix}: {thread_id}"
 
@@ -1655,8 +1655,7 @@ class DeepAgentsApp(App):
             webbrowser.open(url)
         except Exception:
             logger.debug("Could not open browser for URL: %s", url, exc_info=True)
-        link = Text(url, style="dim italic")
-        link.stylize(f"link {url}", 0)
+        link = Content.styled(url, TStyle(dim=True, italic=True, link=url))
         await self._mount_message(AppMessage(link))
 
     async def _handle_command(self, command: str) -> None:
@@ -1671,7 +1670,7 @@ class DeepAgentsApp(App):
             self.exit()
         elif cmd == "/help":
             await self._mount_message(UserMessage(command))
-            help_text = Text(
+            help_body = (
                 "Commands: /quit, /clear, /offload, /mcp, "
                 "/model [--model-params JSON] [--default], /reload, /remember, "
                 "/tokens, /threads, /trace, /changelog, /docs, /feedback, /help\n\n"
@@ -1682,10 +1681,12 @@ class DeepAgentsApp(App):
                 "  @filename       Auto-complete files and inject content\n"
                 "  /command        Slash commands (/help, /clear, /quit)\n"
                 "  !command        Run shell commands directly\n\n"
-                f"Docs: {DOCS_URL}",
-                style="dim italic",
+                "Docs: "
             )
-            help_text.stylize(f"link {DOCS_URL}", help_text.plain.index(DOCS_URL))
+            help_text = Content.assemble(
+                (help_body, "dim italic"),
+                (DOCS_URL, TStyle(dim=True, italic=True, link=DOCS_URL)),
+            )
             await self._mount_message(AppMessage(help_text))
 
         elif cmd in {"/changelog", "/docs", "/feedback"}:
@@ -2437,7 +2438,7 @@ class DeepAgentsApp(App):
         """
         try:
             thread_msg = await self._build_thread_message(prefix, thread_id)
-            if not isinstance(thread_msg, Text):
+            if not isinstance(thread_msg, Content):
                 logger.debug(
                     "Skipping thread link upgrade for %s: URL did not resolve",
                     thread_id,

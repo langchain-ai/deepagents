@@ -12,8 +12,8 @@ from time import time
 from typing import TYPE_CHECKING, Any
 
 from rich.markup import escape as escape_markup
-from rich.text import Text
 from textual.containers import Vertical
+from textual.content import Content
 from textual.widgets import Markdown, Static
 
 from deepagents_cli.config import (
@@ -178,7 +178,7 @@ class UserMessage(_TimestampClickMixin, Static):
         Yields:
             Static widget containing the formatted user message.
         """
-        text = Text()
+        parts: list[str | tuple[str, str]] = []
         content = self._content
 
         # Use mode-specific prefix indicator when content starts with a
@@ -187,10 +187,10 @@ class UserMessage(_TimestampClickMixin, Static):
         mode = PREFIX_TO_MODE.get(content[:1]) if content else None
         if mode:
             glyph = MODE_DISPLAY_GLYPHS.get(mode, content[0])
-            text.append(f"{glyph} ", style=f"bold {_mode_color(mode)}")
+            parts.append((f"{glyph} ", f"bold {_mode_color(mode)}"))
             content = content[1:]
         else:
-            text.append("> ", style=f"bold {COLORS['primary']}")
+            parts.append(("> ", f"bold {COLORS['primary']}"))
 
         # Highlight @mentions and /commands in the content
         last_end = 0
@@ -206,22 +206,22 @@ class UserMessage(_TimestampClickMixin, Static):
 
             # Add text before the match (unstyled)
             if start > last_end:
-                text.append(content[last_end:start])
+                parts.append(content[last_end:start])
 
             # The regex only matches tokens starting with / or @
             if token.startswith("/") and start == 0:
                 # /command at start - yellow/gold
-                text.append(token, style="bold #fbbf24")
+                parts.append((token, "bold #fbbf24"))
             elif token.startswith("@"):
                 # @file mention - green
-                text.append(token, style="bold #10b981")
+                parts.append((token, "bold #10b981"))
             last_end = end
 
         # Add remaining text after last match
         if last_end < len(content):
-            text.append(content[last_end:])
+            parts.append(content[last_end:])
 
-        yield Static(text)
+        yield Static(Content.assemble(*parts))
 
 
 class QueuedUserMessage(Static):
@@ -262,17 +262,15 @@ class QueuedUserMessage(Static):
         Yields:
             Static widget containing the formatted queued message (greyed out).
         """
-        text = Text()
         content = self._content
         mode = PREFIX_TO_MODE.get(content[:1]) if content else None
         if mode:
             glyph = MODE_DISPLAY_GLYPHS.get(mode, content[0])
-            text.append(f"{glyph} ", style=f"bold {COLORS['dim']}")
+            prefix = (f"{glyph} ", f"bold {COLORS['dim']}")
             content = content[1:]
         else:
-            text.append("> ", style=f"bold {COLORS['dim']}")
-        text.append(content, style="#9ca3af")
-        yield Static(text)
+            prefix = ("> ", f"bold {COLORS['dim']}")
+        yield Static(Content.assemble(prefix, (content, "#9ca3af")))
 
 
 class AssistantMessage(_TimestampClickMixin, Vertical):
@@ -1310,10 +1308,7 @@ class ErrorMessage(_TimestampClickMixin, Static):
         """
         # Store raw content for serialization
         self._content = error
-        # Use Text object to combine styled prefix with unstyled error content
-        text = Text("Error: ", style="bold red")
-        text.append(error)
-        super().__init__(text, **kwargs)
+        super().__init__(Content.assemble(("Error: ", "bold red"), error), **kwargs)
 
     def on_mount(self) -> None:
         """Set border style based on charset mode."""
@@ -1340,23 +1335,24 @@ class AppMessage(Static):
     }
     """
 
-    def __init__(self, message: str | Text, **kwargs: Any) -> None:
+    def __init__(self, message: str | Content, **kwargs: Any) -> None:
         """Initialize a system message.
 
         Args:
-            message: The system message as a string or pre-styled Rich Text.
+            message: The system message as a string or pre-styled `Content`.
             **kwargs: Additional arguments passed to parent
         """
         # Store raw content for serialization
         self._content = message
-        # Use Text object to safely render message without markup parsing
-        content = (
-            message if isinstance(message, Text) else Text(message, style="dim italic")
+        rendered = (
+            message
+            if isinstance(message, Content)
+            else Content.styled(message, "dim italic")
         )
-        super().__init__(content, **kwargs)
+        super().__init__(rendered, **kwargs)
 
     def on_click(self, event: Click) -> None:
-        """Open Rich-style hyperlinks on single click and show timestamp."""
+        """Open style-embedded hyperlinks on single click and show timestamp."""
         open_style_link(event)
         _show_timestamp_toast(self)
 
@@ -1376,7 +1372,7 @@ class SummarizationMessage(AppMessage):
     }
     """
 
-    def __init__(self, message: str | Text | None = None, **kwargs: Any) -> None:
+    def __init__(self, message: str | Content | None = None, **kwargs: Any) -> None:
         """Initialize a summarization notification message.
 
         Args:
@@ -1386,11 +1382,11 @@ class SummarizationMessage(AppMessage):
                 Defaults to the standard summary notification.
             **kwargs: Additional arguments passed to parent.
         """
-        content: Text
+        rendered: Content
         if message is None:
-            content = Text("✓ Conversation offloaded", style="bold cyan")
-        elif isinstance(message, Text):
-            content = message
+            rendered = Content.styled("✓ Conversation offloaded", "bold cyan")
+        elif isinstance(message, Content):
+            rendered = message
         else:
-            content = Text(message, style="bold cyan")
-        super().__init__(content, **kwargs)
+            rendered = Content.styled(message, "bold cyan")
+        super().__init__(rendered, **kwargs)

@@ -580,7 +580,7 @@ def create_cli_agent(
         assistant_id: Agent identifier for memory/state storage
         tools: Additional tools to provide to agent
         sandbox: Optional sandbox backend for remote execution
-            (e.g., `ModalBackend`).
+            (e.g., `ModalSandbox`).
 
             If `None`, uses local filesystem + shell.
         sandbox_type: Type of sandbox provider
@@ -745,7 +745,7 @@ def create_cli_agent(
             backend = FilesystemBackend(root_dir=root_dir)
     else:
         # ========== REMOTE SANDBOX MODE ==========
-        backend = sandbox  # Remote sandbox (ModalBackend, etc.)
+        backend = sandbox  # Remote sandbox (ModalSandbox, etc.)
         # Note: Shell middleware not used in sandbox mode
         # File operations and execute tool are provided by the sandbox backend
 

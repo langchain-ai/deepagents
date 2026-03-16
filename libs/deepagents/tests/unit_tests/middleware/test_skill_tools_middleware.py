@@ -269,9 +269,8 @@ def test_get_backend_direct_instance() -> None:
     mock_runtime.context = MagicMock()
     mock_runtime.stream_writer = MagicMock()
     mock_runtime.store = MagicMock()
-    mock_config = MagicMock()
 
-    backend = middleware._get_backend(mock_state, mock_runtime, mock_config)
+    backend = middleware._get_backend(mock_state, mock_runtime)
 
     # StateBackend is callable, so it's treated as a factory and an instance is created
     assert isinstance(backend, StateBackend)
@@ -291,9 +290,8 @@ def test_get_backend_factory() -> None:
     mock_runtime.context = MagicMock()
     mock_runtime.stream_writer = MagicMock()
     mock_runtime.store = MagicMock()
-    mock_config = MagicMock()
 
-    backend = middleware._get_backend(mock_state, mock_runtime, mock_config)
+    backend = middleware._get_backend(mock_state, mock_runtime)
 
     assert backend is not None
     assert isinstance(backend, StateBackend)
@@ -551,9 +549,8 @@ async def test_abefore_agent_initialization() -> None:
     mock_runtime.context = MagicMock()
     mock_runtime.stream_writer = MagicMock()
     mock_runtime.store = MagicMock()
-    mock_config = MagicMock()
 
-    result = await middleware.abefore_agent(mock_state, mock_runtime, mock_config)
+    result = await middleware.abefore_agent(mock_state, mock_runtime)
 
     # Should return state update
     assert result is not None
@@ -575,9 +572,8 @@ async def test_abefore_agent_skip_if_initialized() -> None:
     mock_runtime.context = MagicMock()
     mock_runtime.stream_writer = MagicMock()
     mock_runtime.store = MagicMock()
-    mock_config = MagicMock()
 
-    result = await middleware.abefore_agent(mock_state, mock_runtime, mock_config)
+    result = await middleware.abefore_agent(mock_state, mock_runtime)
 
     # Should return None (no update)
     assert result is None

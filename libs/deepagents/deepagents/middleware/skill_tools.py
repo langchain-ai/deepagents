@@ -89,29 +89,53 @@ from langgraph.prebuilt import ToolRuntime
 from deepagents.middleware._utils import append_to_system_message
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Iterable
 
-    from langchain_core.runnables import RunnableConfig
+    # Type stubs for MCP client (optional dependency)
+    from typing import Any as AnyMCP, Protocol as ProtocolMCP, Self
+
     from langgraph.runtime import Runtime
 
     from deepagents.backends.protocol import BACKEND_TYPES, BackendProtocol
 
-# MCP client imports - optional dependency
-# type: ignore[import-not-found] - langchain-mcp-adapters is an optional dependency
-try:
-    from langchain_mcp_adapters.client import (  # type: ignore[import-not-found]
-        MultiServerMCPClient,
-        SSEConnection,
-        StdioConnection,
-        StreamableHttpConnection,
-    )
-    from langchain_mcp_adapters.tools import load_mcp_tools  # type: ignore[import-not-found]
-except ImportError:
-    MultiServerMCPClient = None
-    SSEConnection = None
-    StdioConnection = None
-    StreamableHttpConnection = None
-    load_mcp_tools = None
+    class MultiServerMCPClient(ProtocolMCP):  # type: ignore[no-redef]
+        async def __aenter__(self) -> Self: ...
+        async def __aexit__(self, *args: object) -> None: ...
+        async def session(self, *args: object, **kwargs: object) -> AsyncExitStack: ...
+
+    class StdioConnection(ProtocolMCP):  # type: ignore[no-redef]
+        transport: str
+        command: str
+        args: list[str]
+        env: dict[str, str] | None
+
+    class SSEConnection(ProtocolMCP):  # type: ignore[no-redef]
+        transport: str
+        url: str
+
+    class StreamableHttpConnection(ProtocolMCP):  # type: ignore[no-redef]
+        transport: str
+        url: str
+        headers: dict[str, str] | None
+
+    async def load_mcp_tools(*args: object, **kwargs: object) -> Iterable[AnyMCP]: ...
+
+else:
+    # MCP client imports - optional dependency
+    try:
+        from langchain_mcp_adapters.client import (
+            MultiServerMCPClient,
+            SSEConnection,
+            StdioConnection,
+            StreamableHttpConnection,
+        )
+        from langchain_mcp_adapters.tools import load_mcp_tools
+    except ImportError:
+        MultiServerMCPClient = None  # type: ignore[assignment]
+        SSEConnection = None  # type: ignore[assignment]
+        StdioConnection = None  # type: ignore[assignment]
+        StreamableHttpConnection = None  # type: ignore[assignment]
+        load_mcp_tools = None  # type: ignore[assignment]
 
 
 logger = logging.getLogger(__name__)
@@ -160,7 +184,9 @@ def register_tool(
     def decorator(func: Callable) -> Callable:
         if skill_name not in _NATIVE_TOOLS:
             _NATIVE_TOOLS[skill_name] = {}
-        _NATIVE_TOOLS[skill_name][func.__name__] = func
+        # Type narrowing: func is a function with __name__
+        tool_name = getattr(func, "__name__", str(func))
+        _NATIVE_TOOLS[skill_name][tool_name] = func
         return func
 
     return decorator
@@ -376,14 +402,12 @@ class SkillToolMiddleware(AgentMiddleware[SkillToolState, ContextT, ResponseT]):
         self,
         state: SkillToolState,
         runtime: Runtime,
-        config: RunnableConfig,
     ) -> BackendProtocol:
         """Resolve backend from instance or factory.
 
         Args:
             state: Current agent state.
             runtime: Runtime context for factory functions.
-            config: Runnable config to pass to backend factory.
 
         Returns:
             Resolved backend instance.
@@ -395,7 +419,7 @@ class SkillToolMiddleware(AgentMiddleware[SkillToolState, ContextT, ResponseT]):
                 context=runtime.context,
                 stream_writer=runtime.stream_writer,
                 store=runtime.store,
-                config=config,
+                config=runtime.config if hasattr(runtime, "config") else {},
                 tool_call_id=None,
             )
             backend = self._backend(tool_runtime)  # type: ignore[call-arg]
@@ -418,7 +442,7 @@ class SkillToolMiddleware(AgentMiddleware[SkillToolState, ContextT, ResponseT]):
         skills_metadata = state.get("skills_metadata", [])
         return {s["name"] for s in skills_metadata if isinstance(s, dict) and "name" in s}
 
-    async def _connect_skill_mcp_servers(  # noqa: C901
+    async def _connect_skill_mcp_servers(  # noqa: C901, PLR0912
         self,
         skill_name: str,
         server_configs: list[MCPServerConfig],
@@ -445,25 +469,51 @@ class SkillToolMiddleware(AgentMiddleware[SkillToolState, ContextT, ResponseT]):
             # Expand environment variables in config
             expanded_config = _expand_env_vars_recursive(server_config)
 
+            # Type narrowing: expanded_config should be dict[str, object]
+            if not isinstance(expanded_config, dict):
+                logger.warning(
+                    "Ignoring MCP server '%s' in skill '%s' (config expansion failed)",
+                    server_name,
+                    skill_name,
+                )
+                continue
+
+            config_dict: dict[str, object] = expanded_config
+
             if transport == "http":
+                if StreamableHttpConnection is None:
+                    continue
+                url_val = config_dict.get("url", "")
                 conn = StreamableHttpConnection(
                     transport="streamable_http",
-                    url=expanded_config.get("url", ""),
+                    url=str(url_val) if isinstance(url_val, str) else "",
                 )
-                if "headers" in expanded_config:
-                    conn["headers"] = expanded_config["headers"]  # type: ignore[index]
+                if "headers" in config_dict:
+                    headers_val = config_dict["headers"]
+                    if isinstance(headers_val, dict):
+                        conn["headers"] = headers_val  # type: ignore[index]
             elif transport == "sse":
+                if SSEConnection is None:
+                    continue
+                url_val = config_dict.get("url", "")
                 conn = SSEConnection(
                     transport="sse",
-                    url=expanded_config.get("url", ""),
+                    url=str(url_val) if isinstance(url_val, str) else "",
                 )
-                if "headers" in expanded_config:
-                    conn["headers"] = expanded_config["headers"]  # type: ignore[index]
+                if "headers" in config_dict:
+                    headers_val = config_dict["headers"]
+                    if isinstance(headers_val, dict):
+                        conn["headers"] = headers_val  # type: ignore[index]
             else:  # stdio (default)
+                if StdioConnection is None:
+                    continue
+                cmd_val = config_dict.get("command", "")
+                args_val = config_dict.get("args", [])
+                env_val = config_dict.get("env")
                 conn = StdioConnection(
-                    command=expanded_config.get("command", ""),
-                    args=expanded_config.get("args", []),
-                    env=expanded_config.get("env") or None,
+                    command=str(cmd_val) if isinstance(cmd_val, str) else "",
+                    args=[str(a) for a in args_val] if isinstance(args_val, list) else [],
+                    env=dict(env_val) if isinstance(env_val, dict) else None,
                     transport="stdio",
                 )
 
@@ -532,12 +582,11 @@ class SkillToolMiddleware(AgentMiddleware[SkillToolState, ContextT, ResponseT]):
             func=func,
         )
 
-    async def abefore_agent(
+    async def abefore_agent(  # type: ignore[override]
         self,
         state: SkillToolState,
         runtime: Runtime,  # noqa: ARG002
-        config: RunnableConfig,  # noqa: ARG002
-    ) -> SkillToolStateUpdate | None:
+    ) -> dict[str, AnyMCP] | None:
         """Connect to MCP servers and load tools for active skills.
 
         This is called before agent execution. It checks which skills are
@@ -547,7 +596,6 @@ class SkillToolMiddleware(AgentMiddleware[SkillToolState, ContextT, ResponseT]):
         Args:
             state: Current agent state.
             runtime: Runtime context.
-            config: Runnable config.
 
         Returns:
             State update with mcp_clients and active_skill_tools populated,
@@ -700,7 +748,7 @@ class SkillToolMiddleware(AgentMiddleware[SkillToolState, ContextT, ResponseT]):
                             asyncio.run,
                             _dispatch_async(skill_name, tool_name, arguments, **kwargs),
                         )
-                        return future.result()
+                        return str(future.result())  # type: ignore[return-value]
                 else:
                     # No running loop, just run the async function
                     return asyncio.run(_dispatch_async(skill_name, tool_name, arguments, **kwargs))
@@ -800,18 +848,19 @@ class SkillToolMiddleware(AgentMiddleware[SkillToolState, ContextT, ResponseT]):
         modified_request = self.modify_request(request)
         return await handler(modified_request)
 
-    async def aafter_agent(
+    async def aafter_agent(  # type: ignore[override]
         self,
         state: SkillToolState,
         runtime: Runtime,  # noqa: ARG002
-        config: RunnableConfig,  # noqa: ARG002
-    ) -> None:
+    ) -> dict[str, object] | None:
         """Clean up MCP client connections.
 
         Args:
             state: Current agent state.
             runtime: Runtime context.
-            config: Runnable config.
+
+        Returns:
+            None (no state update).
         """
         mcp_clients = state.get("mcp_clients", {})
         for skill_name, session_manager in mcp_clients.items():

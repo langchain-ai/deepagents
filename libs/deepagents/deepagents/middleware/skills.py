@@ -435,8 +435,8 @@ def _parse_and_validate_mcp_servers(  # noqa: C901, PLR0912
         if not isinstance(raw_server, dict):
             continue
 
-        # Type narrow for mypy
-        server_dict: dict[str, object] = raw_server
+        # Type narrow for ty - cast to dict[str, object]
+        server_dict: dict[str, object] = raw_server  # type: ignore[assignment]
 
         # Validate required 'name' field
         if "name" not in server_dict:

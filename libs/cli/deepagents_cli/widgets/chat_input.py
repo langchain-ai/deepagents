@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.content import Content
 from textual.css.query import NoMatches
 from textual.message import Message
 from textual.reactive import reactive
@@ -129,11 +130,17 @@ class CompletionOption(Static):
         cursor = f"{glyphs.cursor} " if self._is_selected else "  "
 
         if self._description:
-            text = f"{cursor}[bold]{self._label}[/bold]  [dim]{self._description}[/dim]"
+            content = Content.from_markup(
+                f"{cursor}[bold]$label[/bold]  [dim]$desc[/dim]",
+                label=self._label,
+                desc=self._description,
+            )
         else:
-            text = f"{cursor}[bold]{self._label}[/bold]"
+            content = Content.from_markup(
+                f"{cursor}[bold]$label[/bold]", label=self._label
+            )
 
-        self.update(text)
+        self.update(content)
 
         if self._is_selected:
             self.add_class("completion-option-selected")

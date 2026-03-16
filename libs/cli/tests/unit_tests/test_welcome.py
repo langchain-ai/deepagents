@@ -3,19 +3,22 @@
 from unittest.mock import MagicMock, patch
 
 from rich.style import Style
-from rich.text import Text
+from textual.content import Content
+from textual.style import Style as TStyle
 
-from deepagents_cli.widgets.welcome import WelcomeBanner, build_welcome_footer
+from deepagents_cli.widgets.welcome import (
+    WelcomeBanner,
+    build_connecting_footer,
+    build_failure_footer,
+    build_welcome_footer,
+)
 
 
-def _extract_links(banner: Text, text_start: int, text_end: int) -> list[str]:
+def _extract_links(banner: Content, text_start: int, text_end: int) -> list[str]:
     """Extract link URLs from spans covering the given text range.
 
-    Note: This relies on `rich.text.Text._spans` internals and may need
-    updating if the Rich library changes its internal representation.
-
     Args:
-        banner: The Rich Text object to inspect.
+        banner: The Content object to inspect.
         text_start: Start index in the plain text.
         text_end: End index in the plain text.
 
@@ -23,10 +26,14 @@ def _extract_links(banner: Text, text_start: int, text_end: int) -> list[str]:
         List of link URL strings found on spans covering the range.
     """
     links: list[str] = []
-    for start, end, style in banner._spans:
-        if not isinstance(style, Style):
-            continue
-        if start <= text_start and end >= text_end and style.link:
+    for span in banner._spans:
+        style = span.style
+        if (
+            isinstance(style, TStyle)
+            and style.link
+            and span.start <= text_start
+            and span.end >= text_end
+        ):
             links.append(style.link)
     return links
 
@@ -168,11 +175,11 @@ class TestUpdateThreadId:
 class TestBuildBannerReturnType:
     """Tests for `_build_banner` return value."""
 
-    def test_returns_rich_text(self) -> None:
-        """`_build_banner` should return a `rich.text.Text` object."""
+    def test_returns_content(self) -> None:
+        """`_build_banner` should return a `Content` object."""
         widget = _make_banner(thread_id="abc")
         result = widget._build_banner()
-        assert isinstance(result, Text)
+        assert isinstance(result, Content)
 
 
 class TestAutoLinksDisabled:
@@ -228,9 +235,9 @@ class TestOnClickOpensLink:
 class TestBuildWelcomeFooter:
     """Tests for the `build_welcome_footer` standalone function."""
 
-    def test_returns_rich_text(self) -> None:
-        """Footer should return a `rich.text.Text` object."""
-        assert isinstance(build_welcome_footer(), Text)
+    def test_returns_content(self) -> None:
+        """Footer should return a `Content` object."""
+        assert isinstance(build_welcome_footer(), Content)
 
     def test_contains_ready_prompt(self) -> None:
         """Footer should include the ready-to-code prompt."""
@@ -327,3 +334,29 @@ class TestBannerFooterPosition:
         idx = plain.index("Ready to code")
         assert plain[idx - 1] == "\n"
         assert plain[idx - 2] == "\n"
+
+
+class TestBuildFailureFooter:
+    """Tests for the `build_failure_footer` standalone function."""
+
+    def test_returns_content(self) -> None:
+        """Footer should return a `Content` object."""
+        assert isinstance(build_failure_footer("oops"), Content)
+
+    def test_contains_error_message(self) -> None:
+        """Footer should include the failure prefix and error text."""
+        plain = build_failure_footer("connection refused").plain
+        assert "Server failed to start: " in plain
+        assert "connection refused" in plain
+
+
+class TestBuildConnectingFooter:
+    """Tests for the `build_connecting_footer` standalone function."""
+
+    def test_returns_content(self) -> None:
+        """Footer should return a `Content` object."""
+        assert isinstance(build_connecting_footer(), Content)
+
+    def test_contains_connecting_message(self) -> None:
+        """Footer should include the connecting status text."""
+        assert "Connecting to server..." in build_connecting_footer().plain

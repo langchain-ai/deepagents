@@ -265,13 +265,13 @@ def test_state_legacy_list_content_read():
 def test_grep_new_format():
     fd = create_file_data("import os\nprint('hello')\nimport sys")
     files = {"/src/main.py": fd}
-    matches = grep_matches_from_files(files, "import", path="/")
-    assert isinstance(matches, list)
-    assert len(matches) == 2
-    assert matches[0]["line"] == 1
-    assert matches[0]["text"] == "import os"
-    assert matches[1]["line"] == 3
-    assert matches[1]["text"] == "import sys"
+    result = grep_matches_from_files(files, "import", path="/")
+    assert result.matches is not None
+    assert len(result.matches) == 2
+    assert result.matches[0]["line"] == 1
+    assert result.matches[0]["text"] == "import os"
+    assert result.matches[1]["line"] == 3
+    assert result.matches[1]["text"] == "import sys"
 
 
 # ---------------------------------------------------------------------------
@@ -289,11 +289,11 @@ def test_grep_legacy_format():
     files = {"/src/funcs.py": legacy_fd}
     with warnings.catch_warnings(record=True) as w:
         warnings.simplefilter("always")
-        matches = grep_matches_from_files(files, "def", path="/")
-        assert isinstance(matches, list)
-        assert len(matches) == 2
-        assert matches[0]["text"] == "def foo():"
-        assert matches[1]["text"] == "def bar():"
+        result = grep_matches_from_files(files, "def", path="/")
+        assert result.matches is not None
+        assert len(result.matches) == 2
+        assert result.matches[0]["text"] == "def foo():"
+        assert result.matches[1]["text"] == "def bar():"
         deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
         assert len(deprecation_warnings) >= 1
 

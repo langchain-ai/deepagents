@@ -20,12 +20,15 @@ class DatasetConfig:
         source: Value matched against `metadata.source` in the dataset.
         chunk_size: Token budget per text chunk during memorization.
         max_samples: Maximum number of context samples to evaluate.
+        max_questions: Cap on questions asked per sample. When `None`,
+            all questions in the dataset are used.
     """
 
     split: str
     source: str
     chunk_size: int = 4096
     max_samples: int = 1
+    max_questions: int | None = None
 
 
 # -- Conflict Resolution (single-hop) ----------------------------------------
@@ -202,7 +205,7 @@ ALL_CONFIGS: list[DatasetConfig] = (
 
 # Small / cheap subset for regular CI runs
 CI_CONFIGS: list[DatasetConfig] = [
-    CR_SH_6K,
-    CR_MH_6K,
-    TTL_BANKING77,
+    DatasetConfig(split=CR_SH_6K.split, source=CR_SH_6K.source, max_questions=10),
+    DatasetConfig(split=CR_MH_6K.split, source=CR_MH_6K.source, max_questions=10),
+    DatasetConfig(split=TTL_BANKING77.split, source=TTL_BANKING77.source, max_questions=10),
 ]

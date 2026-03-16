@@ -11,7 +11,9 @@ from deepagents.backends.protocol import (
     FileFormat,
     FileInfo,
     FileUploadResponse,
-    GrepMatch,
+    GlobResult,
+    GrepResult,
+    LsResult,
     ReadResult,
     WriteResult,
 )
@@ -70,7 +72,7 @@ class StateBackend(BackendProtocol):
             return _to_legacy_file_data(file_data)
         return {**file_data}
 
-    def ls_info(self, path: str) -> list[FileInfo]:
+    def ls_info(self, path: str) -> LsResult:
         """List files and directories in the specified directory (non-recursive).
 
         Args:
@@ -119,7 +121,7 @@ class StateBackend(BackendProtocol):
         infos.extend(FileInfo(path=subdir, is_dir=True, size=0, modified_at="") for subdir in sorted(subdirs))
 
         infos.sort(key=lambda x: x.get("path", ""))
-        return infos
+        return LsResult(entries=infos)
 
     def read(
         self,
@@ -208,17 +210,17 @@ class StateBackend(BackendProtocol):
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
-    ) -> list[GrepMatch] | str:
+    ) -> GrepResult:
         """Search state files for a literal text pattern."""
         files = self.runtime.state.get("files", {})
         return grep_matches_from_files(files, pattern, path if path is not None else "/", glob)
 
-    def glob_info(self, pattern: str, path: str = "/") -> list[FileInfo]:
+    def glob_info(self, pattern: str, path: str = "/") -> GlobResult:
         """Get FileInfo for files matching glob pattern."""
         files = self.runtime.state.get("files", {})
         result = _glob_search_files(files, pattern, path)
         if result == "No files found":
-            return []
+            return GlobResult(matches=[])
         paths = result.split("\n")
         infos: list[FileInfo] = []
         for p in paths:
@@ -237,7 +239,7 @@ class StateBackend(BackendProtocol):
                     "modified_at": fd.get("modified_at", "") if fd else "",
                 }
             )
-        return infos
+        return GlobResult(matches=infos)
 
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
         """Upload multiple files to state.

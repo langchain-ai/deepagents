@@ -121,9 +121,9 @@ class TestV1StyleWritesStateBackend:
 
         with warnings.catch_warnings(record=True):
             warnings.simplefilter("always")
-            matches = be2.grep_raw("import", path="/")
+            matches = be2.grep_raw("import", path="/").matches
 
-        assert isinstance(matches, list)
+        assert matches is not None
         assert len(matches) == 2
         paths = {m["text"] for m in matches}
         assert "import sys" in paths
@@ -159,7 +159,8 @@ class TestV1StyleWritesStateBackend:
         rt2 = _make_state_runtime(files=write_res.files_update)
         be2 = StateBackend(rt2, file_format="v1")
 
-        infos = be2.ls_info("/dir")
+        infos = be2.ls_info("/dir").entries
+        assert infos is not None
         assert len(infos) == 1
         assert infos[0]["path"] == "/dir/file.txt"
 
@@ -177,7 +178,7 @@ class TestV1StyleWritesStateBackend:
         rt3 = _make_state_runtime(files=merged)
         be3 = StateBackend(rt3, file_format="v1")
 
-        infos = be3.glob_info("**/*.py", path="/")
+        infos = be3.glob_info("**/*.py", path="/").matches
         paths = [fi["path"] for fi in infos]
         assert "/src/a.py" in paths
         assert "/src/b.txt" not in paths
@@ -243,9 +244,9 @@ class TestV1StyleWritesStoreBackend:
 
         with warnings.catch_warnings(record=True):
             warnings.simplefilter("always")
-            matches = be.grep_raw("import", path="/")
+            matches = be.grep_raw("import", path="/").matches
 
-        assert isinstance(matches, list)
+        assert matches is not None
         assert len(matches) == 2
 
     def test_download_works_with_v1_data(self):
@@ -326,9 +327,9 @@ class TestV2LoadsV1CheckpointStateBackend:
 
         with warnings.catch_warnings(record=True):
             warnings.simplefilter("always")
-            matches = be.grep_raw("def", path="/")
+            matches = be.grep_raw("def", path="/").matches
 
-        assert isinstance(matches, list)
+        assert matches is not None
         assert len(matches) == 2
         assert matches[0]["text"] == "def foo():"
         assert matches[1]["text"] == "def bar():"
@@ -353,7 +354,8 @@ class TestV2LoadsV1CheckpointStateBackend:
         rt = _make_state_runtime(files={"/dir/file.txt": v1_data})
         be = StateBackend(rt, file_format="v2")
 
-        infos = be.ls_info("/dir")
+        infos = be.ls_info("/dir").entries
+        assert infos is not None
         assert len(infos) == 1
         assert infos[0]["path"] == "/dir/file.txt"
         # size should still be computed correctly from list content
@@ -366,7 +368,7 @@ class TestV2LoadsV1CheckpointStateBackend:
         rt = _make_state_runtime(files={"/src/a.py": v1_py, "/src/b.txt": v1_txt})
         be = StateBackend(rt, file_format="v2")
 
-        infos = be.glob_info("**/*.py", path="/")
+        infos = be.glob_info("**/*.py", path="/").matches
         paths = [fi["path"] for fi in infos]
         assert "/src/a.py" in paths
         assert "/src/b.txt" not in paths
@@ -517,9 +519,9 @@ class TestV2LoadsV1CheckpointStoreBackend:
 
         with warnings.catch_warnings(record=True):
             warnings.simplefilter("always")
-            matches = be.grep_raw("def", path="/")
+            matches = be.grep_raw("def", path="/").matches
 
-        assert isinstance(matches, list)
+        assert matches is not None
         assert len(matches) == 2
 
     def test_download_v1_store_data(self):

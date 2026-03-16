@@ -8,6 +8,7 @@ from langchain_core.tools import BaseTool, tool
 from pydantic import BaseModel
 from typing_extensions import TypedDict
 
+from langchain_quickjs._foregin_functions import get_ptc_implementations
 from langchain_quickjs._foreign_function_docs import (
     _collect_referenced_types,
     _format_annotation,
@@ -15,7 +16,6 @@ from langchain_quickjs._foreign_function_docs import (
     _get_return_annotation,
     _render_typed_dict_definition,
     format_foreign_function_docs,
-    get_ptc_implementations,
     render_external_functions_section,
     render_foreign_function_section,
 )

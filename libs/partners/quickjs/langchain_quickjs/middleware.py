@@ -16,11 +16,11 @@ from langchain.agents.middleware.types import (
 )
 from langchain_core.tools import BaseTool, StructuredTool
 
-from langchain_quickjs._foreign_function_bridge import install_external_functions
-from langchain_quickjs._foreign_function_docs import (
+from langchain_quickjs._foregin_functions import (
     get_ptc_implementations,
-    render_external_functions_section,
+    install_external_functions,
 )
+from langchain_quickjs._foreign_function_docs import render_external_functions_section
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable

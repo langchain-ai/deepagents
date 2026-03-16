@@ -105,6 +105,21 @@ def _invoke_tool(
     return _await_if_needed(tool.invoke(payload))
 
 
+def get_ptc_implementations(
+    ptc: list[Callable[..., Any] | BaseTool] | None,
+) -> dict[str, Callable[..., Any] | BaseTool]:
+    """Return configured PTC implementations keyed by exported function name."""
+    implementations: dict[str, Callable[..., Any] | BaseTool] = {}
+    for implementation in ptc or []:
+        if isinstance(implementation, BaseTool):
+            implementations[implementation.name] = implementation
+            continue
+        name = getattr(implementation, "__name__", None)
+        if isinstance(name, str):
+            implementations[name] = implementation
+    return implementations
+
+
 def _build_tool_payload(
     tool: BaseTool, args: tuple[Any, ...], kwargs: dict[str, Any]
 ) -> str | dict[str, Any]:
@@ -309,4 +324,4 @@ def install_external_functions(
     inject_external_function_shims(context, list(implementations or {}))
 
 
-__all__ = ["install_external_functions"]
+__all__ = ["get_ptc_implementations", "install_external_functions"]

@@ -25,8 +25,11 @@ dependencies = [
     "langchain-anthropic>=1.3.4,<2.0.0",
     "langchain-google-genai>=4.2.0,<5.0.0",
     "wcmatch",
+    "fsspec>=2023.1.0",
+    "s3fs>=2023.1.0",
+    "gcsfs>=2023.1.0",
+    "adlfs>=2023.1.0",
 ]
-
 
 [project.urls]
 Homepage = "https://docs.langchain.com/oss/python/deepagents/overview"
@@ -52,6 +55,9 @@ test = [
   "langchain-openai",
   "twine",
   "build",
+  "moto[s3,server]>=5.0.0,<6.0.0",
+  "s3fs>=2023.1.0",
+  "fsspec>=2023.1.0",
 ]
 
 evals = [
@@ -123,6 +129,7 @@ ignore-var-parameters = true
     "PLR2004", # Magic value used in comparison — fine in test assertions
     "PT018",   # Assertion should be broken down into multiple parts
     "S101",    # Use of `assert` detected
+    "S106",    # Hardcoded password — test credentials are intentionally fake
     "S311",    # Pseudo-random generator not suitable for security — fine in tests
 ]
 # Scripts: allow prints, broad exceptions, and standalone modules

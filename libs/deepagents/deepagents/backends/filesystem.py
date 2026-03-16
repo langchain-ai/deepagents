@@ -50,6 +50,8 @@ class FilesystemBackend(BackendProtocol):
 
         - Web servers or HTTP APIs - use `StateBackend`, `StoreBackend`, or
             `SandboxBackend` instead
+        - Cloud-hosted agents that need durable storage - use `RemoteBackend`
+            instead (supports S3, GCS, and Azure Blob Storage)
 
         **Security risks:**
 

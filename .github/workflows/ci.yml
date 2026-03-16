@@ -46,7 +46,7 @@ jobs:
           fetch-depth: 0
 
       - name: "🔍 Check for changes"
-        uses: dorny/paths-filter@v3
+        uses: dorny/paths-filter@v4
         id: filter
         with:
           # Each package filter includes workflow/action paths so that CI

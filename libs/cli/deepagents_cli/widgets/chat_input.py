@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from pathlib import Path
@@ -9,6 +10,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.content import Content
 from textual.css.query import NoMatches
 from textual.message import Message
 from textual.reactive import reactive
@@ -129,11 +131,17 @@ class CompletionOption(Static):
         cursor = f"{glyphs.cursor} " if self._is_selected else "  "
 
         if self._description:
-            text = f"{cursor}[bold]{self._label}[/bold]  [dim]{self._description}[/dim]"
+            content = Content.from_markup(
+                f"{cursor}[bold]$label[/bold]  [dim]$desc[/dim]",
+                label=self._label,
+                desc=self._description,
+            )
         else:
-            text = f"{cursor}[bold]{self._label}[/bold]"
+            content = Content.from_markup(
+                f"{cursor}[bold]$label[/bold]", label=self._label
+            )
 
-        self.update(text)
+        self.update(content)
 
         if self._is_selected:
             self.add_class("completion-option-selected")
@@ -409,7 +417,7 @@ class ChatTextArea(TextArea):
         row, col = self.cursor_location
         return row == 0 and col == 0
 
-    def _flush_paste_burst(self) -> None:
+    async def _flush_paste_burst(self) -> None:
         """Flush buffered burst text through dropped-path parsing.
 
         When parsing fails, the buffered text is inserted unchanged so regular
@@ -424,7 +432,10 @@ class ChatTextArea(TextArea):
 
         from deepagents_cli.input import parse_pasted_path_payload
 
-        parsed = parse_pasted_path_payload(payload)
+        try:
+            parsed = await asyncio.to_thread(parse_pasted_path_payload, payload)
+        except Exception:  # noqa: BLE001  # Treat thread failure as non-path text
+            parsed = None
         if parsed is not None:
             self.post_message(self.PastedPaths(payload, parsed.paths))
             return
@@ -494,7 +505,7 @@ class ChatTextArea(TextArea):
                     event.stop()
                     return
 
-            self._flush_paste_burst()
+            await self._flush_paste_burst()
 
         if (
             event.is_printable
@@ -647,11 +658,14 @@ class ChatTextArea(TextArea):
         """Handle paste events and detect dragged file paths."""
         self._backslash_pending_time = None
         if self._paste_burst_buffer:
-            self._flush_paste_burst()
+            await self._flush_paste_burst()
 
         from deepagents_cli.input import parse_pasted_path_payload
 
-        parsed = parse_pasted_path_payload(event.text)
+        try:
+            parsed = await asyncio.to_thread(parse_pasted_path_payload, event.text)
+        except Exception:  # noqa: BLE001  # Treat thread failure as non-path text
+            parsed = None
         if parsed is None:
             # Don't call super() here — Textual's MRO dispatch already calls
             # TextArea._on_paste after this handler returns. Calling super()
@@ -876,13 +890,21 @@ class ChatInput(Vertical):
         # Both controllers implement the CompletionController protocol but have
         # different concrete types; the list-item warning is a false positive.
         self._completion_view = _CompletionViewAdapter(self)
+        self._file_controller = FuzzyFileController(
+            self._completion_view, cwd=self._cwd
+        )
         self._completion_manager = MultiCompletionManager(
             [
                 SlashCommandController(SLASH_COMMANDS, self._completion_view),
-                FuzzyFileController(self._completion_view, cwd=self._cwd),
+                self._file_controller,
             ]  # type: ignore[list-item]  # Controller types are compatible at runtime
         )
 
+        self.run_worker(
+            self._file_controller.warm_cache(),
+            exclusive=False,
+            exit_on_error=False,
+        )
         self._text_area.focus()
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:

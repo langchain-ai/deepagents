@@ -103,13 +103,15 @@ def list_agents(*, output_format: OutputFormat = "text") -> None:
         write_json("list", agents)
         return
 
+    from rich.markup import escape as escape_markup
+
     console.print("\n[bold]Available Agents:[/bold]\n", style=COLORS["primary"])
 
     for agent_path in sorted(agents_dir.iterdir()):
         if agent_path.is_dir():
-            agent_name = agent_path.name
+            agent_name = escape_markup(agent_path.name)
             agent_md = agent_path / "AGENTS.md"
-            is_default = agent_name == DEFAULT_AGENT_NAME
+            is_default = agent_path.name == DEFAULT_AGENT_NAME
             default_label = " [dim](default)[/dim]" if is_default else ""
 
             bullet = get_glyphs().bullet
@@ -118,14 +120,20 @@ def list_agents(*, output_format: OutputFormat = "text") -> None:
                     f"  {bullet} [bold]{agent_name}[/bold]{default_label}",
                     style=COLORS["primary"],
                 )
-                console.print(f"    {agent_path}", style=COLORS["dim"])
+                console.print(
+                    f"    {escape_markup(str(agent_path))}",
+                    style=COLORS["dim"],
+                )
             else:
                 console.print(
                     f"  {bullet} [bold]{agent_name}[/bold]{default_label}"
                     " [dim](incomplete)[/dim]",
                     style=COLORS["tool"],
                 )
-                console.print(f"    {agent_path}", style=COLORS["dim"])
+                console.print(
+                    f"    {escape_markup(str(agent_path))}",
+                    style=COLORS["dim"],
+                )
 
     console.print()
 
@@ -542,10 +550,10 @@ def _add_interrupt_on() -> dict[str, InterruptOnConfig]:
         interrupt_map["compact_conversation"] = {
             "allowed_decisions": ["approve", "reject"],
             "description": (
-                "Summarizes older messages into a shorter summary "
-                "using an LLM call, then replaces them in context. "
-                "Recent messages are kept as-is. Full history is "
-                "written to backend storage for agent retrieval."
+                "Offloads older messages to backend storage and "
+                "replaces them with a summary, freeing context "
+                "window space. Recent messages are kept as-is. "
+                "Full history remains available for retrieval."
             ),
         }
 

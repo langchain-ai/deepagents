@@ -7,7 +7,7 @@ from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
 from langgraph.store.memory import InMemoryStore
 
-from deepagents.backends.protocol import EditResult, WriteResult
+from deepagents.backends.protocol import EditResult, ReadResult, WriteResult
 from deepagents.backends.store import BackendContext, StoreBackend, _validate_namespace
 from deepagents.middleware.filesystem import FilesystemMiddleware
 
@@ -32,26 +32,28 @@ def test_store_backend_crud_and_search():
     assert isinstance(msg, WriteResult) and msg.error is None and msg.path == "/docs/readme.md"
 
     # read
-    txt = be.read("/docs/readme.md")
-    assert "hello store" in txt
+    read_result = be.read("/docs/readme.md")
+    assert isinstance(read_result, ReadResult) and read_result.file_data is not None
+    assert "hello store" in read_result.file_data["content"]
 
     # edit
     msg2 = be.edit("/docs/readme.md", "hello", "hi", replace_all=False)
     assert isinstance(msg2, EditResult) and msg2.error is None and msg2.occurrences == 1
 
     # ls_info (path prefix filter)
-    infos = be.ls_info("/docs/")
+    infos = be.ls_info("/docs/").entries
+    assert infos is not None
     assert any(i["path"] == "/docs/readme.md" for i in infos)
 
     # grep_raw
-    matches = be.grep_raw("hi", path="/")
-    assert isinstance(matches, list) and any(m["path"] == "/docs/readme.md" for m in matches)
+    matches = be.grep_raw("hi", path="/").matches
+    assert matches is not None and any(m["path"] == "/docs/readme.md" for m in matches)
 
     # glob_info
-    g = be.glob_info("*.md", path="/")
+    g = be.glob_info("*.md", path="/").matches
     assert len(g) == 0
 
-    g2 = be.glob_info("**/*.md", path="/")
+    g2 = be.glob_info("**/*.md", path="/").matches
     assert any(i["path"] == "/docs/readme.md" for i in g2)
 
 
@@ -72,7 +74,8 @@ def test_store_backend_ls_nested_directories():
         res = be.write(path, content)
         assert res.error is None
 
-    root_listing = be.ls_info("/")
+    root_listing = be.ls_info("/").entries
+    assert root_listing is not None
     root_paths = [fi["path"] for fi in root_listing]
     assert "/config.json" in root_paths
     assert "/src/" in root_paths
@@ -82,20 +85,22 @@ def test_store_backend_ls_nested_directories():
     assert "/docs/readme.md" not in root_paths
     assert "/docs/api/reference.md" not in root_paths
 
-    src_listing = be.ls_info("/src/")
+    src_listing = be.ls_info("/src/").entries
+    assert src_listing is not None
     src_paths = [fi["path"] for fi in src_listing]
     assert "/src/main.py" in src_paths
     assert "/src/utils/" in src_paths
     assert "/src/utils/helper.py" not in src_paths
 
-    utils_listing = be.ls_info("/src/utils/")
+    utils_listing = be.ls_info("/src/utils/").entries
+    assert utils_listing is not None
     utils_paths = [fi["path"] for fi in utils_listing]
     assert "/src/utils/helper.py" in utils_paths
     assert "/src/utils/common.py" in utils_paths
     assert len(utils_paths) == 2
 
     empty_listing = be.ls_info("/nonexistent/")
-    assert empty_listing == []
+    assert empty_listing.entries == []
 
 
 def test_store_backend_ls_trailing_slash():
@@ -111,19 +116,25 @@ def test_store_backend_ls_trailing_slash():
         res = be.write(path, content)
         assert res.error is None
 
-    listing_from_root = be.ls_info("/")
+    listing_from_root = be.ls_info("/").entries
+    assert listing_from_root is not None
     assert len(listing_from_root) > 0
 
-    listing1 = be.ls_info("/dir/")
-    listing2 = be.ls_info("/dir")
+    listing1 = be.ls_info("/dir/").entries
+    listing2 = be.ls_info("/dir").entries
+    assert listing1 is not None
+    assert listing2 is not None
     assert len(listing1) == len(listing2)
     assert [fi["path"] for fi in listing1] == [fi["path"] for fi in listing2]
 
 
-def test_store_backend_intercept_large_tool_result():
+@pytest.mark.parametrize("file_format", ["v1", "v2"])
+def test_store_backend_intercept_large_tool_result(file_format):
     """Test that StoreBackend properly handles large tool result interception."""
     rt = make_runtime()
-    middleware = FilesystemMiddleware(backend=lambda r: StoreBackend(r, namespace=lambda _ctx: ("filesystem",)), tool_token_limit_before_evict=1000)
+    middleware = FilesystemMiddleware(
+        backend=lambda r: StoreBackend(r, namespace=lambda _ctx: ("filesystem",), file_format=file_format), tool_token_limit_before_evict=1000
+    )
 
     large_content = "y" * 5000
     tool_message = ToolMessage(content=large_content, tool_call_id="test_456")
@@ -135,7 +146,8 @@ def test_store_backend_intercept_large_tool_result():
 
     stored_content = rt.store.get(("filesystem",), "/large_tool_results/test_456")
     assert stored_content is not None
-    assert stored_content.value["content"] == [large_content]
+    expected = [large_content] if file_format == "v1" else large_content
+    assert stored_content.value["content"] == expected
 
 
 @dataclass
@@ -168,8 +180,9 @@ def test_store_backend_namespace_user_scoped() -> None:
     assert items[0].key == "/test.txt"
 
     # Read it back
-    content = be.read("/test.txt")
-    assert "hello alice" in content
+    read_result = be.read("/test.txt")
+    assert read_result.file_data is not None
+    assert "hello alice" in read_result.file_data["content"]
 
 
 def test_store_backend_namespace_multi_level() -> None:
@@ -234,11 +247,13 @@ def test_store_backend_namespace_isolation() -> None:
     be_bob.write("/notes.txt", "bob notes")
 
     # Verify isolation
-    alice_content = be_alice.read("/notes.txt")
-    assert "alice notes" in alice_content
+    alice_result = be_alice.read("/notes.txt")
+    assert alice_result.file_data is not None
+    assert "alice notes" in alice_result.file_data["content"]
 
-    bob_content = be_bob.read("/notes.txt")
-    assert "bob notes" in bob_content
+    bob_result = be_bob.read("/notes.txt")
+    assert bob_result.file_data is not None
+    assert "bob notes" in bob_result.file_data["content"]
 
     # Verify they're in different namespaces
     alice_items = store.search(("filesystem", "alice"))
@@ -355,8 +370,8 @@ def test_store_backend_grep_literal_search_special_chars(pattern: str, expected_
         assert res.error is None
 
     # Test literal search with the pattern
-    matches = be.grep_raw(pattern, path="/")
-    assert isinstance(matches, list)
+    matches = be.grep_raw(pattern, path="/").matches
+    assert matches is not None
     assert any(expected_file in m["path"] for m in matches), f"Pattern '{pattern}' not found in {expected_file}"
 
 

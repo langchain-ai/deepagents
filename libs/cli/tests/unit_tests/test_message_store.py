@@ -145,12 +145,12 @@ class TestMessageData:
 
         data = MessageData.from_widget(original)
         assert data.type == MessageType.SUMMARIZATION
-        assert data.content == "✓ Summarized conversation"
+        assert data.content == "✓ Conversation offloaded"
         assert data.id == "test-summary-1"
 
         restored = data.to_widget()
         assert isinstance(restored, SummarizationMessage)
-        assert str(restored._content) == "✓ Summarized conversation"
+        assert str(restored._content) == "✓ Conversation offloaded"
         assert restored.id == "test-summary-1"
 
     def test_message_data_defaults(self):

@@ -1116,6 +1116,7 @@ async def list_threads_command(
         write_json("threads list", list(threads))
         return
 
+    from rich.markup import escape as escape_markup
     from rich.table import Table
 
     from deepagents_cli.config import COLORS, console
@@ -1123,9 +1124,9 @@ async def list_threads_command(
     if not threads:
         filters = []
         if agent_name:
-            filters.append(f"agent '{agent_name}'")
+            filters.append(f"agent '{escape_markup(agent_name)}'")
         if branch:
-            filters.append(f"branch '{branch}'")
+            filters.append(f"branch '{escape_markup(branch)}'")
         if filters:
             console.print(
                 f"[yellow]No threads found for {' and '.join(filters)}.[/yellow]"
@@ -1137,9 +1138,10 @@ async def list_threads_command(
 
     title_parts = []
     if agent_name:
-        title_parts.append(f"agent '{agent_name}'")
+        title_parts.append(f"agent '{escape_markup(agent_name)}'")
     if branch:
-        title_parts.append(f"branch '{branch}'")
+        title_parts.append(f"branch '{escape_markup(branch)}'")
+
     title_filter = f" for {' and '.join(title_parts)}" if title_parts else ""
     sort_label = "created" if sort_by == "created" else "updated"
     title = f"Recent Threads{title_filter} (last {limit}, by {sort_label})"
@@ -1209,9 +1211,12 @@ async def delete_thread_command(
         write_json("threads delete", {"thread_id": thread_id, "deleted": deleted})
         return
 
+    from rich.markup import escape as escape_markup
+
     from deepagents_cli.config import console
 
+    escaped_id = escape_markup(thread_id)
     if deleted:
-        console.print(f"[green]Thread '{thread_id}' deleted.[/green]")
+        console.print(f"[green]Thread '{escaped_id}' deleted.[/green]")
     else:
-        console.print(f"[red]Thread '{thread_id}' not found.[/red]")
+        console.print(f"[red]Thread '{escaped_id}' not found.[/red]")

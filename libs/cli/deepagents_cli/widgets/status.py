@@ -7,8 +7,8 @@ from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from rich.text import Text
 from textual.containers import Horizontal
+from textual.content import Content
 from textual.css.query import NoMatches
 from textual.reactive import reactive
 from textual.widget import Widget
@@ -54,23 +54,19 @@ class ModelLabel(Widget):
         """Render the model label with width-aware truncation.
 
         Returns:
-            Right-aligned text, truncated from the left when necessary.
+            Text content, truncated from the left when necessary.
         """
         width = self.content_size.width
         if not self.model or width <= 0:
             return ""
         full = f"{self.provider}:{self.model}" if self.provider else self.model
         if len(full) <= width:
-            return Text(full, no_wrap=True, justify="right")
+            return Content(full)
         if len(self.model) <= width:
-            return Text(self.model, no_wrap=True, justify="right")
+            return Content(self.model)
         if width > 1:
-            return Text(
-                "\u2026" + self.model[-(width - 1) :],
-                no_wrap=True,
-                justify="right",
-            )
-        return Text("\u2026", no_wrap=True, justify="right")
+            return Content("\u2026" + self.model[-(width - 1) :])
+        return Content("\u2026")
 
 
 class StatusBar(Horizontal):

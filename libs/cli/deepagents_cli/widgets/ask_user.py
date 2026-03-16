@@ -5,9 +5,9 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
-from rich.markup import escape as escape_markup
 from textual.binding import Binding, BindingType
 from textual.containers import Container, Vertical
+from textual.content import Content
 from textual.message import Message
 from textual.widgets import Input, Static
 
@@ -205,37 +205,38 @@ class AskUserMenu(Container):
 class _ChoiceOption(Static):
     """A single selectable choice option."""
 
-    def __init__(self, label: str, index: int, **kwargs: Any) -> None:
-        super().__init__(label, classes="ask-user-choice", **kwargs)
+    def __init__(
+        self, text: str, index: int, *, selected: bool = False, **kwargs: Any
+    ) -> None:
         self.choice_index: int = index
-        self.selected: bool = False
-        self._label: str = label
+        self.selected: bool = selected
+        self._text: str = text
+        super().__init__(self._render(), classes="ask-user-choice", **kwargs)
 
     def toggle(self) -> None:
         """Toggle the selected state."""
         self.selected = not self.selected
-        self._update_display()
+        self.update(self._render())
 
     def select(self) -> None:
         """Mark this choice as selected."""
         self.selected = True
-        self._update_display()
+        self.update(self._render())
 
     def deselect(self) -> None:
         """Mark this choice as deselected."""
         self.selected = False
-        self._update_display()
+        self.update(self._render())
 
-    def _update_display(self) -> None:
+    def _render(self) -> Content:
+        """Build display content with cursor prefix.
+
+        Returns:
+            Styled Content with selection cursor and label text.
+        """
         glyphs = get_glyphs()
-        raw = self._label.lstrip()
-        for prefix in (f"{glyphs.cursor} ", "  "):
-            if raw.startswith(prefix):
-                raw = raw[len(prefix) :]
-                break
-        self._label = raw
         prefix = f"{glyphs.cursor} " if self.selected else "  "
-        self.update(f"{prefix}{raw}")
+        return Content.from_markup("$prefix$text", prefix=prefix, text=self._text)
 
 
 class _QuestionWidget(Vertical):
@@ -270,23 +271,20 @@ class _QuestionWidget(Vertical):
 
     def compose(self) -> ComposeResult:
         q_text = self._question.get("question", "")
-        suffix = " [dim](required)[/dim]" if self._required else ""
-        yield Static(f"[bold]{self._index + 1}. {escape_markup(q_text)}[/bold]{suffix}")
+        if self._required:
+            markup = "[bold]$num. $text[/bold] [dim](required)[/dim]"
+        else:
+            markup = "[bold]$num. $text[/bold]"
+        yield Static(Content.from_markup(markup, num=self._index + 1, text=q_text))
 
         if self._q_type == "multiple_choice" and self._choices:
-            glyphs = get_glyphs()
             for i, choice in enumerate(self._choices):
-                label = escape_markup(choice.get("value", str(choice)))
-                prefix = f"{glyphs.cursor} " if i == 0 else "  "
-                cw = _ChoiceOption(f"{prefix}{label}", index=i)
-                if i == 0:
-                    cw.selected = True
+                label = choice.get("value", str(choice))
+                cw = _ChoiceOption(label, index=i, selected=(i == 0))
                 self._choice_widgets.append(cw)
                 yield cw
 
-            other_cw = _ChoiceOption(
-                f"  {OTHER_CHOICE_LABEL}", index=len(self._choices)
-            )
+            other_cw = _ChoiceOption(OTHER_CHOICE_LABEL, index=len(self._choices))
             self._choice_widgets.append(other_cw)
             yield other_cw
 

@@ -459,6 +459,7 @@ def parse_args() -> argparse.Namespace:
     add_json_output_arg(parser, default="text")
 
     parser.add_argument(
+        "-y",
         "--auto-approve",
         action="store_true",
         help=(
@@ -489,6 +490,7 @@ def parse_args() -> argparse.Namespace:
         help="Path to setup script to run in sandbox after creation",
     )
     parser.add_argument(
+        "-S",
         "--shell-allow-list",
         metavar="LIST",
         help="Comma-separated list of shell commands to auto-approve, "
@@ -696,7 +698,7 @@ async def _run_acp_cli_async(
     Returns:
         Exit code for ACP mode.
     """
-    from deepagents_cli.agent import create_cli_agent
+    from deepagents_cli.agent import create_cli_agent, load_async_subagents
     from deepagents_cli.config import create_model, settings
     from deepagents_cli.model_config import ModelConfigError, save_recent_model
     from deepagents_cli.tools import fetch_url, http_request, web_search
@@ -746,6 +748,8 @@ async def _run_acp_cli_async(
         sys.stderr.flush()
         return 1
 
+    async_subagents = load_async_subagents() or None
+
     try:
         from langgraph.checkpoint.memory import InMemorySaver
 
@@ -755,6 +759,7 @@ async def _run_acp_cli_async(
             tools=tools,
             mcp_server_info=mcp_server_info,
             checkpointer=InMemorySaver(),
+            async_subagents=async_subagents,
         )
     except Exception as exc:
         sys.stderr.write(f"Error: failed to create agent: {exc}\n")

@@ -206,11 +206,24 @@ jobs:
 
           echo "Previous tag: $PREV_TAG"
 
-          # Get commits between previous tag and HEAD for this package
+          # Resolve the actual release commit instead of using HEAD.
+          # release-please always updates CHANGELOG.md in the release commit,
+          # so on workflow_call this resolves to HEAD (effectively a no-op).
+          # On workflow_dispatch (manual/recovery), HEAD may be ahead of the
+          # release commit — this avoids attributing post-release commits to
+          # this release's contributor list.
+          RELEASE_COMMIT=$(git log -1 --format=%H -- "$WORKING_DIR/CHANGELOG.md")
+          if [ -z "$RELEASE_COMMIT" ]; then
+            echo "Warning: no CHANGELOG.md history found, falling back to HEAD"
+            RELEASE_COMMIT=$(git rev-parse HEAD)
+          fi
+          echo "Release commit (from CHANGELOG.md): $RELEASE_COMMIT"
+
+          # Get commits between previous tag and release commit for this package
           if [ -z "$PREV_TAG" ]; then
-            COMMITS=$(git rev-list HEAD -- "$WORKING_DIR" | head -100)
+            COMMITS=$(git rev-list "$RELEASE_COMMIT" -- "$WORKING_DIR" | head -100)
           else
-            COMMITS=$(git rev-list "$PREV_TAG"..HEAD -- "$WORKING_DIR" | head -100)
+            COMMITS=$(git rev-list "$PREV_TAG".."$RELEASE_COMMIT" -- "$WORKING_DIR" | head -100)
           fi
 
           # Find PRs and collect contributors (GitHub username + optional Twitter/LinkedIn)
@@ -405,20 +418,29 @@ jobs:
               PREV_TAG=""
             fi
 
+            # Use CHANGELOG.md's last edit as the release commit boundary.
+            # On manual dispatch, HEAD may be ahead of the actual release —
+            # this ensures the git log only covers commits up to the release.
+            RELEASE_COMMIT=$(git log -1 --format=%H -- "$WORKING_DIR/CHANGELOG.md")
+            if [ -z "$RELEASE_COMMIT" ]; then
+              echo "Warning: no CHANGELOG.md history found, falling back to HEAD"
+              RELEASE_COMMIT=$(git rev-parse HEAD)
+            fi
+
             if [ -z "$PREV_TAG" ]; then
               PREAMBLE="Initial release"
-              PREV_TAG=$(git rev-list --max-parents=0 HEAD)
+              PREV_TAG=$(git rev-list --max-parents=0 "$RELEASE_COMMIT")
             else
               PREAMBLE="Changes since $PREV_TAG"
             fi
 
-            GIT_LOG=$(git log --format="%s" "$PREV_TAG"..HEAD -- "$WORKING_DIR")
+            GIT_LOG=$(git log --format="%s" "$PREV_TAG".."$RELEASE_COMMIT" -- "$WORKING_DIR")
             RELEASE_BODY=$(printf "%s\n%s" "$PREAMBLE" "$GIT_LOG")
           fi
 
           # Append contributor shoutouts
           if [ -n "$CONTRIBUTORS" ]; then
-            RELEASE_BODY=$(printf "%s\n\n---\n\nThanks to our contributors: %s" "$RELEASE_BODY" "$CONTRIBUTORS")
+            RELEASE_BODY=$(printf "%s\n\n---\n\nThanks to our community contributors: %s" "$RELEASE_BODY" "$CONTRIBUTORS")
           fi
 
           # Output release body using heredoc for proper multiline handling

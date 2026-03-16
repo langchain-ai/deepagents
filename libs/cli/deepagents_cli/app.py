@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
-from textual.app import App
+from textual.app import App, ScreenStackError
 from textual.binding import Binding, BindingType
 from textual.containers import Container, VerticalScroll
 from textual.content import Content
@@ -680,8 +680,9 @@ class DeepAgentsApp(App):
 
     async def on_mount(self) -> None:
         """Initialize components after mount."""
+        chat = self.query_one("#chat", VerticalScroll)
+        chat.anchor()
         if _detect_charset_mode() == CharsetMode.ASCII:
-            chat = self.query_one("#chat", VerticalScroll)
             chat.styles.scrollbar_size_vertical = 0
 
         self._status_bar = self.query_one("#status-bar", StatusBar)
@@ -773,7 +774,6 @@ class DeepAgentsApp(App):
             update_status=self._update_status,
             request_approval=self._request_approval,
             on_auto_approve_enabled=self._on_auto_approve_enabled,
-            scroll_to_bottom=self._scroll_chat_to_bottom,
             set_spinner=self._set_spinner,
             set_active_message=self._set_active_message,
             sync_message_content=self._sync_message_content,
@@ -968,24 +968,6 @@ class DeepAgentsApp(App):
         if self._status_bar:
             self._status_bar.hide_tokens()
 
-    def _scroll_chat_to_bottom(self) -> None:
-        """Scroll chat to bottom using sticky scroll pattern.
-
-        Only scrolls if user is already at/near the bottom.
-        This prevents dragging the user back if they've scrolled up to read.
-        """
-        chat = self.query_one("#chat", VerticalScroll)
-
-        # Nothing to scroll if content fits in viewport
-        if chat.max_scroll_y <= 0:
-            return
-
-        # Sticky scroll: only scroll to bottom if user is near the bottom
-        # "Near" means within 100 pixels of the bottom (about 6-7 lines)
-        distance_from_bottom = chat.max_scroll_y - chat.scroll_y
-        if distance_from_bottom < 100:  # noqa: PLR2004  # Pixel distance threshold for sticky scroll
-            chat.scroll_end(animate=False)
-
     def _check_hydration_needed(self) -> None:
         """Check if we need to hydrate messages from the store.
 
@@ -1159,8 +1141,8 @@ class DeepAgentsApp(App):
             if not self._is_spinner_at_correct_position(messages):
                 await self._loading_widget.remove()
                 await self._mount_before_queued(messages, self._loading_widget)
-        # NOTE: Don't call _scroll_chat_to_bottom() here - it would re-anchor
-        # and drag user back to bottom if they've scrolled away during streaming
+        # NOTE: Don't call anchor() here - it would re-anchor and drag user back
+        # to bottom if they've scrolled away during streaming
 
     async def _request_approval(
         self,
@@ -1216,7 +1198,8 @@ class DeepAgentsApp(App):
                             f"✓ Auto-approved shell command (allow-list): {command}"
                         )
                         await self._mount_before_queued(messages, auto_msg)
-                    self._scroll_chat_to_bottom()
+                    with suppress(NoMatches, ScreenStackError):
+                        self.query_one("#chat", VerticalScroll).anchor()
                 except Exception:  # noqa: S110, BLE001  # Resilient auto-message display
                     pass  # Don't fail if we can't show the message
 
@@ -1510,9 +1493,9 @@ class DeepAgentsApp(App):
             if proc.returncode and proc.returncode != 0:
                 await self._mount_message(ErrorMessage(f"Exit code: {proc.returncode}"))
 
-            # Scroll to show the output (user-initiated command, so scroll is expected)
-            chat = self.query_one("#chat", VerticalScroll)
-            chat.scroll_end(animate=False)
+            # Anchor to bottom so shell output stays visible
+            with suppress(NoMatches, ScreenStackError):
+                self.query_one("#chat", VerticalScroll).anchor()
 
         except OSError as e:
             logger.exception("Failed to execute shell command: %s", command)
@@ -1887,18 +1870,9 @@ class DeepAgentsApp(App):
             await self._mount_message(UserMessage(command))
             await self._mount_message(AppMessage(f"Unknown command: {cmd}"))
 
-        # Scroll to bottom after command output is rendered.
-        # Use call_after_refresh so the layout pass completes first;
-        # otherwise max_scroll_y is still stale.
-        def _scroll_after_command() -> None:
-            try:
-                chat = self.query_one("#chat", VerticalScroll)
-                if chat.max_scroll_y > 0:
-                    chat.scroll_end(animate=False)
-            except NoMatches:
-                pass
-
-        self.call_after_refresh(_scroll_after_command)
+        # Anchor to bottom so command output stays visible
+        with suppress(NoMatches, ScreenStackError):
+            self.query_one("#chat", VerticalScroll).anchor()
 
     async def _get_conversation_token_count(self) -> int | None:
         """Return the approximate conversation-only token count.
@@ -2093,13 +2067,9 @@ class DeepAgentsApp(App):
         # Mount the user message
         await self._mount_message(UserMessage(message))
 
-        # Scroll to bottom when user sends a new message
-        try:
-            chat = self.query_one("#chat", VerticalScroll)
-            if chat.max_scroll_y > 0:
-                chat.scroll_end(animate=False)
-        except NoMatches:
-            pass
+        # Anchor to bottom so streaming response stays visible
+        with suppress(NoMatches, ScreenStackError):
+            self.query_one("#chat", VerticalScroll).anchor()
 
         # Check if agent is available
         if self._agent and self._ui_adapter and self._session_state:
@@ -2567,7 +2537,7 @@ class DeepAgentsApp(App):
                 thread_id=history_thread_id,
             )
 
-            # 10. Scroll once
+            # 10. Scroll once to bottom after history loads
             def scroll_to_end() -> None:
                 with suppress(NoMatches):
                     chat = self.query_one("#chat", VerticalScroll)
@@ -3349,16 +3319,9 @@ class DeepAgentsApp(App):
                 await self._mount_message(AppMessage(f"Switched to {display}"))
             logger.info("Model switched to %s (via configurable middleware)", display)
 
-            # Scroll to bottom so the confirmation message is visible
-            def _scroll_after_switch() -> None:
-                try:
-                    chat = self.query_one("#chat", VerticalScroll)
-                    if chat.max_scroll_y > 0:
-                        chat.scroll_end(animate=False)
-                except NoMatches:
-                    pass
-
-            self.call_after_refresh(_scroll_after_switch)
+            # Anchor to bottom so the confirmation message is visible
+            with suppress(NoMatches, ScreenStackError):
+                self.query_one("#chat", VerticalScroll).anchor()
         finally:
             self._model_switching = False
 

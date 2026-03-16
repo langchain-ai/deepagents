@@ -173,6 +173,44 @@ class TestUpdateThreadId:
         assert links[0] == f"{project_url}/t/new_id?utm_source=deepagents-cli"
 
 
+class TestBuildBannerEditableInstall:
+    """Tests for the editable-install path in `_build_banner`."""
+
+    def test_build_banner_with_editable_install(self) -> None:
+        """Banner should include install path when running from editable install."""
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            patch(
+                "deepagents_cli.widgets.welcome._is_editable_install",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_cli.widgets.welcome._get_editable_install_path",
+                return_value="~/dev/deepagents",
+            ),
+        ):
+            widget = WelcomeBanner()
+            banner = widget._build_banner()
+        assert "Installed from: ~/dev/deepagents" in banner.plain
+
+    def test_build_banner_without_editable_install(self) -> None:
+        """Banner should not include install path for non-editable installs."""
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            patch(
+                "deepagents_cli.widgets.welcome._is_editable_install",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_cli.widgets.welcome._get_editable_install_path",
+                return_value=None,
+            ),
+        ):
+            widget = WelcomeBanner()
+            banner = widget._build_banner()
+        assert "Installed from:" not in banner.plain
+
+
 class TestBuildBannerReturnType:
     """Tests for `_build_banner` return value."""
 

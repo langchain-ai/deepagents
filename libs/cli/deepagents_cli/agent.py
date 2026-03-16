@@ -97,6 +97,10 @@ def load_async_subagents(config_path: Path | None = None) -> list[AsyncSubAgent]
             data = tomllib.load(f)
     except (tomllib.TOMLDecodeError, PermissionError, OSError) as e:
         logger.warning("Could not read async subagents from %s: %s", config_path, e)
+        console.print(
+            f"[bold yellow]Warning:[/bold yellow] Could not read async subagents "
+            f"from {config_path}: {e}",
+        )
         return []
 
     section = data.get("async_subagents")
@@ -605,7 +609,7 @@ def _add_interrupt_on() -> dict[str, InterruptOnConfig]:
 
     async_subagent_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
-        "description": "Launch or send a follow-up to a remote async subagent.",
+        "description": "Launch, update, or cancel a remote async subagent.",
     }
 
     interrupt_map: dict[str, InterruptOnConfig] = {

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from typing import TYPE_CHECKING, Annotated, Any, NotRequired, TypedDict
 
 from langchain.agents.middleware.types import AgentMiddleware, AgentState, ContextT, ModelResponse, ResponseT
@@ -20,6 +21,8 @@ from langgraph.types import Command
 from langgraph_sdk import get_client, get_sync_client
 
 from deepagents.middleware._utils import append_to_system_message
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -78,7 +81,12 @@ class AsyncSubAgentJob(TypedDict):
     """LangGraph run ID for the current execution on the thread."""
 
     status: str
-    """Current job status (e.g., `'running'`, `'success'`, `'error'`, `'cancelled'`)."""
+    """Current job status (e.g., `'running'`, `'success'`, `'error'`, `'cancelled'`).
+
+    Typed as `str` rather than a `Literal` because the LangGraph SDK's
+    `Run.status` is `str` — using a `Literal` here would require `cast` at every
+    SDK boundary.
+    """
 
 
 def _jobs_reducer(
@@ -217,13 +225,17 @@ def _build_launch_tool(
         if error:
             return error
         spec = agent_map[subagent_type]
-        client = clients.get_sync(subagent_type)
-        thread = client.threads.create()
-        run = client.runs.create(
-            thread_id=thread["thread_id"],
-            assistant_id=spec["graph_id"],
-            input={"messages": [{"role": "user", "content": description}]},
-        )
+        try:
+            client = clients.get_sync(subagent_type)
+            thread = client.threads.create()
+            run = client.runs.create(
+                thread_id=thread["thread_id"],
+                assistant_id=spec["graph_id"],
+                input={"messages": [{"role": "user", "content": description}]},
+            )
+        except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
+            logger.warning("Failed to launch async subagent '%s': %s", subagent_type, e)
+            return f"Failed to launch async subagent '{subagent_type}': {e}"
         job_id = thread["thread_id"]
         job: AsyncSubAgentJob = {
             "job_id": job_id,
@@ -249,13 +261,17 @@ def _build_launch_tool(
         if error:
             return error
         spec = agent_map[subagent_type]
-        client = clients.get_async(subagent_type)
-        thread = await client.threads.create()
-        run = await client.runs.create(
-            thread_id=thread["thread_id"],
-            assistant_id=spec["graph_id"],
-            input={"messages": [{"role": "user", "content": description}]},
-        )
+        try:
+            client = clients.get_async(subagent_type)
+            thread = await client.threads.create()
+            run = await client.runs.create(
+                thread_id=thread["thread_id"],
+                assistant_id=spec["graph_id"],
+                input={"messages": [{"role": "user", "content": description}]},
+            )
+        except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
+            logger.warning("Failed to launch async subagent '%s': %s", subagent_type, e)
+            return f"Failed to launch async subagent '{subagent_type}': {e}"
         job_id = thread["thread_id"]
         job: AsyncSubAgentJob = {
             "job_id": job_id,
@@ -285,7 +301,7 @@ def _build_check_result(
     thread_id: str,
     thread_values: dict[str, Any],
 ) -> dict[str, Any]:
-    """Build the result dict from a completed run and its thread values."""
+    """Build the result dict from a run's current status and its thread values."""
     result: dict[str, Any] = {
         "status": run["status"],
         "thread_id": thread_id,
@@ -295,8 +311,11 @@ def _build_check_result(
         if messages:
             last = messages[-1]
             result["result"] = last.get("content", "") if isinstance(last, dict) else str(last)
+        else:
+            result["result"] = "(completed with no output messages)"
     elif run["status"] == "error":
-        result["error"] = "The async subagent encountered an error."
+        error_detail = run.get("error")
+        result["error"] = str(error_detail) if error_detail else "The async subagent encountered an error."
     return result
 
 
@@ -337,7 +356,7 @@ def _resolve_tracked_job(
     return tracked
 
 
-def _build_check_tool(
+def _build_check_tool(  # noqa: C901  # complexity from necessary error handling
     clients: _ClientCache,
 ) -> StructuredTool:
     """Build the `check_async_subagent` tool."""
@@ -358,8 +377,11 @@ def _build_check_tool(
 
         thread_values: dict[str, Any] = {}
         if run["status"] == "success":
-            thread = client.threads.get(thread_id=job["thread_id"])
-            thread_values = thread.get("values") or {}
+            try:
+                thread = client.threads.get(thread_id=job["thread_id"])
+                thread_values = thread.get("values") or {}
+            except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
+                logger.warning("Failed to fetch thread values for job %s: %s", job["job_id"], e)
 
         result = _build_check_result(run, job["thread_id"], thread_values)
         return _build_check_command(result, job, runtime.tool_call_id)
@@ -380,8 +402,11 @@ def _build_check_tool(
 
         thread_values: dict[str, Any] = {}
         if run["status"] == "success":
-            thread = await client.threads.get(thread_id=job["thread_id"])
-            thread_values = thread.get("values") or {}
+            try:
+                thread = await client.threads.get(thread_id=job["thread_id"])
+                thread_values = thread.get("values") or {}
+            except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
+                logger.warning("Failed to fetch thread values for job %s: %s", job["job_id"], e)
 
         result = _build_check_result(run, job["thread_id"], thread_values)
         return _build_check_command(result, job, runtime.tool_call_id)
@@ -415,13 +440,17 @@ def _build_update_tool(
         if isinstance(tracked, str):
             return tracked
         spec = agent_map[tracked["agent_name"]]
-        client = clients.get_sync(tracked["agent_name"])
-        run = client.runs.create(
-            thread_id=tracked["thread_id"],
-            assistant_id=spec["graph_id"],
-            input={"messages": [{"role": "user", "content": message}]},
-            multitask_strategy="interrupt",
-        )
+        try:
+            client = clients.get_sync(tracked["agent_name"])
+            run = client.runs.create(
+                thread_id=tracked["thread_id"],
+                assistant_id=spec["graph_id"],
+                input={"messages": [{"role": "user", "content": message}]},
+                multitask_strategy="interrupt",
+            )
+        except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
+            logger.warning("Failed to update async subagent '%s': %s", tracked["agent_name"], e)
+            return f"Failed to update async subagent: {e}"
         job: AsyncSubAgentJob = {
             "job_id": tracked["job_id"],
             "agent_name": tracked["agent_name"],
@@ -446,13 +475,17 @@ def _build_update_tool(
         if isinstance(tracked, str):
             return tracked
         spec = agent_map[tracked["agent_name"]]
-        client = clients.get_async(tracked["agent_name"])
-        run = await client.runs.create(
-            thread_id=tracked["thread_id"],
-            assistant_id=spec["graph_id"],
-            input={"messages": [{"role": "user", "content": message}]},
-            multitask_strategy="interrupt",
-        )
+        try:
+            client = clients.get_async(tracked["agent_name"])
+            run = await client.runs.create(
+                thread_id=tracked["thread_id"],
+                assistant_id=spec["graph_id"],
+                input={"messages": [{"role": "user", "content": message}]},
+                multitask_strategy="interrupt",
+            )
+        except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
+            logger.warning("Failed to update async subagent '%s': %s", tracked["agent_name"], e)
+            return f"Failed to update async subagent: {e}"
         job: AsyncSubAgentJob = {
             "job_id": tracked["job_id"],
             "agent_name": tracked["agent_name"],
@@ -549,7 +582,8 @@ def _build_cancel_tool(
     )
 
 
-_TERMINAL_STATUSES = frozenset({"cancelled", "success", "error"})
+_TERMINAL_STATUSES = frozenset({"cancelled", "success", "error", "timeout", "interrupted"})
+"""Job statuses that will never change, so live-status fetches can be skipped."""
 
 
 def _fetch_live_status(clients: _ClientCache, job: AsyncSubAgentJob) -> str:
@@ -561,6 +595,13 @@ def _fetch_live_status(clients: _ClientCache, job: AsyncSubAgentJob) -> str:
         run = client.runs.get(thread_id=job["thread_id"], run_id=job["run_id"])
         return run["status"]
     except Exception:  # noqa: BLE001  # LangGraph SDK raises untyped errors
+        logger.warning(
+            "Failed to fetch live status for job %s (agent=%s), returning cached status %r",
+            job["job_id"],
+            job["agent_name"],
+            job["status"],
+            exc_info=True,
+        )
         return job["status"]
 
 
@@ -573,6 +614,13 @@ async def _afetch_live_status(clients: _ClientCache, job: AsyncSubAgentJob) -> s
         run = await client.runs.get(thread_id=job["thread_id"], run_id=job["run_id"])
         return run["status"]
     except Exception:  # noqa: BLE001  # LangGraph SDK raises untyped errors
+        logger.warning(
+            "Failed to fetch live status for job %s (agent=%s), returning cached status %r",
+            job["job_id"],
+            job["agent_name"],
+            job["status"],
+            exc_info=True,
+        )
         return job["status"]
 
 
@@ -585,13 +633,16 @@ def _filter_jobs(
     jobs: dict[str, AsyncSubAgentJob],
     status_filter: str | None,
 ) -> list[AsyncSubAgentJob]:
-    """Filter jobs by status.
+    """Filter jobs by cached status from agent state.
+
+    Filtering happens on the cached status, not live server status. Live
+    statuses are fetched after filtering by the calling tool.
 
     Args:
         jobs: All tracked jobs from state.
         status_filter: If `None` or `'all'`, return all jobs.
 
-            Otherwise return only jobs whose status matches the given value.
+            Otherwise return only jobs whose cached status matches.
 
     Returns:
         Filtered list of jobs.
@@ -688,7 +739,7 @@ def _build_async_subagent_tools(
         agents: List of async subagent specifications.
 
     Returns:
-        List of StructuredTools for launch, check, update, and list operations.
+        List of StructuredTools for launch, check, update, cancel, and list operations.
     """
     agent_map: dict[str, AsyncSubAgent] = {a["name"]: a for a in agents}
     clients = _ClientCache(agent_map)
@@ -753,6 +804,12 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         super().__init__()
         if not async_subagents:
             msg = "At least one async subagent must be specified"
+            raise ValueError(msg)
+
+        names = [a["name"] for a in async_subagents]
+        dupes = {n for n in names if names.count(n) > 1}
+        if dupes:
+            msg = f"Duplicate async subagent names: {dupes}"
             raise ValueError(msg)
 
         self.tools = _build_async_subagent_tools(async_subagents)

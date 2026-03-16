@@ -281,12 +281,10 @@ class ChatTextArea(TextArea):
         Binding("cmd+shift+z,super+shift+z", "redo", "Redo", show=False, priority=True),
     ]
 
-    _navigating_history: bool
-    """Transient guard set `True` only while `ChatInput` replaces text with a
-    history entry.
-
-    Prevents `watch_text` from treating the programmatic replacement as user
-    typing (which would trigger autocomplete, etc.).
+    _skip_history_change_events: int
+    """Counter incremented before a history-driven text replacement so the
+    resulting ``TextArea.Changed`` event (which fires asynchronously) can be
+    suppressed.  The handler decrements the counter.
     """
 
     _in_history: bool
@@ -332,7 +330,7 @@ class ChatTextArea(TextArea):
         # Remove placeholder if passed, TextArea doesn't support it the same way
         kwargs.pop("placeholder", None)
         super().__init__(**kwargs)
-        self._navigating_history = False
+        self._skip_history_change_events = 0
         self._in_history = False
         self._completion_active = False
         self._app_has_focus = True
@@ -588,7 +586,7 @@ class ChatTextArea(TextArea):
             if navigate:
                 event.prevent_default()
                 event.stop()
-                self._navigating_history = True
+                self._skip_history_change_events += 1
                 if event.key == "up":
                     self.post_message(self.HistoryPrevious(self.text))
                 else:
@@ -682,14 +680,13 @@ class ChatTextArea(TextArea):
         self._paste_burst_last_char_time = None
         self._cancel_paste_burst_timer()
         self._backslash_pending_time = None
-        self._navigating_history = True
+        self._skip_history_change_events += 1
         self.text = text
         # Move cursor to end
         lines = text.split("\n")
         last_row = len(lines) - 1
         last_col = len(lines[last_row])
         self.move_cursor((last_row, last_col))
-        self._navigating_history = False
 
     def clear_text(self) -> None:
         """Clear the text area."""
@@ -914,7 +911,8 @@ class ChatInput(Vertical):
 
         # History handlers explicitly decide mode and stripped display text.
         # Skip mode detection here so recalled entries don't inherit stale mode.
-        if self._text_area and self._text_area._navigating_history:
+        if self._text_area and self._text_area._skip_history_change_events > 0:
+            self._text_area._skip_history_change_events -= 1
             if self._completion_manager:
                 self._completion_manager.reset()
             self.scroll_visible()
@@ -1205,7 +1203,7 @@ class ChatInput(Vertical):
             self.mode = mode
             self._text_area.set_text_from_history(display_text)
         elif self._text_area:
-            self._text_area._navigating_history = False
+            self._text_area._skip_history_change_events = 0
         # Keep text area's _in_history in sync with the history manager.
         if self._text_area:
             self._text_area._in_history = self._history.in_history
@@ -1221,7 +1219,7 @@ class ChatInput(Vertical):
             self.mode = mode
             self._text_area.set_text_from_history(display_text)
         elif self._text_area:
-            self._text_area._navigating_history = False
+            self._text_area._skip_history_change_events = 0
         # Keep text area's _in_history in sync with the history manager.
         # When the user presses Down past the newest entry, get_next()
         # resets navigation internally, so in_history becomes False.

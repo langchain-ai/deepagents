@@ -11,6 +11,7 @@ from pathlib import Path
 from time import time
 from typing import TYPE_CHECKING, Any
 
+from rich.text import Text
 from textual.containers import Vertical
 from textual.content import Content
 from textual.widgets import Markdown, Static
@@ -35,6 +36,17 @@ if TYPE_CHECKING:
     from textual.widgets._markdown import MarkdownStream
 
 logger = logging.getLogger(__name__)
+
+
+def escape_markup(text: str) -> str:
+    """Escape text so Textual's markup parser won't interpret brackets as tags.
+
+    Unlike `rich.markup.escape` (which only escapes `[lowercase…]` patterns),
+    this escapes **every** unescaped `[` so that Textual's stricter parser
+    (which treats *any* `[` as a potential tag opener) cannot misinterpret
+    arbitrary tool output as markup.
+    """
+    return text.replace("\\[", "\x00").replace("[", "\\[").replace("\x00", "\\[")
 
 
 def _show_timestamp_toast(widget: Static | Vertical) -> None:

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from deepagents.graph import create_deep_agent
+from langchain.tools import (
+    ToolRuntime,  # noqa: TC002  # tool decorator resolves type hints at import time
+)
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.tools import tool
 
@@ -113,6 +116,14 @@ def list_user_ids() -> list[str]:
 def get_user_profile() -> dict[str, str | int]:
     """Return example user profile data for testing object bridging."""
     return {"id": "user_1", "name": "Ada", "age": 37}
+
+
+@tool("runtime_marker")
+def runtime_marker(value: str, runtime: ToolRuntime) -> str:
+    """Return runtime metadata for testing ToolRuntime injection."""
+    return (
+        f"{value}:{runtime.tool_call_id}:{runtime.config['metadata']['langgraph_node']}"
+    )
 
 
 def test_deepagent_with_quickjs_langchain_tool_multi_arg_foreign_function() -> None:
@@ -240,6 +251,42 @@ def test_deepagent_with_quickjs_langchain_tool_json_stringify_foreign_function()
         {"type": "text", "text": '["user_1","user_2","user_3"]'}
     ]
     assert result["messages"][-1].content_blocks == [{"type": "text", "text": "done"}]
+
+
+def test_deepagent_with_quickjs_langchain_toolruntime_foreign_function() -> None:
+    """Verify QuickJS foreign tool calls inherit the enclosing repl ToolRuntime."""
+    model = GenericFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "repl",
+                            "args": {"code": "print(runtime_marker('value'))"},
+                            "id": "call_1",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="done"),
+            ]
+        )
+    )
+
+    agent = create_deep_agent(
+        model=model,
+        middleware=[QuickJSMiddleware(ptc=[runtime_marker])],
+    )
+
+    result = agent.invoke(
+        {"messages": [HumanMessage(content="Use the repl to inspect the runtime")]}
+    )
+
+    tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+    assert tool_messages[0].content_blocks == [
+        {"type": "text", "text": "value:call_1:tools"}
+    ]
 
 
 def test_deepagent_with_quickjs_langchain_tool_dict_foreign_function() -> None:

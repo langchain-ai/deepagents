@@ -14,16 +14,19 @@ from langchain.agents.middleware.types import (
     ModelResponse,
     ResponseT,
 )
+from langchain.tools import ToolRuntime
 from langchain_core.tools import BaseTool, StructuredTool
 
-from langchain_quickjs._foregin_functions import (
+from langchain_quickjs._foreign_function_docs import render_external_functions_section
+from langchain_quickjs._foreign_functions import (
     get_ptc_implementations,
     install_external_functions,
 )
-from langchain_quickjs._foreign_function_docs import render_external_functions_section
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
+
+    from langchain.tools import ToolRuntime
 
 
 REPL_TOOL_DESCRIPTION = """Evaluates code using a QuickJS-backed JavaScript REPL.
@@ -125,6 +128,7 @@ class QuickJSMiddleware(AgentMiddleware[AgentState[Any], ContextT, ResponseT]):
         printed_lines: list[str],
         *,
         prefer_async: bool = False,
+        runtime: ToolRuntime | None = None,
     ) -> quickjs.Context:
         """Create a configured QuickJS context for a single evaluation."""
         context = quickjs.Context()
@@ -148,6 +152,7 @@ class QuickJSMiddleware(AgentMiddleware[AgentState[Any], ContextT, ResponseT]):
             context,
             get_ptc_implementations(self._ptc),
             execution_mode="async" if prefer_async else "sync",
+            runtime=runtime,
         )
         return context
 
@@ -157,6 +162,7 @@ class QuickJSMiddleware(AgentMiddleware[AgentState[Any], ContextT, ResponseT]):
         *,
         timeout: int | None,
         prefer_async: bool = False,
+        runtime: ToolRuntime | None = None,
     ) -> str:
         """Execute JavaScript and return printed output or final value."""
         printed_lines: list[str] = []
@@ -165,6 +171,7 @@ class QuickJSMiddleware(AgentMiddleware[AgentState[Any], ContextT, ResponseT]):
                 timeout,
                 printed_lines,
                 prefer_async=prefer_async,
+                runtime=runtime,
             )
         except ValueError as exc:
             return f"Error: {exc}"
@@ -185,21 +192,33 @@ class QuickJSMiddleware(AgentMiddleware[AgentState[Any], ContextT, ResponseT]):
 
         def _sync_quickjs(
             code: Annotated[str, "Code string to evaluate in QuickJS."],
+            runtime: ToolRuntime,
             timeout: Annotated[
                 int | None, "Optional timeout in seconds for this evaluation."
             ] = None,
         ) -> str:
             """Execute a single QuickJS program and return captured stdout."""
-            return self._evaluate(code, timeout=timeout, prefer_async=False)
+            return self._evaluate(
+                code,
+                timeout=timeout,
+                prefer_async=False,
+                runtime=runtime,
+            )
 
         async def _async_quickjs(
             code: Annotated[str, "Code string to evaluate in QuickJS."],
+            runtime: ToolRuntime,
             timeout: Annotated[
                 int | None, "Optional timeout in seconds for this evaluation."
             ] = None,
         ) -> str:
             """Execute a single QuickJS program in the async tool path."""
-            return self._evaluate(code, timeout=timeout, prefer_async=True)
+            return self._evaluate(
+                code,
+                timeout=timeout,
+                prefer_async=True,
+                runtime=runtime,
+            )
 
         tool_description = REPL_TOOL_DESCRIPTION.format(
             external_functions_section=render_external_functions_section(

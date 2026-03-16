@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from rich.markup import escape as escape_markup
 from textual.containers import Vertical
+from textual.content import Content
 from textual.widgets import Markdown, Static
 
 if TYPE_CHECKING:
@@ -109,7 +109,12 @@ class EditFileApprovalWidget(ToolApprovalWidget):
         # File path header with stats
         stats_str = self._format_stats(additions, deletions)
         yield Static(
-            f"[bold cyan]File:[/bold cyan] {escape_markup(file_path)}  {stats_str}"
+            Content.assemble(
+                Content.from_markup(
+                    "[bold cyan]File:[/bold cyan] $path  ", path=file_path
+                ),
+                stats_str,
+            )
         )
         yield Static("")
 
@@ -147,18 +152,22 @@ class EditFileApprovalWidget(ToolApprovalWidget):
         return additions, deletions
 
     @staticmethod
-    def _format_stats(additions: int, deletions: int) -> str:
-        """Format stats as colored string.
+    def _format_stats(additions: int, deletions: int) -> Content:
+        """Format addition/deletion stats as styled Content.
 
         Returns:
-            Rich-formatted string showing additions and deletions.
+            Styled Content showing additions and deletions.
         """
-        parts = []
+        parts: list[str | tuple[str, str] | Content] = []
         if additions:
-            parts.append(f"[green]+{additions}[/green]")
+            if parts:
+                parts.append(" ")
+            parts.append((f"+{additions}", "green"))
         if deletions:
-            parts.append(f"[red]-{deletions}[/red]")
-        return " ".join(parts)
+            if parts:
+                parts.append(" ")
+            parts.append((f"-{deletions}", "red"))
+        return Content.assemble(*parts) if parts else Content("")
 
     def _render_diff_lines_only(self, diff_lines: list[str]) -> ComposeResult:
         """Render unified diff lines without returning stats.
@@ -171,7 +180,9 @@ class EditFileApprovalWidget(ToolApprovalWidget):
         for line in diff_lines:
             if lines_shown >= _MAX_DIFF_LINES:
                 yield Static(
-                    f"[dim]... ({len(diff_lines) - lines_shown} more lines)[/dim]"
+                    Content.styled(
+                        f"... ({len(diff_lines) - lines_shown} more lines)", "dim"
+                    )
                 )
                 break
 
@@ -190,12 +201,12 @@ class EditFileApprovalWidget(ToolApprovalWidget):
             Static widgets showing removed and added content with styling.
         """
         if old_string:
-            yield Static("[bold red]Removing:[/bold red]")
+            yield Static(Content.styled("Removing:", "bold red"))
             yield from self._render_string_lines(old_string, is_addition=False)
             yield Static("")
 
         if new_string:
-            yield Static("[bold green]Adding:[/bold green]")
+            yield Static(Content.styled("Adding:", "bold green"))
             yield from self._render_string_lines(new_string, is_addition=True)
 
     @staticmethod
@@ -205,14 +216,22 @@ class EditFileApprovalWidget(ToolApprovalWidget):
         Returns:
             Static widget with styled diff line, or None for empty/skipped lines.
         """
-        content = escape_markup(line[1:] if len(line) > 1 else "")
+        raw = line[1:] if len(line) > 1 else ""
 
         if line.startswith("-"):
-            return Static(f"[on #4a2020][#ff8787]- {content}[/#ff8787][/on #4a2020]")
+            return Static(
+                Content.from_markup(
+                    "[on #4a2020][#ff8787]- $text[/#ff8787][/on #4a2020]", text=raw
+                )
+            )
         if line.startswith("+"):
-            return Static(f"[on #1e4620][#8ce99a]+ {content}[/#8ce99a][/on #1e4620]")
+            return Static(
+                Content.from_markup(
+                    "[on #1e4620][#8ce99a]+ $text[/#8ce99a][/on #1e4620]", text=raw
+                )
+            )
         if line.startswith(" "):
-            return Static(f"[#aaaaaa]  {content}[/#aaaaaa]")
+            return Static(Content.from_markup("[#aaaaaa]  $text[/#aaaaaa]", text=raw))
         if line.strip():
             return Static(line, markup=False)
         return None
@@ -231,9 +250,8 @@ class EditFileApprovalWidget(ToolApprovalWidget):
         )
 
         for line in lines[:_MAX_PREVIEW_LINES]:
-            escaped = escape_markup(line)
-            yield Static(f"{style} {escaped}{end_style}")
+            yield Static(Content.from_markup(f"{style} $text{end_style}", text=line))
 
         if len(lines) > _MAX_PREVIEW_LINES:
             remaining = len(lines) - _MAX_PREVIEW_LINES
-            yield Static(f"[dim]... ({remaining} more lines)[/dim]")
+            yield Static(Content.styled(f"... ({remaining} more lines)", "dim"))

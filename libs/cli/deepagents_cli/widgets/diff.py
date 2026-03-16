@@ -5,8 +5,8 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, Any
 
-from rich.markup import escape as escape_markup
 from textual.containers import Vertical
+from textual.content import Content
 from textual.widgets import Static
 
 from deepagents_cli.config import CharsetMode, _detect_charset_mode, get_glyphs
@@ -15,7 +15,7 @@ if TYPE_CHECKING:
     from textual.app import ComposeResult
 
 
-def format_diff_textual(diff: str, max_lines: int | None = 100) -> str:
+def format_diff_textual(diff: str, max_lines: int | None = 100) -> Content:
     """Format a unified diff with line numbers and colors.
 
     Args:
@@ -23,10 +23,10 @@ def format_diff_textual(diff: str, max_lines: int | None = 100) -> str:
         max_lines: Maximum number of diff lines to show (None for unlimited)
 
     Returns:
-        Rich-formatted diff string with line numbers
+        Styled `Content` with line numbers and color-coded diff lines.
     """
     if not diff:
-        return "[dim]No changes detected[/dim]"
+        return Content.styled("No changes detected", "dim")
 
     glyphs = get_glyphs()
     lines = diff.splitlines()
@@ -46,23 +46,27 @@ def format_diff_textual(diff: str, max_lines: int | None = 100) -> str:
             max_line = max(max_line, int(m.group(1)), int(m.group(2)))
     width = max(3, len(str(max_line + len(lines))))
 
-    formatted = []
+    formatted: list[str | Content] = []
 
     # Add stats header
-    stats_parts = []
+    stats_parts: list[str | tuple[str, str] | Content] = []
     if additions:
-        stats_parts.append(f"[green]+{additions}[/green]")
+        stats_parts.append((f"+{additions}", "green"))
     if deletions:
-        stats_parts.append(f"[red]-{deletions}[/red]")
+        if stats_parts:
+            stats_parts.append(" ")
+        stats_parts.append((f"-{deletions}", "red"))
     if stats_parts:
-        formatted.extend([" ".join(stats_parts), ""])  # Blank line after stats
+        formatted.extend([Content.assemble(*stats_parts), ""])  # Blank line after stats
 
     old_num = new_num = 0
     line_count = 0
 
     for line in lines:
         if max_lines and line_count >= max_lines:
-            formatted.append(f"\n[dim]... ({len(lines) - line_count} more lines)[/dim]")
+            formatted.append(
+                Content.styled(f"\n... ({len(lines) - line_count} more lines)", "dim")
+            )
             break
 
         # Skip file headers (--- and +++)
@@ -76,38 +80,52 @@ def format_diff_textual(diff: str, max_lines: int | None = 100) -> str:
 
         # Handle diff lines - use gutter bar instead of +/- prefix
         content = line[1:] if line else ""
-        escaped_content = escape_markup(content)
 
         if line.startswith("-"):
             # Deletion - red gutter bar, subtle red background
-            gutter = f"[red bold]{glyphs.gutter_bar}[/red bold]"
-            line_num = f"[dim]{old_num:>{width}}[/dim]"
-            content = f"[on #2d1515]{escaped_content}[/on #2d1515]"
-            formatted.append(f"{gutter}{line_num} {content}")
+            formatted.append(
+                Content.assemble(
+                    (f"{glyphs.gutter_bar}", "red bold"),
+                    (f"{old_num:>{width}}", "dim"),
+                    " ",
+                    Content.styled(content, "on #2d1515"),
+                )
+            )
             old_num += 1
             line_count += 1
         elif line.startswith("+"):
             # Addition - green gutter bar, subtle green background
-            gutter = f"[green bold]{glyphs.gutter_bar}[/green bold]"
-            line_num = f"[dim]{new_num:>{width}}[/dim]"
-            content = f"[on #152d15]{escaped_content}[/on #152d15]"
-            formatted.append(f"{gutter}{line_num} {content}")
+            formatted.append(
+                Content.assemble(
+                    (f"{glyphs.gutter_bar}", "green bold"),
+                    (f"{new_num:>{width}}", "dim"),
+                    " ",
+                    Content.styled(content, "on #152d15"),
+                )
+            )
             new_num += 1
             line_count += 1
         elif line.startswith(" "):
             # Context line - dim gutter
             formatted.append(
-                f"[dim]{glyphs.box_vertical}{old_num:>{width}}[/dim]  {escaped_content}"
+                Content.assemble(
+                    (f"{glyphs.box_vertical}{old_num:>{width}}", "dim"),
+                    f"  {content}",
+                )
             )
             old_num += 1
             new_num += 1
             line_count += 1
         elif line.strip() == "...":
             # Truncation marker
-            formatted.append("[dim]...[/dim]")
+            formatted.append(Content.styled("...", "dim"))
+            line_count += 1
+        else:
+            # Unrecognized diff line (e.g., "\ No newline at end of file")
+            formatted.append(Content.styled(line, "dim"))
             line_count += 1
 
-    return "\n".join(formatted)
+    return Content("\n").join(formatted)
 
 
 class EnhancedDiff(Vertical):
@@ -187,7 +205,7 @@ class EnhancedDiff(Vertical):
         glyphs = get_glyphs()
         h = glyphs.box_double_horizontal
         yield Static(
-            f"[bold cyan]{h}{h}{h} {self._title} {h}{h}{h}[/bold cyan]",
+            Content.styled(f"{h}{h}{h} {self._title} {h}{h}{h}", "bold cyan"),
             classes="diff-title",
         )
 
@@ -196,9 +214,11 @@ class EnhancedDiff(Vertical):
 
         additions, deletions = self._stats
         if additions or deletions:
-            stats_parts = []
+            content_parts: list[str | tuple[str, str]] = []
             if additions:
-                stats_parts.append(f"[green]+{additions}[/green]")
+                content_parts.append((f"+{additions}", "green"))
             if deletions:
-                stats_parts.append(f"[red]-{deletions}[/red]")
-            yield Static(" ".join(stats_parts), classes="diff-stats")
+                if content_parts:
+                    content_parts.append(" ")
+                content_parts.append((f"-{deletions}", "red"))
+            yield Static(Content.assemble(*content_parts), classes="diff-stats")

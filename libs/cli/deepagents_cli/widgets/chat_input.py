@@ -7,9 +7,9 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
-from rich.markup import escape as escape_markup
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.content import Content
 from textual.css.query import NoMatches
 from textual.message import Message
 from textual.reactive import reactive
@@ -129,14 +129,18 @@ class CompletionOption(Static):
         glyphs = get_glyphs()
         cursor = f"{glyphs.cursor} " if self._is_selected else "  "
 
-        escaped_label = escape_markup(self._label)
         if self._description:
-            escaped_desc = escape_markup(self._description)
-            text = f"{cursor}[bold]{escaped_label}[/bold]  [dim]{escaped_desc}[/dim]"
+            content = Content.from_markup(
+                f"{cursor}[bold]$label[/bold]  [dim]$desc[/dim]",
+                label=self._label,
+                desc=self._description,
+            )
         else:
-            text = f"{cursor}[bold]{escaped_label}[/bold]"
+            content = Content.from_markup(
+                f"{cursor}[bold]$label[/bold]", label=self._label
+            )
 
-        self.update(text)
+        self.update(content)
 
         if self._is_selected:
             self.add_class("completion-option-selected")

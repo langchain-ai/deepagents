@@ -11,7 +11,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -52,6 +52,9 @@ configure_debug_logging(logger)
 
 _git_branch_cache: dict[str, str | None] = {}
 """Cache git-branch lookups by current working directory."""
+
+SpinnerStatus = Literal["Thinking", "Offloading"] | None
+"""Valid spinner display states, or `None` to hide."""
 
 
 @dataclass
@@ -356,11 +359,8 @@ class TextualUIAdapter:
     _scroll_to_bottom: Callable[[], None] | None
     """Callback to scroll chat to bottom."""
 
-    _set_spinner: Callable[[str | None], Awaitable[None]] | None
-    """Callback to show/hide loading spinner.
-
-    Pass `None` to hide, or a status string to show.
-    """
+    _set_spinner: Callable[[SpinnerStatus], Awaitable[None]] | None
+    """Callback to show/hide loading spinner."""
 
     _set_active_message: Callable[[str | None], None] | None
     """Callback to set the active streaming message ID (pass `None` to clear)."""
@@ -381,7 +381,7 @@ class TextualUIAdapter:
         request_approval: Callable[..., Awaitable[Any]],
         on_auto_approve_enabled: Callable[[], None] | None = None,
         scroll_to_bottom: Callable[[], None] | None = None,
-        set_spinner: Callable[[str | None], Awaitable[None]] | None = None,
+        set_spinner: Callable[[SpinnerStatus], Awaitable[None]] | None = None,
         set_active_message: Callable[[str | None], None] | None = None,
         sync_message_content: Callable[[str, str], None] | None = None,
         request_ask_user: (
@@ -714,7 +714,7 @@ async def execute_task_textual(
                         if not summarization_in_progress:
                             summarization_in_progress = True
                             if adapter._set_spinner:
-                                await adapter._set_spinner("Summarizing")
+                                await adapter._set_spinner("Offloading")
                         continue
 
                     # Regular (non-summarization) chunks resumed — summarization
@@ -1261,7 +1261,7 @@ async def execute_task_textual(
         if adapter._set_active_message:
             adapter._set_active_message(None)
 
-        # Hide spinner (may still show "Summarizing" if interrupted mid-summary)
+        # Hide spinner (may still show "Offloading" if interrupted mid-offload)
         if adapter._set_spinner:
             await adapter._set_spinner(None)
 
@@ -1309,7 +1309,7 @@ async def execute_task_textual(
         if adapter._set_active_message:
             adapter._set_active_message(None)
 
-        # Hide spinner (may still show "Summarizing" if interrupted mid-summary)
+        # Hide spinner (may still show "Offloading" if interrupted mid-offload)
         if adapter._set_spinner:
             await adapter._set_spinner(None)
 

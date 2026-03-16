@@ -433,15 +433,13 @@ def _parse_and_validate_mcp_servers(  # noqa: C901, PLR0912
 
     for i, raw_server in enumerate(raw_servers):
         if not isinstance(raw_server, dict):
-            logger.warning(
-                "Skipping invalid MCP server at index %d in %s (not a dict)",
-                i,
-                skill_path,
-            )
             continue
 
+        # Type narrow for mypy
+        server_dict: dict[str, object] = raw_server
+
         # Validate required 'name' field
-        if "name" not in raw_server:
+        if "name" not in server_dict:
             logger.warning(
                 "Skipping MCP server at index %d in %s (missing 'name' field)",
                 i,
@@ -449,7 +447,7 @@ def _parse_and_validate_mcp_servers(  # noqa: C901, PLR0912
             )
             continue
 
-        server_name = str(raw_server["name"]).strip()
+        server_name = str(server_dict["name"]).strip()
         if not server_name:
             logger.warning(
                 "Skipping MCP server at index %d in %s (empty 'name' field)",
@@ -462,15 +460,15 @@ def _parse_and_validate_mcp_servers(  # noqa: C901, PLR0912
         server_config: MCPServerConfig = {"name": server_name}
 
         # Transport (default: "stdio")
-        if "transport" in raw_server:
-            server_config["transport"] = str(raw_server["transport"])
+        if "transport" in server_dict:
+            server_config["transport"] = str(server_dict["transport"])
 
         # stdio-specific fields
-        if "command" in raw_server:
-            server_config["command"] = str(raw_server["command"])
+        if "command" in server_dict:
+            server_config["command"] = str(server_dict["command"])
 
-        if "args" in raw_server:
-            args = raw_server["args"]
+        if "args" in server_dict:
+            args = server_dict["args"]
             if isinstance(args, list):
                 server_config["args"] = [str(a) for a in args]
             else:
@@ -480,8 +478,8 @@ def _parse_and_validate_mcp_servers(  # noqa: C901, PLR0912
                     skill_path,
                 )
 
-        if "env" in raw_server:
-            env = raw_server["env"]
+        if "env" in server_dict:
+            env = server_dict["env"]
             if isinstance(env, dict):
                 server_config["env"] = {str(k): str(v) for k, v in env.items()}
             else:
@@ -492,11 +490,11 @@ def _parse_and_validate_mcp_servers(  # noqa: C901, PLR0912
                 )
 
         # SSE/HTTP-specific fields
-        if "url" in raw_server:
-            server_config["url"] = str(raw_server["url"])
+        if "url" in server_dict:
+            server_config["url"] = str(server_dict["url"])
 
-        if "headers" in raw_server:
-            headers = raw_server["headers"]
+        if "headers" in server_dict:
+            headers = server_dict["headers"]
             if isinstance(headers, dict):
                 server_config["headers"] = {str(k): str(v) for k, v in headers.items()}
             else:

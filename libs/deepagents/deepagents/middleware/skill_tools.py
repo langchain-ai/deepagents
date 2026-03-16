@@ -88,22 +88,6 @@ from langgraph.prebuilt import ToolRuntime
 
 from deepagents.middleware._utils import append_to_system_message
 
-# MCP client imports - optional dependency
-try:
-    from langchain_mcp_adapters.client import (
-        MultiServerMCPClient,
-        SSEConnection,
-        StdioConnection,
-        StreamableHttpConnection,
-    )
-    from langchain_mcp_adapters.tools import load_mcp_tools
-except ImportError:
-    MultiServerMCPClient = None  # type: ignore[assignment]
-    SSEConnection = None
-    StdioConnection = None
-    StreamableHttpConnection = None
-    load_mcp_tools = None
-
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
@@ -111,6 +95,23 @@ if TYPE_CHECKING:
     from langgraph.runtime import Runtime
 
     from deepagents.backends.protocol import BACKEND_TYPES, BackendProtocol
+
+# MCP client imports - optional dependency
+# type: ignore[import-not-found] - langchain-mcp-adapters is an optional dependency
+try:
+    from langchain_mcp_adapters.client import (  # type: ignore[import-not-found]
+        MultiServerMCPClient,
+        SSEConnection,
+        StdioConnection,
+        StreamableHttpConnection,
+    )
+    from langchain_mcp_adapters.tools import load_mcp_tools  # type: ignore[import-not-found]
+except ImportError:
+    MultiServerMCPClient = None
+    SSEConnection = None
+    StdioConnection = None
+    StreamableHttpConnection = None
+    load_mcp_tools = None
 
 
 logger = logging.getLogger(__name__)
@@ -121,7 +122,7 @@ logger = logging.getLogger(__name__)
 # ==========================================
 
 
-_NATIVE_TOOLS: dict[str, dict[str, Callable]] = {}
+_NATIVE_TOOLS: dict[str, dict[str, Callable[[object], object]]] = {}
 """Global registry of native tools keyed by skill name.
 
 Structure:
@@ -135,7 +136,9 @@ Structure:
 """
 
 
-def register_tool(skill_name: str) -> Callable[[Callable], Callable]:
+def register_tool(
+    skill_name: str,
+) -> Callable[[Callable[[object], object]], Callable[[object], object]]:
     """Decorator to register a native tool for a skill.
 
     Args:
@@ -621,8 +624,8 @@ class SkillToolMiddleware(AgentMiddleware[SkillToolState, ContextT, ResponseT]):
         async def _dispatch_async(
             skill_name: str,
             tool_name: str,
-            arguments: dict[str, Any] | None = None,
-            **kwargs: Any,
+            arguments: dict[str, object] | None = None,
+            **kwargs: object,
         ) -> str:
             """Async dispatch implementation."""
             if arguments is None:

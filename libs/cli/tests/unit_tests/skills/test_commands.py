@@ -7,7 +7,11 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from deepagents.middleware.skills import SkillMetadata, _parse_skill_metadata
+from deepagents.middleware.skills import (
+    MCPServerConfig,
+    SkillMetadata,
+    _parse_skill_metadata,
+)
 from rich.console import Console
 
 from deepagents_cli.main import parse_args
@@ -340,6 +344,7 @@ def _make_skill(
     compatibility: str | None = None,
     metadata: dict[str, str] | None = None,
     allowed_tools: list[str] | None = None,
+    mcp_servers: list[MCPServerConfig] | None = None,
 ) -> SkillMetadata:
     """Build a minimal `SkillMetadata` dict with overrides.
 
@@ -351,6 +356,7 @@ def _make_skill(
         compatibility: Environment requirements or `None`.
         metadata: Arbitrary key-value pairs.
         allowed_tools: Recommended tool names.
+        mcp_servers: MCP server configurations.
 
     Returns:
         A `SkillMetadata` TypedDict with the given values.
@@ -363,6 +369,7 @@ def _make_skill(
         compatibility=compatibility,
         metadata=metadata if metadata is not None else {},
         allowed_tools=allowed_tools if allowed_tools is not None else [],
+        mcp_servers=mcp_servers if mcp_servers is not None else [],
     )
 
 

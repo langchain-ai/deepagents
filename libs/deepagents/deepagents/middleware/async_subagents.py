@@ -8,6 +8,7 @@ agent to monitor progress and send updates while the subagent works.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import TYPE_CHECKING, Annotated, Any, NotRequired, TypedDict
 
@@ -180,6 +181,7 @@ class _ClientCache:
 
 
 def _validate_agent_type(agent_map: dict[str, AsyncSubAgent], agent_type: str) -> str | None:
+    """Return an error message if `agent_type` is not in `agent_map`, or `None` if valid."""
     if agent_type not in agent_map:
         allowed = ", ".join(f"`{k}`" for k in agent_map)
         return f"Unknown async subagent type `{agent_type}`. Available types: {allowed}"
@@ -189,7 +191,7 @@ def _validate_agent_type(agent_map: dict[str, AsyncSubAgent], agent_type: str) -
 def _build_launch_tool(
     agent_map: dict[str, AsyncSubAgent],
     clients: _ClientCache,
-    description: str,
+    tool_description: str,
 ) -> StructuredTool:
     """Build the launch_async_subagent tool."""
 
@@ -261,7 +263,7 @@ def _build_launch_tool(
         name="launch_async_subagent",
         func=launch_async_subagent,
         coroutine=alaunch_async_subagent,
-        description=description,
+        description=tool_description,
     )
 
 
@@ -562,6 +564,7 @@ async def _afetch_live_status(clients: _ClientCache, job: AsyncSubAgentJob) -> s
 
 
 def _format_job_entry(job: AsyncSubAgentJob, status: str) -> str:
+    """Format a single job as a display string for list output."""
     return f"- job_id: {job['job_id']}  agent: {job['agent_name']}  status: {status}"
 
 
@@ -598,10 +601,10 @@ def _build_list_jobs_tool(clients: _ClientCache) -> StructuredTool:
         active = [job for job in jobs.values() if job["status"] not in _TERMINAL_STATUSES]
         if not active:
             return "No async subagent jobs tracked."
+        statuses = await asyncio.gather(*(_afetch_live_status(clients, job) for job in active))
         updated_jobs: dict[str, AsyncSubAgentJob] = {}
         entries: list[str] = []
-        for job in active:
-            status = await _afetch_live_status(clients, job)
+        for job, status in zip(active, statuses):
             entries.append(_format_job_entry(job, status))
             updated_jobs[job["job_id"]] = AsyncSubAgentJob(
                 job_id=job["job_id"],
@@ -706,7 +709,7 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
 
         self.tools = _build_async_subagent_tools(async_subagents)
 
-        if system_prompt and async_subagents:
+        if system_prompt:
             agents_desc = "\n".join(f"- {a['name']}: {a['description']}" for a in async_subagents)
             self.system_prompt: str | None = system_prompt + "\n\nAvailable async subagent types:\n" + agents_desc
         else:

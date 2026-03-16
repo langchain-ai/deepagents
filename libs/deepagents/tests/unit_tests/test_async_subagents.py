@@ -1,7 +1,7 @@
 """Tests for async subagent middleware functionality."""
 
 import json
-from typing import Any
+from typing import Any, TypeVar
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -468,10 +468,13 @@ class TestListJobsTool:
         assert "No async subagent jobs tracked" in result
 
 
-def _async_return(value: Any) -> Any:  # noqa: ANN401
+_T = TypeVar("_T")
+
+
+def _async_return(value: _T) -> Any:  # noqa: ANN401
     """Create an async function that returns a fixed value."""
 
-    async def _inner(*_args: Any, **_kwargs: Any) -> Any:  # noqa: ANN401
+    async def _inner(*_args: Any, **_kwargs: Any) -> _T:
         return value
 
     return _inner

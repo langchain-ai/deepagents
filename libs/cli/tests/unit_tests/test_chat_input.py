@@ -368,6 +368,49 @@ class TestHistoryNavigationFlag:
             controller = chat_input._completion_manager._active
             assert controller is not None
 
+    async def test_counter_resets_after_successful_recall(self) -> None:
+        """Counter should return to 0 after a history entry is recalled."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input._text_area
+            assert text_area is not None
+
+            # Seed history with an entry
+            chat_input._history._entries.append("previous entry")
+
+            # Recall via up arrow (cursor starts at (0,0) on empty input)
+            await pilot.press("up")
+            await pilot.pause()
+
+            assert text_area.text == "previous entry"
+            assert text_area._skip_history_change_events == 0
+
+    async def test_autocomplete_works_after_history_recall(self) -> None:
+        """Typing '/' after recalling history should trigger completions."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input._text_area
+            assert text_area is not None
+
+            # Seed and recall a history entry
+            chat_input._history._entries.append("previous entry")
+            await pilot.press("up")
+            await pilot.pause()
+            assert text_area.text == "previous entry"
+
+            # Clear and type '/' — autocomplete should activate
+            text_area.clear_text()
+            await pilot.pause()
+            text_area.insert("/")
+            await _pause_for_strip(pilot)
+
+            assert chat_input.mode == "command"
+            assert chat_input._completion_manager is not None
+            controller = chat_input._completion_manager._active
+            assert controller is not None
+
 
 class TestHistoryBoundaryNavigation:
     """Test that history navigation only triggers at input boundaries."""

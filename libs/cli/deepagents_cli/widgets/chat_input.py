@@ -586,7 +586,6 @@ class ChatTextArea(TextArea):
             if navigate:
                 event.prevent_default()
                 event.stop()
-                self._skip_history_change_events += 1
                 if event.key == "up":
                     self.post_message(self.HistoryPrevious(self.text))
                 else:
@@ -691,6 +690,7 @@ class ChatTextArea(TextArea):
     def clear_text(self) -> None:
         """Clear the text area."""
         self._in_history = False
+        self._skip_history_change_events = 0
         self._paste_burst_buffer = ""
         self._paste_burst_last_char_time = None
         self._cancel_paste_burst_timer()
@@ -917,6 +917,12 @@ class ChatInput(Vertical):
                 self._completion_manager.reset()
             self.scroll_visible()
             return
+        if self._text_area and self._text_area._skip_history_change_events < 0:
+            logger.warning(
+                "_skip_history_change_events is negative (%d); resetting to 0",
+                self._text_area._skip_history_change_events,
+            )
+            self._text_area._skip_history_change_events = 0
 
         if self._applying_inline_path_replacement:
             self._applying_inline_path_replacement = False

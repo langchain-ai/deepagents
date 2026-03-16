@@ -459,6 +459,7 @@ def parse_args() -> argparse.Namespace:
     add_json_output_arg(parser, default="text")
 
     parser.add_argument(
+        "-y",
         "--auto-approve",
         action="store_true",
         help=(
@@ -489,6 +490,7 @@ def parse_args() -> argparse.Namespace:
         help="Path to setup script to run in sandbox after creation",
     )
     parser.add_argument(
+        "-S",
         "--shell-allow-list",
         metavar="LIST",
         help="Comma-separated list of shell commands to auto-approve, "

@@ -188,7 +188,7 @@ async def test_deepagent_with_quickjs_async_foreign_function() -> None:
     assert result["messages"][-1].content_blocks == [{"type": "text", "text": "done"}]
 
 
-async def test_deepagent_with_quickjs_async_langchain_tool() -> None:
+async def test_quickjs_async_langchain_tool() -> None:
     """Verify the repl supports async LangChain tools alongside sync ones."""
     model = GenericFakeChatModel(
         messages=iter(
@@ -236,9 +236,7 @@ async def test_deepagent_with_quickjs_async_langchain_tool() -> None:
     assert result["messages"][-1].content_blocks == [{"type": "text", "text": "done"}]
 
 
-async def test_deepagent_with_quickjs_async_toolruntime_configurable_foreign_function() -> (
-    None
-):
+async def test_quickjs_async_toolruntime_configurable_foreign_function() -> None:
     """Verify async QuickJS foreign tool calls see configurable runtime data."""
     model = GenericFakeChatModel(
         messages=iter(

@@ -15,7 +15,6 @@ import json
 import threading
 from typing import TYPE_CHECKING, Any, Literal
 
-from langchain.tools import ToolRuntime
 from langchain_core.tools import BaseTool
 from langchain_core.tools.base import (
     _is_injected_arg_type,
@@ -27,6 +26,7 @@ if TYPE_CHECKING:
     from concurrent.futures import Future
 
     import quickjs
+    from langchain.tools import ToolRuntime
 
 
 class _AsyncLoopThread:

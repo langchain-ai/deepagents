@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from deepagents.graph import create_deep_agent
+from langchain.tools import (
+    ToolRuntime,  # noqa: TC002  # tool decorator resolves type hints at import time
+)
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.tools import tool
 
@@ -55,7 +58,7 @@ def foo_tool(value: str) -> str:
     return f"foo returned {value}!"
 
 
-def test_deepagent_with_quickjs_langchain_tool_single_arg_foreign_function() -> None:
+def test_quickjs_tool_single_arg_foreign_function() -> None:
     """Verify the repl maps a single positional arg to a single-field tool payload."""
     model = GenericFakeChatModel(
         messages=iter(
@@ -115,7 +118,21 @@ def get_user_profile() -> dict[str, str | int]:
     return {"id": "user_1", "name": "Ada", "age": 37}
 
 
-def test_deepagent_with_quickjs_langchain_tool_multi_arg_foreign_function() -> None:
+@tool("runtime_marker")
+def runtime_marker(value: str, runtime: ToolRuntime) -> str:
+    """Return runtime metadata for testing ToolRuntime injection."""
+    return (
+        f"{value}:{runtime.tool_call_id}:{runtime.config['metadata']['langgraph_node']}"
+    )
+
+
+@tool("runtime_configurable")
+def runtime_configurable(value: str, runtime: ToolRuntime) -> str:
+    """Return configurable runtime data for testing ToolRuntime context propagation."""
+    return f"{value}:{runtime.config['configurable']['user_id']}"
+
+
+def test_quickjs_tool_multi_arg_foreign_function() -> None:
     """Verify the repl maps multiple positional args onto matching tool fields."""
     model = GenericFakeChatModel(
         messages=iter(
@@ -153,7 +170,7 @@ def test_deepagent_with_quickjs_langchain_tool_multi_arg_foreign_function() -> N
     assert result["messages"][-1].content_blocks == [{"type": "text", "text": "done"}]
 
 
-def test_deepagent_with_quickjs_langchain_tool_list_of_ints_foreign_function() -> None:
+def test_quickjs_tool_list_of_ints_foreign_function() -> None:
     """Verify the repl can print array output from a foreign tool returning ints."""
     model = GenericFakeChatModel(
         messages=iter(
@@ -191,9 +208,7 @@ def test_deepagent_with_quickjs_langchain_tool_list_of_ints_foreign_function() -
     assert result["messages"][-1].content_blocks == [{"type": "text", "text": "done"}]
 
 
-def test_deepagent_with_quickjs_langchain_tool_json_stringify_foreign_function() -> (
-    None
-):
+def test_quickjs_tool_json_stringify_foreign_function() -> None:
     """Verify the repl transparently bridges Python list returns into JS arrays."""
     model = GenericFakeChatModel(
         messages=iter(
@@ -242,7 +257,84 @@ def test_deepagent_with_quickjs_langchain_tool_json_stringify_foreign_function()
     assert result["messages"][-1].content_blocks == [{"type": "text", "text": "done"}]
 
 
-def test_deepagent_with_quickjs_langchain_tool_dict_foreign_function() -> None:
+def test_quickjs_toolruntime_foreign_function() -> None:
+    """Verify QuickJS foreign tool calls inherit the enclosing repl ToolRuntime."""
+    model = GenericFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "repl",
+                            "args": {"code": "print(runtime_marker('value'))"},
+                            "id": "call_1",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="done"),
+            ]
+        )
+    )
+
+    agent = create_deep_agent(
+        model=model,
+        middleware=[QuickJSMiddleware(ptc=[runtime_marker])],
+    )
+
+    result = agent.invoke(
+        {"messages": [HumanMessage(content="Use the repl to inspect the runtime")]}
+    )
+
+    tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+    assert tool_messages[0].content_blocks == [
+        {"type": "text", "text": "value:call_1:tools"}
+    ]
+
+
+def test_quickjs_toolruntime_configurable_foreign_function() -> None:
+    """Verify QuickJS foreign tool calls see configurable runtime data."""
+    model = GenericFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "repl",
+                            "args": {"code": "print(runtime_configurable('value'))"},
+                            "id": "call_1",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="done"),
+            ]
+        )
+    )
+
+    agent = create_deep_agent(
+        model=model,
+        middleware=[QuickJSMiddleware(ptc=[runtime_configurable])],
+    )
+
+    result = agent.invoke(
+        {
+            "messages": [
+                HumanMessage(content="Use the repl to inspect configurable runtime")
+            ]
+        },
+        config={"configurable": {"user_id": "user-123"}},
+    )
+
+    tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+    assert tool_messages[0].content_blocks == [
+        {"type": "text", "text": "value:user-123"}
+    ]
+
+
+def test_quickjs_tool_dict_foreign_function() -> None:
     """Verify the repl transparently bridges Python dict returns into JS objects."""
     model = GenericFakeChatModel(
         messages=iter(

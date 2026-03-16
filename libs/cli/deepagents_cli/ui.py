@@ -7,10 +7,13 @@ argparse tree.  It must stay lightweight — no SDK or langchain imports.
 import argparse
 from collections.abc import Callable
 
+from rich.markup import escape
+
 from deepagents_cli._version import __version__
 from deepagents_cli.config import (
     COLORS,
     DOCS_URL,
+    _get_editable_install_path,
     _is_editable_install,
     console,
 )
@@ -59,7 +62,8 @@ def _print_option_section(*lines: str, title: str = "Options") -> None:
 
 def show_help() -> None:
     """Show top-level help information for the deepagents CLI."""
-    install_type = " (local)" if _is_editable_install() else ""
+    editable_path = _get_editable_install_path()
+    install_type = f" (local: {escape(editable_path)})" if editable_path else ""
     banner_color = (
         COLORS["primary_dev"] if _is_editable_install() else COLORS["primary"]
     )

@@ -15,6 +15,7 @@ from enum import StrEnum
 from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from urllib.parse import unquote, urlparse
 
 import dotenv
 from rich.console import Console
@@ -243,8 +244,8 @@ ASCII_GLYPHS = Glyphs(
 _glyphs_cache: Glyphs | None = None
 """Module-level cache for detected glyphs."""
 
-_editable_cache: bool | None = None
-"""Module-level cache for editable install detection."""
+_editable_cache: tuple[bool, str | None] | None = None
+"""Module-level cache for editable install info: (is_editable, source_path)."""
 
 _langsmith_url_cache: tuple[str, str] | None = None
 """Module-level cache for successful LangSmith project URL lookups."""
@@ -256,30 +257,62 @@ Kept short so tracing metadata can never stall CLI flows.
 """
 
 
-def _is_editable_install() -> bool:
-    """Check if deepagents-cli is installed in editable mode.
-
-    Uses PEP 610 direct_url.json metadata to detect editable installs.
+def _resolve_editable_info() -> tuple[bool, str | None]:
+    """Parse PEP 610 `direct_url.json` once and cache both results.
 
     Returns:
-        True if installed in editable mode, False otherwise.
+        Tuple of (is_editable, contracted_source_path). The path is
+        `~`-contracted when it falls under the user's home directory, or
+        `None` when the install is non-editable or the path is unavailable.
     """
     global _editable_cache  # noqa: PLW0603  # Module-level cache requires global statement
     if _editable_cache is not None:
         return _editable_cache
 
+    editable = False
+    path: str | None = None
+
     try:
         dist = distribution("deepagents-cli")
-        direct_url = dist.read_text("direct_url.json")
-        if direct_url:
-            data = json.loads(direct_url)
-            _editable_cache = data.get("dir_info", {}).get("editable", False)
-        else:
-            _editable_cache = False
+        raw = dist.read_text("direct_url.json")
+        if raw:
+            data = json.loads(raw)
+            editable = data.get("dir_info", {}).get("editable", False)
+            if editable:
+                url = data.get("url", "")
+                if url.startswith("file://"):
+                    path = unquote(urlparse(url).path)
+                    home = str(Path.home())
+                    if path.startswith(home):
+                        path = "~" + path[len(home) :]
     except (PackageNotFoundError, FileNotFoundError, json.JSONDecodeError, TypeError):
-        _editable_cache = False
+        logger.debug(
+            "Failed to read editable install info from PEP 610 metadata",
+            exc_info=True,
+        )
 
+    _editable_cache = (editable, path)
     return _editable_cache
+
+
+def _is_editable_install() -> bool:
+    """Check if deepagents-cli is installed in editable mode.
+
+    Uses PEP 610 `direct_url.json` metadata to detect editable installs.
+
+    Returns:
+        `True` if installed in editable mode, `False` otherwise.
+    """
+    return _resolve_editable_info()[0]
+
+
+def _get_editable_install_path() -> str | None:
+    """Return the `~`-contracted source directory for an editable install.
+
+    Returns `None` for non-editable installs or when the path cannot be
+    determined.
+    """
+    return _resolve_editable_info()[1]
 
 
 def _detect_charset_mode() -> CharsetMode:

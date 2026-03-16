@@ -155,11 +155,15 @@ class DeepAgentsWrapper(BaseAgent):
             Formatted system prompt with directory context
         """
         # Get directory information from backend
-        ls_info = await backend.als_info(".")
+        ls_result = await backend.als_info(".")
         current_dir = (await backend.aexecute("pwd")).output
 
-        total_files = len(ls_info) if ls_info else 0
-        first_files = ls_info[:_MAX_FILE_LISTING] if ls_info else []
+        if ls_result.error:
+            logger.warning("Failed to list working directory: %s", ls_result.error)
+
+        entries = ls_result.entries or []
+        total_files = len(entries)
+        first_files = entries[:_MAX_FILE_LISTING]
 
         # Build file listing header based on actual count
         if total_files == 0:

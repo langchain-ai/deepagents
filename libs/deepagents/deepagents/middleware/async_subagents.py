@@ -568,17 +568,42 @@ def _format_job_entry(job: AsyncSubAgentJob, status: str) -> str:
     return f"- job_id: {job['job_id']}  agent: {job['agent_name']}  status: {status}"
 
 
+def _filter_jobs(
+    jobs: dict[str, AsyncSubAgentJob],
+    status_filter: str | None,
+) -> list[AsyncSubAgentJob]:
+    """Filter jobs by status.
+
+    Args:
+        jobs: All tracked jobs from state.
+        status_filter: If `None` or `"all"`, return all jobs. Otherwise return only
+            jobs whose status matches the given value.
+
+    Returns:
+        Filtered list of jobs.
+    """
+    if not status_filter or status_filter == "all":
+        return list(jobs.values())
+    return [job for job in jobs.values() if job["status"] == status_filter]
+
+
 def _build_list_jobs_tool(clients: _ClientCache) -> StructuredTool:
     """Build the list_async_subagent_jobs tool."""
 
-    def list_async_subagent_jobs(runtime: ToolRuntime) -> str | Command:
+    def list_async_subagent_jobs(
+        runtime: ToolRuntime,
+        status_filter: Annotated[
+            str | None,
+            "Filter jobs by status. One of: 'running', 'success', 'error', 'cancelled', 'all'. Defaults to 'all'.",
+        ] = None,
+    ) -> str | Command:
         jobs: dict[str, AsyncSubAgentJob] = runtime.state.get("async_subagent_jobs") or {}
-        active = [job for job in jobs.values() if job["status"] not in _TERMINAL_STATUSES]
-        if not active:
+        filtered = _filter_jobs(jobs, status_filter)
+        if not filtered:
             return "No async subagent jobs tracked."
         updated_jobs: dict[str, AsyncSubAgentJob] = {}
         entries: list[str] = []
-        for job in active:
+        for job in filtered:
             status = _fetch_live_status(clients, job)
             entries.append(_format_job_entry(job, status))
             updated_jobs[job["job_id"]] = AsyncSubAgentJob(
@@ -596,15 +621,21 @@ def _build_list_jobs_tool(clients: _ClientCache) -> StructuredTool:
             }
         )
 
-    async def alist_async_subagent_jobs(runtime: ToolRuntime) -> str | Command:
+    async def alist_async_subagent_jobs(
+        runtime: ToolRuntime,
+        status_filter: Annotated[
+            str | None,
+            "Filter jobs by status. One of: 'running', 'success', 'error', 'cancelled', 'all'. Defaults to 'all'.",
+        ] = None,
+    ) -> str | Command:
         jobs: dict[str, AsyncSubAgentJob] = runtime.state.get("async_subagent_jobs") or {}
-        active = [job for job in jobs.values() if job["status"] not in _TERMINAL_STATUSES]
-        if not active:
+        filtered = _filter_jobs(jobs, status_filter)
+        if not filtered:
             return "No async subagent jobs tracked."
-        statuses = await asyncio.gather(*(_afetch_live_status(clients, job) for job in active))
+        statuses = await asyncio.gather(*(_afetch_live_status(clients, job) for job in filtered))
         updated_jobs: dict[str, AsyncSubAgentJob] = {}
         entries: list[str] = []
-        for job, status in zip(active, statuses, strict=True):
+        for job, status in zip(filtered, statuses, strict=True):
             entries.append(_format_job_entry(job, status))
             updated_jobs[job["job_id"]] = AsyncSubAgentJob(
                 job_id=job["job_id"],
@@ -626,8 +657,9 @@ def _build_list_jobs_tool(clients: _ClientCache) -> StructuredTool:
         func=list_async_subagent_jobs,
         coroutine=alist_async_subagent_jobs,
         description=(
-            "List all tracked async subagent jobs with their current live statuses. "
-            "Use this to see the status of all jobs at once. "
+            "List tracked async subagent jobs with their current live statuses. "
+            "By default shows all jobs. Use `status_filter` to narrow by status "
+            "(e.g. 'running', 'success', 'error', 'cancelled'). "
             "Use `check_async_subagent` to get the full result of a specific completed job."
         ),
     )

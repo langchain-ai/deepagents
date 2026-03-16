@@ -457,8 +457,53 @@ class TestListJobsTool:
             stream_writer=lambda _: None,
             config={},
         )
-        list_tool.func(runtime=rt)
+        result = list_tool.func(runtime=rt)
+        assert isinstance(result, Command)
         mock_client.runs.get.assert_not_called()
+        content = result.update["messages"][0].content
+        assert "3 tracked job(s)" in content
+        assert "cancelled" in content
+        assert "success" in content
+        assert "error" in content
+
+    @patch("deepagents.middleware.async_subagents.get_sync_client")
+    def test_status_filter_running(self, mock_get_client: MagicMock) -> None:
+        mock_client = MagicMock()
+        mock_client.runs.get.return_value = {"run_id": "r1", "status": "running"}
+        mock_get_client.return_value = mock_client
+
+        tools = _build_async_subagent_tools([_make_spec("test-agent")])
+        list_tool = tools[4]
+        jobs: dict[str, AsyncSubAgentJob] = {
+            "t1": {
+                "job_id": "t1",
+                "agent_name": "test-agent",
+                "thread_id": "t1",
+                "run_id": "r1",
+                "status": "running",
+            },
+            "t2": {
+                "job_id": "t2",
+                "agent_name": "test-agent",
+                "thread_id": "t2",
+                "run_id": "r2",
+                "status": "success",
+            },
+        }
+        rt = ToolRuntime(
+            state={"async_subagent_jobs": jobs},
+            context=None,
+            tool_call_id="tc_list",
+            store=None,
+            stream_writer=lambda _: None,
+            config={},
+        )
+        result = list_tool.func(runtime=rt, status_filter="running")
+        assert isinstance(result, Command)
+        content = result.update["messages"][0].content
+        assert "1 tracked job(s)" in content
+        assert "t1" in content
+        assert "t2" not in content
 
     async def test_async_list_returns_no_jobs(self) -> None:
         tools = _build_async_subagent_tools([_make_spec()])

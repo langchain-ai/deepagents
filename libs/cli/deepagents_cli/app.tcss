@@ -21,8 +21,10 @@ Screen {
     margin-bottom: 1;
 }
 
-/* Messages area */
+/* Messages area — uses undocumented "stream" layout (Textual ≥5.2.0) for
+   O(1) append performance via incremental placement caching. */
 #messages {
+    layout: stream;
     height: auto;
 }
 

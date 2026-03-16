@@ -344,11 +344,11 @@ def load_mcp_config_lenient(config_path: Path) -> dict[str, Any] | None:
 
 
 class MCPSessionManager:
-    """Manages persistent MCP sessions for stateful stdio servers.
+    """Manages persistent MCP sessions for stateful server connections.
 
-    This manager creates and maintains persistent sessions for stdio MCP
-    servers, preventing server restarts on every tool call. Sessions are kept
-    alive until explicitly cleaned up.
+    This manager creates and maintains persistent sessions for MCP servers,
+    preventing server restarts (stdio) or reconnections (SSE/HTTP) on every
+    tool call. Sessions are kept alive until explicitly cleaned up.
     """
 
     def __init__(self) -> None:
@@ -363,7 +363,9 @@ class MCPSessionManager:
 
 async def _load_tools_from_config(
     config: dict[str, Any],
-) -> tuple[list[BaseTool], MCPSessionManager, list[MCPServerInfo]]:
+    *,
+    stateless: bool = False,
+) -> tuple[list[BaseTool], MCPSessionManager | None, list[MCPServerInfo]]:
     """Build MCP connections from a validated config and load tools.
 
     This is the shared implementation used by both `get_mcp_tools` (explicit
@@ -371,20 +373,21 @@ async def _load_tools_from_config(
 
     Args:
         config: Validated MCP configuration dict with `mcpServers` key.
+        stateless: When True, tools create a fresh MCP session per call
+            instead of sharing a persistent session. Required when the
+            calling event loop will not outlive the current coroutine
+            (e.g., `asyncio.run` in `server_graph`), because persistent
+            sessions die when the temporary loop closes.
 
     Returns:
         Tuple of `(tools_list, session_manager, server_infos)`.
-
-    Raises:
-        RuntimeError: If MCP server fails to spawn or connect.
+        `session_manager` is `None` when `stateless` is True.
     """
-    from langchain_mcp_adapters.client import MultiServerMCPClient
     from langchain_mcp_adapters.sessions import (
         SSEConnection,
         StdioConnection,
         StreamableHttpConnection,
     )
-    from langchain_mcp_adapters.tools import load_mcp_tools
 
     # Create connections dict for MultiServerMCPClient
     # Convert Claude Desktop format to langchain-mcp-adapters format
@@ -416,7 +419,92 @@ async def _load_tools_from_config(
                 transport="stdio",
             )
 
-    # Create session manager to track persistent sessions
+    if stateless:
+        return await _load_tools_stateless(config, connections)
+
+    return await _load_tools_stateful(config, connections)
+
+
+async def _load_tools_stateless(
+    config: dict[str, Any],
+    connections: dict[str, Connection],
+) -> tuple[list[BaseTool], None, list[MCPServerInfo]]:
+    """Load tools using per-call sessions (no persistent session manager).
+
+    Each tool invocation creates and tears down its own MCP session.
+    This is safe to call from a throwaway event loop (e.g., `asyncio.run`)
+    because no long-lived transport state is captured in tool closures.
+
+    Args:
+        config: Validated MCP configuration dict with `mcpServers` key.
+        connections: Pre-built connection configs keyed by server name.
+
+    Returns:
+        Tuple of `(tools_list, None, server_infos)`.
+
+    Raises:
+        RuntimeError: If tool discovery fails for any server.
+    """
+    from langchain_mcp_adapters.tools import load_mcp_tools
+
+    all_tools: list[BaseTool] = []
+    server_infos: list[MCPServerInfo] = []
+    for server_name, server_config in config["mcpServers"].items():
+        try:
+            tools = await load_mcp_tools(
+                None,
+                connection=connections[server_name],
+                server_name=server_name,
+                tool_name_prefix=True,
+            )
+        except Exception as e:
+            error_msg = (
+                f"Failed to load tools from MCP server '{server_name}': {e}\n"
+                "For stdio servers: Check that the command and args are correct,"
+                " and that the MCP server is installed"
+                " (e.g., run 'npx -y <package>' manually to test).\n"
+                "For sse/http servers: Check that the URL is correct"
+                " and the server is running."
+            )
+            raise RuntimeError(error_msg) from e
+
+        all_tools.extend(tools)
+        server_infos.append(
+            MCPServerInfo(
+                name=server_name,
+                transport=_resolve_server_type(server_config),
+                tools=[
+                    MCPToolInfo(name=t.name, description=t.description or "")
+                    for t in tools
+                ],
+            )
+        )
+
+    return all_tools, None, server_infos
+
+
+async def _load_tools_stateful(
+    config: dict[str, Any],
+    connections: dict[str, Connection],
+) -> tuple[list[BaseTool], MCPSessionManager, list[MCPServerInfo]]:
+    """Load tools with persistent sessions managed by `MCPSessionManager`.
+
+    Sessions stay alive until the caller invokes `manager.cleanup()`.
+    Only safe when the calling event loop persists for the tool lifetime.
+
+    Args:
+        config: Validated MCP configuration dict with `mcpServers` key.
+        connections: Pre-built connection configs keyed by server name.
+
+    Returns:
+        Tuple of `(tools_list, session_manager, server_infos)`.
+
+    Raises:
+        RuntimeError: If MCP server fails to spawn or connect.
+    """
+    from langchain_mcp_adapters.client import MultiServerMCPClient
+    from langchain_mcp_adapters.tools import load_mcp_tools
+
     manager = MCPSessionManager()
 
     try:
@@ -427,6 +515,7 @@ async def _load_tools_from_config(
         error_msg = f"Failed to initialize MCP client: {e}"
         raise RuntimeError(error_msg) from e
 
+    server_name = "<unknown>"
     try:
         all_tools: list[BaseTool] = []
         server_infos: list[MCPServerInfo] = []
@@ -465,7 +554,7 @@ async def _load_tools_from_config(
 
 async def get_mcp_tools(
     config_path: str,
-) -> tuple[list[BaseTool], MCPSessionManager, list[MCPServerInfo]]:
+) -> tuple[list[BaseTool], MCPSessionManager | None, list[MCPServerInfo]]:
     """Load MCP tools from configuration file with stateful sessions.
 
     Supports multiple server types:
@@ -497,6 +586,7 @@ async def resolve_and_load_mcp_tools(
     no_mcp: bool = False,
     trust_project_mcp: bool | None = None,
     project_context: ProjectContext | None = None,
+    stateless: bool = False,
 ) -> tuple[list[BaseTool], MCPSessionManager | None, list[MCPServerInfo]]:
     """Resolve MCP config and load tools.
 
@@ -517,6 +607,10 @@ async def resolve_and_load_mcp_tools(
                 fingerprint matches, allow; otherwise filter + warn.
         project_context: Explicit project path context for config discovery
             and trust resolution.
+        stateless: When True, tools create a fresh MCP session per call
+            instead of sharing a persistent session. Required when MCP
+            discovery runs in a temporary event loop (e.g., `asyncio.run`)
+            that will not outlive the tools themselves.
 
     Returns:
         Tuple of `(tools_list, session_manager, server_infos)`.
@@ -622,4 +716,4 @@ async def resolve_and_load_mcp_tools(
         msg = f"Invalid MCP server configuration: {e}"
         raise RuntimeError(msg) from e
 
-    return await _load_tools_from_config(merged)
+    return await _load_tools_from_config(merged, stateless=stateless)

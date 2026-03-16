@@ -12,6 +12,7 @@ from deepagents_cli.mcp_tools import (
     MCPSessionManager,
     MCPToolInfo,
     _filter_project_stdio_servers,
+    _load_tools_from_config,
     classify_discovered_configs,
     discover_mcp_configs,
     extract_stdio_server_commands,
@@ -504,6 +505,48 @@ class TestGetMCPTools:
 
         # Clean up
         await manager.cleanup()
+
+    @patch("langchain_mcp_adapters.tools.load_mcp_tools")
+    async def test_stateless_skips_persistent_sessions(
+        self,
+        mock_load_tools: AsyncMock,
+        valid_config_data: dict,
+        mock_tools: list,
+    ) -> None:
+        """Stateless mode passes connection (not session) to load_mcp_tools."""
+        mock_load_tools.return_value = mock_tools
+
+        tools, manager, server_infos = await _load_tools_from_config(
+            valid_config_data, stateless=True
+        )
+
+        # No persistent session manager in stateless mode.
+        assert manager is None
+
+        # load_mcp_tools called with session=None and a connection dict.
+        mock_load_tools.assert_called_once()
+        call_args = mock_load_tools.call_args
+        assert call_args.args[0] is None  # session
+        conn = call_args.kwargs["connection"]
+        assert conn["transport"] == "stdio"
+        assert conn["command"] == "npx"
+
+        assert len(tools) == 2
+        assert len(server_infos) == 1
+
+    @patch("langchain_mcp_adapters.tools.load_mcp_tools")
+    async def test_stateless_tool_load_failure_raises_runtime_error(
+        self,
+        mock_load_tools: AsyncMock,
+        valid_config_data: dict,
+    ) -> None:
+        """Stateless mode wraps tool-discovery failures in RuntimeError."""
+        mock_load_tools.side_effect = Exception("connection refused")
+
+        with pytest.raises(
+            RuntimeError, match=r"Failed to load tools.*connection refused"
+        ):
+            await _load_tools_from_config(valid_config_data, stateless=True)
 
     @patch("langchain_mcp_adapters.client.MultiServerMCPClient")
     async def test_get_mcp_tools_server_spawn_failure(
@@ -1192,6 +1235,27 @@ class TestResolveAndLoadMcpTools:
         merged = mock_load.call_args.args[0]
         assert "fs" in merged["mcpServers"]
         assert "search" in merged["mcpServers"]
+
+    @patch("deepagents_cli.mcp_tools._load_tools_from_config")
+    @patch("deepagents_cli.mcp_tools.discover_mcp_configs")
+    async def test_stateless_kwarg_forwarded_to_load(
+        self,
+        mock_discover: MagicMock,
+        mock_load: AsyncMock,
+        tmp_path: Path,
+    ) -> None:
+        """stateless=True is forwarded to _load_tools_from_config."""
+        cfg = tmp_path / "mcp.json"
+        cfg.write_text(
+            json.dumps({"mcpServers": {"fs": {"command": "npx", "args": []}}})
+        )
+        mock_discover.return_value = [cfg]
+        mock_load.return_value = ([], None, [])
+
+        await resolve_and_load_mcp_tools(trust_project_mcp=True, stateless=True)
+
+        mock_load.assert_awaited_once()
+        assert mock_load.call_args.kwargs["stateless"] is True
 
     @patch("deepagents_cli.mcp_tools.discover_mcp_configs")
     async def test_auto_discovery_no_configs_returns_empty(

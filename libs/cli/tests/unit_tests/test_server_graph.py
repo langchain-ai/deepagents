@@ -109,6 +109,7 @@ class TestServerGraph:
             no_mcp=False,
             trust_project_mcp=None,
             project_context=None,
+            stateless=True,
         )
         create_cli_agent.assert_called_once_with(
             model=model_obj,

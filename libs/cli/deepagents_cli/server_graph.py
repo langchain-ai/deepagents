@@ -39,7 +39,10 @@ def _build_tools(
 
     MCP discovery runs synchronously via `asyncio.run` because this function is
     called during module-level graph construction (before the server's async
-    event loop is available).
+    event loop is available). `stateless=True` ensures tools create per-call
+    sessions within the server's event loop rather than capturing sessions
+    from the throwaway `asyncio.run` loop (which would cause
+    `ClosedResourceError`).
 
     Args:
         config: Deserialized server configuration.
@@ -72,6 +75,7 @@ def _build_tools(
                     no_mcp=config.no_mcp,
                     trust_project_mcp=config.trust_project_mcp,
                     project_context=project_context,
+                    stateless=True,
                 )
             )
         except FileNotFoundError:

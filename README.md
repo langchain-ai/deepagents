@@ -9,7 +9,7 @@
 </div>
 
 <div align="center">
-  <h3>The batteries-included agent harness.</h3>
+  <h3>The batteries-included agent harness. 😊</h3>
 </div>
 
 <div align="center">

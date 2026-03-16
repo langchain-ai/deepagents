@@ -108,7 +108,7 @@ def show_help() -> None:
     console.print("  --profile-override JSON    Override model profile fields as JSON")
     console.print("  -m, --message TEXT         Initial prompt to auto-submit on start")
     console.print(
-        "  --auto-approve             Auto-approve all tool calls (toggle: Shift+Tab)"
+        "  -y, --auto-approve         Auto-approve all tool calls (toggle: Shift+Tab)"
     )
     console.print("  --sandbox TYPE             Remote sandbox for execution")
     console.print(
@@ -134,7 +134,7 @@ def show_help() -> None:
         "  --json                     Emit machine-readable JSON for commands"
     )
     console.print(
-        "  --shell-allow-list CMDS    Comma-separated commands, 'recommended', or 'all'"
+        "  -S, --shell-allow-list CMDS  Comma-separated cmds, 'recommended', or 'all'"
     )
     console.print("  --default-model [MODEL]    Set, show, or manage the default model")
     console.print("  --clear-default-model      Clear the default model")
@@ -149,15 +149,15 @@ def show_help() -> None:
         style=COLORS["dim"],
     )
     console.print(
-        "  deepagents -n 'List files' --shell-allow-list recommended  # Use safe commands",  # noqa: E501
+        "  deepagents -n 'List files' -S recommended  # Use safe commands",
         style=COLORS["dim"],
     )
     console.print(
-        "  deepagents -n 'Search logs' --shell-allow-list ls,cat,grep # Specify list",
+        "  deepagents -n 'Search logs' -S ls,cat,grep # Specify list",
         style=COLORS["dim"],
     )
     console.print(
-        "  deepagents -n 'Fix tests' --shell-allow-list all           # Any command",
+        "  deepagents -n 'Fix tests' -S all           # Any command",
         style=COLORS["dim"],
     )
     console.print()

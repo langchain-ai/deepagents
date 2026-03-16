@@ -418,7 +418,7 @@ jobs:
 
           # Append contributor shoutouts
           if [ -n "$CONTRIBUTORS" ]; then
-            RELEASE_BODY=$(printf "%s\n\n---\n\nThanks to our contributors: %s" "$RELEASE_BODY" "$CONTRIBUTORS")
+            RELEASE_BODY=$(printf "%s\n\n---\n\nThanks to our community contributors: %s" "$RELEASE_BODY" "$CONTRIBUTORS")
           fi
 
           # Output release body using heredoc for proper multiline handling

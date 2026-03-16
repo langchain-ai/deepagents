@@ -296,12 +296,10 @@ def _build_launch_tool(
 
 def _resolve_client_name(agent_name: str, agent_map: dict[str, AsyncSubAgent]) -> str:
     """Resolve the client name from a parsed job_id agent_name field."""
-    if agent_name and agent_name in agent_map:
+    if agent_name in agent_map:
         return agent_name
-    if agent_name:
-        msg = f"Unknown agent '{agent_name}' in job_id. Available: {', '.join(agent_map)}"
-        raise ValueError(msg)
-    return next(iter(agent_map))
+    msg = f"Unknown agent '{agent_name}' in job_id. Available: {', '.join(agent_map)}"
+    raise ValueError(msg)
 
 
 def _build_check_result(
@@ -326,24 +324,15 @@ def _build_check_result(
 
 def _build_check_command(
     result: dict[str, Any],
-    job_id: str,
-    name: str,
-    thread_id: str,
-    run_id: str,
+    job: AsyncSubAgentJob,
     tool_call_id: str | None,
 ) -> Command:
     """Build the Command update for a check result."""
-    job: AsyncSubAgentJob = {
-        "job_id": job_id,
-        "agent_name": name,
-        "thread_id": thread_id,
-        "run_id": run_id,
-        "status": result["status"],
-    }
+    updated_job: AsyncSubAgentJob = {**job, "status": result["status"]}
     return Command(
         update={
             "messages": [ToolMessage(json.dumps(result), tool_call_id=tool_call_id)],
-            "async_subagent_jobs": {job_id: job},
+            "async_subagent_jobs": {job["job_id"]: updated_job},
         }
     )
 
@@ -368,11 +357,11 @@ def _resolve_tracked_job(
     job_id: str,
     agent_map: dict[str, AsyncSubAgent],
     runtime: ToolRuntime,
-) -> tuple[str, str, str, str] | str:
+) -> AsyncSubAgentJob | str:
     """Parse job_id, resolve agent, and look up the tracked job from state.
 
     Returns:
-        `(name, thread_id, run_id, canonical_job_id)` on success, or an error string.
+        The tracked `AsyncSubAgentJob` on success, or an error string.
     """
     parsed = _parse_and_resolve(job_id, agent_map)
     if isinstance(parsed, str):
@@ -383,7 +372,7 @@ def _resolve_tracked_job(
     tracked = jobs.get(canonical)
     if not tracked:
         return f"No tracked job found for job_id: {job_id}"
-    return name, thread_id, tracked["run_id"], canonical
+    return tracked
 
 
 def _build_check_tool(
@@ -399,21 +388,21 @@ def _build_check_tool(
         resolved = _resolve_tracked_job(job_id, agent_map, runtime)
         if isinstance(resolved, str):
             return resolved
-        name, thread_id, run_id, canonical = resolved
+        job = resolved
 
-        client = clients.get_sync(name)
+        client = clients.get_sync(job["agent_name"])
         try:
-            run = client.runs.get(thread_id=thread_id, run_id=run_id)
+            run = client.runs.get(thread_id=job["thread_id"], run_id=job["run_id"])
         except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
             return f"Failed to get run status: {e}"
 
         thread_values: dict[str, Any] = {}
         if run["status"] == "success":
-            thread = client.threads.get(thread_id=thread_id)
+            thread = client.threads.get(thread_id=job["thread_id"])
             thread_values = thread.get("values") or {}
 
-        result = _build_check_result(run, thread_id, thread_values)
-        return _build_check_command(result, canonical, name, thread_id, run_id, runtime.tool_call_id)
+        result = _build_check_result(run, job["thread_id"], thread_values)
+        return _build_check_command(result, job, runtime.tool_call_id)
 
     async def acheck_async_subagent(
         job_id: Annotated[str, "The exact job_id string returned by launch_async_subagent. Pass it verbatim."],
@@ -422,21 +411,21 @@ def _build_check_tool(
         resolved = _resolve_tracked_job(job_id, agent_map, runtime)
         if isinstance(resolved, str):
             return resolved
-        name, thread_id, run_id, canonical = resolved
+        job = resolved
 
-        client = clients.get_async(name)
+        client = clients.get_async(job["agent_name"])
         try:
-            run = await client.runs.get(thread_id=thread_id, run_id=run_id)
+            run = await client.runs.get(thread_id=job["thread_id"], run_id=job["run_id"])
         except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
             return f"Failed to get run status: {e}"
 
         thread_values: dict[str, Any] = {}
         if run["status"] == "success":
-            thread = await client.threads.get(thread_id=thread_id)
+            thread = await client.threads.get(thread_id=job["thread_id"])
             thread_values = thread.get("values") or {}
 
-        result = _build_check_result(run, thread_id, thread_values)
-        return _build_check_command(result, canonical, name, thread_id, run_id, runtime.tool_call_id)
+        result = _build_check_result(run, job["thread_id"], thread_values)
+        return _build_check_command(result, job, runtime.tool_call_id)
 
     return StructuredTool.from_function(
         name="check_async_subagent",
@@ -455,7 +444,7 @@ def _build_update_tool(
     Sends a follow-up message to an async subagent by creating a new run
     on the same thread. The subagent sees the full conversation history
     (including the original task and any prior results) plus the new message.
-    Returns a new job_id for the follow-up run.
+    The job_id remains the same; only the internal run_id is updated.
     """
 
     def update_async_subagent(
@@ -549,25 +538,19 @@ def _build_cancel_tool(
         resolved = _resolve_tracked_job(job_id, agent_map, runtime)
         if isinstance(resolved, str):
             return resolved
-        name, thread_id, run_id, canonical = resolved
+        tracked = resolved
 
-        client = clients.get_sync(name)
+        client = clients.get_sync(tracked["agent_name"])
         try:
-            client.runs.cancel(thread_id=thread_id, run_id=run_id)
+            client.runs.cancel(thread_id=tracked["thread_id"], run_id=tracked["run_id"])
         except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
             return f"Failed to cancel run: {e}"
-        job: AsyncSubAgentJob = {
-            "job_id": canonical,
-            "agent_name": name,
-            "thread_id": thread_id,
-            "run_id": run_id,
-            "status": "cancelled",
-        }
-        msg = f"Cancelled async subagent job: {canonical}"
+        updated: AsyncSubAgentJob = {**tracked, "status": "cancelled"}
+        msg = f"Cancelled async subagent job: {tracked['job_id']}"
         return Command(
             update={
                 "messages": [ToolMessage(msg, tool_call_id=runtime.tool_call_id)],
-                "async_subagent_jobs": {canonical: job},
+                "async_subagent_jobs": {tracked["job_id"]: updated},
             }
         )
 
@@ -578,25 +561,19 @@ def _build_cancel_tool(
         resolved = _resolve_tracked_job(job_id, agent_map, runtime)
         if isinstance(resolved, str):
             return resolved
-        name, thread_id, run_id, canonical = resolved
+        tracked = resolved
 
-        client = clients.get_async(name)
+        client = clients.get_async(tracked["agent_name"])
         try:
-            await client.runs.cancel(thread_id=thread_id, run_id=run_id)
+            await client.runs.cancel(thread_id=tracked["thread_id"], run_id=tracked["run_id"])
         except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
             return f"Failed to cancel run: {e}"
-        job: AsyncSubAgentJob = {
-            "job_id": canonical,
-            "agent_name": name,
-            "thread_id": thread_id,
-            "run_id": run_id,
-            "status": "cancelled",
-        }
-        msg = f"Cancelled async subagent job: {canonical}"
+        updated: AsyncSubAgentJob = {**tracked, "status": "cancelled"}
+        msg = f"Cancelled async subagent job: {tracked['job_id']}"
         return Command(
             update={
                 "messages": [ToolMessage(msg, tool_call_id=runtime.tool_call_id)],
-                "async_subagent_jobs": {canonical: job},
+                "async_subagent_jobs": {tracked["job_id"]: updated},
             }
         )
 
@@ -608,8 +585,7 @@ def _build_cancel_tool(
     )
 
 
-_TERMINAL_STATUSES = frozenset({"superseded", "cancelled"})
-_SKIP_IN_LIST = frozenset({"superseded"})
+_TERMINAL_STATUSES = frozenset({"cancelled"})
 
 
 def _fetch_live_status(clients: _ClientCache, job: AsyncSubAgentJob) -> str:
@@ -645,7 +621,7 @@ def _build_list_jobs_tool(clients: _ClientCache) -> StructuredTool:
 
     def list_async_subagent_jobs(runtime: ToolRuntime) -> str | Command:
         jobs: dict[str, AsyncSubAgentJob] = runtime.state.get("async_subagent_jobs") or {}
-        active = [job for job in jobs.values() if job["status"] not in _SKIP_IN_LIST]
+        active = [job for job in jobs.values() if job["status"] not in _TERMINAL_STATUSES]
         if not active:
             return "No async subagent jobs tracked."
         updated_jobs: dict[str, AsyncSubAgentJob] = {}
@@ -670,7 +646,7 @@ def _build_list_jobs_tool(clients: _ClientCache) -> StructuredTool:
 
     async def alist_async_subagent_jobs(runtime: ToolRuntime) -> str | Command:
         jobs: dict[str, AsyncSubAgentJob] = runtime.state.get("async_subagent_jobs") or {}
-        active = [job for job in jobs.values() if job["status"] not in _SKIP_IN_LIST]
+        active = [job for job in jobs.values() if job["status"] not in _TERMINAL_STATUSES]
         if not active:
             return "No async subagent jobs tracked."
         updated_jobs: dict[str, AsyncSubAgentJob] = {}

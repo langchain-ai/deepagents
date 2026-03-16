@@ -74,21 +74,32 @@ def _await_if_needed(value: Any) -> Any:
     return value
 
 
-def _invoke_tool(tool: BaseTool, payload: str | dict[str, Any]) -> Any:
+def _invoke_tool(
+    tool: BaseTool,
+    payload: str | dict[str, Any],
+    *,
+    prefer_async: bool = False,
+) -> Any:
     """Invoke a tool through its sync or async entrypoint as appropriate.
 
     Args:
         tool: The tool to execute.
         payload: Input payload already normalized for the tool schema.
+        prefer_async: Whether the surrounding middleware/tool call originated from
+            the async path and should prefer `tool.ainvoke()` when available.
 
     Returns:
         The tool result, awaiting `tool.ainvoke()` on the daemon-thread event
-        loop when the tool exposes only an async implementation.
+        loop when the async path is preferred or when the tool exposes only an
+        async implementation.
     """
-    if (
-        getattr(tool, "func", None) is None
-        and getattr(tool, "coroutine", None) is not None
-    ):
+    has_async = getattr(tool, "coroutine", None) is not None or (
+        tool.__class__._arun is not BaseTool._arun  # noqa: SLF001
+    )
+    has_sync = getattr(tool, "func", None) is not None or (
+        tool.__class__._run is not BaseTool._run  # noqa: SLF001
+    )
+    if has_async and (prefer_async or not has_sync):
         return _await_if_needed(tool.ainvoke(payload))
     return _await_if_needed(tool.invoke(payload))
 
@@ -98,6 +109,8 @@ def _wrap_tool_for_js(
     payload_builder: Callable[
         [BaseTool, tuple[Any, ...], dict[str, Any]], str | dict[str, Any]
     ],
+    *,
+    prefer_async: bool = False,
 ) -> Callable[..., Any]:
     """Adapt a LangChain tool into a plain sync callable for QuickJS.
 
@@ -105,6 +118,8 @@ def _wrap_tool_for_js(
         tool: The LangChain tool to expose inside the QuickJS context.
         payload_builder: Helper that converts JavaScript positional and keyword
             arguments into the payload shape expected by the tool invocation.
+        prefer_async: Whether wrapped tool calls should prefer `tool.ainvoke()`
+            when the tool supports both sync and async implementations.
 
     Returns:
         A Python callable that QuickJS can register via `Context.add_callable()`.
@@ -114,7 +129,7 @@ def _wrap_tool_for_js(
 
     def tool_wrapper(*args: Any, **kwargs: Any) -> Any:
         payload = payload_builder(tool, args, kwargs)
-        return _invoke_tool(tool, payload)
+        return _invoke_tool(tool, payload, prefer_async=prefer_async)
 
     return tool_wrapper
 
@@ -174,6 +189,7 @@ def build_external_functions(
     payload_builder: Callable[
         [BaseTool, tuple[Any, ...], dict[str, Any]], str | dict[str, Any]
     ],
+    prefer_async: bool = False,
 ) -> dict[str, Callable[..., Any]]:
     """Normalize foreign implementations into QuickJS-registerable callables.
 
@@ -186,6 +202,8 @@ def build_external_functions(
             plain Python callables or LangChain tools.
         payload_builder: Helper that converts JavaScript call arguments into the
             payload shape expected by LangChain tools.
+        prefer_async: Whether wrapped LangChain tools should prefer `tool.ainvoke()`
+            when both sync and async implementations are available.
 
     Returns:
         A mapping from internal raw callable names to callables suitable for
@@ -194,7 +212,11 @@ def build_external_functions(
     external_functions: dict[str, Callable[..., Any]] = {}
     for name, implementation in (implementations or {}).items():
         callable_implementation = (
-            _wrap_tool_for_js(implementation, payload_builder)
+            _wrap_tool_for_js(
+                implementation,
+                payload_builder,
+                prefer_async=prefer_async,
+            )
             if isinstance(implementation, BaseTool)
             else implementation
         )

@@ -16,14 +16,11 @@ from langchain.agents.middleware.types import (
 )
 from langchain_core.tools import BaseTool, StructuredTool
 
-from langchain_quickjs._foreign_function_bridge import (
-    build_external_functions,
-    inject_external_function_shims,
-)
-from langchain_quickjs._foreign_function_docs import (
+from langchain_quickjs._foregin_functions import (
     get_ptc_implementations,
-    render_external_functions_section,
+    install_external_functions,
 )
+from langchain_quickjs._foreign_function_docs import render_external_functions_section
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -122,23 +119,6 @@ class QuickJSMiddleware(AgentMiddleware[AgentState[Any], ContextT, ResponseT]):
         modified_request = self.modify_request(request)
         return await handler(modified_request)
 
-    def _build_tool_payload(
-        self, tool: BaseTool, args: tuple[Any, ...], kwargs: dict[str, Any]
-    ) -> str | dict[str, Any]:
-        """Convert QuickJS call arguments into a LangChain tool payload."""
-        if kwargs:
-            return kwargs
-        if len(args) == 1 and isinstance(args[0], (str, dict)):
-            return args[0]
-
-        input_schema = tool.get_input_schema()
-        fields = list(getattr(input_schema, "__annotations__", {}))
-        if len(args) == 1 and len(fields) == 1:
-            return {fields[0]: args[0]}
-        if len(args) == len(fields) and fields:
-            return dict(zip(fields, args, strict=False))
-        return {"args": list(args)}
-
     def _create_context(
         self,
         timeout: int | None,
@@ -164,14 +144,11 @@ class QuickJSMiddleware(AgentMiddleware[AgentState[Any], ContextT, ResponseT]):
             printed_lines.append(" ".join(map(str, args)))
 
         context.add_callable("print", _print)
-        implementations = get_ptc_implementations(self._ptc)
-        for name, implementation in build_external_functions(
-            implementations,
-            payload_builder=self._build_tool_payload,
-            prefer_async=prefer_async,
-        ).items():
-            context.add_callable(name, implementation)
-        inject_external_function_shims(context, list(implementations))
+        install_external_functions(
+            context,
+            get_ptc_implementations(self._ptc),
+            execution_mode="async" if prefer_async else "sync",
+        )
         return context
 
     def _evaluate(

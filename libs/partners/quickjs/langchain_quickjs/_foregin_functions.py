@@ -20,6 +20,7 @@ from langchain_core.tools import BaseTool
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
     from concurrent.futures import Future
+    from typing import Literal
 
     import quickjs
 
@@ -104,11 +105,50 @@ def _invoke_tool(
     return _await_if_needed(tool.invoke(payload))
 
 
+def get_ptc_implementations(
+    ptc: list[Callable[..., Any] | BaseTool] | None,
+) -> dict[str, Callable[..., Any] | BaseTool]:
+    """Return configured PTC implementations keyed by exported function name."""
+    implementations: dict[str, Callable[..., Any] | BaseTool] = {}
+    for implementation in ptc or []:
+        if isinstance(implementation, BaseTool):
+            implementations[implementation.name] = implementation
+            continue
+        name = getattr(implementation, "__name__", None)
+        if isinstance(name, str):
+            implementations[name] = implementation
+    return implementations
+
+
+def _build_tool_payload(
+    tool: BaseTool, args: tuple[Any, ...], kwargs: dict[str, Any]
+) -> str | dict[str, Any]:
+    """Convert QuickJS call arguments into a LangChain tool payload.
+
+    Args:
+        tool: The LangChain tool receiving the payload.
+        args: Positional arguments provided by JavaScript.
+        kwargs: Keyword arguments provided by JavaScript.
+
+    Returns:
+        A string or dictionary payload compatible with LangChain tool invocation.
+    """
+    if kwargs:
+        return kwargs
+    if len(args) == 1 and isinstance(args[0], (str, dict)):
+        return args[0]
+
+    input_schema = tool.get_input_schema()
+    fields = list(getattr(input_schema, "__annotations__", {}))
+    if len(args) == 1 and len(fields) == 1:
+        return {fields[0]: args[0]}
+    if len(args) == len(fields) and fields:
+        return dict(zip(fields, args, strict=False))
+    return {"args": list(args)}
+
+
 def _wrap_tool_for_js(
     tool: BaseTool,
-    payload_builder: Callable[
-        [BaseTool, tuple[Any, ...], dict[str, Any]], str | dict[str, Any]
-    ],
     *,
     prefer_async: bool = False,
 ) -> Callable[..., Any]:
@@ -116,8 +156,6 @@ def _wrap_tool_for_js(
 
     Args:
         tool: The LangChain tool to expose inside the QuickJS context.
-        payload_builder: Helper that converts JavaScript positional and keyword
-            arguments into the payload shape expected by the tool invocation.
         prefer_async: Whether wrapped tool calls should prefer `tool.ainvoke()`
             when the tool supports both sync and async implementations.
 
@@ -128,7 +166,7 @@ def _wrap_tool_for_js(
     """
 
     def tool_wrapper(*args: Any, **kwargs: Any) -> Any:
-        payload = payload_builder(tool, args, kwargs)
+        payload = _build_tool_payload(tool, args, kwargs)
         return _invoke_tool(tool, payload, prefer_async=prefer_async)
 
     return tool_wrapper
@@ -183,12 +221,9 @@ def _raw_function_name(name: str) -> str:
     return f"__python_{name}"
 
 
-def build_external_functions(
+def _build_external_functions(
     implementations: dict[str, Callable[..., Any] | BaseTool] | None,
     *,
-    payload_builder: Callable[
-        [BaseTool, tuple[Any, ...], dict[str, Any]], str | dict[str, Any]
-    ],
     prefer_async: bool = False,
 ) -> dict[str, Callable[..., Any]]:
     """Normalize foreign implementations into QuickJS-registerable callables.
@@ -200,8 +235,6 @@ def build_external_functions(
     Args:
         implementations: Mapping of user-facing foreign function names to either
             plain Python callables or LangChain tools.
-        payload_builder: Helper that converts JavaScript call arguments into the
-            payload shape expected by LangChain tools.
         prefer_async: Whether wrapped LangChain tools should prefer `tool.ainvoke()`
             when both sync and async implementations are available.
 
@@ -212,11 +245,7 @@ def build_external_functions(
     external_functions: dict[str, Callable[..., Any]] = {}
     for name, implementation in (implementations or {}).items():
         callable_implementation = (
-            _wrap_tool_for_js(
-                implementation,
-                payload_builder,
-                prefer_async=prefer_async,
-            )
+            _wrap_tool_for_js(implementation, prefer_async=prefer_async)
             if isinstance(implementation, BaseTool)
             else implementation
         )
@@ -271,4 +300,28 @@ def inject_external_function_shims(
     context.eval(code)
 
 
-__all__ = ["build_external_functions", "inject_external_function_shims"]
+def install_external_functions(
+    context: quickjs.Context,
+    implementations: dict[str, Callable[..., Any] | BaseTool] | None,
+    *,
+    execution_mode: Literal["sync", "async"] = "sync",
+) -> None:
+    """Install foreign functions and JavaScript shims into a QuickJS context.
+
+    Args:
+        context: The QuickJS context receiving foreign function callables.
+        implementations: Mapping of user-facing foreign function names to either
+            plain Python callables or LangChain tools.
+        execution_mode: Whether tool-backed foreign functions should use sync or
+            async invocation when both are available.
+    """
+    external_functions = _build_external_functions(
+        implementations,
+        prefer_async=execution_mode == "async",
+    )
+    for name, implementation in external_functions.items():
+        context.add_callable(name, implementation)
+    inject_external_function_shims(context, list(implementations or {}))
+
+
+__all__ = ["get_ptc_implementations", "install_external_functions"]

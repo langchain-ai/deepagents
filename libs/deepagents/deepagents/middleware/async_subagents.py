@@ -38,34 +38,47 @@ class AsyncSubAgent(TypedDict):
     Authentication is handled via environment variables (`LANGGRAPH_API_KEY`,
     `LANGSMITH_API_KEY`, or `LANGCHAIN_API_KEY`), which the LangGraph SDK
     reads automatically.
-
-    Required fields:
-        name: Unique identifier for the async subagent.
-        description: What this subagent does. The main agent uses this to decide
-            when to delegate.
-        graph_id: The graph name or assistant ID on the remote server.
-
-    Optional fields:
-        url: URL of the LangGraph server (e.g., `"https://my-deployment.langsmith.dev"`).
-            Omit to use ASGI transport for local LangGraph servers.
-        headers: Additional headers to include in requests to the remote server.
     """
 
     name: str
+    """Unique identifier for the async subagent."""
+
     description: str
+    """What this subagent does.
+
+    The main agent uses this to decide when to delegate.
+    """
+
     graph_id: str
+    """The graph name or assistant ID on the remote server."""
+
     url: NotRequired[str]
+    """URL of the LangGraph server (e.g., `"https://my-deployment.langsmith.dev"`).
+
+    Omit to use ASGI transport for local LangGraph servers.
+    """
+
     headers: NotRequired[dict[str, str]]
+    """Additional headers to include in requests to the remote server."""
 
 
 class AsyncSubAgentJob(TypedDict):
     """A tracked async subagent job persisted in agent state."""
 
     job_id: str
+    """Unique identifier for the job (same as `thread_id`)."""
+
     agent_name: str
+    """Name of the async subagent type that is running."""
+
     thread_id: str
+    """LangGraph thread ID for the remote run."""
+
     run_id: str
+    """LangGraph run ID for the current execution on the thread."""
+
     status: str
+    """Current job status (e.g., `'running'`, `'success'`, `'error'`, `'cancelled'`)."""
 
 
 def _jobs_reducer(
@@ -193,7 +206,7 @@ def _build_launch_tool(
     clients: _ClientCache,
     tool_description: str,
 ) -> StructuredTool:
-    """Build the launch_async_subagent tool."""
+    """Build the `launch_async_subagent` tool."""
 
     def launch_async_subagent(
         description: Annotated[str, "A detailed description of the task for the async subagent to perform."],
@@ -292,7 +305,7 @@ def _build_check_command(
     job: AsyncSubAgentJob,
     tool_call_id: str | None,
 ) -> Command:
-    """Build the Command update for a check result."""
+    """Build the `Command` update for a check result."""
     updated_job = AsyncSubAgentJob(
         job_id=job["job_id"],
         agent_name=job["agent_name"],
@@ -312,7 +325,7 @@ def _resolve_tracked_job(
     job_id: str,
     runtime: ToolRuntime,
 ) -> AsyncSubAgentJob | str:
-    """Look up a tracked job from state by its job_id (thread_id).
+    """Look up a tracked job from state by its `job_id` (`thread_id`).
 
     Returns:
         The tracked `AsyncSubAgentJob` on success, or an error string.
@@ -327,7 +340,7 @@ def _resolve_tracked_job(
 def _build_check_tool(
     clients: _ClientCache,
 ) -> StructuredTool:
-    """Build the check_async_subagent tool."""
+    """Build the `check_async_subagent` tool."""
 
     def check_async_subagent(
         job_id: Annotated[str, "The exact job_id string returned by launch_async_subagent. Pass it verbatim."],
@@ -385,12 +398,12 @@ def _build_update_tool(
     agent_map: dict[str, AsyncSubAgent],
     clients: _ClientCache,
 ) -> StructuredTool:
-    """Build the update_async_subagent tool.
+    """Build the `update_async_subagent` tool.
 
-    Sends a follow-up message to an async subagent by creating a new run
-    on the same thread. The subagent sees the full conversation history
-    (including the original task and any prior results) plus the new message.
-    The job_id remains the same; only the internal run_id is updated.
+    Sends a follow-up message to an async subagent by creating a new run on the
+    same thread. The subagent sees the full conversation history (including the
+    original task and any prior results) plus the new message. The `job_id`
+    remains the same; only the internal `run_id` is updated.
     """
 
     def update_async_subagent(
@@ -470,7 +483,7 @@ def _build_update_tool(
 def _build_cancel_tool(
     clients: _ClientCache,
 ) -> StructuredTool:
-    """Build the cancel_async_subagent tool."""
+    """Build the `cancel_async_subagent` tool."""
 
     def cancel_async_subagent(
         job_id: Annotated[str, "The exact job_id string returned by launch_async_subagent. Pass it verbatim."],
@@ -576,8 +589,9 @@ def _filter_jobs(
 
     Args:
         jobs: All tracked jobs from state.
-        status_filter: If `None` or `"all"`, return all jobs. Otherwise return only
-            jobs whose status matches the given value.
+        status_filter: If `None` or `'all'`, return all jobs.
+
+            Otherwise return only jobs whose status matches the given value.
 
     Returns:
         Filtered list of jobs.
@@ -698,13 +712,15 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
     `SubAgentMiddleware`, async subagents return immediately with a job ID,
     allowing the main agent to continue working while subagents execute.
 
-    Job IDs are persisted in the agent state under `async_subagent_jobs`
-    so they survive context compaction and can be accessed programmatically.
+    Job IDs are persisted in the agent state under `async_subagent_jobs` so they
+    survive context compaction/offloading and can be accessed programmatically.
 
     Args:
-        async_subagents: List of async subagent specifications. Each must
-            include `name`, `description`, and `graph_id`. `url` is optional —
-            omit it to use ASGI transport for local LangGraph servers.
+        async_subagents: List of async subagent specifications.
+
+            Each must include `name`, `description`, and `graph_id`. `url` is
+            optional — omit it to use ASGI transport for local
+            LangGraph servers.
         system_prompt: Instructions appended to the main agent's system prompt
             about how to use the async subagent tools.
 

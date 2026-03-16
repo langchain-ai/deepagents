@@ -68,16 +68,20 @@ REQUIRE_COMPACT_TOOL_APPROVAL: bool = True
 def load_async_subagents(config_path: Path | None = None) -> list[AsyncSubAgent]:
     """Load async subagent definitions from `config.toml`.
 
-    Reads the `[async_subagents]` section where each sub-table defines a
-    remote LangGraph deployment::
+    Reads the `[async_subagents]` section where each sub-table defines a remote
+    LangGraph deployment:
 
-        [async_subagents.researcher]
-        description = "Research agent"
-        url = "https://my-deployment.langsmith.dev"
-        graph_id = "agent"
+    ```toml
+    [async_subagents.researcher]
+    description = "Research agent"
+    url = "https://my-deployment.langsmith.dev"
+    graph_id = "agent"
+    ```
 
     Args:
-        config_path: Path to config file. Defaults to `~/.deepagents/config.toml`.
+        config_path: Path to config file.
+
+            Defaults to `~/.deepagents/config.toml`.
 
     Returns:
         List of `AsyncSubAgent` specs (empty if section is absent or invalid).

@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 from langchain.chat_models import init_chat_model
+from langchain_baseten import ChatBaseten
 from langchain_openai import ChatOpenAI
 
 if TYPE_CHECKING:
@@ -15,6 +16,33 @@ from deepagents import __version__ as deepagents_version
 from deepagents.graph import get_default_model
 
 pytest_plugins = ["tests.evals.pytest_reporter"]
+
+
+def pytest_configure(config: pytest.Config) -> None:  # noqa: ARG001  # pytest hook signature
+    """Fail fast if LangSmith tracing is not enabled.
+
+    All eval tests require `@pytest.mark.langsmith` and
+    `LANGSMITH_TRACING=true`. Detect this early so the entire suite is skipped
+    with a clear message instead of failing one-by-one.
+    """
+    tracing_enabled = any(
+        os.environ.get(var, "").lower() == "true"
+        for var in (
+            "LANGSMITH_TRACING_V2",
+            "LANGCHAIN_TRACING_V2",
+            "LANGSMITH_TRACING",
+            "LANGCHAIN_TRACING",
+        )
+    )
+    if not tracing_enabled:
+        pytest.exit(
+            "Aborting: LangSmith tracing is not enabled. "
+            "All eval tests require LangSmith tracing. "
+            "Set one of LANGSMITH_TRACING / LANGSMITH_TRACING_V2 / "
+            "LANGCHAIN_TRACING_V2 to 'true' and ensure a valid "
+            "LANGSMITH_API_KEY is set, then re-run.",
+            returncode=1,
+        )
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -61,9 +89,7 @@ def model(model_name: str) -> BaseChatModel:
             api_key=os.environ["NVIDIA_API_KEY"],
         )
     if model_name.startswith("baseten:"):
-        return ChatOpenAI(
+        return ChatBaseten(
             model=model_name.removeprefix("baseten:"),
-            base_url="https://inference.baseten.co/v1",
-            api_key=os.environ["BASETEN_API_KEY"],
         )
     return init_chat_model(model_name)

@@ -43,3 +43,21 @@ repos:
         entry: make -C libs/acp format lint
         files: ^libs/acp/
         pass_filenames: false
+      - id: lock-check
+        name: check lockfiles are up-to-date
+        language: system
+        entry: make lock-check
+        files: (^libs/.*/pyproject\.toml|^libs/.*/uv\.lock)$
+        pass_filenames: false
+      - id: extras-sync
+        name: check extras sync with required deps
+        language: system
+        entry: python3 .github/scripts/check_extras_sync.py libs/cli/pyproject.toml
+        files: ^libs/cli/pyproject\.toml$
+        pass_filenames: false
+      - id: version-equality
+        name: check pyproject.toml and _version.py match
+        language: system
+        entry: python3 .github/scripts/check_version_equality.py
+        files: (^libs/deepagents/pyproject\.toml|^libs/deepagents/deepagents/_version\.py|^libs/cli/pyproject\.toml|^libs/cli/deepagents_cli/_version\.py)$
+        pass_filenames: false

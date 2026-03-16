@@ -158,7 +158,12 @@ class DaytonaProvider(SandboxProvider):
         if not self._api_key:
             msg = "DAYTONA_API_KEY environment variable not set"
             raise ValueError(msg)
-        self._client = Daytona(DaytonaConfig(api_key=self._api_key))
+        self._client = Daytona(
+            DaytonaConfig(
+                api_key=self._api_key,
+                api_url=os.environ.get("DAYTONA_API_URL"),
+            )
+        )
 
     def get_or_create(
         self,

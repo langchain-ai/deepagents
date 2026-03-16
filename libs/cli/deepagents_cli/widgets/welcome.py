@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import random
 from typing import TYPE_CHECKING, Any
 
-from rich.style import Style
-from rich.text import Text
+from textual.color import Color as TColor
+from textual.content import Content
+from textual.style import Style as TStyle
 from textual.widgets import Static
 
 if TYPE_CHECKING:
@@ -14,6 +16,7 @@ if TYPE_CHECKING:
 
 from deepagents_cli.config import (
     COLORS,
+    _get_editable_install_path,
     _is_editable_install,
     fetch_langsmith_project_url,
     get_banner,
@@ -22,6 +25,19 @@ from deepagents_cli.config import (
     newline_shortcut,
 )
 from deepagents_cli.widgets._links import open_style_link
+
+_TIPS: list[str] = [
+    "Use @ to reference files and / for commands",
+    "Try /threads to resume a previous conversation",
+    "Use /offload when your conversation gets long",
+    "Use /mcp to see your loaded tools and servers",
+    "Use /remember to save learnings from this conversation",
+    "Use /model to switch models mid-conversation",
+]
+"""Rotating tips shown in the welcome footer.
+
+One is picked per session.
+"""
 
 
 class WelcomeBanner(Static):
@@ -45,6 +61,8 @@ class WelcomeBanner(Static):
         self,
         thread_id: str | None = None,
         mcp_tool_count: int = 0,
+        *,
+        connecting: bool = False,
         **kwargs: Any,
     ) -> None:
         """Initialize the welcome banner.
@@ -52,11 +70,16 @@ class WelcomeBanner(Static):
         Args:
             thread_id: Optional thread ID to display in the banner.
             mcp_tool_count: Number of MCP tools loaded at startup.
+            connecting: When `True`, show a "Connecting..." footer instead of
+                the normal ready prompt. Call `set_connected` to transition.
             **kwargs: Additional arguments passed to parent.
         """
         # Avoid collision with Widget._thread_id (Textual internal int)
         self._cli_thread_id: str | None = thread_id
         self._mcp_tool_count = mcp_tool_count
+        self._connecting = connecting
+        self._failed = False
+        self._failure_error: str = ""
         self._project_name: str | None = get_langsmith_project_name()
         self._project_url: str | None = None
 
@@ -91,12 +114,34 @@ class WelcomeBanner(Static):
         self._cli_thread_id = thread_id
         self.update(self._build_banner(self._project_url))
 
+    def set_connected(self, mcp_tool_count: int = 0) -> None:
+        """Transition from "connecting" to "ready" state.
+
+        Args:
+            mcp_tool_count: Number of MCP tools loaded during connection.
+        """
+        self._connecting = False
+        self._failed = False
+        self._mcp_tool_count = mcp_tool_count
+        self.update(self._build_banner(self._project_url))
+
+    def set_failed(self, error: str) -> None:
+        """Transition from "connecting" to a persistent failure state.
+
+        Args:
+            error: Error message describing the server startup failure.
+        """
+        self._connecting = False
+        self._failed = True
+        self._failure_error = error
+        self.update(self._build_banner(self._project_url))
+
     def on_click(self, event: Click) -> None:  # noqa: PLR6301  # Textual event handler
-        """Open Rich-style hyperlinks on single click."""
+        """Open style-embedded hyperlinks on single click."""
         open_style_link(event)
 
-    def _build_banner(self, project_url: str | None = None) -> Text:
-        """Build the banner rich text.
+    def _build_banner(self, project_url: str | None = None) -> Content:
+        """Build the banner content.
 
         When a `project_url` is provided and a thread ID is set, the thread ID
         is rendered as a clickable hyperlink to the LangSmith thread view.
@@ -106,29 +151,44 @@ class WelcomeBanner(Static):
                 name and thread ID. When `None`, text is rendered without links.
 
         Returns:
-            Rich Text object containing the formatted banner.
+            Content object containing the formatted banner.
         """
-        banner = Text()
+        parts: list[str | tuple[str, str | TStyle] | Content] = []
         # Use orange for local, green for production
         banner_color = (
             COLORS["primary_dev"] if _is_editable_install() else COLORS["primary"]
         )
-        banner.append(get_banner() + "\n", style=Style(bold=True, color=banner_color))
+        parts.append(
+            (
+                get_banner() + "\n",
+                TStyle(foreground=TColor.parse(banner_color), bold=True),
+            )
+        )
+
+        editable_path = _get_editable_install_path()
+        if editable_path:
+            parts.extend([("Installed from: ", "dim"), (editable_path, "dim"), "\n"])
 
         if self._project_name:
-            banner.append(f"{get_glyphs().checkmark} ", style="green")
-            banner.append("LangSmith tracing: ")
+            parts.extend(
+                [
+                    (f"{get_glyphs().checkmark} ", "green"),
+                    "LangSmith tracing: ",
+                ]
+            )
             if project_url:
-                banner.append(
-                    f"'{self._project_name}'",
-                    style=Style(
-                        color="cyan",
-                        link=f"{project_url}?utm_source=deepagents-cli",
-                    ),
+                parts.append(
+                    (
+                        f"'{self._project_name}'",
+                        TStyle(
+                            foreground=TColor.parse("cyan"),
+                            link=f"{project_url}?utm_source=deepagents-cli",
+                        ),
+                    )
                 )
             else:
-                banner.append(f"'{self._project_name}'", style="cyan")
-            banner.append("\n")
+                parts.append((f"'{self._project_name}'", "cyan"))
+            parts.append("\n")
 
         if self._cli_thread_id:
             if project_url:
@@ -136,29 +196,73 @@ class WelcomeBanner(Static):
                     f"{project_url.rstrip('/')}/t/{self._cli_thread_id}"
                     "?utm_source=deepagents-cli"
                 )
-                thread_line = Text.assemble(
-                    ("Thread: ", "dim"),
-                    (self._cli_thread_id, Style(dim=True, link=thread_url)),
-                    ("\n", "dim"),
+                parts.extend(
+                    [
+                        ("Thread: ", "dim"),
+                        (self._cli_thread_id, TStyle(dim=True, link=thread_url)),
+                        ("\n", "dim"),
+                    ]
                 )
-                banner.append_text(thread_line)
             else:
-                banner.append(f"Thread: {self._cli_thread_id}\n", style="dim")
+                parts.append((f"Thread: {self._cli_thread_id}\n", "dim"))
 
         if self._mcp_tool_count > 0:
-            banner.append(f"{get_glyphs().checkmark} ", style="green")
+            parts.append((f"{get_glyphs().checkmark} ", "green"))
             label = "MCP tool" if self._mcp_tool_count == 1 else "MCP tools"
-            banner.append(f"Loaded {self._mcp_tool_count} {label}\n")
+            parts.append(f"Loaded {self._mcp_tool_count} {label}\n")
 
-        banner.append(
-            "Ready to code! What would you like to build?\n", style=COLORS["primary"]
-        )
-        bullet = get_glyphs().bullet
-        banner.append(
+        if self._failed:
+            parts.append(build_failure_footer(self._failure_error))
+        elif self._connecting:
+            parts.append(build_connecting_footer())
+        else:
+            parts.append(build_welcome_footer())
+        return Content.assemble(*parts)
+
+
+def build_failure_footer(error: str) -> Content:
+    """Build a footer shown when the server failed to start.
+
+    Args:
+        error: Error message describing the failure.
+
+    Returns:
+        Content with a persistent failure message.
+    """
+    return Content.assemble(
+        ("\nServer failed to start: ", "bold red"),
+        (error, "red"),
+        ("\n", "red"),
+    )
+
+
+def build_connecting_footer() -> Content:
+    """Build a footer shown while waiting for the server to connect.
+
+    Returns:
+        Content with a connecting status message.
+    """
+    return Content.styled("\nConnecting to server...\n", "dim")
+
+
+def build_welcome_footer() -> Content:
+    """Build the two-line footer shown at the bottom of the welcome banner.
+
+    Includes a randomly selected tip to help users discover features.
+
+    Returns:
+        Content with the ready prompt, a tip, and keyboard shortcut help line.
+    """
+    tip = random.choice(_TIPS)  # noqa: S311
+    bullet = get_glyphs().bullet
+    return Content.assemble(
+        ("\nReady to code! What would you like to build?\n", COLORS["primary"]),
+        (f"Tip: {tip}\n", "dim italic"),
+        (
             (
                 f"Enter send {bullet} {newline_shortcut()} newline "
                 f"{bullet} @ files {bullet} / commands"
             ),
-            style="dim",
-        )
-        return banner
+            "dim",
+        ),
+    )

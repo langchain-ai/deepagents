@@ -7,7 +7,6 @@ from langchain.agents import create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig, TodoListMiddleware
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain.agents.structured_output import ResponseFormat
-from langchain.chat_models import init_chat_model
 from langchain_anthropic import ChatAnthropic
 from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
 from langchain_core.language_models import BaseChatModel
@@ -18,8 +17,10 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.store.base import BaseStore
 from langgraph.types import Checkpointer
 
+from deepagents._models import resolve_model
 from deepagents.backends import StateBackend
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
+from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
@@ -78,39 +79,14 @@ def get_default_model() -> ChatAnthropic:
     )
 
 
-def resolve_model(model: str | BaseChatModel) -> BaseChatModel:
-    """Resolve a model string to a `BaseChatModel` instance.
-
-    If `model` is already a `BaseChatModel`, returns it unchanged.
-
-    String models are resolved via `init_chat_model`, with OpenAI models
-    defaulting to the Responses API. See the `create_deep_agent` docstring for
-    details on how to customize this behavior.
-
-    Args:
-        model: Model name string or pre-configured model instance.
-
-    Returns:
-        Resolved `BaseChatModel` instance.
-    """
-    if isinstance(model, BaseChatModel):
-        return model
-    if model.startswith("openai:"):
-        # Use Responses API by default. To use chat completions, use
-        # `model=init_chat_model("openai:...")`
-        # To disable data retention with the Responses API, use
-        # `model=init_chat_model("openai:...", use_responses_api=True, store=False, include=["reasoning.encrypted_content"])`
-        return init_chat_model(model, use_responses_api=True)
-    return init_chat_model(model)
-
-
 def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic with many conditional branches
     model: str | BaseChatModel | None = None,
     tools: Sequence[BaseTool | Callable | dict[str, Any]] | None = None,
     *,
     system_prompt: str | SystemMessage | None = None,
     middleware: Sequence[AgentMiddleware] = (),
-    subagents: list[SubAgent | CompiledSubAgent] | None = None,
+    subagents: Sequence[SubAgent | CompiledSubAgent] | None = None,
+    async_subagents: list[AsyncSubAgent] | None = None,
     skills: list[str] | None = None,
     memory: list[str] | None = None,
     response_format: ResponseFormat | None = None,
@@ -174,6 +150,12 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
             - (optional) `tools`
             - (optional) `model` (either a `LanguageModelLike` instance or `dict` settings)
             - (optional) `middleware` (list of `AgentMiddleware`)
+        async_subagents: Optional list of async subagent specs for remote LangGraph servers.
+
+            Each spec should be an `AsyncSubAgent` dict with `name`, `description`,
+            and `graph_id`. Optionally include `url` for remote deployments (omit
+            for ASGI transport). Async subagents run as background jobs with tools
+            for launching, checking, updating, cancelling, and listing jobs.
         skills: Optional list of skill source paths (e.g., `["/skills/user/", "/skills/project/"]`).
 
             Paths must be specified using POSIX conventions (forward slashes) and are relative
@@ -263,8 +245,13 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
             }
             processed_subagents.append(processed_spec)
 
-    # Combine GP with processed user-provided subagents
-    all_subagents: list[SubAgent | CompiledSubAgent] = [general_purpose_spec, *processed_subagents]
+    if any(spec["name"] == GENERAL_PURPOSE_SUBAGENT["name"] for spec in processed_subagents):
+        # If an agent with general purpose name already exists in subagents, then don't add it
+        # This is how you overwrite/configure general purpose subagent
+        all_subagents: list[SubAgent | CompiledSubAgent] = processed_subagents
+    else:
+        # Otherwise - add it!
+        all_subagents = [general_purpose_spec, *processed_subagents]
 
     # Build main agent middleware stack
     deepagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
@@ -286,6 +273,9 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
             PatchToolCallsMiddleware(),
         ]
     )
+
+    if async_subagents:
+        deepagent_middleware.append(AsyncSubAgentMiddleware(async_subagents=async_subagents))
 
     if middleware:
         deepagent_middleware.extend(middleware)
@@ -313,4 +303,11 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
         debug=debug,
         name=name,
         cache=cache,
-    ).with_config({"recursion_limit": 1000})
+    ).with_config(
+        {
+            "recursion_limit": 1000,
+            "metadata": {
+                "ls_integration": "deepagents",
+            },
+        }
+    )

@@ -1,12 +1,15 @@
 """Unit tests for main entry point."""
 
+import asyncio
 import inspect
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from deepagents_cli.app import AppResult, run_textual_app
+from deepagents_cli.app import AppResult, DeepAgentsApp, run_textual_app
 from deepagents_cli.config import build_langsmith_thread_url, reset_langsmith_url_cache
 from deepagents_cli.main import (
     check_optional_tools,
@@ -147,23 +150,149 @@ class TestRunTextualCliAsyncReturnType:
 
 
 class TestThreadMessage:
-    """Test thread info display format."""
+    """Test thread info display format.
 
-    def test_new_session_message_format(self) -> None:
-        """New session message should say 'Starting with thread:' not 'Thread:'."""
-        # This tests that the format is correct by checking the source
+    Thread info is now displayed in the WelcomeBanner widget rather than via
+    pre-TUI console output, so we verify the banner receives the thread ID.
+    """
+
+    def test_thread_id_forwarded_to_app(self) -> None:
+        """run_textual_cli_async passes thread_id to run_textual_app."""
         source = inspect.getsource(run_textual_cli_async)
-        assert "Starting with thread:" in source, (
-            "New session should show 'Starting with thread:' message"
+        assert "thread_id=thread_id" in source, (
+            "thread_id should be forwarded to run_textual_app"
         )
-        # Should not have the old format (Thread: without Starting)
-        # Note: "Resuming thread:" is still valid for resumed sessions
-        lines = [
-            line
-            for line in source.split("\n")
-            if "Thread:" in line and "Resuming" not in line and "Starting" not in line
-        ]
-        assert len(lines) == 0, f"Should not have old 'Thread:' format. Found: {lines}"
+
+
+class TestRunTextualCliAsyncMcp:
+    """Tests for MCP/server kwargs forwarding in interactive server mode.
+
+    Server startup and MCP preload now happen inside the TUI via deferred
+    kwargs rather than being invoked directly in `run_textual_cli_async`.
+    """
+
+    async def test_passes_server_and_mcp_kwargs_to_textual_app(self) -> None:
+        """Interactive TUI should receive server_kwargs and mcp_preload_kwargs."""
+        model_result = SimpleNamespace(
+            model=object(),
+            provider="openai",
+            model_name="gpt-5",
+            apply_to_settings=MagicMock(),
+        )
+        app_result = AppResult(return_code=0, thread_id="thread-123")
+        captured_kwargs: dict[str, Any] = {}
+
+        async def _run_textual_app_stub(**kwargs: Any) -> AppResult:
+            captured_kwargs.update(kwargs)
+            await asyncio.sleep(0)
+            return app_result
+
+        with (
+            patch("deepagents_cli.config.console"),
+            patch("deepagents_cli.config.create_model", return_value=model_result),
+            patch("deepagents_cli.model_config.save_recent_model"),
+            patch("deepagents_cli.app.run_textual_app", new=_run_textual_app_stub),
+        ):
+            result = await run_textual_cli_async(
+                "agent",
+                thread_id="thread-123",
+            )
+
+        assert result == app_result
+        model_result.apply_to_settings.assert_called_once_with()
+
+        # Server kwargs forwarded for deferred startup inside the TUI
+        assert captured_kwargs["server_kwargs"] is not None
+        assert captured_kwargs["server_kwargs"]["assistant_id"] == "agent"
+        assert captured_kwargs["server_kwargs"]["interactive"] is True
+
+        # MCP preload kwargs forwarded (no_mcp=False by default)
+        assert captured_kwargs["mcp_preload_kwargs"] is not None
+        assert captured_kwargs["mcp_preload_kwargs"]["no_mcp"] is False
+
+    async def test_no_mcp_kwargs_when_disabled(self) -> None:
+        """mcp_preload_kwargs should be None when no_mcp=True."""
+        model_result = SimpleNamespace(
+            model=object(),
+            provider="openai",
+            model_name="gpt-5",
+            apply_to_settings=MagicMock(),
+        )
+        app_result = AppResult(return_code=0, thread_id="thread-123")
+        captured_kwargs: dict[str, Any] = {}
+
+        async def _run_textual_app_stub(**kwargs: Any) -> AppResult:
+            captured_kwargs.update(kwargs)
+            await asyncio.sleep(0)
+            return app_result
+
+        with (
+            patch("deepagents_cli.config.console"),
+            patch("deepagents_cli.config.create_model", return_value=model_result),
+            patch("deepagents_cli.model_config.save_recent_model"),
+            patch("deepagents_cli.app.run_textual_app", new=_run_textual_app_stub),
+        ):
+            await run_textual_cli_async(
+                "agent",
+                thread_id="thread-123",
+                no_mcp=True,
+            )
+
+        assert captured_kwargs["mcp_preload_kwargs"] is None
+
+
+class TestServerCleanupLifecycle:
+    """Verify server_proc.stop() is guaranteed after the TUI exits."""
+
+    async def test_server_proc_stopped_after_app_exits(self) -> None:
+        """run_textual_app must call server_proc.stop() in the finally block."""
+        server_proc = SimpleNamespace(stop=MagicMock())
+
+        with patch.object(
+            DeepAgentsApp,
+            "run_async",
+            new_callable=AsyncMock,
+        ):
+            await run_textual_app(server_proc=server_proc, thread_id="t-1")  # type: ignore[invalid-argument-type]
+
+        server_proc.stop.assert_called_once_with()
+
+    async def test_server_proc_stopped_even_on_crash(self) -> None:
+        """server_proc.stop() must fire even when run_async raises."""
+        server_proc = SimpleNamespace(stop=MagicMock())
+
+        with (
+            patch.object(
+                DeepAgentsApp,
+                "run_async",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("boom"),
+            ),
+            pytest.raises(RuntimeError, match="boom"),
+        ):
+            await run_textual_app(server_proc=server_proc, thread_id="t-1")  # type: ignore[invalid-argument-type]
+
+        server_proc.stop.assert_called_once_with()
+
+    async def test_deferred_server_proc_stopped_after_app_exits(self) -> None:
+        """server_proc set by the background worker must still be cleaned up."""
+        server_proc = SimpleNamespace(stop=MagicMock())
+
+        async def _fake_run_async(self: DeepAgentsApp) -> None:  # noqa: RUF029
+            # Simulate the background worker having set _server_proc
+            self._server_proc = server_proc
+
+        with patch.object(
+            DeepAgentsApp,
+            "run_async",
+            new=_fake_run_async,
+        ):
+            await run_textual_app(
+                server_kwargs={"assistant_id": "a"},
+                thread_id="t-1",
+            )
+
+        server_proc.stop.assert_called_once_with()
 
 
 class TestCheckOptionalTools:

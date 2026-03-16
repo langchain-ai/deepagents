@@ -187,6 +187,27 @@ class TestBuildStreamConfig:
         config = _build_stream_config("t-abc", assistant_id=None)
         assert config["configurable"]["thread_id"] == "t-abc"
 
+    def test_sandbox_type_included_when_set(self) -> None:
+        """Sandbox type should appear in metadata when provided."""
+        config = _build_stream_config("t-sb", assistant_id=None, sandbox_type="daytona")
+        assert config["metadata"]["sandbox_type"] == "daytona"
+
+    def test_sandbox_type_absent_when_none(self) -> None:
+        """Sandbox type should be absent from metadata when not provided."""
+        config = _build_stream_config("t-nosb", assistant_id=None)
+        assert "sandbox_type" not in config["metadata"]
+
+    def test_sandbox_type_none_string_excluded(self) -> None:
+        """The argparse sentinel `"none"` should not leak into metadata."""
+        config = _build_stream_config("t-none", assistant_id=None, sandbox_type="none")
+        assert "sandbox_type" not in config["metadata"]
+
+    def test_no_model_keys_in_configurable(self) -> None:
+        """Model/model_params should not be in configurable."""
+        config = _build_stream_config("t-no-model", assistant_id=None)
+        assert "model" not in config["configurable"]
+        assert "model_params" not in config["configurable"]
+
 
 class TestGetGitBranch:
     """Tests for `_get_git_branch` caching."""
@@ -317,7 +338,7 @@ class TestExecuteTaskTextualSummarizationFeedback:
     """Tests for summarization spinner and notification feedback."""
 
     async def test_spinner_transitions_for_summarization_stream(self) -> None:
-        """Spinner should move Thinking -> Summarizing -> Thinking."""
+        """Spinner should move Thinking -> Offloading -> Thinking."""
         statuses: list[str | None] = []
 
         async def record_spinner(status: str | None) -> None:
@@ -352,7 +373,7 @@ class TestExecuteTaskTextualSummarizationFeedback:
         )
 
         assert statuses[0] == "Thinking"
-        assert "Summarizing" in statuses
+        assert "Offloading" in statuses
         assert statuses[-1] == "Thinking"
 
     async def test_mounts_summarization_notification_on_regular_chunk(self) -> None:

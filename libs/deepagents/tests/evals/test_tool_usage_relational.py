@@ -880,3 +880,159 @@ def test_four_steps_find_user_food_allergies(model: BaseChatModel) -> None:
             ],
         ),
     )
+
+
+@pytest.mark.langsmith
+def test_four_steps_current_user_food_names_calories_and_allergies(model: BaseChatModel) -> None:
+    """Agent resolves current user -> favorite foods -> all requested food details in parallel."""
+    agent = create_deep_agent(
+        model=model,
+        tools=RELATIONAL_TOOLS,
+    )
+    run_agent(
+        agent,
+        model=model,
+        query=("For each of the current user's favorite foods, tell me the food name, calories per serving, and allergic ingredients."),
+        # 1st step: get_current_user_id -> 35.
+        # 2nd step: get_user_favorite_foods(35) -> [3, 7, 2].
+        # 3rd step: get_food_name, get_food_calories, and get_food_allergic_ingredients
+        #           for each food ID, all 9 calls in parallel.
+        # 4th step: answer.
+        # 11 tool call requests: 1 + 1 + 9 parallel.
+        scorer=TrajectoryScorer()
+        .success(
+            final_text_contains("Sushi"),
+            final_text_contains("300"),
+            final_text_contains("Fish"),
+            final_text_contains("Salad"),
+            final_text_contains("Chocolate"),
+            final_text_contains("Milk"),
+        )
+        .expect(
+            agent_steps=4,
+            tool_call_requests=11,
+            tool_calls=[
+                tool_call(name="get_current_user_id", step=1),
+                tool_call(name="get_user_favorite_foods", step=2, args_contains={"user_id": 35}),
+                tool_call(name="get_food_name", step=3, args_contains={"food_id": 3}),
+                tool_call(name="get_food_name", step=3, args_contains={"food_id": 7}),
+                tool_call(name="get_food_name", step=3, args_contains={"food_id": 2}),
+                tool_call(name="get_food_calories", step=3, args_contains={"food_id": 3}),
+                tool_call(name="get_food_calories", step=3, args_contains={"food_id": 7}),
+                tool_call(name="get_food_calories", step=3, args_contains={"food_id": 2}),
+                tool_call(name="get_food_allergic_ingredients", step=3, args_contains={"food_id": 3}),
+                tool_call(name="get_food_allergic_ingredients", step=3, args_contains={"food_id": 7}),
+                tool_call(name="get_food_allergic_ingredients", step=3, args_contains={"food_id": 2}),
+            ],
+        ),
+    )
+
+
+@pytest.mark.langsmith
+def test_four_steps_find_user_city_weather_time_and_food_details(model: BaseChatModel) -> None:
+    """Agent finds Donna and gathers location plus detailed favorite-food info."""
+    agent = create_deep_agent(
+        model=model,
+        tools=RELATIONAL_TOOLS,
+    )
+    run_agent(
+        agent,
+        model=model,
+        query=(
+            "Find Donna and tell me which city she lives in, the current weather and time there, and the names "
+            "and calories of all her favorite foods."
+        ),
+        # 1st step: find_users_by_name("Donna") -> [{id: 41, ...}, ...].
+        # 2nd step: get_user_location(41) and get_user_favorite_foods(41) in parallel.
+        # 3rd step: get_city_for_location(4), get_current_time_for_location(4),
+        #           get_weather_at_location(4), get_food_name for each favorite food ID,
+        #           and get_food_calories for each favorite food ID, all 9 calls in parallel.
+        # 4th step: answer.
+        # 12 tool call requests: 1 + 2 + 9 parallel.
+        scorer=TrajectoryScorer()
+        .success(
+            final_text_contains("Houston"),
+            final_text_contains("12:00"),
+            final_text_contains("55", case_insensitive=True),
+            final_text_contains("Pasta"),
+            final_text_contains("Pizza"),
+            final_text_contains("Burger"),
+            final_text_contains("180"),
+            final_text_contains("285"),
+            final_text_contains("350"),
+        )
+        .expect(
+            agent_steps=4,
+            tool_call_requests=12,
+            tool_calls=[
+                tool_call(name="find_users_by_name", step=1, args_contains={"name": "Donna"}),
+                tool_call(name="get_user_location", step=2, args_contains={"user_id": 41}),
+                tool_call(name="get_user_favorite_foods", step=2, args_contains={"user_id": 41}),
+                tool_call(name="get_city_for_location", step=3, args_contains={"location_id": 4}),
+                tool_call(name="get_current_time_for_location", step=3, args_contains={"location_id": 4}),
+                tool_call(name="get_weather_at_location", step=3, args_contains={"location_id": 4}),
+                tool_call(name="get_food_name", step=3, args_contains={"food_id": 6}),
+                tool_call(name="get_food_name", step=3, args_contains={"food_id": 1}),
+                tool_call(name="get_food_name", step=3, args_contains={"food_id": 4}),
+                tool_call(name="get_food_calories", step=3, args_contains={"food_id": 6}),
+                tool_call(name="get_food_calories", step=3, args_contains={"food_id": 1}),
+                tool_call(name="get_food_calories", step=3, args_contains={"food_id": 4}),
+            ],
+        ),
+    )
+
+
+@pytest.mark.langsmith
+def test_four_steps_find_user_email_city_foods_calories_and_allergies(model: BaseChatModel) -> None:
+    """Agent finds Eve and returns contact, location, and detailed food facts."""
+    agent = create_deep_agent(
+        model=model,
+        tools=RELATIONAL_TOOLS,
+    )
+    run_agent(
+        agent,
+        model=model,
+        query=(
+            "Find Eve and tell me her email address, what city she lives in, and for each of her favorite foods, "
+            "give the food name, calories per serving, and allergic ingredients."
+        ),
+        # 1st step: find_users_by_name("Eve") -> [{id: 42, ...}, ...].
+        # 2nd step: get_user_email(42), get_user_location(42), and get_user_favorite_foods(42) in parallel.
+        # 3rd step: get_city_for_location(5), get_food_name for each favorite food ID,
+        #           get_food_calories for each favorite food ID, and get_food_allergic_ingredients
+        #           for each favorite food ID, all 10 calls in parallel.
+        # 4th step: answer.
+        # 14 tool call requests: 1 + 3 + 10 parallel.
+        scorer=TrajectoryScorer()
+        .success(
+            final_text_contains("eve@example.org"),
+            final_text_contains("Miami"),
+            final_text_contains("Ice Cream"),
+            final_text_contains("200"),
+            final_text_contains("Dairy"),
+            final_text_contains("Salad"),
+            final_text_contains("Burger"),
+            final_text_contains("350"),
+            final_text_contains("Gluten"),
+        )
+        .expect(
+            agent_steps=4,
+            tool_call_requests=14,
+            tool_calls=[
+                tool_call(name="find_users_by_name", step=1, args_contains={"name": "Eve"}),
+                tool_call(name="get_user_email", step=2, args_contains={"user_id": 42}),
+                tool_call(name="get_user_location", step=2, args_contains={"user_id": 42}),
+                tool_call(name="get_user_favorite_foods", step=2, args_contains={"user_id": 42}),
+                tool_call(name="get_city_for_location", step=3, args_contains={"location_id": 5}),
+                tool_call(name="get_food_name", step=3, args_contains={"food_id": 5}),
+                tool_call(name="get_food_name", step=3, args_contains={"food_id": 7}),
+                tool_call(name="get_food_name", step=3, args_contains={"food_id": 4}),
+                tool_call(name="get_food_calories", step=3, args_contains={"food_id": 5}),
+                tool_call(name="get_food_calories", step=3, args_contains={"food_id": 7}),
+                tool_call(name="get_food_calories", step=3, args_contains={"food_id": 4}),
+                tool_call(name="get_food_allergic_ingredients", step=3, args_contains={"food_id": 5}),
+                tool_call(name="get_food_allergic_ingredients", step=3, args_contains={"food_id": 7}),
+                tool_call(name="get_food_allergic_ingredients", step=3, args_contains={"food_id": 4}),
+            ],
+        ),
+    )

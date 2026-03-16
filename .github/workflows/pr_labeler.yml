@@ -82,10 +82,73 @@ jobs:
               core.setOutput('is-external', 'true');
             }
 
+      # Rename `deepagents` scope → `sdk` for non-release PRs.
+      # Release PRs (e.g. `release(deepagents): 1.2.0`) are left
+      # untouched since their titles are canonical version records.
+      # Runs before labeling so title-based labels read the
+      # corrected title.
+      - name: Rename deepagents scope to sdk
+        id: rename-scope
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const pr = context.payload.pull_request;
+            if (!pr) {
+              console.log('No pull_request in payload; skipping scope rename');
+              return;
+            }
+
+            const title = pr.title ?? '';
+            const match = title.match(/^(\w+!?)\(([^)]+)\)(!?:\s*.*)$/);
+            if (!match) {
+              console.log(`Title has no scoped format; skipping rename: "${title}"`);
+              return;
+            }
+
+            const type = match[1].replace('!', '').toLowerCase();
+            if (type === 'release') {
+              console.log(`Skipping release PR: ${title}`);
+              return;
+            }
+
+            const scopeStr = match[2];
+            const newScope = scopeStr
+              .split(',')
+              .map(s => s.trim() === 'deepagents' ? 'sdk' : s.trim())
+              .join(',');
+
+            if (newScope === scopeStr) return;
+
+            const newTitle = `${match[1]}(${newScope})${match[3]}`;
+            console.log(`Renaming: "${title}" → "${newTitle}"`);
+
+            try {
+              await github.rest.pulls.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: pr.number,
+                title: newTitle,
+              });
+            } catch (error) {
+              core.warning(
+                `Failed to rename PR #${pr.number} title ` +
+                `(${error.status ?? 'unknown'}): ${error.message}. ` +
+                `Labeling will continue with the original title.`
+              );
+              return;
+            }
+
+            // Pass corrected title to the labeling step via output;
+            // context.payload.pull_request.title is frozen from the
+            // webhook event and won't reflect the API update.
+            core.setOutput('title', newTitle);
+
       - name: Apply PR labels
         uses: actions/github-script@v8
         env:
           IS_EXTERNAL: ${{ steps.check-membership.outputs.is-external }}
+          RENAMED_TITLE: ${{ steps.rename-scope.outputs.title }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
@@ -161,7 +224,9 @@ jobs:
             }
 
             // ── Title-based labels ──
-            const title = pr.title ?? '';
+            // Use renamed title if the scope-rename step rewrote it,
+            // since pr.title still reflects the pre-update value.
+            const title = process.env.RENAMED_TITLE || pr.title || '';
             const titleMatch = title.match(/^(\w+)(?:\(([^)]+)\))?(!)?:/);
             if (titleMatch) {
               const type = titleMatch[1].toLowerCase();

@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import sqlite3
-import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
@@ -234,12 +233,14 @@ def get_db_path() -> Path:
 
 
 def generate_thread_id() -> str:
-    """Generate a new 8-char hex thread ID.
+    """Generate a new thread ID as a full UUID7 string.
 
     Returns:
-        8-character hexadecimal string.
+        UUID7 string (time-ordered for natural sort by creation time).
     """
-    return uuid.uuid4().hex[:8]
+    from uuid_utils import uuid7
+
+    return str(uuid7())
 
 
 async def _table_exists(conn: aiosqlite.Connection, table: str) -> bool:
@@ -278,7 +279,6 @@ async def list_threads(
         ValueError: If `sort_by` is not `"updated"` or `"created"`.
     """
     async with _connect() as conn:
-        # Return empty if table doesn't exist yet (fresh install)
         if not await _table_exists(conn, "checkpoints"):
             return []
 

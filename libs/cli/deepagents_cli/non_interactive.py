@@ -3,6 +3,9 @@
 Provides `run_non_interactive` which runs a single user task against the
 agent graph, streams results to stdout, and exits with an appropriate code.
 
+The agent runs inside a `langgraph dev` server subprocess, connected via
+the `RemoteAgent` client (see `server_manager.server_session`).
+
 Shell commands are gated by an optional allow-list (`--shell-allow-list`):
 
 - Not set → shell disabled, all other tool calls auto-approved.
@@ -16,7 +19,6 @@ stderr, leaving stdout exclusively for the agent's response text.
 
 from __future__ import annotations
 
-import contextlib
 import logging
 import sys
 import threading
@@ -34,7 +36,8 @@ from rich.console import Console
 from rich.style import Style
 from rich.text import Text
 
-from deepagents_cli.agent import DEFAULT_AGENT_NAME, create_cli_agent
+from deepagents_cli._version import __version__
+from deepagents_cli.agent import DEFAULT_AGENT_NAME
 from deepagents_cli.config import (
     SHELL_ALLOW_ALL,
     SHELL_TOOL_NAMES,
@@ -46,9 +49,8 @@ from deepagents_cli.config import (
 from deepagents_cli.file_ops import FileOpTracker
 from deepagents_cli.hooks import dispatch_hook, dispatch_hook_fire_and_forget
 from deepagents_cli.model_config import ModelConfigError
-from deepagents_cli.sessions import generate_thread_id, get_checkpointer
+from deepagents_cli.sessions import generate_thread_id
 from deepagents_cli.textual_adapter import SessionStats, print_usage_table
-from deepagents_cli.tools import fetch_url, http_request, web_search
 from deepagents_cli.unicode_security import (
     check_url_safety,
     detect_dangerous_unicode,
@@ -60,7 +62,6 @@ from deepagents_cli.unicode_security import (
 
 if TYPE_CHECKING:
     from langchain_core.runnables import RunnableConfig
-    from langgraph.pregel import Pregel
 
 logger = logging.getLogger(__name__)
 
@@ -501,7 +502,7 @@ def _process_hitl_interrupts(state: StreamState, console: Console) -> None:
 
 
 async def _stream_agent(
-    agent: Pregel,
+    agent: Any,  # noqa: ANN401
     stream_input: dict[str, Any] | Command,
     config: RunnableConfig,
     state: StreamState,
@@ -511,7 +512,7 @@ async def _stream_agent(
     """Consume the full agent stream and update *state* with results.
 
     Args:
-        agent: The compiled LangGraph agent.
+        agent: The agent (Pregel or RemoteAgent).
         stream_input: Either the initial user message dict or a
             `Command(resume=...)` for HITL continuation.
         config: LangGraph runnable config (thread ID, metadata, etc.).
@@ -530,7 +531,7 @@ async def _stream_agent(
 
 
 async def _run_agent_loop(
-    agent: Pregel,
+    agent: Any,  # noqa: ANN401
     message: str,
     config: RunnableConfig,
     console: Console,
@@ -546,7 +547,7 @@ async def _run_agent_loop(
     runaway retries (e.g. the agent repeatedly attempting rejected commands).
 
     Args:
-        agent: The compiled LangGraph agent.
+        agent: The agent (Pregel or RemoteAgent).
         message: The user's task message.
         config: LangGraph runnable config.
         console: Rich console for formatted output.
@@ -642,6 +643,8 @@ def _build_non_interactive_header(
     """
     default_label = " (default)" if assistant_id == DEFAULT_AGENT_NAME else ""
     parts: list[tuple[str, str | Style]] = [
+        (f"CLI: v{__version__}", "dim"),
+        (" | ", "dim"),
         (f"Agent: {assistant_id}{default_label}", "dim"),
     ]
 
@@ -743,7 +746,6 @@ async def run_non_interactive(
         console.print(f"[bold red]Error:[/bold red] {e}")
         return 1
 
-    model = result.model
     result.apply_to_settings()
     thread_id = generate_thread_id()
 
@@ -773,103 +775,73 @@ async def run_non_interactive(
     thread_url_lookup: ThreadUrlLookupState | None = None
     if not quiet:
         thread_url_lookup = _start_langsmith_thread_url_lookup(thread_id)
-        console.print("[dim]Running task non-interactively...[/dim]", highlight=False)
+        console.print(Text("Running task non-interactively...", style="dim"))
         header = _build_non_interactive_header(assistant_id, thread_id)
         console.print(header)
 
-    sandbox_backend = None
-    exit_stack = contextlib.ExitStack()
+    import asyncio
 
-    if sandbox_type != "none":
-        # Conditional: sandbox_factory transitively imports provider modules
-        # and SDKs — skip that cost for the common no-sandbox path.
-        from deepagents_cli.integrations.sandbox_factory import (
-            create_sandbox,
-        )
+    from deepagents_cli.server_manager import server_session
 
+    # Launch MCP preload concurrently with server startup
+    mcp_task: asyncio.Task[Any] | None = None
+    if not no_mcp and not quiet:
         try:
-            sandbox_cm = create_sandbox(
-                sandbox_type,
-                sandbox_id=sandbox_id,
-                setup_script_path=sandbox_setup,
-            )
-            sandbox_backend = exit_stack.enter_context(sandbox_cm)
-        except (ImportError, ValueError) as e:
-            logger.exception("Sandbox creation failed")
-            console.print(f"[red]Sandbox creation failed: {e}[/red]")
-            return 1
-        except NotImplementedError as e:
-            logger.exception("Unsupported sandbox type %r", sandbox_type)
-            console.print(
-                f"[red]Sandbox type '{sandbox_type}' is not yet supported: {e}[/red]"
-            )
-            return 1
-        except RuntimeError as e:
-            logger.exception("Sandbox creation failed")
-            console.print(f"[red]Sandbox creation failed: {e}[/red]")
-            return 1
+            from deepagents_cli.main import _preload_session_mcp_server_info
 
-    mcp_session_manager = None
-    mcp_server_info: list[Any] | None = None
-    try:
-        async with get_checkpointer() as checkpointer:
-            tools = [http_request, fetch_url]
-            if settings.has_tavily:
-                tools.append(web_search)
-
-            # Load MCP tools (explicit config, auto-discovery, or disabled)
-            try:
-                from deepagents_cli.mcp_tools import resolve_and_load_mcp_tools
-
-                (
-                    mcp_tools,
-                    mcp_session_manager,
-                    mcp_server_info,
-                ) = await resolve_and_load_mcp_tools(
-                    explicit_config_path=mcp_config_path,
+            mcp_task = asyncio.create_task(
+                _preload_session_mcp_server_info(
+                    mcp_config_path=mcp_config_path,
                     no_mcp=no_mcp,
                     trust_project_mcp=trust_project_mcp,
                 )
-                tools.extend(mcp_tools)
-                if mcp_tools:
-                    label = "MCP tool" if len(mcp_tools) == 1 else "MCP tools"
-                    console.print(f"[green]✓ Loaded {len(mcp_tools)} {label}[/green]")
-            except FileNotFoundError as e:
-                console.print(f"[red]✗ MCP config file not found: {e}[/red]")
-                return 1
-            except RuntimeError as e:
-                console.print(f"[red]✗ Failed to load MCP tools: {e}[/red]")
-                return 1
-
-            # Shell access is controlled by --shell-allow-list:
-            #   not set        → shell disabled, auto-approve all other tools
-            #   recommended/…  → shell enabled, gated by list
-            #   all            → shell enabled, any command, auto-approve
-            enable_shell = bool(settings.shell_allow_list)
-            shell_is_unrestricted = isinstance(
-                settings.shell_allow_list, type(SHELL_ALLOW_ALL)
             )
-            use_auto_approve = not enable_shell or shell_is_unrestricted
+        except Exception:
+            logger.warning("MCP metadata preload task creation failed", exc_info=True)
 
-            agent, composite_backend = create_cli_agent(
-                model=model,
-                assistant_id=assistant_id,
-                tools=tools,
-                sandbox=sandbox_backend,
-                sandbox_type=sandbox_type if sandbox_type != "none" else None,
-                interactive=False,
-                auto_approve=use_auto_approve,
-                enable_shell=enable_shell,
-                checkpointer=checkpointer,
-                mcp_server_info=mcp_server_info,
-            )
+    try:
+        enable_shell = bool(settings.shell_allow_list)
+        shell_is_unrestricted = isinstance(
+            settings.shell_allow_list, type(SHELL_ALLOW_ALL)
+        )
+        use_auto_approve = not enable_shell or shell_is_unrestricted
 
-            file_op_tracker = FileOpTracker(
-                assistant_id=assistant_id, backend=composite_backend
-            )
+        if not quiet:
+            console.print(Text("Starting LangGraph server...", style="dim"))
+
+        async with server_session(
+            assistant_id=assistant_id,
+            model_name=model_name,
+            model_params=model_params,
+            auto_approve=use_auto_approve,
+            sandbox_type=sandbox_type,
+            sandbox_id=sandbox_id,
+            sandbox_setup=sandbox_setup,
+            enable_shell=enable_shell,
+            enable_ask_user=False,
+            mcp_config_path=mcp_config_path,
+            no_mcp=no_mcp,
+            trust_project_mcp=trust_project_mcp,
+            interactive=False,
+        ) as (agent, _server_proc):
+            # Collect MCP preload result (ran concurrently with server startup)
+            if mcp_task is not None:
+                try:
+                    mcp_info = await mcp_task
+                    if mcp_info:
+                        tool_count = sum(len(s.tools) for s in mcp_info)
+                        if tool_count:
+                            label = "MCP tool" if tool_count == 1 else "MCP tools"
+                            console.print(
+                                f"[green]✓ Loaded {tool_count} {label}[/green]"
+                            )
+                except Exception:
+                    logger.warning("MCP metadata preload failed", exc_info=True)
 
             if not quiet:
-                console.print()
+                console.print("[green]✓ Server ready[/green]")
+
+            file_op_tracker = FileOpTracker(assistant_id=assistant_id, backend=None)
 
             await _run_agent_loop(
                 agent,
@@ -881,7 +853,6 @@ async def run_non_interactive(
                 stream=stream,
                 thread_url_lookup=thread_url_lookup,
             )
-            return 0
 
     except KeyboardInterrupt:
         console.print("\n[yellow]Interrupted[/yellow]")
@@ -902,17 +873,5 @@ async def run_non_interactive(
         logger.exception("Unexpected error during non-interactive execution")
         console.print(f"\n[red]Unexpected error ({type(e).__name__}): {e}[/red]")
         return 1
-    finally:
-        if mcp_session_manager is not None:
-            try:
-                await mcp_session_manager.cleanup()
-            except Exception:
-                logger.warning("MCP session cleanup failed", exc_info=True)
-        try:
-            exit_stack.close()
-        except (OSError, RuntimeError) as cleanup_err:
-            msg = "Failed to clean up resources during exit"
-            logger.warning("%s: %s", msg, cleanup_err, exc_info=True)
-            console.print(
-                f"[yellow]Warning: Resource cleanup failed: {cleanup_err}[/yellow]"
-            )
+    else:
+        return 0

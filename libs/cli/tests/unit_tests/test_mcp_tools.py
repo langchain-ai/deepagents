@@ -21,6 +21,7 @@ from deepagents_cli.mcp_tools import (
     merge_mcp_configs,
     resolve_and_load_mcp_tools,
 )
+from deepagents_cli.project_utils import ProjectContext
 
 # Test Fixtures
 
@@ -916,6 +917,31 @@ class TestGetMCPTools:
 class TestDiscoverMcpConfigs:
     """Test auto-discovery of MCP config files."""
 
+    def test_project_context_overrides_process_cwd(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Explicit project context should drive discovery instead of cwd."""
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: home)
+
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        (project_root / ".git").mkdir()
+        user_cwd = project_root / "src"
+        user_cwd.mkdir()
+        project_cfg = project_root / ".mcp.json"
+        project_cfg.write_text('{"mcpServers": {}}')
+
+        other_cwd = tmp_path / "elsewhere"
+        other_cwd.mkdir()
+        monkeypatch.chdir(other_cwd)
+
+        project_context = ProjectContext.from_user_cwd(user_cwd)
+        result = discover_mcp_configs(project_context=project_context)
+
+        assert result == [project_cfg]
+
     def test_no_configs_found(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1197,6 +1223,79 @@ class TestResolveAndLoadMcpTools:
         """no_mcp=True should not call discover_mcp_configs."""
         await resolve_and_load_mcp_tools(no_mcp=True)
         mock_discover.assert_not_called()
+
+    @patch("deepagents_cli.mcp_tools._load_tools_from_config")
+    @patch("deepagents_cli.mcp_trust.is_project_mcp_trusted")
+    async def test_project_context_drives_trust_root(
+        self,
+        mock_is_trusted: MagicMock,
+        mock_load: AsyncMock,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Trust lookup should use explicit project context, not process cwd."""
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: home)
+
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        (project_root / ".git").mkdir()
+        user_cwd = project_root / "src"
+        user_cwd.mkdir()
+        project_cfg = project_root / ".mcp.json"
+        project_cfg.write_text(
+            json.dumps({"mcpServers": {"local": {"command": "npx", "args": []}}})
+        )
+
+        other_cwd = tmp_path / "elsewhere"
+        other_cwd.mkdir()
+        monkeypatch.chdir(other_cwd)
+
+        mock_is_trusted.return_value = True
+        mock_load.return_value = ([], MCPSessionManager(), [])
+
+        project_context = ProjectContext.from_user_cwd(user_cwd)
+        await resolve_and_load_mcp_tools(project_context=project_context)
+
+        mock_is_trusted.assert_called_once()
+        assert mock_is_trusted.call_args.args[0] == str(project_root.resolve())
+        mock_load.assert_awaited_once()
+
+    @patch("deepagents_cli.mcp_tools._load_tools_from_config")
+    async def test_project_context_normalizes_relative_explicit_path(
+        self,
+        mock_load: AsyncMock,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Explicit config paths should resolve relative to project context cwd."""
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: home)
+
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        (project_root / ".git").mkdir()
+        user_cwd = project_root / "src"
+        user_cwd.mkdir()
+        explicit = user_cwd / "configs" / "mcp.json"
+        explicit.parent.mkdir(parents=True)
+        explicit.write_text(
+            json.dumps({"mcpServers": {"fs": {"command": "npx", "args": []}}})
+        )
+
+        mock_load.return_value = ([], MCPSessionManager(), [])
+
+        project_context = ProjectContext.from_user_cwd(user_cwd)
+        await resolve_and_load_mcp_tools(
+            explicit_config_path="configs/mcp.json",
+            trust_project_mcp=True,
+            project_context=project_context,
+        )
+
+        merged = mock_load.call_args.args[0]
+        assert "fs" in merged["mcpServers"]
 
     @patch("deepagents_cli.mcp_tools._load_tools_from_config")
     @patch("deepagents_cli.mcp_tools.discover_mcp_configs")

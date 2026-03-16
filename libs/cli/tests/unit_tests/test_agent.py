@@ -25,6 +25,7 @@ from deepagents_cli.agent import (
     list_agents,
 )
 from deepagents_cli.config import Settings, get_glyphs
+from deepagents_cli.project_utils import ProjectContext
 
 
 def _make_fake_chat_model() -> GenericFakeChatModel:
@@ -567,7 +568,7 @@ class TestCreateCliAgentInteractiveForwarding:
             patch("deepagents_cli.agent.MemoryMiddleware"),
             patch("deepagents_cli.agent.create_deep_agent", return_value=mock_agent),
             patch(
-                "deepagents.graph.init_chat_model",
+                "deepagents._models.init_chat_model",
                 return_value=fake_model,
             ),
             patch("deepagents_cli.agent.get_system_prompt") as mock_get_prompt,
@@ -619,7 +620,7 @@ class TestCreateCliAgentInteractiveForwarding:
             patch("deepagents_cli.agent.MemoryMiddleware"),
             patch("deepagents_cli.agent.create_deep_agent", return_value=mock_agent),
             patch(
-                "deepagents.graph.init_chat_model",
+                "deepagents._models.init_chat_model",
                 return_value=fake_model,
             ),
             patch("deepagents_cli.agent.get_system_prompt") as mock_get_prompt,
@@ -875,7 +876,7 @@ class TestCreateCliAgentSkillsSources:
             patch("deepagents_cli.agent.MemoryMiddleware"),
             patch("deepagents_cli.agent.create_deep_agent", return_value=mock_agent),
             patch(
-                "deepagents.graph.init_chat_model",
+                "deepagents._models.init_chat_model",
                 return_value=fake_model,
             ),
         ):
@@ -952,7 +953,7 @@ class TestCreateCliAgentMemorySources:
                 return_value=mock_agent,
             ),
             patch(
-                "deepagents.graph.init_chat_model",
+                "deepagents._models.init_chat_model",
                 return_value=fake_model,
             ),
         ):
@@ -1018,7 +1019,7 @@ class TestCreateCliAgentMemorySources:
                 return_value=mock_agent,
             ),
             patch(
-                "deepagents.graph.init_chat_model",
+                "deepagents._models.init_chat_model",
                 return_value=fake_model,
             ),
         ):
@@ -1034,6 +1035,273 @@ class TestCreateCliAgentMemorySources:
         sources = captured[0]
         # Only user AGENTS.md, no project paths
         assert sources == [str(agent_dir / "AGENTS.md")]
+
+
+class TestCreateCliAgentProjectContext:
+    """Tests for explicit project context in `create_cli_agent`."""
+
+    def test_project_context_drives_project_skills_and_subagents(
+        self, tmp_path: Path
+    ) -> None:
+        """Project-sensitive paths should come from explicit project context."""
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        (project_root / ".git").mkdir()
+        user_cwd = project_root / "src"
+        user_cwd.mkdir()
+
+        project_skills_dir = project_root / ".deepagents" / "skills"
+        project_skills_dir.mkdir(parents=True)
+        project_agent_skills_dir = project_root / ".agents" / "skills"
+        project_agent_skills_dir.mkdir(parents=True)
+        project_agents_dir = project_root / ".deepagents" / "agents"
+        project_agents_dir.mkdir(parents=True)
+        project_context = ProjectContext.from_user_cwd(user_cwd)
+
+        agent_dir = tmp_path / "agent"
+        agent_dir.mkdir()
+        user_skills_dir = tmp_path / "user-skills"
+        user_skills_dir.mkdir()
+        user_agent_skills_dir = tmp_path / "user-agent-skills"
+        user_agent_skills_dir.mkdir()
+
+        mock_settings = Mock()
+        mock_settings.ensure_agent_dir.return_value = agent_dir
+        mock_settings.ensure_user_skills_dir.return_value = user_skills_dir
+        mock_settings.get_user_agent_skills_dir.return_value = user_agent_skills_dir
+        mock_settings.get_project_skills_dir.return_value = None
+        mock_settings.get_project_agent_skills_dir.return_value = None
+        mock_settings.get_built_in_skills_dir.return_value = (
+            Settings.get_built_in_skills_dir()
+        )
+        mock_settings.get_user_agent_md_path.return_value = agent_dir / "AGENTS.md"
+        mock_settings.get_project_agent_md_path.return_value = []
+        mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
+        mock_settings.get_project_agents_dir.return_value = None
+        mock_settings.model_name = None
+        mock_settings.model_provider = None
+        mock_settings.model_context_limit = None
+        mock_settings.project_root = None
+        mock_settings.user_langchain_project = None
+
+        captured_sources: list[list[str]] = []
+
+        class FakeSkillsMiddleware:
+            """Capture the sources argument passed to SkillsMiddleware."""
+
+            def __init__(self, **kwargs: Any) -> None:
+                captured_sources.append(kwargs.get("sources", []))
+
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+
+        fake_model = _make_fake_chat_model()
+        with (
+            patch("deepagents_cli.agent.settings", mock_settings),
+            patch("deepagents_cli.agent.SkillsMiddleware", FakeSkillsMiddleware),
+            patch("deepagents_cli.agent.MemoryMiddleware"),
+            patch("deepagents_cli.agent.list_subagents", return_value=[]) as mock_list,
+            patch("deepagents_cli.agent.create_deep_agent", return_value=mock_agent),
+            patch("deepagents._models.init_chat_model", return_value=fake_model),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=False,
+                enable_skills=True,
+                enable_shell=False,
+                project_context=project_context,
+            )
+
+        assert len(captured_sources) == 1
+        sources = captured_sources[0]
+        assert str(project_skills_dir) in sources
+        assert str(project_agent_skills_dir) in sources
+        mock_list.assert_called_once_with(
+            user_agents_dir=tmp_path / "agents",
+            project_agents_dir=project_agents_dir,
+        )
+
+    def test_project_context_drives_project_agents_md_paths(
+        self, tmp_path: Path
+    ) -> None:
+        """Memory sources should use project AGENTS from explicit context."""
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        (project_root / ".git").mkdir()
+        user_cwd = project_root / "src"
+        user_cwd.mkdir()
+
+        deepagents_md = project_root / ".deepagents" / "AGENTS.md"
+        deepagents_md.parent.mkdir(parents=True)
+        deepagents_md.write_text("deepagents instructions")
+        root_md = project_root / "AGENTS.md"
+        root_md.write_text("root instructions")
+        project_context = ProjectContext.from_user_cwd(user_cwd)
+
+        agent_dir = tmp_path / "agent"
+        agent_dir.mkdir()
+        user_skills_dir = tmp_path / "skills"
+        user_skills_dir.mkdir()
+
+        mock_settings = Mock()
+        mock_settings.ensure_agent_dir.return_value = agent_dir
+        mock_settings.ensure_user_skills_dir.return_value = user_skills_dir
+        mock_settings.get_project_skills_dir.return_value = None
+        mock_settings.get_built_in_skills_dir.return_value = (
+            Settings.get_built_in_skills_dir()
+        )
+        mock_settings.get_user_agent_md_path.return_value = agent_dir / "AGENTS.md"
+        mock_settings.get_project_agent_md_path.return_value = []
+        mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
+        mock_settings.get_project_agents_dir.return_value = None
+        mock_settings.model_name = None
+        mock_settings.model_provider = None
+        mock_settings.model_context_limit = None
+        mock_settings.project_root = None
+        mock_settings.user_langchain_project = None
+
+        captured_sources: list[list[str]] = []
+
+        class FakeMemoryMiddleware:
+            """Capture the sources argument passed to MemoryMiddleware."""
+
+            def __init__(self, **kwargs: Any) -> None:
+                captured_sources.append(kwargs.get("sources", []))
+
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+
+        fake_model = _make_fake_chat_model()
+        with (
+            patch("deepagents_cli.agent.settings", mock_settings),
+            patch("deepagents_cli.agent.SkillsMiddleware"),
+            patch("deepagents_cli.agent.MemoryMiddleware", FakeMemoryMiddleware),
+            patch("deepagents_cli.agent.FilesystemBackend"),
+            patch("deepagents_cli.agent.create_deep_agent", return_value=mock_agent),
+            patch("deepagents._models.init_chat_model", return_value=fake_model),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=True,
+                enable_skills=False,
+                enable_shell=False,
+                project_context=project_context,
+            )
+
+        assert len(captured_sources) == 1
+        sources = captured_sources[0]
+        assert sources[0] == str(agent_dir / "AGENTS.md")
+        assert sources[1:] == [str(deepagents_md), str(root_md)]
+
+    def test_project_context_sets_local_shell_root_dir(self, tmp_path: Path) -> None:
+        """Shell backend root should follow the explicit user working directory."""
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        (project_root / ".git").mkdir()
+        user_cwd = project_root / "src"
+        user_cwd.mkdir()
+        project_context = ProjectContext.from_user_cwd(user_cwd)
+
+        agent_dir = tmp_path / "agent"
+        agent_dir.mkdir()
+        user_skills_dir = tmp_path / "skills"
+        user_skills_dir.mkdir()
+
+        mock_settings = Mock()
+        mock_settings.ensure_agent_dir.return_value = agent_dir
+        mock_settings.ensure_user_skills_dir.return_value = user_skills_dir
+        mock_settings.get_project_skills_dir.return_value = None
+        mock_settings.get_built_in_skills_dir.return_value = (
+            Settings.get_built_in_skills_dir()
+        )
+        mock_settings.get_user_agent_md_path.return_value = agent_dir / "AGENTS.md"
+        mock_settings.get_project_agent_md_path.return_value = []
+        mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
+        mock_settings.get_project_agents_dir.return_value = None
+        mock_settings.model_name = None
+        mock_settings.model_provider = None
+        mock_settings.model_context_limit = None
+        mock_settings.project_root = None
+        mock_settings.user_langchain_project = None
+
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        mock_backend = Mock()
+
+        fake_model = _make_fake_chat_model()
+        with (
+            patch("deepagents_cli.agent.settings", mock_settings),
+            patch("deepagents_cli.agent.MemoryMiddleware"),
+            patch("deepagents_cli.agent.SkillsMiddleware"),
+            patch(
+                "deepagents_cli.agent.LocalShellBackend", return_value=mock_backend
+            ) as mock_shell,
+            patch("deepagents_cli.agent.create_deep_agent", return_value=mock_agent),
+            patch("deepagents._models.init_chat_model", return_value=fake_model),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=True,
+                project_context=project_context,
+            )
+
+        assert mock_shell.call_args.kwargs["root_dir"] == user_cwd
+
+    def test_cwd_sets_local_filesystem_root_dir_without_shell(
+        self, tmp_path: Path
+    ) -> None:
+        """Filesystem backend root should follow the explicit working directory."""
+        user_cwd = tmp_path / "project" / "src"
+        user_cwd.mkdir(parents=True)
+
+        agent_dir = tmp_path / "agent"
+        agent_dir.mkdir()
+        user_skills_dir = tmp_path / "skills"
+        user_skills_dir.mkdir()
+
+        mock_settings = Mock()
+        mock_settings.ensure_agent_dir.return_value = agent_dir
+        mock_settings.ensure_user_skills_dir.return_value = user_skills_dir
+        mock_settings.get_project_skills_dir.return_value = None
+        mock_settings.get_built_in_skills_dir.return_value = (
+            Settings.get_built_in_skills_dir()
+        )
+        mock_settings.get_user_agent_md_path.return_value = agent_dir / "AGENTS.md"
+        mock_settings.get_project_agent_md_path.return_value = []
+        mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
+        mock_settings.get_project_agents_dir.return_value = None
+        mock_settings.model_name = None
+        mock_settings.model_provider = None
+        mock_settings.model_context_limit = None
+        mock_settings.project_root = None
+
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+
+        fake_model = _make_fake_chat_model()
+        with (
+            patch("deepagents_cli.agent.settings", mock_settings),
+            patch("deepagents_cli.agent.MemoryMiddleware"),
+            patch("deepagents_cli.agent.SkillsMiddleware"),
+            patch("deepagents_cli.agent.FilesystemBackend") as mock_filesystem,
+            patch("deepagents_cli.agent.create_deep_agent", return_value=mock_agent),
+            patch("deepagents._models.init_chat_model", return_value=fake_model),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=False,
+                cwd=user_cwd,
+            )
+
+        assert mock_filesystem.call_args_list[0].kwargs["root_dir"] == user_cwd
 
 
 class TestMiddlewareStackConformance:
@@ -1084,7 +1352,7 @@ class TestMiddlewareStackConformance:
                 side_effect=capture_create_agent,
             ),
             patch(
-                "deepagents.graph.init_chat_model",
+                "deepagents._models.init_chat_model",
                 return_value=fake_model,
             ),
         ):

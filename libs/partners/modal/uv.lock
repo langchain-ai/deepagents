@@ -577,7 +577,7 @@ wheels = [
 
 [[package]]
 name = "deepagents"
-version = "0.4.10"
+version = "0.4.11"
 source = { editable = "../../deepagents" }
 dependencies = [
     { name = "langchain" },
@@ -598,12 +598,20 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 evals = [
+    { name = "datasets", specifier = ">=3.0.0" },
+    { name = "langchain-anthropic" },
+    { name = "langchain-baseten" },
     { name = "langchain-deepseek" },
     { name = "langchain-fireworks" },
+    { name = "langchain-google-genai" },
     { name = "langchain-groq" },
     { name = "langchain-mistralai" },
     { name = "langchain-ollama" },
+    { name = "langchain-openai" },
     { name = "langchain-xai" },
+    { name = "langsmith" },
+    { name = "nltk", specifier = ">=3.9.0" },
+    { name = "tiktoken", specifier = ">=0.8.0" },
 ]
 test = [
     { name = "build" },

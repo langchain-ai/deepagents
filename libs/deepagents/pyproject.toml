@@ -1,6 +1,6 @@
 [project]
 name = "deepagents"
-version = "0.4.10"
+version = "0.4.11"
 
 description = "General purpose 'deep agent' with sub-agent spawning, todo list capabilities, and mock file system. Built on LangGraph."
 readme = "README.md"
@@ -55,12 +55,20 @@ test = [
 ]
 
 evals = [
-  "langchain-xai",
-  "langchain-mistralai",
+  "langsmith",
+  "langchain-anthropic",
+  "langchain-baseten",
   "langchain-deepseek",
-  "langchain-groq",
-  "langchain-ollama",
   "langchain-fireworks",
+  "langchain-google-genai",
+  "langchain-groq",
+  "langchain-mistralai",
+  "langchain-ollama",
+  "langchain-openai",
+  "langchain-xai",
+  "datasets>=3.0.0",
+  "nltk>=3.9.0",
+  "tiktoken>=0.8.0",
 ]
 
 [build-system]

@@ -1399,7 +1399,7 @@ class SummarizationMessage(AppMessage):
         """
         content: Text
         if message is None:
-            content = Text("✓ Summarized conversation", style="bold cyan")
+            content = Text("✓ Conversation offloaded", style="bold cyan")
         elif isinstance(message, Text):
             content = message
         else:

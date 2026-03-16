@@ -300,7 +300,7 @@ def _build_stream_config(
     branch = _get_git_branch()
     if branch:
         metadata["git_branch"] = branch
-    if sandbox_type and sandbox_type != "none":
+    if sandbox_type:
         metadata["sandbox_type"] = sandbox_type
     return {
         "configurable": {"thread_id": thread_id},

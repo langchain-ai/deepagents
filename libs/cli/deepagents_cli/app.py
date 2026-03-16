@@ -597,6 +597,11 @@ class DeepAgentsApp(App):
         self._server_kwargs = server_kwargs
         self._mcp_preload_kwargs = mcp_preload_kwargs
         self._connecting = server_kwargs is not None
+        # Extract sandbox type from server kwargs for trace metadata.
+        # _server_config normalizes "none" → None, but server_kwargs carries
+        # the raw argparse value, so guard against both.
+        raw = (server_kwargs or {}).get("sandbox_type")
+        self._sandbox_type: str | None = raw if raw and raw != "none" else None
         self._model_override: str | None = None
         self._model_params_override: dict[str, Any] | None = None
         self._mcp_tool_count = sum(len(s.tools) for s in (mcp_server_info or []))

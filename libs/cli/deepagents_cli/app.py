@@ -680,8 +680,9 @@ class DeepAgentsApp(App):
 
     async def on_mount(self) -> None:
         """Initialize components after mount."""
+        chat = self.query_one("#chat", VerticalScroll)
+        chat.anchor()
         if _detect_charset_mode() == CharsetMode.ASCII:
-            chat = self.query_one("#chat", VerticalScroll)
             chat.styles.scrollbar_size_vertical = 0
 
         self._status_bar = self.query_one("#status-bar", StatusBar)

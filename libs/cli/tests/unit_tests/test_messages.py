@@ -3,7 +3,6 @@
 from unittest.mock import MagicMock, patch
 
 import pytest
-from rich.markup import render
 from rich.style import Style
 from textual.content import Content
 
@@ -148,7 +147,7 @@ class TestToolCallMessageMarkupSafety:
         assert msg._args == args
 
     def test_tool_header_escapes_markup_in_label(self) -> None:
-        """Tool header should escape tool label content before Rich parsing."""
+        """Tool header should safely render label content with markup-like chars."""
         msg = ToolCallMessage(
             "task",
             {"description": "Search for closing tag [/dim] mismatches"},
@@ -157,9 +156,8 @@ class TestToolCallMessageMarkupSafety:
         # `task` has no inline args widget, so this validates the header markup.
         header = next(iter(msg.compose()))
         content = header._Static__content
-        assert isinstance(content, str)
-        rendered = render(content)
-        assert "[/dim]" in rendered.plain
+        assert isinstance(content, Content)
+        assert "[/dim]" in content.plain
 
     def test_tool_args_line_escapes_markup_values(self) -> None:
         """Inline args line should escape bracket content in argument values."""
@@ -171,10 +169,9 @@ class TestToolCallMessageMarkupSafety:
         widgets = list(msg.compose())
         args_widget = widgets[1]
         content = args_widget._Static__content  # type: ignore[attr-defined]
-        assert isinstance(content, str)
-        rendered = render(content)
-        assert "[foo]" in rendered.plain
-        assert "[/dim]" in rendered.plain
+        assert isinstance(content, Content)
+        assert "[foo]" in content.plain
+        assert "[/dim]" in content.plain
 
 
 class TestToolCallMessageShellCommand:
@@ -271,15 +268,17 @@ class TestToolCallMessageShellCommand:
     def test_format_shell_output_styles_only_first_line_dim(self) -> None:
         """Shell output formatting should only style the first command line in dim."""
         msg = ToolCallMessage("shell", {"command": "echo test"})
-        # Include a line that looks like a command prompt in the output
         output = "$ echo test\ntest output\n$ not a command"
         result = msg._format_shell_output(output, is_preview=False)
 
-        # First line (the command) should be wrapped in [dim] markup
-        assert "[dim]$ echo test[/dim]" in result.content
-        # Subsequent lines starting with $ should NOT be dimmed
-        assert "$ not a command" in result.content
-        assert "[dim]$ not a command" not in result.content
+        assert isinstance(result.content, Content)
+        lines = result.content.split("\n")
+        # First line (the command) should be styled dim
+        assert lines[0].plain == "$ echo test"
+        assert "dim" in lines[0].markup
+        # Subsequent lines should NOT be dim
+        assert lines[2].plain == "$ not a command"
+        assert "dim" not in lines[2].markup
 
 
 class TestUserMessageHighlighting:

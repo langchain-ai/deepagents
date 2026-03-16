@@ -11,7 +11,6 @@ from pathlib import Path
 from time import time
 from typing import TYPE_CHECKING, Any
 
-from rich.markup import escape as escape_markup
 from textual.containers import Vertical
 from textual.content import Content
 from textual.widgets import Markdown, Static
@@ -100,16 +99,14 @@ def _mode_color(mode: str | None) -> str:
 
 @dataclass(frozen=True, slots=True)
 class FormattedOutput:
-    """Result of formatting tool output for display.
+    """Result of formatting tool output for display."""
 
-    Attributes:
-        content: The formatted output content with Rich markup.
-        truncation: Description of truncated content (e.g., "10 more lines"),
-            or None if no truncation occurred.
-    """
+    content: Content
+    """Styled `Content` for the formatted output."""
 
-    content: str
     truncation: str | None = None
+    """Description of truncated content (e.g., "10 more lines"), or None if no
+    truncation occurred."""
 
 
 # Maximum number of tool arguments to display inline
@@ -489,9 +486,11 @@ class ToolCallMessage(Vertical):
         Yields:
             Widgets for header, arguments, status, and output display.
         """
-        tool_label = escape_markup(format_tool_display(self._tool_name, self._args))
+        tool_label = format_tool_display(self._tool_name, self._args)
         yield Static(
-            f"[bold #f59e0b]{tool_label}[/bold #f59e0b]",
+            Content.from_markup(
+                "[bold #f59e0b]$label[/bold #f59e0b]", label=tool_label
+            ),
             classes="tool-header",
         )
         # Only show args for tools where header doesn't capture the key info
@@ -504,7 +503,7 @@ class ToolCallMessage(Vertical):
                 if len(args) > _MAX_INLINE_ARGS:
                     args_str += ", ..."
                 yield Static(
-                    f"[dim]({escape_markup(args_str)})[/dim]",
+                    Content.from_markup("[dim]($args)[/dim]", args=args_str),
                     classes="tool-args",
                 )
         # Status - shows running animation while pending, then final status
@@ -557,20 +556,20 @@ class ToolCallMessage(Vertical):
                 self._output = output
                 if self._status_widget:
                     self._status_widget.add_class("error")
-                    self._status_widget.update("[red]✗ Error[/red]")
+                    self._status_widget.update(Content.styled("✗ Error", "red"))
                     self._status_widget.display = True
                 self._update_output_display()
             case "rejected":
                 self._status = "rejected"
                 if self._status_widget:
                     self._status_widget.add_class("rejected")
-                    self._status_widget.update("[yellow]✗ Rejected[/yellow]")
+                    self._status_widget.update(Content.styled("✗ Rejected", "yellow"))
                     self._status_widget.display = True
             case "skipped":
                 self._status = "skipped"
                 if self._status_widget:
                     self._status_widget.add_class("rejected")
-                    self._status_widget.update("[dim]- Skipped[/dim]")
+                    self._status_widget.update(Content.styled("- Skipped", "dim"))
                     self._status_widget.display = True
             case "running":
                 # For running tools, show static "Running..." without animation
@@ -578,7 +577,7 @@ class ToolCallMessage(Vertical):
                 self._status = "running"
                 if self._status_widget:
                     self._status_widget.add_class("pending")
-                    self._status_widget.update("[yellow]⠿ Running...[/yellow]")
+                    self._status_widget.update(Content.styled("⠿ Running...", "yellow"))
                     self._status_widget.display = True
             case _:
                 # pending or unknown - leave as default
@@ -614,7 +613,8 @@ class ToolCallMessage(Vertical):
             elapsed_secs = int(time() - self._start_time)
             elapsed = f" ({elapsed_secs}s)"
 
-        self._status_widget.update(f"[yellow]{frame} Running...{elapsed}[/yellow]")
+        text = f"{frame} Running...{elapsed}"
+        self._status_widget.update(Content.styled(text, "yellow"))
 
     def _stop_animation(self) -> None:
         """Stop the running animation."""
@@ -659,7 +659,7 @@ class ToolCallMessage(Vertical):
             self._status_widget.remove_class("pending")
             self._status_widget.add_class("error")
             error_icon = get_glyphs().error
-            self._status_widget.update(f"[red]{error_icon} Error[/red]")
+            self._status_widget.update(Content.styled(f"{error_icon} Error", "red"))
             self._status_widget.display = True
         # Always show full error - errors should be visible
         self._expanded = True
@@ -673,7 +673,8 @@ class ToolCallMessage(Vertical):
             self._status_widget.remove_class("pending")
             self._status_widget.add_class("rejected")
             error_icon = get_glyphs().error
-            self._status_widget.update(f"[yellow]{error_icon} Rejected[/yellow]")
+            text = f"{error_icon} Rejected"
+            self._status_widget.update(Content.styled(text, "yellow"))
             self._status_widget.display = True
 
     def set_skipped(self) -> None:
@@ -683,7 +684,7 @@ class ToolCallMessage(Vertical):
         if self._status_widget:
             self._status_widget.remove_class("pending")
             self._status_widget.add_class("rejected")  # Use same styling as rejected
-            self._status_widget.update("[dim]- Skipped[/dim]")
+            self._status_widget.update(Content.styled("- Skipped", "dim"))
             self._status_widget.display = True
 
     def toggle_output(self) -> None:
@@ -715,7 +716,7 @@ class ToolCallMessage(Vertical):
         """
         output = output.strip()
         if not output:
-            return FormattedOutput(content="")
+            return FormattedOutput(content=Content(""))
 
         # Tool-specific formatting using dispatch table
         formatters = {
@@ -739,26 +740,26 @@ class ToolCallMessage(Vertical):
         if formatter:
             return formatter(output, is_preview=is_preview)
 
-        # Default: return as-is but escape markup
-        return FormattedOutput(content=escape_markup(output))
+        # Default: plain text (Content treats input as literal)
+        return FormattedOutput(content=Content(output))
 
-    def _prefix_output(self, content: str) -> str:  # noqa: PLR6301  # Grouped as method for widget cohesion
+    def _prefix_output(self, content: Content) -> Content:  # noqa: PLR6301  # Grouped as method for widget cohesion
         """Prefix output with output marker and indent continuation lines.
 
         Args:
-            content: The output content to prefix and indent.
+            content: The styled output content to prefix and indent.
 
         Returns:
-            Content with output prefix on first line and indented continuation.
+            `Content` with output prefix on first line and indented
+                continuation.
         """
-        lines = content.split("\n")
-        if not lines:
-            return ""
+        if not content.plain:
+            return Content("")
         output_prefix = get_glyphs().output_prefix
-        prefixed = f"{output_prefix} {lines[0]}"
-        if len(lines) > 1:
-            prefixed += "\n" + "\n".join(f"  {line}" for line in lines[1:])
-        return prefixed
+        lines = content.split("\n")
+        prefixed = [Content.assemble(f"{output_prefix} ", lines[0])]
+        prefixed.extend(Content.assemble("  ", line) for line in lines[1:])
+        return Content("\n").join(prefixed)
 
     def _format_todos_output(
         self, output: str, *, is_preview: bool = False
@@ -770,18 +771,18 @@ class ToolCallMessage(Vertical):
         """
         items = self._parse_todo_items(output)
         if items is None:
-            return FormattedOutput(content=escape_markup(output))
+            return FormattedOutput(content=Content(output))
 
         if not items:
-            return FormattedOutput(content="    [dim]No todos[/dim]")
+            return FormattedOutput(content=Content.styled("    No todos", "dim"))
 
-        lines: list[str] = []
+        lines: list[Content] = []
         max_items = 4 if is_preview else len(items)
 
         # Build stats header
-        stats_header = self._build_todo_stats(items)
-        if stats_header:
-            lines.extend([f"    [dim]{stats_header}[/dim]", ""])
+        stats = self._build_todo_stats(items)
+        if stats:
+            lines.extend([Content.assemble("    ", stats), Content("")])
 
         # Format each item
         lines.extend(self._format_single_todo(item) for item in items[:max_items])
@@ -790,7 +791,7 @@ class ToolCallMessage(Vertical):
         if is_preview and len(items) > max_items:
             truncation = f"{len(items) - max_items} more"
 
-        return FormattedOutput(content="\n".join(lines), truncation=truncation)
+        return FormattedOutput(content=Content("\n").join(lines), truncation=truncation)
 
     def _parse_todo_items(self, output: str) -> list | None:  # noqa: PLR6301  # Grouped as method for widget cohesion
         """Parse todo items from output.
@@ -810,11 +811,11 @@ class ToolCallMessage(Vertical):
         except (ValueError, SyntaxError):
             return None
 
-    def _build_todo_stats(self, items: list) -> str:  # noqa: PLR6301  # Grouped as method for widget cohesion
-        """Build stats string for todo list.
+    def _build_todo_stats(self, items: list) -> Content:  # noqa: PLR6301  # Grouped as method for widget cohesion
+        """Build stats content for todo list.
 
         Returns:
-            Formatted stats string showing active, pending, and completed counts.
+            Styled `Content` showing active, pending, and completed counts.
         """
         completed = sum(
             1 for i in items if isinstance(i, dict) and i.get("status") == "completed"
@@ -824,38 +825,46 @@ class ToolCallMessage(Vertical):
         )
         pending = len(items) - completed - active
 
-        parts = []
+        parts: list[Content] = []
         if active:
-            parts.append(f"[yellow]{active} active[/yellow]")
+            parts.append(Content.styled(f"{active} active", "yellow"))
         if pending:
-            parts.append(f"{pending} pending")
+            parts.append(Content.styled(f"{pending} pending", "dim"))
         if completed:
-            parts.append(f"[green]{completed} done[/green]")
-        return " | ".join(parts)
+            parts.append(Content.styled(f"{completed} done", "green"))
+        return Content.styled(" | ", "dim").join(parts) if parts else Content("")
 
-    def _format_single_todo(self, item: dict | str) -> str:  # noqa: PLR6301  # Grouped as method for widget cohesion
+    def _format_single_todo(self, item: dict | str) -> Content:  # noqa: PLR6301  # Grouped as method for widget cohesion
         """Format a single todo item.
 
         Returns:
-            Rich-formatted string with checkbox and status styling.
+            Styled `Content` with checkbox and status styling.
         """
         if isinstance(item, dict):
-            content = item.get("content", str(item))
+            text = item.get("content", str(item))
             status = item.get("status", "pending")
         else:
-            content = str(item)
+            text = str(item)
             status = "pending"
 
-        if len(content) > _MAX_TODO_CONTENT_LEN:
-            content = content[: _MAX_TODO_CONTENT_LEN - 3] + "..."
+        if len(text) > _MAX_TODO_CONTENT_LEN:
+            text = text[: _MAX_TODO_CONTENT_LEN - 3] + "..."
 
         glyphs = get_glyphs()
-        escaped = escape_markup(content)
         if status == "completed":
-            return f"    [green]{glyphs.checkmark} done[/green]   [dim]{escaped}[/dim]"
+            return Content.assemble(
+                Content.styled(f"    {glyphs.checkmark} done", "green"),
+                Content.styled(f"   {text}", "dim"),
+            )
         if status == "in_progress":
-            return f"    [yellow]{glyphs.circle_filled} active[/yellow] {escaped}"
-        return f"    [dim]{glyphs.circle_empty} todo[/dim]   {escaped}"
+            return Content.assemble(
+                Content.styled(f"    {glyphs.circle_filled} active", "yellow"),
+                f" {text}",
+            )
+        return Content.assemble(
+            Content.styled(f"    {glyphs.circle_empty} todo", "dim"),
+            f"   {text}",
+        )
 
     def _format_ls_output(  # noqa: PLR6301  # Grouped as method for widget cohesion
         self, output: str, *, is_preview: bool = False
@@ -869,35 +878,32 @@ class ToolCallMessage(Vertical):
         try:
             items = ast.literal_eval(output)
             if isinstance(items, list):
-                lines = []
-                max_items = 5 if is_preview else len(items)  # Show all when expanded
+                lines: list[Content] = []
+                max_items = 5 if is_preview else len(items)
                 for item in items[:max_items]:
                     path = Path(str(item))
                     name = path.name
-                    # Color by file type
-                    escaped_name = escape_markup(name)
                     if path.suffix in {".py", ".pyx"}:
-                        lines.append(f"    [#3b82f6]{escaped_name}[/#3b82f6]")
-                    elif path.suffix in {".md", ".txt", ".rst"}:
-                        lines.append(f"    {escaped_name}")
+                        lines.append(Content.styled(f"    {name}", "#3b82f6"))
                     elif path.suffix in {".json", ".yaml", ".yml", ".toml"}:
-                        lines.append(f"    [#f59e0b]{escaped_name}[/#f59e0b]")
+                        lines.append(Content.styled(f"    {name}", "#f59e0b"))
                     elif not path.suffix:
-                        # Likely a directory or no extension
-                        lines.append(f"    [#10b981]{escaped_name}/[/#10b981]")
+                        lines.append(Content.styled(f"    {name}/", "#10b981"))
                     else:
-                        lines.append(f"    {escaped_name}")
+                        lines.append(Content(f"    {name}"))
 
                 truncation = None
                 if is_preview and len(items) > max_items:
                     truncation = f"{len(items) - max_items} more"
 
-                return FormattedOutput(content="\n".join(lines), truncation=truncation)
+                return FormattedOutput(
+                    content=Content("\n").join(lines), truncation=truncation
+                )
         except (ValueError, SyntaxError):
             pass
 
-        # Fallback: just escape and return
-        return FormattedOutput(content=escape_markup(output))
+        # Fallback: plain text
+        return FormattedOutput(content=Content(output))
 
     def _format_file_output(  # noqa: PLR6301  # Grouped as method for widget cohesion
         self, output: str, *, is_preview: bool = False
@@ -910,8 +916,8 @@ class ToolCallMessage(Vertical):
         lines = output.split("\n")
         max_lines = 4 if is_preview else len(lines)
 
-        formatted_lines = [escape_markup(line) for line in lines[:max_lines]]
-        content = "\n".join(formatted_lines)
+        parts = [Content(line) for line in lines[:max_lines]]
+        content = Content("\n").join(parts)
 
         truncation = None
         if is_preview and len(lines) > max_lines:
@@ -931,23 +937,24 @@ class ToolCallMessage(Vertical):
         try:
             items = ast.literal_eval(output.strip())
             if isinstance(items, list):
-                lines = []
-                max_items = 5 if is_preview else len(items)  # Show all when expanded
+                parts: list[Content] = []
+                max_items = 5 if is_preview else len(items)
                 for item in items[:max_items]:
-                    # Show just filename or relative path
                     path = Path(str(item))
                     try:
                         rel = path.relative_to(Path.cwd())
                         display = str(rel)
                     except ValueError:
                         display = path.name
-                    lines.append(f"    {display}")
+                    parts.append(Content(f"    {display}"))
 
                 truncation = None
                 if is_preview and len(items) > max_items:
                     truncation = f"{len(items) - max_items} more files"
 
-                return FormattedOutput(content="\n".join(lines), truncation=truncation)
+                return FormattedOutput(
+                    content=Content("\n").join(parts), truncation=truncation
+                )
         except (ValueError, SyntaxError):
             pass
 
@@ -955,13 +962,13 @@ class ToolCallMessage(Vertical):
         lines = output.split("\n")
         max_lines = 5 if is_preview else len(lines)
 
-        formatted_lines = [
-            f"    {escape_markup(raw_line.strip())}"
+        parts = [
+            Content(f"    {raw_line.strip()}")
             for raw_line in lines[:max_lines]
             if raw_line.strip()
         ]
 
-        content = "\n".join(formatted_lines)
+        content = Content("\n").join(parts) if parts else Content("")
         truncation = None
         if is_preview and len(lines) > max_lines:
             truncation = f"{len(lines) - max_lines} more"
@@ -977,18 +984,16 @@ class ToolCallMessage(Vertical):
             FormattedOutput with shell output and optional truncation info.
         """
         lines = output.split("\n")
-        max_lines = 4 if is_preview else len(lines)  # Show all when expanded
+        max_lines = 4 if is_preview else len(lines)
 
-        formatted_lines = []
+        parts: list[Content] = []
         for i, line in enumerate(lines[:max_lines]):
-            escaped = escape_markup(line)
-            # Style only the first line (the command) in dim grey
-            if i == 0 and escaped.startswith("$ "):
-                formatted_lines.append(f"[dim]{escaped}[/dim]")
+            if i == 0 and line.startswith("$ "):
+                parts.append(Content.styled(line, "dim"))
             else:
-                formatted_lines.append(escaped)
+                parts.append(Content(line))
 
-        content = "\n".join(formatted_lines)
+        content = Content("\n").join(parts) if parts else Content("")
 
         truncation = None
         if is_preview and len(lines) > max_lines:
@@ -1043,26 +1048,29 @@ class ToolCallMessage(Vertical):
             return self._format_lines_output(lines, is_preview=is_preview)
 
         if "content" in data:
-            content = str(data["content"])
-            if is_preview and len(content) > _MAX_WEB_PREVIEW_LEN:
+            raw = str(data["content"])
+            if is_preview and len(raw) > _MAX_WEB_PREVIEW_LEN:
                 return FormattedOutput(
-                    content=escape_markup(content[:_MAX_WEB_PREVIEW_LEN]),
+                    content=Content(raw[:_MAX_WEB_PREVIEW_LEN]),
                     truncation="more",
                 )
-            return FormattedOutput(content=escape_markup(content))
+            return FormattedOutput(content=Content(raw))
 
         # Generic dict - show key fields
-        lines = []
+        parts: list[Content] = []
         max_keys = 3 if is_preview else len(data)
         for k, v in list(data.items())[:max_keys]:
             v_str = str(v)
             if is_preview and len(v_str) > _MAX_WEB_CONTENT_LEN:
                 v_str = v_str[:_MAX_WEB_CONTENT_LEN] + "..."
-            lines.append(f"  {k}: {escape_markup(v_str)}")
+            parts.append(Content(f"  {k}: {v_str}"))
         truncation = None
         if is_preview and len(data) > max_keys:
             truncation = f"{len(data) - max_keys} more"
-        return FormattedOutput(content="\n".join(lines), truncation=truncation)
+        return FormattedOutput(
+            content=Content("\n").join(parts) if parts else Content(""),
+            truncation=truncation,
+        )
 
     def _format_web_search_results(  # noqa: PLR6301  # Grouped as method for widget cohesion
         self, results: list, *, is_preview: bool
@@ -1073,22 +1081,22 @@ class ToolCallMessage(Vertical):
             FormattedOutput with search results and optional truncation info.
         """
         if not results:
-            return FormattedOutput(content="[dim]No results[/dim]")
-        lines = []
+            return FormattedOutput(content=Content.styled("No results", "dim"))
+        parts: list[Content] = []
         max_results = 3 if is_preview else len(results)
         for r in results[:max_results]:
             title = r.get("title", "")
             url = r.get("url", "")
-            lines.extend(
+            parts.extend(
                 [
-                    f"  [bold]{escape_markup(title)}[/bold]",
-                    f"  [dim]{escape_markup(url)}[/dim]",
+                    Content.styled(f"  {title}", "bold"),
+                    Content.styled(f"  {url}", "dim"),
                 ]
             )
         truncation = None
         if is_preview and len(results) > max_results:
             truncation = f"{len(results) - max_results} more results"
-        return FormattedOutput(content="\n".join(lines), truncation=truncation)
+        return FormattedOutput(content=Content("\n").join(parts), truncation=truncation)
 
     def _format_lines_output(  # noqa: PLR6301  # Grouped as method for widget cohesion
         self, lines: list[str], *, is_preview: bool
@@ -1099,7 +1107,8 @@ class ToolCallMessage(Vertical):
             FormattedOutput with lines content and optional truncation info.
         """
         max_lines = 4 if is_preview else len(lines)
-        content = "\n".join(escape_markup(line) for line in lines[:max_lines])
+        parts = [Content(line) for line in lines[:max_lines]]
+        content = Content("\n").join(parts) if parts else Content("")
         truncation = None
         if is_preview and len(lines) > max_lines:
             truncation = f"{len(lines) - max_lines} more lines"
@@ -1116,8 +1125,8 @@ class ToolCallMessage(Vertical):
         lines = output.split("\n")
         max_lines = 4 if is_preview else len(lines)
 
-        formatted_lines = [escape_markup(line) for line in lines[:max_lines]]
-        content = "\n".join(formatted_lines)
+        parts = [Content(line) for line in lines[:max_lines]]
+        content = Content("\n").join(parts) if parts else Content("")
 
         truncation = None
         if is_preview and len(lines) > max_lines:
@@ -1155,7 +1164,7 @@ class ToolCallMessage(Vertical):
             self._full_widget.display = True
             # Show collapse hint underneath
             self._hint_widget.update(
-                "[dim italic]click or Ctrl+E to collapse[/dim italic]"
+                Content.styled("click or Ctrl+E to collapse", "dim italic")
             )
             self._hint_widget.display = True
         else:
@@ -1170,12 +1179,12 @@ class ToolCallMessage(Vertical):
                 # Build hint with truncation info if available
                 if result.truncation:
                     ellipsis = get_glyphs().ellipsis
-                    hint = (
-                        f"[dim]{ellipsis} {result.truncation} "
-                        "— click or Ctrl+E to expand[/dim]"
+                    hint = Content.styled(
+                        f"{ellipsis} {result.truncation} — click or Ctrl+E to expand",
+                        "dim",
                     )
                 else:
-                    hint = "[dim italic]click or Ctrl+E to expand[/dim italic]"
+                    hint = Content.styled("click or Ctrl+E to expand", "dim italic")
                 self._hint_widget.update(hint)
                 self._hint_widget.display = True
             elif output_stripped:
@@ -1271,7 +1280,7 @@ class DiffMessage(_TimestampClickMixin, Static):
         """
         if self._file_path:
             yield Static(
-                f"[bold]File: {escape_markup(self._file_path)}[/bold]",
+                Content.from_markup("[bold]File: $path[/bold]", path=self._file_path),
                 classes="diff-header",
             )
 
@@ -1308,7 +1317,10 @@ class ErrorMessage(_TimestampClickMixin, Static):
         """
         # Store raw content for serialization
         self._content = error
-        super().__init__(Content.assemble(("Error: ", "bold red"), error), **kwargs)
+        super().__init__(
+            Content.from_markup("[bold red]Error: [/bold red]$err", err=error),
+            **kwargs,
+        )
 
     def on_mount(self) -> None:
         """Set border style based on charset mode."""

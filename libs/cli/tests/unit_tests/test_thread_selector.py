@@ -816,7 +816,9 @@ class TestThreadSelectorBuildTitle:
             s for s in title._spans if isinstance(s.style, TStyle) and s.style.link
         ]
         assert len(spans) > 0
-        assert spans[0].style.foreground == TColor.parse("cyan")
+        style = spans[0].style
+        assert isinstance(style, TStyle)
+        assert style.foreground == TColor.parse("cyan")
 
     async def test_title_widget_has_id(self) -> None:
         """Title widget should be queryable by ID for URL updates."""
@@ -2545,7 +2547,9 @@ class TestBuildThreadMessage:
             s for s in result._spans if isinstance(s.style, TStyle) and s.style.link
         ]
         assert len(spans) == 1
-        assert spans[0].style.link == url
+        style = spans[0].style
+        assert isinstance(style, TStyle)
+        assert style.link == url
 
     async def test_fallback_on_timeout(self) -> None:
         """Returns plain string when URL resolution times out."""

@@ -9,7 +9,6 @@ import sqlite3
 from typing import TYPE_CHECKING, ClassVar, cast
 
 from rich.cells import cell_len
-from rich.markup import escape as escape_markup
 from textual.binding import Binding, BindingType
 from textual.color import Color as TColor
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -403,7 +402,10 @@ class DeleteThreadConfirmScreen(ModalScreen[bool]):
         """
         with Vertical(id="delete-confirm"):
             yield Static(
-                f"Delete thread [bold]{escape_markup(self._delete_thread_id)}[/bold]?",
+                Content.from_markup(
+                    "Delete thread [bold]$tid[/bold]?",
+                    tid=self._delete_thread_id,
+                ),
                 classes="thread-confirm-text",
             )
             yield Static(
@@ -818,12 +820,12 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                                 yield from self._option_widgets
                             else:
                                 yield Static(
-                                    "[dim]No threads found[/dim]",
+                                    Content.styled("No threads found", "dim"),
                                     classes="thread-empty",
                                 )
                         else:
                             yield Static(
-                                "[dim]Loading threads...[/dim]",
+                                Content.styled("Loading threads...", "dim"),
                                 classes="thread-empty",
                                 id="thread-loading",
                             )
@@ -1426,9 +1428,10 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                 await scroll.remove_children()
                 await scroll.mount(
                     Static(
-                        (
-                            f"[red]Failed to load threads: {detail}. "
-                            "Press Esc to close.[/red]"
+                        Content.from_markup(
+                            "[red]Failed to load threads: $detail. "
+                            "Press Esc to close.[/red]",
+                            detail=detail,
                         ),
                         classes="thread-empty",
                     )
@@ -1462,7 +1465,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                     self._option_widgets = []
                     await scroll.mount(
                         Static(
-                            "[dim]No threads found[/dim]",
+                            Content.styled("No threads found", "dim"),
                             classes="thread-empty",
                         )
                     )

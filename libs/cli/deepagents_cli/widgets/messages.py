@@ -11,7 +11,6 @@ from pathlib import Path
 from time import time
 from typing import TYPE_CHECKING, Any
 
-from rich.text import Text
 from textual.containers import Vertical
 from textual.content import Content
 from textual.widgets import Markdown, Static

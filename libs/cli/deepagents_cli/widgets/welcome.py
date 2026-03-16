@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import random
 from typing import TYPE_CHECKING, Any
 
 from textual.color import Color as TColor
@@ -23,6 +24,19 @@ from deepagents_cli.config import (
     newline_shortcut,
 )
 from deepagents_cli.widgets._links import open_style_link
+
+_TIPS: list[str] = [
+    "Use @ to reference files and / for commands",
+    "Try /threads to resume a previous conversation",
+    "Use /offload when your conversation gets long",
+    "Use /mcp to see your loaded tools and servers",
+    "Use /remember to save learnings from this conversation",
+    "Use /model to switch models mid-conversation",
+]
+"""Rotating tips shown in the welcome footer.
+
+One is picked per session.
+"""
 
 
 class WelcomeBanner(Static):
@@ -229,12 +243,16 @@ def build_connecting_footer() -> Content:
 def build_welcome_footer() -> Content:
     """Build the two-line footer shown at the bottom of the welcome banner.
 
+    Includes a randomly selected tip to help users discover features.
+
     Returns:
-        Content with the ready prompt and keyboard shortcut help line.
+        Content with the ready prompt, a tip, and keyboard shortcut help line.
     """
+    tip = random.choice(_TIPS)  # noqa: S311
     bullet = get_glyphs().bullet
     return Content.assemble(
         ("\nReady to code! What would you like to build?\n", COLORS["primary"]),
+        (f"Tip: {tip}\n", "dim italic"),
         (
             (
                 f"Enter send {bullet} {newline_shortcut()} newline "

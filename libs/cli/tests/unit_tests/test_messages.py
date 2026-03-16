@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from rich.markup import render
 from rich.style import Style
-from rich.text import Text
+from textual.content import Content
 
 from deepagents_cli.config import COLORS
 from deepagents_cli.input import INPUT_HIGHLIGHT_PATTERN
@@ -65,6 +65,13 @@ class TestErrorMessageMarkupSafety:
         msg = ErrorMessage(error)
         assert msg is not None
 
+    def test_error_message_has_prefix_and_body(self) -> None:
+        """ErrorMessage content should have `'Error: '` prefix followed by the body."""
+        msg = ErrorMessage("something broke")
+        rendered = msg._Static__content  # type: ignore[attr-defined]
+        assert isinstance(rendered, Content)
+        assert rendered.plain == "Error: something broke"
+
 
 class TestAppMessageMarkupSafety:
     """Test AppMessage handles content with brackets safely."""
@@ -81,6 +88,20 @@ class TestAppMessageMarkupSafety:
         msg = AppMessage(content)
         assert msg is not None
 
+    def test_app_message_str_gets_dim_italic(self) -> None:
+        """String input should be rendered as dim italic `Content`."""
+        msg = AppMessage("hello")
+        rendered = msg._Static__content  # type: ignore[attr-defined]
+        assert isinstance(rendered, Content)
+        assert rendered.plain == "hello"
+
+    def test_app_message_content_passthrough(self) -> None:
+        """Pre-styled `Content` should pass through unchanged."""
+        pre = Content.styled("styled", "bold cyan")
+        msg = AppMessage(pre)
+        rendered = msg._Static__content  # type: ignore[attr-defined]
+        assert rendered is pre
+
 
 class TestSummarizationMessage:
     """Tests for summarization notification widget."""
@@ -94,6 +115,20 @@ class TestSummarizationMessage:
         """SummarizationMessage should be treated like an AppMessage."""
         msg = SummarizationMessage()
         assert isinstance(msg, AppMessage)
+
+    def test_summarization_message_str_input(self) -> None:
+        """String input should be rendered as bold cyan `Content`."""
+        msg = SummarizationMessage("custom text")
+        rendered = msg._Static__content  # type: ignore[attr-defined]
+        assert isinstance(rendered, Content)
+        assert rendered.plain == "custom text"
+
+    def test_summarization_message_content_passthrough(self) -> None:
+        """Pre-styled `Content` should pass through unchanged."""
+        pre = Content.styled("pre-styled", "bold cyan")
+        msg = SummarizationMessage(pre)
+        rendered = msg._Static__content  # type: ignore[attr-defined]
+        assert rendered is pre
 
 
 class TestToolCallMessageMarkupSafety:
@@ -294,13 +329,13 @@ class TestUserMessageHighlighting:
         assert len(matches) == 0
 
 
-def _compose_text(widget: UserMessage | QueuedUserMessage) -> Text:
-    """Extract the Rich `Text` object from a message widget's first yielded Static."""
+def _compose_content(widget: UserMessage | QueuedUserMessage) -> Content:
+    """Extract the `Content` object from a message widget's first yielded Static."""
     statics = list(widget.compose())
     assert statics, "compose() yielded no widgets"
-    content = statics[0]._Static__content  # type: ignore[attr-defined]
-    assert isinstance(content, Text)
-    return content
+    result = statics[0]._Static__content  # type: ignore[attr-defined]
+    assert isinstance(result, Content)
+    return result
 
 
 class TestUserMessageModeRendering:
@@ -308,29 +343,29 @@ class TestUserMessageModeRendering:
 
     def test_shell_prefix_renders_dollar_indicator(self) -> None:
         """`UserMessage('!ls')` should render with `'$ '` prefix and shell body."""
-        text = _compose_text(UserMessage("!ls"))
-        assert text.plain == "$ ls"
-        first_span = text._spans[0]
+        content = _compose_content(UserMessage("!ls"))
+        assert content.plain == "$ ls"
+        first_span = content._spans[0]
         assert COLORS["mode_shell"] in str(first_span.style)
 
     def test_command_prefix_renders_slash_indicator(self) -> None:
         """`UserMessage('/help')` should render with `'/ '` prefix and body."""
-        text = _compose_text(UserMessage("/help"))
-        assert text.plain == "/ help"
-        first_span = text._spans[0]
+        content = _compose_content(UserMessage("/help"))
+        assert content.plain == "/ help"
+        first_span = content._spans[0]
         assert COLORS["mode_command"] in str(first_span.style)
 
     def test_normal_message_renders_angle_bracket(self) -> None:
         """`UserMessage('hello')` should render with `'> '` prefix."""
-        text = _compose_text(UserMessage("hello"))
-        assert text.plain == "> hello"
-        first_span = text._spans[0]
+        content = _compose_content(UserMessage("hello"))
+        assert content.plain == "> hello"
+        first_span = content._spans[0]
         assert COLORS["primary"] in str(first_span.style)
 
     def test_empty_content_renders_angle_bracket(self) -> None:
         """`UserMessage('')` should not crash and should render `'> '` prefix."""
-        text = _compose_text(UserMessage(""))
-        assert text.plain == "> "
+        content = _compose_content(UserMessage(""))
+        assert content.plain == "> "
 
 
 class TestQueuedUserMessageModeRendering:
@@ -338,23 +373,23 @@ class TestQueuedUserMessageModeRendering:
 
     def test_shell_prefix_renders_dimmed_dollar(self) -> None:
         """`QueuedUserMessage('!ls')` should render dimmed `'$ '` prefix."""
-        text = _compose_text(QueuedUserMessage("!ls"))
-        assert text.plain == "$ ls"
+        content = _compose_content(QueuedUserMessage("!ls"))
+        assert content.plain == "$ ls"
 
     def test_command_prefix_renders_dimmed_slash(self) -> None:
         """`QueuedUserMessage('/help')` should render dimmed `'/ '` prefix."""
-        text = _compose_text(QueuedUserMessage("/help"))
-        assert text.plain == "/ help"
+        content = _compose_content(QueuedUserMessage("/help"))
+        assert content.plain == "/ help"
 
     def test_normal_message_renders_dimmed_angle_bracket(self) -> None:
         """`QueuedUserMessage('hello')` should render dimmed `'> '` prefix."""
-        text = _compose_text(QueuedUserMessage("hello"))
-        assert text.plain == "> hello"
+        content = _compose_content(QueuedUserMessage("hello"))
+        assert content.plain == "> hello"
 
     def test_empty_content_renders_angle_bracket(self) -> None:
         """`QueuedUserMessage('')` should not crash and should render `'> '`."""
-        text = _compose_text(QueuedUserMessage(""))
-        assert text.plain == "> "
+        content = _compose_content(QueuedUserMessage(""))
+        assert content.plain == "> "
 
 
 class TestAppMessageAutoLinksDisabled:
@@ -369,10 +404,10 @@ _WEBBROWSER_OPEN = "deepagents_cli.widgets._links.webbrowser.open"
 
 
 class TestAppMessageOnClickOpensLink:
-    """Tests for `AppMessage.on_click` opening Rich-style hyperlinks."""
+    """Tests for `AppMessage.on_click` opening style-embedded hyperlinks."""
 
     def test_click_on_link_opens_browser(self) -> None:
-        """Clicking a Rich link should call `webbrowser.open`."""
+        """Clicking a styled link should call `webbrowser.open`."""
         msg = AppMessage("test")
         event = MagicMock()
         event.style = Style(link="https://example.com")

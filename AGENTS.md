@@ -209,6 +209,12 @@ def send_email(to: str, msg: str, *, priority: str = "normal") -> bool:
 - **CSS reference:** https://textual.textualize.io/styles/
 - **API reference:** https://textual.textualize.io/api/
 
+**Styled text in widgets:**
+
+Prefer Textual's `Content` (`textual.content`) over Rich's `Text` for widget rendering. `Content` is immutable (like `str`) and integrates natively with Textual's rendering pipeline. Use `Content.assemble()` with `(text, style)` tuples to build styled text.
+
+IMPORTANT: `Content` requires **Textual's** `Style` (`textual.style.Style`) for rendering, not Rich's `Style` (`rich.style.Style`). Mixing Rich `Style` objects into `Content` spans will cause `TypeError` during widget rendering. String styles (`"bold cyan"`, `"dim"`) work for non-link styling. For links, use `TStyle(link=url)`. Rich `Text` is still correct for code that renders via Rich's `Console.print()` (e.g., `non_interactive.py`, `main.py`).
+
 **Textual patterns used in this codebase:**
 
 - **Workers** (`@work` decorator) for async operations - see [Workers guide](https://textual.textualize.io/guide/workers/)

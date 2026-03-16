@@ -4,6 +4,9 @@ import asyncio
 import threading
 
 from deepagents.graph import create_deep_agent
+from langchain.tools import (
+    ToolRuntime,  # noqa: TC002  # tool decorator resolves type hints at import time
+)
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.tools import tool
 
@@ -28,6 +31,12 @@ async def async_label_tool(value: str) -> str:
     """Return a labeled value from an asynchronous LangChain tool."""
     await asyncio.sleep(0)
     return f"async:{value}"
+
+
+@tool("runtime_configurable")
+def runtime_configurable(value: str, runtime: ToolRuntime) -> str:
+    """Return configurable runtime data for testing ToolRuntime context propagation."""
+    return f"{value}:{runtime.config['configurable']['user_id']}"
 
 
 async def async_uppercase(value: str) -> str:
@@ -225,6 +234,49 @@ async def test_deepagent_with_quickjs_async_langchain_tool() -> None:
         {"type": "text", "text": "sync:left\nasync:right"}
     ]
     assert result["messages"][-1].content_blocks == [{"type": "text", "text": "done"}]
+
+
+async def test_deepagent_with_quickjs_async_toolruntime_configurable_foreign_function() -> (
+    None
+):
+    """Verify async QuickJS foreign tool calls see configurable runtime data."""
+    model = GenericFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "repl",
+                            "args": {"code": "print(runtime_configurable('value'))"},
+                            "id": "call_1",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="done"),
+            ]
+        )
+    )
+
+    agent = create_deep_agent(
+        model=model,
+        middleware=[QuickJSMiddleware(ptc=[runtime_configurable])],
+    )
+
+    result = await agent.ainvoke(
+        {
+            "messages": [
+                HumanMessage(content="Use the repl to inspect configurable runtime")
+            ]
+        },
+        config={"configurable": {"user_id": "user-123"}},
+    )
+
+    tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+    assert tool_messages[0].content_blocks == [
+        {"type": "text", "text": "value:user-123"}
+    ]
 
 
 async def test_quickjs_async_foreign_function_runs_on_daemon_loop_thread() -> None:

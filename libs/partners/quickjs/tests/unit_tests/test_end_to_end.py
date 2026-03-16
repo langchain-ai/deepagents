@@ -126,6 +126,12 @@ def runtime_marker(value: str, runtime: ToolRuntime) -> str:
     )
 
 
+@tool("runtime_configurable")
+def runtime_configurable(value: str, runtime: ToolRuntime) -> str:
+    """Return configurable runtime data for testing ToolRuntime context propagation."""
+    return f"{value}:{runtime.config['configurable']['user_id']}"
+
+
 def test_deepagent_with_quickjs_langchain_tool_multi_arg_foreign_function() -> None:
     """Verify the repl maps multiple positional args onto matching tool fields."""
     model = GenericFakeChatModel(
@@ -286,6 +292,49 @@ def test_deepagent_with_quickjs_langchain_toolruntime_foreign_function() -> None
     tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
     assert tool_messages[0].content_blocks == [
         {"type": "text", "text": "value:call_1:tools"}
+    ]
+
+
+def test_deepagent_with_quickjs_langchain_toolruntime_configurable_foreign_function() -> (
+    None
+):
+    """Verify QuickJS foreign tool calls see configurable runtime data via ToolRuntime."""
+    model = GenericFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "repl",
+                            "args": {"code": "print(runtime_configurable('value'))"},
+                            "id": "call_1",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="done"),
+            ]
+        )
+    )
+
+    agent = create_deep_agent(
+        model=model,
+        middleware=[QuickJSMiddleware(ptc=[runtime_configurable])],
+    )
+
+    result = agent.invoke(
+        {
+            "messages": [
+                HumanMessage(content="Use the repl to inspect configurable runtime")
+            ]
+        },
+        config={"configurable": {"user_id": "user-123"}},
+    )
+
+    tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+    assert tool_messages[0].content_blocks == [
+        {"type": "text", "text": "value:user-123"}
     ]
 
 

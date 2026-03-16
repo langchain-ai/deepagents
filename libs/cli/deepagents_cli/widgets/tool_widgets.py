@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from rich.markup import escape as escape_markup
 from textual.containers import Vertical
 from textual.widgets import Markdown, Static
 
@@ -15,15 +16,6 @@ _MAX_VALUE_LEN = 200
 _MAX_LINES = 30
 _MAX_DIFF_LINES = 50
 _MAX_PREVIEW_LINES = 20
-
-
-def _escape_markup(text: str) -> str:
-    """Escape Rich markup characters in text.
-
-    Returns:
-        Escaped text safe for Rich rendering.
-    """
-    return text.replace("[", r"\[").replace("]", r"\]")
 
 
 class ToolApprovalWidget(Vertical):
@@ -116,7 +108,9 @@ class EditFileApprovalWidget(ToolApprovalWidget):
 
         # File path header with stats
         stats_str = self._format_stats(additions, deletions)
-        yield Static(f"[bold cyan]File:[/bold cyan] {file_path}  {stats_str}")
+        yield Static(
+            f"[bold cyan]File:[/bold cyan] {escape_markup(file_path)}  {stats_str}"
+        )
         yield Static("")
 
         if not diff_lines and not old_string and not new_string:
@@ -211,7 +205,7 @@ class EditFileApprovalWidget(ToolApprovalWidget):
         Returns:
             Static widget with styled diff line, or None for empty/skipped lines.
         """
-        content = _escape_markup(line[1:] if len(line) > 1 else "")
+        content = escape_markup(line[1:] if len(line) > 1 else "")
 
         if line.startswith("-"):
             return Static(f"[on #4a2020][#ff8787]- {content}[/#ff8787][/on #4a2020]")
@@ -237,7 +231,7 @@ class EditFileApprovalWidget(ToolApprovalWidget):
         )
 
         for line in lines[:_MAX_PREVIEW_LINES]:
-            escaped = _escape_markup(line)
+            escaped = escape_markup(line)
             yield Static(f"{style} {escaped}{end_style}")
 
         if len(lines) > _MAX_PREVIEW_LINES:

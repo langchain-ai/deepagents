@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any, ClassVar
 
+from rich.markup import escape as escape_markup
 from textual.binding import Binding, BindingType
 from textual.containers import Container, Vertical, VerticalScroll
 from textual.events import (
@@ -439,9 +440,10 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 cred_indicator = f"{glyphs.warning} missing credentials"
             else:
                 cred_indicator = f"{glyphs.question} credentials unknown"
+            escaped_prov = escape_markup(provider)
             all_widgets.append(
                 Static(
-                    f"[bold]{provider}[/bold] [dim]{cred_indicator}[/dim]",
+                    f"[bold]{escaped_prov}[/bold] [dim]{cred_indicator}[/dim]",
                     classes="model-provider-header",
                 )
             )
@@ -521,18 +523,19 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         """
         glyphs = get_glyphs()
         cursor = f"{glyphs.cursor} " if selected else "  "
+        escaped_spec = escape_markup(model_spec)
         if not has_creds:
-            spec_text = f"[yellow]{model_spec}[/yellow]"
+            spec_text = f"[yellow]{escaped_spec}[/yellow]"
         elif is_default:
-            spec_text = f"[cyan]{model_spec}[/cyan]"
+            spec_text = f"[cyan]{escaped_spec}[/cyan]"
         else:
-            spec_text = model_spec
+            spec_text = escaped_spec
         suffix = " [dim](current)[/dim]" if current else ""
         default_suffix = " [cyan](default)[/cyan]" if is_default else ""
         if status == "deprecated":
             status_suffix = " [red](deprecated)[/red]"
         elif status:
-            status_suffix = f" [yellow]({status})[/yellow]"
+            status_suffix = f" [yellow]({escape_markup(status)})[/yellow]"
         else:
             status_suffix = ""
         return f"{cursor}{spec_text}{suffix}{default_suffix}{status_suffix}"
@@ -822,7 +825,9 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         elif await asyncio.to_thread(save_default_model, model_spec):
             self._default_spec = model_spec
             self.call_after_refresh(self._update_display)
-            help_widget.update(f"[bold]Default set to {model_spec}[/bold]")
+            help_widget.update(
+                f"[bold]Default set to {escape_markup(model_spec)}[/bold]"
+            )
             self.set_timer(3.0, self._restore_help_text)
         else:
             help_widget.update("[bold red]Failed to save default[/bold red]")

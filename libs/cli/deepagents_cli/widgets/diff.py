@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, Any
 
+from rich.markup import escape as escape_markup
 from textual.containers import Vertical
 from textual.widgets import Static
 
@@ -12,19 +13,6 @@ from deepagents_cli.config import CharsetMode, _detect_charset_mode, get_glyphs
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
-
-
-def _escape_markup(text: str) -> str:
-    """Escape Rich markup characters in text.
-
-    Args:
-        text: Text that may contain Rich markup
-
-    Returns:
-        Escaped text safe for Rich rendering
-    """
-    # Escape brackets that could be interpreted as markup
-    return text.replace("[", r"\[").replace("]", r"\]")
 
 
 def format_diff_textual(diff: str, max_lines: int | None = 100) -> str:
@@ -88,7 +76,7 @@ def format_diff_textual(diff: str, max_lines: int | None = 100) -> str:
 
         # Handle diff lines - use gutter bar instead of +/- prefix
         content = line[1:] if line else ""
-        escaped_content = _escape_markup(content)
+        escaped_content = escape_markup(content)
 
         if line.startswith("-"):
             # Deletion - red gutter bar, subtle red background

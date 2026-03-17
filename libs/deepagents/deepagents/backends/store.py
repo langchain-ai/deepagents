@@ -329,7 +329,7 @@ class StoreBackend(BackendProtocol):
 
         return all_items
 
-    def ls_info(self, path: str) -> LsResult:
+    def ls(self, path: str) -> LsResult:
         """List files and directories in the specified directory (non-recursive).
 
         Args:

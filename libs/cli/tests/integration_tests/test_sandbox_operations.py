@@ -4,7 +4,7 @@ This module tests the core file operations implemented in BaseSandbox:
 - write(): Create new files
 - read(): Read file contents
 - edit(): String replacement in files
-- ls_info(): List directory contents
+- ls(): List directory contents
 - grep_raw(): Search for patterns
 - glob_info(): Pattern matching for files
 
@@ -629,19 +629,19 @@ class TestSandboxOperations:
         assert "red cat" in file_content
         assert "The quick red cat jumps" in file_content
 
-    # ==================== ls_info() tests ====================
+    # ==================== ls() tests ====================
 
-    def test_ls_info_path_is_absolute(self, sandbox: SandboxBackendProtocol) -> None:
-        """Test that files returned from ls_info have absolute paths."""
+    def test_ls_path_is_absolute(self, sandbox: SandboxBackendProtocol) -> None:
+        """Test that files returned from ls have absolute paths."""
         base_dir = "/tmp/test_sandbox_ops/ls_absolute"
         sandbox.execute(f"mkdir -p {base_dir}")
         sandbox.write(f"{base_dir}/file.txt", "content")
-        result = sandbox.ls_info(base_dir)
+        result = sandbox.ls(base_dir)
         assert result.entries is not None
         assert len(result.entries) == 1
         assert result.entries[0]["path"] == "/tmp/test_sandbox_ops/ls_absolute/file.txt"
 
-    def test_ls_info_basic_directory(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_ls_basic_directory(self, sandbox: SandboxBackendProtocol) -> None:
         """Test listing a directory with files and subdirectories."""
         base_dir = "/tmp/test_sandbox_ops/ls_test"
         sandbox.execute(f"mkdir -p {base_dir}")
@@ -649,7 +649,7 @@ class TestSandboxOperations:
         sandbox.write(f"{base_dir}/file2.txt", "content2")
         sandbox.execute(f"mkdir -p {base_dir}/subdir")
 
-        result = sandbox.ls_info(base_dir)
+        result = sandbox.ls(base_dir)
 
         assert result.entries is not None
         assert len(result.entries) == 3
@@ -664,40 +664,40 @@ class TestSandboxOperations:
             else:
                 assert info["is_dir"] is False
 
-    def test_ls_info_empty_directory(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_ls_empty_directory(self, sandbox: SandboxBackendProtocol) -> None:
         """Test listing an empty directory."""
         empty_dir = "/tmp/test_sandbox_ops/empty_dir"
         sandbox.execute(f"mkdir -p {empty_dir}")
 
-        result = sandbox.ls_info(empty_dir)
+        result = sandbox.ls(empty_dir)
 
         assert result.entries == []
 
-    def test_ls_info_nonexistent_directory(
+    def test_ls_nonexistent_directory(
         self, sandbox: SandboxBackendProtocol
     ) -> None:
         """Test listing a directory that doesn't exist."""
         nonexistent_dir = "/tmp/test_sandbox_ops/does_not_exist"
 
-        result = sandbox.ls_info(nonexistent_dir)
+        result = sandbox.ls(nonexistent_dir)
 
         assert result.entries == []
 
-    def test_ls_info_hidden_files(self, sandbox: SandboxBackendProtocol) -> None:
-        """Test that ls_info includes hidden files (starting with .)."""
+    def test_ls_hidden_files(self, sandbox: SandboxBackendProtocol) -> None:
+        """Test that ls includes hidden files (starting with .)."""
         base_dir = "/tmp/test_sandbox_ops/hidden_test"
         sandbox.execute(f"mkdir -p {base_dir}")
         sandbox.write(f"{base_dir}/.hidden", "hidden content")
         sandbox.write(f"{base_dir}/visible.txt", "visible content")
 
-        result = sandbox.ls_info(base_dir)
+        result = sandbox.ls(base_dir)
 
         assert result.entries is not None
         paths = [info["path"] for info in result.entries]
         assert f"{base_dir}/.hidden" in paths
         assert f"{base_dir}/visible.txt" in paths
 
-    def test_ls_info_directory_with_spaces(
+    def test_ls_directory_with_spaces(
         self, sandbox: SandboxBackendProtocol
     ) -> None:
         """Test listing a directory that has spaces in file/dir names."""
@@ -706,28 +706,28 @@ class TestSandboxOperations:
         sandbox.write(f"{base_dir}/file with spaces.txt", "content")
         sandbox.execute(f"mkdir -p '{base_dir}/dir with spaces'")
 
-        result = sandbox.ls_info(base_dir)
+        result = sandbox.ls(base_dir)
 
         assert result.entries is not None
         paths = [info["path"] for info in result.entries]
         assert f"{base_dir}/file with spaces.txt" in paths
         assert f"{base_dir}/dir with spaces" in paths
 
-    def test_ls_info_unicode_filenames(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_ls_unicode_filenames(self, sandbox: SandboxBackendProtocol) -> None:
         """Test listing directory with unicode filenames."""
         base_dir = "/tmp/test_sandbox_ops/ls_unicode"
         sandbox.execute(f"mkdir -p {base_dir}")
         sandbox.write(f"{base_dir}/测试文件.txt", "content")
         sandbox.write(f"{base_dir}/файл.txt", "content")
 
-        result = sandbox.ls_info(base_dir)
+        result = sandbox.ls(base_dir)
 
         assert result.entries is not None
         paths = [info["path"] for info in result.entries]
         # Should contain the unicode filenames
         assert len(paths) == 2
 
-    def test_ls_info_large_directory(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_ls_large_directory(self, sandbox: SandboxBackendProtocol) -> None:
         """Test listing a directory with many files."""
         base_dir = "/tmp/test_sandbox_ops/ls_large"
         # Create 50 files in a single command (much faster than loop)
@@ -739,7 +739,7 @@ class TestSandboxOperations:
             "echo 'content' > file_$(printf '%03d' $i).txt; done"
         )
 
-        result = sandbox.ls_info(base_dir)
+        result = sandbox.ls(base_dir)
 
         assert result.entries is not None
         assert len(result.entries) == 50
@@ -747,7 +747,7 @@ class TestSandboxOperations:
         assert f"{base_dir}/file_000.txt" in paths
         assert f"{base_dir}/file_049.txt" in paths
 
-    def test_ls_info_path_with_trailing_slash(
+    def test_ls_path_with_trailing_slash(
         self, sandbox: SandboxBackendProtocol
     ) -> None:
         """Test that trailing slash in path is handled correctly."""
@@ -756,14 +756,14 @@ class TestSandboxOperations:
         sandbox.write(f"{base_dir}/file.txt", "content")
 
         # List with trailing slash
-        result = sandbox.ls_info(f"{base_dir}/")
+        result = sandbox.ls(f"{base_dir}/")
 
         # Should work the same as without trailing slash
         assert (
             result.entries is not None and len(result.entries) >= 1
         ) or result.entries == []  # Implementation dependent
 
-    def test_ls_info_special_characters_in_filenames(
+    def test_ls_special_characters_in_filenames(
         self, sandbox: SandboxBackendProtocol
     ) -> None:
         """Test listing files with special characters in names."""
@@ -774,7 +774,7 @@ class TestSandboxOperations:
         sandbox.write(f"{base_dir}/file[2].txt", "content")
         sandbox.write(f"{base_dir}/file-3.txt", "content")
 
-        result = sandbox.ls_info(base_dir)
+        result = sandbox.ls(base_dir)
 
         assert result.entries is not None
         paths = [info["path"] for info in result.entries]
@@ -1162,7 +1162,7 @@ class TestSandboxOperations:
         sandbox.write(f"{base_dir}/subdir2/file3.txt", "file 3")
 
         # List root directory
-        ls_result = sandbox.ls_info(base_dir)
+        ls_result = sandbox.ls(base_dir)
         assert ls_result.entries is not None
         paths = [info["path"] for info in ls_result.entries]
         assert f"{base_dir}/root.txt" in paths

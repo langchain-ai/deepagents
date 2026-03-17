@@ -72,7 +72,7 @@ class StateBackend(BackendProtocol):
             return _to_legacy_file_data(file_data)
         return {**file_data}
 
-    def ls_info(self, path: str) -> LsResult:
+    def ls(self, path: str) -> LsResult:
         """List files and directories in the specified directory (non-recursive).
 
         Args:

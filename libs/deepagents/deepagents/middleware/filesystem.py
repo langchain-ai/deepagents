@@ -513,7 +513,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 validated_path = validate_path(path)
             except ValueError as e:
                 return f"Error: {e}"
-            ls_result = resolved_backend.ls_info(validated_path)
+            ls_result = resolved_backend.ls(validated_path)
             if isinstance(ls_result, LsResult):
                 if ls_result.error:
                     return f"Error: {ls_result.error}"
@@ -541,7 +541,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 validated_path = validate_path(path)
             except ValueError as e:
                 return f"Error: {e}"
-            ls_result = await resolved_backend.als_info(validated_path)
+            ls_result = await resolved_backend.als(validated_path)
             if isinstance(ls_result, LsResult):
                 if ls_result.error:
                     return f"Error: {ls_result.error}"

@@ -345,7 +345,7 @@ __DEEPAGENTS_EOF__
         """Edit a file by replacing string occurrences using shell commands."""
         raise NotImplementedError(_SYNC_NOT_SUPPORTED)
 
-    async def als_info(self, path: str) -> LsResult:
+    async def als(self, path: str) -> LsResult:
         """List directory contents with metadata using shell commands."""
         safe_path = shlex.quote(path)
 
@@ -385,7 +385,7 @@ done
 
         return LsResult(entries=file_infos)
 
-    def ls_info(self, path: str) -> LsResult:
+    def ls(self, path: str) -> LsResult:
         """List directory contents with metadata using shell commands."""
         raise NotImplementedError(_SYNC_NOT_SUPPORTED)
 

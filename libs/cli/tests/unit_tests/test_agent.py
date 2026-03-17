@@ -1481,9 +1481,9 @@ class TestCreateDeepAgentKwargsWorkaround:
 class TestLsEntriesShim:
     """Remind us to remove the `_ls_entries` compat shim in test_end_to_end.py.
 
-    The PyPI SDK <0.5 returns a raw `list` from `ls_info`; >=0.5 returns
+    The PyPI SDK <0.5 returns a raw `list` from `ls`; >=0.5 returns
     `LsResult` with `.entries`. Once the pin is bumped to >=0.5.0 the shim
-    should be deleted and callers inlined to `backend.ls_info(path).entries`.
+    should be deleted and callers inlined to `backend.ls(path).entries`.
     """
 
     def test_remove_ls_entries_shim_when_sdk_pin_is_bumped(self) -> None:
@@ -1501,5 +1501,5 @@ class TestLsEntriesShim:
         assert (major, minor) < (0, 5), (
             f"SDK pin is now {pinned_version} (>=0.5.0). "
             "Delete `_ls_entries()` from test_end_to_end.py and inline "
-            "`backend.ls_info(path).entries` at call sites."
+            "`backend.ls(path).entries` at call sites."
         )

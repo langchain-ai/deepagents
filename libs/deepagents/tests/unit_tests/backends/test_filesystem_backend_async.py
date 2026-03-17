@@ -27,7 +27,7 @@ async def test_filesystem_backend_async_normal_mode(tmp_path: Path):
     be = FilesystemBackend(root_dir=str(root), virtual_mode=False)
 
     # als_info absolute path - should only list files in root, not subdirectories
-    infos = (await be.als_info(str(root))).entries
+    infos = (await be.als(str(root))).entries
     assert infos is not None
     paths = {i["path"] for i in infos}
     assert str(f1) in paths  # File in root should be listed
@@ -63,7 +63,7 @@ async def test_filesystem_backend_async_virtual_mode(tmp_path: Path):
     be = FilesystemBackend(root_dir=str(root), virtual_mode=True)
 
     # als_info from virtual root - should only list files in root, not subdirectories
-    infos = (await be.als_info("/")).entries
+    infos = (await be.als("/")).entries
     assert infos is not None
     paths = {i["path"] for i in infos}
     assert "/a.txt" in paths  # File in root should be listed
@@ -117,7 +117,7 @@ async def test_filesystem_backend_als_nested_directories(tmp_path: Path):
 
     be = FilesystemBackend(root_dir=str(root), virtual_mode=True)
 
-    root_listing = (await be.als_info("/")).entries
+    root_listing = (await be.als("/")).entries
     assert root_listing is not None
     root_paths = [fi["path"] for fi in root_listing]
     assert "/config.json" in root_paths
@@ -126,21 +126,21 @@ async def test_filesystem_backend_als_nested_directories(tmp_path: Path):
     assert "/src/main.py" not in root_paths
     assert "/src/utils/helper.py" not in root_paths
 
-    src_listing = (await be.als_info("/src/")).entries
+    src_listing = (await be.als("/src/")).entries
     assert src_listing is not None
     src_paths = [fi["path"] for fi in src_listing]
     assert "/src/main.py" in src_paths
     assert "/src/utils/" in src_paths
     assert "/src/utils/helper.py" not in src_paths
 
-    utils_listing = (await be.als_info("/src/utils/")).entries
+    utils_listing = (await be.als("/src/utils/")).entries
     assert utils_listing is not None
     utils_paths = [fi["path"] for fi in utils_listing]
     assert "/src/utils/helper.py" in utils_paths
     assert "/src/utils/common.py" in utils_paths
     assert len(utils_paths) == 2
 
-    empty_listing = await be.als_info("/nonexistent/")
+    empty_listing = await be.als("/nonexistent/")
     assert empty_listing.entries == []
 
 
@@ -159,7 +159,7 @@ async def test_filesystem_backend_als_normal_mode_nested(tmp_path: Path):
 
     be = FilesystemBackend(root_dir=str(root), virtual_mode=False)
 
-    root_listing = (await be.als_info(str(root))).entries
+    root_listing = (await be.als(str(root))).entries
     assert root_listing is not None
     root_paths = [fi["path"] for fi in root_listing]
 
@@ -167,7 +167,7 @@ async def test_filesystem_backend_als_normal_mode_nested(tmp_path: Path):
     assert str(root / "subdir") + "/" in root_paths
     assert str(root / "subdir" / "file2.txt") not in root_paths
 
-    subdir_listing = (await be.als_info(str(root / "subdir"))).entries
+    subdir_listing = (await be.als(str(root / "subdir"))).entries
     assert subdir_listing is not None
     subdir_paths = [fi["path"] for fi in subdir_listing]
     assert str(root / "subdir" / "file2.txt") in subdir_paths
@@ -189,23 +189,23 @@ async def test_filesystem_backend_als_trailing_slash(tmp_path: Path):
 
     be = FilesystemBackend(root_dir=str(root), virtual_mode=True)
 
-    listing_with_slash = (await be.als_info("/")).entries
+    listing_with_slash = (await be.als("/")).entries
     assert listing_with_slash is not None
     assert len(listing_with_slash) > 0
 
-    listing = (await be.als_info("/")).entries
+    listing = (await be.als("/")).entries
     assert listing is not None
     paths = [fi["path"] for fi in listing]
     assert paths == sorted(paths)
 
-    listing1 = (await be.als_info("/dir/")).entries
-    listing2 = (await be.als_info("/dir")).entries
+    listing1 = (await be.als("/dir/")).entries
+    listing2 = (await be.als("/dir")).entries
     assert listing1 is not None
     assert listing2 is not None
     assert len(listing1) == len(listing2)
     assert [fi["path"] for fi in listing1] == [fi["path"] for fi in listing2]
 
-    empty = await be.als_info("/nonexistent/")
+    empty = await be.als("/nonexistent/")
     assert empty.entries == []
 
 

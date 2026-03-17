@@ -54,7 +54,7 @@ def test_composite_state_backend_routes_and_search(tmp_path: Path):  # noqa: ARG
     assert isinstance(msg, WriteResult) and msg.error is None and msg.files_update is None
 
     # ls_info at root returns both
-    infos = be.ls_info("/").entries
+    infos = be.ls("/").entries
     assert infos is not None
     paths = {i["path"] for i in infos}
     assert "/file.txt" in paths and "/memories/" in paths
@@ -87,14 +87,14 @@ def test_composite_backend_filesystem_plus_store(tmp_path: Path):
     assert isinstance(r2, WriteResult) and r2.error is None and r2.files_update is None
 
     # ls_info path routing
-    infos_root = comp.ls_info("/").entries
+    infos_root = comp.ls("/").entries
     assert infos_root is not None
     assert any(i["path"] == "/hello.txt" for i in infos_root)
-    infos_mem = comp.ls_info("/memories/").entries
+    infos_mem = comp.ls("/memories/").entries
     assert infos_mem is not None
     assert any(i["path"] == "/memories/notes.md" for i in infos_mem)
 
-    infos_mem_no_slash = comp.ls_info("/memories").entries
+    infos_mem_no_slash = comp.ls("/memories").entries
     assert infos_mem_no_slash is not None
     assert any(i["path"] == "/memories/notes.md" for i in infos_mem_no_slash)
 
@@ -148,7 +148,7 @@ def test_composite_backend_store_to_store():
     assert "routed store content" in content2.file_data["content"]
 
     # ls_info at root should show both
-    infos = comp.ls_info("/").entries
+    infos = comp.ls("/").entries
     assert infos is not None
     paths = {i["path"] for i in infos}
     assert "/notes.txt" in paths
@@ -199,7 +199,7 @@ def test_composite_backend_multiple_routes():
     assert res_cache.path == "/cache/session.json"
 
     # ls_info at root should aggregate all
-    infos = comp.ls_info("/").entries
+    infos = comp.ls("/").entries
     assert infos is not None
     paths = {i["path"] for i in infos}
     assert "/temp.txt" in paths
@@ -208,7 +208,7 @@ def test_composite_backend_multiple_routes():
     assert "/cache/" in paths
 
     # ls_info at specific route
-    mem_infos = comp.ls_info("/memories/").entries
+    mem_infos = comp.ls("/memories/").entries
     assert mem_infos is not None
     mem_paths = {i["path"] for i in mem_infos}
     assert "/memories/important.md" in mem_paths
@@ -293,7 +293,7 @@ def test_composite_backend_ls_nested_directories(tmp_path: Path):
     comp.write("/memories/deep/note2.txt", "note 2")
     comp.write("/memories/deep/nested/note3.txt", "note 3")
 
-    root_listing = comp.ls_info("/").entries
+    root_listing = comp.ls("/").entries
     assert root_listing is not None
     root_paths = [fi["path"] for fi in root_listing]
     assert "/local.txt" in root_paths
@@ -302,21 +302,21 @@ def test_composite_backend_ls_nested_directories(tmp_path: Path):
     assert "/src/main.py" not in root_paths
     assert "/memories/note1.txt" not in root_paths
 
-    src_listing = comp.ls_info("/src/").entries
+    src_listing = comp.ls("/src/").entries
     assert src_listing is not None
     src_paths = [fi["path"] for fi in src_listing]
     assert "/src/main.py" in src_paths
     assert "/src/utils/" in src_paths
     assert "/src/utils/helper.py" not in src_paths
 
-    mem_listing = comp.ls_info("/memories/").entries
+    mem_listing = comp.ls("/memories/").entries
     assert mem_listing is not None
     mem_paths = [fi["path"] for fi in mem_listing]
     assert "/memories/note1.txt" in mem_paths
     assert "/memories/deep/" in mem_paths
     assert "/memories/deep/note2.txt" not in mem_paths
 
-    deep_listing = comp.ls_info("/memories/deep/").entries
+    deep_listing = comp.ls("/memories/deep/").entries
     assert deep_listing is not None
     deep_paths = [fi["path"] for fi in deep_listing]
     assert "/memories/deep/note2.txt" in deep_paths
@@ -361,7 +361,7 @@ def test_composite_backend_ls_multiple_routes_nested():
     for path, content in archive_files.items():
         comp.write(path, content)
 
-    root_listing = comp.ls_info("/").entries
+    root_listing = comp.ls("/").entries
     assert root_listing is not None
     root_paths = [fi["path"] for fi in root_listing]
     assert "/temp.txt" in root_paths
@@ -371,21 +371,21 @@ def test_composite_backend_ls_multiple_routes_nested():
     assert "/work/file1.txt" not in root_paths
     assert "/memories/important.txt" not in root_paths
 
-    work_listing = comp.ls_info("/work/").entries
+    work_listing = comp.ls("/work/").entries
     assert work_listing is not None
     work_paths = [fi["path"] for fi in work_listing]
     assert "/work/file1.txt" in work_paths
     assert "/work/projects/" in work_paths
     assert "/work/projects/proj1.txt" not in work_paths
 
-    mem_listing = comp.ls_info("/memories/").entries
+    mem_listing = comp.ls("/memories/").entries
     assert mem_listing is not None
     mem_paths = [fi["path"] for fi in mem_listing]
     assert "/memories/important.txt" in mem_paths
     assert "/memories/diary/" in mem_paths
     assert "/memories/diary/entry1.txt" not in mem_paths
 
-    arch_listing = comp.ls_info("/archive/").entries
+    arch_listing = comp.ls("/archive/").entries
     assert arch_listing is not None
     arch_paths = [fi["path"] for fi in arch_listing]
     assert "/archive/old.txt" in arch_paths
@@ -406,19 +406,19 @@ def test_composite_backend_ls_trailing_slash(tmp_path: Path):
 
     comp.write("/store/item.txt", "store content")
 
-    listing = comp.ls_info("/").entries
+    listing = comp.ls("/").entries
     assert listing is not None
     paths = [fi["path"] for fi in listing]
     assert paths == sorted(paths)
 
-    empty_listing = comp.ls_info("/store/nonexistent/")
+    empty_listing = comp.ls("/store/nonexistent/")
     assert empty_listing.entries == []
 
-    empty_listing2 = comp.ls_info("/nonexistent/")
+    empty_listing2 = comp.ls("/nonexistent/")
     assert empty_listing2.entries == []
 
-    listing1 = comp.ls_info("/store/").entries
-    listing2 = comp.ls_info("/store").entries
+    listing1 = comp.ls("/store/").entries
+    listing2 = comp.ls("/store").entries
     assert listing1 is not None
     assert listing2 is not None
     assert [fi["path"] for fi in listing1] == [fi["path"] for fi in listing2]

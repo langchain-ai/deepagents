@@ -158,7 +158,7 @@ def test_local_shell_backend_ls_info() -> None:
         backend.write("/file2.txt", "content2")
 
         # List files
-        files = backend.ls_info("/").entries
+        files = backend.ls("/").entries
 
         assert files is not None
         assert len(files) == 2

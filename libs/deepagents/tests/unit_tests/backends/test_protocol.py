@@ -32,7 +32,7 @@ class TestBackendProtocolRaisesNotImplemented:
 
     def test_ls_info(self, backend: BareBackend) -> None:
         with pytest.raises(NotImplementedError):
-            backend.ls_info("/")
+            backend.ls("/")
 
     def test_read(self, backend: BareBackend) -> None:
         with pytest.raises(NotImplementedError):
@@ -76,7 +76,7 @@ class TestAsyncMethodsPropagateNotImplemented:
 
     async def test_als_info(self, backend: BareBackend) -> None:
         with pytest.raises(NotImplementedError):
-            await backend.als_info("/")
+            await backend.als("/")
 
     async def test_aread(self, backend: BareBackend) -> None:
         with pytest.raises(NotImplementedError):

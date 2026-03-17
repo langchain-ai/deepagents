@@ -1798,7 +1798,7 @@ class DeepAgentsApp(App):
             self.exit()
         elif cmd == "/help":
             await self._mount_message(UserMessage(command))
-            help_text = Text(
+            help_body = (
                 "Commands: /quit, /clear, /offload, /editor, /mcp, "
                 "/model [--model-params JSON] [--default], /reload, /remember, "
                 "/tokens, /threads, /trace, /changelog, /docs, /feedback, /help\n\n"

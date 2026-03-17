@@ -145,6 +145,16 @@ class ApprovalMenu(Container):
         command = str(req.get("args", {}).get("command", ""))
         return len(command) > _SHELL_COMMAND_TRUNCATE_LENGTH
 
+    def _check_expandable_content(self) -> bool:
+        """Check if there's a write_file or edit_file tool widget that can be expanded.
+
+        Returns:
+            Whether the single action request is an expandable file operation.
+        """
+        if len(self._action_requests) != 1:
+            return False
+        return self._action_requests[0].get("name", "") in {"write_file", "edit_file"}
+
     def _get_command_display(self, *, expanded: bool) -> Content:
         """Get the command display content (truncated or full).
 
@@ -270,7 +280,7 @@ class ApprovalMenu(Container):
             f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate {glyphs.bullet} "
             f"Enter select {glyphs.bullet} y/a/n quick keys {glyphs.bullet} Esc reject"
         )
-        if self._has_expandable_command:
+        if self._has_expandable_command or self._check_expandable_content():
             help_text += f" {glyphs.bullet} e expand"
         yield Static(help_text, classes="approval-help")
 
@@ -383,13 +393,20 @@ class ApprovalMenu(Container):
         self._handle_selection(2)
 
     def action_toggle_expand(self) -> None:
-        """Toggle shell command expansion."""
-        if not self._has_expandable_command or not self._command_widget:
+        """Toggle shell command or file content expansion."""
+        if self._has_expandable_command and self._command_widget:
+            self._command_expanded = not self._command_expanded
+            self._command_widget.update(
+                self._get_command_display(expanded=self._command_expanded)
+            )
             return
-        self._command_expanded = not self._command_expanded
-        self._command_widget.update(
-            self._get_command_display(expanded=self._command_expanded)
-        )
+        if self._check_expandable_content() and self._tool_info_container:
+            from deepagents_cli.widgets.tool_widgets import ToolApprovalWidget
+
+            for widget in self._tool_info_container.query(ToolApprovalWidget):
+                if widget.is_expandable:
+                    widget.toggle_expand()
+                    return
 
     def _handle_selection(self, option: int) -> None:
         """Handle the selected option."""

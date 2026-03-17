@@ -4,6 +4,7 @@ from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
+from langchain.chat_models.base import _ConfigurableModel
 from langchain_core.messages import AIMessage
 
 from deepagents.middleware.summarization import create_summarization_middleware
@@ -46,3 +47,34 @@ def test_factory_rejects_string_model() -> None:
     """Raises `TypeError` when called with a string model name."""
     with pytest.raises(TypeError, match="BaseChatModel"):
         create_summarization_middleware("openai:gpt-5", cast("Any", MagicMock()))  # type: ignore[arg-type]
+
+
+def test_factory_accepts_configurable_model() -> None:
+    """Accepts _ConfigurableModel instances (runtime compatible with BaseChatModel)."""
+    # _ConfigurableModel is returned by init_chat_model when configurable_fields is specified
+    # We can't easily create one in tests without mocking the entire init_chat_model flow,
+    # so we just verify the type check accepts it
+    from langchain.chat_models.base import _ConfigurableModel as RuntimeConfigurableModel
+
+    # Create a mock that passes the isinstance check
+    model = MagicMock()
+    model.__class__ = RuntimeConfigurableModel
+    model.profile = {"max_input_tokens": 120_000}
+
+    # The type check should pass (not raise TypeError)
+    # Note: This will fail later in initialization because it's a mock,
+    # but we're only testing that the type check accepts _ConfigurableModel
+    try:
+        middleware = create_summarization_middleware(model, cast("Any", MagicMock()))
+        # If we get here, the type check passed
+        assert True
+    except TypeError as e:
+        if "BaseChatModel" in str(e):
+            # Type check failed - this is what we're testing against
+            pytest.fail(f"Type check rejected _ConfigurableModel: {e}")
+        # Other TypeErrors are expected (mock limitations)
+        pass
+    except AttributeError:
+        # Expected - mock doesn't have all required attributes
+        # But the type check passed, which is what we're testing
+        pass

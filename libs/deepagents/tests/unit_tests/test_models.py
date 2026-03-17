@@ -2,6 +2,7 @@
 
 from unittest.mock import MagicMock, patch
 
+from langchain.chat_models.base import _ConfigurableModel
 from langchain_core.language_models import BaseChatModel
 
 from deepagents._models import (
@@ -41,6 +42,11 @@ class TestResolveModel:
 
         mock.assert_called_once_with("anthropic:claude-sonnet-4-6")
         assert result is mock.return_value
+
+    def test_passthrough_configurable_model(self) -> None:
+        """_ConfigurableModel instances should pass through unchanged."""
+        model = MagicMock(spec=_ConfigurableModel)
+        assert resolve_model(model) is model
 
 
 class TestGetModelIdentifier:

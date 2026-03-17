@@ -69,13 +69,21 @@ def format_ci(
 def min_detectable_effect(total: int, *, z: float = 1.96, p: float = 0.5) -> float:
     """Estimate minimum detectable effect size for a given sample count.
 
-    Uses the normal approximation for difference in two proportions.
-    Conservative estimate assumes `p=0.5` (maximum variance).
+    The MDE is the smallest difference in success rates between two runs that
+    can be considered statistically significant. If two runs score 72% and 78%
+    but the MDE is 14pp, that 6pp gap is indistinguishable from noise at the
+    chosen confidence level.
+
+    Derived from the standard error of the difference between two independent
+    proportions: `MDE = z * sqrt(2 * p * (1-p) / n)`. Assumes equal sample sizes
+    in both runs. Defaults to `p=0.5` because that maximizes `p*(1-p)`, giving
+    the most conservative (widest) estimate.
 
     Args:
-        total: Number of tasks per run.
-        z: Z-score for desired confidence level `(1.96 = 95% CI)`.
-        p: Assumed base proportion.
+        total: Number of tasks per run (assumes both runs have the same count).
+        z: Z-score for desired confidence level (1.96 = 95% CI).
+        p: Assumed base proportion. 0.5 is the conservative default
+            since it maximizes variance.
 
     Returns:
         Minimum detectable difference as a proportion (e.g., `0.042 = 4.2pp`).

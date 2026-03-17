@@ -475,7 +475,11 @@ def parse_args() -> argparse.Namespace:
         choices=["none", "modal", "daytona", "runloop", "langsmith"],
         default="none",
         metavar="TYPE",
-        help="Remote sandbox for code execution (default: none - local only)",
+        help=(
+            "Remote sandbox for code execution "
+            "(default: none - local only; langsmith is included, "
+            "modal/daytona/runloop require downloading extras)"
+        ),
     )
 
     parser.add_argument(

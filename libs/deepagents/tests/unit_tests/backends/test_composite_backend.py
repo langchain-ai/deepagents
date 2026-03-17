@@ -54,21 +54,21 @@ def test_composite_state_backend_routes_and_search(tmp_path: Path):  # noqa: ARG
     assert isinstance(msg, WriteResult) and msg.error is None and msg.files_update is None
 
     # ls_info at root returns both
-    infos = be.ls_info("/").entries
+    infos = be.ls("/").entries
     assert infos is not None
     paths = {i["path"] for i in infos}
     assert "/file.txt" in paths and "/memories/" in paths
 
     # grep across both
-    matches = be.grep_raw("alpha", path="/").matches
+    matches = be.grep("alpha", path="/").matches
     assert matches is not None
     assert any(m["path"] == "/file.txt" for m in matches)
-    matches2 = be.grep_raw("beta", path="/").matches
+    matches2 = be.grep("beta", path="/").matches
     assert matches2 is not None
     assert any(m["path"] == "/memories/readme.md" for m in matches2)
 
     # glob across both
-    g = be.glob_info("**/*.md", path="/").matches
+    g = be.glob("**/*.md", path="/").matches
     assert any(i["path"] == "/memories/readme.md" for i in g)
 
 
@@ -87,36 +87,36 @@ def test_composite_backend_filesystem_plus_store(tmp_path: Path):
     assert isinstance(r2, WriteResult) and r2.error is None and r2.files_update is None
 
     # ls_info path routing
-    infos_root = comp.ls_info("/").entries
+    infos_root = comp.ls("/").entries
     assert infos_root is not None
     assert any(i["path"] == "/hello.txt" for i in infos_root)
-    infos_mem = comp.ls_info("/memories/").entries
+    infos_mem = comp.ls("/memories/").entries
     assert infos_mem is not None
     assert any(i["path"] == "/memories/notes.md" for i in infos_mem)
 
-    infos_mem_no_slash = comp.ls_info("/memories").entries
+    infos_mem_no_slash = comp.ls("/memories").entries
     assert infos_mem_no_slash is not None
     assert any(i["path"] == "/memories/notes.md" for i in infos_mem_no_slash)
 
-    # grep_raw route targeting should accept /memories as the route root
-    gm_mem = comp.grep_raw("note", path="/memories").matches
+    # grep route targeting should accept /memories as the route root
+    gm_mem = comp.grep("note", path="/memories").matches
     assert gm_mem is not None
     assert any(m["path"] == "/memories/notes.md" for m in gm_mem)
 
-    # glob_info route targeting should accept /memories as the route root
-    gl_mem = comp.glob_info("*.md", path="/memories").matches
+    # glob route targeting should accept /memories as the route root
+    gl_mem = comp.glob("*.md", path="/memories").matches
     assert any(i["path"] == "/memories/notes.md" for i in gl_mem)
 
-    # grep_raw merges
-    gm = comp.grep_raw("hello", path="/").matches
+    # grep merges
+    gm = comp.grep("hello", path="/").matches
     assert gm is not None
     assert any(m["path"] == "/hello.txt" for m in gm)
-    gm2 = comp.grep_raw("note", path="/").matches
+    gm2 = comp.grep("note", path="/").matches
     assert gm2 is not None
     assert any(m["path"] == "/memories/notes.md" for m in gm2)
 
-    # glob_info
-    gl = comp.glob_info("*.md", path="/").matches
+    # glob
+    gl = comp.glob("*.md", path="/").matches
     assert any(i["path"] == "/memories/notes.md" for i in gl)
 
 
@@ -148,18 +148,18 @@ def test_composite_backend_store_to_store():
     assert "routed store content" in content2.file_data["content"]
 
     # ls_info at root should show both
-    infos = comp.ls_info("/").entries
+    infos = comp.ls("/").entries
     assert infos is not None
     paths = {i["path"] for i in infos}
     assert "/notes.txt" in paths
     assert "/memories/" in paths
 
     # grep across both stores
-    matches = comp.grep_raw("default", path="/").matches
+    matches = comp.grep("default", path="/").matches
     assert matches is not None
     assert any(m["path"] == "/notes.txt" for m in matches)
 
-    matches2 = comp.grep_raw("routed", path="/").matches
+    matches2 = comp.grep("routed", path="/").matches
     assert matches2 is not None
     assert any(m["path"] == "/memories/important.txt" for m in matches2)
 
@@ -199,7 +199,7 @@ def test_composite_backend_multiple_routes():
     assert res_cache.path == "/cache/session.json"
 
     # ls_info at root should aggregate all
-    infos = comp.ls_info("/").entries
+    infos = comp.ls("/").entries
     assert infos is not None
     paths = {i["path"] for i in infos}
     assert "/temp.txt" in paths
@@ -208,7 +208,7 @@ def test_composite_backend_multiple_routes():
     assert "/cache/" in paths
 
     # ls_info at specific route
-    mem_infos = comp.ls_info("/memories/").entries
+    mem_infos = comp.ls("/memories/").entries
     assert mem_infos is not None
     mem_paths = {i["path"] for i in mem_infos}
     assert "/memories/important.md" in mem_paths
@@ -217,7 +217,7 @@ def test_composite_backend_multiple_routes():
 
     # grep across all backends with literal text search
     # Note: All written content contains 'm' character
-    all_matches = comp.grep_raw("m", path="/").matches  # Match literal 'm'
+    all_matches = comp.grep("m", path="/").matches  # Match literal 'm'
     assert all_matches is not None
     paths_with_content = {m["path"] for m in all_matches}
     assert "/temp.txt" in paths_with_content  # "ephemeral" contains 'm'
@@ -225,7 +225,7 @@ def test_composite_backend_multiple_routes():
     assert len(paths_with_content) >= 1  # At least temp.txt should match
 
     # glob across all backends
-    glob_results = comp.glob_info("**/*.md", path="/").matches
+    glob_results = comp.glob("**/*.md", path="/").matches
     assert any(i["path"] == "/memories/important.md" for i in glob_results)
 
     # Edit in routed backend
@@ -258,7 +258,7 @@ def test_composite_backend_grep_path_isolation():
     comp.write("/memories/notes.txt", "remember to buy tools")
 
     # Grep for "tool" in /tools directory - should NOT return /memories results
-    result = comp.grep_raw("tool", path="/tools")
+    result = comp.grep("tool", path="/tools")
     matches = result.matches
     match_paths = [m["path"] for m in matches] if matches is not None else []
 
@@ -293,7 +293,7 @@ def test_composite_backend_ls_nested_directories(tmp_path: Path):
     comp.write("/memories/deep/note2.txt", "note 2")
     comp.write("/memories/deep/nested/note3.txt", "note 3")
 
-    root_listing = comp.ls_info("/").entries
+    root_listing = comp.ls("/").entries
     assert root_listing is not None
     root_paths = [fi["path"] for fi in root_listing]
     assert "/local.txt" in root_paths
@@ -302,21 +302,21 @@ def test_composite_backend_ls_nested_directories(tmp_path: Path):
     assert "/src/main.py" not in root_paths
     assert "/memories/note1.txt" not in root_paths
 
-    src_listing = comp.ls_info("/src/").entries
+    src_listing = comp.ls("/src/").entries
     assert src_listing is not None
     src_paths = [fi["path"] for fi in src_listing]
     assert "/src/main.py" in src_paths
     assert "/src/utils/" in src_paths
     assert "/src/utils/helper.py" not in src_paths
 
-    mem_listing = comp.ls_info("/memories/").entries
+    mem_listing = comp.ls("/memories/").entries
     assert mem_listing is not None
     mem_paths = [fi["path"] for fi in mem_listing]
     assert "/memories/note1.txt" in mem_paths
     assert "/memories/deep/" in mem_paths
     assert "/memories/deep/note2.txt" not in mem_paths
 
-    deep_listing = comp.ls_info("/memories/deep/").entries
+    deep_listing = comp.ls("/memories/deep/").entries
     assert deep_listing is not None
     deep_paths = [fi["path"] for fi in deep_listing]
     assert "/memories/deep/note2.txt" in deep_paths
@@ -361,7 +361,7 @@ def test_composite_backend_ls_multiple_routes_nested():
     for path, content in archive_files.items():
         comp.write(path, content)
 
-    root_listing = comp.ls_info("/").entries
+    root_listing = comp.ls("/").entries
     assert root_listing is not None
     root_paths = [fi["path"] for fi in root_listing]
     assert "/temp.txt" in root_paths
@@ -371,21 +371,21 @@ def test_composite_backend_ls_multiple_routes_nested():
     assert "/work/file1.txt" not in root_paths
     assert "/memories/important.txt" not in root_paths
 
-    work_listing = comp.ls_info("/work/").entries
+    work_listing = comp.ls("/work/").entries
     assert work_listing is not None
     work_paths = [fi["path"] for fi in work_listing]
     assert "/work/file1.txt" in work_paths
     assert "/work/projects/" in work_paths
     assert "/work/projects/proj1.txt" not in work_paths
 
-    mem_listing = comp.ls_info("/memories/").entries
+    mem_listing = comp.ls("/memories/").entries
     assert mem_listing is not None
     mem_paths = [fi["path"] for fi in mem_listing]
     assert "/memories/important.txt" in mem_paths
     assert "/memories/diary/" in mem_paths
     assert "/memories/diary/entry1.txt" not in mem_paths
 
-    arch_listing = comp.ls_info("/archive/").entries
+    arch_listing = comp.ls("/archive/").entries
     assert arch_listing is not None
     arch_paths = [fi["path"] for fi in arch_listing]
     assert "/archive/old.txt" in arch_paths
@@ -406,19 +406,19 @@ def test_composite_backend_ls_trailing_slash(tmp_path: Path):
 
     comp.write("/store/item.txt", "store content")
 
-    listing = comp.ls_info("/").entries
+    listing = comp.ls("/").entries
     assert listing is not None
     paths = [fi["path"] for fi in listing]
     assert paths == sorted(paths)
 
-    empty_listing = comp.ls_info("/store/nonexistent/")
+    empty_listing = comp.ls("/store/nonexistent/")
     assert empty_listing.entries == []
 
-    empty_listing2 = comp.ls_info("/nonexistent/")
+    empty_listing2 = comp.ls("/nonexistent/")
     assert empty_listing2.entries == []
 
-    listing1 = comp.ls_info("/store/").entries
-    listing2 = comp.ls_info("/store").entries
+    listing1 = comp.ls("/store/").entries
+    listing2 = comp.ls("/store").entries
     assert listing1 is not None
     assert listing2 is not None
     assert [fi["path"] for fi in listing1] == [fi["path"] for fi in listing2]
@@ -768,7 +768,7 @@ def test_composite_grep_targeting_specific_route(tmp_path: Path) -> None:
     comp.write("/memories/note2.txt", "memory content beta")
 
     # Grep with path="/memories/" should only search memories backend
-    matches = comp.grep_raw("memory", path="/memories/").matches
+    matches = comp.grep("memory", path="/memories/").matches
     assert matches is not None
     match_paths = [m["path"] for m in matches]
 
@@ -800,7 +800,7 @@ def test_composite_grep_with_glob_filter(tmp_path: Path) -> None:
     comp.write("/memories/data.json", "json data here")
 
     # Grep with glob="*.py" should only search Python files
-    matches = comp.grep_raw("here", path="/", glob="*.py").matches
+    matches = comp.grep("here", path="/", glob="*.py").matches
     assert matches is not None
     match_paths = [m["path"] for m in matches]
 
@@ -830,7 +830,7 @@ def test_composite_grep_with_glob_in_specific_route(tmp_path: Path) -> None:
     comp.write("/memories/data.txt", "text data")
 
     # Grep memories with glob="*.md"
-    matches = comp.grep_raw("notes", path="/memories/", glob="*.md").matches
+    matches = comp.grep("notes", path="/memories/", glob="*.md").matches
     assert matches is not None
     match_paths = [m["path"] for m in matches]
 
@@ -857,11 +857,11 @@ def test_composite_grep_with_path_none(tmp_path: Path) -> None:
     comp.write("/memories/file2.txt", "searchable memory")
 
     # Grep with path=None
-    matches_none = comp.grep_raw("searchable", path=None).matches
+    matches_none = comp.grep("searchable", path=None).matches
     assert matches_none is not None
 
     # Grep with path="/"
-    matches_root = comp.grep_raw("searchable", path="/").matches
+    matches_root = comp.grep("searchable", path="/").matches
     assert matches_root is not None
 
     # Both should return same results
@@ -881,7 +881,7 @@ def test_composite_grep_invalid_regex(tmp_path: Path) -> None:
     comp = CompositeBackend(default=fs, routes={})
 
     # Special characters are treated literally (not regex), should return empty list
-    result = comp.grep_raw("[invalid(", path="/")
+    result = comp.grep("[invalid(", path="/")
     assert result.matches is not None  # Returns empty list, not error
 
 
@@ -903,7 +903,7 @@ def test_composite_grep_nested_path_in_route(tmp_path: Path) -> None:
     comp.write("/memories/notes.txt", "notes here")
 
     # Grep with nested path
-    matches = comp.grep_raw("here", path="/memories/docs/").matches
+    matches = comp.grep("here", path="/memories/docs/").matches
     assert matches is not None
     match_paths = [m["path"] for m in matches]
 
@@ -931,7 +931,7 @@ def test_composite_grep_empty_results(tmp_path: Path) -> None:
     comp.write("/memories/note.txt", "memory content")
 
     # Search for pattern that doesn't exist
-    matches = comp.grep_raw("nonexistent_pattern_xyz", path="/").matches
+    matches = comp.grep("nonexistent_pattern_xyz", path="/").matches
     assert matches is not None
     assert len(matches) == 0
 
@@ -951,7 +951,7 @@ def test_composite_grep_route_prefix_restoration(tmp_path: Path) -> None:
     comp.write("/memories/beta.txt", "test content beta")
 
     # Grep in memories route
-    matches = comp.grep_raw("test", path="/memories/").matches
+    matches = comp.grep("test", path="/memories/").matches
     assert matches is not None
     assert len(matches) > 0
 
@@ -961,7 +961,7 @@ def test_composite_grep_route_prefix_restoration(tmp_path: Path) -> None:
         assert not match["path"].startswith("/memories//")  # No double slashes
 
     # Grep across all backends (path="/")
-    matches_all = comp.grep_raw("test", path="/").matches
+    matches_all = comp.grep("test", path="/").matches
     assert matches_all is not None
 
     # Filter matches from memories
@@ -981,7 +981,7 @@ def test_composite_grep_multiple_matches_per_file(tmp_path: Path) -> None:
     fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
     comp = CompositeBackend(default=fs, routes={})
 
-    matches = comp.grep_raw("pattern", path="/").matches
+    matches = comp.grep("pattern", path="/").matches
     assert matches is not None
 
     # Should have 2 matches from the same file
@@ -1021,7 +1021,7 @@ def test_composite_grep_multiple_routes_aggregation(tmp_path: Path) -> None:
     comp.write("/archive/arch.txt", "archive findme")
 
     # Grep across all backends
-    matches = comp.grep_raw("findme", path="/").matches
+    matches = comp.grep("findme", path="/").matches
     assert matches is not None
     match_paths = sorted([m["path"] for m in matches])
 
@@ -1042,7 +1042,7 @@ def test_composite_grep_error_in_routed_backend() -> None:
 
     # Create a mock backend that returns error strings for grep
     class ErrorBackend(StoreBackend):
-        def grep_raw(self, pattern: str, path: str | None = None, glob: str | None = None):
+        def grep(self, pattern: str, path: str | None = None, glob: str | None = None):
             return "Invalid regex pattern error"
 
     error_backend = ErrorBackend(rt)
@@ -1051,7 +1051,7 @@ def test_composite_grep_error_in_routed_backend() -> None:
     comp = CompositeBackend(default=state_backend, routes={"/errors/": error_backend})
 
     # When searching a specific route that errors, return the error
-    result = comp.grep_raw("test", path="/errors/")
+    result = comp.grep("test", path="/errors/")
     assert result.error == "Invalid regex pattern error"
 
 
@@ -1061,7 +1061,7 @@ def test_composite_grep_error_in_routed_backend_at_root() -> None:
 
     # Create a mock backend that returns error strings for grep
     class ErrorBackend(StoreBackend):
-        def grep_raw(self, pattern: str, path: str | None = None, glob: str | None = None):
+        def grep(self, pattern: str, path: str | None = None, glob: str | None = None):
             return "Backend error occurred"
 
     error_backend = ErrorBackend(rt)
@@ -1070,7 +1070,7 @@ def test_composite_grep_error_in_routed_backend_at_root() -> None:
     comp = CompositeBackend(default=state_backend, routes={"/errors/": error_backend})
 
     # When searching from root and a routed backend errors, return the error
-    result = comp.grep_raw("test", path="/")
+    result = comp.grep("test", path="/")
     assert result.error == "Backend error occurred"
 
 
@@ -1080,7 +1080,7 @@ def test_composite_grep_error_in_default_backend_at_root() -> None:
 
     # Create a mock backend that returns error strings for grep
     class ErrorDefaultBackend(StateBackend):
-        def grep_raw(self, pattern: str, path: str | None = None, glob: str | None = None):
+        def grep(self, pattern: str, path: str | None = None, glob: str | None = None):
             return "Default backend error"
 
     error_default = ErrorDefaultBackend(rt)
@@ -1089,7 +1089,7 @@ def test_composite_grep_error_in_default_backend_at_root() -> None:
     comp = CompositeBackend(default=error_default, routes={"/store/": store_backend})
 
     # When searching from root and default backend errors, return the error
-    result = comp.grep_raw("test", path="/")
+    result = comp.grep("test", path="/")
     assert result.error == "Default backend error"
 
 
@@ -1109,7 +1109,7 @@ def test_composite_grep_non_root_path_on_default_backend(tmp_path: Path) -> None
     comp = CompositeBackend(default=fs, routes={"/memories/": store})
 
     # Search in /work directory (doesn't match any route)
-    matches = comp.grep_raw("content", path="/work").matches
+    matches = comp.grep("content", path="/work").matches
     assert matches is not None
     match_paths = [m["path"] for m in matches]
 
@@ -1117,8 +1117,8 @@ def test_composite_grep_non_root_path_on_default_backend(tmp_path: Path) -> None
     assert match_paths == ["/work/project.txt"]
 
 
-def test_composite_glob_info_targeting_specific_route() -> None:
-    """Test glob_info when path matches a specific route."""
+def test_composite_glob_targeting_specific_route() -> None:
+    """Test glob when path matches a specific route."""
     rt = make_runtime("t_glob1")
 
     store = StoreBackend(rt)
@@ -1135,14 +1135,14 @@ def test_composite_glob_info_targeting_specific_route() -> None:
     state_backend.write("/local.py", "local python")
 
     # Glob in specific route with pattern - should only find .py files in memories
-    results = comp.glob_info("**/*.py", path="/memories/").matches
+    results = comp.glob("**/*.py", path="/memories/").matches
     result_paths = [fi["path"] for fi in results]
 
     assert result_paths == ["/memories/test.py"]
 
 
-def test_composite_glob_info_leading_slash_pattern() -> None:
-    """Test glob_info with a leading-slash pattern from the root path."""
+def test_composite_glob_leading_slash_pattern() -> None:
+    """Test glob with a leading-slash pattern from the root path."""
     rt = make_runtime("t_glob_slash")
 
     store = StoreBackend(rt)
@@ -1154,15 +1154,15 @@ def test_composite_glob_info_leading_slash_pattern() -> None:
     comp.write("/memories/data.txt", "text data")
     state_backend.write("/local.md", "local markdown")
 
-    results = comp.glob_info("/memories/**/*.md", path="/").matches
+    results = comp.glob("/memories/**/*.md", path="/").matches
     result_paths = [fi["path"] for fi in results]
 
     assert "/memories/note.md" in result_paths
     assert "/memories/data.txt" not in result_paths
 
 
-def test_composite_glob_info_nested_path_in_route() -> None:
-    """Test glob_info with nested path within route."""
+def test_composite_glob_nested_path_in_route() -> None:
+    """Test glob with nested path within route."""
     rt = make_runtime("t_glob2")
 
     store = StoreBackend(rt)
@@ -1177,7 +1177,7 @@ def test_composite_glob_info_nested_path_in_route() -> None:
     comp.write("/archive/notes.txt", "general notes")
 
     # Glob in nested path within route - should only find .log files in /archive/2024/
-    results = comp.glob_info("*.log", path="/archive/2024/").matches
+    results = comp.glob("*.log", path="/archive/2024/").matches
     result_paths = sorted([fi["path"] for fi in results])
 
     assert result_paths == ["/archive/2024/feb.log", "/archive/2024/jan.log"]
@@ -1186,8 +1186,8 @@ def test_composite_glob_info_nested_path_in_route() -> None:
 # --- Tests for path stripping consistency ---
 
 
-def test_grep_raw_path_stripping_matches_get_backend_and_key() -> None:
-    """Verify grep_raw strips route prefix the same way as _get_backend_and_key."""
+def test_grep_path_stripping_matches_get_backend_and_key() -> None:
+    """Verify grep strips route prefix the same way as _get_backend_and_key."""
     rt = make_runtime("t_strip1")
     store = StoreBackend(rt)
     state = StateBackend(rt)
@@ -1196,17 +1196,17 @@ def test_grep_raw_path_stripping_matches_get_backend_and_key() -> None:
     comp.write("/memories/readme.md", "hello world")
 
     # Search with trailing slash (exact route prefix)
-    matches = comp.grep_raw("hello", path="/memories/").matches
+    matches = comp.grep("hello", path="/memories/").matches
     assert matches is not None
     assert any(m["path"] == "/memories/readme.md" for m in matches)
 
     # Search with nested path inside route
-    matches2 = comp.grep_raw("hello", path="/memories/readme.md").matches
+    matches2 = comp.grep("hello", path="/memories/readme.md").matches
     assert matches2 is not None
 
 
-def test_glob_info_path_stripping_matches_get_backend_and_key() -> None:
-    """Verify glob_info strips route prefix the same way as _get_backend_and_key."""
+def test_glob_path_stripping_matches_get_backend_and_key() -> None:
+    """Verify glob strips route prefix the same way as _get_backend_and_key."""
     rt = make_runtime("t_strip2")
     store = StoreBackend(rt)
     state = StateBackend(rt)
@@ -1215,7 +1215,7 @@ def test_glob_info_path_stripping_matches_get_backend_and_key() -> None:
     comp.write("/memories/notes.txt", "content")
 
     # Glob with trailing slash
-    results = comp.glob_info("*.txt", path="/memories/").matches
+    results = comp.glob("*.txt", path="/memories/").matches
     assert any(fi["path"] == "/memories/notes.txt" for fi in results)
 
 

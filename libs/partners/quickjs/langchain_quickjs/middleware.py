@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Annotated, Any
 
 import quickjs
@@ -14,30 +15,25 @@ from langchain.agents.middleware.types import (
     ModelResponse,
     ResponseT,
 )
+from langchain.tools import ToolRuntime
 from langchain_core.tools import BaseTool, StructuredTool
 
-from langchain_quickjs._foregin_functions import (
+from langchain_quickjs._foreign_function_docs import render_external_functions_section
+from langchain_quickjs._foreign_functions import (
     get_ptc_implementations,
     install_external_functions,
 )
-from langchain_quickjs._foreign_function_docs import render_external_functions_section
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable
+
+    from langchain.tools import ToolRuntime
 
 
-REPL_TOOL_DESCRIPTION = """Evaluates code using a QuickJS-backed JavaScript REPL.
+PrintCallback = Callable[..., None]
 
-CRITICAL: The REPL does NOT retain state between calls. Each `repl` invocation is evaluated from scratch.
-Do NOT assume variables, functions, imports, or helper objects from prior `repl` calls are available.
 
-Capabilities and limitations:
-- Executes JavaScript with QuickJS.
-- Use `print(...)` to emit output. The tool returns printed lines joined with newlines.
-- The final expression value is returned only if nothing was printed.
-- There is no filesystem or network access unless you expose Python callables as foreign functions.
-{external_functions_section}
-"""  # noqa: E501  # preserve prompt text formatting exactly for the model
+REPL_TOOL_DESCRIPTION = "Evaluates code using a QuickJS-backed JavaScript REPL."
 
 REPL_SYSTEM_PROMPT = """## REPL tool
 
@@ -75,7 +71,7 @@ class QuickJSMiddleware(AgentMiddleware[AgentState[Any], ContextT, ResponseT]):
             timeout: Optional timeout in seconds for each evaluation.
             memory_limit: Optional memory limit in bytes for each evaluation.
         """
-        self._ptc = ptc or []
+        self._foreign_functions = ptc or []
         self._add_ptc_docs = add_ptc_docs
         self._timeout = timeout
         self._memory_limit = memory_limit
@@ -84,7 +80,7 @@ class QuickJSMiddleware(AgentMiddleware[AgentState[Any], ContextT, ResponseT]):
     def _format_repl_system_prompt(self) -> str:
         """Build the system prompt fragment describing the repl tool."""
         external_functions_section = render_external_functions_section(
-            get_ptc_implementations(self._ptc),
+            get_ptc_implementations(self._foreign_functions),
             add_docs=self._add_ptc_docs,
         )
         return REPL_SYSTEM_PROMPT.format(
@@ -122,9 +118,10 @@ class QuickJSMiddleware(AgentMiddleware[AgentState[Any], ContextT, ResponseT]):
     def _create_context(
         self,
         timeout: int | None,
-        printed_lines: list[str],
+        print_callback: PrintCallback,
         *,
         prefer_async: bool = False,
+        runtime: ToolRuntime | None = None,
     ) -> quickjs.Context:
         """Create a configured QuickJS context for a single evaluation."""
         context = quickjs.Context()
@@ -140,14 +137,12 @@ class QuickJSMiddleware(AgentMiddleware[AgentState[Any], ContextT, ResponseT]):
                 raise ValueError(msg)
             context.set_memory_limit(self._memory_limit)
 
-        def _print(*args: Any) -> None:
-            printed_lines.append(" ".join(map(str, args)))
-
-        context.add_callable("print", _print)
+        context.add_callable("print", print_callback)
         install_external_functions(
             context,
-            get_ptc_implementations(self._ptc),
+            get_ptc_implementations(self._foreign_functions),
             execution_mode="async" if prefer_async else "sync",
+            runtime=runtime,
         )
         return context
 
@@ -157,14 +152,21 @@ class QuickJSMiddleware(AgentMiddleware[AgentState[Any], ContextT, ResponseT]):
         *,
         timeout: int | None,
         prefer_async: bool = False,
+        runtime: ToolRuntime | None = None,
     ) -> str:
         """Execute JavaScript and return printed output or final value."""
         printed_lines: list[str] = []
+
+        def _print_callback(*args: Any) -> None:
+            """Callback function for print."""
+            printed_lines.append(" ".join(map(str, args)))
+
         try:
             context = self._create_context(
                 timeout,
-                printed_lines,
+                _print_callback,
                 prefer_async=prefer_async,
+                runtime=runtime,
             )
         except ValueError as exc:
             return f"Error: {exc}"
@@ -185,25 +187,37 @@ class QuickJSMiddleware(AgentMiddleware[AgentState[Any], ContextT, ResponseT]):
 
         def _sync_quickjs(
             code: Annotated[str, "Code string to evaluate in QuickJS."],
+            runtime: ToolRuntime,
             timeout: Annotated[
                 int | None, "Optional timeout in seconds for this evaluation."
             ] = None,
         ) -> str:
             """Execute a single QuickJS program and return captured stdout."""
-            return self._evaluate(code, timeout=timeout, prefer_async=False)
+            return self._evaluate(
+                code,
+                timeout=timeout,
+                prefer_async=False,
+                runtime=runtime,
+            )
 
         async def _async_quickjs(
             code: Annotated[str, "Code string to evaluate in QuickJS."],
+            runtime: ToolRuntime,
             timeout: Annotated[
                 int | None, "Optional timeout in seconds for this evaluation."
             ] = None,
         ) -> str:
             """Execute a single QuickJS program in the async tool path."""
-            return self._evaluate(code, timeout=timeout, prefer_async=True)
+            return self._evaluate(
+                code,
+                timeout=timeout,
+                prefer_async=True,
+                runtime=runtime,
+            )
 
         tool_description = REPL_TOOL_DESCRIPTION.format(
             external_functions_section=render_external_functions_section(
-                get_ptc_implementations(self._ptc),
+                get_ptc_implementations(self._foreign_functions),
                 add_docs=self._add_ptc_docs,
             )
         )

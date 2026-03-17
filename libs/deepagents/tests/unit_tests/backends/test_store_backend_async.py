@@ -46,8 +46,8 @@ async def test_store_backend_async_crud_and_search():
     assert infos is not None
     assert any(i["path"] == "/docs/readme.md" for i in infos)
 
-    # agrep_raw
-    matches = (await be.agrep_raw("hi", path="/")).matches
+    # agrep
+    matches = (await be.agrep("hi", path="/")).matches
     assert matches is not None and any(m["path"] == "/docs/readme.md" for m in matches)
 
     # aglob_info
@@ -215,8 +215,8 @@ async def test_store_backend_agrep_with_glob():
         res = await be.awrite(path, content)
         assert res.error is None
 
-    # agrep_raw with glob filter for .py files only
-    matches = (await be.agrep_raw("import", path="/", glob="*.py")).matches
+    # agrep with glob filter for .py files only
+    matches = (await be.agrep("import", path="/", glob="*.py")).matches
     assert matches is not None
     py_matches = [m["path"] for m in matches if m["path"].endswith(".py")]
     assert len(py_matches) >= 2  # Should match test.py and main.py
@@ -286,7 +286,7 @@ async def test_store_backend_agrep_invalid_regex():
     assert res.error is None
 
     # Special characters are treated literally, not regex
-    result = await be.agrep_raw("[invalid", path="/")
+    result = await be.agrep("[invalid", path="/")
     assert result.matches is not None  # Returns empty list, not error
 
 

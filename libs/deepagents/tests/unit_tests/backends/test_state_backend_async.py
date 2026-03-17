@@ -56,12 +56,12 @@ async def test_awrite_aread_aedit_als_agrep_aglob_state_backend():
     assert listing is not None
     assert any(fi["path"] == "/notes.txt" for fi in listing)
 
-    # agrep_raw
-    matches = (await be.agrep_raw("hi", path="/")).matches
+    # agrep
+    matches = (await be.agrep("hi", path="/")).matches
     assert matches is not None and any(m["path"] == "/notes.txt" for m in matches)
 
     # special characters are treated literally, not regex
-    result = await be.agrep_raw("[", path="/")
+    result = await be.agrep("[", path="/")
     assert result.matches is not None  # Returns empty list, not error
 
     # aglob_info
@@ -231,8 +231,8 @@ async def test_state_backend_agrep_with_pattern_and_glob():
         assert res.error is None
         rt.state["files"].update(res.files_update)
 
-    # agrep_raw with glob filter for .py files only
-    matches = (await be.agrep_raw("import", path="/", glob="*.py")).matches
+    # agrep with glob filter for .py files only
+    matches = (await be.agrep("import", path="/", glob="*.py")).matches
     assert matches is not None
     assert any(m["path"] == "/test.py" for m in matches)
     assert any(m["path"] == "/main.py" for m in matches)
@@ -314,14 +314,14 @@ Total projects: 3
     rt.state["files"].update(res.files_update)
 
     # Test 1: Grep with parent directory path works (establishes baseline)
-    matches_parent = (await be.agrep_raw("Project Beta", path="/large_tool_results/")).matches
+    matches_parent = (await be.agrep("Project Beta", path="/large_tool_results/")).matches
     assert matches_parent is not None
     assert len(matches_parent) == 1
     assert matches_parent[0]["path"] == evicted_path
     assert "Project Beta" in matches_parent[0]["text"]
 
     # Test 2: Grep with exact file path should also work (THIS IS THE BUG)
-    matches_exact = (await be.agrep_raw("Project Beta", path=evicted_path)).matches
+    matches_exact = (await be.agrep("Project Beta", path=evicted_path)).matches
     assert matches_exact is not None, "Expected list but got None"
     assert len(matches_exact) == 1, f"Expected 1 match but got {len(matches_exact)} matches"
     assert matches_exact[0]["path"] == evicted_path
@@ -352,18 +352,18 @@ async def test_state_backend_apath_edge_cases() -> None:
         rt.state["files"].update(res.files_update)
 
     # Test 1: Grep with None path should default to root
-    matches = (await be.agrep_raw("content", path=None)).matches
+    matches = (await be.agrep("content", path=None)).matches
     assert matches is not None
     assert len(matches) == 3
 
     # Test 2: Grep with trailing slash on directory
-    matches_slash = (await be.agrep_raw("nested", path="/dir/")).matches
+    matches_slash = (await be.agrep("nested", path="/dir/")).matches
     assert matches_slash is not None
     assert len(matches_slash) == 1
     assert matches_slash[0]["path"] == "/dir/nested.txt"
 
     # Test 3: Grep with no trailing slash on directory
-    matches_no_slash = (await be.agrep_raw("nested", path="/dir")).matches
+    matches_no_slash = (await be.agrep("nested", path="/dir")).matches
     assert matches_no_slash is not None
     assert len(matches_no_slash) == 1
     assert matches_no_slash[0]["path"] == "/dir/nested.txt"
@@ -412,7 +412,7 @@ async def test_state_backend_agrep_with_path_variations(path: str, expected_coun
         rt.state["files"].update(res.files_update)
 
     # Test the path variation
-    matches = (await be.agrep_raw("import", path=path)).matches
+    matches = (await be.agrep("import", path=path)).matches
     assert matches is not None
     assert len(matches) == expected_count
     match_paths = {m["path"] for m in matches}

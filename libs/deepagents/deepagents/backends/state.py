@@ -205,7 +205,7 @@ class StateBackend(BackendProtocol):
         new_file_data = update_file_data(file_data, new_content)
         return EditResult(path=file_path, files_update={file_path: self._prepare_for_storage(new_file_data)}, occurrences=int(occurrences))
 
-    def grep_raw(
+    def grep(
         self,
         pattern: str,
         path: str | None = None,

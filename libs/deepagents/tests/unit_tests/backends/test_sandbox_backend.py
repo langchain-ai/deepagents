@@ -194,12 +194,12 @@ def test_sandbox_grep_literal_search() -> None:
     sandbox.execute = mock_execute
 
     # Test with parentheses (should be literal, not regex grouping)
-    matches = sandbox.grep_raw("def __init__(", path="/test").matches
+    matches = sandbox.grep("def __init__(", path="/test").matches
     assert matches is not None
     assert len(matches) == 2
 
     # Test with pipe character (should be literal, not regex OR)
-    matches = sandbox.grep_raw("str | int", path="/test").matches
+    matches = sandbox.grep("str | int", path="/test").matches
     assert matches is not None
 
     # Verify the command uses grep -rHnF for literal search (combined flags)

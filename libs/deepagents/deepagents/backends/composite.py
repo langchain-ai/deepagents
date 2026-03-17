@@ -297,7 +297,7 @@ class CompositeBackend(BackendProtocol):
             return GrepResult(error=raw)
         return GrepResult(matches=raw)
 
-    def grep_raw(
+    def grep(
         self,
         pattern: str,
         path: str | None = None,
@@ -319,9 +319,9 @@ class CompositeBackend(BackendProtocol):
 
         Examples:
             ```python
-            result = composite.grep_raw("TODO", path="/memories/")
-            result = composite.grep_raw("error", path="/")
-            result = composite.grep_raw("import", path="/", glob="*.py")
+            result = composite.grep("TODO", path="/memories/")
+            result = composite.grep("error", path="/")
+            result = composite.grep("import", path="/", glob="*.py")
             ```
         """
         if path is not None:
@@ -331,7 +331,7 @@ class CompositeBackend(BackendProtocol):
                 path=path,
             )
             if route_prefix is not None:
-                grep_result = self._coerce_grep_result(backend.grep_raw(pattern, backend_path, glob))
+                grep_result = self._coerce_grep_result(backend.grep(pattern, backend_path, glob))
                 if grep_result.error:
                     return grep_result
                 return GrepResult(matches=[_remap_grep_path(m, route_prefix) for m in (grep_result.matches or [])])
@@ -340,30 +340,30 @@ class CompositeBackend(BackendProtocol):
         # Otherwise, search only the default backend
         if path is None or path == "/":
             all_matches: list[GrepMatch] = []
-            default_result = self._coerce_grep_result(self.default.grep_raw(pattern, path, glob))
+            default_result = self._coerce_grep_result(self.default.grep(pattern, path, glob))
             if default_result.error:
                 return default_result
             all_matches.extend(default_result.matches or [])
 
             for route_prefix, backend in self.routes.items():
-                grep_result = self._coerce_grep_result(backend.grep_raw(pattern, "/", glob))
+                grep_result = self._coerce_grep_result(backend.grep(pattern, "/", glob))
                 if grep_result.error:
                     return grep_result
                 all_matches.extend(_remap_grep_path(m, route_prefix) for m in (grep_result.matches or []))
 
             return GrepResult(matches=all_matches)
         # Path specified but doesn't match a route - search only default
-        return self._coerce_grep_result(self.default.grep_raw(pattern, path, glob))
+        return self._coerce_grep_result(self.default.grep(pattern, path, glob))
 
-    async def agrep_raw(
+    async def agrep(
         self,
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
     ) -> GrepResult:
-        """Async version of grep_raw.
+        """Async version of grep.
 
-        See grep_raw() for detailed documentation on routing behavior and parameters.
+        See grep() for detailed documentation on routing behavior and parameters.
         """
         if path is not None:
             backend, backend_path, route_prefix = _route_for_path(
@@ -372,7 +372,7 @@ class CompositeBackend(BackendProtocol):
                 path=path,
             )
             if route_prefix is not None:
-                grep_result = self._coerce_grep_result(await backend.agrep_raw(pattern, backend_path, glob))
+                grep_result = self._coerce_grep_result(await backend.agrep(pattern, backend_path, glob))
                 if grep_result.error:
                     return grep_result
                 return GrepResult(matches=[_remap_grep_path(m, route_prefix) for m in (grep_result.matches or [])])
@@ -381,20 +381,20 @@ class CompositeBackend(BackendProtocol):
         # Otherwise, search only the default backend
         if path is None or path == "/":
             all_matches: list[GrepMatch] = []
-            default_result = self._coerce_grep_result(await self.default.agrep_raw(pattern, path, glob))
+            default_result = self._coerce_grep_result(await self.default.agrep(pattern, path, glob))
             if default_result.error:
                 return default_result
             all_matches.extend(default_result.matches or [])
 
             for route_prefix, backend in self.routes.items():
-                grep_result = self._coerce_grep_result(await backend.agrep_raw(pattern, "/", glob))
+                grep_result = self._coerce_grep_result(await backend.agrep(pattern, "/", glob))
                 if grep_result.error:
                     return grep_result
                 all_matches.extend(_remap_grep_path(m, route_prefix) for m in (grep_result.matches or []))
 
             return GrepResult(matches=all_matches)
         # Path specified but doesn't match a route - search only default
-        return self._coerce_grep_result(await self.default.agrep_raw(pattern, path, glob))
+        return self._coerce_grep_result(await self.default.agrep(pattern, path, glob))
 
     def glob_info(self, pattern: str, path: str = "/") -> GlobResult:
         """Find files matching a glob pattern, routing by path prefix."""

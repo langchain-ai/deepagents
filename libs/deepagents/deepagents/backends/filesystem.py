@@ -432,7 +432,7 @@ class FilesystemBackend(BackendProtocol):
         except (OSError, UnicodeDecodeError, UnicodeEncodeError) as e:
             return EditResult(error=f"Error editing file '{file_path}': {e}")
 
-    def grep_raw(
+    def grep(
         self,
         pattern: str,
         path: str | None = None,

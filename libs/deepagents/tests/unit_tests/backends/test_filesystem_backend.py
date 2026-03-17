@@ -40,8 +40,8 @@ def test_filesystem_backend_normal_mode(tmp_path: Path):
     msg2 = be.write(str(root / "new.txt"), "new content")
     assert isinstance(msg2, WriteResult) and msg2.error is None and msg2.path.endswith("new.txt")
 
-    # grep_raw
-    matches = be.grep_raw("hello", path=str(root)).matches
+    # grep
+    matches = be.grep("hello", path=str(root)).matches
     assert matches is not None and any(m["path"].endswith("a.txt") for m in matches)
 
     # glob_info
@@ -80,8 +80,8 @@ def test_filesystem_backend_virtual_mode(tmp_path: Path, monkeypatch: pytest.Mon
     assert isinstance(msg2, WriteResult) and msg2.error is None
     assert (root / "new.txt").exists()
 
-    # grep_raw limited to path
-    matches = be.grep_raw("virt", path="/").matches
+    # grep limited to path
+    matches = be.grep("virt", path="/").matches
     assert matches is not None and any(m["path"] == "/a.txt" for m in matches)
 
     # glob_info
@@ -89,7 +89,7 @@ def test_filesystem_backend_virtual_mode(tmp_path: Path, monkeypatch: pytest.Mon
     assert any(i["path"] == "/dir/b.md" for i in g)
 
     # literal search should work with special regex chars like "[" and "("
-    result_bracket = be.grep_raw("[", path="/")
+    result_bracket = be.grep("[", path="/")
     assert result_bracket.matches is not None  # Should not error, returns empty list or matches
 
     # path traversal blocked
@@ -530,7 +530,7 @@ def test_grep_literal_search_with_special_chars(tmp_path: Path, pattern: str, ex
     be = FilesystemBackend(root_dir=str(root), virtual_mode=True)
 
     # Test literal search with the pattern (uses ripgrep if available, otherwise Python fallback)
-    matches = be.grep_raw(pattern, path="/").matches
+    matches = be.grep(pattern, path="/").matches
     assert matches is not None
     assert any(expected_file in m["path"] for m in matches), f"Pattern '{pattern}' not found in {expected_file}"
 
@@ -585,12 +585,12 @@ class TestWindowsPathHandling:
         for info in result.matches:
             assert "\\" not in info["path"], f"Backslash in glob_info path: {info['path']}"
 
-    def test_grep_raw_paths(self, backend):
-        """grep_raw should return forward-slash paths."""
-        matches = backend.grep_raw("def", path="/").matches
+    def test_grep_paths(self, backend):
+        """grep should return forward-slash paths."""
+        matches = backend.grep("def", path="/").matches
         assert matches is not None
         for m in matches:
-            assert "\\" not in m["path"], f"Backslash in grep_raw path: {m['path']}"
+            assert "\\" not in m["path"], f"Backslash in grep path: {m['path']}"
 
     def test_deeply_nested_path(self, tmp_path: Path):
         """Deeply nested paths should still use forward slashes."""

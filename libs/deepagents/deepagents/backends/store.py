@@ -594,7 +594,7 @@ class StoreBackend(BackendProtocol):
 
     # Removed legacy grep() convenience to keep lean surface
 
-    def grep_raw(
+    def grep(
         self,
         pattern: str,
         path: str | None = None,

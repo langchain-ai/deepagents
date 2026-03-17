@@ -121,7 +121,7 @@ class TestV1StyleWritesStateBackend:
 
         with warnings.catch_warnings(record=True):
             warnings.simplefilter("always")
-            matches = be2.grep_raw("import", path="/").matches
+            matches = be2.grep("import", path="/").matches
 
         assert matches is not None
         assert len(matches) == 2
@@ -244,7 +244,7 @@ class TestV1StyleWritesStoreBackend:
 
         with warnings.catch_warnings(record=True):
             warnings.simplefilter("always")
-            matches = be.grep_raw("import", path="/").matches
+            matches = be.grep("import", path="/").matches
 
         assert matches is not None
         assert len(matches) == 2
@@ -327,7 +327,7 @@ class TestV2LoadsV1CheckpointStateBackend:
 
         with warnings.catch_warnings(record=True):
             warnings.simplefilter("always")
-            matches = be.grep_raw("def", path="/").matches
+            matches = be.grep("def", path="/").matches
 
         assert matches is not None
         assert len(matches) == 2
@@ -519,7 +519,7 @@ class TestV2LoadsV1CheckpointStoreBackend:
 
         with warnings.catch_warnings(record=True):
             warnings.simplefilter("always")
-            matches = be.grep_raw("def", path="/").matches
+            matches = be.grep("def", path="/").matches
 
         assert matches is not None
         assert len(matches) == 2

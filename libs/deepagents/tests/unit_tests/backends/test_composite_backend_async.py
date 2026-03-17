@@ -84,10 +84,10 @@ async def test_composite_state_backend_routes_and_search_async(tmp_path: Path): 
     assert "/file.txt" in paths and "/memories/" in paths
 
     # agrep across both
-    matches = (await be.agrep_raw("alpha", path="/")).matches
+    matches = (await be.agrep("alpha", path="/")).matches
     assert matches is not None
     assert any(m["path"] == "/file.txt" for m in matches)
-    matches2 = (await be.agrep_raw("beta", path="/")).matches
+    matches2 = (await be.agrep("beta", path="/")).matches
     assert matches2 is not None
     assert any(m["path"] == "/memories/readme.md" for m in matches2)
 
@@ -122,8 +122,8 @@ async def test_composite_backend_filesystem_plus_store_async(tmp_path: Path):
     assert infos_mem_no_slash is not None
     assert any(i["path"] == "/memories/notes.md" for i in infos_mem_no_slash)
 
-    # agrep_raw route targeting should accept /memories as the route root
-    gm_mem = (await comp.agrep_raw("note", path="/memories")).matches
+    # agrep route targeting should accept /memories as the route root
+    gm_mem = (await comp.agrep("note", path="/memories")).matches
     assert gm_mem is not None
     assert any(m["path"] == "/memories/notes.md" for m in gm_mem)
 
@@ -131,11 +131,11 @@ async def test_composite_backend_filesystem_plus_store_async(tmp_path: Path):
     gl_mem = (await comp.aglob_info("*.md", path="/memories")).matches
     assert any(i["path"] == "/memories/notes.md" for i in gl_mem)
 
-    # agrep_raw merges
-    gm = (await comp.agrep_raw("hello", path="/")).matches
+    # agrep merges
+    gm = (await comp.agrep("hello", path="/")).matches
     assert gm is not None
     assert any(m["path"] == "/hello.txt" for m in gm)
-    gm2 = (await comp.agrep_raw("note", path="/")).matches
+    gm2 = (await comp.agrep("note", path="/")).matches
     assert gm2 is not None
     assert any(m["path"] == "/memories/notes.md" for m in gm2)
 
@@ -179,11 +179,11 @@ async def test_composite_backend_store_to_store_async():
     assert "/memories/" in paths
 
     # agrep across both stores
-    matches = (await comp.agrep_raw("default", path="/")).matches
+    matches = (await comp.agrep("default", path="/")).matches
     assert matches is not None
     assert any(m["path"] == "/notes.txt" for m in matches)
 
-    matches2 = (await comp.agrep_raw("routed", path="/")).matches
+    matches2 = (await comp.agrep("routed", path="/")).matches
     assert matches2 is not None
     assert any(m["path"] == "/memories/important.txt" for m in matches2)
 
@@ -240,7 +240,7 @@ async def test_composite_backend_multiple_routes_async():
 
     # agrep across all backends with literal text search
     # Note: All written content contains 'm' character
-    all_matches = (await comp.agrep_raw("m", path="/")).matches  # Match literal 'm'
+    all_matches = (await comp.agrep("m", path="/")).matches  # Match literal 'm'
     assert all_matches is not None
     paths_with_content = {m["path"] for m in all_matches}
     assert "/temp.txt" in paths_with_content  # "ephemeral" contains 'm'
@@ -674,7 +674,7 @@ async def test_composite_agrep_targeting_specific_route_async(tmp_path: Path) ->
     await comp.awrite("/memories/note2.txt", "memory content beta")
 
     # Grep with path="/memories/" should only search memories backend
-    matches = (await comp.agrep_raw("memory", path="/memories/")).matches
+    matches = (await comp.agrep("memory", path="/memories/")).matches
     assert matches is not None
     match_paths = [m["path"] for m in matches]
 
@@ -706,7 +706,7 @@ async def test_composite_agrep_with_glob_filter_async(tmp_path: Path) -> None:
     await comp.awrite("/memories/data.json", "json data here")
 
     # Grep with glob="*.py" should only search Python files
-    matches = (await comp.agrep_raw("here", path="/", glob="*.py")).matches
+    matches = (await comp.agrep("here", path="/", glob="*.py")).matches
     assert matches is not None
     match_paths = [m["path"] for m in matches]
 
@@ -736,7 +736,7 @@ async def test_composite_agrep_with_glob_in_specific_route_async(tmp_path: Path)
     await comp.awrite("/memories/data.txt", "text data")
 
     # Grep memories with glob="*.md"
-    matches = (await comp.agrep_raw("notes", path="/memories/", glob="*.md")).matches
+    matches = (await comp.agrep("notes", path="/memories/", glob="*.md")).matches
     assert matches is not None
     match_paths = [m["path"] for m in matches]
 
@@ -763,11 +763,11 @@ async def test_composite_agrep_with_path_none_async(tmp_path: Path) -> None:
     await comp.awrite("/memories/file2.txt", "searchable memory")
 
     # Grep with path=None
-    matches_none = (await comp.agrep_raw("searchable", path=None)).matches
+    matches_none = (await comp.agrep("searchable", path=None)).matches
     assert matches_none is not None
 
     # Grep with path="/"
-    matches_root = (await comp.agrep_raw("searchable", path="/")).matches
+    matches_root = (await comp.agrep("searchable", path="/")).matches
     assert matches_root is not None
 
     # Both should return same results
@@ -787,7 +787,7 @@ async def test_composite_agrep_invalid_regex_async(tmp_path: Path) -> None:
     comp = CompositeBackend(default=fs, routes={})
 
     # Special characters are treated literally (not regex), should return empty list
-    result = await comp.agrep_raw("[invalid(", path="/")
+    result = await comp.agrep("[invalid(", path="/")
     assert result.matches is not None  # Returns empty list, not error
 
 
@@ -809,7 +809,7 @@ async def test_composite_agrep_nested_path_in_route_async(tmp_path: Path) -> Non
     await comp.awrite("/memories/notes.txt", "notes here")
 
     # Grep with nested path
-    matches = (await comp.agrep_raw("here", path="/memories/docs/")).matches
+    matches = (await comp.agrep("here", path="/memories/docs/")).matches
     assert matches is not None
     match_paths = [m["path"] for m in matches]
 
@@ -837,7 +837,7 @@ async def test_composite_agrep_empty_results_async(tmp_path: Path) -> None:
     await comp.awrite("/memories/note.txt", "memory content")
 
     # Search for pattern that doesn't exist
-    matches = (await comp.agrep_raw("nonexistent_pattern_xyz", path="/")).matches
+    matches = (await comp.agrep("nonexistent_pattern_xyz", path="/")).matches
     assert matches is not None
     assert len(matches) == 0
 
@@ -857,7 +857,7 @@ async def test_composite_agrep_route_prefix_restoration_async(tmp_path: Path) ->
     await comp.awrite("/memories/beta.txt", "test content beta")
 
     # Grep in memories route
-    matches = (await comp.agrep_raw("test", path="/memories/")).matches
+    matches = (await comp.agrep("test", path="/memories/")).matches
     assert matches is not None
     assert len(matches) > 0
 
@@ -867,7 +867,7 @@ async def test_composite_agrep_route_prefix_restoration_async(tmp_path: Path) ->
         assert not match["path"].startswith("/memories//")  # No double slashes
 
     # Grep across all backends (path="/")
-    matches_all = (await comp.agrep_raw("test", path="/")).matches
+    matches_all = (await comp.agrep("test", path="/")).matches
     assert matches_all is not None
 
     # Filter matches from memories
@@ -887,7 +887,7 @@ async def test_composite_agrep_multiple_matches_per_file_async(tmp_path: Path) -
     fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
     comp = CompositeBackend(default=fs, routes={})
 
-    matches = (await comp.agrep_raw("pattern", path="/")).matches
+    matches = (await comp.agrep("pattern", path="/")).matches
     assert matches is not None
 
     # Should have 2 matches from the same file
@@ -927,7 +927,7 @@ async def test_composite_agrep_multiple_routes_aggregation_async(tmp_path: Path)
     await comp.awrite("/archive/arch.txt", "archive findme")
 
     # Grep across all backends
-    matches = (await comp.agrep_raw("findme", path="/")).matches
+    matches = (await comp.agrep("findme", path="/")).matches
     assert matches is not None
     match_paths = sorted([m["path"] for m in matches])
 
@@ -948,7 +948,7 @@ async def test_composite_agrep_error_in_routed_backend_async() -> None:
 
     # Create a mock backend that returns error strings for grep
     class ErrorBackend(StoreBackend):
-        async def agrep_raw(self, pattern: str, path: str | None = None, glob: str | None = None):
+        async def agrep(self, pattern: str, path: str | None = None, glob: str | None = None):
             return "Invalid regex pattern error"
 
     error_backend = ErrorBackend(rt)
@@ -957,7 +957,7 @@ async def test_composite_agrep_error_in_routed_backend_async() -> None:
     comp = CompositeBackend(default=state_backend, routes={"/errors/": error_backend})
 
     # When searching a specific route that errors, return the error
-    result = await comp.agrep_raw("test", path="/errors/")
+    result = await comp.agrep("test", path="/errors/")
     assert result.error == "Invalid regex pattern error"
 
 
@@ -967,7 +967,7 @@ async def test_composite_agrep_error_in_routed_backend_at_root_async() -> None:
 
     # Create a mock backend that returns error strings for grep
     class ErrorBackend(StoreBackend):
-        async def agrep_raw(self, pattern: str, path: str | None = None, glob: str | None = None):
+        async def agrep(self, pattern: str, path: str | None = None, glob: str | None = None):
             return "Backend error occurred"
 
     error_backend = ErrorBackend(rt)
@@ -976,7 +976,7 @@ async def test_composite_agrep_error_in_routed_backend_at_root_async() -> None:
     comp = CompositeBackend(default=state_backend, routes={"/errors/": error_backend})
 
     # When searching from root and a routed backend errors, return the error
-    result = await comp.agrep_raw("test", path="/")
+    result = await comp.agrep("test", path="/")
     assert result.error == "Backend error occurred"
 
 
@@ -986,7 +986,7 @@ async def test_composite_agrep_error_in_default_backend_at_root_async() -> None:
 
     # Create a mock backend that returns error strings for grep
     class ErrorDefaultBackend(StateBackend):
-        async def agrep_raw(self, pattern: str, path: str | None = None, glob: str | None = None):
+        async def agrep(self, pattern: str, path: str | None = None, glob: str | None = None):
             return "Default backend error"
 
     error_default = ErrorDefaultBackend(rt)
@@ -995,7 +995,7 @@ async def test_composite_agrep_error_in_default_backend_at_root_async() -> None:
     comp = CompositeBackend(default=error_default, routes={"/store/": store_backend})
 
     # When searching from root and default backend errors, return the error
-    result = await comp.agrep_raw("test", path="/")
+    result = await comp.agrep("test", path="/")
     assert result.error == "Default backend error"
 
 
@@ -1015,7 +1015,7 @@ async def test_composite_agrep_non_root_path_on_default_backend_async(tmp_path: 
     comp = CompositeBackend(default=fs, routes={"/memories/": store})
 
     # Search in /work directory (doesn't match any route)
-    matches = (await comp.agrep_raw("content", path="/work")).matches
+    matches = (await comp.agrep("content", path="/work")).matches
     assert matches is not None
     match_paths = [m["path"] for m in matches]
 

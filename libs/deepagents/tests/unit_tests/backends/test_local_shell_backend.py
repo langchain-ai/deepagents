@@ -177,7 +177,7 @@ def test_local_shell_backend_grep() -> None:
         backend.write("/file2.txt", "DONE: completed")
 
         # Search for TODO
-        matches = backend.grep_raw("TODO").matches
+        matches = backend.grep("TODO").matches
 
         assert matches is not None
         assert len(matches) == 1

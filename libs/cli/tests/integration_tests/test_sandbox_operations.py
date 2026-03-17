@@ -5,7 +5,7 @@ This module tests the core file operations implemented in BaseSandbox:
 - read(): Read file contents
 - edit(): String replacement in files
 - ls(): List directory contents
-- grep_raw(): Search for patterns
+- grep(): Search for patterns
 - glob_info(): Pattern matching for files
 
 All tests run on a single sandbox instance (class-scoped fixture)
@@ -782,7 +782,7 @@ class TestSandboxOperations:
         assert f"{base_dir}/file[2].txt" in paths
         assert f"{base_dir}/file-3.txt" in paths
 
-    # ==================== grep_raw() tests ====================
+    # ==================== grep() tests ====================
 
     def test_grep_basic_search(self, sandbox: SandboxBackendProtocol) -> None:
         """Test basic grep search for a literal pattern (not regex)."""
@@ -791,7 +791,7 @@ class TestSandboxOperations:
         sandbox.write(f"{base_dir}/file1.txt", "Hello world\nGoodbye world")
         sandbox.write(f"{base_dir}/file2.txt", "Hello there\nGoodbye friend")
 
-        result = sandbox.grep_raw("Hello", path=base_dir)
+        result = sandbox.grep("Hello", path=base_dir)
 
         assert result.matches is not None
         assert len(result.matches) == 2
@@ -812,7 +812,7 @@ class TestSandboxOperations:
         sandbox.write(f"{base_dir}/test.py", "pattern")
         sandbox.write(f"{base_dir}/test.md", "pattern")
 
-        result = sandbox.grep_raw("pattern", path=base_dir, glob="*.py")
+        result = sandbox.grep("pattern", path=base_dir, glob="*.py")
 
         assert result.matches is not None
         assert len(result.matches) == 1
@@ -824,7 +824,7 @@ class TestSandboxOperations:
         sandbox.execute(f"mkdir -p {base_dir}")
         sandbox.write(f"{base_dir}/file.txt", "Hello world")
 
-        result = sandbox.grep_raw("nonexistent", path=base_dir)
+        result = sandbox.grep("nonexistent", path=base_dir)
 
         assert result.matches is not None
         assert len(result.matches) == 0
@@ -838,7 +838,7 @@ class TestSandboxOperations:
         content = "apple\nbanana\napple\norange\napple"
         sandbox.write(f"{base_dir}/fruits.txt", content)
 
-        result = sandbox.grep_raw("apple", path=base_dir)
+        result = sandbox.grep("apple", path=base_dir)
 
         assert result.matches is not None
         assert len(result.matches) == 3
@@ -855,7 +855,7 @@ class TestSandboxOperations:
         sandbox.write(f"{base_dir}/numbers.txt", "test123\ntest456\nabcdef")
 
         # Pattern is treated as literal string, not regex
-        result = sandbox.grep_raw("test123", path=base_dir)
+        result = sandbox.grep("test123", path=base_dir)
 
         assert result.matches is not None
         assert len(result.matches) == 1
@@ -867,7 +867,7 @@ class TestSandboxOperations:
         sandbox.execute(f"mkdir -p {base_dir}")
         sandbox.write(f"{base_dir}/unicode.txt", "Hello 世界\nПривет мир\n测试 pattern")
 
-        result = sandbox.grep_raw("世界", path=base_dir)
+        result = sandbox.grep("世界", path=base_dir)
 
         assert result.matches is not None
         assert len(result.matches) == 1
@@ -879,7 +879,7 @@ class TestSandboxOperations:
         sandbox.execute(f"mkdir -p {base_dir}")
         sandbox.write(f"{base_dir}/case.txt", "Hello\nhello\nHELLO")
 
-        result = sandbox.grep_raw("Hello", path=base_dir)
+        result = sandbox.grep("Hello", path=base_dir)
 
         assert result.matches is not None
         # Should only match "Hello", not "hello" or "HELLO"
@@ -897,13 +897,13 @@ class TestSandboxOperations:
         )
 
         # Test with dollar sign (treated as literal)
-        result = sandbox.grep_raw("$100", path=base_dir)
+        result = sandbox.grep("$100", path=base_dir)
         assert result.matches is not None
         assert len(result.matches) == 1
         assert "$100" in result.matches[0]["text"]
 
         # Test with brackets (treated as literal)
-        result = sandbox.grep_raw("[a-z]*", path=base_dir)
+        result = sandbox.grep("[a-z]*", path=base_dir)
         assert result.matches is not None
         assert len(result.matches) == 1
         assert "[a-z]*" in result.matches[0]["text"]
@@ -913,7 +913,7 @@ class TestSandboxOperations:
         base_dir = "/tmp/test_sandbox_ops/grep_empty_dir"
         sandbox.execute(f"mkdir -p {base_dir}")
 
-        result = sandbox.grep_raw("anything", path=base_dir)
+        result = sandbox.grep("anything", path=base_dir)
 
         assert result.matches is not None
         assert len(result.matches) == 0
@@ -928,7 +928,7 @@ class TestSandboxOperations:
         sandbox.write(f"{base_dir}/sub1/level1.txt", "target here")
         sandbox.write(f"{base_dir}/sub1/sub2/level2.txt", "target here")
 
-        result = sandbox.grep_raw("target", path=base_dir)
+        result = sandbox.grep("target", path=base_dir)
 
         assert result.matches is not None
         assert len(result.matches) == 3
@@ -941,7 +941,7 @@ class TestSandboxOperations:
         content = "\n".join([f"Line {i}" for i in range(1, 101)])
         sandbox.write(f"{base_dir}/long.txt", content)
 
-        result = sandbox.grep_raw("Line 50", path=base_dir)
+        result = sandbox.grep("Line 50", path=base_dir)
 
         assert result.matches is not None
         assert len(result.matches) == 1
@@ -1175,6 +1175,6 @@ class TestSandboxOperations:
         assert len(glob_result.matches) == 3
 
         # Grep for a pattern
-        grep_result = sandbox.grep_raw("file", path=base_dir)
+        grep_result = sandbox.grep("file", path=base_dir)
         assert grep_result.matches is not None
         assert len(grep_result.matches) >= 3  # At least 3 matches

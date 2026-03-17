@@ -370,7 +370,7 @@ except PermissionError:
         # External storage - no files_update needed
         return EditResult(path=file_path, files_update=None, occurrences=count)
 
-    def grep_raw(
+    def grep(
         self,
         pattern: str,
         path: str | None = None,

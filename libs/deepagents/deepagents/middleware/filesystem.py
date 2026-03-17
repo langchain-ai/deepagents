@@ -906,7 +906,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         ) -> str:
             """Synchronous wrapper for grep tool."""
             resolved_backend = self._get_backend(runtime)
-            grep_result = resolved_backend.grep_raw(pattern, path=path, glob=glob)
+            grep_result = resolved_backend.grep(pattern, path=path, glob=glob)
             if isinstance(grep_result, GrepResult):
                 if grep_result.error:
                     return grep_result.error
@@ -944,7 +944,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         ) -> str:
             """Asynchronous wrapper for grep tool."""
             resolved_backend = self._get_backend(runtime)
-            grep_result = await resolved_backend.agrep_raw(pattern, path=path, glob=glob)
+            grep_result = await resolved_backend.agrep(pattern, path=path, glob=glob)
             if isinstance(grep_result, GrepResult):
                 if grep_result.error:
                     return grep_result.error

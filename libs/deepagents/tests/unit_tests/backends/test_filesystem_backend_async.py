@@ -43,8 +43,8 @@ async def test_filesystem_backend_async_normal_mode(tmp_path: Path):
     msg2 = await be.awrite(str(root / "new.txt"), "new content")
     assert isinstance(msg2, WriteResult) and msg2.error is None and msg2.path.endswith("new.txt")
 
-    # agrep_raw
-    matches = (await be.agrep_raw("hello", path=str(root))).matches
+    # agrep
+    matches = (await be.agrep("hello", path=str(root))).matches
     assert matches is not None and any(m["path"].endswith("a.txt") for m in matches)
 
     # aglob_info
@@ -82,8 +82,8 @@ async def test_filesystem_backend_async_virtual_mode(tmp_path: Path):
     assert isinstance(msg2, WriteResult) and msg2.error is None
     assert (root / "new.txt").exists()
 
-    # agrep_raw limited to path
-    matches = (await be.agrep_raw("virt", path="/")).matches
+    # agrep limited to path
+    matches = (await be.agrep("virt", path="/")).matches
     assert matches is not None and any(m["path"] == "/a.txt" for m in matches)
 
     # aglob_info
@@ -91,7 +91,7 @@ async def test_filesystem_backend_async_virtual_mode(tmp_path: Path):
     assert any(i["path"] == "/dir/b.md" for i in g)
 
     # literal search should work with special regex chars like "[" and "("
-    result_bracket = await be.agrep_raw("[", path="/")
+    result_bracket = await be.agrep("[", path="/")
     assert result_bracket.matches is not None  # Should not error, returns empty list or matches
 
     # path traversal blocked
@@ -500,8 +500,8 @@ async def test_filesystem_agrep_with_glob(tmp_path: Path):
     (root / "test.txt").write_text("import nothing")
     (root / "main.py").write_text("import sys")
 
-    # agrep_raw with glob filter
-    matches = (await be.agrep_raw("import", path="/", glob="*.py")).matches
+    # agrep with glob filter
+    matches = (await be.agrep("import", path="/", glob="*.py")).matches
     assert matches is not None
     py_files = [m["path"] for m in matches]
     assert any("test.py" in p for p in py_files)

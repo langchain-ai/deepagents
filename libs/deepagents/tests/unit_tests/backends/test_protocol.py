@@ -38,9 +38,9 @@ class TestBackendProtocolRaisesNotImplemented:
         with pytest.raises(NotImplementedError):
             backend.read("/file.txt")
 
-    def test_grep_raw(self, backend: BareBackend) -> None:
+    def test_grep(self, backend: BareBackend) -> None:
         with pytest.raises(NotImplementedError):
-            backend.grep_raw("pattern")
+            backend.grep("pattern")
 
     def test_glob_info(self, backend: BareBackend) -> None:
         with pytest.raises(NotImplementedError):
@@ -82,9 +82,9 @@ class TestAsyncMethodsPropagateNotImplemented:
         with pytest.raises(NotImplementedError):
             await backend.aread("/file.txt")
 
-    async def test_agrep_raw(self, backend: BareBackend) -> None:
+    async def test_agrep(self, backend: BareBackend) -> None:
         with pytest.raises(NotImplementedError):
-            await backend.agrep_raw("pattern")
+            await backend.agrep("pattern")
 
     async def test_aglob_info(self, backend: BareBackend) -> None:
         with pytest.raises(NotImplementedError):

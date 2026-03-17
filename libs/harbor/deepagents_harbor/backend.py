@@ -389,7 +389,7 @@ done
         """List directory contents with metadata using shell commands."""
         raise NotImplementedError(_SYNC_NOT_SUPPORTED)
 
-    async def agrep_raw(
+    async def agrep(
         self,
         pattern: str,
         path: str | None = None,
@@ -443,7 +443,7 @@ done
 
         return GrepResult(matches=matches)
 
-    def grep_raw(
+    def grep(
         self,
         pattern: str,
         path: str | None = None,

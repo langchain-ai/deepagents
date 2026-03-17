@@ -53,12 +53,12 @@ def test_write_read_edit_ls_grep_glob_state_backend():
     assert listing is not None
     assert any(fi["path"] == "/notes.txt" for fi in listing)
 
-    # grep_raw
-    matches = be.grep_raw("hi", path="/").matches
+    # grep
+    matches = be.grep("hi", path="/").matches
     assert matches is not None and any(m["path"] == "/notes.txt" for m in matches)
 
     # special characters are treated literally, not regex
-    result = be.grep_raw("[", path="/")
+    result = be.grep("[", path="/")
     assert result.matches is not None  # Returns empty list, not error
 
     # glob_info
@@ -206,7 +206,7 @@ def test_state_backend_grep_literal_search_special_chars(pattern: str, expected_
         rt.state["files"].update(res.files_update)
 
     # Test literal search with the pattern
-    matches = be.grep_raw(pattern, path="/").matches
+    matches = be.grep(pattern, path="/").matches
     assert matches is not None
     assert any(expected_file in m["path"] for m in matches), f"Pattern '{pattern}' not found in {expected_file}"
 
@@ -238,14 +238,14 @@ Total projects: 3
     rt.state["files"].update(res.files_update)
 
     # Test 1: Grep with parent directory path works (establishes baseline)
-    matches_parent = be.grep_raw("Project Beta", path="/large_tool_results/").matches
+    matches_parent = be.grep("Project Beta", path="/large_tool_results/").matches
     assert matches_parent is not None
     assert len(matches_parent) == 1
     assert matches_parent[0]["path"] == evicted_path
     assert "Project Beta" in matches_parent[0]["text"]
 
     # Test 2: Grep with exact file path should also work (THIS IS THE BUG)
-    matches_exact = be.grep_raw("Project Beta", path=evicted_path).matches
+    matches_exact = be.grep("Project Beta", path=evicted_path).matches
     assert matches_exact is not None, "Expected list but got None"
     assert len(matches_exact) == 1, f"Expected 1 match but got {len(matches_exact)} matches"
     assert matches_exact[0]["path"] == evicted_path
@@ -276,18 +276,18 @@ def test_state_backend_path_edge_cases() -> None:
         rt.state["files"].update(res.files_update)
 
     # Test 1: Grep with None path should default to root
-    matches = be.grep_raw("content", path=None).matches
+    matches = be.grep("content", path=None).matches
     assert matches is not None
     assert len(matches) == 3
 
     # Test 2: Grep with trailing slash on directory
-    matches_slash = be.grep_raw("nested", path="/dir/").matches
+    matches_slash = be.grep("nested", path="/dir/").matches
     assert matches_slash is not None
     assert len(matches_slash) == 1
     assert matches_slash[0]["path"] == "/dir/nested.txt"
 
     # Test 3: Grep with no trailing slash on directory
-    matches_no_slash = be.grep_raw("nested", path="/dir").matches
+    matches_no_slash = be.grep("nested", path="/dir").matches
     assert matches_no_slash is not None
     assert len(matches_no_slash) == 1
     assert matches_no_slash[0]["path"] == "/dir/nested.txt"
@@ -336,7 +336,7 @@ def test_state_backend_grep_with_path_variations(path: str, expected_count: int,
         rt.state["files"].update(res.files_update)
 
     # Test the path variation
-    matches = be.grep_raw("import", path=path).matches
+    matches = be.grep("import", path=path).matches
     assert matches is not None
     assert len(matches) == expected_count
     match_paths = {m["path"] for m in matches}

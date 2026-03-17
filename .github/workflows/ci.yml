@@ -22,6 +22,8 @@ concurrency:
 
 permissions:
   contents: read
+  # Required for CodSpeed OIDC authentication in _benchmark.yml
+  id-token: write
 
 env:
   UV_NO_SYNC: "true"

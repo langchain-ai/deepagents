@@ -165,7 +165,7 @@ class TestOpenInEditor:
         mock_run.side_effect = fake_run
         with patch("deepagents_cli.editor.resolve_editor", return_value=["nano"]):
             result = open_in_editor("")
-        assert result == "line1\nline2\nline3\n"
+        assert result == "line1\nline2\nline3"
 
     @patch("deepagents_cli.editor.subprocess.run")
     def test_cleans_up_temp_file(self, mock_run: MagicMock) -> None:

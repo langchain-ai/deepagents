@@ -454,8 +454,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             system_prompt: Optional custom system prompt override.
             custom_tool_descriptions: Optional custom tool descriptions override.
             tool_token_limit_before_evict: Optional token limit before evicting a tool result to the filesystem.
-            max_filesystem_timeout: Maximum allowed value in seconds for per-call
-                filesystem timeout overrides and middleware-enforced filesystem caps.
+            max_filesystem_timeout: Maximum timeout in seconds applied to all
+                filesystem operations.  For glob and grep, the LLM can request a
+                lower value; for other operations (ls, read, write, edit), this
+                value is used directly as the timeout.
             max_execute_timeout: Maximum allowed value in seconds for per-command timeout
                 overrides on the execute tool.
 
@@ -1034,7 +1036,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         """Create the execute tool for sandbox command execution."""
         tool_description = self._custom_tool_descriptions.get("execute") or EXECUTE_TOOL_DESCRIPTION
 
-        def sync_execute(
+        def sync_execute(  # noqa: PLR0911
             command: Annotated[str, "Shell command to execute in the sandbox environment."],
             runtime: ToolRuntime[None, FilesystemState],
             timeout: Annotated[
@@ -1067,6 +1069,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             except NotImplementedError as e:
                 # Handle case where execute() exists but raises NotImplementedError
                 return f"Error: Execution not available. {e}"
+            except TypeError as e:
+                # Older third-party backends may not accept the timeout kwarg
+                return f"Error: Backend incompatibility. {e}"
             except ValueError as e:
                 return f"Error: Invalid parameter. {e}"
 
@@ -1082,7 +1087,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
             return "".join(parts)
 
-        async def async_execute(
+        async def async_execute(  # noqa: PLR0911
             command: Annotated[str, "Shell command to execute in the sandbox environment."],
             runtime: ToolRuntime[None, FilesystemState],
             # ASYNC109 - timeout is a semantic parameter forwarded to the
@@ -1116,6 +1121,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             except NotImplementedError as e:
                 # Handle case where execute() exists but raises NotImplementedError
                 return f"Error: Execution not available. {e}"
+            except TypeError as e:
+                # Older third-party backends may not accept the timeout kwarg
+                return f"Error: Backend incompatibility. {e}"
             except ValueError as e:
                 return f"Error: Invalid parameter. {e}"
 

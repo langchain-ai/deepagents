@@ -210,6 +210,78 @@ def test_sandbox_grep_literal_search() -> None:
     assert "grep -rHnF" in sandbox.last_command
 
 
+class TestTimeoutError:
+    """Tests for BaseSandbox._timeout_error."""
+
+    def test_strips_error_prefix(self):
+        assert BaseSandbox._timeout_error("Error: command killed", fallback="fb") == "command killed"
+
+    def test_returns_non_empty_output_as_is(self):
+        assert BaseSandbox._timeout_error("killed by signal", fallback="fb") == "killed by signal"
+
+    def test_empty_output_returns_fallback(self):
+        assert BaseSandbox._timeout_error("", fallback="ls timed out") == "ls timed out"
+
+    def test_whitespace_only_returns_fallback(self):
+        assert BaseSandbox._timeout_error("   \n  ", fallback="fb") == "fb"
+
+
+class TestTimeoutExitCode124:
+    """Tests for exit code 124 timeout detection in sandbox methods."""
+
+    def _make_sandbox(self, output: str = "") -> "MockSandbox":
+        sandbox = MockSandbox()
+
+        def mock_execute(command: str, *, timeout: int | None = None) -> ExecuteResponse:
+            sandbox.last_command = command
+            sandbox.last_timeout = timeout
+            return ExecuteResponse(output=output, exit_code=124, truncated=False)
+
+        sandbox.execute = mock_execute
+        return sandbox
+
+    def test_ls_info_returns_timeout_error(self):
+        sandbox = self._make_sandbox()
+        result = sandbox.ls_info("/", timeout=10)
+        assert result.error is not None
+        assert "timed out" in result.error
+
+    def test_read_returns_timeout_error(self):
+        sandbox = self._make_sandbox()
+        result = sandbox.read("/file.txt", timeout=10)
+        assert result.error is not None
+        assert "timed out" in result.error
+
+    def test_write_returns_timeout_error(self):
+        sandbox = self._make_sandbox()
+        result = sandbox.write("/file.txt", "content", timeout=10)
+        assert result.error is not None
+        assert "timed out" in result.error
+
+    def test_edit_returns_timeout_error(self):
+        sandbox = self._make_sandbox()
+        result = sandbox.edit("/file.txt", "old", "new", timeout=10)
+        assert result.error is not None
+        assert "timed out" in result.error
+
+    def test_grep_returns_timeout_error(self):
+        sandbox = self._make_sandbox()
+        result = sandbox.grep_raw("pattern", path="/", timeout=10)
+        assert result.error is not None
+        assert "timed out" in result.error
+
+    def test_glob_returns_timeout_error(self):
+        sandbox = self._make_sandbox()
+        result = sandbox.glob_info("*.py", path="/", timeout=10)
+        assert result.error is not None
+        assert "timed out" in result.error
+
+    def test_timeout_error_uses_execute_output_when_present(self):
+        sandbox = self._make_sandbox(output="Error: command killed after 10s")
+        result = sandbox.ls_info("/", timeout=10)
+        assert result.error == "command killed after 10s"
+
+
 def test_sandbox_filesystem_methods_forward_timeout() -> None:
     """BaseSandbox filesystem methods should forward timeout to execute()."""
     sandbox = MockSandbox()

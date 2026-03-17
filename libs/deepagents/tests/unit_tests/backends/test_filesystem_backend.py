@@ -643,3 +643,102 @@ class TestWindowsPathHandling:
         assert infos is not None
         for info in infos:
             assert "\\" not in info["path"], f"Backslash in deep path: {info['path']}"
+
+
+class TestNormalizeTimeout:
+    """Tests for FilesystemBackend._normalize_timeout."""
+
+    def test_none_with_no_default_returns_none(self):
+        assert FilesystemBackend._normalize_timeout(None) is None
+
+    def test_none_with_default_returns_default(self):
+        assert FilesystemBackend._normalize_timeout(None, default=30) == 30
+
+    def test_explicit_overrides_default(self):
+        assert FilesystemBackend._normalize_timeout(10, default=30) == 10
+
+    def test_zero_raises(self):
+        with pytest.raises(ValueError, match="timeout must be positive"):
+            FilesystemBackend._normalize_timeout(0)
+
+    def test_negative_raises(self):
+        with pytest.raises(ValueError, match="timeout must be positive"):
+            FilesystemBackend._normalize_timeout(-5)
+
+    def test_zero_default_raises_when_timeout_is_none(self):
+        with pytest.raises(ValueError, match="timeout must be positive"):
+            FilesystemBackend._normalize_timeout(None, default=0)
+
+    def test_positive_passes(self):
+        assert FilesystemBackend._normalize_timeout(42) == 42
+
+
+class TestRunWithTimeout:
+    """Tests for FilesystemBackend._run_with_timeout."""
+
+    def test_success_with_timeout(self):
+        result = FilesystemBackend._run_with_timeout(
+            lambda: "ok",
+            timeout=10,
+            on_timeout=lambda _: "timed out",
+        )
+        assert result == "ok"
+
+    def test_none_timeout_bypasses_executor(self):
+        called = []
+
+        def func():
+            called.append(True)
+            return "direct"
+
+        result = FilesystemBackend._run_with_timeout(
+            func,
+            timeout=None,
+            on_timeout=lambda _: "should not be called",
+        )
+        assert result == "direct"
+        assert called == [True]
+
+    def test_timeout_triggers_callback(self):
+        def slow():
+            time.sleep(10)
+            return "never"
+
+        result = FilesystemBackend._run_with_timeout(
+            slow,
+            timeout=1,
+            on_timeout=lambda secs: f"timed out after {secs}s",
+        )
+        assert result == "timed out after 1s"
+
+    def test_func_exception_propagates(self):
+        def broken():
+            msg = "boom"
+            raise RuntimeError(msg)
+
+        with pytest.raises(RuntimeError, match="boom"):
+            FilesystemBackend._run_with_timeout(
+                broken,
+                timeout=10,
+                on_timeout=lambda _: "should not be called",
+            )
+
+
+class TestReadTimeout:
+    """Test that read returns a structured error on timeout."""
+
+    def test_read_timeout_returns_error(self, tmp_path: Path):
+        (tmp_path / "big.txt").write_text("x" * 100)
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+        # Monkeypatch the impl to be slow
+        original = be._read_impl
+
+        def slow_read(*args: object, **kwargs: object) -> ReadResult:
+            time.sleep(10)
+            return original(*args, **kwargs)
+
+        be._read_impl = slow_read
+        result = be.read("/big.txt", timeout=1)
+        assert result.error is not None
+        assert "timed out" in result.error

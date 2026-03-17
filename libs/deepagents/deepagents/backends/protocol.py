@@ -270,7 +270,8 @@ class BackendProtocol(abc.ABC):  # noqa: B024
             path: Absolute path to the directory to list. Must start with '/'.
             timeout: Maximum time in seconds to wait for the operation.
 
-                If None, uses the backend's default timeout.
+                If None, no timeout is applied unless the backend defines
+                an operation-specific default (e.g. grep, glob).
 
         Returns:
             LsResult with directory entries or error.
@@ -302,7 +303,8 @@ class BackendProtocol(abc.ABC):  # noqa: B024
             limit: Maximum number of lines to read. Default: 2000.
             timeout: Maximum time in seconds to wait for the operation.
 
-                If None, uses the backend's default timeout.
+                If None, no timeout is applied unless the backend defines
+                an operation-specific default (e.g. grep, glob).
 
         Returns:
             String containing file content formatted with line numbers (cat -n format),
@@ -358,7 +360,8 @@ class BackendProtocol(abc.ABC):  # noqa: B024
                   - `[abc]` matches one character from set
             timeout: Maximum time in seconds to wait for the operation.
 
-                If None, uses the backend's default timeout.
+                If None, no timeout is applied unless the backend defines
+                an operation-specific default (e.g. grep, glob).
 
         Examples:
                   - "*.py" - only search Python files
@@ -403,7 +406,8 @@ class BackendProtocol(abc.ABC):  # noqa: B024
                   The pattern is applied relative to this path.
             timeout: Maximum time in seconds to wait for the operation.
 
-                If None, uses the backend's default timeout.
+                If None, no timeout is applied unless the backend defines
+                an operation-specific default (e.g. grep, glob).
 
         Returns:
             GlobResult with matching files or error.
@@ -435,7 +439,8 @@ class BackendProtocol(abc.ABC):  # noqa: B024
             content: String content to write to the file.
             timeout: Maximum time in seconds to wait for the operation.
 
-                If None, uses the backend's default timeout.
+                If None, no timeout is applied unless the backend defines
+                an operation-specific default (e.g. grep, glob).
 
         Returns:
             WriteResult
@@ -473,7 +478,8 @@ class BackendProtocol(abc.ABC):  # noqa: B024
                         old_string must be unique in the file or the edit fails.
             timeout: Maximum time in seconds to wait for the operation.
 
-                If None, uses the backend's default timeout.
+                If None, no timeout is applied unless the backend defines
+                an operation-specific default (e.g. grep, glob).
 
         Returns:
             EditResult

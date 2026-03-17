@@ -30,6 +30,8 @@ from deepagents.backends.protocol import (
 )
 from deepagents.backends.utils import _get_file_type, create_file_data
 
+# Standard exit code from timeout(1); sandbox execute() implementations
+# should use this for consistency when a command is killed due to timeout.
 _TIMEOUT_EXIT_CODE = 124
 
 _GLOB_COMMAND_TEMPLATE = """python3 -c "
@@ -244,7 +246,7 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
 
     @staticmethod
     def _timeout_error(output: str, *, fallback: str) -> str:
-        """Normalize timeout-related execute output for filesystem methods."""
+        """Normalize timeout-related execute output for file-operation methods that delegate to execute()."""
         stripped = output.strip()
         if stripped.startswith("Error: "):
             return stripped[len("Error: ") :]
@@ -359,6 +361,14 @@ except PermissionError:
         cmd = _WRITE_COMMAND_TEMPLATE.format(payload_b64=payload_b64)
         result = self.execute(cmd, timeout=timeout)
 
+        if result.exit_code == _TIMEOUT_EXIT_CODE:
+            return WriteResult(
+                error=self._timeout_error(
+                    result.output.strip(),
+                    fallback=f"write timed out after {timeout} seconds" if timeout is not None else "write timed out",
+                )
+            )
+
         # Check for errors (exit code or error message in output)
         if result.exit_code != 0 or "Error:" in result.output:
             error_msg = result.output.strip() or f"Failed to write file '{file_path}'"
@@ -388,6 +398,14 @@ except PermissionError:
 
         exit_code = result.exit_code
         output = result.output.strip()
+
+        if exit_code == _TIMEOUT_EXIT_CODE:
+            return EditResult(
+                error=self._timeout_error(
+                    output,
+                    fallback=f"edit timed out after {timeout} seconds" if timeout is not None else "edit timed out",
+                )
+            )
 
         # Map exit codes to error messages
         error_messages = {

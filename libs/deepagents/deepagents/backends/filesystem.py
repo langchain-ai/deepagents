@@ -37,9 +37,13 @@ from deepagents.backends.utils import (
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_GLOB_TIMEOUT = 20
-_DEFAULT_GREP_TIMEOUT = 30
+_DEFAULT_GLOB_TIMEOUT = 20  # seconds
+_DEFAULT_GREP_TIMEOUT = 30  # seconds
 _T = TypeVar("_T")
+
+# Sentinel returned by _ripgrep_search when the subprocess times out, as
+# opposed to None which means ripgrep is not installed.
+_RIPGREP_TIMED_OUT: dict[str, list[tuple[int, str]]] = {}
 
 
 class FilesystemBackend(BackendProtocol):
@@ -161,7 +165,12 @@ class FilesystemBackend(BackendProtocol):
         timeout: int | None,
         on_timeout: Callable[[int], _T],
     ) -> _T:
-        """Run a blocking operation with an optional wall-clock timeout."""
+        """Run a blocking operation with an optional wall-clock timeout.
+
+        When a timeout fires the underlying thread is **not** killed — only the
+        caller stops waiting.  Blocking pathlib / file I/O is not interruptible,
+        so the background work may continue until the I/O completes naturally.
+        """
         if timeout is None:
             return func()
 
@@ -171,6 +180,10 @@ class FilesystemBackend(BackendProtocol):
             return future.result(timeout=timeout)
         except concurrent.futures.TimeoutError:
             future.cancel()
+            logger.warning(
+                "Operation timed out after %ds; background thread will continue running until the blocking I/O completes.",
+                timeout,
+            )
             return on_timeout(timeout)
         finally:
             # Blocking pathlib/file I/O is not cancellable; do not wait for the
@@ -567,8 +580,11 @@ class FilesystemBackend(BackendProtocol):
 
         # Try ripgrep first (with -F flag for literal search)
         results = self._ripgrep_search(pattern, base_full, glob, timeout=effective_timeout)
+        if results is _RIPGREP_TIMED_OUT:
+            # Ripgrep timed out — Python fallback would be even slower, skip it.
+            return GrepResult(error=f"Error: grep timed out after {effective_timeout}s. Try a more specific pattern or a narrower path.")
         if results is None:
-            # Python fallback needs escaped pattern for literal search
+            # Ripgrep unavailable — fall back to Python search.
             fallback = self._run_with_timeout(
                 lambda: self._python_search(re.escape(pattern), base_full, glob),
                 timeout=effective_timeout,
@@ -602,7 +618,8 @@ class FilesystemBackend(BackendProtocol):
 
         Returns:
             Dict mapping file paths to list of `(line_number, line_text)` tuples.
-                Returns `None` if ripgrep is unavailable or times out.
+                Returns `None` if ripgrep is not installed. Returns the
+                `_RIPGREP_TIMED_OUT` sentinel if the subprocess timed out.
         """
         cmd = ["rg", "--json", "-F"]  # -F enables fixed-string (literal) mode
         if include_glob:
@@ -617,8 +634,10 @@ class FilesystemBackend(BackendProtocol):
                 timeout=timeout,
                 check=False,
             )
-        except (subprocess.TimeoutExpired, FileNotFoundError):
+        except FileNotFoundError:
             return None
+        except subprocess.TimeoutExpired:
+            return _RIPGREP_TIMED_OUT
 
         results: dict[str, list[tuple[int, str]]] = {}
         for line in proc.stdout.splitlines():

@@ -2292,3 +2292,45 @@ class TestBuiltinTruncationTools:
 
         with pytest.raises(ValueError, match="max_execute_timeout must be positive"):
             FilesystemMiddleware(max_execute_timeout=-1)
+
+    def test_validate_filesystem_timeout_at_max(self):
+        """Timeout exactly at max_filesystem_timeout should be accepted."""
+        middleware = FilesystemMiddleware(max_filesystem_timeout=30)
+        # Should not raise — boundary value equals the cap
+        result = middleware._validate_filesystem_timeout(30, default=20)
+        assert result == 30
+
+    def test_validate_filesystem_timeout_negative(self):
+        """Negative timeout should be rejected."""
+        middleware = FilesystemMiddleware(max_filesystem_timeout=30)
+        with pytest.raises(ValueError, match="timeout must be positive"):
+            middleware._validate_filesystem_timeout(-1, default=20)
+
+    def test_execute_tool_catches_type_error(self):
+        """Execute tool should catch TypeError from backends missing timeout kwarg."""
+
+        class BrokenExecuteBackend(SandboxBackendProtocol):
+            @property
+            def id(self):
+                return "broken"
+
+            def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+                msg = "execute() got an unexpected keyword argument 'timeout'"
+                raise TypeError(msg)
+
+        state = FilesystemState(messages=[], files={})
+        rt = ToolRuntime(
+            state=state,
+            context=None,
+            tool_call_id="test_type_error",
+            store=InMemoryStore(),
+            stream_writer=lambda _: None,
+            config={},
+        )
+
+        backend = BrokenExecuteBackend()
+        middleware = FilesystemMiddleware(backend=backend)
+
+        execute_tool = next(tool for tool in middleware.tools if tool.name == "execute")
+        result = execute_tool.invoke({"command": "echo hello", "runtime": rt})
+        assert "Error: Backend incompatibility" in result

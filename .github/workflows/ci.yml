@@ -258,7 +258,9 @@ jobs:
   benchmark-deepagents:
     name: "⏱️ Benchmark deepagents"
     needs: changes
-    if: needs.changes.outputs.deepagents == 'true' || github.event_name == 'push'
+    # TODO: re-enable once CodSpeed integration is ready
+    #if: needs.changes.outputs.deepagents == 'true' || github.event_name == 'push'
+    if: false
     uses: ./.github/workflows/_benchmark.yml
     with:
       working-directory: "libs/deepagents"

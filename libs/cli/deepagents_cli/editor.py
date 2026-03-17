@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import contextlib
+import logging
 import os
 import shlex
 import subprocess  # noqa: S404
 import sys
 import tempfile
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 GUI_WAIT_FLAG: dict[str, str] = {
     "code": "--wait",
@@ -21,6 +24,7 @@ GUI_WAIT_FLAG: dict[str, str] = {
 """Mapping of GUI editor base names to their blocking flag."""
 
 VIM_EDITORS = {"vi", "vim", "nvim"}
+"""Set of vim-family editor base names that receive the `-i NONE` flag."""
 
 
 def resolve_editor() -> list[str] | None:
@@ -29,20 +33,22 @@ def resolve_editor() -> list[str] | None:
     Checks $VISUAL, then $EDITOR, then falls back to platform default.
 
     Returns:
-        Tokenized command list, or None if no editor could be resolved.
+        Tokenized command list, or `None` if the env var was set but empty after
+            tokenization.
     """
     editor = os.environ.get("VISUAL") or os.environ.get("EDITOR")
     if not editor:
         if sys.platform == "win32":
             return ["notepad"]
         return ["vi"]
-    return shlex.split(editor)
+    tokens = shlex.split(editor)
+    return tokens or None
 
 
 def _prepare_command(cmd: list[str], filepath: str) -> list[str]:
     """Build the full command list with appropriate flags.
 
-    Adds --wait/-w for GUI editors and -i NONE for vim.
+    Adds --wait/-w for GUI editors and `-i NONE` for vim-family editors.
 
     Returns:
         The complete command list with flags and filepath appended.
@@ -69,24 +75,31 @@ def open_in_editor(current_text: str) -> str | None:
 
     Creates a temp .md file, launches the editor, and reads back the result.
 
+    Args:
+        current_text: The text to pre-populate in the editor.
+
     Returns:
-        The edited text, or None if the editor failed or the user cancelled.
+        The edited text with normalized line endings, or `None` if the editor
+            exited with a non-zero status, was not found, or the result was
+            empty/whitespace-only.
     """
     cmd = resolve_editor()
     if cmd is None:
         return None
 
-    with tempfile.NamedTemporaryFile(
-        suffix=".md",
-        prefix="deepagents-edit-",
-        delete=False,
-        mode="w",
-        encoding="utf-8",
-    ) as tmp:
-        tmp.write(current_text)
-
+    tmp_path: str | None = None
     try:
-        full_cmd = _prepare_command(cmd, tmp.name)
+        with tempfile.NamedTemporaryFile(
+            suffix=".md",
+            prefix="deepagents-edit-",
+            delete=False,
+            mode="w",
+            encoding="utf-8",
+        ) as tmp:
+            tmp_path = tmp.name
+            tmp.write(current_text)
+
+        full_cmd = _prepare_command(cmd, tmp_path)
 
         # S603: editor command comes from user's own $EDITOR env var
         result = subprocess.run(  # noqa: S603
@@ -97,9 +110,12 @@ def open_in_editor(current_text: str) -> str | None:
             check=False,
         )
         if result.returncode != 0:
+            logger.warning(
+                "Editor exited with code %d: %s", result.returncode, full_cmd
+            )
             return None
 
-        edited = Path(tmp.name).read_text(encoding="utf-8")
+        edited = Path(tmp_path).read_text(encoding="utf-8")
 
         # Normalize line endings
         edited = edited.replace("\r\n", "\n").replace("\r", "\n")
@@ -110,8 +126,12 @@ def open_in_editor(current_text: str) -> str | None:
 
     except FileNotFoundError:
         return None
+    except Exception:
+        logger.warning("Editor failed", exc_info=True)
+        return None
     else:
         return edited
     finally:
-        contextlib.suppress(OSError)
-        Path(tmp.name).unlink(missing_ok=True)
+        if tmp_path is not None:
+            with contextlib.suppress(OSError):
+                Path(tmp_path).unlink(missing_ok=True)

@@ -1345,7 +1345,7 @@ class DeepAgentsApp(App):
         try:
             await placeholder.remove()
         except Exception:
-            logger.debug(
+            logger.warning(
                 "Failed to remove approval placeholder during swap",
                 exc_info=True,
             )
@@ -1553,7 +1553,7 @@ class DeepAgentsApp(App):
                 try:
                     await self._approval_placeholder.remove()
                 except Exception:
-                    logger.debug(
+                    logger.warning(
                         "Failed to remove approval placeholder during cleanup",
                         exc_info=True,
                     )
@@ -3094,7 +3094,7 @@ class DeepAgentsApp(App):
             self._pending_approval_widget.action_select_reject()
 
     async def action_open_editor(self) -> None:
-        """Open the current prompt text in an external editor ($EDITOR/$VISUAL)."""
+        """Open the current prompt text in an external editor ($VISUAL/$EDITOR)."""
         from deepagents_cli.editor import open_in_editor
 
         chat_input = self._chat_input
@@ -3104,8 +3104,18 @@ class DeepAgentsApp(App):
         current_text = chat_input._text_area.text or ""
 
         edited: str | None = None
-        with self.suspend():
-            edited = open_in_editor(current_text)
+        try:
+            with self.suspend():
+                edited = open_in_editor(current_text)
+        except Exception:
+            logger.warning("External editor failed", exc_info=True)
+            self.notify(
+                "External editor failed. Check $VISUAL/$EDITOR.",
+                severity="error",
+                timeout=5,
+            )
+            chat_input.focus_input()
+            return
 
         if edited is not None:
             chat_input._text_area.text = edited

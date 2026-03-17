@@ -52,6 +52,20 @@ class TestResolveEditor:
         monkeypatch.setenv("EDITOR", "vim -u NONE")
         assert resolve_editor() == ["vim", "-u", "NONE"]
 
+    def test_whitespace_only_editor_returns_none(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("VISUAL", raising=False)
+        monkeypatch.setenv("EDITOR", "   ")
+        assert resolve_editor() is None
+
+    def test_empty_visual_falls_through_to_editor(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("VISUAL", "")
+        monkeypatch.setenv("EDITOR", "nano")
+        assert resolve_editor() == ["nano"]
+
 
 class TestPrepareCommand:
     """Tests for command preparation with flag injection."""
@@ -85,6 +99,10 @@ class TestPrepareCommand:
         original = ["code"]
         _prepare_command(original, "/tmp/f.md")
         assert original == ["code"]
+
+    def test_gui_editor_with_full_path(self) -> None:
+        cmd = _prepare_command(["/usr/local/bin/code"], "/tmp/f.md")
+        assert cmd == ["/usr/local/bin/code", "--wait", "/tmp/f.md"]
 
 
 class TestOpenInEditor:
@@ -165,6 +183,21 @@ class TestOpenInEditor:
         assert not pathlib.Path(created_path).exists()
 
     @patch("deepagents_cli.editor.subprocess.run")
+    def test_cleans_up_temp_file_on_error(self, mock_run: MagicMock) -> None:
+        created_path: str | None = None
+
+        def fake_run(cmd: list[str], **_: object) -> MagicMock:
+            nonlocal created_path
+            created_path = cmd[-1]
+            return MagicMock(returncode=1)
+
+        mock_run.side_effect = fake_run
+        with patch("deepagents_cli.editor.resolve_editor", return_value=["nano"]):
+            open_in_editor("text")
+        assert created_path is not None
+        assert not pathlib.Path(created_path).exists()
+
+    @patch("deepagents_cli.editor.subprocess.run")
     def test_temp_file_has_md_extension(self, mock_run: MagicMock) -> None:
         def fake_run(cmd: list[str], **_: object) -> MagicMock:
             filepath = cmd[-1]
@@ -174,3 +207,68 @@ class TestOpenInEditor:
         mock_run.side_effect = fake_run
         with patch("deepagents_cli.editor.resolve_editor", return_value=["nano"]):
             open_in_editor("text")
+
+    def test_returns_none_when_resolve_editor_is_none(self) -> None:
+        with patch("deepagents_cli.editor.resolve_editor", return_value=None):
+            result = open_in_editor("text")
+        assert result is None
+
+    @patch("deepagents_cli.editor.subprocess.run")
+    def test_handles_permission_error_on_cleanup(self, mock_run: MagicMock) -> None:
+        """PermissionError during temp file cleanup should not propagate."""
+
+        def fake_run(cmd: list[str], **_: object) -> MagicMock:
+            filepath = cmd[-1]
+            pathlib.Path(filepath).write_text("edited", encoding="utf-8")
+            return MagicMock(returncode=0)
+
+        mock_run.side_effect = fake_run
+        with (
+            patch("deepagents_cli.editor.resolve_editor", return_value=["nano"]),
+            patch.object(
+                pathlib.Path,
+                "unlink",
+                side_effect=PermissionError("locked"),
+            ),
+        ):
+            result = open_in_editor("text")
+        assert result == "edited"
+
+    @patch("deepagents_cli.editor.subprocess.run")
+    def test_handles_unexpected_exception(self, mock_run: MagicMock) -> None:
+        """Unexpected exceptions from subprocess are caught, not propagated."""
+        mock_run.side_effect = RuntimeError("unexpected")
+        with patch("deepagents_cli.editor.resolve_editor", return_value=["nano"]):
+            result = open_in_editor("text")
+        assert result is None
+
+    @patch("deepagents_cli.editor.subprocess.run")
+    def test_writes_initial_content_to_temp_file(self, mock_run: MagicMock) -> None:
+        """The current_text should be written to the temp file before editor launch."""
+        observed_content: str | None = None
+
+        def fake_run(cmd: list[str], **_: object) -> MagicMock:
+            nonlocal observed_content
+            filepath = cmd[-1]
+            observed_content = pathlib.Path(filepath).read_text(encoding="utf-8")
+            pathlib.Path(filepath).write_text("edited", encoding="utf-8")
+            return MagicMock(returncode=0)
+
+        mock_run.side_effect = fake_run
+        with patch("deepagents_cli.editor.resolve_editor", return_value=["nano"]):
+            open_in_editor("hello world")
+        assert observed_content == "hello world"
+
+    @patch("deepagents_cli.editor.subprocess.run")
+    def test_unicode_round_trip(self, mock_run: MagicMock) -> None:
+        def fake_run(cmd: list[str], **_: object) -> MagicMock:
+            filepath = cmd[-1]
+            pathlib.Path(filepath).write_text(
+                "Hello \u4e16\u754c \U0001f680", encoding="utf-8"
+            )
+            return MagicMock(returncode=0)
+
+        mock_run.side_effect = fake_run
+        with patch("deepagents_cli.editor.resolve_editor", return_value=["nano"]):
+            result = open_in_editor("original")
+        assert result == "Hello \u4e16\u754c \U0001f680"

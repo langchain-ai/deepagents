@@ -2113,6 +2113,92 @@ class TestOnApprovalMenuDecidedCleanup:
         assert app._approval_placeholder is None
 
 
+class TestActionOpenEditor:
+    """Tests for the external editor action."""
+
+    async def test_updates_text_on_successful_edit(self) -> None:
+        app = DeepAgentsApp(agent=MagicMock())
+        text_area = MagicMock()
+        text_area.text = "original"
+        chat_input = MagicMock()
+        chat_input._text_area = text_area
+        app._chat_input = chat_input
+
+        with (
+            patch.object(app, "suspend"),
+            patch("deepagents_cli.editor.open_in_editor", return_value="edited"),
+        ):
+            await app.action_open_editor()
+
+        assert text_area.text == "edited"
+        chat_input.focus_input.assert_called_once()
+
+    async def test_no_update_when_editor_returns_none(self) -> None:
+        app = DeepAgentsApp(agent=MagicMock())
+        text_area = MagicMock()
+        text_area.text = "original"
+        chat_input = MagicMock()
+        chat_input._text_area = text_area
+        app._chat_input = chat_input
+
+        with (
+            patch.object(app, "suspend"),
+            patch("deepagents_cli.editor.open_in_editor", return_value=None),
+        ):
+            await app.action_open_editor()
+
+        assert text_area.text == "original"
+        chat_input.focus_input.assert_called_once()
+
+    async def test_early_return_when_chat_input_is_none(self) -> None:
+        app = DeepAgentsApp(agent=MagicMock())
+        app._chat_input = None
+
+        # Should not raise
+        await app.action_open_editor()
+
+    async def test_early_return_when_text_area_is_none(self) -> None:
+        app = DeepAgentsApp(agent=MagicMock())
+        chat_input = MagicMock()
+        chat_input._text_area = None
+        app._chat_input = chat_input
+
+        await app.action_open_editor()
+
+    async def test_notifies_on_exception(self) -> None:
+        app = DeepAgentsApp(agent=MagicMock())
+        text_area = MagicMock()
+        text_area.text = ""
+        chat_input = MagicMock()
+        chat_input._text_area = text_area
+        app._chat_input = chat_input
+
+        with (
+            patch.object(app, "suspend"),
+            patch(
+                "deepagents_cli.editor.open_in_editor",
+                side_effect=RuntimeError("boom"),
+            ),
+            patch.object(app, "notify") as mock_notify,
+        ):
+            await app.action_open_editor()
+
+        mock_notify.assert_called_once()
+        assert "failed" in mock_notify.call_args[0][0].lower()
+        chat_input.focus_input.assert_called_once()
+
+
+class TestEditorSlashCommand:
+    """Test that /editor dispatches to action_open_editor."""
+
+    async def test_editor_command_calls_action(self) -> None:
+        app = DeepAgentsApp(agent=MagicMock())
+        with patch.object(app, "action_open_editor", new_callable=AsyncMock) as mock:
+            app._chat_input = MagicMock()
+            await app._handle_command("/editor")
+        mock.assert_awaited_once()
+
+
 class TestFetchThreadHistoryData:
     """Verify _fetch_thread_history_data handles server-mode resume scenarios."""
 

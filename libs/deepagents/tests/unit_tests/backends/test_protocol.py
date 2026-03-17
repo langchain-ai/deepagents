@@ -4,6 +4,8 @@ Verifies that unimplemented protocol methods raise NotImplementedError
 instead of silently returning None.
 """
 
+import warnings
+
 import pytest
 
 from deepagents.backends.protocol import BackendProtocol, SandboxBackendProtocol
@@ -97,6 +99,74 @@ class TestAsyncMethodsPropagateNotImplemented:
     async def test_aedit(self, backend: BareBackend) -> None:
         with pytest.raises(NotImplementedError):
             await backend.aedit("/file.txt", "old", "new")
+
+
+class TestDeprecatedMethodsRouteToNewNames:
+    """Old method names warn and delegate to the new implementations."""
+
+    def test_ls_info_delegates_to_ls(self) -> None:
+        class MyBackend(BackendProtocol):
+            def ls(self, path):
+                return "ok"
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            assert MyBackend().ls_info("/") == "ok"
+        assert any("ls_info" in str(x.message) for x in w)
+
+    def test_grep_raw_delegates_to_grep(self) -> None:
+        class MyBackend(BackendProtocol):
+            def grep(self, pattern, path=None, glob=None):
+                return "ok"
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            assert MyBackend().grep_raw("x") == "ok"
+        assert any("grep_raw" in str(x.message) for x in w)
+
+    def test_glob_info_delegates_to_glob(self) -> None:
+        class MyBackend(BackendProtocol):
+            def glob(self, pattern, path="/"):
+                return "ok"
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            assert MyBackend().glob_info("*.py") == "ok"
+        assert any("glob_info" in str(x.message) for x in w)
+
+
+class TestLegacySubclassOverrideRouting:
+    """New method names detect legacy overrides and delegate back."""
+
+    def test_ls_routes_to_ls_info_override(self) -> None:
+        class LegacyBackend(BackendProtocol):
+            def ls_info(self, path):
+                return "legacy"
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            assert LegacyBackend().ls("/") == "legacy"
+        assert any("ls_info" in str(x.message) for x in w)
+
+    def test_grep_routes_to_grep_raw_override(self) -> None:
+        class LegacyBackend(BackendProtocol):
+            def grep_raw(self, pattern, path=None, glob=None):
+                return "legacy"
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            assert LegacyBackend().grep("x") == "legacy"
+        assert any("grep_raw" in str(x.message) for x in w)
+
+    def test_glob_routes_to_glob_info_override(self) -> None:
+        class LegacyBackend(BackendProtocol):
+            def glob_info(self, pattern, path="/"):
+                return "legacy"
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            assert LegacyBackend().glob("*.py") == "legacy"
+        assert any("glob_info" in str(x.message) for x in w)
 
     async def test_aupload_files(self, backend: BareBackend) -> None:
         with pytest.raises(NotImplementedError):

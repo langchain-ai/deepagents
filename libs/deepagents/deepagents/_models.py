@@ -1,5 +1,4 @@
 """Shared helpers for resolving and inspecting chat models."""
-
 from __future__ import annotations
 
 from typing import Any
@@ -12,7 +11,6 @@ def resolve_model(model: str | BaseChatModel) -> BaseChatModel:
     """Resolve a model string to a `BaseChatModel`.
 
     If `model` is already a `BaseChatModel`, returns it unchanged.
-
     String models are resolved via `init_chat_model`. OpenAI models
     (prefixed with `openai:`) default to the Responses API.
 
@@ -46,6 +44,46 @@ def get_model_identifier(model: BaseChatModel) -> str | None:
     return _string_value(config, "model_name") or _string_value(config, "model")
 
 
+def get_model_provider(model: BaseChatModel) -> str | None:
+    """Extract the provider name from a chat model instance.
+
+    Reads the serialized model config for a ``model_provider`` field, which
+    LangChain populates when a model is initialised via ``init_chat_model``
+    with a ``provider:model`` spec. Falls back to inspecting the class name
+    as a best-effort when the field is absent (e.g. for directly instantiated
+    model objects).
+
+    Examples::
+
+        m = init_chat_model("openai:gpt-5")
+        get_model_provider(m)   # "openai"
+
+        m = init_chat_model("anthropic:claude-opus-4-6")
+        get_model_provider(m)   # "anthropic"
+
+    Args:
+        model: Chat model instance to inspect.
+
+    Returns:
+        The provider name as a lowercase string, or ``None`` if it cannot be
+        determined.
+    """
+    config = model.model_dump()
+
+    # Prefer the explicit field set by init_chat_model.
+    provider = _string_value(config, "model_provider")
+    if provider:
+        return provider.lower()
+
+    # Fall back to the class name, which conventionally starts with the
+    # provider name (e.g. ChatOpenAI → "openai", ChatAnthropic → "anthropic").
+    class_name = type(model).__name__
+    if class_name.startswith("Chat"):
+        return class_name[len("Chat"):].lower() or None
+
+    return None
+
+
 def model_matches_spec(model: BaseChatModel, spec: str) -> bool:
     """Check whether a model instance already matches a string model spec.
 
@@ -68,7 +106,6 @@ def model_matches_spec(model: BaseChatModel, spec: str) -> bool:
         return False
     if spec == current:
         return True
-
     _, separator, model_name = spec.partition(":")
     return bool(separator) and model_name == current
 

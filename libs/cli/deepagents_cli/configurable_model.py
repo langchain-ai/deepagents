@@ -84,9 +84,18 @@ def _apply_overrides(request: ModelRequest) -> ModelRequest:
     model = ctx.get("model")
     if model and not model_matches_spec(request.model, model):
         from deepagents_cli.config import create_model
+        from deepagents_cli.model_config import ModelConfigError
 
         logger.debug("Overriding model to %s", model)
-        new_model = create_model(model).model
+        try:
+            new_model = create_model(model).model
+        except ModelConfigError:
+            logger.exception(
+                "Failed to resolve runtime model override '%s'; "
+                "continuing with current model",
+                model,
+            )
+            return request
         overrides["model"] = new_model
 
     # Param merge

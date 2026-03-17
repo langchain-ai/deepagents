@@ -4,7 +4,6 @@ from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
-import pytest
 from langchain.agents.middleware.types import ModelRequest, ModelResponse
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage
@@ -185,19 +184,22 @@ class TestModelSwap:
         assert captured[0].model is custom
         mock_create.assert_called_once_with("custom:my-model")
 
-    def test_create_model_error_propagates(self) -> None:
-        """ModelConfigError from create_model propagates to caller."""
+    def test_create_model_error_falls_back_to_original(self) -> None:
+        """ModelConfigError falls back to original model instead of crashing."""
         from deepagents_cli.model_config import ModelConfigError
 
+        original = _make_model("claude-sonnet-4-6")
         request = _make_request(
-            _make_model("claude-sonnet-4-6"),
+            original,
             context=CLIContext(model="unknown:bad-model"),
         )
-        with (
-            patch(_PATCH_CREATE, side_effect=ModelConfigError("no such provider")),
-            pytest.raises(ModelConfigError, match="no such provider"),
-        ):
-            _mw.wrap_model_call(request, lambda _r: _make_response())
+        captured: list[ModelRequest] = []
+        with patch(_PATCH_CREATE, side_effect=ModelConfigError("no such provider")):
+            _mw.wrap_model_call(
+                request, lambda r: (captured.append(r), _make_response())[1]
+            )
+
+        assert captured[0].model is original
 
 
 class TestAnthropicSettingsStripped:

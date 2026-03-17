@@ -468,6 +468,10 @@ def _list_skills(backend: BackendProtocol, source_path: str) -> list[SkillMetada
     (e.g., `~/.agents/skills/superpowers → pack/skills/`) to expose all
     skills within it.
 
+    Warning:
+        Skill pack support is experimental. The nesting heuristic and discovery
+        semantics may change in future versions.
+
     Expected structures:
 
     ```txt
@@ -498,7 +502,7 @@ def _list_skills(backend: BackendProtocol, source_path: str) -> list[SkillMetada
 
     skills, pack_dirs = _download_and_parse_skills(backend, dir_paths)
 
-    # Scan one level deeper for skill packs (directories without a loadable SKILL.md)
+    # Experimental: scan one level deeper for skill packs (directories without a loadable SKILL.md)
     for pack_dir in pack_dirs:
         try:
             nested_result = backend.ls(pack_dir)
@@ -508,6 +512,13 @@ def _list_skills(backend: BackendProtocol, source_path: str) -> list[SkillMetada
         nested_items = nested_result.entries if isinstance(nested_result, LsResult) else nested_result
         nested_dirs = [item["path"] for item in (nested_items or []) if item.get("is_dir")]
         nested_skills, _ = _download_and_parse_skills(backend, nested_dirs)
+        if nested_skills:
+            pack_name = PurePosixPath(pack_dir).name
+            logger.info(
+                "Discovered %d skill(s) from skill pack '%s' (experimental)",
+                len(nested_skills),
+                pack_name,
+            )
         skills.extend(nested_skills)
 
     return skills
@@ -576,6 +587,10 @@ async def _alist_skills(backend: BackendProtocol, source_path: str) -> list[Skil
     (e.g., `~/.agents/skills/superpowers → pack/skills/`) to expose all
     skills within it.
 
+    Warning:
+        Skill pack support is experimental. The nesting heuristic and discovery
+        semantics may change in future versions.
+
     Expected structures:
 
     ```txt
@@ -606,7 +621,7 @@ async def _alist_skills(backend: BackendProtocol, source_path: str) -> list[Skil
 
     skills, pack_dirs = await _adownload_and_parse_skills(backend, dir_paths)
 
-    # Scan one level deeper for skill packs (directories without a loadable SKILL.md)
+    # Experimental: scan one level deeper for skill packs (directories without a loadable SKILL.md)
     for pack_dir in pack_dirs:
         try:
             nested_result = await backend.als(pack_dir)
@@ -616,6 +631,13 @@ async def _alist_skills(backend: BackendProtocol, source_path: str) -> list[Skil
         nested_items = nested_result.entries if isinstance(nested_result, LsResult) else nested_result
         nested_dirs = [item["path"] for item in (nested_items or []) if item.get("is_dir")]
         nested_skills, _ = await _adownload_and_parse_skills(backend, nested_dirs)
+        if nested_skills:
+            pack_name = PurePosixPath(pack_dir).name
+            logger.info(
+                "Discovered %d skill(s) from skill pack '%s' (experimental)",
+                len(nested_skills),
+                pack_name,
+            )
         skills.extend(nested_skills)
 
     return skills

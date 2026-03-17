@@ -20,6 +20,7 @@ def _make_model(name: str) -> MagicMock:
     model = MagicMock(spec=BaseChatModel)
     model.model_name = name
     model.model_dump.return_value = {"model_name": name}
+    model._get_ls_params.return_value = {"ls_provider": "openai"}
     return model
 
 
@@ -368,9 +369,18 @@ class TestIsAnthropicModel:
     def test_returns_false_for_non_anthropic(self) -> None:
         assert _is_anthropic_model(_make_model("gpt-4o")) is False
 
-    def test_returns_false_when_import_missing(self) -> None:
-        with patch.dict("sys.modules", {"langchain_anthropic": None}):
-            assert _is_anthropic_model(_make_model("anything")) is False
+    def test_returns_false_for_plain_object(self) -> None:
+        assert _is_anthropic_model(object()) is False
+
+    def test_returns_false_when_ls_params_returns_none(self) -> None:
+        model = MagicMock(spec=BaseChatModel)
+        model._get_ls_params.return_value = None
+        assert _is_anthropic_model(model) is False
+
+    def test_returns_false_when_ls_params_raises(self) -> None:
+        model = MagicMock(spec=BaseChatModel)
+        model._get_ls_params.side_effect = RuntimeError("not initialized")
+        assert _is_anthropic_model(model) is False
 
 
 class TestModelParams:

@@ -41,19 +41,22 @@ class CLIContext(TypedDict, total=False):
 
 
 def _is_anthropic_model(model: object) -> bool:
-    """Check whether a resolved model is an Anthropic `ChatAnthropic` instance.
+    """Check whether a resolved model reports `'anthropic'` as its provider.
 
-    Returns `False` if `langchain-anthropic` is not installed.
+    Uses `_get_ls_params` from `BaseChatModel` to read the provider name.
 
     Returns:
-        `True` if the model is a `ChatAnthropic` instance.
+        `True` if the model's `ls_provider` is `'anthropic'`.
     """
     try:
-        from langchain_anthropic import ChatAnthropic
-    except ImportError:
-        logger.debug("langchain_anthropic not installed; assuming non-Anthropic model")
+        ls_params = model._get_ls_params()  # type: ignore[attr-defined]
+    except (AttributeError, TypeError, RuntimeError):
+        logger.debug(
+            "_get_ls_params raised for %s; assuming non-Anthropic",
+            type(model).__name__,
+        )
         return False
-    return isinstance(model, ChatAnthropic)
+    return isinstance(ls_params, dict) and ls_params.get("ls_provider") == "anthropic"
 
 
 _ANTHROPIC_ONLY_SETTINGS: set[str] = {"cache_control"}

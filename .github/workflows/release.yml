@@ -155,8 +155,9 @@ jobs:
               f.write(f"pkg-name={pkg_name}\n")
               f.write(f"version={version}\n")
 
-  # Collect contributors from merged PRs for release shoutouts
-  collect-contributors:
+  # Generate release notes from CHANGELOG.md (with git log fallback)
+  # and collect contributor shoutouts from merged PRs
+  release-notes:
     needs:
       - setup
       - build
@@ -167,48 +168,55 @@ jobs:
     env:
       WORKING_DIR: ${{ needs.setup.outputs.working-dir }}
     outputs:
-      contributors: ${{ steps.collect.outputs.contributors }}
+      release-body: ${{ steps.generate-release-body.outputs.release-body }}
+      tag: ${{ steps.check-tags.outputs.tag }}
     steps:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
-      - name: Collect contributors from merged PRs
-        id: collect
+      - name: Check tags
+        id: check-tags
+        shell: bash
+        working-directory: ${{ env.WORKING_DIR }}
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PKG_NAME: ${{ needs.build.outputs.pkg-name }}
           VERSION: ${{ needs.build.outputs.version }}
         run: |
-          # Determine previous tag (same logic as release-notes job)
+          TAG="${PKG_NAME}==${VERSION}"
+          echo tag="$TAG" >> $GITHUB_OUTPUT
+
+      - name: Resolve previous tag and release commit
+        id: resolve-refs
+        env:
+          PKG_NAME: ${{ needs.build.outputs.pkg-name }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          # Determine previous tag
           if [[ "$VERSION" == *"-"* ]]; then
             BASE_VERSION=${VERSION%%-*}
-            REGEX="^$PKG_NAME==$BASE_VERSION\$"
-            PREV_TAG=$(git tag --sort=-creatordate | (grep -P "$REGEX" || true) | head -1)
+            PREV_TAG=$(git tag --sort=-creatordate | (grep -E "^${PKG_NAME}==${BASE_VERSION}$" || true) | head -1)
             if [ -z "$PREV_TAG" ]; then
-              REGEX="^$PKG_NAME==\\d+\\.\\d+\\.\\d+\$"
-              PREV_TAG=$(git tag --sort=-creatordate | (grep -P "$REGEX" || true) | head -1)
+              PREV_TAG=$(git tag --sort=-creatordate | (grep -E "^${PKG_NAME}==[0-9]+\.[0-9]+\.[0-9]+$" || true) | head -1)
             fi
           else
             PREV_TAG="$PKG_NAME==${VERSION%.*}.$(( ${VERSION##*.} - 1 ))"
             [[ "${VERSION##*.}" -eq 0 ]] && PREV_TAG=""
             if [ -z "$PREV_TAG" ]; then
-              REGEX="^$PKG_NAME==\\d+\\.\\d+\\.\\d+\$"
-              PREV_TAG=$(git tag --sort=-creatordate | (grep -P "$REGEX" || true) | head -1)
+              PREV_TAG=$(git tag --sort=-creatordate | (grep -E "^${PKG_NAME}==[0-9]+\.[0-9]+\.[0-9]+$" || true) | head -1)
             fi
           fi
 
           # Validate prev tag exists
           if [ -n "$PREV_TAG" ] && [ "$PREV_TAG" != "$PKG_NAME==0.0.0" ]; then
             GIT_TAG_RESULT=$(git tag -l "$PREV_TAG")
-            if [ -z "$GIT_TAG_RESULT" ]; then
-              PREV_TAG=""
-            fi
+            [ -z "$GIT_TAG_RESULT" ] && PREV_TAG=""
           else
             PREV_TAG=""
           fi
 
           echo "Previous tag: $PREV_TAG"
+          echo "prev-tag=$PREV_TAG" >> "$GITHUB_OUTPUT"
 
           # Resolve the actual release commit instead of using HEAD.
           # release-please always updates CHANGELOG.md in the release commit,
@@ -222,6 +230,66 @@ jobs:
             RELEASE_COMMIT=$(git rev-parse HEAD)
           fi
           echo "Release commit (from CHANGELOG.md): $RELEASE_COMMIT"
+          echo "release-commit=$RELEASE_COMMIT" >> "$GITHUB_OUTPUT"
+
+      - name: Generate release body
+        id: generate-release-body
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PKG_NAME: ${{ needs.build.outputs.pkg-name }}
+          VERSION: ${{ needs.build.outputs.version }}
+          PREV_TAG: ${{ steps.resolve-refs.outputs.prev-tag }}
+          RELEASE_COMMIT: ${{ steps.resolve-refs.outputs.release-commit }}
+        run: |
+          if [ -z "$RELEASE_COMMIT" ]; then
+            echo "::error::RELEASE_COMMIT is empty — resolve-refs step may have failed"
+            exit 1
+          fi
+
+          CHANGELOG_PATH="$WORKING_DIR/CHANGELOG.md"
+          RELEASE_BODY=""
+
+          # Try to extract current version's section from CHANGELOG.md
+          if [ -f "$CHANGELOG_PATH" ]; then
+            echo "Found CHANGELOG.md, extracting version $VERSION section..."
+
+            # Extract section between current version header and next version header (or EOF)
+            # Matches headers like: ## [0.0.16] or ## 0.0.16
+            RELEASE_BODY=$(awk -v ver="$VERSION" '
+              BEGIN { found=0; printing=0 }
+              /^## \[?[0-9]+\.[0-9]+\.[0-9]+/ {
+                if (printing) { exit }
+                if (index($0, ver)) { found=1; printing=1; next }
+              }
+              printing { print }
+            ' "$CHANGELOG_PATH")
+
+            if [ -n "$RELEASE_BODY" ]; then
+              echo "Successfully extracted changelog for version $VERSION"
+            else
+              echo "Could not find version $VERSION in CHANGELOG.md"
+            fi
+          else
+            echo "No CHANGELOG.md found at $CHANGELOG_PATH"
+          fi
+
+          # Fallback to git log if CHANGELOG extraction failed
+          if [ -z "$RELEASE_BODY" ]; then
+            echo "Falling back to git log for release notes..."
+
+            FALLBACK_PREV="$PREV_TAG"
+            if [ -z "$FALLBACK_PREV" ]; then
+              PREAMBLE="Initial release"
+              FALLBACK_PREV=$(git rev-list --max-parents=0 "$RELEASE_COMMIT")
+            else
+              PREAMBLE="Changes since $FALLBACK_PREV"
+            fi
+
+            GIT_LOG=$(git log --format="%s" "$FALLBACK_PREV".."$RELEASE_COMMIT" -- "$WORKING_DIR")
+            RELEASE_BODY=$(printf "%s\n%s" "$PREAMBLE" "$GIT_LOG")
+          fi
+
+          # ── Collect contributors from merged PRs ──
 
           # Get commits between previous tag and release commit for this package
           if [ -z "$PREV_TAG" ]; then
@@ -265,10 +333,10 @@ jobs:
 
                 if [ -n "$GH_USER" ]; then
                   # Extract Twitter handle if present (matches "Twitter: @handle" or "Twitter: handle")
-                  TWITTER=$(echo "$PR_BODY" | grep -ioP '^\s*Twitter:\s*@?\s*\K[a-zA-Z0-9_]+' || true)
+                  TWITTER=$(echo "$PR_BODY" | grep -iE '^\s*Twitter:\s' | sed -nE 's/.*:[[:space:]]*@?[[:space:]]*([a-zA-Z0-9_]+).*/\1/p' | head -1 || true)
 
                   # Extract LinkedIn URL if present (matches "LinkedIn: https://linkedin.com/in/username" or similar)
-                  LINKEDIN=$(echo "$PR_BODY" | grep -ioP '^\s*LinkedIn:\s*\K(https?://)?(www\.)?linkedin\.com/in/[a-zA-Z0-9_-]+/?' || true)
+                  LINKEDIN=$(echo "$PR_BODY" | grep -iE '^\s*LinkedIn:\s' | grep -oE '(https?://)?(www\.)?linkedin\.com/in/[a-zA-Z0-9_-]+/?' | head -1 || true)
 
                   # Add user if not seen, or update socials if newly provided
                   if [ -z "${TWITTER_HANDLES[$GH_USER]+x}" ]; then
@@ -319,132 +387,11 @@ jobs:
             fi
           done
 
-          echo "contributors=$CONTRIBUTOR_LIST" >> $GITHUB_OUTPUT
           echo "Found contributors: $CONTRIBUTOR_LIST"
 
-  # Generate release notes from CHANGELOG.md (with git log fallback)
-  release-notes:
-    needs:
-      - setup
-      - build
-      - collect-contributors
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    env:
-      WORKING_DIR: ${{ needs.setup.outputs.working-dir }}
-    outputs:
-      release-body: ${{ steps.generate-release-body.outputs.release-body }}
-      tag: ${{ steps.check-tags.outputs.tag }}
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          path: deepagents
-          sparse-checkout: |
-            ${{ env.WORKING_DIR }}
-          ref: ${{ github.ref }}
-          fetch-depth: 0
-
-      - name: Check tags
-        id: check-tags
-        shell: bash
-        working-directory: deepagents/${{ env.WORKING_DIR }}
-        env:
-          PKG_NAME: ${{ needs.build.outputs.pkg-name }}
-          VERSION: ${{ needs.build.outputs.version }}
-        run: |
-          TAG="${PKG_NAME}==${VERSION}"
-          echo tag="$TAG" >> $GITHUB_OUTPUT
-
-      - name: Generate release body
-        id: generate-release-body
-        working-directory: deepagents
-        env:
-          PKG_NAME: ${{ needs.build.outputs.pkg-name }}
-          VERSION: ${{ needs.build.outputs.version }}
-          WORKING_DIR: ${{ env.WORKING_DIR }}
-          CONTRIBUTORS: ${{ needs.collect-contributors.outputs.contributors }}
-        run: |
-          CHANGELOG_PATH="$WORKING_DIR/CHANGELOG.md"
-          RELEASE_BODY=""
-
-          # Try to extract current version's section from CHANGELOG.md
-          if [ -f "$CHANGELOG_PATH" ]; then
-            echo "Found CHANGELOG.md, extracting version $VERSION section..."
-
-            # Extract section between current version header and next version header (or EOF)
-            # Matches headers like: ## [0.0.16] or ## 0.0.16
-            RELEASE_BODY=$(awk -v ver="$VERSION" '
-              BEGIN { found=0; printing=0 }
-              /^## \[?[0-9]+\.[0-9]+\.[0-9]+/ {
-                if (printing) { exit }
-                if (index($0, ver)) { found=1; printing=1; next }
-              }
-              printing { print }
-            ' "$CHANGELOG_PATH")
-
-            if [ -n "$RELEASE_BODY" ]; then
-              echo "Successfully extracted changelog for version $VERSION"
-            else
-              echo "Could not find version $VERSION in CHANGELOG.md"
-            fi
-          else
-            echo "No CHANGELOG.md found at $CHANGELOG_PATH"
-          fi
-
-          # Fallback to git log if CHANGELOG extraction failed
-          if [ -z "$RELEASE_BODY" ]; then
-            echo "Falling back to git log for release notes..."
-
-            # Determine previous tag
-            if [[ "$VERSION" == *"-"* ]]; then
-              BASE_VERSION=${VERSION%%-*}
-              REGEX="^$PKG_NAME==$BASE_VERSION\$"
-              PREV_TAG=$(git tag --sort=-creatordate | (grep -P "$REGEX" || true) | head -1)
-              if [ -z "$PREV_TAG" ]; then
-                REGEX="^$PKG_NAME==\\d+\\.\\d+\\.\\d+\$"
-                PREV_TAG=$(git tag --sort=-creatordate | (grep -P "$REGEX" || true) | head -1)
-              fi
-            else
-              PREV_TAG="$PKG_NAME==${VERSION%.*}.$(( ${VERSION##*.} - 1 ))"
-              [[ "${VERSION##*.}" -eq 0 ]] && PREV_TAG=""
-              if [ -z "$PREV_TAG" ]; then
-                REGEX="^$PKG_NAME==\\d+\\.\\d+\\.\\d+\$"
-                PREV_TAG=$(git tag --sort=-creatordate | (grep -P "$REGEX" || true) | head -1)
-              fi
-            fi
-
-            # Validate prev tag exists
-            if [ -n "$PREV_TAG" ] && [ "$PREV_TAG" != "$PKG_NAME==0.0.0" ]; then
-              GIT_TAG_RESULT=$(git tag -l "$PREV_TAG")
-              [ -z "$GIT_TAG_RESULT" ] && PREV_TAG=""
-            else
-              PREV_TAG=""
-            fi
-
-            # Use CHANGELOG.md's last edit as the release commit boundary.
-            # On manual dispatch, HEAD may be ahead of the actual release —
-            # this ensures the git log only covers commits up to the release.
-            RELEASE_COMMIT=$(git log -1 --format=%H -- "$WORKING_DIR/CHANGELOG.md")
-            if [ -z "$RELEASE_COMMIT" ]; then
-              echo "Warning: no CHANGELOG.md history found, falling back to HEAD"
-              RELEASE_COMMIT=$(git rev-parse HEAD)
-            fi
-
-            if [ -z "$PREV_TAG" ]; then
-              PREAMBLE="Initial release"
-              PREV_TAG=$(git rev-list --max-parents=0 "$RELEASE_COMMIT")
-            else
-              PREAMBLE="Changes since $PREV_TAG"
-            fi
-
-            GIT_LOG=$(git log --format="%s" "$PREV_TAG".."$RELEASE_COMMIT" -- "$WORKING_DIR")
-            RELEASE_BODY=$(printf "%s\n%s" "$PREAMBLE" "$GIT_LOG")
-          fi
-
           # Append contributor shoutouts
-          if [ -n "$CONTRIBUTORS" ]; then
-            RELEASE_BODY=$(printf "%s\n\n---\n\nThanks to our community contributors: %s" "$RELEASE_BODY" "$CONTRIBUTORS")
+          if [ -n "$CONTRIBUTOR_LIST" ]; then
+            RELEASE_BODY=$(printf "%s\n\n---\n\nThanks to our community contributors: %s" "$RELEASE_BODY" "$CONTRIBUTOR_LIST")
           fi
 
           # Output release body using heredoc for proper multiline handling
@@ -532,8 +479,17 @@ jobs:
       - name: Verify CLI pins latest SDK version
         if: needs.build.outputs.pkg-name == 'deepagents-cli' && !inputs.dangerous-skip-sdk-pin-check
         run: |
-          SDK_VERSION=$(grep -Po '(?<=^version = ")[^"]*' libs/deepagents/pyproject.toml)
-          CLI_SDK_PIN=$(grep -Po '(?<=deepagents==)[0-9]+\.[0-9]+\.[0-9]+' libs/cli/pyproject.toml)
+          SDK_VERSION=$(sed -nE 's/^version = "([^"]*)".*/\1/p' libs/deepagents/pyproject.toml | head -1)
+          if [ -z "$SDK_VERSION" ]; then
+            echo "::error file=libs/deepagents/pyproject.toml::Failed to extract SDK version. Expected a line matching: version = \"X.Y.Z\""
+            exit 1
+          fi
+
+          CLI_SDK_PIN=$(sed -nE 's/.*deepagents==([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' libs/cli/pyproject.toml | head -1)
+          if [ -z "$CLI_SDK_PIN" ]; then
+            echo "::error file=libs/cli/pyproject.toml::Failed to extract CLI SDK pin. Expected a dependency matching: deepagents==X.Y.Z"
+            exit 1
+          fi
 
           if [ "$SDK_VERSION" != "$CLI_SDK_PIN" ]; then
             echo "::error::CLI SDK pin does not match SDK version!"

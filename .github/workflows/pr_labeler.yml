@@ -26,6 +26,11 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  # Separate opened events so external/tier labels are never lost to cancellation
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}-${{ github.event.action == 'opened' && 'opened' || 'update' }}
+  cancel-in-progress: ${{ github.event.action != 'opened' }}
+
 jobs:
   label:
     if: github.event_name != 'workflow_dispatch'

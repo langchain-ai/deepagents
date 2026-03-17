@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, ClassVar
 
-from rich.markup import escape as escape_markup
 from textual.binding import Binding, BindingType
 from textual.containers import Container, Vertical, VerticalScroll
+from textual.content import Content
 from textual.message import Message
 from textual.widgets import Static
 
@@ -145,14 +145,14 @@ class ApprovalMenu(Container):
         command = str(req.get("args", {}).get("command", ""))
         return len(command) > _SHELL_COMMAND_TRUNCATE_LENGTH
 
-    def _get_command_display(self, *, expanded: bool) -> str:
-        """Get the command display string (truncated or full).
+    def _get_command_display(self, *, expanded: bool) -> Content:
+        """Get the command display content (truncated or full).
 
         Args:
             expanded: Whether to show the full command or truncated version.
 
         Returns:
-            Formatted command string with Rich markup.
+            Styled Content for the command display.
 
         Raises:
             RuntimeError: If called with empty action_requests.
@@ -172,25 +172,33 @@ class ApprovalMenu(Container):
                 command[:_SHELL_COMMAND_TRUNCATE_LENGTH] + get_glyphs().ellipsis
             )
 
-        escaped_truncated = escape_markup(command_display)
-        display = f"[bold #f59e0b]{escaped_truncated}[/bold #f59e0b]"
         if not expanded and len(command) > _SHELL_COMMAND_TRUNCATE_LENGTH:
-            display += " [dim](press 'e' to expand)[/dim]"
+            display = Content.from_markup(
+                "[bold #f59e0b]$cmd[/bold #f59e0b] [dim](press 'e' to expand)[/dim]",
+                cmd=command_display,
+            )
+        else:
+            display = Content.from_markup(
+                "[bold #f59e0b]$cmd[/bold #f59e0b]", cmd=command_display
+            )
 
         if not issues:
             return display
 
-        issue_summary = escape_markup(summarize_issues(issues))
-        raw_with_markers = escape_markup(render_with_unicode_markers(command_raw))
+        raw_with_markers = render_with_unicode_markers(command_raw)
         if not expanded and len(raw_with_markers) > _WARNING_TEXT_TRUNCATE_LENGTH:
             raw_with_markers = (
                 raw_with_markers[:_WARNING_TEXT_TRUNCATE_LENGTH] + get_glyphs().ellipsis
             )
 
-        return (
-            f"{display}\n"
-            f"[yellow]Warning:[/yellow] hidden chars detected ({issue_summary})\n"
-            f"[dim]raw: {raw_with_markers}[/dim]"
+        return Content.assemble(
+            display,
+            Content.from_markup(
+                "\n[yellow]Warning:[/yellow] hidden chars detected ($summary)\n"
+                "[dim]raw: $raw[/dim]",
+                summary=summarize_issues(issues),
+                raw=raw_with_markers,
+            ),
         )
 
     def compose(self) -> ComposeResult:
@@ -205,22 +213,28 @@ class ApprovalMenu(Container):
         # Title - show count if multiple tools
         count = len(self._action_requests)
         if count == 1:
-            title = f">>> {self._tool_names[0]} Requires Approval <<<"
+            title = Content.from_markup(
+                ">>> $name Requires Approval <<<", name=self._tool_names[0]
+            )
         else:
-            title = f">>> {count} Tool Calls Require Approval <<<"
+            title = Content(f">>> {count} Tool Calls Require Approval <<<")
         yield Static(title, classes="approval-title")
 
         if self._security_warnings:
-            warning_lines = ["[yellow]Warning:[/yellow] Potentially deceptive text"]
-            warning_lines.extend(
-                f"[dim]- {escape_markup(warning)}[/dim]"
+            parts: list[Content] = [
+                Content.from_markup(
+                    "[yellow]Warning:[/yellow] Potentially deceptive text"
+                ),
+            ]
+            parts.extend(
+                Content.from_markup("\n[dim]- $w[/dim]", w=warning)
                 for warning in self._security_warnings[:_WARNING_PREVIEW_LIMIT]
             )
             if len(self._security_warnings) > _WARNING_PREVIEW_LIMIT:
                 remaining = len(self._security_warnings) - _WARNING_PREVIEW_LIMIT
-                warning_lines.append(f"[dim]- +{remaining} more warning(s)[/dim]")
+                parts.append(Content.styled(f"\n- +{remaining} more warning(s)", "dim"))
             yield Static(
-                "\n".join(warning_lines),
+                Content.assemble(*parts),
                 classes="approval-security-warning",
             )
 
@@ -285,14 +299,20 @@ class ApprovalMenu(Container):
 
             # Add tool header if multiple tools
             if len(self._action_requests) > 1:
-                header = Static(f"[bold]{i + 1}. {tool_name}[/bold]")
+                header = Static(
+                    Content.from_markup(
+                        "[bold]$num. $name[/bold]",
+                        num=i + 1,
+                        name=tool_name,
+                    )
+                )
                 await self._tool_info_container.mount(header)
 
             # Show description if present
             description = action_request.get("description")
             if description:
                 desc_widget = Static(
-                    f"[dim]{description}[/dim]",
+                    Content.from_markup("[dim]$desc[/dim]", desc=description),
                     classes="approval-description",
                 )
                 await self._tool_info_container.mount(desc_widget)

@@ -33,9 +33,11 @@ from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.types import Command, Interrupt
 from pydantic import TypeAdapter, ValidationError
 from rich.console import Console
+from rich.markup import escape as escape_markup
 from rich.style import Style
 from rich.text import Text
 
+from deepagents_cli._version import __version__
 from deepagents_cli.agent import DEFAULT_AGENT_NAME
 from deepagents_cli.config import (
     SHELL_ALLOW_ALL,
@@ -290,7 +292,9 @@ def _process_ai_message(
                 state.tool_call_buffers[buffer_key]["name"] = chunk_name
                 if state.full_response and not state.quiet:
                     _write_newline()
-                console.print(f"[dim]🔧 Calling tool: {chunk_name}[/dim]")
+                console.print(
+                    f"[dim]🔧 Calling tool: {escape_markup(chunk_name)}[/dim]"
+                )
 
 
 def _process_message_chunk(
@@ -330,7 +334,7 @@ def _process_message_chunk(
     elif isinstance(message_obj, ToolMessage):
         record = file_op_tracker.complete_with_message(message_obj)
         if record and record.diff:
-            console.print(f"[dim]📝 {record.display_path}[/dim]")
+            console.print(f"[dim]📝 {escape_markup(record.display_path)}[/dim]")
 
 
 def _process_stream_chunk(
@@ -425,12 +429,14 @@ def _make_hitl_decision(
         command = action_request.get("args", {}).get("command", "")
 
         if is_shell_command_allowed(command, settings.shell_allow_list):
-            console.print(f"[dim]✓ Auto-approved: {command}[/dim]")
+            console.print(f"[dim]✓ Auto-approved: {escape_markup(command)}[/dim]")
             return {"type": "approve"}
 
         allowed_list_str = ", ".join(settings.shell_allow_list)
-        console.print(f"\n[red]Shell command rejected:[/red] {command}")
-        console.print(f"[yellow]Allowed commands:[/yellow] {allowed_list_str}")
+        console.print(f"\n[red]Shell command rejected:[/red] {escape_markup(command)}")
+        console.print(
+            f"[yellow]Allowed commands:[/yellow] {escape_markup(allowed_list_str)}"
+        )
         return {
             "type": "reject",
             "message": (
@@ -440,7 +446,7 @@ def _make_hitl_decision(
             ),
         }
 
-    console.print(f"[dim]✓ Auto-approved action: {action_name}[/dim]")
+    console.print(f"[dim]✓ Auto-approved action: {escape_markup(action_name)}[/dim]")
     return {"type": "approve"}
 
 
@@ -642,6 +648,8 @@ def _build_non_interactive_header(
     """
     default_label = " (default)" if assistant_id == DEFAULT_AGENT_NAME else ""
     parts: list[tuple[str, str | Style]] = [
+        (f"CLI: v{__version__}", "dim"),
+        (" | ", "dim"),
         (f"Agent: {assistant_id}{default_label}", "dim"),
     ]
 
@@ -758,6 +766,8 @@ async def run_non_interactive(
     }
     if cwd:
         metadata["cwd"] = cwd
+    if sandbox_type and sandbox_type != "none":
+        metadata["sandbox_type"] = sandbox_type
     from deepagents_cli.textual_adapter import _get_git_branch
 
     branch = _get_git_branch()
@@ -855,7 +865,7 @@ async def run_non_interactive(
         console.print("\n[yellow]Interrupted[/yellow]")
         return 130
     except HITLIterationLimitError as e:
-        console.print(f"\n[red]{e}[/red]")
+        console.print(f"\n[red]{escape_markup(str(e))}[/red]")
         console.print(
             "[yellow]Hint: The agent may be repeatedly attempting commands "
             "that are not in the allow-list. Consider expanding the "
@@ -864,11 +874,14 @@ async def run_non_interactive(
         return 1
     except (ValueError, OSError) as e:
         logger.exception("Error during non-interactive execution")
-        console.print(f"\n[red]Error: {e}[/red]")
+        console.print(f"\n[red]Error: {escape_markup(str(e))}[/red]")
         return 1
     except Exception as e:
         logger.exception("Unexpected error during non-interactive execution")
-        console.print(f"\n[red]Unexpected error ({type(e).__name__}): {e}[/red]")
+        console.print(
+            f"\n[red]Unexpected error ({type(e).__name__}): "
+            f"{escape_markup(str(e))}[/red]"
+        )
         return 1
     else:
         return 0

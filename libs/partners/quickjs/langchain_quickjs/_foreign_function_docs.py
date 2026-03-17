@@ -193,21 +193,6 @@ def _format_typed_dict_structure(annotation: Any) -> str | None:
     return container_prefix + rendered_fields
 
 
-def get_ptc_implementations(
-    ptc: list[Callable[..., Any] | BaseTool] | None,
-) -> dict[str, Callable[..., Any] | BaseTool]:
-    """Return configured PTC implementations keyed by exported function name."""
-    implementations: dict[str, Callable[..., Any] | BaseTool] = {}
-    for implementation in ptc or []:
-        if isinstance(implementation, BaseTool):
-            implementations[implementation.name] = implementation
-            continue
-        name = getattr(implementation, "__name__", None)
-        if isinstance(name, str):
-            implementations[name] = implementation
-    return implementations
-
-
 def render_external_functions_section(
     implementations: dict[str, Callable[..., Any] | BaseTool], *, add_docs: bool
 ) -> str:
@@ -457,7 +442,6 @@ def format_foreign_function_docs(
 
 __all__ = [
     "format_foreign_function_docs",
-    "get_ptc_implementations",
     "render_external_functions_section",
     "render_foreign_function_section",
 ]

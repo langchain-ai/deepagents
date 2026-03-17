@@ -44,7 +44,8 @@ jobs:
         with:
           python-version: ${{ inputs.python-version }}
           working-directory: ${{ inputs.working-directory }}
-          enable-cache: "false"
+          enable-cache: "true"
+          cache-suffix: benchmark-${{ inputs.python-version }}
 
       - name: "Install dependencies"
         run: uv sync --group test

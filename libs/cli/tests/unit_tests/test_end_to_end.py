@@ -25,10 +25,10 @@ from deepagents_cli.agent import create_cli_agent
 def _ls_entries(backend: CompositeBackend, path: str) -> list | None:
     """Compat shim: PyPI SDK <0.5 returns raw list; >=0.5 returns LsResult.
 
-    TODO(remove): delete this helper and inline `backend.ls_info(path).entries`
+    TODO(remove): delete this helper and inline `backend.ls(path).entries`
     once the CLI pins `deepagents>=0.5`.
     """
-    ls_result = backend.ls_info(path)
+    ls_result = backend.ls(path)
     return ls_result.entries if hasattr(ls_result, "entries") else ls_result
 
 

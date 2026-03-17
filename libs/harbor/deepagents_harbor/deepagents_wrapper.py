@@ -155,7 +155,7 @@ class DeepAgentsWrapper(BaseAgent):
             Formatted system prompt with directory context
         """
         # Get directory information from backend
-        ls_result = await backend.als_info(".")
+        ls_result = await backend.als(".")
         current_dir = (await backend.aexecute("pwd")).output
 
         if ls_result.error:

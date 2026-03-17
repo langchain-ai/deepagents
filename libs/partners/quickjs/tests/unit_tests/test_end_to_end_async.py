@@ -236,6 +236,48 @@ async def test_quickjs_async_langchain_tool() -> None:
     assert result["messages"][-1].content_blocks == [{"type": "text", "text": "done"}]
 
 
+async def test_quickjs_async_timeout_error() -> None:
+    """Verify the async repl path surfaces QuickJS eval timeouts."""
+    model = GenericFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "repl",
+                            "args": {"code": "while (true) {}"},
+                            "id": "call_1",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="timeout hit"),
+            ]
+        )
+    )
+
+    agent = create_deep_agent(
+        model=model,
+        middleware=[QuickJSMiddleware(timeout=1)],
+    )
+
+    result = await agent.ainvoke(
+        {
+            "messages": [
+                HumanMessage(content="Use the repl and keep looping until it times out")
+            ]
+        }
+    )
+
+    tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+    assert len(tool_messages) == 1
+    assert tool_messages[0].content == (
+        "InternalError: interrupted\n    at <eval> (<input>)\n"
+    )
+    assert result["messages"][-1].content == "timeout hit"
+
+
 async def test_quickjs_async_toolruntime_configurable_foreign_function() -> None:
     """Verify async QuickJS foreign tool calls see configurable runtime data."""
     model = GenericFakeChatModel(

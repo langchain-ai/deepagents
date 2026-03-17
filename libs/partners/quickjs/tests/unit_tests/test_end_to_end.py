@@ -293,6 +293,99 @@ def test_quickjs_toolruntime_foreign_function() -> None:
     ]
 
 
+def test_quickjs_memory_limit_error() -> None:
+    """Verify the repl surfaces QuickJS memory limit failures."""
+    model = GenericFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "repl",
+                            "args": {
+                                "code": (
+                                    "const values = [];\n"
+                                    "while (true) {\n"
+                                    "  values.push('x'.repeat(1024));\n"
+                                    "}"
+                                )
+                            },
+                            "id": "call_1",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="memory limit hit"),
+            ]
+        )
+    )
+
+    agent = create_deep_agent(
+        model=model,
+        middleware=[QuickJSMiddleware(memory_limit=1_000_000)],
+    )
+
+    result = agent.invoke(
+        {
+            "messages": [
+                HumanMessage(
+                    content="Use the repl and keep allocating memory until it fails"
+                )
+            ]
+        }
+    )
+
+    tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+    assert len(tool_messages) == 1
+    assert tool_messages[0].content == (
+        "InternalError: out of memory\n    at <eval> (<input>:3)\n"
+    )
+    assert result["messages"][-1].content == "memory limit hit"
+
+
+def test_quickjs_timeout_error() -> None:
+    """Verify the repl surfaces QuickJS eval timeouts."""
+    model = GenericFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "repl",
+                            "args": {"code": "while (true) {}"},
+                            "id": "call_1",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="timeout hit"),
+            ]
+        )
+    )
+
+    agent = create_deep_agent(
+        model=model,
+        middleware=[QuickJSMiddleware(timeout=1)],
+    )
+
+    result = agent.invoke(
+        {
+            "messages": [
+                HumanMessage(content="Use the repl and keep looping until it times out")
+            ]
+        }
+    )
+
+    tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+    assert len(tool_messages) == 1
+    assert tool_messages[0].content == (
+        "InternalError: interrupted\n    at <eval> (<input>)\n"
+    )
+    assert result["messages"][-1].content == "timeout hit"
+
+
 def test_quickjs_toolruntime_configurable_foreign_function() -> None:
     """Verify QuickJS foreign tool calls see configurable runtime data."""
     model = GenericFakeChatModel(

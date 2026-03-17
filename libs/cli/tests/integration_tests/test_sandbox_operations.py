@@ -2,7 +2,7 @@
 
 This module tests the core file operations implemented in BaseSandbox:
 - write(): Create new files
-- read(): Read file contents with line numbers
+- read(): Read file contents
 - edit(): String replacement in files
 - ls_info(): List directory contents
 - grep_raw(): Search for patterns
@@ -182,12 +182,12 @@ class TestSandboxOperations:
 
         result = sandbox.read(test_path)
 
-        assert "Error:" not in result
-        # Should have line numbers
-        assert "1\t" in result or "     1\t" in result
-        assert "Line 1" in result
-        assert "Line 2" in result
-        assert "Line 3" in result
+        assert result.error is None
+        assert result.file_data is not None
+        content = result.file_data["content"]
+        assert "Line 1" in content
+        assert "Line 2" in content
+        assert "Line 3" in content
 
     def test_read_nonexistent_file(self, sandbox: SandboxBackendProtocol) -> None:
         """Test reading a file that doesn't exist."""
@@ -195,8 +195,8 @@ class TestSandboxOperations:
 
         result = sandbox.read(test_path)
 
-        assert "Error:" in result
-        assert "not found" in result.lower()
+        assert result.error is not None
+        assert "not found" in result.error.lower()
 
     def test_read_empty_file(self, sandbox: SandboxBackendProtocol) -> None:
         """Test reading an empty file."""
@@ -206,7 +206,10 @@ class TestSandboxOperations:
         result = sandbox.read(test_path)
 
         # Empty files should return a system reminder
-        assert "empty" in result.lower() or result.strip() == ""
+        assert result.error is None
+        assert result.file_data is not None
+        content = result.file_data["content"]
+        assert "empty" in content.lower()
 
     def test_read_with_offset(self, sandbox: SandboxBackendProtocol) -> None:
         """Test reading a file with offset parameter."""
@@ -217,8 +220,11 @@ class TestSandboxOperations:
         result = sandbox.read(test_path, offset=5)
 
         # Should start from line 6 (offset=5 means skip first 5 lines)
-        assert "Row_6_content" in result
-        assert "Row_1_content" not in result
+        assert result.error is None
+        assert result.file_data is not None
+        content = result.file_data["content"]
+        assert "Row_6_content" in content
+        assert "Row_1_content" not in content
 
     def test_read_with_limit(self, sandbox: SandboxBackendProtocol) -> None:
         """Test reading a file with limit parameter."""
@@ -229,9 +235,12 @@ class TestSandboxOperations:
         result = sandbox.read(test_path, offset=0, limit=5)
 
         # Should only have first 5 lines
-        assert "Row_1_content" in result
-        assert "Row_5_content" in result
-        assert "Row_6_content" not in result
+        assert result.error is None
+        assert result.file_data is not None
+        content = result.file_data["content"]
+        assert "Row_1_content" in content
+        assert "Row_5_content" in content
+        assert "Row_6_content" not in content
 
     def test_read_with_offset_and_limit(self, sandbox: SandboxBackendProtocol) -> None:
         """Test reading a file with both offset and limit."""
@@ -242,10 +251,13 @@ class TestSandboxOperations:
         result = sandbox.read(test_path, offset=10, limit=5)
 
         # Should have lines 11-15
-        assert "Row_11_content" in result
-        assert "Row_15_content" in result
-        assert "Row_10_content" not in result
-        assert "Row_16_content" not in result
+        assert result.error is None
+        assert result.file_data is not None
+        content = result.file_data["content"]
+        assert "Row_11_content" in content
+        assert "Row_15_content" in content
+        assert "Row_10_content" not in content
+        assert "Row_16_content" not in content
 
     def test_read_unicode_content(self, sandbox: SandboxBackendProtocol) -> None:
         """Test reading a file with unicode content."""
@@ -255,10 +267,12 @@ class TestSandboxOperations:
 
         result = sandbox.read(test_path)
 
-        assert "Error:" not in result
-        assert "👋" in result
-        assert "世界" in result
-        assert "Привет" in result
+        assert result.error is None
+        assert result.file_data is not None
+        content = result.file_data["content"]
+        assert "👋" in content
+        assert "世界" in content
+        assert "Привет" in content
 
     def test_read_file_with_very_long_lines(
         self, sandbox: SandboxBackendProtocol
@@ -273,8 +287,10 @@ class TestSandboxOperations:
         result = sandbox.read(test_path)
 
         # Should still read successfully (implementation may truncate)
-        assert "Error:" not in result
-        assert "Short line" in result
+        assert result.error is None
+        assert result.file_data is not None
+        content = result.file_data["content"]
+        assert "Short line" in content
 
     def test_read_with_zero_limit(self, sandbox: SandboxBackendProtocol) -> None:
         """Test reading with limit=0 returns nothing."""
@@ -285,7 +301,12 @@ class TestSandboxOperations:
         result = sandbox.read(test_path, offset=0, limit=0)
 
         # Should return empty or no content lines
-        assert "Line 1" not in result or result.strip() == ""
+        if result.error is not None:
+            pass  # An error is acceptable for limit=0
+        else:
+            assert result.file_data is not None
+            content = result.file_data["content"]
+            assert "Line 1" not in content or content.strip() == ""
 
     def test_read_offset_beyond_file_length(
         self, sandbox: SandboxBackendProtocol
@@ -297,11 +318,15 @@ class TestSandboxOperations:
 
         result = sandbox.read(test_path, offset=100, limit=10)
 
-        # Should return empty result (no lines to read)
-        # Check that there's no actual content (only possible header/formatting)
-        assert "Line 1" not in result
-        assert "Line 2" not in result
-        assert "Line 3" not in result
+        # Should return empty result or error (no lines to read)
+        if result.error is not None:
+            pass  # An error is acceptable when offset exceeds file length
+        else:
+            assert result.file_data is not None
+            content = result.file_data["content"]
+            assert "Line 1" not in content
+            assert "Line 2" not in content
+            assert "Line 3" not in content
 
     def test_read_offset_at_exact_file_length(
         self, sandbox: SandboxBackendProtocol
@@ -314,8 +339,13 @@ class TestSandboxOperations:
         result = sandbox.read(test_path, offset=5, limit=10)
 
         # Should return empty (offset=5 means skip first 5 lines)
-        assert "Line 1" not in result
-        assert "Line 5" not in result
+        if result.error is not None:
+            pass  # An error is acceptable when offset is at exact file length
+        else:
+            assert result.file_data is not None
+            content = result.file_data["content"]
+            assert "Line 1" not in content
+            assert "Line 5" not in content
 
     def test_read_very_large_file_in_chunks(
         self, sandbox: SandboxBackendProtocol
@@ -328,20 +358,29 @@ class TestSandboxOperations:
 
         # Read first chunk
         chunk1 = sandbox.read(test_path, offset=0, limit=100)
-        assert "Line_0000_content" in chunk1
-        assert "Line_0099_content" in chunk1
-        assert "Line_0100_content" not in chunk1
+        assert chunk1.error is None
+        assert chunk1.file_data is not None
+        content1 = chunk1.file_data["content"]
+        assert "Line_0000_content" in content1
+        assert "Line_0099_content" in content1
+        assert "Line_0100_content" not in content1
 
         # Read middle chunk
         chunk2 = sandbox.read(test_path, offset=500, limit=100)
-        assert "Line_0500_content" in chunk2
-        assert "Line_0599_content" in chunk2
-        assert "Line_0499_content" not in chunk2
+        assert chunk2.error is None
+        assert chunk2.file_data is not None
+        content2 = chunk2.file_data["content"]
+        assert "Line_0500_content" in content2
+        assert "Line_0599_content" in content2
+        assert "Line_0499_content" not in content2
 
         # Read last chunk
         chunk3 = sandbox.read(test_path, offset=900, limit=100)
-        assert "Line_0900_content" in chunk3
-        assert "Line_0999_content" in chunk3
+        assert chunk3.error is None
+        assert chunk3.file_data is not None
+        content3 = chunk3.file_data["content"]
+        assert "Line_0900_content" in content3
+        assert "Line_0999_content" in content3
 
     # ==================== edit() tests ====================
 
@@ -356,7 +395,10 @@ class TestSandboxOperations:
         assert result.error is None
         assert result.occurrences == 1
         # Verify change
-        file_content = sandbox.read(test_path)
+        read_result = sandbox.read(test_path)
+        assert read_result.error is None
+        assert read_result.file_data is not None
+        file_content = read_result.file_data["content"]
         assert "Farewell world" in file_content
         assert "Goodbye" not in file_content
 
@@ -373,7 +415,10 @@ class TestSandboxOperations:
         assert result.error is not None
         assert "multiple times" in result.error.lower()
         # Verify file unchanged
-        file_content = sandbox.read(test_path)
+        read_result = sandbox.read(test_path)
+        assert read_result.error is None
+        assert read_result.file_data is not None
+        file_content = read_result.file_data["content"]
         assert "apple" in file_content
         assert "pear" not in file_content
 
@@ -390,7 +435,10 @@ class TestSandboxOperations:
         assert result.error is None
         assert result.occurrences == 3
         # Verify all replaced
-        file_content = sandbox.read(test_path)
+        read_result = sandbox.read(test_path)
+        assert read_result.error is None
+        assert read_result.file_data is not None
+        file_content = read_result.file_data["content"]
         assert "apple" not in file_content
         assert file_content.count("pear") == 3
 
@@ -429,7 +477,10 @@ class TestSandboxOperations:
         assert result.error is None
 
         # Verify changes
-        file_content = sandbox.read(test_path)
+        read_result = sandbox.read(test_path)
+        assert read_result.error is None
+        assert read_result.file_data is not None
+        file_content = read_result.file_data["content"]
         assert "$200.00" in file_content
         assert "[0-9]+" in file_content
 
@@ -445,7 +496,10 @@ class TestSandboxOperations:
         assert result.error is None
         assert result.occurrences == 1
         # Verify the replacement worked correctly
-        file_content = sandbox.read(test_path)
+        read_result = sandbox.read(test_path)
+        assert read_result.error is None
+        assert read_result.file_data is not None
+        file_content = read_result.file_data["content"]
         assert "Combined" in file_content
         assert "Line 3" in file_content
         assert "Line 1" not in file_content
@@ -460,7 +514,10 @@ class TestSandboxOperations:
 
         assert result.error is None
         assert result.occurrences == 1
-        file_content = sandbox.read(test_path)
+        read_result = sandbox.read(test_path)
+        assert read_result.error is None
+        assert read_result.file_data is not None
+        file_content = read_result.file_data["content"]
         assert "Keep this" in file_content
         assert "Keep this too" in file_content
         assert "Delete this part" not in file_content
@@ -476,7 +533,10 @@ class TestSandboxOperations:
         # Should succeed with 1 occurrence
         assert result.error is None
         assert result.occurrences == 1
-        file_content = sandbox.read(test_path)
+        read_result = sandbox.read(test_path)
+        assert read_result.error is None
+        assert read_result.file_data is not None
+        file_content = read_result.file_data["content"]
         assert "Same text" in file_content
 
     def test_edit_unicode_content(self, sandbox: SandboxBackendProtocol) -> None:
@@ -489,7 +549,10 @@ class TestSandboxOperations:
 
         assert result.error is None
         assert result.occurrences == 1
-        file_content = sandbox.read(test_path)
+        read_result = sandbox.read(test_path)
+        assert read_result.error is None
+        assert read_result.file_data is not None
+        file_content = read_result.file_data["content"]
         assert "🌍" in file_content
         assert "👋" not in file_content
 
@@ -505,7 +568,10 @@ class TestSandboxOperations:
 
         assert result.error is None
         assert result.occurrences == 1
-        file_content = sandbox.read(test_path)
+        read_result = sandbox.read(test_path)
+        assert read_result.error is None
+        assert read_result.file_data is not None
+        file_content = read_result.file_data["content"]
         assert "Line1 Line2" in file_content
 
     def test_edit_with_very_long_strings(self, sandbox: SandboxBackendProtocol) -> None:
@@ -520,7 +586,10 @@ class TestSandboxOperations:
 
         assert result.error is None
         assert result.occurrences == 1
-        file_content = sandbox.read(test_path)
+        read_result = sandbox.read(test_path)
+        assert read_result.error is None
+        assert read_result.file_data is not None
+        file_content = read_result.file_data["content"]
         assert "y" * 100 in file_content  # Check partial presence
         assert "x" * 100 not in file_content
 
@@ -535,7 +604,10 @@ class TestSandboxOperations:
         result = sandbox.edit(test_path, "Line 2", "Modified Line 2")
 
         assert result.error is None
-        file_content = sandbox.read(test_path)
+        read_result = sandbox.read(test_path)
+        assert read_result.error is None
+        assert read_result.file_data is not None
+        file_content = read_result.file_data["content"]
         assert "Line 1" in file_content
         assert "Modified Line 2" in file_content
         assert "Line 3" in file_content
@@ -550,7 +622,10 @@ class TestSandboxOperations:
 
         assert result.error is None
         assert result.occurrences == 1
-        file_content = sandbox.read(test_path)
+        read_result = sandbox.read(test_path)
+        assert read_result.error is None
+        assert read_result.file_data is not None
+        file_content = read_result.file_data["content"]
         assert "red cat" in file_content
         assert "The quick red cat jumps" in file_content
 
@@ -562,8 +637,9 @@ class TestSandboxOperations:
         sandbox.execute(f"mkdir -p {base_dir}")
         sandbox.write(f"{base_dir}/file.txt", "content")
         result = sandbox.ls_info(base_dir)
-        assert len(result) == 1
-        assert result[0]["path"] == "/tmp/test_sandbox_ops/ls_absolute/file.txt"
+        assert result.entries is not None
+        assert len(result.entries) == 1
+        assert result.entries[0]["path"] == "/tmp/test_sandbox_ops/ls_absolute/file.txt"
 
     def test_ls_info_basic_directory(self, sandbox: SandboxBackendProtocol) -> None:
         """Test listing a directory with files and subdirectories."""
@@ -575,13 +651,14 @@ class TestSandboxOperations:
 
         result = sandbox.ls_info(base_dir)
 
-        assert len(result) == 3
-        paths = [info["path"] for info in result]
+        assert result.entries is not None
+        assert len(result.entries) == 3
+        paths = [info["path"] for info in result.entries]
         assert f"{base_dir}/file1.txt" in paths
         assert f"{base_dir}/file2.txt" in paths
         assert f"{base_dir}/subdir" in paths
         # Check is_dir flag
-        for info in result:
+        for info in result.entries:
             if info["path"] == f"{base_dir}/subdir":
                 assert info["is_dir"] is True
             else:
@@ -594,7 +671,7 @@ class TestSandboxOperations:
 
         result = sandbox.ls_info(empty_dir)
 
-        assert result == []
+        assert result.entries == []
 
     def test_ls_info_nonexistent_directory(
         self, sandbox: SandboxBackendProtocol
@@ -604,7 +681,7 @@ class TestSandboxOperations:
 
         result = sandbox.ls_info(nonexistent_dir)
 
-        assert result == []
+        assert result.entries == []
 
     def test_ls_info_hidden_files(self, sandbox: SandboxBackendProtocol) -> None:
         """Test that ls_info includes hidden files (starting with .)."""
@@ -615,7 +692,8 @@ class TestSandboxOperations:
 
         result = sandbox.ls_info(base_dir)
 
-        paths = [info["path"] for info in result]
+        assert result.entries is not None
+        paths = [info["path"] for info in result.entries]
         assert f"{base_dir}/.hidden" in paths
         assert f"{base_dir}/visible.txt" in paths
 
@@ -630,7 +708,8 @@ class TestSandboxOperations:
 
         result = sandbox.ls_info(base_dir)
 
-        paths = [info["path"] for info in result]
+        assert result.entries is not None
+        paths = [info["path"] for info in result.entries]
         assert f"{base_dir}/file with spaces.txt" in paths
         assert f"{base_dir}/dir with spaces" in paths
 
@@ -643,7 +722,8 @@ class TestSandboxOperations:
 
         result = sandbox.ls_info(base_dir)
 
-        paths = [info["path"] for info in result]
+        assert result.entries is not None
+        paths = [info["path"] for info in result.entries]
         # Should contain the unicode filenames
         assert len(paths) == 2
 
@@ -661,8 +741,9 @@ class TestSandboxOperations:
 
         result = sandbox.ls_info(base_dir)
 
-        assert len(result) == 50
-        paths = [info["path"] for info in result]
+        assert result.entries is not None
+        assert len(result.entries) == 50
+        paths = [info["path"] for info in result.entries]
         assert f"{base_dir}/file_000.txt" in paths
         assert f"{base_dir}/file_049.txt" in paths
 
@@ -678,7 +759,9 @@ class TestSandboxOperations:
         result = sandbox.ls_info(f"{base_dir}/")
 
         # Should work the same as without trailing slash
-        assert len(result) >= 1 or result == []  # Implementation dependent
+        assert (
+            result.entries is not None and len(result.entries) >= 1
+        ) or result.entries == []  # Implementation dependent
 
     def test_ls_info_special_characters_in_filenames(
         self, sandbox: SandboxBackendProtocol
@@ -693,7 +776,8 @@ class TestSandboxOperations:
 
         result = sandbox.ls_info(base_dir)
 
-        paths = [info["path"] for info in result]
+        assert result.entries is not None
+        paths = [info["path"] for info in result.entries]
         assert f"{base_dir}/file(1).txt" in paths
         assert f"{base_dir}/file[2].txt" in paths
         assert f"{base_dir}/file-3.txt" in paths
@@ -709,14 +793,14 @@ class TestSandboxOperations:
 
         result = sandbox.grep_raw("Hello", path=base_dir)
 
-        assert isinstance(result, list)
-        assert len(result) == 2
+        assert result.matches is not None
+        assert len(result.matches) == 2
         # Check that both files matched
-        paths = [match["path"] for match in result]
+        paths = [match["path"] for match in result.matches]
         assert any("file1.txt" in p for p in paths)
         assert any("file2.txt" in p for p in paths)
         # Check line numbers
-        for match in result:
+        for match in result.matches:
             assert match["line"] == 1
             assert "Hello" in match["text"]
 
@@ -730,9 +814,9 @@ class TestSandboxOperations:
 
         result = sandbox.grep_raw("pattern", path=base_dir, glob="*.py")
 
-        assert isinstance(result, list)
-        assert len(result) == 1
-        assert "test.py" in result[0]["path"]
+        assert result.matches is not None
+        assert len(result.matches) == 1
+        assert "test.py" in result.matches[0]["path"]
 
     def test_grep_no_matches(self, sandbox: SandboxBackendProtocol) -> None:
         """Test grep when no matches are found."""
@@ -742,8 +826,8 @@ class TestSandboxOperations:
 
         result = sandbox.grep_raw("nonexistent", path=base_dir)
 
-        assert isinstance(result, list)
-        assert len(result) == 0
+        assert result.matches is not None
+        assert len(result.matches) == 0
 
     def test_grep_multiple_matches_per_file(
         self, sandbox: SandboxBackendProtocol
@@ -756,10 +840,10 @@ class TestSandboxOperations:
 
         result = sandbox.grep_raw("apple", path=base_dir)
 
-        assert isinstance(result, list)
-        assert len(result) == 3
+        assert result.matches is not None
+        assert len(result.matches) == 3
         # Check line numbers
-        line_numbers = [match["line"] for match in result]
+        line_numbers = [match["line"] for match in result.matches]
         assert line_numbers == [1, 3, 5]
 
     def test_grep_literal_string_matching(
@@ -773,9 +857,9 @@ class TestSandboxOperations:
         # Pattern is treated as literal string, not regex
         result = sandbox.grep_raw("test123", path=base_dir)
 
-        assert isinstance(result, list)
-        assert len(result) == 1
-        assert "test123" in result[0]["text"]
+        assert result.matches is not None
+        assert len(result.matches) == 1
+        assert "test123" in result.matches[0]["text"]
 
     def test_grep_unicode_pattern(self, sandbox: SandboxBackendProtocol) -> None:
         """Test grep with unicode pattern and content."""
@@ -785,9 +869,9 @@ class TestSandboxOperations:
 
         result = sandbox.grep_raw("世界", path=base_dir)
 
-        assert isinstance(result, list)
-        assert len(result) == 1
-        assert "世界" in result[0]["text"]
+        assert result.matches is not None
+        assert len(result.matches) == 1
+        assert "世界" in result.matches[0]["text"]
 
     def test_grep_case_sensitivity(self, sandbox: SandboxBackendProtocol) -> None:
         """Test that grep is case-sensitive by default."""
@@ -797,10 +881,10 @@ class TestSandboxOperations:
 
         result = sandbox.grep_raw("Hello", path=base_dir)
 
-        assert isinstance(result, list)
+        assert result.matches is not None
         # Should only match "Hello", not "hello" or "HELLO"
-        assert len(result) == 1
-        assert "Hello" in result[0]["text"]
+        assert len(result.matches) == 1
+        assert "Hello" in result.matches[0]["text"]
 
     def test_grep_with_special_characters(
         self, sandbox: SandboxBackendProtocol
@@ -814,15 +898,15 @@ class TestSandboxOperations:
 
         # Test with dollar sign (treated as literal)
         result = sandbox.grep_raw("$100", path=base_dir)
-        assert isinstance(result, list)
-        assert len(result) == 1
-        assert "$100" in result[0]["text"]
+        assert result.matches is not None
+        assert len(result.matches) == 1
+        assert "$100" in result.matches[0]["text"]
 
         # Test with brackets (treated as literal)
         result = sandbox.grep_raw("[a-z]*", path=base_dir)
-        assert isinstance(result, list)
-        assert len(result) == 1
-        assert "[a-z]*" in result[0]["text"]
+        assert result.matches is not None
+        assert len(result.matches) == 1
+        assert "[a-z]*" in result.matches[0]["text"]
 
     def test_grep_empty_directory(self, sandbox: SandboxBackendProtocol) -> None:
         """Test grep in a directory with no files."""
@@ -831,8 +915,8 @@ class TestSandboxOperations:
 
         result = sandbox.grep_raw("anything", path=base_dir)
 
-        assert isinstance(result, list)
-        assert len(result) == 0
+        assert result.matches is not None
+        assert len(result.matches) == 0
 
     def test_grep_across_nested_directories(
         self, sandbox: SandboxBackendProtocol
@@ -846,8 +930,8 @@ class TestSandboxOperations:
 
         result = sandbox.grep_raw("target", path=base_dir)
 
-        assert isinstance(result, list)
-        assert len(result) == 3
+        assert result.matches is not None
+        assert len(result.matches) == 3
         # Should find matches in all nested levels
 
     def test_grep_with_multiline_matches(self, sandbox: SandboxBackendProtocol) -> None:
@@ -859,9 +943,9 @@ class TestSandboxOperations:
 
         result = sandbox.grep_raw("Line 50", path=base_dir)
 
-        assert isinstance(result, list)
-        assert len(result) == 1
-        assert result[0]["line"] == 50
+        assert result.matches is not None
+        assert len(result.matches) == 1
+        assert result.matches[0]["line"] == 50
 
     # ==================== glob_info() tests ====================
 
@@ -875,8 +959,9 @@ class TestSandboxOperations:
 
         result = sandbox.glob_info("*.txt", path=base_dir)
 
-        assert len(result) == 2
-        paths = [info["path"] for info in result]
+        assert result.matches is not None
+        assert len(result.matches) == 2
+        paths = [info["path"] for info in result.matches]
         assert "file1.txt" in paths
         assert "file2.txt" in paths
         assert not any(".py" in p for p in paths)
@@ -891,8 +976,9 @@ class TestSandboxOperations:
 
         result = sandbox.glob_info("**/*.txt", path=base_dir)
 
-        assert len(result) >= 2  # At least the nested files
-        paths = [info["path"] for info in result]
+        assert result.matches is not None
+        assert len(result.matches) >= 2  # At least the nested files
+        paths = [info["path"] for info in result.matches]
         assert any("nested1.txt" in p for p in paths)
         assert any("nested2.txt" in p for p in paths)
 
@@ -904,7 +990,8 @@ class TestSandboxOperations:
 
         result = sandbox.glob_info("*.py", path=base_dir)
 
-        assert result == []
+        assert result.matches is not None
+        assert result.matches == []
 
     def test_glob_with_directories(self, sandbox: SandboxBackendProtocol) -> None:
         """Test that glob includes directories in results."""
@@ -914,10 +1001,11 @@ class TestSandboxOperations:
 
         result = sandbox.glob_info("*", path=base_dir)
 
-        assert len(result) == 3
+        assert result.matches is not None
+        assert len(result.matches) == 3
         # Check is_dir flags
-        dir_count = sum(1 for info in result if info["is_dir"])
-        file_count = sum(1 for info in result if not info["is_dir"])
+        dir_count = sum(1 for info in result.matches if info["is_dir"])
+        file_count = sum(1 for info in result.matches if not info["is_dir"])
         assert dir_count == 2
         assert file_count == 1
 
@@ -931,8 +1019,9 @@ class TestSandboxOperations:
 
         result = sandbox.glob_info("*.py", path=base_dir)
 
-        assert len(result) == 1
-        assert "test.py" in result[0]["path"]
+        assert result.matches is not None
+        assert len(result.matches) == 1
+        assert "test.py" in result.matches[0]["path"]
 
     def test_glob_hidden_files_explicitly(
         self, sandbox: SandboxBackendProtocol
@@ -947,7 +1036,8 @@ class TestSandboxOperations:
         result = sandbox.glob_info(".*", path=base_dir)
 
         # Should only match hidden files
-        paths = [info["path"] for info in result]
+        assert result.matches is not None
+        paths = [info["path"] for info in result.matches]
         assert ".hidden1" in paths or ".hidden2" in paths
         # Should not match visible.txt
         assert not any("visible" in p for p in paths)
@@ -963,8 +1053,9 @@ class TestSandboxOperations:
 
         result = sandbox.glob_info("file[1-2].txt", path=base_dir)
 
-        assert len(result) == 2
-        paths = [info["path"] for info in result]
+        assert result.matches is not None
+        assert len(result.matches) == 2
+        paths = [info["path"] for info in result.matches]
         assert "file1.txt" in paths
         assert "file2.txt" in paths
         assert "file3.txt" not in paths
@@ -981,8 +1072,9 @@ class TestSandboxOperations:
         result = sandbox.glob_info("file?.txt", path=base_dir)
 
         # Should match file1.txt and file2.txt, but not file10.txt
-        assert len(result) == 2
-        paths = [info["path"] for info in result]
+        assert result.matches is not None
+        assert len(result.matches) == 2
+        paths = [info["path"] for info in result.matches]
         assert "file10.txt" not in paths
 
     def test_glob_multiple_extensions(self, sandbox: SandboxBackendProtocol) -> None:
@@ -998,8 +1090,10 @@ class TestSandboxOperations:
         result_txt = sandbox.glob_info("*.txt", path=base_dir)
         result_py = sandbox.glob_info("*.py", path=base_dir)
 
-        assert len(result_txt) == 1
-        assert len(result_py) == 1
+        assert result_txt.matches is not None
+        assert result_py.matches is not None
+        assert len(result_txt.matches) == 1
+        assert len(result_py.matches) == 1
 
     def test_glob_deeply_nested_pattern(self, sandbox: SandboxBackendProtocol) -> None:
         """Test glob with deeply nested directory structure."""
@@ -1010,7 +1104,8 @@ class TestSandboxOperations:
 
         result = sandbox.glob_info("**/deep.txt", path=base_dir)
 
-        assert len(result) >= 1
+        assert result.matches is not None
+        assert len(result.matches) >= 1
         # Should find the deeply nested file
 
     def test_glob_with_no_path_argument(self, sandbox: SandboxBackendProtocol) -> None:
@@ -1023,7 +1118,7 @@ class TestSandboxOperations:
         result = sandbox.glob_info("*.txt", path=base_dir)
 
         # Should work with explicit path
-        assert isinstance(result, list)
+        assert result.matches is not None
 
     # ==================== Integration tests ====================
 
@@ -1036,7 +1131,10 @@ class TestSandboxOperations:
         assert write_result.error is None
 
         # Read it back
-        content = sandbox.read(test_path)
+        read_result = sandbox.read(test_path)
+        assert read_result.error is None
+        assert read_result.file_data is not None
+        content = read_result.file_data["content"]
         assert "Original content" in content
 
         # Edit it
@@ -1044,7 +1142,10 @@ class TestSandboxOperations:
         assert edit_result.error is None
 
         # Read again to verify
-        updated_content = sandbox.read(test_path)
+        updated_read = sandbox.read(test_path)
+        assert updated_read.error is None
+        assert updated_read.file_data is not None
+        updated_content = updated_read.file_data["content"]
         assert "Modified content" in updated_content
         assert "Original" not in updated_content
 
@@ -1062,15 +1163,18 @@ class TestSandboxOperations:
 
         # List root directory
         ls_result = sandbox.ls_info(base_dir)
-        paths = [info["path"] for info in ls_result]
+        assert ls_result.entries is not None
+        paths = [info["path"] for info in ls_result.entries]
         assert f"{base_dir}/root.txt" in paths
         assert f"{base_dir}/subdir1" in paths
         assert f"{base_dir}/subdir2" in paths
 
         # Glob for txt files
         glob_result = sandbox.glob_info("**/*.txt", path=base_dir)
-        assert len(glob_result) == 3
+        assert glob_result.matches is not None
+        assert len(glob_result.matches) == 3
 
         # Grep for a pattern
         grep_result = sandbox.grep_raw("file", path=base_dir)
-        assert len(grep_result) >= 3  # At least 3 matches
+        assert grep_result.matches is not None
+        assert len(grep_result.matches) >= 3  # At least 3 matches

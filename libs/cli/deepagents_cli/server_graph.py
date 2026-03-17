@@ -103,7 +103,7 @@ def make_graph() -> Any:  # noqa: ANN401
     config = ServerConfig.from_env()
     project_context = get_server_project_context()
 
-    from deepagents_cli.agent import create_cli_agent
+    from deepagents_cli.agent import create_cli_agent, load_async_subagents
     from deepagents_cli.config import create_model, settings
 
     if project_context is not None:
@@ -160,6 +160,8 @@ def make_graph() -> Any:  # noqa: ANN401
             )
             sys.exit(1)
 
+    async_subagents = load_async_subagents() or None
+
     agent, _ = create_cli_agent(
         model=result.model,
         assistant_id=config.assistant_id,
@@ -175,6 +177,7 @@ def make_graph() -> Any:  # noqa: ANN401
         mcp_server_info=mcp_server_info,
         cwd=project_context.user_cwd if project_context is not None else config.cwd,
         project_context=project_context,
+        async_subagents=async_subagents,
     )
     return agent
 

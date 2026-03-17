@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 class HistoryManager:
@@ -50,6 +53,11 @@ class HistoryManager:
                     entries.append(entry if isinstance(entry, str) else str(entry))
                 self._entries = entries[-self.max_entries :]
         except (OSError, UnicodeDecodeError):
+            logger.warning(
+                "Failed to load history from %s; starting with empty history",
+                self.history_file,
+                exc_info=True,
+            )
             self._entries = []
 
     def _append_to_file(self, text: str) -> None:
@@ -59,7 +67,11 @@ class HistoryManager:
             with self.history_file.open("a", encoding="utf-8") as f:
                 f.write(json.dumps(text) + "\n")
         except OSError:
-            pass
+            logger.warning(
+                "Failed to append history entry to %s",
+                self.history_file,
+                exc_info=True,
+            )
 
     def _compact_history(self) -> None:
         """Rewrite history file to remove old entries.
@@ -72,7 +84,11 @@ class HistoryManager:
                 for entry in self._entries:
                     f.write(json.dumps(entry) + "\n")
         except OSError:
-            pass
+            logger.warning(
+                "Failed to compact history file %s",
+                self.history_file,
+                exc_info=True,
+            )
 
     def add(self, text: str) -> None:
         """Add a command to history.

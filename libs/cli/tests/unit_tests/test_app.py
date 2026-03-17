@@ -1238,6 +1238,7 @@ class TestRunAgentTaskMediaTracker:
             mock_execute.assert_awaited_once()
             assert mock_execute.await_args is not None
             assert mock_execute.await_args.kwargs["image_tracker"] is app._image_tracker
+            assert mock_execute.await_args.kwargs["sandbox_type"] is app._sandbox_type
 
     async def test_run_agent_task_finalizes_pending_tools_on_error(self) -> None:
         """Unexpected agent errors should stop/clear in-flight tool widgets."""

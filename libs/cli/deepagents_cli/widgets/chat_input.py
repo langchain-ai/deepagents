@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from pathlib import Path
@@ -280,12 +281,11 @@ class ChatTextArea(TextArea):
         Binding("cmd+shift+z,super+shift+z", "redo", "Redo", show=False, priority=True),
     ]
 
-    _navigating_history: bool
-    """Transient guard set `True` only while `ChatInput` replaces text with a
-    history entry.
-
-    Prevents `watch_text` from treating the programmatic replacement as user
-    typing (which would trigger autocomplete, etc.).
+    _skip_history_change_events: int
+    """Counter incremented before a history-driven text replacement so the
+    resulting `TextArea.Changed` event (which fires on the next message-loop
+    iteration) can be suppressed.  `ChatInput.on_text_area_changed` decrements
+    the counter.
     """
 
     _in_history: bool
@@ -337,7 +337,7 @@ class ChatTextArea(TextArea):
         # Remove placeholder if passed, TextArea doesn't support it the same way
         kwargs.pop("placeholder", None)
         super().__init__(**kwargs)
-        self._navigating_history = False
+        self._skip_history_change_events = 0
         self._in_history = False
         self._completion_active = False
         self._app_has_focus = True
@@ -422,7 +422,7 @@ class ChatTextArea(TextArea):
         row, col = self.cursor_location
         return row == 0 and col == 0
 
-    def _flush_paste_burst(self) -> None:
+    async def _flush_paste_burst(self) -> None:
         """Flush buffered burst text through dropped-path parsing.
 
         When parsing fails, the buffered text is inserted unchanged so regular
@@ -437,7 +437,10 @@ class ChatTextArea(TextArea):
 
         from deepagents_cli.input import parse_pasted_path_payload
 
-        parsed = parse_pasted_path_payload(payload)
+        try:
+            parsed = await asyncio.to_thread(parse_pasted_path_payload, payload)
+        except Exception:  # noqa: BLE001  # Treat thread failure as non-path text
+            parsed = None
         if parsed is not None:
             self.post_message(self.PastedPaths(payload, parsed.paths))
             return
@@ -513,7 +516,7 @@ class ChatTextArea(TextArea):
                     event.stop()
                     return
 
-            self._flush_paste_burst()
+            await self._flush_paste_burst()
 
         if (
             event.is_printable
@@ -596,7 +599,6 @@ class ChatTextArea(TextArea):
             if navigate:
                 event.prevent_default()
                 event.stop()
-                self._navigating_history = True
                 if event.key == "up":
                     self.post_message(self.HistoryPrevious(self.text))
                 else:
@@ -666,11 +668,14 @@ class ChatTextArea(TextArea):
         """Handle paste events and detect dragged file paths."""
         self._backslash_pending_time = None
         if self._paste_burst_buffer:
-            self._flush_paste_burst()
+            await self._flush_paste_burst()
 
         from deepagents_cli.input import parse_pasted_path_payload
 
-        parsed = parse_pasted_path_payload(event.text)
+        try:
+            parsed = await asyncio.to_thread(parse_pasted_path_payload, event.text)
+        except Exception:  # noqa: BLE001  # Treat thread failure as non-path text
+            parsed = None
         if parsed is None:
             # Don't call super() here — Textual's MRO dispatch already calls
             # TextArea._on_paste after this handler returns. Calling super()
@@ -687,18 +692,21 @@ class ChatTextArea(TextArea):
         self._paste_burst_last_char_time = None
         self._cancel_paste_burst_timer()
         self._backslash_pending_time = None
-        self._navigating_history = True
+        self._skip_history_change_events += 1
         self.text = text
         # Move cursor to end
         lines = text.split("\n")
         last_row = len(lines) - 1
         last_col = len(lines[last_row])
         self.move_cursor((last_row, last_col))
-        self._navigating_history = False
 
     def clear_text(self) -> None:
         """Clear the text area."""
         self._in_history = False
+        # Increment (not reset) so any pending Changed event from a prior
+        # set_text_from_history is still suppressed, plus one for the
+        # self.text = "" assignment below.
+        self._skip_history_change_events += 1
         self._paste_burst_buffer = ""
         self._paste_burst_last_char_time = None
         self._cancel_paste_burst_timer()
@@ -903,13 +911,21 @@ class ChatInput(Vertical):
         # Both controllers implement the CompletionController protocol but have
         # different concrete types; the list-item warning is a false positive.
         self._completion_view = _CompletionViewAdapter(self)
+        self._file_controller = FuzzyFileController(
+            self._completion_view, cwd=self._cwd
+        )
         self._completion_manager = MultiCompletionManager(
             [
                 SlashCommandController(SLASH_COMMANDS, self._completion_view),
-                FuzzyFileController(self._completion_view, cwd=self._cwd),
+                self._file_controller,
             ]  # type: ignore[list-item]  # Controller types are compatible at runtime
         )
 
+        self.run_worker(
+            self._file_controller.warm_cache(),
+            exclusive=False,
+            exit_on_error=False,
+        )
         self._text_area.focus()
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
@@ -919,11 +935,18 @@ class ChatInput(Vertical):
 
         # History handlers explicitly decide mode and stripped display text.
         # Skip mode detection here so recalled entries don't inherit stale mode.
-        if self._text_area and self._text_area._navigating_history:
+        if self._text_area and self._text_area._skip_history_change_events > 0:
+            self._text_area._skip_history_change_events -= 1
             if self._completion_manager:
                 self._completion_manager.reset()
             self.scroll_visible()
             return
+        if self._text_area and self._text_area._skip_history_change_events < 0:
+            logger.warning(
+                "_skip_history_change_events is negative (%d); resetting to 0",
+                self._text_area._skip_history_change_events,
+            )
+            self._text_area._skip_history_change_events = 0
 
         if self._applying_inline_path_replacement:
             self._applying_inline_path_replacement = False
@@ -1216,8 +1239,8 @@ class ChatInput(Vertical):
             mode, display_text = self._history_entry_mode_and_text(entry)
             self.mode = mode
             self._text_area.set_text_from_history(display_text)
-        elif self._text_area:
-            self._text_area._navigating_history = False
+        # No-match path: don't reset the counter — a pending Changed event
+        # from a prior set_text_from_history call may still be in flight.
         # Keep text area's _in_history in sync with the history manager.
         if self._text_area:
             self._text_area._in_history = self._history.in_history
@@ -1232,8 +1255,8 @@ class ChatInput(Vertical):
             mode, display_text = self._history_entry_mode_and_text(entry)
             self.mode = mode
             self._text_area.set_text_from_history(display_text)
-        elif self._text_area:
-            self._text_area._navigating_history = False
+        # No-match path: don't reset the counter — a pending Changed event
+        # from a prior set_text_from_history call may still be in flight.
         # Keep text area's _in_history in sync with the history manager.
         # When the user presses Down past the newest entry, get_next()
         # resets navigation internally, so in_history becomes False.

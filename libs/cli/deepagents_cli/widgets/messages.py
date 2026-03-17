@@ -556,14 +556,20 @@ class ToolCallMessage(Vertical):
                 self._output = output
                 if self._status_widget:
                     self._status_widget.add_class("error")
-                    self._status_widget.update(Content.styled("✗ Error", "red"))
+                    error_icon = get_glyphs().error
+                    self._status_widget.update(
+                        Content.styled(f"{error_icon} Error", "red")
+                    )
                     self._status_widget.display = True
                 self._update_output_display()
             case "rejected":
                 self._status = "rejected"
                 if self._status_widget:
                     self._status_widget.add_class("rejected")
-                    self._status_widget.update(Content.styled("✗ Rejected", "yellow"))
+                    error_icon = get_glyphs().error
+                    self._status_widget.update(
+                        Content.styled(f"{error_icon} Rejected", "yellow")
+                    )
                     self._status_widget.display = True
             case "skipped":
                 self._status = "skipped"
@@ -577,7 +583,10 @@ class ToolCallMessage(Vertical):
                 self._status = "running"
                 if self._status_widget:
                     self._status_widget.add_class("pending")
-                    self._status_widget.update(Content.styled("⠿ Running...", "yellow"))
+                    frame = get_glyphs().spinner_frames[0]
+                    self._status_widget.update(
+                        Content.styled(f"{frame} Running...", "yellow")
+                    )
                     self._status_widget.display = True
             case _:
                 # pending or unknown - leave as default

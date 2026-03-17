@@ -264,17 +264,21 @@ def _get_git_branch() -> str | None:
 def _build_stream_config(
     thread_id: str,
     assistant_id: str | None,
+    *,
+    sandbox_type: str | None = None,
 ) -> dict[str, Any]:
     """Build the LangGraph stream config dict.
 
     The `thread_id` in `configurable` is automatically propagated as run
     metadata by LangGraph, so it can be used for LangSmith filtering without
-    a separate metadata key. Includes the current working directory (`cwd`)
-    and git branch in metadata when available.
+    a separate metadata key. Includes the current working directory (`cwd`),
+    git branch, and sandbox type in metadata when available.
 
     Args:
         thread_id: The CLI session thread identifier.
         assistant_id: The agent/assistant identifier, if any.
+        sandbox_type: Sandbox provider name for trace metadata, or `None`
+            if no sandbox is active.
 
     Returns:
         Config dict with `configurable` and `metadata` keys.
@@ -296,6 +300,8 @@ def _build_stream_config(
     branch = _get_git_branch()
     if branch:
         metadata["git_branch"] = branch
+    if sandbox_type and sandbox_type != "none":
+        metadata["sandbox_type"] = sandbox_type
     return {
         "configurable": {"thread_id": thread_id},
         "metadata": metadata,
@@ -476,6 +482,29 @@ def _build_interrupted_ai_message(
     )
 
 
+def _read_mentioned_file(file_path: Path, max_embed_bytes: int) -> str:
+    """Read a mentioned file for inline embedding (sync, for use with to_thread).
+
+    Args:
+        file_path: Resolved path to the file.
+        max_embed_bytes: Size threshold; larger files get a reference only.
+
+    Returns:
+        Markdown snippet with the file content or a size-exceeded reference.
+    """
+    file_size = file_path.stat().st_size
+    if file_size > max_embed_bytes:
+        size_kb = file_size // 1024
+        return (
+            f"\n### {file_path.name}\n"
+            f"Path: `{file_path}`\n"
+            f"Size: {size_kb}KB (too large to embed, "
+            "use read_file tool to view)"
+        )
+    content = file_path.read_text(encoding="utf-8")
+    return f"\n### {file_path.name}\nPath: `{file_path}`\n```\n{content}\n```"
+
+
 async def execute_task_textual(
     user_input: str,
     agent: Any,  # noqa: ANN401  # Dynamic agent graph type
@@ -485,6 +514,8 @@ async def execute_task_textual(
     backend: Any = None,  # noqa: ANN401  # Dynamic backend type
     image_tracker: MediaTracker | None = None,
     context: CLIContext | None = None,
+    *,
+    sandbox_type: str | None = None,
 ) -> SessionStats:
     """Execute a task with output directed to Textual UI.
 
@@ -501,6 +532,8 @@ async def execute_task_textual(
         image_tracker: Optional tracker for images
         context: Optional `CLIContext` with model override and params, passed
             to the graph via `context=`.
+        sandbox_type: Sandbox provider name for trace metadata, or `None`
+            if no sandbox is active.
 
     Returns:
         Stats accumulated over this turn (request count, token counts,
@@ -509,8 +542,10 @@ async def execute_task_textual(
     Raises:
         ValidationError: If HITL request validation fails (re-raised).
     """
-    # Parse file mentions and inject content if any
-    prompt_text, mentioned_files = parse_file_mentions(user_input)
+    # Parse file mentions and inject content if any — offload blocking I/O
+    prompt_text, mentioned_files = await asyncio.to_thread(
+        parse_file_mentions, user_input
+    )
 
     # Max file size to embed inline (256KB, matching mistral-vibe)
     # Larger files get a reference instead - use read_file tool to view them
@@ -520,22 +555,10 @@ async def execute_task_textual(
         context_parts = [prompt_text, "\n\n## Referenced Files\n"]
         for file_path in mentioned_files:
             try:
-                file_size = file_path.stat().st_size
-                if file_size > max_embed_bytes:
-                    # File too large - include reference instead of content
-                    size_kb = file_size // 1024
-                    context_parts.append(
-                        f"\n### {file_path.name}\n"
-                        f"Path: `{file_path}`\n"
-                        f"Size: {size_kb}KB (too large to embed, "
-                        "use read_file tool to view)"
-                    )
-                else:
-                    content = file_path.read_text()
-                    context_parts.append(
-                        f"\n### {file_path.name}\n"
-                        f"Path: `{file_path}`\n```\n{content}\n```"
-                    )
+                part = await asyncio.to_thread(
+                    _read_mentioned_file, file_path, max_embed_bytes
+                )
+                context_parts.append(part)
             except Exception as e:  # noqa: BLE001  # Resilient adapter error handling
                 context_parts.append(
                     f"\n### {file_path.name}\n[Error reading file: {e}]"
@@ -558,7 +581,7 @@ async def execute_task_textual(
         message_content = final_input
 
     thread_id = session_state.thread_id
-    config = _build_stream_config(thread_id, assistant_id)
+    config = _build_stream_config(thread_id, assistant_id, sandbox_type=sandbox_type)
 
     await dispatch_hook("session.start", {"thread_id": thread_id})
 

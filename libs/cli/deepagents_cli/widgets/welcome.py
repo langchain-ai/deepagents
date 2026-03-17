@@ -33,6 +33,7 @@ _TIPS: list[str] = [
     "Use /mcp to see your loaded tools and servers",
     "Use /remember to save learnings from this conversation",
     "Use /model to switch models mid-conversation",
+    "Press ctrl+x to compose prompts in your external editor",
 ]
 """Rotating tips shown in the welcome footer.
 

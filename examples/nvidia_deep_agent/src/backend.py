@@ -41,13 +41,17 @@ def _collect_uploads() -> list[tuple[str, bytes]]:
     if agents_md.exists():
         files.append(("/memory/AGENTS.md", agents_md.read_bytes()))
 
-    # Skills: skills/**/* → /skills/**/*
+    # Skills: skills/<name>/SKILL.md → /skills/<name>/SKILL.md
     skills_dir = _EXAMPLE_DIR / "skills"
     if skills_dir.is_dir():
-        for path in sorted(skills_dir.rglob("*")):
-            if path.is_file():
-                rel = path.relative_to(skills_dir)
-                files.append((f"/skills/{rel}", path.read_bytes()))
+        for skill_dir in sorted(skills_dir.iterdir()):
+            if not skill_dir.is_dir():
+                continue
+            skill_md = skill_dir / "SKILL.md"
+            if skill_md.exists():
+                files.append(
+                    (f"/skills/{skill_dir.name}/SKILL.md", skill_md.read_bytes())
+                )
 
     return files
 
@@ -66,6 +70,7 @@ def create_backend(runtime):
     use_gpu = sandbox_type == "gpu"
     sandbox_name = f"{MODAL_SANDBOX_NAME}-{sandbox_type}"
 
+    created = False
     try:
         sandbox = modal.Sandbox.from_name(MODAL_SANDBOX_NAME, sandbox_name)
     except modal.exception.NotFoundError:
@@ -82,14 +87,16 @@ def create_backend(runtime):
         else:
             create_kwargs["image"] = cpu_image
         sandbox = modal.Sandbox.create(**create_kwargs)
+        created = True
 
     backend = ModalSandbox(sandbox=sandbox)
 
-    # Upload local memory and skills into the sandbox
-    files = _collect_uploads()
-    if files:
-        dirs = sorted({str(Path(p).parent) for p, _ in files})
-        backend.execute(f"mkdir -p {' '.join(dirs)}")
-        backend.upload_files(files)
+    # Only seed a freshly created sandbox; an existing one already has the files
+    if created:
+        files = _collect_uploads()
+        if files:
+            dirs = sorted({str(Path(p).parent) for p, _ in files})
+            backend.execute(f"mkdir -p {' '.join(dirs)}")
+            backend.upload_files(files)
 
     return backend

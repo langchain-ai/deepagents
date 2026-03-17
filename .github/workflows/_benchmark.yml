@@ -3,7 +3,7 @@
 # Runs pytest-benchmark tests under CodSpeed instrumentation so that
 # regressions are tracked across commits on the CodSpeed dashboard.
 #
-# Requires the CODSPEED_TOKEN repository secret.
+# Authenticates via OpenID Connect (OIDC) — no repository secret required.
 
 name: "Benchmark"
 
@@ -31,6 +31,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      id-token: write
     defaults:
       run:
         working-directory: ${{ inputs.working-directory }}
@@ -51,7 +52,6 @@ jobs:
       - name: "Run benchmarks"
         uses: CodSpeedHQ/action@v4
         with:
-          token: ${{ secrets.CODSPEED_TOKEN }}
           working-directory: ${{ inputs.working-directory }}
           run: uv run --no-sync pytest ./tests -m benchmark --codspeed
           mode: walltime

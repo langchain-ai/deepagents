@@ -1621,10 +1621,15 @@ class TestCreateModelViaInitImportError:
     @patch("langchain.chat_models.init_chat_model")
     def test_missing_package_error(self, mock_init: Mock) -> None:
         """Shows install hint when provider package is not installed."""
-        mock_init.side_effect = ImportError("No module named 'langchain_nvidia_ai_endpoints'")
+        mock_init.side_effect = ImportError(
+            "No module named 'langchain_nvidia_ai_endpoints'"
+        )
         with (
             patch("importlib.util.find_spec", return_value=None),
-            pytest.raises(ModelConfigError, match="Missing package for provider 'nvidia'"),
+            pytest.raises(
+                ModelConfigError,
+                match="Missing package for provider 'nvidia'",
+            ),
         ):
             _create_model_via_init("nemotron", "nvidia", {})
 
@@ -1643,7 +1648,9 @@ class TestCreateModelViaInitImportError:
             _create_model_via_init("nemotron", "nvidia", {})
 
     @patch("langchain.chat_models.init_chat_model")
-    def test_installed_but_broken_includes_original_error(self, mock_init: Mock) -> None:
+    def test_installed_but_broken_includes_original_error(
+        self, mock_init: Mock
+    ) -> None:
         """Original ImportError message is included when package is installed."""
         mock_init.side_effect = ImportError("some transitive dep missing")
         mock_spec = Mock()

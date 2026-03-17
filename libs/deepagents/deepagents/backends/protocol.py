@@ -357,8 +357,24 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         path: str | None = None,
         glob: str | None = None,
     ) -> "GrepResult":
-        """Async version of grep_raw."""
-        return await asyncio.to_thread(self.grep_raw, pattern, path, glob)
+        """Async version of grep_raw.
+
+        Wraps the sync call with a 60s async timeout as a safety net. The sync
+        `grep_raw` implementations have their own internal timeouts (typically
+        30s), but this ensures the async caller is never blocked indefinitely
+        if the underlying thread hangs.
+        """
+        _async_timeout = 60
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(self.grep_raw, pattern, path, glob),
+                timeout=_async_timeout,
+            )
+        except TimeoutError:
+            logger.warning("agrep_raw timed out after %ds", _async_timeout)
+            return GrepResult(
+                error=f"Error: grep timed out after {_async_timeout}s. Try a more specific pattern or a narrower path.",
+            )
 
     def glob_info(self, pattern: str, path: str = "/") -> "GlobResult":
         """Find files matching a glob pattern.

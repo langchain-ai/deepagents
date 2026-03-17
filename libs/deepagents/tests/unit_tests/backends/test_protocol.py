@@ -32,27 +32,27 @@ class TestBackendProtocolRaisesNotImplemented:
 
     def test_ls_info(self, backend: BareBackend) -> None:
         with pytest.raises(NotImplementedError):
-            backend.ls_info("/")
+            backend.ls_info("/", timeout=1)
 
     def test_read(self, backend: BareBackend) -> None:
         with pytest.raises(NotImplementedError):
-            backend.read("/file.txt")
+            backend.read("/file.txt", timeout=1)
 
     def test_grep_raw(self, backend: BareBackend) -> None:
         with pytest.raises(NotImplementedError):
-            backend.grep_raw("pattern")
+            backend.grep_raw("pattern", timeout=1)
 
     def test_glob_info(self, backend: BareBackend) -> None:
         with pytest.raises(NotImplementedError):
-            backend.glob_info("*.py")
+            backend.glob_info("*.py", timeout=1)
 
     def test_write(self, backend: BareBackend) -> None:
         with pytest.raises(NotImplementedError):
-            backend.write("/file.txt", "content")
+            backend.write("/file.txt", "content", timeout=1)
 
     def test_edit(self, backend: BareBackend) -> None:
         with pytest.raises(NotImplementedError):
-            backend.edit("/file.txt", "old", "new")
+            backend.edit("/file.txt", "old", "new", timeout=1)
 
     def test_upload_files(self, backend: BareBackend) -> None:
         with pytest.raises(NotImplementedError):
@@ -76,27 +76,27 @@ class TestAsyncMethodsPropagateNotImplemented:
 
     async def test_als_info(self, backend: BareBackend) -> None:
         with pytest.raises(NotImplementedError):
-            await backend.als_info("/")
+            await backend.als_info("/", timeout=1)
 
     async def test_aread(self, backend: BareBackend) -> None:
         with pytest.raises(NotImplementedError):
-            await backend.aread("/file.txt")
+            await backend.aread("/file.txt", timeout=1)
 
     async def test_agrep_raw(self, backend: BareBackend) -> None:
         with pytest.raises(NotImplementedError):
-            await backend.agrep_raw("pattern")
+            await backend.agrep_raw("pattern", timeout=1)
 
     async def test_aglob_info(self, backend: BareBackend) -> None:
         with pytest.raises(NotImplementedError):
-            await backend.aglob_info("*.py")
+            await backend.aglob_info("*.py", timeout=1)
 
     async def test_awrite(self, backend: BareBackend) -> None:
         with pytest.raises(NotImplementedError):
-            await backend.awrite("/file.txt", "content")
+            await backend.awrite("/file.txt", "content", timeout=1)
 
     async def test_aedit(self, backend: BareBackend) -> None:
         with pytest.raises(NotImplementedError):
-            await backend.aedit("/file.txt", "old", "new")
+            await backend.aedit("/file.txt", "old", "new", timeout=1)
 
     async def test_aupload_files(self, backend: BareBackend) -> None:
         with pytest.raises(NotImplementedError):

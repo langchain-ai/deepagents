@@ -9,12 +9,18 @@ from langgraph.store.memory import InMemoryStore
 from deepagents.backends.composite import CompositeBackend
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.protocol import (
+    EditResult,
     ExecuteResponse,
+    GlobResult,
+    GrepResult,
+    LsResult,
+    ReadResult,
     SandboxBackendProtocol,
     WriteResult,
 )
 from deepagents.backends.state import StateBackend
 from deepagents.backends.store import StoreBackend
+from deepagents.backends.utils import create_file_data
 
 
 def make_runtime(tid: str = "tc"):
@@ -142,6 +148,74 @@ async def test_composite_backend_filesystem_plus_store_async(tmp_path: Path):
     # aglob_info
     gl = (await comp.aglob_info("*.md", path="/")).matches
     assert any(i["path"] == "/memories/notes.md" for i in gl)
+
+
+async def test_composite_backend_forwards_filesystem_timeouts_async() -> None:
+    """CompositeBackend async filesystem methods should forward timeouts."""
+    rt = make_runtime("t_timeout_fs_async")
+
+    class RecordingBackend(StateBackend):
+        def __init__(self, runtime: ToolRuntime) -> None:
+            super().__init__(runtime)
+            self.timeouts: dict[str, int | None] = {}
+
+        def ls_info(self, path: str, *, timeout: int | None = None) -> LsResult:
+            self.timeouts["ls_info"] = timeout
+            return LsResult(entries=[])
+
+        def read(self, file_path: str, offset: int = 0, limit: int = 2000, *, timeout: int | None = None) -> ReadResult:
+            self.timeouts["read"] = timeout
+            return ReadResult(file_data=create_file_data("content"))
+
+        def grep_raw(
+            self,
+            pattern: str,
+            path: str | None = None,
+            glob: str | None = None,
+            *,
+            timeout: int | None = None,
+        ) -> GrepResult:
+            self.timeouts["grep_raw"] = timeout
+            return GrepResult(matches=[])
+
+        def glob_info(self, pattern: str, path: str = "/", *, timeout: int | None = None) -> GlobResult:
+            self.timeouts["glob_info"] = timeout
+            return GlobResult(matches=[])
+
+        def write(self, file_path: str, content: str, *, timeout: int | None = None) -> WriteResult:
+            self.timeouts["write"] = timeout
+            return WriteResult(path=file_path, files_update=None)
+
+        def edit(
+            self,
+            file_path: str,
+            old_string: str,
+            new_string: str,
+            replace_all: bool = False,  # noqa: FBT001, FBT002
+            *,
+            timeout: int | None = None,
+        ) -> EditResult:
+            self.timeouts["edit"] = timeout
+            return EditResult(path=file_path, files_update=None, occurrences=1)
+
+    routed = RecordingBackend(rt)
+    comp = CompositeBackend(default=StateBackend(rt), routes={"/memories/": routed})
+
+    await comp.als_info("/memories/", timeout=10)
+    await comp.aread("/memories/file.txt", timeout=11)
+    await comp.agrep_raw("findme", path="/memories/", timeout=12)
+    await comp.aglob_info("*.txt", path="/memories/", timeout=13)
+    await comp.awrite("/memories/file.txt", "content", timeout=14)
+    await comp.aedit("/memories/file.txt", "old", "new", timeout=15)
+
+    assert routed.timeouts == {
+        "ls_info": 10,
+        "read": 11,
+        "grep_raw": 12,
+        "glob_info": 13,
+        "write": 14,
+        "edit": 15,
+    }
 
 
 async def test_composite_backend_store_to_store_async():
@@ -948,7 +1022,14 @@ async def test_composite_agrep_error_in_routed_backend_async() -> None:
 
     # Create a mock backend that returns error strings for grep
     class ErrorBackend(StoreBackend):
-        async def agrep_raw(self, pattern: str, path: str | None = None, glob: str | None = None):
+        async def agrep_raw(
+            self,
+            pattern: str,
+            path: str | None = None,
+            glob: str | None = None,
+            *,
+            timeout: int | None = None,  # noqa: ASYNC109
+        ):
             return "Invalid regex pattern error"
 
     error_backend = ErrorBackend(rt)
@@ -967,7 +1048,14 @@ async def test_composite_agrep_error_in_routed_backend_at_root_async() -> None:
 
     # Create a mock backend that returns error strings for grep
     class ErrorBackend(StoreBackend):
-        async def agrep_raw(self, pattern: str, path: str | None = None, glob: str | None = None):
+        async def agrep_raw(
+            self,
+            pattern: str,
+            path: str | None = None,
+            glob: str | None = None,
+            *,
+            timeout: int | None = None,  # noqa: ASYNC109
+        ):
             return "Backend error occurred"
 
     error_backend = ErrorBackend(rt)
@@ -986,7 +1074,14 @@ async def test_composite_agrep_error_in_default_backend_at_root_async() -> None:
 
     # Create a mock backend that returns error strings for grep
     class ErrorDefaultBackend(StateBackend):
-        async def agrep_raw(self, pattern: str, path: str | None = None, glob: str | None = None):
+        async def agrep_raw(
+            self,
+            pattern: str,
+            path: str | None = None,
+            glob: str | None = None,
+            *,
+            timeout: int | None = None,  # noqa: ASYNC109
+        ):
             return "Default backend error"
 
     error_default = ErrorDefaultBackend(rt)

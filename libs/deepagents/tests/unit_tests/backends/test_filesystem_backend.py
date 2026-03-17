@@ -1,3 +1,4 @@
+import time
 from pathlib import Path
 
 import pytest
@@ -204,6 +205,46 @@ def test_filesystem_backend_ls_trailing_slash(tmp_path: Path):
 
     empty = be.ls_info("/nonexistent/")
     assert empty.entries == []
+
+
+def test_filesystem_backend_glob_timeout_returns_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """glob_info should surface a backend timeout error."""
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+    def slow_glob(_pattern: str, _path: str = "/") -> object:
+        time.sleep(2)
+        return []
+
+    monkeypatch.setattr(be, "_glob_info_impl", slow_glob)
+
+    result = be.glob_info("**/*", path="/", timeout=1)
+
+    assert result.error == "glob timed out after 1s. Try a more specific pattern or a narrower path."
+
+
+def test_filesystem_backend_grep_falls_back_when_ripgrep_times_out(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """grep_raw should use the Python fallback when ripgrep is unavailable or times out."""
+    root = tmp_path
+    target = root / "app.py"
+    write_file(target, "import os\nprint('hello')\n")
+
+    be = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+    called = {"python": False}
+
+    def no_ripgrep(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    def python_fallback(*_args: object, **_kwargs: object) -> dict[str, list[tuple[int, str]]]:
+        called["python"] = True
+        return {"/app.py": [(1, "import os")]}
+
+    monkeypatch.setattr(be, "_ripgrep_search", no_ripgrep)
+    monkeypatch.setattr(be, "_python_search", python_fallback)
+
+    result = be.grep_raw("import", path="/", timeout=5)
+
+    assert called["python"] is True
+    assert result.matches == [{"path": "/app.py", "line": 1, "text": "import os"}]
 
 
 def test_filesystem_backend_intercept_large_tool_result(tmp_path: Path):
@@ -602,3 +643,102 @@ class TestWindowsPathHandling:
         assert infos is not None
         for info in infos:
             assert "\\" not in info["path"], f"Backslash in deep path: {info['path']}"
+
+
+class TestNormalizeTimeout:
+    """Tests for FilesystemBackend._normalize_timeout."""
+
+    def test_none_with_no_default_returns_none(self):
+        assert FilesystemBackend._normalize_timeout(None) is None
+
+    def test_none_with_default_returns_default(self):
+        assert FilesystemBackend._normalize_timeout(None, default=30) == 30
+
+    def test_explicit_overrides_default(self):
+        assert FilesystemBackend._normalize_timeout(10, default=30) == 10
+
+    def test_zero_raises(self):
+        with pytest.raises(ValueError, match="timeout must be positive"):
+            FilesystemBackend._normalize_timeout(0)
+
+    def test_negative_raises(self):
+        with pytest.raises(ValueError, match="timeout must be positive"):
+            FilesystemBackend._normalize_timeout(-5)
+
+    def test_zero_default_raises_when_timeout_is_none(self):
+        with pytest.raises(ValueError, match="timeout must be positive"):
+            FilesystemBackend._normalize_timeout(None, default=0)
+
+    def test_positive_passes(self):
+        assert FilesystemBackend._normalize_timeout(42) == 42
+
+
+class TestRunWithTimeout:
+    """Tests for FilesystemBackend._run_with_timeout."""
+
+    def test_success_with_timeout(self):
+        result = FilesystemBackend._run_with_timeout(
+            lambda: "ok",
+            timeout=10,
+            on_timeout=lambda _: "timed out",
+        )
+        assert result == "ok"
+
+    def test_none_timeout_bypasses_executor(self):
+        called = []
+
+        def func():
+            called.append(True)
+            return "direct"
+
+        result = FilesystemBackend._run_with_timeout(
+            func,
+            timeout=None,
+            on_timeout=lambda _: "should not be called",
+        )
+        assert result == "direct"
+        assert called == [True]
+
+    def test_timeout_triggers_callback(self):
+        def slow():
+            time.sleep(10)
+            return "never"
+
+        result = FilesystemBackend._run_with_timeout(
+            slow,
+            timeout=1,
+            on_timeout=lambda secs: f"timed out after {secs}s",
+        )
+        assert result == "timed out after 1s"
+
+    def test_func_exception_propagates(self):
+        def broken():
+            msg = "boom"
+            raise RuntimeError(msg)
+
+        with pytest.raises(RuntimeError, match="boom"):
+            FilesystemBackend._run_with_timeout(
+                broken,
+                timeout=10,
+                on_timeout=lambda _: "should not be called",
+            )
+
+
+class TestReadTimeout:
+    """Test that read returns a structured error on timeout."""
+
+    def test_read_timeout_returns_error(self, tmp_path: Path):
+        (tmp_path / "big.txt").write_text("x" * 100)
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+        # Monkeypatch the impl to be slow
+        original = be._read_impl
+
+        def slow_read(*args: object, **kwargs: object) -> ReadResult:
+            time.sleep(10)
+            return original(*args, **kwargs)
+
+        be._read_impl = slow_read
+        result = be.read("/big.txt", timeout=1)
+        assert result.error is not None
+        assert "timed out" in result.error

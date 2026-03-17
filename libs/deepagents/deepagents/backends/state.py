@@ -72,16 +72,24 @@ class StateBackend(BackendProtocol):
             return _to_legacy_file_data(file_data)
         return {**file_data}
 
-    def ls_info(self, path: str) -> LsResult:
+    def ls_info(
+        self,
+        path: str,
+        *,
+        timeout: int | None = None,
+    ) -> LsResult:
         """List files and directories in the specified directory (non-recursive).
 
         Args:
             path: Absolute path to directory.
+            timeout: Unused for the in-memory backend; accepted for protocol
+                compatibility.
 
         Returns:
             List of FileInfo-like dicts for files and directories directly in the directory.
             Directories have a trailing / in their path and is_dir=True.
         """
+        del timeout
         files = self.runtime.state.get("files", {})
         infos: list[FileInfo] = []
         subdirs: set[str] = set()
@@ -128,6 +136,8 @@ class StateBackend(BackendProtocol):
         file_path: str,
         offset: int = 0,
         limit: int = 2000,
+        *,
+        timeout: int | None = None,
     ) -> ReadResult:
         """Read file content for the requested line range.
 
@@ -135,11 +145,14 @@ class StateBackend(BackendProtocol):
             file_path: Absolute file path.
             offset: Line offset to start reading from (0-indexed).
             limit: Maximum number of lines to read.
+            timeout: Unused for the in-memory backend; accepted for protocol
+                compatibility.
 
         Returns:
             ReadResult with raw (unformatted) content for the requested
             window. Line-number formatting is applied by the middleware.
         """
+        del timeout
         files = self.runtime.state.get("files", {})
         file_data = files.get(file_path)
 
@@ -165,11 +178,14 @@ class StateBackend(BackendProtocol):
         self,
         file_path: str,
         content: str,
+        *,
+        timeout: int | None = None,
     ) -> WriteResult:
         """Create a new file with content.
 
         Returns WriteResult with files_update to update LangGraph state.
         """
+        del timeout
         files = self.runtime.state.get("files", {})
 
         if file_path in files:
@@ -184,11 +200,14 @@ class StateBackend(BackendProtocol):
         old_string: str,
         new_string: str,
         replace_all: bool = False,  # noqa: FBT001, FBT002
+        *,
+        timeout: int | None = None,
     ) -> EditResult:
         """Edit a file by replacing string occurrences.
 
         Returns EditResult with files_update and occurrences.
         """
+        del timeout
         files = self.runtime.state.get("files", {})
         file_data = files.get(file_path)
 
@@ -210,13 +229,23 @@ class StateBackend(BackendProtocol):
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
+        *,
+        timeout: int | None = None,
     ) -> GrepResult:
         """Search state files for a literal text pattern."""
+        del timeout
         files = self.runtime.state.get("files", {})
         return grep_matches_from_files(files, pattern, path if path is not None else "/", glob)
 
-    def glob_info(self, pattern: str, path: str = "/") -> GlobResult:
+    def glob_info(
+        self,
+        pattern: str,
+        path: str = "/",
+        *,
+        timeout: int | None = None,
+    ) -> GlobResult:
         """Get FileInfo for files matching glob pattern."""
+        del timeout
         files = self.runtime.state.get("files", {})
         result = _glob_search_files(files, pattern, path)
         if result == "No files found":

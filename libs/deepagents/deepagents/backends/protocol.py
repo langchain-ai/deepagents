@@ -7,11 +7,8 @@ database, etc.) and provide a uniform interface for file operations.
 
 import abc
 import asyncio
-import inspect
-import logging
 from collections.abc import Callable
 from dataclasses import dataclass
-from functools import lru_cache
 from typing import Any, Literal, NotRequired, TypeAlias
 
 from langchain.tools import ToolRuntime
@@ -26,8 +23,6 @@ r"""File storage format version.
   or base64-encoded binary), with an `encoding` field (`"utf-8"` or
   `"base64"`).
 """
-
-logger = logging.getLogger(__name__)
 
 FileOperationError = Literal[
     "file_not_found",  # Download: file doesn't exist
@@ -263,26 +258,42 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         `DeprecationWarning`.
     """
 
-    def ls_info(self, path: str) -> "LsResult":
+    def ls_info(
+        self,
+        path: str,
+        *,
+        timeout: int | None = None,
+    ) -> "LsResult":
         """List all files in a directory with metadata.
 
         Args:
             path: Absolute path to the directory to list. Must start with '/'.
+            timeout: Maximum time in seconds to wait for the operation.
+
+                If None, no timeout is applied unless the backend defines
+                an operation-specific default (e.g. grep, glob).
 
         Returns:
             LsResult with directory entries or error.
         """
         raise NotImplementedError
 
-    async def als_info(self, path: str) -> "LsResult":
+    async def als_info(
+        self,
+        path: str,
+        *,
+        timeout: int | None = None,  # noqa: ASYNC109
+    ) -> "LsResult":
         """Async version of ls_info."""
-        return await asyncio.to_thread(self.ls_info, path)
+        return await asyncio.to_thread(self.ls_info, path, timeout=timeout)
 
     def read(
         self,
         file_path: str,
         offset: int = 0,
         limit: int = 2000,
+        *,
+        timeout: int | None = None,
     ) -> ReadResult:
         """Read file content with line numbers.
 
@@ -290,6 +301,10 @@ class BackendProtocol(abc.ABC):  # noqa: B024
             file_path: Absolute path to the file to read. Must start with '/'.
             offset: Line number to start reading from (0-indexed). Default: 0.
             limit: Maximum number of lines to read. Default: 2000.
+            timeout: Maximum time in seconds to wait for the operation.
+
+                If None, no timeout is applied unless the backend defines
+                an operation-specific default (e.g. grep, glob).
 
         Returns:
             String containing file content formatted with line numbers (cat -n format),
@@ -311,15 +326,19 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         file_path: str,
         offset: int = 0,
         limit: int = 2000,
+        *,
+        timeout: int | None = None,  # noqa: ASYNC109
     ) -> ReadResult:
         """Async version of read."""
-        return await asyncio.to_thread(self.read, file_path, offset, limit)
+        return await asyncio.to_thread(self.read, file_path, offset, limit, timeout=timeout)
 
     def grep_raw(
         self,
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
+        *,
+        timeout: int | None = None,
     ) -> "GrepResult":
         """Search for a literal text pattern in files.
 
@@ -339,6 +358,10 @@ class BackendProtocol(abc.ABC):  # noqa: B024
                   - `**` matches any directories recursively
                   - `?` matches single character
                   - `[abc]` matches one character from set
+            timeout: Maximum time in seconds to wait for the operation.
+
+                If None, no timeout is applied unless the backend defines
+                an operation-specific default (e.g. grep, glob).
 
         Examples:
                   - "*.py" - only search Python files
@@ -356,11 +379,19 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
+        *,
+        timeout: int | None = None,  # noqa: ASYNC109
     ) -> "GrepResult":
         """Async version of grep_raw."""
-        return await asyncio.to_thread(self.grep_raw, pattern, path, glob)
+        return await asyncio.to_thread(self.grep_raw, pattern, path, glob, timeout=timeout)
 
-    def glob_info(self, pattern: str, path: str = "/") -> "GlobResult":
+    def glob_info(
+        self,
+        pattern: str,
+        path: str = "/",
+        *,
+        timeout: int | None = None,
+    ) -> "GlobResult":
         """Find files matching a glob pattern.
 
         Args:
@@ -373,20 +404,32 @@ class BackendProtocol(abc.ABC):  # noqa: B024
 
             path: Base directory to search from. Default: "/" (root).
                   The pattern is applied relative to this path.
+            timeout: Maximum time in seconds to wait for the operation.
+
+                If None, no timeout is applied unless the backend defines
+                an operation-specific default (e.g. grep, glob).
 
         Returns:
             GlobResult with matching files or error.
         """
         raise NotImplementedError
 
-    async def aglob_info(self, pattern: str, path: str = "/") -> "GlobResult":
+    async def aglob_info(
+        self,
+        pattern: str,
+        path: str = "/",
+        *,
+        timeout: int | None = None,  # noqa: ASYNC109
+    ) -> "GlobResult":
         """Async version of glob_info."""
-        return await asyncio.to_thread(self.glob_info, pattern, path)
+        return await asyncio.to_thread(self.glob_info, pattern, path, timeout=timeout)
 
     def write(
         self,
         file_path: str,
         content: str,
+        *,
+        timeout: int | None = None,
     ) -> WriteResult:
         """Write content to a new file in the filesystem, error if file exists.
 
@@ -394,6 +437,10 @@ class BackendProtocol(abc.ABC):  # noqa: B024
             file_path: Absolute path where the file should be created.
                        Must start with '/'.
             content: String content to write to the file.
+            timeout: Maximum time in seconds to wait for the operation.
+
+                If None, no timeout is applied unless the backend defines
+                an operation-specific default (e.g. grep, glob).
 
         Returns:
             WriteResult
@@ -404,9 +451,11 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         self,
         file_path: str,
         content: str,
+        *,
+        timeout: int | None = None,  # noqa: ASYNC109
     ) -> WriteResult:
         """Async version of write."""
-        return await asyncio.to_thread(self.write, file_path, content)
+        return await asyncio.to_thread(self.write, file_path, content, timeout=timeout)
 
     def edit(
         self,
@@ -414,6 +463,8 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         old_string: str,
         new_string: str,
         replace_all: bool = False,  # noqa: FBT001, FBT002
+        *,
+        timeout: int | None = None,
     ) -> EditResult:
         """Perform exact string replacements in an existing file.
 
@@ -425,6 +476,10 @@ class BackendProtocol(abc.ABC):  # noqa: B024
                        Must be different from old_string.
             replace_all: If True, replace all occurrences. If False (default),
                         old_string must be unique in the file or the edit fails.
+            timeout: Maximum time in seconds to wait for the operation.
+
+                If None, no timeout is applied unless the backend defines
+                an operation-specific default (e.g. grep, glob).
 
         Returns:
             EditResult
@@ -437,9 +492,18 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         old_string: str,
         new_string: str,
         replace_all: bool = False,  # noqa: FBT001, FBT002
+        *,
+        timeout: int | None = None,  # noqa: ASYNC109
     ) -> EditResult:
         """Async version of edit."""
-        return await asyncio.to_thread(self.edit, file_path, old_string, new_string, replace_all)
+        return await asyncio.to_thread(
+            self.edit,
+            file_path,
+            old_string,
+            new_string,
+            replace_all,
+            timeout=timeout,
+        )
 
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
         """Upload multiple files to the sandbox.
@@ -560,33 +624,7 @@ class SandboxBackendProtocol(BackendProtocol):
         timeout: int | None = None,  # noqa: ASYNC109
     ) -> ExecuteResponse:
         """Async version of execute."""
-        # The middleware layer validates timeout support before calling, so
-        # this guard only protects direct callers bypassing the middleware.
-        if timeout is not None and execute_accepts_timeout(type(self)):
-            return await asyncio.to_thread(self.execute, command, timeout=timeout)
-        return await asyncio.to_thread(self.execute, command)
-
-
-@lru_cache(maxsize=128)
-def execute_accepts_timeout(cls: type[SandboxBackendProtocol]) -> bool:
-    """Check whether a backend class's `execute` accepts a `timeout` kwarg.
-
-    Older backend packages didn't lower-bound their SDK dependency, so they
-    may not accept the `timeout` keyword added to `SandboxBackendProtocol`.
-
-    Results are cached per class to avoid repeated introspection overhead.
-    """
-    try:
-        sig = inspect.signature(cls.execute)
-    except (ValueError, TypeError):
-        logger.warning(
-            "Could not inspect signature of %s.execute; assuming timeout is not supported. This may indicate a backend packaging issue.",
-            cls.__qualname__,
-            exc_info=True,
-        )
-        return False
-    else:
-        return "timeout" in sig.parameters
+        return await asyncio.to_thread(self.execute, command, timeout=timeout)
 
 
 BackendFactory: TypeAlias = Callable[[ToolRuntime], BackendProtocol]

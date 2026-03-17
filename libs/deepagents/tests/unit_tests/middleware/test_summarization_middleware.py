@@ -111,14 +111,22 @@ class MockBackend(BackendProtocol):
         self.download_raises = download_raises
         self.write_raises = write_raises
 
-    def read(self, path: str, offset: int = 0, limit: int = 2000) -> ReadResult:
+    def read(self, path: str, offset: int = 0, limit: int = 2000, *, timeout: int | None = None) -> ReadResult:
+        del timeout
         self.read_calls.append(path)
         if self.existing_content is not None:
             return ReadResult(file_data={"content": self.existing_content, "encoding": "utf-8", "created_at": "", "modified_at": ""})
         return ReadResult(file_data={"content": "", "encoding": "utf-8", "created_at": "", "modified_at": ""})
 
-    async def aread(self, path: str, offset: int = 0, limit: int = 2000) -> ReadResult:
-        return self.read(path, offset, limit)
+    async def aread(
+        self,
+        path: str,
+        offset: int = 0,
+        limit: int = 2000,
+        *,
+        timeout: int | None = None,  # noqa: ASYNC109
+    ) -> ReadResult:
+        return self.read(path, offset, limit, timeout=timeout)
 
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
         """Download files - returns raw content as bytes."""
@@ -153,7 +161,8 @@ class MockBackend(BackendProtocol):
             raise RuntimeError(msg)
         return self.download_files(paths)
 
-    def write(self, path: str, content: str) -> WriteResult:
+    def write(self, path: str, content: str, *, timeout: int | None = None) -> WriteResult:
+        del timeout
         self.write_calls.append((path, content))
         if self.write_raises:
             msg = "Mock write exception"
@@ -162,14 +171,23 @@ class MockBackend(BackendProtocol):
             return WriteResult(error=self.error_message or "Mock write failure")
         return WriteResult(path=path)
 
-    async def awrite(self, path: str, content: str) -> WriteResult:
+    async def awrite(self, path: str, content: str, *, timeout: int | None = None) -> WriteResult:  # noqa: ASYNC109
         if self.write_raises:
             msg = "Mock awrite exception"
             raise RuntimeError(msg)
-        return self.write(path, content)
+        return self.write(path, content, timeout=timeout)
 
-    def edit(self, path: str, old_string: str, new_string: str, replace_all: bool = False) -> EditResult:  # noqa: FBT001, FBT002
+    def edit(
+        self,
+        path: str,
+        old_string: str,
+        new_string: str,
+        replace_all: bool = False,  # noqa: FBT001, FBT002
+        *,
+        timeout: int | None = None,
+    ) -> EditResult:
         """Edit a file by replacing string occurrences."""
+        del timeout
         self.edit_calls.append((path, old_string, new_string))
         if self.write_raises:
             msg = "Mock edit exception"
@@ -178,12 +196,20 @@ class MockBackend(BackendProtocol):
             return EditResult(error=self.error_message or "Mock edit failure")
         return EditResult(path=path, occurrences=1)
 
-    async def aedit(self, path: str, old_string: str, new_string: str, replace_all: bool = False) -> EditResult:  # noqa: FBT001, FBT002
+    async def aedit(
+        self,
+        path: str,
+        old_string: str,
+        new_string: str,
+        replace_all: bool = False,  # noqa: FBT001, FBT002
+        *,
+        timeout: int | None = None,  # noqa: ASYNC109
+    ) -> EditResult:
         """Async version of edit."""
         if self.write_raises:
             msg = "Mock aedit exception"
             raise RuntimeError(msg)
-        return self.edit(path, old_string, new_string, replace_all)
+        return self.edit(path, old_string, new_string, replace_all, timeout=timeout)
 
 
 def make_mock_runtime() -> MagicMock:

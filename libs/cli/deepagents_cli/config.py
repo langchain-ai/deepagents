@@ -1597,7 +1597,11 @@ def _create_model_via_init(
         package = package_map.get(provider, f"langchain-{provider}")
         # Convert pip package name to Python module name for import check.
         module_name = package.replace("-", "_")
-        if importlib.util.find_spec(module_name) is not None:
+        try:
+            spec_found = importlib.util.find_spec(module_name) is not None
+        except (ImportError, ValueError):
+            spec_found = False
+        if spec_found:
             # Package is installed but an internal import failed — surface
             # the real error instead of the misleading "missing package" hint.
             msg = (

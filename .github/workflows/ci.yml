@@ -22,6 +22,8 @@ concurrency:
 
 permissions:
   contents: read
+  # Required for CodSpeed OIDC authentication in _benchmark.yml
+  id-token: write
 
 env:
   UV_NO_SYNC: "true"
@@ -252,6 +254,18 @@ jobs:
       python-version: ${{ matrix.python-version }}
       coverage: ${{ matrix.python-version == '3.12' }}
 
+  # Run CodSpeed benchmarks on SDK changes
+  benchmark-deepagents:
+    name: "⏱️ Benchmark deepagents"
+    needs: changes
+    # TODO: re-enable once CodSpeed integration is ready
+    #if: needs.changes.outputs.deepagents == 'true' || github.event_name == 'push'
+    if: false
+    uses: ./.github/workflows/_benchmark.yml
+    with:
+      working-directory: "libs/deepagents"
+    secrets: inherit
+
   # Final status check - ensures all jobs passed
   ci_success:
     name: "✅ CI Success"
@@ -270,7 +284,7 @@ jobs:
       - test-daytona
       - test-modal
       - test-runloop
-      - test-quickjs
+      - benchmark-deepagents
     if: always()
     runs-on: ubuntu-latest
     steps:

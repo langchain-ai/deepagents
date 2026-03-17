@@ -86,6 +86,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.models_override || inputs.models || 'all' }}
+  cancel-in-progress: true
+
 env:
   UV_NO_SYNC: "true"
 

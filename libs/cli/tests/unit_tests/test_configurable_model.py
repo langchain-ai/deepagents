@@ -1,6 +1,5 @@
 """Tests for ConfigurableModelMiddleware."""
 
-import sys
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import MagicMock, patch
@@ -21,6 +20,7 @@ def _make_model(name: str) -> MagicMock:
     model = MagicMock(spec=BaseChatModel)
     model.model_name = name
     model.model_dump.return_value = {"model_name": name}
+    model._get_ls_params.return_value = {"ls_provider": "openai"}
     return model
 
 
@@ -44,6 +44,13 @@ def _make_response() -> ModelResponse[Any]:
     """Create a minimal model response for handler mocks."""
     return ModelResponse(result=[AIMessage(content="response")])
 
+
+def _make_model_result(model: MagicMock) -> SimpleNamespace:
+    """Create a mock ModelResult with a .model attribute."""
+    return SimpleNamespace(model=model)
+
+
+_PATCH_CREATE = "deepagents_cli.config.create_model"
 
 _mw = ConfigurableModelMiddleware()
 
@@ -137,9 +144,7 @@ class TestModelSwap:
         request = _make_request(original, context=CLIContext(model="openai:gpt-4o"))
 
         captured: list[ModelRequest] = []
-        with patch(
-            "deepagents_cli.configurable_model.resolve_model", return_value=override
-        ):
+        with patch(_PATCH_CREATE, return_value=_make_model_result(override)):
             _mw.wrap_model_call(
                 request, lambda r: (captured.append(r), _make_response())[1]
             )
@@ -158,12 +163,44 @@ class TestModelSwap:
             captured.append(r)
             return _make_response()
 
-        with patch(
-            "deepagents_cli.configurable_model.resolve_model", return_value=override
-        ):
+        with patch(_PATCH_CREATE, return_value=_make_model_result(override)):
             await _mw.awrap_model_call(request, handler)
 
         assert captured[0].model is override
+
+    def test_class_path_provider_swapped(self) -> None:
+        """Config-defined class_path provider resolves through create_model."""
+        original = _make_model("claude-sonnet-4-6")
+        custom = _make_model("my-model")
+        request = _make_request(original, context=CLIContext(model="custom:my-model"))
+
+        captured: list[ModelRequest] = []
+        with patch(
+            _PATCH_CREATE, return_value=_make_model_result(custom)
+        ) as mock_create:
+            _mw.wrap_model_call(
+                request, lambda r: (captured.append(r), _make_response())[1]
+            )
+
+        assert captured[0].model is custom
+        mock_create.assert_called_once_with("custom:my-model")
+
+    def test_create_model_error_falls_back_to_original(self) -> None:
+        """ModelConfigError falls back to original model instead of crashing."""
+        from deepagents_cli.model_config import ModelConfigError
+
+        original = _make_model("claude-sonnet-4-6")
+        request = _make_request(
+            original,
+            context=CLIContext(model="unknown:bad-model"),
+        )
+        captured: list[ModelRequest] = []
+        with patch(_PATCH_CREATE, side_effect=ModelConfigError("no such provider")):
+            _mw.wrap_model_call(
+                request, lambda r: (captured.append(r), _make_response())[1]
+            )
+
+        assert captured[0].model is original
 
 
 class TestAnthropicSettingsStripped:
@@ -183,9 +220,7 @@ class TestAnthropicSettingsStripped:
         )
         captured: list[ModelRequest] = []
         with (
-            patch(
-                "deepagents_cli.configurable_model.resolve_model", return_value=override
-            ),
+            patch(_PATCH_CREATE, return_value=_make_model_result(override)),
             patch(
                 "deepagents_cli.configurable_model._is_anthropic_model",
                 return_value=False,
@@ -206,9 +241,7 @@ class TestAnthropicSettingsStripped:
         )
         captured: list[ModelRequest] = []
         with (
-            patch(
-                "deepagents_cli.configurable_model.resolve_model", return_value=override
-            ),
+            patch(_PATCH_CREATE, return_value=_make_model_result(override)),
             patch(
                 "deepagents_cli.configurable_model._is_anthropic_model",
                 return_value=True,
@@ -235,9 +268,7 @@ class TestAnthropicSettingsStripped:
         )
         captured: list[ModelRequest] = []
         with (
-            patch(
-                "deepagents_cli.configurable_model.resolve_model", return_value=override
-            ),
+            patch(_PATCH_CREATE, return_value=_make_model_result(override)),
             patch(
                 "deepagents_cli.configurable_model._is_anthropic_model",
                 return_value=False,
@@ -263,9 +294,7 @@ class TestAnthropicSettingsStripped:
             return _make_response()
 
         with (
-            patch(
-                "deepagents_cli.configurable_model.resolve_model", return_value=override
-            ),
+            patch(_PATCH_CREATE, return_value=_make_model_result(override)),
             patch(
                 "deepagents_cli.configurable_model._is_anthropic_model",
                 return_value=False,
@@ -291,9 +320,7 @@ class TestAnthropicSettingsStripped:
         )
         captured: list[ModelRequest] = []
         with (
-            patch(
-                "deepagents_cli.configurable_model.resolve_model", return_value=override
-            ),
+            patch(_PATCH_CREATE, return_value=_make_model_result(override)),
             patch(
                 "deepagents_cli.configurable_model._is_anthropic_model",
                 return_value=False,
@@ -317,9 +344,7 @@ class TestAnthropicSettingsStripped:
         )
         captured: list[ModelRequest] = []
         with (
-            patch(
-                "deepagents_cli.configurable_model.resolve_model", return_value=override
-            ),
+            patch(_PATCH_CREATE, return_value=_make_model_result(override)),
             patch(
                 "deepagents_cli.configurable_model._is_anthropic_model",
                 return_value=False,
@@ -344,9 +369,18 @@ class TestIsAnthropicModel:
     def test_returns_false_for_non_anthropic(self) -> None:
         assert _is_anthropic_model(_make_model("gpt-4o")) is False
 
-    def test_returns_false_when_import_missing(self) -> None:
-        with patch.dict("sys.modules", {"langchain_anthropic": None}):
-            assert _is_anthropic_model(_make_model("anything")) is False
+    def test_returns_false_for_plain_object(self) -> None:
+        assert _is_anthropic_model(object()) is False
+
+    def test_returns_false_when_ls_params_returns_none(self) -> None:
+        model = MagicMock(spec=BaseChatModel)
+        model._get_ls_params.return_value = None
+        assert _is_anthropic_model(model) is False
+
+    def test_returns_false_when_ls_params_raises(self) -> None:
+        model = MagicMock(spec=BaseChatModel)
+        model._get_ls_params.side_effect = RuntimeError("not initialized")
+        assert _is_anthropic_model(model) is False
 
 
 class TestModelParams:
@@ -387,9 +421,7 @@ class TestModelParams:
             ),
         )
         captured: list[ModelRequest] = []
-        with patch(
-            "deepagents_cli.configurable_model.resolve_model", return_value=override
-        ):
+        with patch(_PATCH_CREATE, return_value=_make_model_result(override)):
             _mw.wrap_model_call(
                 request, lambda r: (captured.append(r), _make_response())[1]
             )

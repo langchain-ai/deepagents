@@ -165,7 +165,7 @@ class TestV1StyleWritesStateBackend:
         assert infos[0]["path"] == "/dir/file.txt"
 
     def test_glob_works_with_v1_data(self):
-        """glob works correctly with v1-formatted file data."""
+        """Glob works correctly with v1-formatted file data."""
         rt = _make_state_runtime()
         be = StateBackend(rt, file_format="v1")
 

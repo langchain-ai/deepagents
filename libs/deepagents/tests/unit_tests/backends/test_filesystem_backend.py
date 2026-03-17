@@ -579,14 +579,14 @@ class TestWindowsPathHandling:
             assert "\\" not in info["path"], f"Backslash in ls_info path: {info['path']}"
 
     def test_glob_paths(self, backend):
-        """glob should return forward-slash paths."""
+        """Glob should return forward-slash paths."""
         result = backend.glob("**/*.py", path="/")
         assert result.matches is not None
         for info in result.matches:
             assert "\\" not in info["path"], f"Backslash in glob path: {info['path']}"
 
     def test_grep_paths(self, backend):
-        """grep should return forward-slash paths."""
+        """Grep should return forward-slash paths."""
         matches = backend.grep("def", path="/").matches
         assert matches is not None
         for m in matches:

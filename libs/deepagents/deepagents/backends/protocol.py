@@ -366,7 +366,7 @@ class BackendProtocol(abc.ABC):  # noqa: B024
             )
             return self.grep_raw(pattern, path, glob)
 
-        raise NotImplementedError("Subclasses must implement `grep`.")
+        raise NotImplementedError
 
     async def agrep(
         self,
@@ -402,7 +402,7 @@ class BackendProtocol(abc.ABC):  # noqa: B024
             )
             return self.glob_info(pattern, path)
 
-        raise NotImplementedError("Subclasses must implement `glob`.")
+        raise NotImplementedError
 
     async def aglob(self, pattern: str, path: str = "/") -> "GlobResult":
         """Async version of `glob`."""

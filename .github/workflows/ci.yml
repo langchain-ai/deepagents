@@ -266,6 +266,16 @@ jobs:
       python-version: ${{ matrix.python-version }}
       coverage: ${{ matrix.python-version == '3.12' }}
 
+  # Run CodSpeed benchmarks on SDK changes
+  benchmark-deepagents:
+    name: "⏱️ Benchmark deepagents"
+    needs: changes
+    if: needs.changes.outputs.deepagents == 'true' || github.event_name == 'push'
+    uses: ./.github/workflows/_benchmark.yml
+    with:
+      working-directory: "libs/deepagents"
+    secrets: inherit
+
   # Final status check - ensures all jobs passed
   ci_success:
     name: "✅ CI Success"
@@ -285,6 +295,7 @@ jobs:
       - test-modal
       - test-runloop
       - test-quickjs
+      - benchmark-deepagents
     if: always()
     runs-on: ubuntu-latest
     steps:

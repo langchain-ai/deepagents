@@ -41,6 +41,8 @@ Reddit = "https://www.reddit.com/r/LangChain/"
 [dependency-groups]
 test = [
   "pytest",
+  "pytest-benchmark",
+  "pytest-codspeed",
   "pytest-cov",
   "pytest-xdist",
   "pytest-timeout>=2.3.1,<3.0.0",

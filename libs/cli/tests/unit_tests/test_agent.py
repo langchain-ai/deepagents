@@ -23,6 +23,7 @@ from deepagents_cli.agent import (
     create_cli_agent,
     get_system_prompt,
     list_agents,
+    load_async_subagents,
 )
 from deepagents_cli.config import Settings, get_glyphs
 from deepagents_cli.project_utils import ProjectContext
@@ -1372,3 +1373,106 @@ class TestMiddlewareStackConformance:
             assert isinstance(mw, AgentMiddleware), (
                 f"{type(mw).__name__} does not inherit from AgentMiddleware"
             )
+
+
+class TestLoadAsyncSubagents:
+    def test_returns_empty_when_no_file(self, tmp_path: Path) -> None:
+        result = load_async_subagents(tmp_path / "nonexistent.toml")
+        assert result == []
+
+    def test_returns_empty_when_no_section(self, tmp_path: Path) -> None:
+        config = tmp_path / "config.toml"
+        config.write_text('[models]\ndefault = "gpt-4"\n')
+        result = load_async_subagents(config)
+        assert result == []
+
+    def test_loads_valid_async_subagent(self, tmp_path: Path) -> None:
+        config = tmp_path / "config.toml"
+        config.write_text(
+            "[async_subagents.researcher]\n"
+            'description = "Research agent"\n'
+            'url = "https://my-deployment.langsmith.dev"\n'
+            'graph_id = "agent"\n'
+        )
+        result = load_async_subagents(config)
+        assert len(result) == 1
+        assert result[0]["name"] == "researcher"
+        assert result[0]["description"] == "Research agent"
+        assert result[0]["url"] == "https://my-deployment.langsmith.dev"
+        assert result[0]["graph_id"] == "agent"
+
+    def test_loads_multiple_subagents(self, tmp_path: Path) -> None:
+        config = tmp_path / "config.toml"
+        config.write_text(
+            "[async_subagents.researcher]\n"
+            'description = "Research agent"\n'
+            'url = "https://research.langsmith.dev"\n'
+            'graph_id = "agent"\n'
+            "\n"
+            "[async_subagents.coder]\n"
+            'description = "Coding agent"\n'
+            'url = "https://coder.langsmith.dev"\n'
+            'graph_id = "coder"\n'
+        )
+        result = load_async_subagents(config)
+        assert len(result) == 2
+        names = {a["name"] for a in result}
+        assert names == {"researcher", "coder"}
+
+    def test_skips_entry_missing_required_fields(self, tmp_path: Path) -> None:
+        config = tmp_path / "config.toml"
+        config.write_text(
+            '[async_subagents.incomplete]\ndescription = "Missing url and graph_id"\n'
+        )
+        result = load_async_subagents(config)
+        assert result == []
+
+    def test_includes_optional_headers(self, tmp_path: Path) -> None:
+        config = tmp_path / "config.toml"
+        config.write_text(
+            "[async_subagents.custom]\n"
+            'description = "Custom agent"\n'
+            'url = "https://custom.langsmith.dev"\n'
+            'graph_id = "agent"\n'
+            "\n"
+            "[async_subagents.custom.headers]\n"
+            'x-custom = "value"\n'
+        )
+        result = load_async_subagents(config)
+        assert len(result) == 1
+        assert result[0]["headers"] == {"x-custom": "value"}
+
+    def test_handles_invalid_toml(self, tmp_path: Path) -> None:
+        config = tmp_path / "config.toml"
+        config.write_text("this is not valid toml [[[")
+        result = load_async_subagents(config)
+        assert result == []
+
+
+class TestCreateDeepAgentKwargsWorkaround:
+    """Remind us to remove the **kwargs workaround once the SDK pin allows it.
+
+    `create_cli_agent` builds a dict and calls `create_deep_agent(**kwargs)`
+    instead of using direct keyword arguments because the pinned SDK (0.4.x)
+    doesn't accept `async_subagents`. Once the pin is bumped to >=0.5.0 the
+    workaround should be reverted to direct kwargs for readability and type
+    safety.
+    """
+
+    def test_revert_kwargs_workaround_when_sdk_pin_is_bumped(self) -> None:
+        import tomllib
+
+        pyproject = Path(__file__).resolve().parents[2] / "pyproject.toml"
+        with pyproject.open("rb") as f:
+            data = tomllib.load(f)
+
+        deps = data["project"]["dependencies"]
+        sdk_pin = next(d for d in deps if d.startswith("deepagents=="))
+        pinned_version = sdk_pin.split("==")[1]
+        major, minor = (int(x) for x in pinned_version.split(".")[:2])
+
+        assert (major, minor) < (0, 5), (
+            f"SDK pin is now {pinned_version} (>=0.5.0). "
+            "Revert the **kwargs workaround in create_cli_agent() back to "
+            "direct keyword arguments and delete this test."
+        )

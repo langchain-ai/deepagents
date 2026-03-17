@@ -1,4 +1,5 @@
 import time
+from functools import partial
 from unittest.mock import patch
 
 import pytest
@@ -19,7 +20,7 @@ import deepagents.middleware.filesystem as filesystem_middleware
 from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
 from deepagents.backends.protocol import (
     ExecuteResponse,
-    FileDownloadResponse,
+    ReadResult,
     SandboxBackendProtocol,
 )
 from deepagents.backends.utils import (
@@ -32,6 +33,8 @@ from deepagents.backends.utils import (
     update_file_data,
 )
 from deepagents.middleware.filesystem import (
+    EMPTY_CONTENT_WARNING,
+    NUM_CHARS_PER_TOKEN,
     FileData,
     FilesystemMiddleware,
     FilesystemState,
@@ -702,6 +705,7 @@ class TestFilesystemMiddleware:
                 f"/file{i}.txt",
                 {
                     "content": [f"content {i}"],
+                    "encoding": "utf-8",
                     "created_at": "2021-01-01",
                     "modified_at": "2021-01-01",
                 },
@@ -722,6 +726,7 @@ class TestFilesystemMiddleware:
                 f"/file{i}.txt",
                 {
                     "content": [f"content {i}"],
+                    "encoding": "utf-8",
                     "created_at": "2021-01-01",
                     "modified_at": "2021-01-01",
                 },
@@ -741,6 +746,7 @@ class TestFilesystemMiddleware:
                 f"/file{i}.txt",
                 {
                     "content": [f"content {i}"],
+                    "encoding": "utf-8",
                     "created_at": "2021-01-01",
                     "modified_at": "2021-01-01",
                 },
@@ -760,6 +766,7 @@ class TestFilesystemMiddleware:
                 f"/file{i}.txt",
                 {
                     "content": [f"content {i}"],
+                    "encoding": "utf-8",
                     "created_at": "2021-01-01",
                     "modified_at": "2021-01-01",
                     "type": "test" if i % 2 == 0 else "other",
@@ -783,6 +790,7 @@ class TestFilesystemMiddleware:
                 f"/file{i}.txt",
                 {
                     "content": [f"content {i}"],
+                    "encoding": "utf-8",
                     "created_at": "2021-01-01",
                     "modified_at": "2021-01-01",
                 },
@@ -795,20 +803,19 @@ class TestFilesystemMiddleware:
         assert keys == {f"/file{i}.txt" for i in range(55)}
 
     def test_create_file_data_preserves_long_lines(self):
-        """Test that create_file_data stores long lines as-is without splitting."""
+        """Test that create_file_data stores content as a single string."""
         long_line = "a" * 3500
         short_line = "short line"
         content = f"{short_line}\n{long_line}"
 
         file_data = create_file_data(content)
 
-        assert len(file_data["content"]) == 2
-        assert file_data["content"][0] == short_line
-        assert file_data["content"][1] == long_line
-        assert len(file_data["content"][1]) == 3500
+        assert isinstance(file_data["content"], str)
+        assert file_data["content"] == content
+        assert file_data["encoding"] == "utf-8"
 
     def test_update_file_data_preserves_long_lines(self):
-        """Test that update_file_data stores long lines as-is without splitting."""
+        """Test that update_file_data stores content as a single string."""
         initial_file_data = create_file_data("initial content")
 
         long_line = "b" * 5000
@@ -817,10 +824,9 @@ class TestFilesystemMiddleware:
 
         updated_file_data = update_file_data(initial_file_data, new_content)
 
-        assert len(updated_file_data["content"]) == 2
-        assert updated_file_data["content"][0] == short_line
-        assert updated_file_data["content"][1] == long_line
-        assert len(updated_file_data["content"][1]) == 5000
+        assert isinstance(updated_file_data["content"], str)
+        assert updated_file_data["content"] == new_content
+        assert updated_file_data["encoding"] == "utf-8"
 
         assert updated_file_data["created_at"] == initial_file_data["created_at"]
 
@@ -1100,9 +1106,10 @@ class TestFilesystemMiddleware:
 
         assert result == tool_message
 
-    def test_single_text_block_extracts_text_directly(self):
+    @pytest.mark.parametrize("file_format", ["v1", "v2"])
+    def test_single_text_block_extracts_text_directly(self, file_format):
         """Test that single text block extracts text content directly, not stringified structure."""
-        middleware = FilesystemMiddleware(tool_token_limit_before_evict=100)
+        middleware = FilesystemMiddleware(backend=partial(StateBackend, file_format=file_format), tool_token_limit_before_evict=100)
         state = FilesystemState(messages=[], files={})
         runtime = ToolRuntime(state=state, context=None, tool_call_id="test_single", store=None, stream_writer=lambda _: None, config={})
 
@@ -1114,14 +1121,20 @@ class TestFilesystemMiddleware:
         assert isinstance(result, Command)
         # Check that the file contains actual text, not stringified dict
         file_content = result.update["files"]["/large_tool_results/test_single"]["content"]
-        file_text = "\n".join(file_content)
+        if file_format == "v1":
+            assert isinstance(file_content, list)
+            text = "\n".join(file_content)
+        else:
+            assert isinstance(file_content, str)
+            text = file_content
         # Should start with the actual text, not with "[{" which would indicate stringified dict
-        assert file_text.startswith("Hello world!")
-        assert not file_text.startswith("[{")
+        assert text.startswith("Hello world!")
+        assert not text.startswith("[{")
 
-    def test_multiple_text_blocks_joins_text(self):
+    @pytest.mark.parametrize("file_format", ["v1", "v2"])
+    def test_multiple_text_blocks_joins_text(self, file_format):
         """Test that multiple text blocks are joined, not stringified."""
-        middleware = FilesystemMiddleware(tool_token_limit_before_evict=100)
+        middleware = FilesystemMiddleware(backend=partial(StateBackend, file_format=file_format), tool_token_limit_before_evict=100)
         state = FilesystemState(messages=[], files={})
         runtime = ToolRuntime(state=state, context=None, tool_call_id="test_multi", store=None, stream_writer=lambda _: None, config={})
 
@@ -1134,14 +1147,20 @@ class TestFilesystemMiddleware:
 
         assert isinstance(result, Command)
         file_content = result.update["files"]["/large_tool_results/test_multi"]["content"]
-        file_text = "\n".join(file_content)
-        assert file_text.startswith("First block")
-        assert "Second block" in file_text
-        assert not file_text.startswith("[{")
+        if file_format == "v1":
+            assert isinstance(file_content, list)
+            text = "\n".join(file_content)
+        else:
+            assert isinstance(file_content, str)
+            text = file_content
+        assert text.startswith("First block")
+        assert "Second block" in text
+        assert not text.startswith("[{")
 
-    def test_mixed_content_blocks_preserves_non_text(self):
+    @pytest.mark.parametrize("file_format", ["v1", "v2"])
+    def test_mixed_content_blocks_preserves_non_text(self, file_format):
         """Test that mixed content blocks (text + image) evict text but preserve image blocks."""
-        middleware = FilesystemMiddleware(tool_token_limit_before_evict=100)
+        middleware = FilesystemMiddleware(backend=partial(StateBackend, file_format=file_format), tool_token_limit_before_evict=100)
         state = FilesystemState(messages=[], files={})
         runtime = ToolRuntime(state=state, context=None, tool_call_id="test_mixed", store=None, stream_writer=lambda _: None, config={})
 
@@ -1155,8 +1174,8 @@ class TestFilesystemMiddleware:
 
         assert isinstance(result, Command)
         file_content = result.update["files"]["/large_tool_results/test_mixed"]["content"]
-        file_text = "\n".join(file_content)
-        assert file_text.startswith("Some text")
+        text = "\n".join(file_content) if file_format == "v1" else file_content
+        assert text.startswith("Some text")
 
         returned_content = result.update["messages"][0].content
         assert isinstance(returned_content, list)
@@ -1184,14 +1203,15 @@ class TestFilesystemMiddleware:
         """Test image reads return standard image blocks with base64 + mime_type."""
 
         class ImageBackend(StateBackend):
-            def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
-                return [
-                    FileDownloadResponse(
-                        path=paths[0],
-                        content=b"fake-image-bytes",
-                        error=None,
-                    )
-                ]
+            def read(self, path, *, offset=0, limit=100):
+                return ReadResult(
+                    file_data={
+                        "content": "<base64_data>",
+                        "encoding": "base64",
+                        "created_at": "",
+                        "modified_at": "",
+                    }
+                )
 
         middleware = FilesystemMiddleware(backend=lambda rt: ImageBackend(rt))  # noqa: PLW0108
         state = FilesystemState(messages=[], files={})
@@ -1205,24 +1225,24 @@ class TestFilesystemMiddleware:
         )
 
         read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
-        result = read_file_tool.invoke({"file_path": "/app/frame_001.jpg", "runtime": runtime})
+        result = read_file_tool.invoke({"file_path": "/app/screenshot.png", "runtime": runtime})
 
         assert isinstance(result, ToolMessage)
         assert result.name == "read_file"
         assert result.tool_call_id == "img-read-1"
-        assert result.additional_kwargs["read_file_path"] == "/app/frame_001.jpg"
-        assert result.additional_kwargs["read_file_media_type"] == "image/jpeg"
+        assert result.additional_kwargs["read_file_path"] == "/app/screenshot.png"
+        assert result.additional_kwargs["read_file_media_type"] == "image/png"
         assert isinstance(result.content, list)
         assert result.content[0]["type"] == "image"
-        assert result.content[0]["mime_type"] == "image/jpeg"
-        assert result.content[0]["base64"] == "ZmFrZS1pbWFnZS1ieXRlcw=="
+        assert result.content[0]["mime_type"] == "image/png"
+        assert result.content[0]["base64"] == "<base64_data>"
 
     def test_read_file_image_returns_error_when_download_fails(self):
         """Image reads should return a clear backend error string."""
 
         class ImageBackend(StateBackend):
-            def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
-                return [FileDownloadResponse(path=paths[0], content=None, error="file_not_found")]
+            def read(self, path, *, offset=0, limit=100):
+                return ReadResult(error="file_not_found")
 
         middleware = FilesystemMiddleware(backend=lambda rt: ImageBackend(rt))  # noqa: PLW0108
         state = FilesystemState(messages=[], files={})
@@ -1239,7 +1259,112 @@ class TestFilesystemMiddleware:
         result = read_file_tool.invoke({"file_path": "/app/missing.png", "runtime": runtime})
 
         assert isinstance(result, str)
-        assert result == "Error reading image: file_not_found"
+        assert result == "Error: file_not_found"
+
+    def test_read_file_handles_str_from_backend(self):
+        """Test that read_file works when backend.read() returns a plain str."""
+
+        class StrReadBackend(StateBackend):
+            def read(self, path, *, offset=0, limit=100):
+                return "     1\tline one\n     2\tline two"
+
+        middleware = FilesystemMiddleware(backend=lambda rt: StrReadBackend(rt))  # noqa: PLW0108
+        state = FilesystemState(messages=[], files={})
+        runtime = ToolRuntime(
+            state=state,
+            context=None,
+            tool_call_id="str-read",
+            store=None,
+            stream_writer=lambda _: None,
+            config={},
+        )
+
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+        with pytest.warns(DeprecationWarning, match="Returning a plain `str`"):
+            result = read_file_tool.invoke({"file_path": "/app/file.txt", "runtime": runtime})
+
+        assert isinstance(result, str)
+        assert "line one" in result
+
+    def test_read_file_str_backend_line_limit_truncation(self):
+        """Legacy str backend respects the line-count limit."""
+
+        class StrReadBackend(StateBackend):
+            def read(self, path, *, offset=0, limit=100):
+                return "\n".join(f"{i:6d}\tline {i}" for i in range(1, 201))
+
+        middleware = FilesystemMiddleware(backend=lambda rt: StrReadBackend(rt))  # noqa: PLW0108
+        state = FilesystemState(messages=[], files={})
+        runtime = ToolRuntime(
+            state=state,
+            context=None,
+            tool_call_id="str-trunc",
+            store=None,
+            stream_writer=lambda _: None,
+            config={},
+        )
+
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+        with pytest.warns(DeprecationWarning, match="Returning a plain `str`"):
+            result = read_file_tool.invoke({"file_path": "/app/big.txt", "limit": 50, "runtime": runtime})
+
+        assert isinstance(result, str)
+        output_lines = [ln for ln in result.splitlines() if ln.strip()]
+        assert len(output_lines) <= 50
+
+    def test_read_file_str_backend_token_truncation(self):
+        """Legacy str backend applies token-based truncation for huge content."""
+        token_limit = 500
+
+        class StrReadBackend(StateBackend):
+            def read(self, path, *, offset=0, limit=100):
+                return "x" * (NUM_CHARS_PER_TOKEN * token_limit + 1000)
+
+        middleware = FilesystemMiddleware(
+            backend=lambda rt: StrReadBackend(rt),  # noqa: PLW0108
+            tool_token_limit_before_evict=token_limit,
+        )
+        state = FilesystemState(messages=[], files={})
+        runtime = ToolRuntime(
+            state=state,
+            context=None,
+            tool_call_id="str-tok",
+            store=None,
+            stream_writer=lambda _: None,
+            config={},
+        )
+
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+        with pytest.warns(DeprecationWarning, match="Returning a plain `str`"):
+            result = read_file_tool.invoke({"file_path": "/app/huge.txt", "runtime": runtime})
+
+        assert isinstance(result, str)
+        assert "Output was truncated due to size limits" in result
+        assert len(result) <= NUM_CHARS_PER_TOKEN * token_limit
+
+    def test_read_file_empty_file_returns_warning(self):
+        """ReadResult with empty content returns the empty-content warning."""
+        middleware = FilesystemMiddleware()
+        state = FilesystemState(messages=[], files={})
+        runtime = ToolRuntime(
+            state=state,
+            context=None,
+            tool_call_id="empty-read",
+            store=None,
+            stream_writer=lambda _: None,
+            config={},
+        )
+
+        backend = middleware._get_backend(runtime)
+        res = backend.write("/empty.txt", "")
+        if hasattr(backend, "runtime"):
+            backend.runtime.state["files"].update(res.files_update)
+
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+        result = read_file_tool.invoke({"file_path": "/empty.txt", "runtime": runtime})
+
+        assert isinstance(result, str)
+        assert result == EMPTY_CONTENT_WARNING
 
     def test_execute_tool_returns_error_when_backend_doesnt_support(self):
         """Test that execute tool returns friendly error instead of raising exception."""

@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 from langchain.chat_models import init_chat_model
+from langchain_baseten import ChatBaseten
 from langchain_openai import ChatOpenAI
 
 if TYPE_CHECKING:
@@ -88,9 +89,7 @@ def model(model_name: str) -> BaseChatModel:
             api_key=os.environ["NVIDIA_API_KEY"],
         )
     if model_name.startswith("baseten:"):
-        return ChatOpenAI(
+        return ChatBaseten(
             model=model_name.removeprefix("baseten:"),
-            base_url="https://inference.baseten.co/v1",
-            api_key=os.environ["BASETEN_API_KEY"],
         )
     return init_chat_model(model_name)

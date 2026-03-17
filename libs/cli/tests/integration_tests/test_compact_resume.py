@@ -174,7 +174,7 @@ async def test_compact_resumed_thread_uses_persisted_history(
                     for widget in resume_messages
                 )
 
-                await app._handle_compact()
+                await app._handle_offload()
 
                 # `/compact` posts a success message after the async state write
                 # and archive offload finish.

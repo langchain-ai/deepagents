@@ -1,0 +1,144 @@
+# Advisory check: posts a comment on CLI release PRs when the deepagents SDK
+# pin drifts from the actual SDK version. Does not block merge — the release
+# workflow enforces the pin at publish time. Removes the comment once resolved.
+# See also: release.yml "Verify CLI pins latest SDK version" step (hard gate).
+
+name: "🔗 Check SDK Pin"
+
+on:
+  pull_request:
+    paths:
+      - "libs/deepagents/pyproject.toml"
+      - "libs/cli/pyproject.toml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  check-sdk-pin:
+    if: startsWith(github.head_ref, 'release-please--branches--main--components--deepagents-cli')
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Compare SDK version to CLI pin
+        id: check
+        run: |
+          SDK_VERSION=$(grep -Pom1 '(?<=^version = ")[0-9]+\.[0-9]+\.[0-9]+' libs/deepagents/pyproject.toml) || {
+            echo "::error file=libs/deepagents/pyproject.toml::Failed to extract SDK version. Expected a line matching: version = \"X.Y.Z\""
+            exit 1
+          }
+          if [[ -z "$SDK_VERSION" ]]; then
+            echo "::error file=libs/deepagents/pyproject.toml::SDK version is empty. Found: version = \"\""
+            exit 1
+          fi
+
+          CLI_SDK_PIN=$(grep -Pom1 '(?<=deepagents==)[0-9]+\.[0-9]+\.[0-9]+' libs/cli/pyproject.toml) || {
+            echo "::error file=libs/cli/pyproject.toml::Failed to extract CLI SDK pin. Expected a dependency matching: deepagents==X.Y.Z"
+            exit 1
+          }
+          if [[ -z "$CLI_SDK_PIN" ]]; then
+            echo "::error file=libs/cli/pyproject.toml::CLI SDK pin is empty"
+            exit 1
+          fi
+
+          echo "sdk_version=$SDK_VERSION" >> "$GITHUB_OUTPUT"
+          echo "cli_pin=$CLI_SDK_PIN" >> "$GITHUB_OUTPUT"
+          echo "match=$( [ "$SDK_VERSION" = "$CLI_SDK_PIN" ] && echo true || echo false )" >> "$GITHUB_OUTPUT"
+
+      - name: Manage PR comment
+        uses: actions/github-script@v8
+        env:
+          SDK_VERSION: ${{ steps.check.outputs.sdk_version }}
+          CLI_PIN: ${{ steps.check.outputs.cli_pin }}
+          PIN_MATCH: ${{ steps.check.outputs.match }}
+        with:
+          script: |
+            // Hidden HTML marker to identify comments posted by this workflow.
+            const marker = '<!-- sdk-pin-check -->';
+            const { owner, repo } = context.repo;
+            const prNumber = context.payload.pull_request.number;
+
+            const comments = await github.paginate(
+              github.rest.issues.listComments,
+              { owner, repo, issue_number: prNumber, per_page: 100 },
+            );
+            const existing = comments.find(c => c.body?.includes(marker));
+
+            const match = process.env.PIN_MATCH === 'true';
+            const sdkVersion = process.env.SDK_VERSION;
+            const cliPin = process.env.CLI_PIN;
+
+            if (!sdkVersion || !cliPin) {
+              core.setFailed(
+                `Version extraction returned empty values. SDK: "${sdkVersion}", CLI pin: "${cliPin}". ` +
+                'Check that libs/deepagents/pyproject.toml and libs/cli/pyproject.toml have the expected format.'
+              );
+              return;
+            }
+
+            if (match && existing) {
+              try {
+                await github.rest.issues.deleteComment({
+                  owner, repo,
+                  comment_id: existing.id,
+                });
+                core.info('Pin matches — removed stale warning comment.');
+              } catch (error) {
+                // 404 = comment was already deleted (concurrent run or manual removal)
+                if (error.status === 404) {
+                  core.info('Stale comment already deleted.');
+                } else {
+                  core.warning(
+                    `Failed to delete stale SDK pin warning comment (${error.status}): ${error.message}. ` +
+                    'The outdated warning may still be visible on the PR.'
+                  );
+                }
+              }
+            } else if (match) {
+              core.info(`SDK pin matches: deepagents==${sdkVersion}. No action needed.`);
+            } else {
+              const body = [
+                marker,
+                '> [!WARNING]',
+                '> **SDK pin mismatch** — the next CLI release will fail until this is resolved.',
+                '>',
+                '> | | Version |',
+                '> |---|---|',
+                `> | SDK (\`libs/deepagents/pyproject.toml\`) | \`${sdkVersion}\` |`,
+                `> | CLI pin (\`libs/cli/pyproject.toml\`) | \`${cliPin}\` |`,
+                '>',
+                `> Update \`libs/cli/pyproject.toml\` to pin \`deepagents==${sdkVersion}\`.`,
+              ].join('\n');
+
+              try {
+                // Update silently (no workflow annotation) to avoid repeated warnings on re-pushes.
+                if (existing) {
+                  await github.rest.issues.updateComment({
+                    owner, repo,
+                    comment_id: existing.id,
+                    body,
+                  });
+                  core.info('Updated existing warning comment.');
+                } else {
+                  await github.rest.issues.createComment({
+                    owner, repo,
+                    issue_number: prNumber,
+                    body,
+                  });
+                }
+              } catch (error) {
+                core.warning(
+                  `Could not post/update PR comment (status ${error.status}): ${error.message}. ` +
+                  `The mismatch still exists: CLI pins deepagents==${cliPin} but SDK is ${sdkVersion}.`
+                );
+              }
+              // Always emit annotation regardless of comment success.
+              core.warning(`CLI pins deepagents==${cliPin} but SDK is ${sdkVersion}`);
+            }

@@ -360,7 +360,7 @@ def _get_subagents_legacy(
                 "name": agent_["name"],
                 "description": agent_["description"],
                 "runnable": create_agent(
-                    subagent_model,
+                    subagent_model,  # ty: ignore[invalid-argument-type]  # _ConfigurableModel is runtime-compatible with BaseChatModel
                     system_prompt=agent_["system_prompt"],
                     tools=_tools,
                     middleware=_middleware,
@@ -659,7 +659,7 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
                     "name": spec["name"],
                     "description": spec["description"],
                     "runnable": create_agent(
-                        model,
+                        model,  # ty: ignore[invalid-argument-type]  # _ConfigurableModel is runtime-compatible with BaseChatModel
                         system_prompt=spec["system_prompt"],
                         tools=spec["tools"],
                         middleware=middleware,

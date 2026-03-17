@@ -7,6 +7,7 @@ from langchain.agents import create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig, TodoListMiddleware
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain.agents.structured_output import ResponseFormat
+from langchain.chat_models.base import _ConfigurableModel
 from langchain_anthropic import ChatAnthropic
 from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
 from langchain_core.language_models import BaseChatModel
@@ -80,7 +81,7 @@ def get_default_model() -> ChatAnthropic:
 
 
 def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic with many conditional branches
-    model: str | BaseChatModel | None = None,
+    model: str | BaseChatModel | _ConfigurableModel | None = None,
     tools: Sequence[BaseTool | Callable | dict[str, Any]] | None = None,
     *,
     system_prompt: str | SystemMessage | None = None,
@@ -292,7 +293,7 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
         final_system_prompt = system_prompt + "\n\n" + BASE_AGENT_PROMPT
 
     return create_agent(
-        model,
+        model,  # ty: ignore[invalid-argument-type]  # _ConfigurableModel is runtime-compatible with BaseChatModel
         system_prompt=final_system_prompt,
         tools=tools,
         middleware=deepagent_middleware,

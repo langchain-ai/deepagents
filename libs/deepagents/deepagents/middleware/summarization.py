@@ -161,7 +161,7 @@ class SummarizationDefaults(TypedDict):
     truncate_args_settings: TruncateArgsSettings
 
 
-def compute_summarization_defaults(model: BaseChatModel) -> SummarizationDefaults:
+def compute_summarization_defaults(model: BaseChatModel | _ConfigurableModel) -> SummarizationDefaults:
     """Compute default summarization settings based on model profile.
 
     Args:
@@ -208,7 +208,7 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
 
     def __init__(
         self,
-        model: str | BaseChatModel,
+        model: str | BaseChatModel | _ConfigurableModel,
         *,
         backend: BACKEND_TYPES,
         trigger: ContextSize | list[ContextSize] | None = None,
@@ -265,7 +265,7 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
         """
         # Initialize langchain helper for core summarization logic
         self._lc_helper = LCSummarizationMiddleware(
-            model=model,
+            model=model,  # ty: ignore[invalid-argument-type]  # _ConfigurableModel is runtime-compatible with BaseChatModel
             trigger=trigger,
             keep=keep,
             token_counter=token_counter,

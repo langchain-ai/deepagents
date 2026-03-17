@@ -399,7 +399,11 @@ def _build_task_tool(  # noqa: C901
     else:
         description = task_description
 
-    def _return_command_with_state_update(result: dict, tool_call_id: str) -> Command:
+    def _return_command_with_state_update(
+        result: dict,
+        tool_call_id: str,
+        subgraph_checkpoint_ns: str | None = None,
+    ) -> Command:
         # Validate that the result contains a 'messages' key
         if "messages" not in result:
             error_msg = (
@@ -412,10 +416,15 @@ def _build_task_tool(  # noqa: C901
         state_update = {k: v for k, v in result.items() if k not in _EXCLUDED_STATE_KEYS}
         # Strip trailing whitespace to prevent API errors with Anthropic
         message_text = result["messages"][-1].text.rstrip() if result["messages"][-1].text else ""
+        # Store the actual subgraph checkpoint_ns so the LangGraph SDK can
+        # retrieve the subagent's persisted message history after page reload.
+        # The namespace uses LangGraph's internal UUID-based task ID format
+        # (e.g. "tools:a1b2c3d4-..."), not the LLM provider tool call ID.
+        additional_kwargs = {"subgraph_checkpoint_ns": subgraph_checkpoint_ns} if subgraph_checkpoint_ns else {}
         return Command(
             update={
                 **state_update,
-                "messages": [ToolMessage(message_text, tool_call_id=tool_call_id)],
+                "messages": [ToolMessage(message_text, tool_call_id=tool_call_id, additional_kwargs=additional_kwargs)],
             }
         )
 
@@ -442,8 +451,13 @@ def _build_task_tool(  # noqa: C901
             value_error_msg = "Tool call ID is required for subagent invocation"
             raise ValueError(value_error_msg)
         subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
+        # Capture the actual subgraph checkpoint_ns from the task's config.
+        # LangGraph's execution sets this to a UUID-based namespace (e.g. "tools:a1b2c3d4-...")
+        # which is where the subagent will persist its checkpoints. We store this in the
+        # resulting ToolMessage so the SDK can restore subagent history after page reload.
+        subgraph_checkpoint_ns = (runtime.config.get("configurable") or {}).get("checkpoint_ns")
         result = subagent.invoke(subagent_state)
-        return _return_command_with_state_update(result, runtime.tool_call_id)
+        return _return_command_with_state_update(result, runtime.tool_call_id, subgraph_checkpoint_ns)
 
     async def atask(
         description: Annotated[
@@ -460,8 +474,13 @@ def _build_task_tool(  # noqa: C901
             value_error_msg = "Tool call ID is required for subagent invocation"
             raise ValueError(value_error_msg)
         subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
+        # Capture the actual subgraph checkpoint_ns from the task's config.
+        # LangGraph's execution sets this to a UUID-based namespace (e.g. "tools:a1b2c3d4-...")
+        # which is where the subagent will persist its checkpoints. We store this in the
+        # resulting ToolMessage so the SDK can restore subagent history after page reload.
+        subgraph_checkpoint_ns = (runtime.config.get("configurable") or {}).get("checkpoint_ns")
         result = await subagent.ainvoke(subagent_state)
-        return _return_command_with_state_update(result, runtime.tool_call_id)
+        return _return_command_with_state_update(result, runtime.tool_call_id, subgraph_checkpoint_ns)
 
     return StructuredTool.from_function(
         name="task",

@@ -19,6 +19,7 @@ from langchain_core.runnables import RunnableConfig, RunnableLambda
 from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
+from langgraph.types import Command
 from pydantic import BaseModel, Field
 
 from deepagents.backends.filesystem import FilesystemBackend
@@ -126,6 +127,54 @@ class TestSubAgents:
         # Verify the ToolMessage contains the subagent's final response
         subagent_tool_message = tool_messages[0]
         assert "The sum of 2 and 3 is 5." in subagent_tool_message.content, "ToolMessage should contain subagent's final message content"
+
+    def test_subagent_tool_message_contains_checkpoint_ns(self) -> None:
+        """Test that the ToolMessage carries the subgraph checkpoint_ns in additional_kwargs.
+
+        When LangGraph executes the task tool, it injects a UUID-based checkpoint_ns into
+        the config (e.g. "tools:a1b2c3d4-..."). This namespace identifies where the
+        subagent's checkpoints are persisted, and must be forwarded to the resulting
+        ToolMessage so the SDK can reconstruct subagent history after page reload.
+        """
+        from deepagents.middleware.subagents import _build_task_tool  # noqa: PLC0415
+
+        checkpoint_ns = "tools:a1b2c3d4-5678-90ab-cdef-000000000000"
+
+        subagent_chat_model = GenericFakeChatModel(
+            messages=iter([AIMessage(content="Done.")])
+        )
+        compiled_subagent = create_agent(model=subagent_chat_model)
+
+        task_tool = _build_task_tool(
+            subagents=[
+                {
+                    "name": "worker",
+                    "description": "A worker agent.",
+                    "runnable": compiled_subagent,
+                }
+            ]
+        )
+
+        mock_runtime = ToolRuntime(
+            state={"messages": []},
+            context=None,
+            tool_call_id="call_abc123",
+            store=None,
+            stream_writer=lambda _: None,
+            config=RunnableConfig(configurable={"checkpoint_ns": checkpoint_ns}),
+        )
+
+        result = task_tool.func(
+            description="Do something",
+            subagent_type="worker",
+            runtime=mock_runtime,
+        )
+
+        assert isinstance(result, Command)
+        messages = result.update["messages"]
+        assert len(messages) == 1
+        tool_msg = messages[0]
+        assert tool_msg.additional_kwargs.get("subgraph_checkpoint_ns") == checkpoint_ns
 
     def test_multiple_subagents_invoked_in_parallel(self) -> None:
         """Test that multiple different subagents can be launched in parallel.

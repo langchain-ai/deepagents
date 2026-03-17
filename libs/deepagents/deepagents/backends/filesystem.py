@@ -483,10 +483,16 @@ class FilesystemBackend(BackendProtocol):
             Dict mapping file paths to list of `(line_number, line_text)` tuples.
                 Returns `None` if ripgrep is unavailable or times out.
         """
+        # Validate and canonicalize base path to prevent path traversal attacks
+        try:
+            base_full_canonical = base_full.resolve()
+        except (OSError, RuntimeError) as e:
+            raise ValueError(f"Invalid base path: {base_full}") from e
+        
         cmd = ["rg", "--json", "-F"]  # -F enables fixed-string (literal) mode
         if include_glob:
             cmd.extend(["--glob", include_glob])
-        cmd.extend(["--", pattern, str(base_full)])
+        cmd.extend(["--", pattern, str(base_full_canonical)])
 
         try:
             proc = subprocess.run(  # noqa: S603

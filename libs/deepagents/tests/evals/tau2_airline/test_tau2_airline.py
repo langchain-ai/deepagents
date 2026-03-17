@@ -125,7 +125,6 @@ def test_tau2_airline(model: BaseChatModel, task_id: str) -> None:
     )
     episode_score = score_tau2_episode(reward)
 
-    t.log_feedback(key="correctness", value=1 if episode_score.success else 0)
     t.log_feedback(key="db_score", value=reward.db_score)
     t.log_feedback(key="communicate_score", value=reward.communicate_score)
     t.log_feedback(key="turn_count", value=conversation.turn_count)

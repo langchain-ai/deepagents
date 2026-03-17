@@ -95,6 +95,7 @@ openrouter = ["langchain-openrouter>=0.1.0,<2.0.0"]
 perplexity = ["langchain-perplexity>=1.0.0,<2.0.0"]
 vertexai = ["langchain-google-vertexai>=3.0.0,<4.0.0"]
 xai = ["langchain-xai>=1.0.0,<2.0.0"]
+
 # Sandbox providers
 daytona = ["langchain-daytona>=0.0.4"]
 modal = ["langchain-modal>=0.0.2"]
@@ -102,6 +103,7 @@ runloop = ["langchain-runloop>=0.0.3"]
 all-sandboxes = [
     "deepagents-cli[daytona,modal,runloop]",
 ]
+
 all-providers = [
     "deepagents-cli[anthropic,baseten,bedrock,cohere,deepseek,fireworks,google-genai,groq,huggingface,ibm,litellm,mistralai,nvidia,ollama,openai,openrouter,perplexity,vertexai,xai]",
 ]
@@ -150,7 +152,12 @@ langchain-runloop = { path = "../partners/runloop", editable = true }
 
 [tool.ty.environment]
 python-version = "3.11"
-extra-paths = ["../deepagents"]
+extra-paths = [
+    "../deepagents",
+    "../partners/daytona",
+    "../partners/modal",
+    "../partners/runloop",
+]
 
 [tool.ty.rules]
 # https://docs.astral.sh/ty/rules/

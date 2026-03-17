@@ -1,0 +1,94 @@
+{
+  "org": "langchain-ai",
+  "trustedThreshold": 5,
+  "labelColor": "b76e79",
+  "sizeThresholds": [
+    {
+      "label": "size: XS",
+      "max": 50
+    },
+    {
+      "label": "size: S",
+      "max": 200
+    },
+    {
+      "label": "size: M",
+      "max": 500
+    },
+    {
+      "label": "size: L",
+      "max": 1000
+    },
+    {
+      "label": "size: XL"
+    }
+  ],
+  "excludedFiles": [
+    "uv.lock"
+  ],
+  "excludedPaths": [
+    "docs/"
+  ],
+  "typeToLabel": {
+    "feat": "feature",
+    "fix": "fix",
+    "docs": "documentation",
+    "hotfix": "hotfix",
+    "style": "linting",
+    "refactor": "refactor",
+    "perf": "performance",
+    "test": "tests",
+    "build": "infra",
+    "ci": "infra",
+    "chore": "infra",
+    "revert": "revert",
+    "release": "release",
+    "breaking": "breaking"
+  },
+  "scopeToLabel": {
+    "deepagents": "deepagents",
+    "sdk": "deepagents",
+    "deepagents-cli": "cli",
+    "cli": "cli",
+    "harbor": "harbor",
+    "acp": "acp"
+  },
+  "fileRules": [
+    {
+      "label": "deepagents",
+      "prefix": "libs/deepagents/"
+    },
+    {
+      "label": "cli",
+      "prefix": "libs/cli/"
+    },
+    {
+      "label": "acp",
+      "prefix": "libs/acp/"
+    },
+    {
+      "label": "harbor",
+      "prefix": "libs/harbor/"
+    },
+    {
+      "label": "github_actions",
+      "prefix": ".github/workflows/"
+    },
+    {
+      "label": "github_actions",
+      "prefix": ".github/actions/"
+    },
+    {
+      "label": "dependencies",
+      "suffix": "pyproject.toml"
+    },
+    {
+      "label": "dependencies",
+      "exact": "uv.lock"
+    },
+    {
+      "label": "dependencies",
+      "pattern": "(?:^|/)requirements[^/]*\\.txt$"
+    }
+  ]
+}

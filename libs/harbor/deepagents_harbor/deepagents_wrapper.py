@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.metadata
 import json
 import logging
 import os
@@ -37,7 +38,7 @@ if TYPE_CHECKING:
     from langchain_core.runnables import RunnableConfig
 
 from deepagents_harbor.backend import HarborSandbox
-from deepagents_harbor.infra import InfraMetadata, collect_sandbox_metadata
+from deepagents_harbor.metadata import InfraMetadata, collect_sandbox_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -208,7 +209,7 @@ class DeepAgentsWrapper(BaseAgent):
 
         backend = HarborSandbox(environment)
 
-        # Collect infrastructure metadata for noise analysis
+        # Infrastructure metadata for noise analysis
         try:
             infra_meta = await collect_sandbox_metadata(backend)
         except Exception:  # noqa: BLE001  # metadata is supplementary; never abort a trial
@@ -418,7 +419,8 @@ class DeepAgentsWrapper(BaseAgent):
                 model_name=self._model_name,
                 extra={
                     "framework": "deepagents",
-                    "langchain_version": "1.0+",
+                    "langchain_version": importlib.metadata.version("langchain"),
+                    "langchain_core_version": importlib.metadata.version("langchain-core"),
                     **({"infrastructure": infra_meta.to_dict()} if infra_meta else {}),
                 },
             ),

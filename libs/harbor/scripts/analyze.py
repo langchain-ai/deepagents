@@ -14,13 +14,12 @@ from typing import Optional
 
 from deepagents import create_deep_agent
 
-from deepagents_harbor.infra import (
+from deepagents_harbor.failure import (
     FailureCategory,
     classify_failure,
     extract_exit_codes,
-    format_ci,
-    min_detectable_effect,
 )
+from deepagents_harbor.stats import format_ci, min_detectable_effect
 
 
 def scan_dataset_for_solutions(dataset_path: Path) -> dict[str, Path]:

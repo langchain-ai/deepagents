@@ -5,18 +5,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from deepagents_harbor.infra import (
+from deepagents_harbor.failure import (
     FailureCategory,
+    classify_failure,
+    extract_exit_codes,
+)
+from deepagents_harbor.metadata import (
     InfraMetadata,
     SandboxLike,
-    classify_failure,
     collect_host_metadata,
     collect_sandbox_metadata,
-    extract_exit_codes,
-    format_ci,
-    min_detectable_effect,
-    wilson_ci,
 )
+from deepagents_harbor.stats import format_ci, min_detectable_effect, wilson_ci
 
 
 class TestClassifyFailure:

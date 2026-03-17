@@ -1,6 +1,4 @@
-import time
 from functools import partial
-from unittest.mock import patch
 
 import pytest
 from langchain.agents import create_agent
@@ -16,12 +14,16 @@ from langchain_core.messages import (
 from langgraph.store.memory import InMemoryStore
 from langgraph.types import Command, Overwrite
 
-import deepagents.middleware.filesystem as filesystem_middleware
 from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
 from deepagents.backends.protocol import (
+    EditResult,
     ExecuteResponse,
+    GlobResult,
+    GrepResult,
+    LsResult,
     ReadResult,
     SandboxBackendProtocol,
+    WriteResult,
 )
 from deepagents.backends.utils import (
     TRUNCATION_GUIDANCE,
@@ -56,6 +58,55 @@ def build_composite_state_backend(runtime: ToolRuntime, *, routes):
             built_routes[prefix] = backend_or_factory
     default_state = StateBackend(runtime)
     return CompositeBackend(default=default_state, routes=built_routes)
+
+
+class RecordingFilesystemBackend(StateBackend):
+    """State-backed test backend that records filesystem timeouts."""
+
+    def __init__(self, runtime: ToolRuntime) -> None:
+        super().__init__(runtime)
+        self.timeouts: dict[str, int | None] = {}
+        self.glob_result = GlobResult(matches=[])
+        self.grep_result = GrepResult(matches=[])
+
+    def ls_info(self, path: str, *, timeout: int | None = None) -> LsResult:
+        self.timeouts["ls"] = timeout
+        return LsResult(entries=[])
+
+    def read(self, path: str, offset: int = 0, limit: int = 100, *, timeout: int | None = None) -> ReadResult:
+        self.timeouts["read"] = timeout
+        return ReadResult(file_data=create_file_data("content"))
+
+    def write(self, path: str, content: str, *, timeout: int | None = None) -> WriteResult:
+        self.timeouts["write"] = timeout
+        return WriteResult(path=path, files_update=None)
+
+    def edit(
+        self,
+        path: str,
+        old_string: str,
+        new_string: str,
+        replace_all: bool = False,  # noqa: FBT001, FBT002
+        *,
+        timeout: int | None = None,
+    ) -> EditResult:
+        self.timeouts["edit"] = timeout
+        return EditResult(path=path, files_update=None, occurrences=1)
+
+    def glob_info(self, pattern: str, path: str = "/", *, timeout: int | None = None) -> GlobResult:
+        self.timeouts["glob"] = timeout
+        return self.glob_result
+
+    def grep_raw(
+        self,
+        pattern: str,
+        path: str | None = None,
+        glob: str | None = None,
+        *,
+        timeout: int | None = None,
+    ) -> GrepResult:
+        self.timeouts["grep"] = timeout
+        return self.grep_result
 
 
 class TestAddMiddleware:
@@ -421,30 +472,77 @@ class TestFilesystemMiddleware:
         assert result == str([])
 
     def test_glob_timeout_returns_error_message(self):
-        state = FilesystemState(messages=[], files={})
-        middleware = FilesystemMiddleware()
+        rt = ToolRuntime(
+            state={"messages": [], "files": {}},
+            context=None,
+            tool_call_id="glob_timeout",
+            store=None,
+            stream_writer=lambda _: None,
+            config={},
+        )
+        backend = RecordingFilesystemBackend(rt)
+        backend.glob_result = GlobResult(error="glob timed out after 1s. Try a more specific pattern or a narrower path.")
+        middleware = FilesystemMiddleware(backend=backend, max_filesystem_timeout=5)
         glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
-        backend = middleware._get_backend(
-            ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={})
+        result = glob_search_tool.invoke({"pattern": "**/*", "timeout": 1, "runtime": rt})
+
+        assert result == "Error: glob timed out after 1s. Try a more specific pattern or a narrower path."
+        assert backend.timeouts["glob"] == 1
+
+    def test_filesystem_tools_apply_default_timeout_caps(self):
+        rt = ToolRuntime(
+            state={"messages": [], "files": {}},
+            context=None,
+            tool_call_id="filesystem_caps",
+            store=None,
+            stream_writer=lambda _: None,
+            config={},
+        )
+        backend = RecordingFilesystemBackend(rt)
+        middleware = FilesystemMiddleware(backend=backend, max_filesystem_timeout=45)
+
+        next(tool for tool in middleware.tools if tool.name == "ls").invoke({"path": "/", "runtime": rt})
+        next(tool for tool in middleware.tools if tool.name == "read_file").invoke({"file_path": "/test.txt", "runtime": rt})
+        next(tool for tool in middleware.tools if tool.name == "write_file").invoke({"file_path": "/test.txt", "content": "x", "runtime": rt})
+        next(tool for tool in middleware.tools if tool.name == "edit_file").invoke(
+            {"file_path": "/test.txt", "old_string": "x", "new_string": "y", "runtime": rt}
         )
 
-        def slow_glob_info(*_args: object, **_kwargs: object) -> list[dict[str, str]]:
-            time.sleep(2)
-            return []
+        assert backend.timeouts["ls"] == 45
+        assert backend.timeouts["read"] == 45
+        assert backend.timeouts["write"] == 45
+        assert backend.timeouts["edit"] == 45
 
-        with (
-            patch.object(filesystem_middleware, "GLOB_TIMEOUT", 0.5),
-            patch.object(middleware, "_get_backend", return_value=backend),
-            patch.object(backend, "glob_info", side_effect=slow_glob_info),
-        ):
-            result = glob_search_tool.invoke(
-                {
-                    "pattern": "**/*",
-                    "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
-                }
-            )
+    def test_glob_and_grep_timeout_defaults_and_validation(self):
+        rt = ToolRuntime(
+            state={"messages": [], "files": {}},
+            context=None,
+            tool_call_id="glob_grep_timeout",
+            store=None,
+            stream_writer=lambda _: None,
+            config={},
+        )
+        backend = RecordingFilesystemBackend(rt)
+        middleware = FilesystemMiddleware(backend=backend, max_filesystem_timeout=40)
 
-        assert result == "Error: glob timed out after 0.5s. Try a more specific pattern or a narrower path."
+        glob_tool = next(tool for tool in middleware.tools if tool.name == "glob")
+        grep_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+
+        glob_tool.invoke({"pattern": "**/*", "runtime": rt})
+        grep_tool.invoke({"pattern": "needle", "runtime": rt})
+        assert backend.timeouts["glob"] == 20
+        assert backend.timeouts["grep"] == 30
+
+        glob_tool.invoke({"pattern": "**/*", "timeout": 15, "runtime": rt})
+        grep_tool.invoke({"pattern": "needle", "timeout": 16, "runtime": rt})
+        assert backend.timeouts["glob"] == 15
+        assert backend.timeouts["grep"] == 16
+
+        result = glob_tool.invoke({"pattern": "**/*", "timeout": 41, "runtime": rt})
+        assert result == "Error: timeout 41s exceeds maximum allowed (40s)."
+
+        result = grep_tool.invoke({"pattern": "needle", "timeout": 0, "runtime": rt})
+        assert result == "Error: timeout must be positive, got 0."
 
     def test_glob_search_truncates_large_results(self):
         """Test that glob results are truncated when they exceed token limit."""
@@ -1203,7 +1301,7 @@ class TestFilesystemMiddleware:
         """Test image reads return standard image blocks with base64 + mime_type."""
 
         class ImageBackend(StateBackend):
-            def read(self, path, *, offset=0, limit=100):
+            def read(self, path, *, offset=0, limit=100, timeout=None):
                 return ReadResult(
                     file_data={
                         "content": "<base64_data>",
@@ -1241,7 +1339,7 @@ class TestFilesystemMiddleware:
         """Image reads should return a clear backend error string."""
 
         class ImageBackend(StateBackend):
-            def read(self, path, *, offset=0, limit=100):
+            def read(self, path, *, offset=0, limit=100, timeout=None):
                 return ReadResult(error="file_not_found")
 
         middleware = FilesystemMiddleware(backend=lambda rt: ImageBackend(rt))  # noqa: PLW0108
@@ -1265,7 +1363,7 @@ class TestFilesystemMiddleware:
         """Test that read_file works when backend.read() returns a plain str."""
 
         class StrReadBackend(StateBackend):
-            def read(self, path, *, offset=0, limit=100):
+            def read(self, path, *, offset=0, limit=100, timeout=None):
                 return "     1\tline one\n     2\tline two"
 
         middleware = FilesystemMiddleware(backend=lambda rt: StrReadBackend(rt))  # noqa: PLW0108
@@ -1290,7 +1388,7 @@ class TestFilesystemMiddleware:
         """Legacy str backend respects the line-count limit."""
 
         class StrReadBackend(StateBackend):
-            def read(self, path, *, offset=0, limit=100):
+            def read(self, path, *, offset=0, limit=100, timeout=None):
                 return "\n".join(f"{i:6d}\tline {i}" for i in range(1, 201))
 
         middleware = FilesystemMiddleware(backend=lambda rt: StrReadBackend(rt))  # noqa: PLW0108
@@ -1317,7 +1415,7 @@ class TestFilesystemMiddleware:
         token_limit = 500
 
         class StrReadBackend(StateBackend):
-            def read(self, path, *, offset=0, limit=100):
+            def read(self, path, *, offset=0, limit=100, timeout=None):
                 return "x" * (NUM_CHARS_PER_TOKEN * token_limit + 1000)
 
         middleware = FilesystemMiddleware(
@@ -2182,7 +2280,13 @@ class TestBuiltinTruncationTools:
         assert captured_timeout["value"] is None
 
     def test_max_execute_timeout_init_validation(self):
-        """FilesystemMiddleware should reject non-positive max_execute_timeout at init."""
+        """FilesystemMiddleware should reject non-positive timeout caps at init."""
+        with pytest.raises(ValueError, match="max_filesystem_timeout must be positive"):
+            FilesystemMiddleware(max_filesystem_timeout=0)
+
+        with pytest.raises(ValueError, match="max_filesystem_timeout must be positive"):
+            FilesystemMiddleware(max_filesystem_timeout=-1)
+
         with pytest.raises(ValueError, match="max_execute_timeout must be positive"):
             FilesystemMiddleware(max_execute_timeout=0)
 

@@ -329,16 +329,24 @@ class StoreBackend(BackendProtocol):
 
         return all_items
 
-    def ls_info(self, path: str) -> LsResult:
+    def ls_info(
+        self,
+        path: str,
+        *,
+        timeout: int | None = None,
+    ) -> LsResult:
         """List files and directories in the specified directory (non-recursive).
 
         Args:
             path: Absolute path to directory.
+            timeout: Unused for store-backed listings; accepted for protocol
+                compatibility.
 
         Returns:
             List of FileInfo-like dicts for files and directories directly in the directory.
             Directories have a trailing / in their path and is_dir=True.
         """
+        del timeout
         store = self._get_store()
         namespace = self._get_namespace()
 
@@ -394,6 +402,8 @@ class StoreBackend(BackendProtocol):
         file_path: str,
         offset: int = 0,
         limit: int = 2000,
+        *,
+        timeout: int | None = None,
     ) -> ReadResult:
         """Read file content for the requested line range.
 
@@ -401,11 +411,14 @@ class StoreBackend(BackendProtocol):
             file_path: Absolute file path.
             offset: Line offset to start reading from (0-indexed).
             limit: Maximum number of lines to read.
+            timeout: Unused for store-backed reads; accepted for protocol
+                compatibility.
 
         Returns:
             ReadResult with raw (unformatted) content for the requested
             window. Line-number formatting is applied by the middleware.
         """
+        del timeout
         store = self._get_store()
         namespace = self._get_namespace()
         item: Item | None = store.get(namespace, file_path)
@@ -438,11 +451,14 @@ class StoreBackend(BackendProtocol):
         file_path: str,
         offset: int = 0,
         limit: int = 2000,
+        *,
+        timeout: int | None = None,  # noqa: ASYNC109
     ) -> ReadResult:
         """Async version of read using native store async methods.
 
         This avoids sync calls in async context by using store.aget directly.
         """
+        del timeout
         store = self._get_store()
         namespace = self._get_namespace()
         item: Item | None = await store.aget(namespace, file_path)
@@ -474,11 +490,14 @@ class StoreBackend(BackendProtocol):
         self,
         file_path: str,
         content: str,
+        *,
+        timeout: int | None = None,
     ) -> WriteResult:
         """Create a new file with content.
 
         Returns WriteResult. External storage sets files_update=None.
         """
+        del timeout
         store = self._get_store()
         namespace = self._get_namespace()
 
@@ -497,11 +516,14 @@ class StoreBackend(BackendProtocol):
         self,
         file_path: str,
         content: str,
+        *,
+        timeout: int | None = None,  # noqa: ASYNC109
     ) -> WriteResult:
         """Async version of write using native store async methods.
 
         This avoids sync calls in async context by using store.aget/aput directly.
         """
+        del timeout
         store = self._get_store()
         namespace = self._get_namespace()
 
@@ -522,11 +544,14 @@ class StoreBackend(BackendProtocol):
         old_string: str,
         new_string: str,
         replace_all: bool = False,  # noqa: FBT001, FBT002
+        *,
+        timeout: int | None = None,
     ) -> EditResult:
         """Edit a file by replacing string occurrences.
 
         Returns EditResult. External storage sets files_update=None.
         """
+        del timeout
         store = self._get_store()
         namespace = self._get_namespace()
 
@@ -560,11 +585,14 @@ class StoreBackend(BackendProtocol):
         old_string: str,
         new_string: str,
         replace_all: bool = False,  # noqa: FBT001, FBT002
+        *,
+        timeout: int | None = None,  # noqa: ASYNC109
     ) -> EditResult:
         """Async version of edit using native store async methods.
 
         This avoids sync calls in async context by using store.aget/aput directly.
         """
+        del timeout
         store = self._get_store()
         namespace = self._get_namespace()
 
@@ -599,8 +627,11 @@ class StoreBackend(BackendProtocol):
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
+        *,
+        timeout: int | None = None,
     ) -> GrepResult:
         """Search store files for a literal text pattern."""
+        del timeout
         store = self._get_store()
         namespace = self._get_namespace()
         items = self._search_store_paginated(store, namespace)
@@ -612,8 +643,15 @@ class StoreBackend(BackendProtocol):
                 continue
         return grep_matches_from_files(files, pattern, path, glob)
 
-    def glob_info(self, pattern: str, path: str = "/") -> GlobResult:
+    def glob_info(
+        self,
+        pattern: str,
+        path: str = "/",
+        *,
+        timeout: int | None = None,
+    ) -> GlobResult:
         """Find files matching a glob pattern in the store."""
+        del timeout
         store = self._get_store()
         namespace = self._get_namespace()
         items = self._search_store_paginated(store, namespace)

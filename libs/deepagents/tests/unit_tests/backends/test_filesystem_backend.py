@@ -1,3 +1,4 @@
+import time
 from pathlib import Path
 
 import pytest
@@ -204,6 +205,46 @@ def test_filesystem_backend_ls_trailing_slash(tmp_path: Path):
 
     empty = be.ls_info("/nonexistent/")
     assert empty.entries == []
+
+
+def test_filesystem_backend_glob_timeout_returns_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """glob_info should surface a backend timeout error."""
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+    def slow_glob(_pattern: str, _path: str = "/") -> object:
+        time.sleep(2)
+        return []
+
+    monkeypatch.setattr(be, "_glob_info_impl", slow_glob)
+
+    result = be.glob_info("**/*", path="/", timeout=1)
+
+    assert result.error == "glob timed out after 1s. Try a more specific pattern or a narrower path."
+
+
+def test_filesystem_backend_grep_falls_back_when_ripgrep_times_out(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """grep_raw should use the Python fallback when ripgrep is unavailable or times out."""
+    root = tmp_path
+    target = root / "app.py"
+    write_file(target, "import os\nprint('hello')\n")
+
+    be = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+    called = {"python": False}
+
+    def no_ripgrep(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    def python_fallback(*_args: object, **_kwargs: object) -> dict[str, list[tuple[int, str]]]:
+        called["python"] = True
+        return {"/app.py": [(1, "import os")]}
+
+    monkeypatch.setattr(be, "_ripgrep_search", no_ripgrep)
+    monkeypatch.setattr(be, "_python_search", python_fallback)
+
+    result = be.grep_raw("import", path="/", timeout=5)
+
+    assert called["python"] is True
+    assert result.matches == [{"path": "/app.py", "line": 1, "text": "import os"}]
 
 
 def test_filesystem_backend_intercept_large_tool_result(tmp_path: Path):

@@ -36,7 +36,6 @@ from deepagents.backends.protocol import (
     ReadResult,
     SandboxBackendProtocol,
     WriteResult,
-    execute_accepts_timeout,
 )
 from deepagents.backends.state import StateBackend
 
@@ -173,7 +172,12 @@ class CompositeBackend(BackendProtocol):
             return raw
         return LsResult(entries=raw)
 
-    def ls_info(self, path: str) -> LsResult:
+    def ls_info(
+        self,
+        path: str,
+        *,
+        timeout: int | None = None,
+    ) -> LsResult:
         """List directory contents (non-recursive).
 
         If path matches a route, lists only that backend. If path is "/", aggregates
@@ -181,6 +185,7 @@ class CompositeBackend(BackendProtocol):
 
         Args:
             path: Absolute directory path starting with "/".
+            timeout: Maximum time in seconds to wait for the routed backend.
 
         Returns:
             LsResult with directory entries or error.
@@ -197,7 +202,7 @@ class CompositeBackend(BackendProtocol):
             path=path,
         )
         if route_prefix is not None:
-            ls_result = self._coerce_ls_result(backend.ls_info(backend_path))
+            ls_result = self._coerce_ls_result(backend.ls_info(backend_path, timeout=timeout))
             if ls_result.error:
                 return ls_result
             return LsResult(entries=[_remap_file_info_path(fi, route_prefix) for fi in (ls_result.entries or [])])
@@ -205,7 +210,7 @@ class CompositeBackend(BackendProtocol):
         # At root, aggregate default and all routed backends
         if path == "/":
             results: list[FileInfo] = []
-            default_result = self._coerce_ls_result(self.default.ls_info(path))
+            default_result = self._coerce_ls_result(self.default.ls_info(path, timeout=timeout))
             results.extend(default_result.entries or [])
             for route_prefix, _backend in self.sorted_routes:
                 # Add the route itself as a directory (e.g., /memories/)
@@ -222,9 +227,14 @@ class CompositeBackend(BackendProtocol):
             return LsResult(entries=results)
 
         # Path doesn't match a route: query only default backend
-        return self._coerce_ls_result(self.default.ls_info(path))
+        return self._coerce_ls_result(self.default.ls_info(path, timeout=timeout))
 
-    async def als_info(self, path: str) -> LsResult:
+    async def als_info(
+        self,
+        path: str,
+        *,
+        timeout: int | None = None,  # noqa: ASYNC109
+    ) -> LsResult:
         """Async version of ls_info."""
         backend, backend_path, route_prefix = _route_for_path(
             default=self.default,
@@ -232,7 +242,7 @@ class CompositeBackend(BackendProtocol):
             path=path,
         )
         if route_prefix is not None:
-            ls_result = self._coerce_ls_result(await backend.als_info(backend_path))
+            ls_result = self._coerce_ls_result(await backend.als_info(backend_path, timeout=timeout))
             if ls_result.error:
                 return ls_result
             return LsResult(entries=[_remap_file_info_path(fi, route_prefix) for fi in (ls_result.entries or [])])
@@ -240,7 +250,7 @@ class CompositeBackend(BackendProtocol):
         # At root, aggregate default and all routed backends
         if path == "/":
             results: list[FileInfo] = []
-            default_result = self._coerce_ls_result(await self.default.als_info(path))
+            default_result = self._coerce_ls_result(await self.default.als_info(path, timeout=timeout))
             results.extend(default_result.entries or [])
             for route_prefix, _backend in self.sorted_routes:
                 # Add the route itself as a directory (e.g., /memories/)
@@ -257,13 +267,15 @@ class CompositeBackend(BackendProtocol):
             return LsResult(entries=results)
 
         # Path doesn't match a route: query only default backend
-        return self._coerce_ls_result(await self.default.als_info(path))
+        return self._coerce_ls_result(await self.default.als_info(path, timeout=timeout))
 
     def read(
         self,
         file_path: str,
         offset: int = 0,
         limit: int = 2000,
+        *,
+        timeout: int | None = None,
     ) -> ReadResult:
         """Read file content, routing to appropriate backend.
 
@@ -271,22 +283,25 @@ class CompositeBackend(BackendProtocol):
             file_path: Absolute file path.
             offset: Line offset to start reading from (0-indexed).
             limit: Maximum number of lines to read.
+            timeout: Maximum time in seconds to wait for the routed backend.
 
         Returns:
             ReadResult
         """
         backend, stripped_key = self._get_backend_and_key(file_path)
-        return backend.read(stripped_key, offset=offset, limit=limit)
+        return backend.read(stripped_key, offset=offset, limit=limit, timeout=timeout)
 
     async def aread(
         self,
         file_path: str,
         offset: int = 0,
         limit: int = 2000,
+        *,
+        timeout: int | None = None,  # noqa: ASYNC109
     ) -> ReadResult:
         """Async version of read."""
         backend, stripped_key = self._get_backend_and_key(file_path)
-        return await backend.aread(stripped_key, offset=offset, limit=limit)
+        return await backend.aread(stripped_key, offset=offset, limit=limit, timeout=timeout)
 
     @staticmethod
     def _coerce_grep_result(raw: GrepResult | list[GrepMatch] | str) -> GrepResult:
@@ -302,6 +317,8 @@ class CompositeBackend(BackendProtocol):
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
+        *,
+        timeout: int | None = None,
     ) -> GrepResult:
         """Search files for literal text pattern.
 
@@ -313,6 +330,7 @@ class CompositeBackend(BackendProtocol):
             path: Directory to search. None searches all backends.
             glob: Glob pattern to filter files (e.g., "*.py", "**/*.txt").
                 Filters by filename, not content.
+            timeout: Maximum time in seconds to wait for each routed backend.
 
         Returns:
             GrepResult with matches or error.
@@ -331,7 +349,7 @@ class CompositeBackend(BackendProtocol):
                 path=path,
             )
             if route_prefix is not None:
-                grep_result = self._coerce_grep_result(backend.grep_raw(pattern, backend_path, glob))
+                grep_result = self._coerce_grep_result(backend.grep_raw(pattern, backend_path, glob, timeout=timeout))
                 if grep_result.error:
                     return grep_result
                 return GrepResult(matches=[_remap_grep_path(m, route_prefix) for m in (grep_result.matches or [])])
@@ -340,26 +358,28 @@ class CompositeBackend(BackendProtocol):
         # Otherwise, search only the default backend
         if path is None or path == "/":
             all_matches: list[GrepMatch] = []
-            default_result = self._coerce_grep_result(self.default.grep_raw(pattern, path, glob))
+            default_result = self._coerce_grep_result(self.default.grep_raw(pattern, path, glob, timeout=timeout))
             if default_result.error:
                 return default_result
             all_matches.extend(default_result.matches or [])
 
             for route_prefix, backend in self.routes.items():
-                grep_result = self._coerce_grep_result(backend.grep_raw(pattern, "/", glob))
+                grep_result = self._coerce_grep_result(backend.grep_raw(pattern, "/", glob, timeout=timeout))
                 if grep_result.error:
                     return grep_result
                 all_matches.extend(_remap_grep_path(m, route_prefix) for m in (grep_result.matches or []))
 
             return GrepResult(matches=all_matches)
         # Path specified but doesn't match a route - search only default
-        return self._coerce_grep_result(self.default.grep_raw(pattern, path, glob))
+        return self._coerce_grep_result(self.default.grep_raw(pattern, path, glob, timeout=timeout))
 
     async def agrep_raw(
         self,
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
+        *,
+        timeout: int | None = None,  # noqa: ASYNC109
     ) -> GrepResult:
         """Async version of grep_raw.
 
@@ -372,7 +392,7 @@ class CompositeBackend(BackendProtocol):
                 path=path,
             )
             if route_prefix is not None:
-                grep_result = self._coerce_grep_result(await backend.agrep_raw(pattern, backend_path, glob))
+                grep_result = self._coerce_grep_result(await backend.agrep_raw(pattern, backend_path, glob, timeout=timeout))
                 if grep_result.error:
                     return grep_result
                 return GrepResult(matches=[_remap_grep_path(m, route_prefix) for m in (grep_result.matches or [])])
@@ -381,22 +401,28 @@ class CompositeBackend(BackendProtocol):
         # Otherwise, search only the default backend
         if path is None or path == "/":
             all_matches: list[GrepMatch] = []
-            default_result = self._coerce_grep_result(await self.default.agrep_raw(pattern, path, glob))
+            default_result = self._coerce_grep_result(await self.default.agrep_raw(pattern, path, glob, timeout=timeout))
             if default_result.error:
                 return default_result
             all_matches.extend(default_result.matches or [])
 
             for route_prefix, backend in self.routes.items():
-                grep_result = self._coerce_grep_result(await backend.agrep_raw(pattern, "/", glob))
+                grep_result = self._coerce_grep_result(await backend.agrep_raw(pattern, "/", glob, timeout=timeout))
                 if grep_result.error:
                     return grep_result
                 all_matches.extend(_remap_grep_path(m, route_prefix) for m in (grep_result.matches or []))
 
             return GrepResult(matches=all_matches)
         # Path specified but doesn't match a route - search only default
-        return self._coerce_grep_result(await self.default.agrep_raw(pattern, path, glob))
+        return self._coerce_grep_result(await self.default.agrep_raw(pattern, path, glob, timeout=timeout))
 
-    def glob_info(self, pattern: str, path: str = "/") -> GlobResult:
+    def glob_info(
+        self,
+        pattern: str,
+        path: str = "/",
+        *,
+        timeout: int | None = None,
+    ) -> GlobResult:
         """Find files matching a glob pattern, routing by path prefix."""
         results: list[FileInfo] = []
 
@@ -406,20 +432,20 @@ class CompositeBackend(BackendProtocol):
             path=path,
         )
         if route_prefix is not None:
-            glob_result = backend.glob_info(pattern, backend_path)
+            glob_result = backend.glob_info(pattern, backend_path, timeout=timeout)
             matches = glob_result.matches if isinstance(glob_result, GlobResult) else glob_result
             if isinstance(glob_result, GlobResult) and glob_result.error:
                 return glob_result
             return GlobResult(matches=[_remap_file_info_path(fi, route_prefix) for fi in (matches or [])])
 
         # Path doesn't match any specific route - search default backend AND all routed backends
-        default_result = self.default.glob_info(pattern, path)
+        default_result = self.default.glob_info(pattern, path, timeout=timeout)
         default_matches = default_result.matches if isinstance(default_result, GlobResult) else default_result
         results.extend(default_matches or [])
 
         for route_prefix, backend in self.routes.items():
             route_pattern = _strip_route_from_pattern(pattern, route_prefix)
-            sub_result = backend.glob_info(route_pattern, "/")
+            sub_result = backend.glob_info(route_pattern, "/", timeout=timeout)
             sub_matches = sub_result.matches if isinstance(sub_result, GlobResult) else sub_result
             results.extend(_remap_file_info_path(fi, route_prefix) for fi in (sub_matches or []))
 
@@ -427,7 +453,13 @@ class CompositeBackend(BackendProtocol):
         results.sort(key=lambda x: x.get("path", ""))
         return GlobResult(matches=results)
 
-    async def aglob_info(self, pattern: str, path: str = "/") -> GlobResult:
+    async def aglob_info(
+        self,
+        pattern: str,
+        path: str = "/",
+        *,
+        timeout: int | None = None,  # noqa: ASYNC109
+    ) -> GlobResult:
         """Async version of glob_info."""
         results: list[FileInfo] = []
 
@@ -437,20 +469,20 @@ class CompositeBackend(BackendProtocol):
             path=path,
         )
         if route_prefix is not None:
-            glob_result = await backend.aglob_info(pattern, backend_path)
+            glob_result = await backend.aglob_info(pattern, backend_path, timeout=timeout)
             matches = glob_result.matches if isinstance(glob_result, GlobResult) else glob_result
             if isinstance(glob_result, GlobResult) and glob_result.error:
                 return glob_result
             return GlobResult(matches=[_remap_file_info_path(fi, route_prefix) for fi in (matches or [])])
 
         # Path doesn't match any specific route - search default backend AND all routed backends
-        default_result = await self.default.aglob_info(pattern, path)
+        default_result = await self.default.aglob_info(pattern, path, timeout=timeout)
         default_matches = default_result.matches if isinstance(default_result, GlobResult) else default_result
         results.extend(default_matches or [])
 
         for route_prefix, backend in self.routes.items():
             route_pattern = _strip_route_from_pattern(pattern, route_prefix)
-            sub_result = await backend.aglob_info(route_pattern, "/")
+            sub_result = await backend.aglob_info(route_pattern, "/", timeout=timeout)
             sub_matches = sub_result.matches if isinstance(sub_result, GlobResult) else sub_result
             results.extend(_remap_file_info_path(fi, route_prefix) for fi in (sub_matches or []))
 
@@ -462,18 +494,21 @@ class CompositeBackend(BackendProtocol):
         self,
         file_path: str,
         content: str,
+        *,
+        timeout: int | None = None,
     ) -> WriteResult:
         """Create a new file, routing to appropriate backend.
 
         Args:
             file_path: Absolute file path.
             content: File content as a string.
+            timeout: Maximum time in seconds to wait for the routed backend.
 
         Returns:
             Success message or Command object, or error if file already exists.
         """
         backend, stripped_key = self._get_backend_and_key(file_path)
-        res = backend.write(stripped_key, content)
+        res = backend.write(stripped_key, content, timeout=timeout)
         if res.path is not None:
             res = replace(res, path=file_path)
         # If this is a state-backed update and default has state, merge so listings reflect changes
@@ -493,10 +528,12 @@ class CompositeBackend(BackendProtocol):
         self,
         file_path: str,
         content: str,
+        *,
+        timeout: int | None = None,  # noqa: ASYNC109
     ) -> WriteResult:
         """Async version of write."""
         backend, stripped_key = self._get_backend_and_key(file_path)
-        res = await backend.awrite(stripped_key, content)
+        res = await backend.awrite(stripped_key, content, timeout=timeout)
         if res.path is not None:
             res = replace(res, path=file_path)
         # If this is a state-backed update and default has state, merge so listings reflect changes
@@ -518,6 +555,8 @@ class CompositeBackend(BackendProtocol):
         old_string: str,
         new_string: str,
         replace_all: bool = False,  # noqa: FBT001, FBT002
+        *,
+        timeout: int | None = None,
     ) -> EditResult:
         """Edit a file, routing to appropriate backend.
 
@@ -526,12 +565,13 @@ class CompositeBackend(BackendProtocol):
             old_string: String to find and replace.
             new_string: Replacement string.
             replace_all: If True, replace all occurrences.
+            timeout: Maximum time in seconds to wait for the routed backend.
 
         Returns:
             Success message or Command object, or error message on failure.
         """
         backend, stripped_key = self._get_backend_and_key(file_path)
-        res = backend.edit(stripped_key, old_string, new_string, replace_all=replace_all)
+        res = backend.edit(stripped_key, old_string, new_string, replace_all=replace_all, timeout=timeout)
         if res.path is not None:
             res = replace(res, path=file_path)
         if res.files_update:
@@ -552,10 +592,12 @@ class CompositeBackend(BackendProtocol):
         old_string: str,
         new_string: str,
         replace_all: bool = False,  # noqa: FBT001, FBT002
+        *,
+        timeout: int | None = None,  # noqa: ASYNC109
     ) -> EditResult:
         """Async version of edit."""
         backend, stripped_key = self._get_backend_and_key(file_path)
-        res = await backend.aedit(stripped_key, old_string, new_string, replace_all=replace_all)
+        res = await backend.aedit(stripped_key, old_string, new_string, replace_all=replace_all, timeout=timeout)
         if res.path is not None:
             res = replace(res, path=file_path)
         if res.files_update:
@@ -595,9 +637,7 @@ class CompositeBackend(BackendProtocol):
                 `SandboxBackendProtocol` (i.e., it doesn't support execution).
         """
         if isinstance(self.default, SandboxBackendProtocol):
-            if timeout is not None and execute_accepts_timeout(type(self.default)):
-                return self.default.execute(command, timeout=timeout)
-            return self.default.execute(command)
+            return self.default.execute(command, timeout=timeout)
 
         # This shouldn't be reached if the runtime check in the execute tool works correctly,
         # but we include it as a safety fallback.
@@ -620,9 +660,7 @@ class CompositeBackend(BackendProtocol):
         See `execute()` for detailed documentation on parameters and behavior.
         """
         if isinstance(self.default, SandboxBackendProtocol):
-            if timeout is not None and execute_accepts_timeout(type(self.default)):
-                return await self.default.aexecute(command, timeout=timeout)
-            return await self.default.aexecute(command)
+            return await self.default.aexecute(command, timeout=timeout)
 
         # This shouldn't be reached if the runtime check in the execute tool works correctly,
         # but we include it as a safety fallback.

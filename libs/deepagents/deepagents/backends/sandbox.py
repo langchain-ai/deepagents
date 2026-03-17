@@ -30,6 +30,8 @@ from deepagents.backends.protocol import (
 )
 from deepagents.backends.utils import _get_file_type, create_file_data
 
+_TIMEOUT_EXIT_CODE = 124
+
 _GLOB_COMMAND_TEMPLATE = """python3 -c "
 import glob
 import os
@@ -240,7 +242,20 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
             ExecuteResponse with combined output, exit code, and truncation flag.
         """
 
-    def ls_info(self, path: str) -> LsResult:
+    @staticmethod
+    def _timeout_error(output: str, *, fallback: str) -> str:
+        """Normalize timeout-related execute output for filesystem methods."""
+        stripped = output.strip()
+        if stripped.startswith("Error: "):
+            return stripped[len("Error: ") :]
+        return stripped or fallback
+
+    def ls_info(
+        self,
+        path: str,
+        *,
+        timeout: int | None = None,
+    ) -> LsResult:
         """Structured listing with file metadata using os.scandir."""
         path_b64 = base64.b64encode(path.encode("utf-8")).decode("ascii")
         cmd = f"""python3 -c "
@@ -264,7 +279,14 @@ except PermissionError:
     pass
 " 2>/dev/null"""
 
-        result = self.execute(cmd)
+        result = self.execute(cmd, timeout=timeout)
+        if result.exit_code == _TIMEOUT_EXIT_CODE:
+            return LsResult(
+                error=self._timeout_error(
+                    result.output,
+                    fallback=f"ls timed out after {timeout} seconds" if timeout is not None else "ls timed out",
+                )
+            )
 
         file_infos: list[FileInfo] = []
         for line in result.output.strip().split("\n"):
@@ -283,6 +305,8 @@ except PermissionError:
         file_path: str,
         offset: int = 0,
         limit: int = 2000,
+        *,
+        timeout: int | None = None,
     ) -> ReadResult:
         """Read file content using a single shell command."""
         file_type = _get_file_type(file_path)
@@ -296,9 +320,16 @@ except PermissionError:
         )
         payload_b64 = base64.b64encode(payload.encode("utf-8")).decode("ascii")
         cmd = _READ_COMMAND_TEMPLATE.format(payload_b64=payload_b64)
-        result = self.execute(cmd)
+        result = self.execute(cmd, timeout=timeout)
 
         output = result.output.rstrip()
+        if result.exit_code == _TIMEOUT_EXIT_CODE:
+            return ReadResult(
+                error=self._timeout_error(
+                    output,
+                    fallback=f"read timed out after {timeout} seconds" if timeout is not None else "read timed out",
+                )
+            )
 
         try:
             data = json.loads(output)
@@ -314,6 +345,8 @@ except PermissionError:
         self,
         file_path: str,
         content: str,
+        *,
+        timeout: int | None = None,
     ) -> WriteResult:
         """Create a new file. Returns WriteResult; error populated on failure."""
         # Create JSON payload with file path and base64-encoded content
@@ -324,7 +357,7 @@ except PermissionError:
 
         # Single atomic check + write command
         cmd = _WRITE_COMMAND_TEMPLATE.format(payload_b64=payload_b64)
-        result = self.execute(cmd)
+        result = self.execute(cmd, timeout=timeout)
 
         # Check for errors (exit code or error message in output)
         if result.exit_code != 0 or "Error:" in result.output:
@@ -340,6 +373,8 @@ except PermissionError:
         old_string: str,
         new_string: str,
         replace_all: bool = False,  # noqa: FBT001, FBT002
+        *,
+        timeout: int | None = None,
     ) -> EditResult:
         """Edit a file by replacing string occurrences. Returns EditResult."""
         # Create JSON payload with file path, old string, and new string
@@ -349,7 +384,7 @@ except PermissionError:
 
         # Use template for string replacement
         cmd = _EDIT_COMMAND_TEMPLATE.format(payload_b64=payload_b64, replace_all=replace_all)
-        result = self.execute(cmd)
+        result = self.execute(cmd, timeout=timeout)
 
         exit_code = result.exit_code
         output = result.output.strip()
@@ -375,6 +410,8 @@ except PermissionError:
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
+        *,
+        timeout: int | None = None,
     ) -> GrepResult:
         """Structured search results or error string for invalid input."""
         search_path = shlex.quote(path or ".")
@@ -391,9 +428,12 @@ except PermissionError:
         pattern_escaped = shlex.quote(pattern)
 
         cmd = f"grep {grep_opts} {glob_pattern} -e {pattern_escaped} {search_path} 2>/dev/null || true"
-        result = self.execute(cmd)
+        result = self.execute(cmd, timeout=timeout)
 
         output = result.output.rstrip()
+        if result.exit_code == _TIMEOUT_EXIT_CODE:
+            fallback = f"grep timed out after {timeout} seconds" if timeout is not None else "grep timed out"
+            return GrepResult(error=f"Error: {self._timeout_error(output, fallback=fallback)}")
         if not output:
             return GrepResult(matches=[])
 
@@ -413,16 +453,29 @@ except PermissionError:
 
         return GrepResult(matches=matches)
 
-    def glob_info(self, pattern: str, path: str = "/") -> GlobResult:
+    def glob_info(
+        self,
+        pattern: str,
+        path: str = "/",
+        *,
+        timeout: int | None = None,
+    ) -> GlobResult:
         """Structured glob matching returning GlobResult."""
         # Encode pattern and path as base64 to avoid escaping issues
         pattern_b64 = base64.b64encode(pattern.encode("utf-8")).decode("ascii")
         path_b64 = base64.b64encode(path.encode("utf-8")).decode("ascii")
 
         cmd = _GLOB_COMMAND_TEMPLATE.format(path_b64=path_b64, pattern_b64=pattern_b64)
-        result = self.execute(cmd)
+        result = self.execute(cmd, timeout=timeout)
 
         output = result.output.strip()
+        if result.exit_code == _TIMEOUT_EXIT_CODE:
+            return GlobResult(
+                error=self._timeout_error(
+                    output,
+                    fallback=f"glob timed out after {timeout} seconds" if timeout is not None else "glob timed out",
+                )
+            )
         if not output:
             return GlobResult(matches=[])
 

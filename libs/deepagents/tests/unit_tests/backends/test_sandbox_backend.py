@@ -30,6 +30,7 @@ class MockSandbox(BaseSandbox):
 
     def __init__(self) -> None:
         self.last_command = None
+        self.last_timeout: int | None = None
         self._next_output: str = "1"
 
     @property
@@ -38,6 +39,7 @@ class MockSandbox(BaseSandbox):
 
     def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
         self.last_command = command
+        self.last_timeout = timeout
         output = self._next_output
         self._next_output = "1"
         return ExecuteResponse(output=output, exit_code=0, truncated=False)
@@ -177,8 +179,9 @@ def test_sandbox_grep_literal_search() -> None:
     sandbox = MockSandbox()
 
     # Override execute to return mock grep results
-    def mock_execute(command: str) -> ExecuteResponse:
+    def mock_execute(command: str, *, timeout: int | None = None) -> ExecuteResponse:
         sandbox.last_command = command
+        sandbox.last_timeout = timeout
         # Return mock grep output for literal search tests
         if "grep" in command:
             # Check that -F flag (fixed-strings/literal) is present in the flags
@@ -205,3 +208,29 @@ def test_sandbox_grep_literal_search() -> None:
     # Verify the command uses grep -rHnF for literal search (combined flags)
     assert sandbox.last_command is not None
     assert "grep -rHnF" in sandbox.last_command
+
+
+def test_sandbox_filesystem_methods_forward_timeout() -> None:
+    """BaseSandbox filesystem methods should forward timeout to execute()."""
+    sandbox = MockSandbox()
+
+    sandbox._next_output = ""
+    sandbox.ls_info("/", timeout=11)
+    assert sandbox.last_timeout == 11
+
+    sandbox._next_output = json.dumps({"content": "mock content", "encoding": "utf-8"})
+    sandbox.read("/test/file.txt", timeout=12)
+    assert sandbox.last_timeout == 12
+
+    sandbox.write("/test/file.txt", "content", timeout=13)
+    assert sandbox.last_timeout == 13
+
+    sandbox.edit("/test/file.txt", "old", "new", timeout=14)
+    assert sandbox.last_timeout == 14
+
+    sandbox.grep_raw("pattern", path="/", timeout=15)
+    assert sandbox.last_timeout == 15
+
+    sandbox._next_output = ""
+    sandbox.glob_info("*.py", path="/", timeout=16)
+    assert sandbox.last_timeout == 16

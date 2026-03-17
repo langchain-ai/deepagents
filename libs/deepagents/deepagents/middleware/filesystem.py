@@ -1,8 +1,6 @@
 """Middleware for providing filesystem tools to an agent."""
 # ruff: noqa: E501
 
-import asyncio
-import concurrent.futures
 import mimetypes
 import warnings
 from collections.abc import Awaitable, Callable
@@ -37,7 +35,6 @@ from deepagents.backends.protocol import (
     ReadResult,
     SandboxBackendProtocol,
     WriteResult,
-    execute_accepts_timeout,
 )
 from deepagents.backends.utils import (
     _get_file_type,
@@ -51,10 +48,11 @@ from deepagents.backends.utils import (
 from deepagents.middleware._utils import append_to_system_message
 
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
-GLOB_TIMEOUT = 20.0  # seconds
 LINE_NUMBER_WIDTH = 6
 DEFAULT_READ_OFFSET = 0
 DEFAULT_READ_LIMIT = 100
+DEFAULT_GLOB_TIMEOUT = 20
+DEFAULT_GREP_TIMEOUT = 30
 # Template for truncation message in read_file
 # {file_path} will be filled in at runtime
 READ_FILE_TRUNCATION_MSG = (
@@ -445,6 +443,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         system_prompt: str | None = None,
         custom_tool_descriptions: dict[str, str] | None = None,
         tool_token_limit_before_evict: int | None = 20000,
+        max_filesystem_timeout: int = 120,
         max_execute_timeout: int = 3600,
     ) -> None:
         """Initialize the filesystem middleware.
@@ -455,6 +454,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             system_prompt: Optional custom system prompt override.
             custom_tool_descriptions: Optional custom tool descriptions override.
             tool_token_limit_before_evict: Optional token limit before evicting a tool result to the filesystem.
+            max_filesystem_timeout: Maximum allowed value in seconds for per-call
+                filesystem timeout overrides and middleware-enforced filesystem caps.
             max_execute_timeout: Maximum allowed value in seconds for per-command timeout
                 overrides on the execute tool.
 
@@ -462,8 +463,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 exceeding this value will be rejected with an error message.
 
         Raises:
-            ValueError: If `max_execute_timeout` is not positive.
+            ValueError: If `max_filesystem_timeout` or `max_execute_timeout` is not positive.
         """
+        if max_filesystem_timeout <= 0:
+            msg = f"max_filesystem_timeout must be positive, got {max_filesystem_timeout}"
+            raise ValueError(msg)
         if max_execute_timeout <= 0:
             msg = f"max_execute_timeout must be positive, got {max_execute_timeout}"
             raise ValueError(msg)
@@ -474,6 +478,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         self._custom_system_prompt = system_prompt
         self._custom_tool_descriptions = custom_tool_descriptions or {}
         self._tool_token_limit_before_evict = tool_token_limit_before_evict
+        self._max_filesystem_timeout = max_filesystem_timeout
         self._max_execute_timeout = max_execute_timeout
 
         self.tools = [
@@ -499,6 +504,17 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             return self.backend(runtime)  # ty: ignore[call-top-callable]
         return self.backend
 
+    def _validate_filesystem_timeout(self, timeout: int | None, *, default: int) -> int:
+        """Validate and normalize a filesystem timeout override."""
+        effective_timeout = default if timeout is None else timeout
+        if effective_timeout <= 0:
+            msg = f"timeout must be positive, got {effective_timeout}."
+            raise ValueError(msg)
+        if effective_timeout > self._max_filesystem_timeout:
+            msg = f"timeout {effective_timeout}s exceeds maximum allowed ({self._max_filesystem_timeout}s)."
+            raise ValueError(msg)
+        return effective_timeout
+
     def _create_ls_tool(self) -> BaseTool:
         """Create the ls (list files) tool."""
         tool_description = self._custom_tool_descriptions.get("ls") or LIST_FILES_TOOL_DESCRIPTION
@@ -513,7 +529,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 validated_path = validate_path(path)
             except ValueError as e:
                 return f"Error: {e}"
-            ls_result = resolved_backend.ls_info(validated_path)
+            ls_result = resolved_backend.ls_info(validated_path, timeout=self._max_filesystem_timeout)
             if isinstance(ls_result, LsResult):
                 if ls_result.error:
                     return f"Error: {ls_result.error}"
@@ -541,7 +557,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 validated_path = validate_path(path)
             except ValueError as e:
                 return f"Error: {e}"
-            ls_result = await resolved_backend.als_info(validated_path)
+            ls_result = await resolved_backend.als_info(validated_path, timeout=self._max_filesystem_timeout)
             if isinstance(ls_result, LsResult):
                 if ls_result.error:
                     return f"Error: {ls_result.error}"
@@ -642,7 +658,12 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             except ValueError as e:
                 return f"Error: {e}"
 
-            read_result = resolved_backend.read(validated_path, offset=offset, limit=limit)
+            read_result = resolved_backend.read(
+                validated_path,
+                offset=offset,
+                limit=limit,
+                timeout=self._max_filesystem_timeout,
+            )
             return _handle_read_result(read_result, validated_path, runtime.tool_call_id, offset, limit)
 
         async def async_read_file(
@@ -658,7 +679,12 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             except ValueError as e:
                 return f"Error: {e}"
 
-            read_result = await resolved_backend.aread(validated_path, offset=offset, limit=limit)
+            read_result = await resolved_backend.aread(
+                validated_path,
+                offset=offset,
+                limit=limit,
+                timeout=self._max_filesystem_timeout,
+            )
             return _handle_read_result(read_result, validated_path, runtime.tool_call_id, offset, limit)
 
         return StructuredTool.from_function(
@@ -683,7 +709,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 validated_path = validate_path(file_path)
             except ValueError as e:
                 return f"Error: {e}"
-            res: WriteResult = resolved_backend.write(validated_path, content)
+            res: WriteResult = resolved_backend.write(validated_path, content, timeout=self._max_filesystem_timeout)
             if res.error:
                 return res.error
             # If backend returns state update, wrap into Command with ToolMessage
@@ -712,7 +738,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 validated_path = validate_path(file_path)
             except ValueError as e:
                 return f"Error: {e}"
-            res: WriteResult = await resolved_backend.awrite(validated_path, content)
+            res: WriteResult = await resolved_backend.awrite(validated_path, content, timeout=self._max_filesystem_timeout)
             if res.error:
                 return res.error
             # If backend returns state update, wrap into Command with ToolMessage
@@ -755,7 +781,13 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 validated_path = validate_path(file_path)
             except ValueError as e:
                 return f"Error: {e}"
-            res: EditResult = resolved_backend.edit(validated_path, old_string, new_string, replace_all=replace_all)
+            res: EditResult = resolved_backend.edit(
+                validated_path,
+                old_string,
+                new_string,
+                replace_all=replace_all,
+                timeout=self._max_filesystem_timeout,
+            )
             if res.error:
                 return res.error
             if res.files_update is not None:
@@ -786,7 +818,13 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 validated_path = validate_path(file_path)
             except ValueError as e:
                 return f"Error: {e}"
-            res: EditResult = await resolved_backend.aedit(validated_path, old_string, new_string, replace_all=replace_all)
+            res: EditResult = await resolved_backend.aedit(
+                validated_path,
+                old_string,
+                new_string,
+                replace_all=replace_all,
+                timeout=self._max_filesystem_timeout,
+            )
             if res.error:
                 return res.error
             if res.files_update is not None:
@@ -810,7 +848,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             coroutine=async_edit_file,
         )
 
-    def _create_glob_tool(self) -> BaseTool:  # noqa: C901
+    def _create_glob_tool(self) -> BaseTool:
         """Create the glob tool."""
         tool_description = self._custom_tool_descriptions.get("glob") or GLOB_TOOL_DESCRIPTION
 
@@ -818,19 +856,19 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             pattern: Annotated[str, "Glob pattern to match files (e.g., '**/*.py', '*.txt', '/subdir/**/*.md')."],
             runtime: ToolRuntime[None, FilesystemState],
             path: Annotated[str, "Base directory to search from. Defaults to root '/'."] = "/",
+            timeout: Annotated[
+                int | None,
+                "Optional timeout in seconds for this glob call. Uses 20 seconds by default and must be positive.",
+            ] = None,
         ) -> str:
             """Synchronous wrapper for glob tool."""
             resolved_backend = self._get_backend(runtime)
             try:
                 validated_path = validate_path(path)
+                validated_timeout = self._validate_filesystem_timeout(timeout, default=DEFAULT_GLOB_TIMEOUT)
             except ValueError as e:
                 return f"Error: {e}"
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(resolved_backend.glob_info, pattern, path=validated_path)
-                try:
-                    glob_result = future.result(timeout=GLOB_TIMEOUT)
-                except concurrent.futures.TimeoutError:
-                    return f"Error: glob timed out after {GLOB_TIMEOUT}s. Try a more specific pattern or a narrower path."
+            glob_result = resolved_backend.glob_info(pattern, path=validated_path, timeout=validated_timeout)
             if isinstance(glob_result, GlobResult):
                 if glob_result.error:
                     return f"Error: {glob_result.error}"
@@ -852,20 +890,19 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             pattern: Annotated[str, "Glob pattern to match files (e.g., '**/*.py', '*.txt', '/subdir/**/*.md')."],
             runtime: ToolRuntime[None, FilesystemState],
             path: Annotated[str, "Base directory to search from. Defaults to root '/'."] = "/",
+            timeout: Annotated[  # noqa: ASYNC109
+                int | None,
+                "Optional timeout in seconds for this glob call. Uses 20 seconds by default and must be positive.",
+            ] = None,
         ) -> str:
             """Asynchronous wrapper for glob tool."""
             resolved_backend = self._get_backend(runtime)
             try:
                 validated_path = validate_path(path)
+                validated_timeout = self._validate_filesystem_timeout(timeout, default=DEFAULT_GLOB_TIMEOUT)
             except ValueError as e:
                 return f"Error: {e}"
-            try:
-                glob_result = await asyncio.wait_for(
-                    resolved_backend.aglob_info(pattern, path=validated_path),
-                    timeout=GLOB_TIMEOUT,
-                )
-            except TimeoutError:
-                return f"Error: glob timed out after {GLOB_TIMEOUT}s. Try a more specific pattern or a narrower path."
+            glob_result = await resolved_backend.aglob_info(pattern, path=validated_path, timeout=validated_timeout)
             if isinstance(glob_result, GlobResult):
                 if glob_result.error:
                     return f"Error: {glob_result.error}"
@@ -890,7 +927,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             coroutine=async_glob,
         )
 
-    def _create_grep_tool(self) -> BaseTool:
+    def _create_grep_tool(self) -> BaseTool:  # noqa: C901
         """Create the grep tool."""
         tool_description = self._custom_tool_descriptions.get("grep") or GREP_TOOL_DESCRIPTION
 
@@ -899,6 +936,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             runtime: ToolRuntime[None, FilesystemState],
             path: Annotated[str | None, "Directory to search in. Defaults to current working directory."] = None,
             glob: Annotated[str | None, "Glob pattern to filter which files to search (e.g., '*.py')."] = None,
+            timeout: Annotated[
+                int | None,
+                "Optional timeout in seconds for this grep call. Uses 30 seconds by default and must be positive.",
+            ] = None,
             output_mode: Annotated[
                 Literal["files_with_matches", "content", "count"],
                 "Output format: 'files_with_matches' (file paths only, default), 'content' (matching lines with context), 'count' (match counts per file).",
@@ -906,7 +947,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         ) -> str:
             """Synchronous wrapper for grep tool."""
             resolved_backend = self._get_backend(runtime)
-            grep_result = resolved_backend.grep_raw(pattern, path=path, glob=glob)
+            try:
+                validated_timeout = self._validate_filesystem_timeout(timeout, default=DEFAULT_GREP_TIMEOUT)
+            except ValueError as e:
+                return f"Error: {e}"
+            grep_result = resolved_backend.grep_raw(pattern, path=path, glob=glob, timeout=validated_timeout)
             if isinstance(grep_result, GrepResult):
                 if grep_result.error:
                     return grep_result.error
@@ -937,6 +982,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             runtime: ToolRuntime[None, FilesystemState],
             path: Annotated[str | None, "Directory to search in. Defaults to current working directory."] = None,
             glob: Annotated[str | None, "Glob pattern to filter which files to search (e.g., '*.py')."] = None,
+            timeout: Annotated[  # noqa: ASYNC109
+                int | None,
+                "Optional timeout in seconds for this grep call. Uses 30 seconds by default and must be positive.",
+            ] = None,
             output_mode: Annotated[
                 Literal["files_with_matches", "content", "count"],
                 "Output format: 'files_with_matches' (file paths only, default), 'content' (matching lines with context), 'count' (match counts per file).",
@@ -944,7 +993,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         ) -> str:
             """Asynchronous wrapper for grep tool."""
             resolved_backend = self._get_backend(runtime)
-            grep_result = await resolved_backend.agrep_raw(pattern, path=path, glob=glob)
+            try:
+                validated_timeout = self._validate_filesystem_timeout(timeout, default=DEFAULT_GREP_TIMEOUT)
+            except ValueError as e:
+                return f"Error: {e}"
+            grep_result = await resolved_backend.agrep_raw(pattern, path=path, glob=glob, timeout=validated_timeout)
             if isinstance(grep_result, GrepResult):
                 if grep_result.error:
                     return grep_result.error
@@ -981,7 +1034,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         """Create the execute tool for sandbox command execution."""
         tool_description = self._custom_tool_descriptions.get("execute") or EXECUTE_TOOL_DESCRIPTION
 
-        def sync_execute(  # noqa: PLR0911 - early returns for distinct error conditions
+        def sync_execute(
             command: Annotated[str, "Shell command to execute in the sandbox environment."],
             runtime: ToolRuntime[None, FilesystemState],
             timeout: Annotated[
@@ -1009,14 +1062,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             # Safe cast: _supports_execution validates that execute()/aexecute() exist
             # (either SandboxBackendProtocol or CompositeBackend with sandbox default)
             executable = cast("SandboxBackendProtocol", resolved_backend)
-            if timeout is not None and not execute_accepts_timeout(type(executable)):
-                return (
-                    "Error: This sandbox backend does not support per-command "
-                    "timeout overrides. Update your sandbox package to the "
-                    "latest version, or omit the timeout parameter."
-                )
             try:
-                result = executable.execute(command, timeout=timeout) if timeout is not None else executable.execute(command)
+                result = executable.execute(command, timeout=timeout)
             except NotImplementedError as e:
                 # Handle case where execute() exists but raises NotImplementedError
                 return f"Error: Execution not available. {e}"
@@ -1035,7 +1082,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
             return "".join(parts)
 
-        async def async_execute(  # noqa: PLR0911 - early returns for distinct error conditions
+        async def async_execute(
             command: Annotated[str, "Shell command to execute in the sandbox environment."],
             runtime: ToolRuntime[None, FilesystemState],
             # ASYNC109 - timeout is a semantic parameter forwarded to the
@@ -1064,14 +1111,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
             # Safe cast: _supports_execution validates that execute()/aexecute() exist
             executable = cast("SandboxBackendProtocol", resolved_backend)
-            if timeout is not None and not execute_accepts_timeout(type(executable)):
-                return (
-                    "Error: This sandbox backend does not support per-command "
-                    "timeout overrides. Update your sandbox package to the "
-                    "latest version, or omit the timeout parameter."
-                )
             try:
-                result = await executable.aexecute(command, timeout=timeout) if timeout is not None else await executable.aexecute(command)
+                result = await executable.aexecute(command, timeout=timeout)
             except NotImplementedError as e:
                 # Handle case where execute() exists but raises NotImplementedError
                 return f"Error: Execution not available. {e}"

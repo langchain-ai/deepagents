@@ -1,5 +1,6 @@
 """Async tests for FilesystemBackend."""
 
+import time
 from pathlib import Path
 
 import pytest
@@ -207,6 +208,21 @@ async def test_filesystem_backend_als_trailing_slash(tmp_path: Path):
 
     empty = await be.als_info("/nonexistent/")
     assert empty.entries == []
+
+
+async def test_filesystem_backend_aglob_timeout_returns_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """aglob_info should propagate timeout-aware glob errors through the async wrapper."""
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+    def slow_glob(_pattern: str, _path: str = "/") -> object:
+        time.sleep(2)
+        return []
+
+    monkeypatch.setattr(be, "_glob_info_impl", slow_glob)
+
+    result = await be.aglob_info("**/*", path="/", timeout=1)
+
+    assert result.error == "glob timed out after 1s. Try a more specific pattern or a narrower path."
 
 
 async def test_filesystem_backend_intercept_large_tool_result_async(tmp_path: Path):

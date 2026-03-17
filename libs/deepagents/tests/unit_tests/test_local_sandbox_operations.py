@@ -120,26 +120,33 @@ class LocalSubprocessSandbox(BaseSandbox):
                 truncated=False,
             )
 
-    def ls_info(self, path: str) -> LsResult:
+    def ls_info(self, path: str, *, timeout: int | None = None) -> LsResult:
         """List files while preserving virtual-path expectations in tests."""
-        result = super().ls_info(self._to_real_path(path))
+        result = super().ls_info(self._to_real_path(path), timeout=timeout)
         if result.entries is not None:
             for entry in result.entries:
                 entry["path"] = self._to_virtual_path(entry["path"])
         return result
 
-    def read(self, file_path: str, offset: int = 0, limit: int = 2000) -> ReadResult:
+    def read(
+        self,
+        file_path: str,
+        offset: int = 0,
+        limit: int = 2000,
+        *,
+        timeout: int | None = None,
+    ) -> ReadResult:
         """Read file content from the mapped real path."""
-        result = super().read(self._to_real_path(file_path), offset=offset, limit=limit)
+        result = super().read(self._to_real_path(file_path), offset=offset, limit=limit, timeout=timeout)
         if result.error is not None:
             result.error = self._to_virtual_path(result.error)
         if result.file_data is not None:
             result.file_data = {**result.file_data, "content": self._to_virtual_path(result.file_data["content"])}
         return result
 
-    def write(self, file_path: str, content: str) -> WriteResult:
+    def write(self, file_path: str, content: str, *, timeout: int | None = None) -> WriteResult:
         """Write file content to the mapped real path."""
-        result = super().write(self._to_real_path(file_path), content)
+        result = super().write(self._to_real_path(file_path), content, timeout=timeout)
         if result.path is not None:
             result.path = self._to_virtual_path(result.path)
         if result.error is not None:
@@ -152,6 +159,8 @@ class LocalSubprocessSandbox(BaseSandbox):
         old_string: str,
         new_string: str,
         replace_all: bool = False,  # noqa: FBT001, FBT002
+        *,
+        timeout: int | None = None,
     ) -> EditResult:
         """Edit file content at the mapped real path."""
         result = super().edit(
@@ -159,6 +168,7 @@ class LocalSubprocessSandbox(BaseSandbox):
             old_string,
             new_string,
             replace_all=replace_all,
+            timeout=timeout,
         )
         if result.path is not None:
             result.path = self._to_virtual_path(result.path)
@@ -166,10 +176,17 @@ class LocalSubprocessSandbox(BaseSandbox):
             result.error = self._to_virtual_path(result.error)
         return result
 
-    def grep_raw(self, pattern: str, path: str | None = None, glob: str | None = None) -> GrepResult:
+    def grep_raw(
+        self,
+        pattern: str,
+        path: str | None = None,
+        glob: str | None = None,
+        *,
+        timeout: int | None = None,
+    ) -> GrepResult:
         """Run grep against mapped real paths and return virtual paths."""
         mapped_path = self._to_real_path(path) if path is not None else None
-        result = super().grep_raw(pattern, path=mapped_path, glob=glob)
+        result = super().grep_raw(pattern, path=mapped_path, glob=glob, timeout=timeout)
         if result.error is not None:
             result.error = self._to_virtual_path(result.error)
         if result.matches is not None:
@@ -177,9 +194,9 @@ class LocalSubprocessSandbox(BaseSandbox):
                 match["path"] = self._to_virtual_path(match["path"])
         return result
 
-    def glob_info(self, pattern: str, path: str = "/") -> GlobResult:
+    def glob_info(self, pattern: str, path: str = "/", *, timeout: int | None = None) -> GlobResult:
         """Run glob against mapped real paths."""
-        return super().glob_info(pattern, path=self._to_real_path(path))
+        return super().glob_info(pattern, path=self._to_real_path(path), timeout=timeout)
 
     @property
     def id(self) -> str:

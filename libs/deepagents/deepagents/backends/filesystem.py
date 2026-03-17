@@ -1,14 +1,17 @@
 """`FilesystemBackend`: Read and write files directly from the filesystem."""
 
 import base64
+import concurrent.futures
 import json
 import logging
 import os
 import re
 import subprocess
 import warnings
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
+from typing import TypeVar
 
 import wcmatch.glob as wcglob
 
@@ -33,6 +36,10 @@ from deepagents.backends.utils import (
 )
 
 logger = logging.getLogger(__name__)
+
+_DEFAULT_GLOB_TIMEOUT = 20
+_DEFAULT_GREP_TIMEOUT = 30
+_T = TypeVar("_T")
 
 
 class FilesystemBackend(BackendProtocol):
@@ -138,6 +145,38 @@ class FilesystemBackend(BackendProtocol):
         self.virtual_mode = virtual_mode
         self.max_file_size_bytes = max_file_size_mb * 1024 * 1024
 
+    @staticmethod
+    def _normalize_timeout(timeout: int | None, *, default: int | None = None) -> int | None:
+        """Resolve an operation timeout, validating positive values."""
+        effective_timeout = default if timeout is None else timeout
+        if effective_timeout is not None and effective_timeout <= 0:
+            msg = f"timeout must be positive, got {effective_timeout}"
+            raise ValueError(msg)
+        return effective_timeout
+
+    @staticmethod
+    def _run_with_timeout(
+        func: Callable[[], _T],
+        *,
+        timeout: int | None,
+        on_timeout: Callable[[int], _T],
+    ) -> _T:
+        """Run a blocking operation with an optional wall-clock timeout."""
+        if timeout is None:
+            return func()
+
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        future = executor.submit(func)
+        try:
+            return future.result(timeout=timeout)
+        except concurrent.futures.TimeoutError:
+            future.cancel()
+            return on_timeout(timeout)
+        finally:
+            # Blocking pathlib/file I/O is not cancellable; do not wait for the
+            # worker on timeout or we'd defeat the caller-visible timeout.
+            executor.shutdown(wait=False, cancel_futures=True)
+
     def _resolve_path(self, key: str) -> Path:
         """Resolve a file path with security checks.
 
@@ -191,7 +230,21 @@ class FilesystemBackend(BackendProtocol):
         """
         return "/" + path.resolve().relative_to(self.cwd).as_posix()
 
-    def ls_info(self, path: str) -> LsResult:  # noqa: C901, PLR0912, PLR0915  # Complex virtual_mode logic
+    def ls_info(
+        self,
+        path: str,
+        *,
+        timeout: int | None = None,
+    ) -> LsResult:
+        """List files and directories in the specified directory (non-recursive)."""
+        effective_timeout = self._normalize_timeout(timeout)
+        return self._run_with_timeout(
+            lambda: self._ls_info_impl(path),
+            timeout=effective_timeout,
+            on_timeout=lambda seconds: LsResult(error=f"ls timed out after {seconds}s"),
+        )
+
+    def _ls_info_impl(self, path: str) -> LsResult:  # noqa: C901, PLR0912, PLR0915  # Complex virtual_mode logic
         """List files and directories in the specified directory (non-recursive).
 
         Args:
@@ -301,6 +354,22 @@ class FilesystemBackend(BackendProtocol):
         file_path: str,
         offset: int = 0,
         limit: int = 2000,
+        *,
+        timeout: int | None = None,
+    ) -> ReadResult:
+        """Read file content for the requested line range."""
+        effective_timeout = self._normalize_timeout(timeout)
+        return self._run_with_timeout(
+            lambda: self._read_impl(file_path, offset=offset, limit=limit),
+            timeout=effective_timeout,
+            on_timeout=lambda seconds: ReadResult(error=f"read timed out after {seconds}s"),
+        )
+
+    def _read_impl(
+        self,
+        file_path: str,
+        offset: int = 0,
+        limit: int = 2000,
     ) -> ReadResult:
         """Read file content for the requested line range.
 
@@ -349,6 +418,21 @@ class FilesystemBackend(BackendProtocol):
         self,
         file_path: str,
         content: str,
+        *,
+        timeout: int | None = None,
+    ) -> WriteResult:
+        """Create a new file with content."""
+        effective_timeout = self._normalize_timeout(timeout)
+        return self._run_with_timeout(
+            lambda: self._write_impl(file_path, content),
+            timeout=effective_timeout,
+            on_timeout=lambda seconds: WriteResult(error=f"Error writing file '{file_path}': timed out after {seconds}s"),
+        )
+
+    def _write_impl(
+        self,
+        file_path: str,
+        content: str,
     ) -> WriteResult:
         """Create a new file with content.
 
@@ -382,6 +466,23 @@ class FilesystemBackend(BackendProtocol):
             return WriteResult(error=f"Error writing file '{file_path}': {e}")
 
     def edit(
+        self,
+        file_path: str,
+        old_string: str,
+        new_string: str,
+        replace_all: bool = False,  # noqa: FBT001, FBT002
+        *,
+        timeout: int | None = None,
+    ) -> EditResult:
+        """Edit a file by replacing string occurrences."""
+        effective_timeout = self._normalize_timeout(timeout)
+        return self._run_with_timeout(
+            lambda: self._edit_impl(file_path, old_string, new_string, replace_all=replace_all),
+            timeout=effective_timeout,
+            on_timeout=lambda seconds: EditResult(error=f"Error editing file '{file_path}': timed out after {seconds}s"),
+        )
+
+    def _edit_impl(
         self,
         file_path: str,
         old_string: str,
@@ -437,6 +538,8 @@ class FilesystemBackend(BackendProtocol):
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
+        *,
+        timeout: int | None = None,
     ) -> GrepResult:
         """Search for a literal text pattern in files.
 
@@ -446,6 +549,7 @@ class FilesystemBackend(BackendProtocol):
             pattern: Literal string to search for (NOT regex).
             path: Directory or file path to search in. Defaults to current directory.
             glob: Optional glob pattern to filter which files to search.
+            timeout: Maximum time in seconds to wait for the search.
 
         Returns:
             GrepResult with matches or error.
@@ -459,11 +563,20 @@ class FilesystemBackend(BackendProtocol):
         if not base_full.exists():
             return GrepResult(matches=[])
 
+        effective_timeout = self._normalize_timeout(timeout, default=_DEFAULT_GREP_TIMEOUT)
+
         # Try ripgrep first (with -F flag for literal search)
-        results = self._ripgrep_search(pattern, base_full, glob)
+        results = self._ripgrep_search(pattern, base_full, glob, timeout=effective_timeout)
         if results is None:
             # Python fallback needs escaped pattern for literal search
-            results = self._python_search(re.escape(pattern), base_full, glob)
+            fallback = self._run_with_timeout(
+                lambda: self._python_search(re.escape(pattern), base_full, glob),
+                timeout=effective_timeout,
+                on_timeout=lambda _seconds: None,
+            )
+            if fallback is None:
+                return GrepResult(error=f"Error: grep timed out after {effective_timeout}s. Try a more specific pattern or a narrower path.")
+            results = fallback
 
         matches: list[GrepMatch] = []
         for fpath, items in results.items():
@@ -471,13 +584,21 @@ class FilesystemBackend(BackendProtocol):
                 matches.append({"path": fpath, "line": int(line_num), "text": line_text})
         return GrepResult(matches=matches)
 
-    def _ripgrep_search(self, pattern: str, base_full: Path, include_glob: str | None) -> dict[str, list[tuple[int, str]]] | None:  # noqa: C901  # Split except clauses for logging
+    def _ripgrep_search(  # noqa: C901
+        self,
+        pattern: str,
+        base_full: Path,
+        include_glob: str | None,
+        *,
+        timeout: int | None,
+    ) -> dict[str, list[tuple[int, str]]] | None:
         """Search using ripgrep with fixed-string (literal) mode.
 
         Args:
             pattern: Literal string to search for (unescaped).
             base_full: Resolved base path to search in.
             include_glob: Optional glob pattern to filter files.
+            timeout: Maximum time in seconds to wait for the ripgrep subprocess.
 
         Returns:
             Dict mapping file paths to list of `(line_number, line_text)` tuples.
@@ -493,7 +614,7 @@ class FilesystemBackend(BackendProtocol):
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=30,
+                timeout=timeout,
                 check=False,
             )
         except (subprocess.TimeoutExpired, FileNotFoundError):
@@ -586,7 +707,22 @@ class FilesystemBackend(BackendProtocol):
 
         return results
 
-    def glob_info(self, pattern: str, path: str = "/") -> GlobResult:  # noqa: C901, PLR0912  # Complex virtual_mode logic
+    def glob_info(
+        self,
+        pattern: str,
+        path: str = "/",
+        *,
+        timeout: int | None = None,
+    ) -> GlobResult:
+        """Find files matching a glob pattern."""
+        effective_timeout = self._normalize_timeout(timeout, default=_DEFAULT_GLOB_TIMEOUT)
+        return self._run_with_timeout(
+            lambda: self._glob_info_impl(pattern, path),
+            timeout=effective_timeout,
+            on_timeout=lambda seconds: GlobResult(error=f"glob timed out after {seconds}s. Try a more specific pattern or a narrower path."),
+        )
+
+    def _glob_info_impl(self, pattern: str, path: str = "/") -> GlobResult:  # noqa: C901, PLR0912  # Complex virtual_mode logic
         """Find files matching a glob pattern.
 
         Args:

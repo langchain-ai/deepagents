@@ -1,191 +1,73 @@
-"""Tests for timeout compatibility guards.
-
-Verifies that `execute_accepts_timeout` correctly detects whether a backend's
-`execute` method accepts a `timeout` keyword argument, and that callers handle
-the result appropriately.
-"""
-
-import logging
-
-import pytest
+"""Tests for timeout forwarding on sandbox execution helpers."""
 
 from deepagents.backends.composite import CompositeBackend
-from deepagents.backends.protocol import (
-    ExecuteResponse,
-    SandboxBackendProtocol,
-    execute_accepts_timeout,
-)
-
-# ---------------------------------------------------------------------------
-# Test backends
-# ---------------------------------------------------------------------------
+from deepagents.backends.protocol import ExecuteResponse, SandboxBackendProtocol
 
 
-class ModernBackend(SandboxBackendProtocol):
-    """Backend whose `execute` accepts `timeout` (current SDK signature)."""
+class RecordingBackend(SandboxBackendProtocol):
+    """Sandbox backend that records the last timeout it received."""
+
+    def __init__(self) -> None:
+        self.received_timeout: int | None = None
 
     @property
     def id(self) -> str:
-        return "modern"
+        return "recording"
 
     def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+        self.received_timeout = timeout
         return ExecuteResponse(output=command, exit_code=0)
 
 
-class LegacyBackend(SandboxBackendProtocol):
-    """Backend whose `execute` does NOT accept `timeout` (pre-0.4.3)."""
-
-    @property
-    def id(self) -> str:
-        return "legacy"
-
-    def execute(self, command: str) -> ExecuteResponse:  # type: ignore[override]
-        return ExecuteResponse(output=command, exit_code=0)
-
-
-class KwargsBackend(SandboxBackendProtocol):
-    """Backend whose `execute` uses **kwargs."""
-
-    @property
-    def id(self) -> str:
-        return "kwargs"
-
-    def execute(self, command: str, **kwargs: object) -> ExecuteResponse:  # type: ignore[override]
-        return ExecuteResponse(output=command, exit_code=0)
-
-
-# ---------------------------------------------------------------------------
-# execute_accepts_timeout
-# ---------------------------------------------------------------------------
-
-
-class TestExecuteAcceptsTimeout:
-    def setup_method(self) -> None:
-        execute_accepts_timeout.cache_clear()
-
-    def test_modern_backend_returns_true(self) -> None:
-        assert execute_accepts_timeout(ModernBackend) is True
-
-    def test_legacy_backend_returns_false(self) -> None:
-        assert execute_accepts_timeout(LegacyBackend) is False
-
-    def test_kwargs_backend_returns_false(self) -> None:
-        """A backend with **kwargs does not have a named `timeout` param."""
-        assert execute_accepts_timeout(KwargsBackend) is False
-
-    def test_result_is_cached(self) -> None:
-        execute_accepts_timeout(ModernBackend)
-        execute_accepts_timeout(ModernBackend)
-        info = execute_accepts_timeout.cache_info()
-        assert info.hits >= 1
-
-    def test_logs_warning_on_inspect_failure(self, caplog: pytest.LogCaptureFixture) -> None:
-        """If inspect.signature raises, a warning is logged and False returned."""
-
-        class BadBackend(SandboxBackendProtocol):
-            @property
-            def id(self) -> str:
-                return "bad"
-
-        # Forcibly set execute to something un-inspectable
-        BadBackend.execute = property(lambda _self: None)  # type: ignore[assignment]
-
-        with caplog.at_level(logging.WARNING):
-            result = execute_accepts_timeout(BadBackend)
-
-        assert result is False
-        assert "Could not inspect signature" in caplog.text
-
-
-# ---------------------------------------------------------------------------
-# SandboxBackendProtocol.aexecute
-# ---------------------------------------------------------------------------
-
-
-class TestAexecuteTimeoutGuard:
-    async def test_modern_backend_forwards_timeout(self) -> None:
-        class RecordingBackend(SandboxBackendProtocol):
-            received_timeout: int | None = None
-
-            @property
-            def id(self) -> str:
-                return "recording"
-
-            def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
-                self.received_timeout = timeout
-                return ExecuteResponse(output="ok", exit_code=0)
-
-        execute_accepts_timeout.cache_clear()
+class TestSandboxBackendProtocolAexecute:
+    async def test_aexecute_forwards_timeout(self) -> None:
         backend = RecordingBackend()
-        await backend.aexecute("ls", timeout=42)
+        result = await backend.aexecute("ls", timeout=42)
+
+        assert result.output == "ls"
         assert backend.received_timeout == 42
 
-    async def test_legacy_backend_drops_timeout_silently(self) -> None:
-        """Timeout is silently dropped for legacy backends (middleware handles user-facing errors)."""
-        execute_accepts_timeout.cache_clear()
-        backend = LegacyBackend()
-        result = await backend.aexecute("ls", timeout=30)
+    async def test_aexecute_forwards_none_timeout(self) -> None:
+        backend = RecordingBackend()
+        result = await backend.aexecute("ls")
+
         assert result.output == "ls"
-
-    async def test_no_timeout_skips_check(self) -> None:
-        execute_accepts_timeout.cache_clear()
-        backend = ModernBackend()
-        result = await backend.aexecute("echo hi")
-        assert result.output == "echo hi"
+        assert backend.received_timeout is None
 
 
-# ---------------------------------------------------------------------------
-# CompositeBackend.execute / .aexecute timeout guard
-# ---------------------------------------------------------------------------
+class TestCompositeTimeoutForwarding:
+    def test_execute_forwards_timeout(self) -> None:
+        backend = RecordingBackend()
+        comp = CompositeBackend(default=backend, routes={})
 
-
-class TestCompositeTimeoutGuard:
-    def setup_method(self) -> None:
-        execute_accepts_timeout.cache_clear()
-
-    def test_execute_forwards_timeout_to_modern(self) -> None:
-        class RecordingModern(SandboxBackendProtocol):
-            received_timeout: int | None = None
-
-            @property
-            def id(self) -> str:
-                return "rec"
-
-            def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
-                self.received_timeout = timeout
-                return ExecuteResponse(output="ok", exit_code=0)
-
-        inner = RecordingModern()
-        comp = CompositeBackend(default=inner, routes={})
-        comp.execute("ls", timeout=60)
-        assert inner.received_timeout == 60
-
-    def test_execute_omits_timeout_for_legacy(self) -> None:
-        """Legacy backend is called without timeout (no TypeError)."""
-        inner = LegacyBackend()
-        comp = CompositeBackend(default=inner, routes={})
         result = comp.execute("ls", timeout=60)
+
         assert result.output == "ls"
+        assert backend.received_timeout == 60
 
-    async def test_aexecute_forwards_timeout_to_modern(self) -> None:
-        class RecordingModern(SandboxBackendProtocol):
-            received_timeout: int | None = None
+    def test_execute_forwards_none_timeout(self) -> None:
+        backend = RecordingBackend()
+        comp = CompositeBackend(default=backend, routes={})
 
-            @property
-            def id(self) -> str:
-                return "rec"
+        result = comp.execute("ls")
 
-            def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
-                self.received_timeout = timeout
-                return ExecuteResponse(output="ok", exit_code=0)
+        assert result.output == "ls"
+        assert backend.received_timeout is None
 
-        inner = RecordingModern()
-        comp = CompositeBackend(default=inner, routes={})
-        await comp.aexecute("ls", timeout=60)
-        assert inner.received_timeout == 60
+    async def test_aexecute_forwards_timeout(self) -> None:
+        backend = RecordingBackend()
+        comp = CompositeBackend(default=backend, routes={})
 
-    async def test_aexecute_omits_timeout_for_legacy(self) -> None:
-        inner = LegacyBackend()
-        comp = CompositeBackend(default=inner, routes={})
         result = await comp.aexecute("ls", timeout=60)
+
         assert result.output == "ls"
+        assert backend.received_timeout == 60
+
+    async def test_aexecute_forwards_none_timeout(self) -> None:
+        backend = RecordingBackend()
+        comp = CompositeBackend(default=backend, routes={})
+
+        result = await comp.aexecute("ls")
+
+        assert result.output == "ls"
+        assert backend.received_timeout is None

@@ -1,15 +1,21 @@
 """Async tests for middleware filesystem tools."""
 
-import asyncio
-from unittest.mock import patch
-
 from langchain.tools import ToolRuntime
 from langgraph.store.memory import InMemoryStore
 from langgraph.types import Command
 
-import deepagents.middleware.filesystem as filesystem_middleware
 from deepagents.backends import CompositeBackend, StateBackend
-from deepagents.backends.protocol import ExecuteResponse, SandboxBackendProtocol
+from deepagents.backends.protocol import (
+    EditResult,
+    ExecuteResponse,
+    GlobResult,
+    GrepResult,
+    LsResult,
+    ReadResult,
+    SandboxBackendProtocol,
+    WriteResult,
+)
+from deepagents.backends.utils import create_file_data
 from deepagents.middleware.filesystem import FileData, FilesystemMiddleware, FilesystemState
 
 
@@ -22,6 +28,55 @@ def build_composite_state_backend(runtime: ToolRuntime, *, routes):
             built_routes[prefix] = backend_or_factory
     default_state = StateBackend(runtime)
     return CompositeBackend(default=default_state, routes=built_routes)
+
+
+class RecordingFilesystemBackend(StateBackend):
+    """State-backed async test backend that records filesystem timeouts."""
+
+    def __init__(self, runtime: ToolRuntime) -> None:
+        super().__init__(runtime)
+        self.timeouts: dict[str, int | None] = {}
+        self.glob_result = GlobResult(matches=[])
+        self.grep_result = GrepResult(matches=[])
+
+    def ls_info(self, path: str, *, timeout: int | None = None) -> LsResult:
+        self.timeouts["ls"] = timeout
+        return LsResult(entries=[])
+
+    def read(self, path: str, offset: int = 0, limit: int = 100, *, timeout: int | None = None) -> ReadResult:
+        self.timeouts["read"] = timeout
+        return ReadResult(file_data=create_file_data("content"))
+
+    def write(self, path: str, content: str, *, timeout: int | None = None) -> WriteResult:
+        self.timeouts["write"] = timeout
+        return WriteResult(path=path, files_update=None)
+
+    def edit(
+        self,
+        path: str,
+        old_string: str,
+        new_string: str,
+        replace_all: bool = False,  # noqa: FBT001, FBT002
+        *,
+        timeout: int | None = None,
+    ) -> EditResult:
+        self.timeouts["edit"] = timeout
+        return EditResult(path=path, files_update=None, occurrences=1)
+
+    def glob_info(self, pattern: str, path: str = "/", *, timeout: int | None = None) -> GlobResult:
+        self.timeouts["glob"] = timeout
+        return self.glob_result
+
+    def grep_raw(
+        self,
+        pattern: str,
+        path: str | None = None,
+        glob: str | None = None,
+        *,
+        timeout: int | None = None,
+    ) -> GrepResult:
+        self.timeouts["grep"] = timeout
+        return self.grep_result
 
 
 class TestFilesystemMiddlewareAsync:
@@ -299,29 +354,77 @@ class TestFilesystemMiddlewareAsync:
         assert result == str([])
 
     async def test_glob_timeout_returns_error_message_async(self):
-        state = FilesystemState(messages=[], files={})
-        middleware = FilesystemMiddleware()
+        rt = ToolRuntime(
+            state={"messages": [], "files": {}},
+            context=None,
+            tool_call_id="aglob_timeout",
+            store=None,
+            stream_writer=lambda _: None,
+            config={},
+        )
+        backend = RecordingFilesystemBackend(rt)
+        backend.glob_result = GlobResult(error="glob timed out after 1s. Try a more specific pattern or a narrower path.")
+        middleware = FilesystemMiddleware(backend=backend, max_filesystem_timeout=5)
         glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
-        backend_runtime = ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={})
-        backend = middleware._get_backend(backend_runtime)
+        result = await glob_search_tool.ainvoke({"pattern": "**/*", "timeout": 1, "runtime": rt})
 
-        async def slow_aglob_info(*_args: object, **_kwargs: object) -> list[dict[str, str]]:
-            await asyncio.sleep(2)
-            return []
+        assert result == "Error: glob timed out after 1s. Try a more specific pattern or a narrower path."
+        assert backend.timeouts["glob"] == 1
 
-        with (
-            patch.object(filesystem_middleware, "GLOB_TIMEOUT", 0.5),
-            patch.object(middleware, "_get_backend", return_value=backend),
-            patch.object(backend, "aglob_info", side_effect=slow_aglob_info),
-        ):
-            result = await glob_search_tool.ainvoke(
-                {
-                    "pattern": "**/*",
-                    "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
-                }
-            )
+    async def test_async_filesystem_tools_apply_default_timeout_caps(self) -> None:
+        rt = ToolRuntime(
+            state={"messages": [], "files": {}},
+            context=None,
+            tool_call_id="async_filesystem_caps",
+            store=None,
+            stream_writer=lambda _: None,
+            config={},
+        )
+        backend = RecordingFilesystemBackend(rt)
+        middleware = FilesystemMiddleware(backend=backend, max_filesystem_timeout=45)
 
-        assert result == "Error: glob timed out after 0.5s. Try a more specific pattern or a narrower path."
+        await next(tool for tool in middleware.tools if tool.name == "ls").ainvoke({"path": "/", "runtime": rt})
+        await next(tool for tool in middleware.tools if tool.name == "read_file").ainvoke({"file_path": "/test.txt", "runtime": rt})
+        await next(tool for tool in middleware.tools if tool.name == "write_file").ainvoke({"file_path": "/test.txt", "content": "x", "runtime": rt})
+        await next(tool for tool in middleware.tools if tool.name == "edit_file").ainvoke(
+            {"file_path": "/test.txt", "old_string": "x", "new_string": "y", "runtime": rt}
+        )
+
+        assert backend.timeouts["ls"] == 45
+        assert backend.timeouts["read"] == 45
+        assert backend.timeouts["write"] == 45
+        assert backend.timeouts["edit"] == 45
+
+    async def test_async_glob_and_grep_timeout_defaults_and_validation(self) -> None:
+        rt = ToolRuntime(
+            state={"messages": [], "files": {}},
+            context=None,
+            tool_call_id="async_glob_grep_timeout",
+            store=None,
+            stream_writer=lambda _: None,
+            config={},
+        )
+        backend = RecordingFilesystemBackend(rt)
+        middleware = FilesystemMiddleware(backend=backend, max_filesystem_timeout=40)
+
+        glob_tool = next(tool for tool in middleware.tools if tool.name == "glob")
+        grep_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+
+        await glob_tool.ainvoke({"pattern": "**/*", "runtime": rt})
+        await grep_tool.ainvoke({"pattern": "needle", "runtime": rt})
+        assert backend.timeouts["glob"] == 20
+        assert backend.timeouts["grep"] == 30
+
+        await glob_tool.ainvoke({"pattern": "**/*", "timeout": 15, "runtime": rt})
+        await grep_tool.ainvoke({"pattern": "needle", "timeout": 16, "runtime": rt})
+        assert backend.timeouts["glob"] == 15
+        assert backend.timeouts["grep"] == 16
+
+        result = await glob_tool.ainvoke({"pattern": "**/*", "timeout": 41, "runtime": rt})
+        assert result == "Error: timeout 41s exceeds maximum allowed (40s)."
+
+        result = await grep_tool.ainvoke({"pattern": "needle", "timeout": 0, "runtime": rt})
+        assert result == "Error: timeout must be positive, got 0."
 
     async def test_agrep_search_shortterm_files_with_matches(self):
         """Test async grep with files_with_matches mode."""

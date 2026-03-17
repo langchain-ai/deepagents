@@ -28,6 +28,7 @@ on:
           - deepagents-harbor
           - langchain-daytona
           - langchain-modal
+          - langchain-quickjs
           - langchain-runloop
         default: deepagents
       dangerous-nonmain-release:
@@ -82,12 +83,15 @@ jobs:
             langchain-modal)
               echo "working-dir=libs/partners/modal" >> $GITHUB_OUTPUT
               ;;
+            langchain-quickjs)
+              echo "working-dir=libs/partners/quickjs" >> $GITHUB_OUTPUT
+              ;;
             langchain-runloop)
               echo "working-dir=libs/partners/runloop" >> $GITHUB_OUTPUT
               ;;
             *)
               echo "Error: Unknown package '$PACKAGE'"
-              echo "Valid packages are: deepagents, deepagents-cli, deepagents-acp, deepagents-harbor, langchain-daytona, langchain-modal, langchain-runloop"
+              echo "Valid packages are: deepagents, deepagents-cli, deepagents-acp, deepagents-harbor, langchain-daytona, langchain-modal, langchain-quickjs, langchain-runloop"
               exit 1
               ;;
           esac
@@ -206,11 +210,24 @@ jobs:
 
           echo "Previous tag: $PREV_TAG"
 
-          # Get commits between previous tag and HEAD for this package
+          # Resolve the actual release commit instead of using HEAD.
+          # release-please always updates CHANGELOG.md in the release commit,
+          # so on workflow_call this resolves to HEAD (effectively a no-op).
+          # On workflow_dispatch (manual/recovery), HEAD may be ahead of the
+          # release commit — this avoids attributing post-release commits to
+          # this release's contributor list.
+          RELEASE_COMMIT=$(git log -1 --format=%H -- "$WORKING_DIR/CHANGELOG.md")
+          if [ -z "$RELEASE_COMMIT" ]; then
+            echo "Warning: no CHANGELOG.md history found, falling back to HEAD"
+            RELEASE_COMMIT=$(git rev-parse HEAD)
+          fi
+          echo "Release commit (from CHANGELOG.md): $RELEASE_COMMIT"
+
+          # Get commits between previous tag and release commit for this package
           if [ -z "$PREV_TAG" ]; then
-            COMMITS=$(git rev-list HEAD -- "$WORKING_DIR" | head -100)
+            COMMITS=$(git rev-list "$RELEASE_COMMIT" -- "$WORKING_DIR" | head -100)
           else
-            COMMITS=$(git rev-list "$PREV_TAG"..HEAD -- "$WORKING_DIR" | head -100)
+            COMMITS=$(git rev-list "$PREV_TAG".."$RELEASE_COMMIT" -- "$WORKING_DIR" | head -100)
           fi
 
           # Find PRs and collect contributors (GitHub username + optional Twitter/LinkedIn)
@@ -405,20 +422,29 @@ jobs:
               PREV_TAG=""
             fi
 
+            # Use CHANGELOG.md's last edit as the release commit boundary.
+            # On manual dispatch, HEAD may be ahead of the actual release —
+            # this ensures the git log only covers commits up to the release.
+            RELEASE_COMMIT=$(git log -1 --format=%H -- "$WORKING_DIR/CHANGELOG.md")
+            if [ -z "$RELEASE_COMMIT" ]; then
+              echo "Warning: no CHANGELOG.md history found, falling back to HEAD"
+              RELEASE_COMMIT=$(git rev-parse HEAD)
+            fi
+
             if [ -z "$PREV_TAG" ]; then
               PREAMBLE="Initial release"
-              PREV_TAG=$(git rev-list --max-parents=0 HEAD)
+              PREV_TAG=$(git rev-list --max-parents=0 "$RELEASE_COMMIT")
             else
               PREAMBLE="Changes since $PREV_TAG"
             fi
 
-            GIT_LOG=$(git log --format="%s" "$PREV_TAG"..HEAD -- "$WORKING_DIR")
+            GIT_LOG=$(git log --format="%s" "$PREV_TAG".."$RELEASE_COMMIT" -- "$WORKING_DIR")
             RELEASE_BODY=$(printf "%s\n%s" "$PREAMBLE" "$GIT_LOG")
           fi
 
           # Append contributor shoutouts
           if [ -n "$CONTRIBUTORS" ]; then
-            RELEASE_BODY=$(printf "%s\n\n---\n\nThanks to our contributors: %s" "$RELEASE_BODY" "$CONTRIBUTORS")
+            RELEASE_BODY=$(printf "%s\n\n---\n\nThanks to our community contributors: %s" "$RELEASE_BODY" "$CONTRIBUTORS")
           fi
 
           # Output release body using heredoc for proper multiline handling
@@ -668,19 +694,49 @@ jobs:
       - name: Update release PR label
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PKG_NAME: ${{ needs.build.outputs.pkg-name }}
         run: |
-          # Find the release PR that was merged (look for PR associated with this commit)
-          PR_NUMBER=$(gh api "/repos/${{ github.repository }}/commits/${{ github.sha }}/pulls" --jq '.[0].number // empty')
+          UPDATED=false
+
+          # Try 1: find PR associated with this commit
+          PR_NUMBER=$(gh api "/repos/${{ github.repository }}/commits/${{ github.sha }}/pulls" --jq '.[0].number // empty' 2>/dev/null) || PR_NUMBER=""
           if [ -n "$PR_NUMBER" ]; then
-            # Only update label if this is actually a release PR (has autorelease: pending label)
-            # This prevents accidentally labeling feature PRs when workflow is manually triggered
             HAS_PENDING=$(gh pr view "$PR_NUMBER" --json labels --jq '.labels[].name' | grep -q "autorelease: pending" && echo "true" || echo "false")
             if [ "$HAS_PENDING" = "true" ]; then
               echo "Found release PR #$PR_NUMBER with 'autorelease: pending', updating labels..."
-              gh pr edit "$PR_NUMBER" --remove-label "autorelease: pending" --add-label "autorelease: tagged" || true
+              if gh pr edit "$PR_NUMBER" --remove-label "autorelease: pending" --add-label "autorelease: tagged"; then
+                UPDATED=true
+              else
+                echo "::warning::Failed to update labels on PR #$PR_NUMBER via commit lookup. Falling through to label search..."
+              fi
             else
-              echo "PR #$PR_NUMBER does not have 'autorelease: pending' label, skipping (not a release PR)"
+              echo "PR #$PR_NUMBER (from commit lookup) is not the release PR, falling through to label search..."
             fi
           else
-            echo "No PR found for commit ${{ github.sha }}, skipping label update"
+            echo "No PR found via commit ${{ github.sha }}, falling through to label search..."
+          fi
+
+          # Try 2: fallback label search when commit-based lookup didn't find the release PR.
+          # This handles manual dispatch where github.sha may not be the merge commit
+          # (e.g., other commits landed on main between the merge and the manual trigger).
+          if [ "$UPDATED" = "false" ]; then
+            PR_NUMBER=$(gh pr list --repo "${{ github.repository }}" \
+              --state merged \
+              --label "autorelease: pending" \
+              --label "release" \
+              --search "\"release($PKG_NAME)\" in:title" \
+              --json number --jq '.[0].number // empty') || {
+              echo "::warning::gh pr list failed. Label swap could not be performed automatically."
+              echo "Manual fix: gh pr edit <PR_NUMBER> --remove-label 'autorelease: pending' --add-label 'autorelease: tagged'"
+              exit 0
+            }
+            if [ -n "$PR_NUMBER" ]; then
+              echo "Found release PR #$PR_NUMBER via label search, updating labels..."
+              if ! gh pr edit "$PR_NUMBER" --remove-label "autorelease: pending" --add-label "autorelease: tagged"; then
+                echo "::warning::Failed to update labels on PR #$PR_NUMBER. Manual fix required."
+                echo "Run: gh pr edit $PR_NUMBER --remove-label 'autorelease: pending' --add-label 'autorelease: tagged'"
+              fi
+            else
+              echo "::warning::No release PR with 'autorelease: pending' found for $PKG_NAME. Manual label update may be required."
+            fi
           fi

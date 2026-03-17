@@ -187,6 +187,21 @@ class TestBuildStreamConfig:
         config = _build_stream_config("t-abc", assistant_id=None)
         assert config["configurable"]["thread_id"] == "t-abc"
 
+    def test_sandbox_type_included_when_set(self) -> None:
+        """Sandbox type should appear in metadata when provided."""
+        config = _build_stream_config("t-sb", assistant_id=None, sandbox_type="daytona")
+        assert config["metadata"]["sandbox_type"] == "daytona"
+
+    def test_sandbox_type_absent_when_none(self) -> None:
+        """Sandbox type should be absent from metadata when not provided."""
+        config = _build_stream_config("t-nosb", assistant_id=None)
+        assert "sandbox_type" not in config["metadata"]
+
+    def test_sandbox_type_none_string_excluded(self) -> None:
+        """The argparse sentinel `"none"` should not leak into metadata."""
+        config = _build_stream_config("t-none", assistant_id=None, sandbox_type="none")
+        assert "sandbox_type" not in config["metadata"]
+
     def test_no_model_keys_in_configurable(self) -> None:
         """Model/model_params should not be in configurable."""
         config = _build_stream_config("t-no-model", assistant_id=None)

@@ -766,6 +766,8 @@ async def run_non_interactive(
     }
     if cwd:
         metadata["cwd"] = cwd
+    if sandbox_type and sandbox_type != "none":
+        metadata["sandbox_type"] = sandbox_type
     from deepagents_cli.textual_adapter import _get_git_branch
 
     branch = _get_git_branch()

@@ -82,7 +82,7 @@ logger = logging.getLogger(__name__)
 _monotonic = time.monotonic
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Awaitable, Callable
 
     from deepagents.backends import CompositeBackend
     from langchain_core.runnables import RunnableConfig
@@ -648,6 +648,7 @@ class DeepAgentsApp(App):
         # User message queue for sequential processing
         self._pending_messages: deque[QueuedMessage] = deque()
         self._queued_widgets: deque[QueuedUserMessage] = deque()
+        self._deferred_actions: list[Callable[[], Awaitable[None]]] = []
         self._processing_pending = False
         self._thread_switching = False
         self._model_switching = False
@@ -902,6 +903,13 @@ class DeepAgentsApp(App):
                 lambda: asyncio.create_task(self._load_thread_history())
             )
 
+        # Drain deferred actions (e.g. model/thread switch queued during connection)
+        # if the agent is not actively running.
+        if self._deferred_actions and not self._agent_running:
+            self.call_after_refresh(
+                lambda: asyncio.create_task(self._drain_deferred_actions())
+            )
+
         # Drain any messages the user typed while the server was starting.
         # (If an initial prompt exists, its cleanup path will drain the queue.)
         if self._pending_messages and not (
@@ -933,6 +941,7 @@ class DeepAgentsApp(App):
             for w in self._queued_widgets:
                 w.remove()
             self._queued_widgets.clear()
+        self._deferred_actions.clear()
 
     async def _prewarm_threads_cache(self) -> None:  # noqa: PLR6301  # Worker hook kept as instance method
         """Prewarm thread selector cache without blocking app startup."""
@@ -1497,6 +1506,11 @@ class DeepAgentsApp(App):
 
         await dispatch_hook("user.prompt", {})
 
+        # /quit should always work immediately, even during thread switching.
+        if mode == "command" and value.lower().strip() in {"/quit", "/q"}:
+            self.exit()
+            return
+
         # Prevent message handling while a thread switch is in-flight.
         if self._thread_switching:
             self.notify(
@@ -1510,6 +1524,22 @@ class DeepAgentsApp(App):
         # instead of processing. Messages queued during connection are drained
         # once the server is ready (see on_deep_agents_app_server_ready).
         if self._agent_running or self._shell_running or self._connecting:
+            # Allow certain commands to bypass the queue.
+            if mode == "command":
+                cmd = value.lower().strip()
+                # /version can run during connection (no server needed), but
+                # still queues when an agent or shell is actively running.
+                if cmd == "/version" and self._connecting and not (
+                    self._agent_running or self._shell_running
+                ):
+                    await self._process_message(value, mode)
+                    return
+                # /model (no args) and /threads open a selector UI immediately;
+                # the actual switch is deferred via the selector callbacks.
+                if cmd == "/model" or cmd == "/threads":
+                    await self._process_message(value, mode)
+                    return
+
             self._pending_messages.append(QueuedMessage(text=value, mode=mode))
             queued_widget = QueuedUserMessage(value)
             self._queued_widgets.append(queued_widget)
@@ -1661,6 +1691,9 @@ class DeepAgentsApp(App):
             await self._mount_message(AppMessage("Command interrupted"))
         if self._chat_input:
             self._chat_input.set_cursor_active(active=True)
+        # Execute deferred actions (e.g. model/thread switch) now that shell is idle
+        if not self._connecting:
+            await self._drain_deferred_actions()
         await self._process_next_from_queue()
 
     async def _kill_shell_process(self) -> None:
@@ -2325,6 +2358,10 @@ class DeepAgentsApp(App):
         if self._token_tracker:
             self._token_tracker.show()
 
+        # Execute deferred actions (e.g. model/thread switch) now that agent is idle
+        if not self._connecting:
+            await self._drain_deferred_actions()
+
         # Process next message from queue if any
         await self._process_next_from_queue()
 
@@ -2825,6 +2862,16 @@ class DeepAgentsApp(App):
         for w in self._queued_widgets:
             w.remove()
         self._queued_widgets.clear()
+        self._deferred_actions.clear()
+
+    async def _drain_deferred_actions(self) -> None:
+        """Execute deferred actions (model/thread switch) now that agent is idle."""
+        while self._deferred_actions:
+            action = self._deferred_actions.pop(0)
+            try:
+                await action()
+            except Exception:
+                logger.exception("Failed to execute deferred action")
 
     def _cancel_worker(self, worker: Worker[None] | None) -> None:
         """Discard the message queue and cancel an active worker.
@@ -3186,13 +3233,19 @@ class DeepAgentsApp(App):
             """Handle the model selector result."""
             if result is not None:
                 model_spec, _ = result
-                self.call_later(
-                    partial(
-                        self._switch_model,
-                        model_spec,
-                        extra_kwargs=extra_kwargs,
+                if self._agent_running or self._shell_running or self._connecting:
+                    self._deferred_actions.append(
+                        partial(self._switch_model, model_spec, extra_kwargs=extra_kwargs)
                     )
-                )
+                    self.notify("Model will switch after current task completes.", timeout=3)
+                else:
+                    self.call_later(
+                        partial(
+                            self._switch_model,
+                            model_spec,
+                            extra_kwargs=extra_kwargs,
+                        )
+                    )
             # Refocus input after modal closes
             if self._chat_input:
                 self._chat_input.focus_input()
@@ -3218,6 +3271,8 @@ class DeepAgentsApp(App):
 
     async def _show_thread_selector(self) -> None:
         """Show interactive thread selector as a modal screen."""
+        from functools import partial
+
         from deepagents_cli.sessions import get_cached_threads, get_thread_limit
 
         current = self._session_state.thread_id if self._session_state else None
@@ -3228,7 +3283,11 @@ class DeepAgentsApp(App):
         def handle_result(result: str | None) -> None:
             """Handle the thread selector result."""
             if result is not None:
-                self.call_later(self._resume_thread, result)
+                if self._agent_running or self._shell_running or self._connecting:
+                    self._deferred_actions.append(partial(self._resume_thread, result))
+                    self.notify("Thread will switch after current task completes.", timeout=3)
+                else:
+                    self.call_later(self._resume_thread, result)
             if self._chat_input:
                 self._chat_input.focus_input()
 

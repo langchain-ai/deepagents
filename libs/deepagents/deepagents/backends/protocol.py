@@ -287,8 +287,8 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         raise NotImplementedError
 
     async def als(self, path: str) -> "LsResult":
-        """Async version of ls_info."""
-        return await asyncio.to_thread(self.ls_info, path)
+        """Async version of `ls`."""
+        return await asyncio.to_thread(self.ls, path)
 
     def read(
         self,

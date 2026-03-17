@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 
 
 class TestLangSmithSandboxStandard(SandboxIntegrationTests):
+
     @pytest.fixture(scope="class")
     def sandbox(self) -> Iterator[SandboxBackendProtocol]:
         api_key = os.environ.get("LANGSMITH_API_KEY")
@@ -30,3 +31,21 @@ class TestLangSmithSandboxStandard(SandboxIntegrationTests):
             yield backend
         finally:
             client.delete_sandbox(ls_sandbox.name)
+
+    @pytest.mark.xfail(reason="LangSmith runs as root and ignores file permissions")
+    def test_download_error_permission_denied(
+        self, sandbox_backend: SandboxBackendProtocol
+    ) -> None:
+        super().test_download_error_permission_denied(sandbox_backend)
+
+    @pytest.mark.xfail(reason="LangSmith returns file_not_found for relative paths")
+    def test_download_error_invalid_path_relative(
+        self, sandbox_backend: SandboxBackendProtocol
+    ) -> None:
+        super().test_download_error_invalid_path_relative(sandbox_backend)
+
+    @pytest.mark.xfail(reason="LangSmith accepts relative paths on upload")
+    def test_upload_relative_path_returns_invalid_path(
+        self, sandbox_backend: SandboxBackendProtocol
+    ) -> None:
+        super().test_upload_relative_path_returns_invalid_path(sandbox_backend)

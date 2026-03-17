@@ -1235,7 +1235,7 @@ class DeepAgentsApp(App):
             # real ApprovalMenu.  This prevents accidental key presses (e.g.
             # 'y', 'n') from triggering approval decisions mid-sentence.
             placeholder = Static(
-                "Waiting for user approval…",
+                "Waiting for typing to finish...",
                 classes="approval-placeholder",
             )
             self._approval_placeholder = placeholder

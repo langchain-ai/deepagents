@@ -5,13 +5,14 @@ from __future__ import annotations
 from typing import Any
 
 from langchain.chat_models import init_chat_model
+from langchain.chat_models.base import _ConfigurableModel
 from langchain_core.language_models import BaseChatModel
 
 
-def resolve_model(model: str | BaseChatModel) -> BaseChatModel:
+def resolve_model(model: str | BaseChatModel | _ConfigurableModel) -> BaseChatModel | _ConfigurableModel:
     """Resolve a model string to a `BaseChatModel`.
 
-    If `model` is already a `BaseChatModel`, returns it unchanged.
+    If `model` is already a `BaseChatModel` or `_ConfigurableModel`, returns it unchanged.
 
     String models are resolved via `init_chat_model`. OpenAI models
     (prefixed with `openai:`) default to the Responses API.
@@ -20,9 +21,9 @@ def resolve_model(model: str | BaseChatModel) -> BaseChatModel:
         model: Model string or pre-configured model instance.
 
     Returns:
-        Resolved `BaseChatModel` instance.
+        Resolved `BaseChatModel` or `_ConfigurableModel` instance.
     """
-    if isinstance(model, BaseChatModel):
+    if isinstance(model, (BaseChatModel, _ConfigurableModel)):
         return model
     if model.startswith("openai:"):
         return init_chat_model(model, use_responses_api=True)

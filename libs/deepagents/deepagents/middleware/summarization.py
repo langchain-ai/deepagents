@@ -80,6 +80,7 @@ if TYPE_CHECKING:
 
     from langchain.agents.middleware.types import ModelRequest, ModelResponse
     from langchain.chat_models import BaseChatModel
+    from langchain.chat_models.base import _ConfigurableModel
     from langchain_core.runnables.config import RunnableConfig
     from langchain_core.tools import BaseTool
     from langgraph.runtime import Runtime
@@ -1075,7 +1076,7 @@ SummarizationMiddleware = _DeepAgentsSummarizationMiddleware
 
 
 def create_summarization_middleware(
-    model: BaseChatModel,
+    model: BaseChatModel | _ConfigurableModel,
     backend: BACKEND_TYPES,
 ) -> _DeepAgentsSummarizationMiddleware:
     """Create a `SummarizationMiddleware` with model-aware defaults.
@@ -1091,9 +1092,10 @@ def create_summarization_middleware(
         Configured `SummarizationMiddleware` instance.
     """
     from langchain.chat_models import BaseChatModel as RuntimeBaseChatModel  # noqa: PLC0415
+    from langchain.chat_models.base import _ConfigurableModel as RuntimeConfigurableModel  # noqa: PLC0415
 
-    if not isinstance(model, RuntimeBaseChatModel):
-        msg = "`create_summarization_middleware` expects `model` to be a `BaseChatModel` instance."
+    if not isinstance(model, (RuntimeBaseChatModel, RuntimeConfigurableModel)):
+        msg = "`create_summarization_middleware` expects `model` to be a `BaseChatModel` or `_ConfigurableModel` instance."
         raise TypeError(msg)
 
     defaults = compute_summarization_defaults(model)

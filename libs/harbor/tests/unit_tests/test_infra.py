@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any
 
 from deepagents_harbor.failure import (
     FailureCategory,
+    _extract_observation_texts,
     classify_failure,
     extract_exit_codes,
 )
@@ -17,6 +19,42 @@ from deepagents_harbor.metadata import (
     collect_sandbox_metadata,
 )
 from deepagents_harbor.stats import format_ci, min_detectable_effect, wilson_ci
+
+
+def _make_trajectory(observation_contents: list[str]) -> str:
+    """Build a minimal ATIF trajectory JSON with observation results.
+
+    Args:
+        observation_contents: List of observation result content strings.
+
+    Returns:
+        JSON string of a minimal trajectory.
+    """
+    steps = []
+    for i, content in enumerate(observation_contents):
+        steps.append(
+            {
+                "step_id": i + 1,
+                "source": "agent",
+                "message": "tool call",
+                "tool_calls": [
+                    {
+                        "tool_call_id": f"tc_{i}",
+                        "function_name": "execute",
+                        "arguments": {},
+                    }
+                ],
+                "observation": {
+                    "results": [
+                        {
+                            "source_call_id": f"tc_{i}",
+                            "content": content,
+                        }
+                    ]
+                },
+            }
+        )
+    return json.dumps({"steps": steps})
 
 
 class TestClassifyFailure:
@@ -42,9 +80,9 @@ class TestClassifyFailure:
         result = classify_failure(exception_text="Connection refused to container endpoint")
         assert result == FailureCategory.INFRA_SANDBOX
 
-    def test_oom_pattern_in_trajectory(self):
-        result = classify_failure(trajectory_text='{"output": "Cannot allocate memory"}')
-        assert result == FailureCategory.INFRA_OOM
+    def test_sandbox_crashed_in_exception(self):
+        result = classify_failure(exception_text="sandbox crashed during execution")
+        assert result == FailureCategory.INFRA_SANDBOX
 
     def test_exit_code_takes_precedence_over_text(self):
         # Exit code 137 (OOM) even though text says timeout
@@ -75,14 +113,139 @@ class TestClassifyFailure:
         result = classify_failure(exception_text="Process was killed by signal 9")
         assert result == FailureCategory.INFRA_OOM
 
-    def test_trajectory_only_no_infra_pattern_is_capability(self):
-        result = classify_failure(trajectory_text='{"output": "test failed: expected 42"}')
+    def test_no_exception_no_exit_codes_is_capability(self):
+        result = classify_failure()
         assert result == FailureCategory.CAPABILITY
 
     def test_bare_killed_does_not_false_positive(self):
         # "killed" alone should NOT trigger OOM (too broad)
         result = classify_failure(exception_text="Agent killed the background process")
         assert result == FailureCategory.UNKNOWN
+
+    def test_bare_sandbox_does_not_false_positive(self):
+        # "sandbox" alone should NOT trigger INFRA_SANDBOX — too broad.
+        # Only specific patterns like "sandbox crashed" should match.
+        result = classify_failure(exception_text="Running inside sandbox environment")
+        assert result == FailureCategory.UNKNOWN
+
+
+class TestClassifyFailureNoTrajectoryLeakage:
+    """Verify that model-generated trajectory content does not cause misclassification."""
+
+    def test_model_discussing_oom_not_misclassified(self):
+        # Model wrote code about OOM handling — should not be classified as infra OOM
+        result = classify_failure()
+        assert result == FailureCategory.CAPABILITY
+
+    def test_model_discussing_connection_refused_not_misclassified(self):
+        # Previously, trajectory_text with "connection refused" would trigger INFRA_SANDBOX.
+        # classify_failure no longer accepts trajectory_text.
+        result = classify_failure()
+        assert result == FailureCategory.CAPABILITY
+
+
+class TestExtractObservationTexts:
+    """Tests for structured observation extraction from ATIF trajectories."""
+
+    def test_extracts_observation_content(self):
+        trajectory = _make_trajectory(["exit_code: 137", "all good"])
+        texts = _extract_observation_texts(trajectory)
+        assert texts == ["exit_code: 137", "all good"]
+
+    def test_ignores_agent_messages(self):
+        data = {
+            "steps": [
+                {
+                    "step_id": 1,
+                    "source": "agent",
+                    "message": "I see exit code 137 in the output",
+                }
+            ]
+        }
+        texts = _extract_observation_texts(json.dumps(data))
+        assert texts == []
+
+    def test_handles_content_part_list(self):
+        data = {
+            "steps": [
+                {
+                    "step_id": 1,
+                    "source": "agent",
+                    "message": "",
+                    "observation": {
+                        "results": [
+                            {
+                                "content": [
+                                    {"type": "text", "text": "exit_code: 1"},
+                                ]
+                            }
+                        ]
+                    },
+                }
+            ]
+        }
+        texts = _extract_observation_texts(json.dumps(data))
+        assert texts == ["exit_code: 1"]
+
+    def test_invalid_json_returns_none(self):
+        texts = _extract_observation_texts("not valid json {{{")
+        assert texts is None
+
+    def test_non_atif_json_returns_none(self):
+        texts = _extract_observation_texts(json.dumps({"foo": "bar"}))
+        assert texts is None
+
+    def test_empty_trajectory(self):
+        texts = _extract_observation_texts(json.dumps({"steps": []}))
+        assert texts == []
+
+
+class TestExtractExitCodes:
+    """Tests for exit code extraction from trajectory text."""
+
+    def test_json_field_in_observation(self):
+        trajectory = _make_trajectory(['{"exit_code": 137, "output": "killed"}'])
+        assert extract_exit_codes(trajectory) == [137]
+
+    def test_prose_format_in_observation(self):
+        trajectory = _make_trajectory(["Command failed with exit code 124"])
+        assert extract_exit_codes(trajectory) == [124]
+
+    def test_zero_exit_code_filtered(self):
+        trajectory = _make_trajectory(['{"exit_code": 0}'])
+        assert extract_exit_codes(trajectory) == []
+
+    def test_multiple_codes(self):
+        trajectory = _make_trajectory(['"exit_code": 1', '"exit_code": 137'])
+        codes = extract_exit_codes(trajectory)
+        assert 1 in codes
+        assert 137 in codes
+
+    def test_empty_string(self):
+        assert extract_exit_codes("") == []
+
+    def test_no_exit_codes(self):
+        trajectory = _make_trajectory(["some random output"])
+        assert extract_exit_codes(trajectory) == []
+
+    def test_exit_code_in_agent_message_ignored(self):
+        """Exit codes in agent messages (not observations) should be ignored."""
+        data = {
+            "steps": [
+                {
+                    "step_id": 1,
+                    "source": "agent",
+                    "message": "I see exit_code: 137 in the output, likely OOM",
+                }
+            ]
+        }
+        codes = extract_exit_codes(json.dumps(data))
+        assert codes == []
+
+    def test_fallback_raw_for_non_atif(self):
+        # Non-ATIF text falls back to raw regex
+        text = "Command failed with exit code 124"
+        assert extract_exit_codes(text) == [124]
 
 
 class TestWilsonCI:
@@ -299,30 +462,3 @@ class TestCollectSandboxMetadata:
         assert meta.sandbox_os == ""
         # Host info should still be populated
         assert meta.host_platform != ""
-
-
-class TestExtractExitCodes:
-    """Tests for exit code extraction from trajectory text."""
-
-    def test_json_field(self):
-        text = '{"exit_code": 137, "output": "killed"}'
-        assert extract_exit_codes(text) == [137]
-
-    def test_prose_format(self):
-        text = "Command failed with exit code 124"
-        assert extract_exit_codes(text) == [124]
-
-    def test_zero_exit_code_filtered(self):
-        assert extract_exit_codes('{"exit_code": 0}') == []
-
-    def test_multiple_codes(self):
-        text = '"exit_code": 1, later "exit_code": 137'
-        codes = extract_exit_codes(text)
-        assert 1 in codes
-        assert 137 in codes
-
-    def test_empty_string(self):
-        assert extract_exit_codes("") == []
-
-    def test_no_exit_codes(self):
-        assert extract_exit_codes("some random output") == []

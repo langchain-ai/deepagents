@@ -6,14 +6,19 @@ capability using exit codes and text pattern matching.
 
 from __future__ import annotations
 
+import json
+import logging
 import re
 from enum import Enum
+from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 class FailureCategory(Enum):
     """Classification of trial failures.
 
-    Distinguishes infrastructure failures from model capabilitiy failures.
+    Distinguishes infrastructure failures from model capability failures.
     """
 
     CAPABILITY = "capability"
@@ -72,7 +77,10 @@ _TIMEOUT_PATTERNS = (
 """Case-insensitive substrings in exception text that signal a timeout."""
 
 _SANDBOX_PATTERNS = (
-    "sandbox",
+    "sandbox crashed",
+    "sandbox exited unexpectedly",
+    "sandbox error",
+    "sandbox failure",
     "connection refused",
     "connection reset",
     "broken pipe",
@@ -84,14 +92,75 @@ _SANDBOX_PATTERNS = (
 network-isolation failure."""
 
 
-def extract_exit_codes(trajectory_text: str) -> list[int]:
-    """Extract non-zero exit codes from trajectory JSON text.
+def _extract_observation_texts(trajectory_json: str) -> list[str] | None:
+    """Extract observation result content from parsed ATIF trajectory JSON.
 
-    Scans observation results in the trajectory for exit code patterns commonly
-    emitted by sandbox execute commands.
+    Only returns text from observation results (tool outputs).
 
     Args:
-        trajectory_text: Raw JSON text of the trajectory.
+        trajectory_json: Raw JSON text of the trajectory.
+
+    Returns:
+        List of observation content strings, or `None` if the JSON could not be
+            parsed as a valid ATIF trajectory (triggers raw fallback).
+    """
+    try:
+        data = json.loads(trajectory_json)
+    except (json.JSONDecodeError, TypeError):
+        logger.debug("Failed to parse trajectory JSON for observation extraction")
+        return None
+
+    if not isinstance(data, dict) or "steps" not in data:
+        return None
+
+    texts: list[str] = []
+    for step in data.get("steps", []):
+        obs: dict[str, Any] | None = step.get("observation")
+        if not obs:
+            continue
+        for result in obs.get("results", []):
+            content = result.get("content")
+            if isinstance(content, str):
+                texts.append(content)
+            elif isinstance(content, list):
+                # ContentPart list (ATIF v1.6+)
+                texts.extend(
+                    part["text"] for part in content if isinstance(part, dict) and part.get("text")
+                )
+    return texts
+
+
+def extract_exit_codes(trajectory_json: str) -> list[int]:
+    """Extract non-zero exit codes from ATIF trajectory observation results.
+
+    Parses the trajectory JSON structurally and only searches observation
+    content (tool output) for exit code patterns, avoiding false positives from
+    model-generated text that discusses exit codes.
+
+    Args:
+        trajectory_json: Raw JSON text of the ATIF trajectory.
+
+    Returns:
+        List of non-zero exit codes found in observation results.
+    """
+    observation_texts = _extract_observation_texts(trajectory_json)
+    if observation_texts is None:
+        # Fall back to regex on raw text if parsing fails (e.g. non-ATIF input)
+        return _extract_exit_codes_raw(trajectory_json)
+    if not observation_texts:
+        return []
+
+    codes: list[int] = []
+    for text in observation_texts:
+        codes.extend(_extract_exit_codes_raw(text))
+    return codes
+
+
+def _extract_exit_codes_raw(text: str) -> list[int]:
+    """Extract non-zero exit codes from a text string using regex.
+
+    Args:
+        text: Text to search for exit code patterns.
 
     Returns:
         List of non-zero exit codes found.
@@ -99,7 +168,7 @@ def extract_exit_codes(trajectory_text: str) -> list[int]:
     codes: list[int] = []
     # Match exit_code/exit code/exit-code variants (dot is a wildcard)
     # e.g. 'exit_code": 137', 'exit code: 1', 'exit-code 124'
-    for match in re.finditer(r'(?:exit.code["\s:]+)(\d+)', trajectory_text, re.IGNORECASE):
+    for match in re.finditer(r'(?:exit.code["\s:]+)(\d+)', text, re.IGNORECASE):
         code = int(match.group(1))
         if code != 0:
             codes.append(code)
@@ -110,28 +179,24 @@ def classify_failure(
     *,
     exception_text: str | None = None,
     exit_codes: list[int] | None = None,
-    trajectory_text: str | None = None,
 ) -> FailureCategory:
     """Classify a trial failure as infrastructure or capability.
 
-    Uses exit codes, exception messages, and trajectory content to determine
-    whether a failure was caused by infrastructure issues (OOM, timeout, sandbox
-    crash) or by the model's capability.
+    Uses exit codes and exception text to determine whether a failure was caused
+    by infrastructure issues (OOM, timeout, sandbox crash) or by the
+    model's capability.
+
+    Pattern matching is restricted to `exception_text` only (structured,
+    controlled output) to avoid false positives from model-generated content
+    in trajectories.
 
     Args:
         exception_text: Content of `exception.txt` if present.
         exit_codes: List of non-zero exit codes observed during the trial.
-        trajectory_text: Raw trajectory JSON text for pattern matching.
 
     Returns:
         The determined failure category.
     """
-    all_text = ""
-    if exception_text:
-        all_text += exception_text.lower()
-    if trajectory_text:
-        all_text += trajectory_text.lower()
-
     # Check exit codes first (most reliable signal)
     if exit_codes:
         for code in exit_codes:
@@ -140,19 +205,21 @@ def classify_failure(
             if code in _TIMEOUT_EXIT_CODES:
                 return FailureCategory.INFRA_TIMEOUT
 
-    # Check text patterns
-    if any(p in all_text for p in _OOM_PATTERNS):
-        return FailureCategory.INFRA_OOM
-
-    if any(p in all_text for p in _TIMEOUT_PATTERNS):
-        return FailureCategory.INFRA_TIMEOUT
-
-    if any(p in all_text for p in _SANDBOX_PATTERNS):
-        return FailureCategory.INFRA_SANDBOX
-
-    # Exception text present but no infra signals — classify as unknown
+    # Pattern match only against exception text (not trajectory)
     if exception_text:
+        lower = exception_text.lower()
+
+        if any(p in lower for p in _OOM_PATTERNS):
+            return FailureCategory.INFRA_OOM
+
+        if any(p in lower for p in _TIMEOUT_PATTERNS):
+            return FailureCategory.INFRA_TIMEOUT
+
+        if any(p in lower for p in _SANDBOX_PATTERNS):
+            return FailureCategory.INFRA_SANDBOX
+
+        # Exception present but no infra signals — ambiguous
         return FailureCategory.UNKNOWN
 
-    # Default: capability failure (wrong answer, not infra)
+    # No exception, no infra exit codes — capability failure
     return FailureCategory.CAPABILITY

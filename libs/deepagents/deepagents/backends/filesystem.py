@@ -464,11 +464,22 @@ class FilesystemBackend(BackendProtocol):
             return GrepResult(matches=[])
 
         # Try ripgrep first (with -F flag for literal search)
-        results = self._ripgrep_search(pattern, base_full, glob)
+        try:
+            results = self._ripgrep_search(pattern, base_full, glob)
+        except subprocess.TimeoutExpired:
+            logger.warning(
+                "ripgrep timed out after %ds searching '%s' for pattern '%s'",
+                _DEFAULT_GREP_TIMEOUT,
+                base_full,
+                pattern,
+            )
+            return GrepResult(
+                error=f"Error: grep timed out after {_DEFAULT_GREP_TIMEOUT}s. Try a more specific pattern or a narrower path.",
+            )
         if results is None:
             # Python fallback needs escaped pattern for literal search
             results, timed_out = self._python_search(re.escape(pattern), base_full, glob)
-            if timed_out and not results:
+            if timed_out:
                 return GrepResult(
                     error=f"Error: grep timed out after {_DEFAULT_GREP_TIMEOUT}s. Try a more specific pattern or a narrower path.",
                 )
@@ -479,7 +490,7 @@ class FilesystemBackend(BackendProtocol):
                 matches.append({"path": fpath, "line": int(line_num), "text": line_text})
         return GrepResult(matches=matches)
 
-    def _ripgrep_search(self, pattern: str, base_full: Path, include_glob: str | None) -> dict[str, list[tuple[int, str]]] | None:  # noqa: C901  # Split except clauses for logging
+    def _ripgrep_search(self, pattern: str, base_full: Path, include_glob: str | None) -> dict[str, list[tuple[int, str]]] | None:  # noqa: C901
         """Search using ripgrep with fixed-string (literal) mode.
 
         Args:
@@ -489,7 +500,10 @@ class FilesystemBackend(BackendProtocol):
 
         Returns:
             Dict mapping file paths to list of `(line_number, line_text)` tuples.
-                Returns `None` if ripgrep is unavailable or times out.
+                Returns `None` if ripgrep is unavailable.
+
+        Raises:
+            subprocess.TimeoutExpired: If ripgrep exceeds `_DEFAULT_GREP_TIMEOUT`.
         """
         cmd = ["rg", "--json", "-F"]  # -F enables fixed-string (literal) mode
         if include_glob:
@@ -501,10 +515,10 @@ class FilesystemBackend(BackendProtocol):
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=30,
+                timeout=_DEFAULT_GREP_TIMEOUT,
                 check=False,
             )
-        except (subprocess.TimeoutExpired, FileNotFoundError):
+        except FileNotFoundError:
             return None
 
         results: dict[str, list[tuple[int, str]]] = {}
@@ -572,9 +586,10 @@ class FilesystemBackend(BackendProtocol):
         for fp in root.rglob("*"):
             if time.monotonic() > deadline:
                 logger.warning(
-                    "Python grep fallback timed out after %ds searching '%s'",
+                    "Python grep fallback timed out after %ds searching '%s' for pattern '%s'",
                     timeout,
                     root,
+                    pattern,
                 )
                 return results, True
             try:

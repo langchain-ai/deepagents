@@ -4,6 +4,9 @@ Verifies that unimplemented protocol methods raise NotImplementedError
 instead of silently returning None.
 """
 
+import asyncio
+from unittest.mock import patch
+
 import pytest
 
 from deepagents.backends.protocol import BackendProtocol, SandboxBackendProtocol
@@ -109,3 +112,26 @@ class TestAsyncMethodsPropagateNotImplemented:
     async def test_aexecute(self, sandbox_backend: BareSandboxBackend) -> None:
         with pytest.raises(NotImplementedError):
             await sandbox_backend.aexecute("ls")
+
+
+class TestAgrepRawTimeout:
+    """Tests for agrep_raw async timeout safety net."""
+
+    async def test_agrep_raw_returns_error_on_timeout(self, backend: BareBackend) -> None:
+        """agrep_raw catches TimeoutError and returns GrepResult with error."""
+
+        async def mock_wait_for(coro, *, timeout):  # noqa: ASYNC109, ARG001
+            coro.close()
+            raise TimeoutError
+
+        with patch.object(asyncio, "wait_for", mock_wait_for):
+            result = await backend.agrep_raw("pattern", "/path", "*.py")
+
+        assert result.error is not None
+        assert "timed out" in result.error
+        assert result.matches is None
+
+    async def test_agrep_raw_propagates_not_implemented(self, backend: BareBackend) -> None:
+        """NotImplementedError from grep_raw still propagates through the timeout wrapper."""
+        with pytest.raises(NotImplementedError):
+            await backend.agrep_raw("pattern")

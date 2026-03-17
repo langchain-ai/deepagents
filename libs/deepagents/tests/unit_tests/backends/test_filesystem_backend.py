@@ -1,3 +1,4 @@
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -602,3 +603,55 @@ class TestWindowsPathHandling:
         assert infos is not None
         for info in infos:
             assert "\\" not in info["path"], f"Backslash in deep path: {info['path']}"
+
+
+class TestGrepTimeout:
+    """Tests for grep timeout behavior."""
+
+    def test_python_search_times_out_with_zero_timeout(self, tmp_path: Path) -> None:
+        """_python_search returns timed_out=True when deadline is exceeded."""
+        (tmp_path / "file.txt").write_text("hello")
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        _results, timed_out = be._python_search("hello", tmp_path, None, timeout=0)
+        assert timed_out is True
+
+    def test_grep_raw_errors_on_python_timeout_with_partial_results(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """grep_raw returns error even when Python fallback has partial results."""
+        (tmp_path / "file.txt").write_text("hello")
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        monkeypatch.setattr(FilesystemBackend, "_ripgrep_search", lambda *_a, **_kw: None)
+        monkeypatch.setattr(
+            be,
+            "_python_search",
+            lambda *_a, **_kw: ({"/file.txt": [(1, "hello")]}, True),
+        )
+        result = be.grep_raw("hello", path="/")
+        assert result.error is not None
+        assert "timed out" in result.error
+        assert result.matches is None
+
+    def test_grep_raw_errors_on_ripgrep_timeout(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """grep_raw returns error on ripgrep timeout without Python fallback."""
+        (tmp_path / "file.txt").write_text("hello")
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+        cmd = "rg"
+        monkeypatch.setattr(
+            be,
+            "_ripgrep_search",
+            lambda *_a, **_kw: (_ for _ in ()).throw(subprocess.TimeoutExpired(cmd, 30)),
+        )
+
+        python_called = False
+
+        def tracking_search(*_args: object, **_kwargs: object) -> tuple[dict, bool]:
+            nonlocal python_called
+            python_called = True
+            return {}, False
+
+        monkeypatch.setattr(be, "_python_search", tracking_search)
+
+        result = be.grep_raw("hello", path="/")
+        assert result.error is not None
+        assert "timed out" in result.error
+        assert not python_called

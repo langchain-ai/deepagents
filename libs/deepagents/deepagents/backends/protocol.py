@@ -359,11 +359,12 @@ class BackendProtocol(abc.ABC):  # noqa: B024
     ) -> "GrepResult":
         """Async version of grep_raw.
 
-        Wraps the sync call with a 60s async timeout as a safety net. The sync
-        `grep_raw` implementations have their own internal timeouts (typically
-        30s), but this ensures the async caller is never blocked indefinitely
-        if the underlying thread hangs.
+        Wraps the sync call with an async timeout as a safety net. Some sync
+        `grep_raw` implementations (e.g., `FilesystemBackend`) have their own
+        internal timeouts, but this ensures the async caller is never blocked
+        indefinitely regardless of backend.
         """
+        # Must exceed the sync grep_raw timeout to let internal timeouts fire first
         _async_timeout = 60
         try:
             return await asyncio.wait_for(
@@ -371,7 +372,14 @@ class BackendProtocol(abc.ABC):  # noqa: B024
                 timeout=_async_timeout,
             )
         except TimeoutError:
-            logger.warning("agrep_raw timed out after %ds", _async_timeout)
+            logger.warning(
+                "agrep_raw timed out after %ds (pattern=%r, path=%r, glob=%r)",
+                _async_timeout,
+                pattern,
+                path,
+                glob,
+                exc_info=True,
+            )
             return GrepResult(
                 error=f"Error: grep timed out after {_async_timeout}s. Try a more specific pattern or a narrower path.",
             )

@@ -329,7 +329,8 @@ class ChatTextArea(TextArea):
     class Typing(Message):
         """Posted when the user presses a printable key or backspace.
 
-        Bubbles up to `ChatInput.Typing` for the app to track typing activity.
+        Relayed by `ChatInput` as `ChatInput.Typing` for the app to track
+        typing activity.
         """
 
     def __init__(self, **kwargs: Any) -> None:
@@ -489,6 +490,7 @@ class ChatTextArea(TextArea):
             event.prevent_default()
             event.stop()
             self.insert(" ")
+            self.post_message(self.Typing())
             return
 
         now = time.monotonic()
@@ -1219,7 +1221,7 @@ class ChatInput(Vertical):
         self,
         event: ChatTextArea.Typing,  # noqa: ARG002  # Textual event handler signature
     ) -> None:
-        """Bubble typing activity up to the app as `ChatInput.Typing`."""
+        """Relay typing activity to the app as `ChatInput.Typing`."""
         self.post_message(self.Typing())
 
     def on_chat_text_area_submitted(self, event: ChatTextArea.Submitted) -> None:

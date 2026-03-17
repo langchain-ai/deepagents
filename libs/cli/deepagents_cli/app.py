@@ -255,9 +255,17 @@ def _extract_model_params_flag(raw_arg: str) -> tuple[str, dict[str, Any] | None
 
 InputMode = Literal["normal", "shell", "command"]
 
-# Seconds since the last keystroke after which the user is considered idle and
-# a pending approval widget can be shown.
 _TYPING_IDLE_THRESHOLD_SECONDS: float = 2.0
+"""Seconds since the last keystroke after which the user is considered idle and
+a pending approval widget can be shown.
+
+Two seconds balances responsiveness with avoiding accidental approval
+key presses.
+"""
+
+_DEFERRED_APPROVAL_TIMEOUT_SECONDS: float = 30.0
+"""Maximum seconds the deferred-approval worker will wait for the user to stop
+typing before showing the approval widget regardless."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -1227,7 +1235,6 @@ class DeepAgentsApp(App):
         menu = ApprovalMenu(action_requests, assistant_id, id=unique_id)
         menu.set_future(result_future)
 
-        # Store reference
         self._pending_approval_widget = menu
 
         if self._is_user_typing():
@@ -1243,8 +1250,13 @@ class DeepAgentsApp(App):
                 messages = self.query_one("#messages", Container)
                 await self._mount_before_queued(messages, placeholder)
                 self.call_after_refresh(placeholder.scroll_visible)
-            except Exception:  # Resilient placeholder display
+            except Exception:
                 logger.exception("Failed to mount approval placeholder")
+                # Placeholder failed — fall back to showing the menu directly
+                # so the future is always resolvable.
+                self._approval_placeholder = None
+                await self._mount_approval_widget(menu)
+                return result_future
 
             self.run_worker(
                 self._deferred_show_approval(placeholder, menu),
@@ -1258,15 +1270,16 @@ class DeepAgentsApp(App):
     async def _mount_approval_widget(self, menu: ApprovalMenu) -> None:
         """Mount the approval menu widget inline in the messages area.
 
+        If mounting fails, clears `_pending_approval_widget` and propagates
+        the exception via `menu.future`.
+
         Args:
             menu: The `ApprovalMenu` instance to mount.
         """
         try:
             messages = self.query_one("#messages", Container)
             await self._mount_before_queued(messages, menu)
-            # Scroll to make approval visible (but don't re-anchor)
             self.call_after_refresh(menu.scroll_visible)
-            # Focus approval menu
             self.call_after_refresh(menu.focus)
         except Exception as e:
             logger.exception(
@@ -1274,29 +1287,52 @@ class DeepAgentsApp(App):
                 menu.id,
             )
             self._pending_approval_widget = None
-            if not menu._future or menu._future.done():
-                return
-            menu._future.set_exception(e)
+            if menu.future and not menu.future.done():
+                menu.future.set_exception(e)
 
     async def _deferred_show_approval(
         self, placeholder: Static, menu: ApprovalMenu
     ) -> None:
         """Wait until the user is idle, then swap the placeholder for the real menu.
 
+        Exits early if the placeholder has already been detached (e.g. the
+        approval was cancelled while waiting).  In that case the future is
+        cancelled so the caller is not left hanging.
+
         Args:
             placeholder: The temporary placeholder widget currently mounted.
             menu: The `ApprovalMenu` to show once the user stops typing.
         """
-        while self._is_user_typing():  # noqa: ASYNC110  # Simple polling
+        deadline = _monotonic() + _DEFERRED_APPROVAL_TIMEOUT_SECONDS
+        while self._is_user_typing():  # Simple polling
+            if _monotonic() > deadline:
+                logger.warning(
+                    "Timed out waiting for user to stop typing; showing approval now"
+                )
+                break
             await asyncio.sleep(0.2)
 
-        # Guard: if the placeholder was already removed (e.g. agent cancelled),
-        # bail out silently.
+        # Guard: if the placeholder was already removed (e.g. agent cancelled
+        # the approval while we were waiting), clean up and cancel the future.
         if not placeholder.is_attached:
+            logger.warning(
+                "Approval placeholder detached before menu shown (id=%s)",
+                menu.id,
+            )
+            self._approval_placeholder = None
+            self._pending_approval_widget = None
+            if menu.future and not menu.future.done():
+                menu.future.cancel()
             return
 
         self._approval_placeholder = None
-        await placeholder.remove()
+        try:
+            await placeholder.remove()
+        except Exception:
+            logger.debug(
+                "Failed to remove approval placeholder during swap",
+                exc_info=True,
+            )
         await self._mount_approval_widget(menu)
 
     def _on_auto_approve_enabled(self) -> None:
@@ -1482,8 +1518,8 @@ class DeepAgentsApp(App):
         """Return whether the user typed recently (within the idle threshold).
 
         Returns:
-            `True` if a printable key or backspace was pressed within the last
-            `_TYPING_IDLE_THRESHOLD_SECONDS` seconds, `False` otherwise.
+            `True` if the last recorded typing event occurred within the last
+                `_TYPING_IDLE_THRESHOLD_SECONDS` seconds, `False` otherwise.
         """
         if self._last_typed_at is None:
             return False
@@ -1498,7 +1534,13 @@ class DeepAgentsApp(App):
         # once the deferred worker swaps it, but guard against edge cases).
         if self._approval_placeholder is not None:
             if self._approval_placeholder.is_attached:
-                await self._approval_placeholder.remove()
+                try:
+                    await self._approval_placeholder.remove()
+                except Exception:
+                    logger.debug(
+                        "Failed to remove approval placeholder during cleanup",
+                        exc_info=True,
+                    )
             self._approval_placeholder = None
 
         # Remove ApprovalMenu using stored reference

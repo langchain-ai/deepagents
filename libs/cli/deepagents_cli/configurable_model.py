@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
-from deepagents._models import model_matches_spec, resolve_model  # noqa: PLC2701
+from deepagents._models import model_matches_spec  # noqa: PLC2701
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     ModelRequest,
@@ -83,8 +83,10 @@ def _apply_overrides(request: ModelRequest) -> ModelRequest:
     new_model = None
     model = ctx.get("model")
     if model and not model_matches_spec(request.model, model):
+        from deepagents_cli.config import create_model
+
         logger.debug("Overriding model to %s", model)
-        new_model = resolve_model(model)
+        new_model = create_model(model).model
         overrides["model"] = new_model
 
     # Param merge

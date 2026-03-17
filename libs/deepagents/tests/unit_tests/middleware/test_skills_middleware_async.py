@@ -404,3 +404,84 @@ async def test_agent_with_skills_middleware_empty_sources_async(tmp_path: Path) 
 
     assert "Skills System" in content
     assert "No skills available" in content
+
+
+# -- Skill pack (nested directory) async tests --
+
+
+async def test_alist_skills_from_backend_skill_pack(tmp_path: Path) -> None:
+    """Test that skills nested inside a skill pack directory are discovered (async)."""
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    skills_dir = tmp_path / "skills"
+    pack_skill_a = str(skills_dir / "my-pack" / "skill-a" / "SKILL.md")
+    pack_skill_b = str(skills_dir / "my-pack" / "skill-b" / "SKILL.md")
+
+    backend.upload_files(
+        [
+            (pack_skill_a, make_skill_content("skill-a", "Skill A").encode("utf-8")),
+            (pack_skill_b, make_skill_content("skill-b", "Skill B").encode("utf-8")),
+        ]
+    )
+
+    skills = await _alist_skills(backend, str(skills_dir))
+
+    assert len(skills) == 2
+    skill_names = {s["name"] for s in skills}
+    assert skill_names == {"skill-a", "skill-b"}
+
+
+async def test_alist_skills_from_backend_mixed_direct_and_pack(tmp_path: Path) -> None:
+    """Test that direct skills and skill pack skills are both discovered (async)."""
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    skills_dir = tmp_path / "skills"
+    direct_path = str(skills_dir / "direct-skill" / "SKILL.md")
+    pack_path = str(skills_dir / "my-pack" / "pack-skill" / "SKILL.md")
+
+    backend.upload_files(
+        [
+            (direct_path, make_skill_content("direct-skill", "Direct").encode("utf-8")),
+            (pack_path, make_skill_content("pack-skill", "From pack").encode("utf-8")),
+        ]
+    )
+
+    skills = await _alist_skills(backend, str(skills_dir))
+
+    assert len(skills) == 2
+    skill_names = {s["name"] for s in skills}
+    assert skill_names == {"direct-skill", "pack-skill"}
+
+
+async def test_alist_skills_from_backend_pack_does_not_recurse_beyond_one_level(tmp_path: Path) -> None:
+    """Test that nesting beyond one extra level is not discovered (async)."""
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    skills_dir = tmp_path / "skills"
+    deep_path = str(skills_dir / "outer" / "inner" / "deep-skill" / "SKILL.md")
+
+    backend.upload_files([(deep_path, make_skill_content("deep-skill", "Too deep").encode("utf-8"))])
+
+    skills = await _alist_skills(backend, str(skills_dir))
+    assert skills == []
+
+
+async def test_alist_skills_from_backend_dir_with_skill_md_not_treated_as_pack(tmp_path: Path) -> None:
+    """Test that a directory with SKILL.md is treated as a skill, not a pack (async)."""
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    skills_dir = tmp_path / "skills"
+    parent_path = str(skills_dir / "parent-skill" / "SKILL.md")
+    child_path = str(skills_dir / "parent-skill" / "child-skill" / "SKILL.md")
+
+    backend.upload_files(
+        [
+            (parent_path, make_skill_content("parent-skill", "Parent").encode("utf-8")),
+            (child_path, make_skill_content("child-skill", "Child").encode("utf-8")),
+        ]
+    )
+
+    skills = await _alist_skills(backend, str(skills_dir))
+
+    assert len(skills) == 1
+    assert skills[0]["name"] == "parent-skill"

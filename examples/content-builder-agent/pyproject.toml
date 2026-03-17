@@ -14,3 +14,6 @@ dependencies = [
 
 [dependency-groups]
 dev = []
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"

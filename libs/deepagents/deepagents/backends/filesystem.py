@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import subprocess
+import time
 import warnings
 from datetime import datetime
 from pathlib import Path
@@ -33,6 +34,9 @@ from deepagents.backends.utils import (
 )
 
 logger = logging.getLogger(__name__)
+
+_DEFAULT_GREP_TIMEOUT = 30
+"""Default timeout in seconds for grep operations (ripgrep and Python fallback)."""
 
 
 class FilesystemBackend(BackendProtocol):
@@ -460,10 +464,25 @@ class FilesystemBackend(BackendProtocol):
             return GrepResult(matches=[])
 
         # Try ripgrep first (with -F flag for literal search)
-        results = self._ripgrep_search(pattern, base_full, glob)
+        try:
+            results = self._ripgrep_search(pattern, base_full, glob)
+        except subprocess.TimeoutExpired:
+            logger.warning(
+                "ripgrep timed out after %ds searching '%s' for pattern '%s'",
+                _DEFAULT_GREP_TIMEOUT,
+                base_full,
+                pattern,
+            )
+            return GrepResult(
+                error=f"Error: grep timed out after {_DEFAULT_GREP_TIMEOUT}s. Try a more specific pattern or a narrower path.",
+            )
         if results is None:
             # Python fallback needs escaped pattern for literal search
-            results = self._python_search(re.escape(pattern), base_full, glob)
+            results, timed_out = self._python_search(re.escape(pattern), base_full, glob)
+            if timed_out:
+                return GrepResult(
+                    error=f"Error: grep timed out after {_DEFAULT_GREP_TIMEOUT}s. Try a more specific pattern or a narrower path.",
+                )
 
         matches: list[GrepMatch] = []
         for fpath, items in results.items():
@@ -471,7 +490,7 @@ class FilesystemBackend(BackendProtocol):
                 matches.append({"path": fpath, "line": int(line_num), "text": line_text})
         return GrepResult(matches=matches)
 
-    def _ripgrep_search(self, pattern: str, base_full: Path, include_glob: str | None) -> dict[str, list[tuple[int, str]]] | None:  # noqa: C901  # Split except clauses for logging
+    def _ripgrep_search(self, pattern: str, base_full: Path, include_glob: str | None) -> dict[str, list[tuple[int, str]]] | None:  # noqa: C901
         """Search using ripgrep with fixed-string (literal) mode.
 
         Args:
@@ -481,7 +500,10 @@ class FilesystemBackend(BackendProtocol):
 
         Returns:
             Dict mapping file paths to list of `(line_number, line_text)` tuples.
-                Returns `None` if ripgrep is unavailable or times out.
+                Returns `None` if ripgrep is unavailable.
+
+        Raises:
+            subprocess.TimeoutExpired: If ripgrep exceeds `_DEFAULT_GREP_TIMEOUT`.
         """
         cmd = ["rg", "--json", "-F"]  # -F enables fixed-string (literal) mode
         if include_glob:
@@ -493,10 +515,10 @@ class FilesystemBackend(BackendProtocol):
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=30,
+                timeout=_DEFAULT_GREP_TIMEOUT,
                 check=False,
             )
-        except (subprocess.TimeoutExpired, FileNotFoundError):
+        except FileNotFoundError:
             return None
 
         results: dict[str, list[tuple[int, str]]] = {}
@@ -531,26 +553,45 @@ class FilesystemBackend(BackendProtocol):
 
         return results
 
-    def _python_search(self, pattern: str, base_full: Path, include_glob: str | None) -> dict[str, list[tuple[int, str]]]:  # noqa: C901, PLR0912
+    def _python_search(  # noqa: C901, PLR0912
+        self,
+        pattern: str,
+        base_full: Path,
+        include_glob: str | None,
+        *,
+        timeout: int = _DEFAULT_GREP_TIMEOUT,
+    ) -> tuple[dict[str, list[tuple[int, str]]], bool]:
         """Fallback search using Python when ripgrep is unavailable.
 
-        Recursively searches files, respecting `max_file_size_bytes` limit.
+        Recursively searches files, respecting `max_file_size_bytes` limit
+        and a wall-clock timeout.
 
         Args:
             pattern: Escaped regex pattern (from re.escape) for literal search.
             base_full: Resolved base path to search in.
             include_glob: Optional glob pattern to filter files by name.
+            timeout: Maximum wall-clock seconds before the search is aborted.
 
         Returns:
-            Dict mapping file paths to list of `(line_number, line_text)` tuples.
+            Tuple of (results dict, timed_out bool). Results maps file paths
+            to list of `(line_number, line_text)` tuples. If `timed_out` is
+            `True`, results are partial.
         """
-        # Compile escaped pattern once for efficiency (used in loop)
+        deadline = time.monotonic() + timeout
         regex = re.compile(pattern)
 
         results: dict[str, list[tuple[int, str]]] = {}
         root = base_full if base_full.is_dir() else base_full.parent
 
         for fp in root.rglob("*"):
+            if time.monotonic() > deadline:
+                logger.warning(
+                    "Python grep fallback timed out after %ds searching '%s' for pattern '%s'",
+                    timeout,
+                    root,
+                    pattern,
+                )
+                return results, True
             try:
                 if not fp.is_file():
                     continue
@@ -584,7 +625,7 @@ class FilesystemBackend(BackendProtocol):
                         virt_path = str(fp)
                     results.setdefault(virt_path, []).append((line_num, line))
 
-        return results
+        return results, False
 
     def glob_info(self, pattern: str, path: str = "/") -> GlobResult:  # noqa: C901, PLR0912  # Complex virtual_mode logic
         """Find files matching a glob pattern.

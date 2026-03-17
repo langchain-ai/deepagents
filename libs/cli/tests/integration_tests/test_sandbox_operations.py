@@ -673,9 +673,7 @@ class TestSandboxOperations:
 
         assert result.entries == []
 
-    def test_ls_nonexistent_directory(
-        self, sandbox: SandboxBackendProtocol
-    ) -> None:
+    def test_ls_nonexistent_directory(self, sandbox: SandboxBackendProtocol) -> None:
         """Test listing a directory that doesn't exist."""
         nonexistent_dir = "/tmp/test_sandbox_ops/does_not_exist"
 
@@ -697,9 +695,7 @@ class TestSandboxOperations:
         assert f"{base_dir}/.hidden" in paths
         assert f"{base_dir}/visible.txt" in paths
 
-    def test_ls_directory_with_spaces(
-        self, sandbox: SandboxBackendProtocol
-    ) -> None:
+    def test_ls_directory_with_spaces(self, sandbox: SandboxBackendProtocol) -> None:
         """Test listing a directory that has spaces in file/dir names."""
         base_dir = "/tmp/test_sandbox_ops/ls_spaces"
         sandbox.execute(f"mkdir -p '{base_dir}'")
@@ -747,9 +743,7 @@ class TestSandboxOperations:
         assert f"{base_dir}/file_000.txt" in paths
         assert f"{base_dir}/file_049.txt" in paths
 
-    def test_ls_path_with_trailing_slash(
-        self, sandbox: SandboxBackendProtocol
-    ) -> None:
+    def test_ls_path_with_trailing_slash(self, sandbox: SandboxBackendProtocol) -> None:
         """Test that trailing slash in path is handled correctly."""
         base_dir = "/tmp/test_sandbox_ops/ls_trailing"
         sandbox.execute(f"mkdir -p {base_dir}")

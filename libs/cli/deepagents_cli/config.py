@@ -1585,6 +1585,8 @@ def _create_model_via_init(
             return init_chat_model(model_name, model_provider=provider, **kwargs)
         return init_chat_model(model_name, **kwargs)
     except ImportError as e:
+        import importlib.util
+
         package_map = {
             "anthropic": "langchain-anthropic",
             "openai": "langchain-openai",
@@ -1593,9 +1595,20 @@ def _create_model_via_init(
             "nvidia": "langchain-nvidia-ai-endpoints",
         }
         package = package_map.get(provider, f"langchain-{provider}")
-        msg = (
-            f"Missing package for provider '{provider}'. Install: pip install {package}"
-        )
+        # Convert pip package name to Python module name for import check.
+        module_name = package.replace("-", "_")
+        if importlib.util.find_spec(module_name) is not None:
+            # Package is installed but an internal import failed — surface
+            # the real error instead of the misleading "missing package" hint.
+            msg = (
+                f"Provider package '{package}' is installed but failed to "
+                f"import for provider '{provider}': {e}"
+            )
+        else:
+            msg = (
+                f"Missing package for provider '{provider}'. "
+                f"Install: pip install {package}"
+            )
         raise ModelConfigError(msg) from e
     except (ValueError, TypeError) as e:
         spec = f"{provider}:{model_name}" if provider else model_name

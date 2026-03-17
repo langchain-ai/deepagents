@@ -8,6 +8,7 @@ from langchain.agents import create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig
 from langchain.agents.middleware.types import AgentMiddleware, ContextT, ModelRequest, ModelResponse, ResponseT
 from langchain.chat_models import init_chat_model
+from langchain.chat_models.base import _ConfigurableModel
 from langchain.tools import BaseTool, ToolRuntime
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, ToolMessage
@@ -65,7 +66,7 @@ class SubAgent(TypedDict):
     tools: NotRequired[Sequence[BaseTool | Callable | dict[str, Any]]]
     """Tools the subagent can use. If not specified, inherits from main agent."""
 
-    model: NotRequired[str | BaseChatModel]
+    model: NotRequired[str | BaseChatModel | _ConfigurableModel]
     """Override the main agent's model. Use `'provider:model-name'` format."""
 
     middleware: NotRequired[list[AgentMiddleware]]

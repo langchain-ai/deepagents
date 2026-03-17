@@ -1110,7 +1110,7 @@ def create_summarization_middleware(
 
 
 def create_summarization_tool_middleware(
-    model: str | BaseChatModel,
+    model: str | BaseChatModel | _ConfigurableModel,
     backend: BACKEND_TYPES,
 ) -> SummarizationToolMiddleware:
     """Create a `SummarizationToolMiddleware` with model-aware defaults.

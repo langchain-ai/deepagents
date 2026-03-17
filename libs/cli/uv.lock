@@ -976,6 +976,8 @@ test = [
     { name = "langchain-openai" },
     { name = "pytest" },
     { name = "pytest-asyncio", specifier = ">=1.3.0" },
+    { name = "pytest-benchmark" },
+    { name = "pytest-codspeed" },
     { name = "pytest-cov" },
     { name = "pytest-socket" },
     { name = "pytest-timeout", specifier = ">=2.3.1,<3.0.0" },

@@ -275,7 +275,7 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         """
         if type(self).ls_info is not BackendProtocol.ls_info:
             warnings.warn(
-                "Implement `ls` instead of `ls_info`.",
+                "`ls_info` is deprecated; rename to `ls` instead.",
                 DeprecationWarning,
                 stacklevel=2,
             )
@@ -360,7 +360,7 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         """
         if type(self).grep_raw is not BackendProtocol.grep_raw:
             warnings.warn(
-                "Implement `grep` instead of `grep_raw`.",
+                "`grep_raw` is deprecated; rename to `grep` instead.",
                 DeprecationWarning,
                 stacklevel=2,
             )
@@ -396,7 +396,7 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         """
         if type(self).glob_info is not BackendProtocol.glob_info:
             warnings.warn(
-                "Implement `glob` instead of `glob_info`.",
+                "`glob_info` is deprecated; rename to `glob` instead.",
                 DeprecationWarning,
                 stacklevel=2,
             )

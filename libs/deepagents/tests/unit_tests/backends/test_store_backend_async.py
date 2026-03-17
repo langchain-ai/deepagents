@@ -50,11 +50,11 @@ async def test_store_backend_async_crud_and_search():
     matches = (await be.agrep("hi", path="/")).matches
     assert matches is not None and any(m["path"] == "/docs/readme.md" for m in matches)
 
-    # aglob_info
-    g = (await be.aglob_info("*.md", path="/")).matches
+    # aglob
+    g = (await be.aglob("*.md", path="/")).matches
     assert len(g) == 0
 
-    g2 = (await be.aglob_info("**/*.md", path="/")).matches
+    g2 = (await be.aglob("**/*.md", path="/")).matches
     assert any(i["path"] == "/docs/readme.md" for i in g2)
 
 
@@ -241,14 +241,14 @@ async def test_store_backend_aglob_patterns():
         assert res.error is None
 
     # Recursive glob for all .py files
-    infos = (await be.aglob_info("**/*.py", path="/")).matches
+    infos = (await be.aglob("**/*.py", path="/")).matches
     py_files = [i["path"] for i in infos]
     assert "/src/main.py" in py_files
     assert "/src/utils/helper.py" in py_files
     assert "/tests/test_main.py" in py_files
 
     # Glob for markdown files
-    md_infos = (await be.aglob_info("**/*.md", path="/")).matches
+    md_infos = (await be.aglob("**/*.md", path="/")).matches
     md_files = [i["path"] for i in md_infos]
     assert "/readme.md" in md_files
     assert "/docs/api.md" in md_files

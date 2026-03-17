@@ -396,7 +396,7 @@ class CompositeBackend(BackendProtocol):
         # Path specified but doesn't match a route - search only default
         return self._coerce_grep_result(await self.default.agrep(pattern, path, glob))
 
-    def glob_info(self, pattern: str, path: str = "/") -> GlobResult:
+    def glob(self, pattern: str, path: str = "/") -> GlobResult:
         """Find files matching a glob pattern, routing by path prefix."""
         results: list[FileInfo] = []
 
@@ -406,20 +406,20 @@ class CompositeBackend(BackendProtocol):
             path=path,
         )
         if route_prefix is not None:
-            glob_result = backend.glob_info(pattern, backend_path)
+            glob_result = backend.glob(pattern, backend_path)
             matches = glob_result.matches if isinstance(glob_result, GlobResult) else glob_result
             if isinstance(glob_result, GlobResult) and glob_result.error:
                 return glob_result
             return GlobResult(matches=[_remap_file_info_path(fi, route_prefix) for fi in (matches or [])])
 
         # Path doesn't match any specific route - search default backend AND all routed backends
-        default_result = self.default.glob_info(pattern, path)
+        default_result = self.default.glob(pattern, path)
         default_matches = default_result.matches if isinstance(default_result, GlobResult) else default_result
         results.extend(default_matches or [])
 
         for route_prefix, backend in self.routes.items():
             route_pattern = _strip_route_from_pattern(pattern, route_prefix)
-            sub_result = backend.glob_info(route_pattern, "/")
+            sub_result = backend.glob(route_pattern, "/")
             sub_matches = sub_result.matches if isinstance(sub_result, GlobResult) else sub_result
             results.extend(_remap_file_info_path(fi, route_prefix) for fi in (sub_matches or []))
 
@@ -427,8 +427,8 @@ class CompositeBackend(BackendProtocol):
         results.sort(key=lambda x: x.get("path", ""))
         return GlobResult(matches=results)
 
-    async def aglob_info(self, pattern: str, path: str = "/") -> GlobResult:
-        """Async version of glob_info."""
+    async def aglob(self, pattern: str, path: str = "/") -> GlobResult:
+        """Async version of glob."""
         results: list[FileInfo] = []
 
         backend, backend_path, route_prefix = _route_for_path(
@@ -437,20 +437,20 @@ class CompositeBackend(BackendProtocol):
             path=path,
         )
         if route_prefix is not None:
-            glob_result = await backend.aglob_info(pattern, backend_path)
+            glob_result = await backend.aglob(pattern, backend_path)
             matches = glob_result.matches if isinstance(glob_result, GlobResult) else glob_result
             if isinstance(glob_result, GlobResult) and glob_result.error:
                 return glob_result
             return GlobResult(matches=[_remap_file_info_path(fi, route_prefix) for fi in (matches or [])])
 
         # Path doesn't match any specific route - search default backend AND all routed backends
-        default_result = await self.default.aglob_info(pattern, path)
+        default_result = await self.default.aglob(pattern, path)
         default_matches = default_result.matches if isinstance(default_result, GlobResult) else default_result
         results.extend(default_matches or [])
 
         for route_prefix, backend in self.routes.items():
             route_pattern = _strip_route_from_pattern(pattern, route_prefix)
-            sub_result = await backend.aglob_info(route_pattern, "/")
+            sub_result = await backend.aglob(route_pattern, "/")
             sub_matches = sub_result.matches if isinstance(sub_result, GlobResult) else sub_result
             results.extend(_remap_file_info_path(fi, route_prefix) for fi in (sub_matches or []))
 

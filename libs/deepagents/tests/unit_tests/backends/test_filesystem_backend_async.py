@@ -47,8 +47,8 @@ async def test_filesystem_backend_async_normal_mode(tmp_path: Path):
     matches = (await be.agrep("hello", path=str(root))).matches
     assert matches is not None and any(m["path"].endswith("a.txt") for m in matches)
 
-    # aglob_info
-    g = (await be.aglob_info("*.py", path=str(root))).matches
+    # aglob
+    g = (await be.aglob("*.py", path=str(root))).matches
     assert any(i["path"] == str(f2) for i in g)
 
 
@@ -86,8 +86,8 @@ async def test_filesystem_backend_async_virtual_mode(tmp_path: Path):
     matches = (await be.agrep("virt", path="/")).matches
     assert matches is not None and any(m["path"] == "/a.txt" for m in matches)
 
-    # aglob_info
-    g = (await be.aglob_info("**/*.md", path="/")).matches
+    # aglob
+    g = (await be.aglob("**/*.md", path="/")).matches
     assert any(i["path"] == "/dir/b.md" for i in g)
 
     # literal search should work with special regex chars like "[" and "("
@@ -526,7 +526,7 @@ async def test_filesystem_aglob_recursive(tmp_path: Path):
         write_file(path, content)
 
     # Recursive glob for all .py files
-    infos = (await be.aglob_info("**/*.py", path="/")).matches
+    infos = (await be.aglob("**/*.py", path="/")).matches
     py_files = [i["path"] for i in infos]
     assert any("main.py" in p for p in py_files)
     assert any("helper.py" in p for p in py_files)

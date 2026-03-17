@@ -452,7 +452,7 @@ done
         """Search for pattern in files using grep."""
         raise NotImplementedError(_SYNC_NOT_SUPPORTED)
 
-    async def aglob_info(self, pattern: str, path: str = "/") -> GlobResult:
+    async def aglob(self, pattern: str, path: str = "/") -> GlobResult:
         """Find files matching glob pattern using shell commands.
 
         Please note that this implementation does not currently support all glob
@@ -505,6 +505,6 @@ done
 
         return GlobResult(matches=file_infos)
 
-    def glob_info(self, pattern: str, path: str = "/") -> GlobResult:
+    def glob(self, pattern: str, path: str = "/") -> GlobResult:
         """Find files matching glob pattern using shell commands."""
         raise NotImplementedError(_SYNC_NOT_SUPPORTED)

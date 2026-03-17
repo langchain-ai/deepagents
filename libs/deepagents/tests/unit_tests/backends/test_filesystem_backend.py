@@ -44,8 +44,8 @@ def test_filesystem_backend_normal_mode(tmp_path: Path):
     matches = be.grep("hello", path=str(root)).matches
     assert matches is not None and any(m["path"].endswith("a.txt") for m in matches)
 
-    # glob_info
-    g = be.glob_info("*.py", path=str(root)).matches
+    # glob
+    g = be.glob("*.py", path=str(root)).matches
     assert any(i["path"] == str(f2) for i in g)
 
 
@@ -84,8 +84,8 @@ def test_filesystem_backend_virtual_mode(tmp_path: Path, monkeypatch: pytest.Mon
     matches = be.grep("virt", path="/").matches
     assert matches is not None and any(m["path"] == "/a.txt" for m in matches)
 
-    # glob_info
-    g = be.glob_info("**/*.md", path="/").matches
+    # glob
+    g = be.glob("**/*.md", path="/").matches
     assert any(i["path"] == "/dir/b.md" for i in g)
 
     # literal search should work with special regex chars like "[" and "("
@@ -578,12 +578,12 @@ class TestWindowsPathHandling:
         for info in infos:
             assert "\\" not in info["path"], f"Backslash in ls_info path: {info['path']}"
 
-    def test_glob_info_paths(self, backend):
-        """glob_info should return forward-slash paths."""
-        result = backend.glob_info("**/*.py", path="/")
+    def test_glob_paths(self, backend):
+        """glob should return forward-slash paths."""
+        result = backend.glob("**/*.py", path="/")
         assert result.matches is not None
         for info in result.matches:
-            assert "\\" not in info["path"], f"Backslash in glob_info path: {info['path']}"
+            assert "\\" not in info["path"], f"Backslash in glob path: {info['path']}"
 
     def test_grep_paths(self, backend):
         """grep should return forward-slash paths."""

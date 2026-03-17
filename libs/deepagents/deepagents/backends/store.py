@@ -612,7 +612,7 @@ class StoreBackend(BackendProtocol):
                 continue
         return grep_matches_from_files(files, pattern, path, glob)
 
-    def glob_info(self, pattern: str, path: str = "/") -> GlobResult:
+    def glob(self, pattern: str, path: str = "/") -> GlobResult:
         """Find files matching a glob pattern in the store."""
         store = self._get_store()
         namespace = self._get_namespace()

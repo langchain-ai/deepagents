@@ -61,8 +61,8 @@ def test_write_read_edit_ls_grep_glob_state_backend():
     result = be.grep("[", path="/")
     assert result.matches is not None  # Returns empty list, not error
 
-    # glob_info
-    infos = be.glob_info("*.txt", path="/").matches
+    # glob
+    infos = be.glob("*.txt", path="/").matches
     assert any(i["path"] == "/notes.txt" for i in infos)
 
 
@@ -252,7 +252,7 @@ Total projects: 3
     assert "Project Beta" in matches_exact[0]["text"]
 
     # Test 3: Verify glob also works with exact file paths
-    glob_matches = be.glob_info("*", path=evicted_path).matches
+    glob_matches = be.glob("*", path=evicted_path).matches
     assert glob_matches is not None
     assert len(glob_matches) == 1
     assert glob_matches[0]["path"] == evicted_path
@@ -293,19 +293,19 @@ def test_state_backend_path_edge_cases() -> None:
     assert matches_no_slash[0]["path"] == "/dir/nested.txt"
 
     # Test 4: Glob with exact file path
-    glob_exact = be.glob_info("*.txt", path="/file.txt").matches
+    glob_exact = be.glob("*.txt", path="/file.txt").matches
     assert glob_exact is not None
     assert len(glob_exact) == 1
     assert glob_exact[0]["path"] == "/file.txt"
 
     # Test 5: Glob with directory and pattern
-    glob_dir = be.glob_info("*.txt", path="/dir/").matches
+    glob_dir = be.glob("*.txt", path="/dir/").matches
     assert glob_dir is not None
     assert len(glob_dir) == 1  # Only nested.txt, not deep.txt (non-recursive)
     assert glob_dir[0]["path"] == "/dir/nested.txt"
 
     # Test 6: Glob with recursive pattern
-    glob_recursive = be.glob_info("**/*.txt", path="/dir/").matches
+    glob_recursive = be.glob("**/*.txt", path="/dir/").matches
     assert glob_recursive is not None
     assert len(glob_recursive) == 2  # Both nested.txt and deep.txt
     paths = {g["path"] for g in glob_recursive}

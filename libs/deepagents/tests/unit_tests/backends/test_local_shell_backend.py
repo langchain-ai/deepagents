@@ -195,7 +195,7 @@ def test_local_shell_backend_glob() -> None:
         backend.write("/file3.txt", "content")
 
         # Find all .txt files
-        txt_files = backend.glob_info("*.txt").matches
+        txt_files = backend.glob("*.txt").matches
 
         assert txt_files is not None
         assert len(txt_files) == 2

@@ -42,9 +42,9 @@ class TestBackendProtocolRaisesNotImplemented:
         with pytest.raises(NotImplementedError):
             backend.grep("pattern")
 
-    def test_glob_info(self, backend: BareBackend) -> None:
+    def test_glob(self, backend: BareBackend) -> None:
         with pytest.raises(NotImplementedError):
-            backend.glob_info("*.py")
+            backend.glob("*.py")
 
     def test_write(self, backend: BareBackend) -> None:
         with pytest.raises(NotImplementedError):
@@ -86,9 +86,9 @@ class TestAsyncMethodsPropagateNotImplemented:
         with pytest.raises(NotImplementedError):
             await backend.agrep("pattern")
 
-    async def test_aglob_info(self, backend: BareBackend) -> None:
+    async def test_aglob(self, backend: BareBackend) -> None:
         with pytest.raises(NotImplementedError):
-            await backend.aglob_info("*.py")
+            await backend.aglob("*.py")
 
     async def test_awrite(self, backend: BareBackend) -> None:
         with pytest.raises(NotImplementedError):

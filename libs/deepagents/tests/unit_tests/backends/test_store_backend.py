@@ -49,11 +49,11 @@ def test_store_backend_crud_and_search():
     matches = be.grep("hi", path="/").matches
     assert matches is not None and any(m["path"] == "/docs/readme.md" for m in matches)
 
-    # glob_info
-    g = be.glob_info("*.md", path="/").matches
+    # glob
+    g = be.glob("*.md", path="/").matches
     assert len(g) == 0
 
-    g2 = be.glob_info("**/*.md", path="/").matches
+    g2 = be.glob("**/*.md", path="/").matches
     assert any(i["path"] == "/docs/readme.md" for i in g2)
 
 

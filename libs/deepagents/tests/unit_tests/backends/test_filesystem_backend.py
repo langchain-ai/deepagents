@@ -571,12 +571,12 @@ class TestWindowsPathHandling:
         (tmp_path / "src" / "utils" / "helper.py").write_text("def help(): pass")
         return FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
 
-    def test_ls_info_paths(self, backend):
-        """ls_info should return forward-slash paths."""
-        infos = backend.ls_info("/src").entries
+    def test_ls_paths(self, backend):
+        """Ls should return forward-slash paths."""
+        infos = backend.ls("/src").entries
         assert infos is not None
         for info in infos:
-            assert "\\" not in info["path"], f"Backslash in ls_info path: {info['path']}"
+            assert "\\" not in info["path"], f"Backslash in ls path: {info['path']}"
 
     def test_glob_paths(self, backend):
         """Glob should return forward-slash paths."""

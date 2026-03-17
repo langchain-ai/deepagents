@@ -35,6 +35,7 @@ jobs:
         uses: "./.github/actions/uv_setup"
         with:
           python-version: "3.14"
+          enable-cache: "false"
 
       - name: "🔍 Check extras sync"
         run: python .github/scripts/check_extras_sync.py libs/cli/pyproject.toml

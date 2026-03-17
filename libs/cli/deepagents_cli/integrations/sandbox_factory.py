@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import contextlib
+import importlib
 import os
 import shlex
 import string
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, NoReturn
+from typing import TYPE_CHECKING, Any
 
 from rich.markup import escape as escape_markup
 
@@ -21,6 +22,7 @@ from deepagents_cli.integrations.sandbox_provider import (
 
 if TYPE_CHECKING:
     from collections.abc import Generator
+    from types import ModuleType
 
     from deepagents.backends.protocol import SandboxBackendProtocol
 
@@ -164,35 +166,51 @@ def get_default_working_dir(provider: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _raise_missing_extra(provider: str, package: str) -> NoReturn:
-    """Raise an ImportError with install instructions for a missing sandbox extra.
+def _import_provider_module(
+    module_name: str,
+    *,
+    provider: str,
+    package: str,
+) -> ModuleType:
+    """Import an optional provider module with a provider-specific error message.
 
     Args:
-        provider: Sandbox provider name (e.g. "daytona")
-        package: PyPI package name (e.g. "langchain-daytona")
+        module_name: Python module name to import.
+        provider: Sandbox provider name (e.g. "daytona").
+        package: PyPI package name exposed by the CLI extra.
+
+    Returns:
+        The imported module object.
 
     Raises:
-        ImportError: Always.
+        ImportError: If the optional dependency is not installed.
     """
-    msg = (
-        f"The '{provider}' sandbox provider requires the '{package}' package. "
-        f"Install it with: pip install 'deepagents-cli[{provider}]'"
-    )
-    raise ImportError(msg)
+    try:
+        return importlib.import_module(module_name)
+    except ImportError as exc:
+        msg = (
+            f"The '{provider}' sandbox provider requires the '{package}' package. "
+            f"Install it with: pip install 'deepagents-cli[{provider}]'"
+        )
+        raise ImportError(msg) from exc
 
 
 class _DaytonaProvider(SandboxProvider):
     """Daytona sandbox provider — lifecycle management for Daytona sandboxes."""
 
     def __init__(self) -> None:
-        from daytona import Daytona, DaytonaConfig
+        daytona_module = _import_provider_module(
+            "daytona",
+            provider="daytona",
+            package="langchain-daytona",
+        )
 
         api_key = os.environ.get("DAYTONA_API_KEY")
         if not api_key:
             msg = "DAYTONA_API_KEY environment variable not set"
             raise ValueError(msg)
-        self._client = Daytona(
-            DaytonaConfig(
+        self._client = daytona_module.Daytona(
+            daytona_module.DaytonaConfig(
                 api_key=api_key,
                 api_url=os.environ.get("DAYTONA_API_URL"),
             )
@@ -219,7 +237,11 @@ class _DaytonaProvider(SandboxProvider):
             NotImplementedError: If sandbox_id is provided.
             RuntimeError: If the sandbox fails to start.
         """
-        from langchain_daytona import DaytonaSandbox
+        daytona_backend = _import_provider_module(
+            "langchain_daytona",
+            provider="daytona",
+            package="langchain-daytona",
+        )
 
         if sandbox_id:
             msg = (
@@ -245,7 +267,7 @@ class _DaytonaProvider(SandboxProvider):
             msg = f"Daytona sandbox failed to start within {timeout} seconds.{detail}"
             raise RuntimeError(msg)
 
-        return DaytonaSandbox(sandbox=sandbox)
+        return daytona_backend.DaytonaSandbox(sandbox=sandbox)
 
     def delete(self, *, sandbox_id: str, **kwargs: Any) -> None:  # noqa: ARG002
         """Delete a Daytona sandbox by id."""
@@ -257,9 +279,16 @@ class _ModalProvider(SandboxProvider):
     """Modal sandbox provider — lifecycle management for Modal sandboxes."""
 
     def __init__(self) -> None:
-        import modal
+        self._modal = _import_provider_module(
+            "modal",
+            provider="modal",
+            package="langchain-modal",
+        )
 
-        self._app = modal.App.lookup(name="deepagents-sandbox", create_if_missing=True)
+        self._app = self._modal.App.lookup(
+            name="deepagents-sandbox",
+            create_if_missing=True,
+        )
 
     def get_or_create(
         self,
@@ -281,13 +310,19 @@ class _ModalProvider(SandboxProvider):
         Raises:
             RuntimeError: If the sandbox fails to start.
         """
-        import modal
-        from langchain_modal import ModalSandbox
+        modal_backend = _import_provider_module(
+            "langchain_modal",
+            provider="modal",
+            package="langchain-modal",
+        )
 
         if sandbox_id:
-            sandbox = modal.Sandbox.from_id(sandbox_id=sandbox_id, app=self._app)  # type: ignore[call-arg]
+            sandbox = self._modal.Sandbox.from_id(
+                sandbox_id=sandbox_id,
+                app=self._app,
+            )
         else:
-            sandbox = modal.Sandbox.create(app=self._app, workdir="/workspace")
+            sandbox = self._modal.Sandbox.create(app=self._app, workdir="/workspace")
             last_exc: Exception | None = None
             for _ in range(timeout // 2):
                 if sandbox.poll() is not None:
@@ -307,13 +342,11 @@ class _ModalProvider(SandboxProvider):
                 msg = f"Modal sandbox failed to start within {timeout} seconds.{detail}"
                 raise RuntimeError(msg)
 
-        return ModalSandbox(sandbox=sandbox)
+        return modal_backend.ModalSandbox(sandbox=sandbox)
 
     def delete(self, *, sandbox_id: str, **kwargs: Any) -> None:  # noqa: ARG002
         """Terminate a Modal sandbox by id."""
-        import modal
-
-        sandbox = modal.Sandbox.from_id(sandbox_id=sandbox_id, app=self._app)  # type: ignore[call-arg]
+        sandbox = self._modal.Sandbox.from_id(sandbox_id=sandbox_id, app=self._app)
         sandbox.terminate()
 
 
@@ -321,13 +354,17 @@ class _RunloopProvider(SandboxProvider):
     """Runloop sandbox provider — lifecycle management for Runloop devboxes."""
 
     def __init__(self) -> None:
-        from runloop_api_client import Runloop
+        runloop_module = _import_provider_module(
+            "runloop_api_client",
+            provider="runloop",
+            package="langchain-runloop",
+        )
 
         api_key = os.environ.get("RUNLOOP_API_KEY")
         if not api_key:
             msg = "RUNLOOP_API_KEY environment variable not set"
             raise ValueError(msg)
-        self._client = Runloop(bearer_token=api_key)
+        self._client = runloop_module.Runloop(bearer_token=api_key)
 
     def get_or_create(
         self,
@@ -350,8 +387,16 @@ class _RunloopProvider(SandboxProvider):
             RuntimeError: If the devbox fails to start.
             SandboxNotFoundError: If sandbox_id does not exist.
         """
-        from langchain_runloop import RunloopSandbox
-        from runloop_api_client.sdk import Devbox
+        runloop_backend = _import_provider_module(
+            "langchain_runloop",
+            provider="runloop",
+            package="langchain-runloop",
+        )
+        runloop_sdk = _import_provider_module(
+            "runloop_api_client.sdk",
+            provider="runloop",
+            package="langchain-runloop",
+        )
 
         if sandbox_id:
             try:
@@ -371,8 +416,8 @@ class _RunloopProvider(SandboxProvider):
                 msg = f"Devbox failed to start within {timeout} seconds"
                 raise RuntimeError(msg)
 
-        devbox = Devbox(self._client, sandbox_id)
-        return RunloopSandbox(devbox=devbox)
+        devbox = runloop_sdk.Devbox(self._client, sandbox_id)
+        return runloop_backend.RunloopSandbox(devbox=devbox)
 
     def delete(self, *, sandbox_id: str, **kwargs: Any) -> None:  # noqa: ARG002
         """Shut down a Runloop devbox by id."""
@@ -392,26 +437,14 @@ def _get_provider(provider_name: str) -> SandboxProvider:
         ValueError: If provider_name is unknown.
     """
     if provider_name == "daytona":
-        try:
-            from daytona import Daytona  # noqa: F401
-        except ImportError:
-            _raise_missing_extra(provider_name, "langchain-daytona")
         return _DaytonaProvider()
     if provider_name == "langsmith":
         from deepagents_cli.integrations.langsmith import LangSmithProvider
 
         return LangSmithProvider()
     if provider_name == "modal":
-        try:
-            import modal  # noqa: F401
-        except ImportError:
-            _raise_missing_extra(provider_name, "langchain-modal")
         return _ModalProvider()
     if provider_name == "runloop":
-        try:
-            from runloop_api_client import Runloop  # noqa: F401
-        except ImportError:
-            _raise_missing_extra(provider_name, "langchain-runloop")
         return _RunloopProvider()
     msg = (
         f"Unknown sandbox provider: {provider_name}. "

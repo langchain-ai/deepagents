@@ -246,6 +246,10 @@ The CLI must stay fast to launch. Never import heavy packages (e.g., `deepagents
 
 The `deepagents --help` screen is hand-maintained in `ui.show_help()`, separate from the argparse definitions in `main.parse_args()`. When adding a new CLI flag, update **both** files. A drift-detection test (`test_args.TestHelpScreenDrift`) fails if a flag is registered in argparse but missing from the help screen.
 
+**Splash screen tips:**
+
+When adding a user-facing CLI feature (new slash command, keybinding, workflow), add a corresponding tip to the `_TIPS` list in `libs/cli/deepagents_cli/widgets/welcome.py`. Tips are shown randomly on startup to help users discover features. Keep tips short and action-oriented (e.g., `"Press ctrl+x to compose prompts in your external editor"`).
+
 **Slash commands:**
 
 Slash commands are defined in `SLASH_COMMANDS` in `libs/cli/deepagents_cli/widgets/autocomplete.py` as `(name, description, hidden_keywords)` tuples. Hidden keywords are space-separated terms that participate in fuzzy matching but are never displayed. To add an alias for an existing command, append it to the `hidden_keywords` string — do not create a duplicate command entry. For example, `/threads` has `sessions` as a hidden keyword so typing "sessions" surfaces it.

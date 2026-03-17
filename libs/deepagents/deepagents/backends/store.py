@@ -329,7 +329,7 @@ class StoreBackend(BackendProtocol):
 
         return all_items
 
-    def ls_info(self, path: str) -> LsResult:
+    def ls(self, path: str) -> LsResult:
         """List files and directories in the specified directory (non-recursive).
 
         Args:
@@ -594,7 +594,7 @@ class StoreBackend(BackendProtocol):
 
     # Removed legacy grep() convenience to keep lean surface
 
-    def grep_raw(
+    def grep(
         self,
         pattern: str,
         path: str | None = None,
@@ -612,7 +612,7 @@ class StoreBackend(BackendProtocol):
                 continue
         return grep_matches_from_files(files, pattern, path, glob)
 
-    def glob_info(self, pattern: str, path: str = "/") -> GlobResult:
+    def glob(self, pattern: str, path: str = "/") -> GlobResult:
         """Find files matching a glob pattern in the store."""
         store = self._get_store()
         namespace = self._get_namespace()

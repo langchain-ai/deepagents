@@ -121,7 +121,7 @@ class TestV1StyleWritesStateBackend:
 
         with warnings.catch_warnings(record=True):
             warnings.simplefilter("always")
-            matches = be2.grep_raw("import", path="/").matches
+            matches = be2.grep("import", path="/").matches
 
         assert matches is not None
         assert len(matches) == 2
@@ -159,13 +159,13 @@ class TestV1StyleWritesStateBackend:
         rt2 = _make_state_runtime(files=write_res.files_update)
         be2 = StateBackend(rt2, file_format="v1")
 
-        infos = be2.ls_info("/dir").entries
+        infos = be2.ls("/dir").entries
         assert infos is not None
         assert len(infos) == 1
         assert infos[0]["path"] == "/dir/file.txt"
 
     def test_glob_works_with_v1_data(self):
-        """glob_info works correctly with v1-formatted file data."""
+        """Glob works correctly with v1-formatted file data."""
         rt = _make_state_runtime()
         be = StateBackend(rt, file_format="v1")
 
@@ -178,7 +178,7 @@ class TestV1StyleWritesStateBackend:
         rt3 = _make_state_runtime(files=merged)
         be3 = StateBackend(rt3, file_format="v1")
 
-        infos = be3.glob_info("**/*.py", path="/").matches
+        infos = be3.glob("**/*.py", path="/").matches
         paths = [fi["path"] for fi in infos]
         assert "/src/a.py" in paths
         assert "/src/b.txt" not in paths
@@ -244,7 +244,7 @@ class TestV1StyleWritesStoreBackend:
 
         with warnings.catch_warnings(record=True):
             warnings.simplefilter("always")
-            matches = be.grep_raw("import", path="/").matches
+            matches = be.grep("import", path="/").matches
 
         assert matches is not None
         assert len(matches) == 2
@@ -327,7 +327,7 @@ class TestV2LoadsV1CheckpointStateBackend:
 
         with warnings.catch_warnings(record=True):
             warnings.simplefilter("always")
-            matches = be.grep_raw("def", path="/").matches
+            matches = be.grep("def", path="/").matches
 
         assert matches is not None
         assert len(matches) == 2
@@ -354,7 +354,7 @@ class TestV2LoadsV1CheckpointStateBackend:
         rt = _make_state_runtime(files={"/dir/file.txt": v1_data})
         be = StateBackend(rt, file_format="v2")
 
-        infos = be.ls_info("/dir").entries
+        infos = be.ls("/dir").entries
         assert infos is not None
         assert len(infos) == 1
         assert infos[0]["path"] == "/dir/file.txt"
@@ -368,7 +368,7 @@ class TestV2LoadsV1CheckpointStateBackend:
         rt = _make_state_runtime(files={"/src/a.py": v1_py, "/src/b.txt": v1_txt})
         be = StateBackend(rt, file_format="v2")
 
-        infos = be.glob_info("**/*.py", path="/").matches
+        infos = be.glob("**/*.py", path="/").matches
         paths = [fi["path"] for fi in infos]
         assert "/src/a.py" in paths
         assert "/src/b.txt" not in paths
@@ -519,7 +519,7 @@ class TestV2LoadsV1CheckpointStoreBackend:
 
         with warnings.catch_warnings(record=True):
             warnings.simplefilter("always")
-            matches = be.grep_raw("def", path="/").matches
+            matches = be.grep("def", path="/").matches
 
         assert matches is not None
         assert len(matches) == 2

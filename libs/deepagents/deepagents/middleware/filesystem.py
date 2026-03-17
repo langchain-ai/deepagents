@@ -513,7 +513,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 validated_path = validate_path(path)
             except ValueError as e:
                 return f"Error: {e}"
-            ls_result = resolved_backend.ls_info(validated_path)
+            ls_result = resolved_backend.ls(validated_path)
             if isinstance(ls_result, LsResult):
                 if ls_result.error:
                     return f"Error: {ls_result.error}"
@@ -541,7 +541,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 validated_path = validate_path(path)
             except ValueError as e:
                 return f"Error: {e}"
-            ls_result = await resolved_backend.als_info(validated_path)
+            ls_result = await resolved_backend.als(validated_path)
             if isinstance(ls_result, LsResult):
                 if ls_result.error:
                     return f"Error: {ls_result.error}"
@@ -826,7 +826,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             except ValueError as e:
                 return f"Error: {e}"
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(resolved_backend.glob_info, pattern, path=validated_path)
+                future = executor.submit(resolved_backend.glob, pattern, path=validated_path)
                 try:
                     glob_result = future.result(timeout=GLOB_TIMEOUT)
                 except concurrent.futures.TimeoutError:
@@ -861,7 +861,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 return f"Error: {e}"
             try:
                 glob_result = await asyncio.wait_for(
-                    resolved_backend.aglob_info(pattern, path=validated_path),
+                    resolved_backend.aglob(pattern, path=validated_path),
                     timeout=GLOB_TIMEOUT,
                 )
             except TimeoutError:
@@ -906,7 +906,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         ) -> str:
             """Synchronous wrapper for grep tool."""
             resolved_backend = self._get_backend(runtime)
-            grep_result = resolved_backend.grep_raw(pattern, path=path, glob=glob)
+            grep_result = resolved_backend.grep(pattern, path=path, glob=glob)
             if isinstance(grep_result, GrepResult):
                 if grep_result.error:
                     return grep_result.error
@@ -944,7 +944,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         ) -> str:
             """Asynchronous wrapper for grep tool."""
             resolved_backend = self._get_backend(runtime)
-            grep_result = await resolved_backend.agrep_raw(pattern, path=path, glob=glob)
+            grep_result = await resolved_backend.agrep(pattern, path=path, glob=glob)
             if isinstance(grep_result, GrepResult):
                 if grep_result.error:
                     return grep_result.error

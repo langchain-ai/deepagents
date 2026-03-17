@@ -72,7 +72,7 @@ class StateBackend(BackendProtocol):
             return _to_legacy_file_data(file_data)
         return {**file_data}
 
-    def ls_info(self, path: str) -> LsResult:
+    def ls(self, path: str) -> LsResult:
         """List files and directories in the specified directory (non-recursive).
 
         Args:
@@ -205,7 +205,7 @@ class StateBackend(BackendProtocol):
         new_file_data = update_file_data(file_data, new_content)
         return EditResult(path=file_path, files_update={file_path: self._prepare_for_storage(new_file_data)}, occurrences=int(occurrences))
 
-    def grep_raw(
+    def grep(
         self,
         pattern: str,
         path: str | None = None,
@@ -215,7 +215,7 @@ class StateBackend(BackendProtocol):
         files = self.runtime.state.get("files", {})
         return grep_matches_from_files(files, pattern, path if path is not None else "/", glob)
 
-    def glob_info(self, pattern: str, path: str = "/") -> GlobResult:
+    def glob(self, pattern: str, path: str = "/") -> GlobResult:
         """Get FileInfo for files matching glob pattern."""
         files = self.runtime.state.get("files", {})
         result = _glob_search_files(files, pattern, path)

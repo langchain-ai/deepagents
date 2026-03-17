@@ -240,7 +240,7 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
             ExecuteResponse with combined output, exit code, and truncation flag.
         """
 
-    def ls_info(self, path: str) -> LsResult:
+    def ls(self, path: str) -> LsResult:
         """Structured listing with file metadata using os.scandir."""
         path_b64 = base64.b64encode(path.encode("utf-8")).decode("ascii")
         cmd = f"""python3 -c "
@@ -370,7 +370,7 @@ except PermissionError:
         # External storage - no files_update needed
         return EditResult(path=file_path, files_update=None, occurrences=count)
 
-    def grep_raw(
+    def grep(
         self,
         pattern: str,
         path: str | None = None,
@@ -413,7 +413,7 @@ except PermissionError:
 
         return GrepResult(matches=matches)
 
-    def glob_info(self, pattern: str, path: str = "/") -> GlobResult:
+    def glob(self, pattern: str, path: str = "/") -> GlobResult:
         """Structured glob matching returning GlobResult."""
         # Encode pattern and path as base64 to avoid escaping issues
         pattern_b64 = base64.b64encode(pattern.encode("utf-8")).decode("ascii")

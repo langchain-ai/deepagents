@@ -31,8 +31,8 @@ jobs:
       - name: "📋 Checkout Code"
         uses: actions/checkout@v6
 
-      - name: "🐍 Set up Python 3.14"
-        uses: actions/setup-python@v6
+      - name: "🐍 Set up Python and uv"
+        uses: "./.github/actions/uv_setup"
         with:
           python-version: "3.14"
 

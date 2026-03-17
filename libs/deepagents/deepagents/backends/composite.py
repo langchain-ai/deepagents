@@ -187,8 +187,8 @@ class CompositeBackend(BackendProtocol):
 
         Examples:
             ```python
-            result = composite.ls_info("/")
-            result = composite.ls_info("/memories/")
+            result = composite.ls("/")
+            result = composite.ls("/memories/")
             ```
         """
         backend, backend_path, route_prefix = _route_for_path(
@@ -225,7 +225,7 @@ class CompositeBackend(BackendProtocol):
         return self._coerce_ls_result(self.default.ls(path))
 
     async def als(self, path: str) -> LsResult:
-        """Async version of ls_info."""
+        """Async version of ls."""
         backend, backend_path, route_prefix = _route_for_path(
             default=self.default,
             sorted_routes=self.sorted_routes,

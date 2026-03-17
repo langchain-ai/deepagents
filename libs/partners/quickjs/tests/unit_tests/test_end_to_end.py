@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+
 from deepagents.graph import create_deep_agent
 from langchain.tools import (
     ToolRuntime,  # noqa: TC002  # tool decorator resolves type hints at import time
@@ -425,6 +427,57 @@ def test_quickjs_toolruntime_configurable_foreign_function() -> None:
     assert tool_messages[0].content_blocks == [
         {"type": "text", "text": "value:user-123"}
     ]
+
+
+def test_quickjs_parallel_agents_across_threads() -> None:
+    """Verify five agents can run in parallel threads with QuickJS middleware."""
+
+    def _run_agent(index: int) -> tuple[int, dict[str, object], GenericFakeChatModel]:
+        model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "repl",
+                                "args": {"code": f"print({index} * 10)"},
+                                "id": f"call_{index}",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content=f"done-{index}"),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=model,
+            middleware=[QuickJSMiddleware()],
+        )
+        result = agent.invoke(
+            {
+                "messages": [
+                    HumanMessage(content=f"Use the repl to multiply {index} by 10")
+                ]
+            }
+        )
+        return index, result, model
+
+    with ThreadPoolExecutor(max_workers=50) as executor:
+        runs = list(executor.map(_run_agent, range(100)))
+
+    assert len(runs) == 100
+    for index, result, model in runs:
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert [msg.content for msg in tool_messages] == [str(index * 10)]
+        assert result["messages"][-1].content == f"done-{index}"
+        assert len(model.call_history) == 2
+        assert (
+            model.call_history[0]["messages"][-1].content
+            == f"Use the repl to multiply {index} by 10"
+        )
 
 
 def test_quickjs_tool_dict_foreign_function() -> None:

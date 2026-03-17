@@ -26,6 +26,7 @@ from textual.css.query import NoMatches
 from textual.message import Message
 from textual.screen import ModalScreen
 from textual.style import Style as TStyle
+from textual.widgets import Static
 
 from deepagents_cli.clipboard import copy_selection_to_clipboard
 from deepagents_cli.config import (

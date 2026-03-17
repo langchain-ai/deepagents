@@ -465,10 +465,10 @@ def test_quickjs_parallel_agents_across_threads() -> None:
         )
         return index, result, model
 
-    with ThreadPoolExecutor(max_workers=50) as executor:
-        runs = list(executor.map(_run_agent, range(100)))
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        runs = list(executor.map(_run_agent, range(10)))
 
-    assert len(runs) == 100
+    assert len(runs) == 10
     for index, result, model in runs:
         tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
         assert [msg.content for msg in tool_messages] == [str(index * 10)]

@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import threading
-import quickjs
-
 
 from deepagents.graph import create_deep_agent
 from langchain.tools import (
@@ -409,7 +407,9 @@ async def test_quickjs_async_foreign_function_runs_on_daemon_loop_thread() -> No
 async def test_quickjs_async_parallel_agents() -> None:
     """Verify five agents can run in parallel with QuickJS middleware."""
 
-    async def _run_agent(index: int) -> tuple[int, dict[str, object], GenericFakeChatModel]:
+    async def _run_agent(
+        index: int,
+    ) -> tuple[int, dict[str, object], GenericFakeChatModel]:
         """Run agent."""
         model = GenericFakeChatModel(
             messages=iter(

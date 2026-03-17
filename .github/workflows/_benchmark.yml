@@ -29,6 +29,8 @@ jobs:
   benchmark:
     name: "CodSpeed"
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     defaults:
       run:
         working-directory: ${{ inputs.working-directory }}
@@ -41,6 +43,7 @@ jobs:
         with:
           python-version: ${{ inputs.python-version }}
           working-directory: ${{ inputs.working-directory }}
+          enable-cache: "false"
 
       - name: "Install dependencies"
         run: uv sync --group test

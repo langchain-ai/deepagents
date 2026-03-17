@@ -88,6 +88,13 @@ class LangSmithSandbox(BaseSandbox):
                 responses.append(FileDownloadResponse(path=path, content=content, error=None))
             except ResourceNotFoundError:
                 responses.append(FileDownloadResponse(path=path, content=None, error="file_not_found"))
+            except SandboxClientError as e:
+                msg = str(e).lower()
+                if "is a directory" in msg:
+                    error = "is_directory"
+                else:
+                    error = "file_not_found"
+                responses.append(FileDownloadResponse(path=path, content=None, error=error))
         return responses
 
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:

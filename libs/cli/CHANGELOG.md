@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.0.34](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.33...deepagents-cli==0.0.34) (2026-03-17)
+
+
+### Features
+
+* **cli:** add external editor support via `ctrl+x` and `/editor` ([#1861](https://github.com/langchain-ai/deepagents/issues/1861)) ([bf5d088](https://github.com/langchain-ai/deepagents/commit/bf5d088d4b3cee6c7e44c3abe3736f9972897896))
+* **cli:** defer HITL approval menu while user is typing ([#1833](https://github.com/langchain-ai/deepagents/issues/1833)) ([1d1572e](https://github.com/langchain-ai/deepagents/commit/1d1572e40cc9f87b97832cbe2b9152c281f8ec92))
+* **sdk:** add async subagent middleware for remote LangGraph servers ([#1758](https://github.com/langchain-ai/deepagents/issues/1758)) ([0c5d501](https://github.com/langchain-ai/deepagents/commit/0c5d501066e7e9cb74737740d9b3c1dfc74751a6))
+
+
+### Bug Fixes
+
+* **cli:** resolve config-defined providers during runtime model swaps ([#1941](https://github.com/langchain-ai/deepagents/issues/1941)) ([aebc660](https://github.com/langchain-ai/deepagents/commit/aebc660321895909f6b6eb71e72a99ca7754bcf1))
+
+
+### Reverted Changes
+
+* make summarization test compatible with sdk 0.4.11 ([#1923](https://github.com/langchain-ai/deepagents/issues/1923)) ([22fd479](https://github.com/langchain-ai/deepagents/commit/22fd4793196f3b2493ed155330ec325302b6e960))
+
 ## [0.0.33](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.32...deepagents-cli==0.0.33) (2026-03-16)
 
 ### Highlights

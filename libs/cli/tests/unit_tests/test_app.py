@@ -2295,3 +2295,273 @@ class TestRemoteAgent:
         app = DeepAgentsApp()
         app._agent = MagicMock(spec=[])
         assert app._remote_agent() is None
+
+
+class TestSlashCommandBypass:
+    """Test that certain slash commands bypass the queue gate."""
+
+    async def test_quit_bypasses_queue_when_agent_running(self) -> None:
+        """/quit should exit immediately even when agent is running."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+
+            with patch.object(app, "exit") as exit_mock:
+                app.post_message(ChatInput.Submitted("/quit", "command"))
+                await pilot.pause()
+
+            exit_mock.assert_called_once()
+            assert len(app._pending_messages) == 0
+
+    async def test_quit_bypasses_queue_when_connecting(self) -> None:
+        """/quit should exit immediately even when connecting."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+
+            with patch.object(app, "exit") as exit_mock:
+                app.post_message(ChatInput.Submitted("/quit", "command"))
+                await pilot.pause()
+
+            exit_mock.assert_called_once()
+            assert len(app._pending_messages) == 0
+
+    async def test_quit_bypasses_thread_switching(self) -> None:
+        """/quit should exit even during a thread switch."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._thread_switching = True
+
+            with patch.object(app, "exit") as exit_mock:
+                app.post_message(ChatInput.Submitted("/quit", "command"))
+                await pilot.pause()
+
+            exit_mock.assert_called_once()
+
+    async def test_q_alias_bypasses_queue(self) -> None:
+        """/q alias should also bypass the queue."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+
+            with patch.object(app, "exit") as exit_mock:
+                app.post_message(ChatInput.Submitted("/q", "command"))
+                await pilot.pause()
+
+            exit_mock.assert_called_once()
+            assert len(app._pending_messages) == 0
+
+    async def test_version_executes_during_connecting(self) -> None:
+        """/version should process immediately when only connecting."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+
+            with patch.object(app, "_process_message", new_callable=AsyncMock) as pm:
+                app.post_message(ChatInput.Submitted("/version", "command"))
+                await pilot.pause()
+
+            pm.assert_called_once_with("/version", "command")
+            assert len(app._pending_messages) == 0
+
+    async def test_version_queues_during_agent_running(self) -> None:
+        """/version should still queue when agent is actively running."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+
+            app.post_message(ChatInput.Submitted("/version", "command"))
+            await pilot.pause()
+
+            assert len(app._pending_messages) == 1
+            assert app._pending_messages[0].text == "/version"
+
+    async def test_model_no_args_opens_selector_during_agent_running(self) -> None:
+        """/model (no args) should process immediately during agent run."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+
+            with patch.object(app, "_process_message", new_callable=AsyncMock) as pm:
+                app.post_message(ChatInput.Submitted("/model", "command"))
+                await pilot.pause()
+
+            pm.assert_called_once_with("/model", "command")
+            assert len(app._pending_messages) == 0
+
+    async def test_model_no_args_opens_selector_during_connecting(self) -> None:
+        """/model (no args) should process immediately during connecting."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+
+            with patch.object(app, "_process_message", new_callable=AsyncMock) as pm:
+                app.post_message(ChatInput.Submitted("/model", "command"))
+                await pilot.pause()
+
+            pm.assert_called_once_with("/model", "command")
+
+    async def test_model_with_args_still_queues(self) -> None:
+        """/model <name> (with args) should still queue normally."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+
+            app.post_message(ChatInput.Submitted("/model gpt-4", "command"))
+            await pilot.pause()
+
+            assert len(app._pending_messages) == 1
+            assert app._pending_messages[0].text == "/model gpt-4"
+
+    async def test_threads_opens_selector_during_agent_running(self) -> None:
+        """/threads should process immediately during agent run."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+
+            with patch.object(app, "_process_message", new_callable=AsyncMock) as pm:
+                app.post_message(ChatInput.Submitted("/threads", "command"))
+                await pilot.pause()
+
+            pm.assert_called_once_with("/threads", "command")
+            assert len(app._pending_messages) == 0
+
+    async def test_threads_opens_selector_during_connecting(self) -> None:
+        """/threads should process immediately during connecting."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+
+            with patch.object(app, "_process_message", new_callable=AsyncMock) as pm:
+                app.post_message(ChatInput.Submitted("/threads", "command"))
+                await pilot.pause()
+
+            pm.assert_called_once_with("/threads", "command")
+
+
+class TestDeferredActions:
+    """Test deferred action queueing and draining."""
+
+    async def test_deferred_actions_drain_after_agent_cleanup(self) -> None:
+        """Deferred actions should execute when agent task completes."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            executed = []
+
+            async def action() -> None:
+                executed.append("ran")
+
+            app._deferred_actions.append(action)
+            app._agent_running = True
+
+            # Simulate agent finishing
+            await app._cleanup_agent_task()
+
+            assert executed == ["ran"]
+            assert len(app._deferred_actions) == 0
+
+    async def test_deferred_actions_drain_after_shell_cleanup(self) -> None:
+        """Deferred actions should execute when shell task completes."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            executed = []
+
+            async def action() -> None:
+                executed.append("ran")
+
+            app._deferred_actions.append(action)
+            app._shell_running = True
+
+            await app._cleanup_shell_task()
+
+            assert executed == ["ran"]
+            assert len(app._deferred_actions) == 0
+
+    async def test_deferred_actions_not_drained_while_connecting(self) -> None:
+        """Deferred actions should NOT drain if still connecting."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            executed = []
+
+            async def action() -> None:
+                executed.append("ran")
+
+            app._deferred_actions.append(action)
+            app._agent_running = True
+            app._connecting = True
+
+            await app._cleanup_agent_task()
+
+            assert executed == []
+            assert len(app._deferred_actions) == 1
+
+    async def test_deferred_actions_cleared_on_interrupt(self) -> None:
+        """Deferred actions should be cleared when queue is discarded."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            async def action() -> None:
+                pass
+
+            app._deferred_actions.append(action)
+            app._discard_queue()
+
+            assert len(app._deferred_actions) == 0
+
+    async def test_deferred_actions_cleared_on_server_failure(self) -> None:
+        """Deferred actions should be cleared when server startup fails."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            async def action() -> None:
+                pass
+
+            app._deferred_actions.append(action)
+            app._connecting = True
+
+            app.on_deep_agents_app_server_start_failed(
+                DeepAgentsApp.ServerStartFailed(error=RuntimeError("test"))
+            )
+
+            assert len(app._deferred_actions) == 0
+
+    async def test_failing_deferred_action_does_not_block_others(self) -> None:
+        """A failing deferred action should not prevent subsequent ones."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            executed = []
+
+            async def bad_action() -> None:
+                raise RuntimeError("boom")
+
+            async def good_action() -> None:
+                executed.append("ok")
+
+            app._deferred_actions.append(bad_action)
+            app._deferred_actions.append(good_action)
+
+            await app._drain_deferred_actions()
+
+            assert executed == ["ok"]
+            assert len(app._deferred_actions) == 0

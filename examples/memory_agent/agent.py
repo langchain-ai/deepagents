@@ -1,104 +1,93 @@
 """Memory Agent — a deep agent that improves over time.
 
 Demonstrates:
-- Global system prompt learned across all users (stored in shared namespace)
-- Per-user system prompt with personalized context (stored in user namespace)
-- LangGraph Store for persistent cross-thread memory
-- Checkpointer for conversation continuity
+- Global memory learned across all users (persistent via StoreBackend)
+- Per-user memory with personalized context (persistent via StoreBackend)
+- CompositeBackend routing /memories/ to Store, everything else to State
+- Agent can read AND write memories live during conversations
+- Sleep-time cron for background memory consolidation
 
-Deploy with: `langgraph up` or run standalone with `python agent.py`
+Deploy with: `langgraph up` or `langgraph dev`
 """
 
 from __future__ import annotations
 
-from typing import Any
-
 from deepagents import create_deep_agent
+from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
 from langchain.chat_models import init_chat_model
-from langgraph.checkpoint.memory import MemorySaver
-from langgraph.store.base import BaseStore
-from langgraph.store.memory import InMemoryStore
 
-from memory_agent.prompts import (
-    AGENT_INSTRUCTIONS,
-    GLOBAL_MEMORY_PROMPT,
-    USER_MEMORY_PROMPT,
-)
-
-GLOBAL_MEMORY_NAMESPACE = ("memory", "global")
-USER_MEMORY_NAMESPACE_PREFIX = ("memory", "users")
-MEMORY_KEY = "system_prompt"
+from memory_agent.prompts import AGENT_INSTRUCTIONS
 
 
-def _load_memory(store: BaseStore, namespace: tuple[str, ...], key: str) -> str:
-    """Load a memory document from the store, returning empty string if not found."""
-    item = store.get(namespace, key)
-    if item is None:
-        return ""
-    return item.value.get("content", "")
+def create_backend(runtime):
+    """Create a CompositeBackend: StoreBackend for /memories/, StateBackend for the rest.
 
-
-def _build_system_prompt(
-    store: BaseStore,
-    user_id: str,
-) -> str:
-    """Build the full system prompt with global + user memory injected."""
-    global_memory = _load_memory(store, GLOBAL_MEMORY_NAMESPACE, MEMORY_KEY)
-    user_namespace = (*USER_MEMORY_NAMESPACE_PREFIX, user_id)
-    user_memory = _load_memory(store, user_namespace, MEMORY_KEY)
-
-    parts = [AGENT_INSTRUCTIONS]
-
-    if global_memory:
-        parts.append(GLOBAL_MEMORY_PROMPT.format(global_memory=global_memory))
-    if user_memory:
-        parts.append(USER_MEMORY_PROMPT.format(user_memory=user_memory))
-
-    return "\n\n".join(parts)
+    Files under /memories/ persist across threads via LangGraph Store.
+    The agent can read and edit these files at any time to update its
+    own memory. Everything else is ephemeral per-thread state.
+    """
+    return CompositeBackend(
+        default=StateBackend(runtime),
+        routes={
+            "/memories/": StoreBackend(
+                runtime,
+                namespace=lambda ctx: ("memories",),
+            ),
+        },
+    )
 
 
 def create_memory_agent(
     *,
     model: str = "anthropic:claude-sonnet-4-6",
-    store: BaseStore | None = None,
-    user_id: str = "default",
-    tools: list[Any] | None = None,
-) -> Any:
+    tools: list | None = None,
+    enable_live_memory: bool = True,
+):
     """Create a memory-enhanced deep agent.
 
     Args:
         model: Model identifier in provider:model format.
-        store: LangGraph BaseStore for persistent memory. Defaults to InMemoryStore.
-        user_id: Identifier for per-user memory namespace.
         tools: Additional tools to give the agent.
+        enable_live_memory: If True, agent can read/write /memories/ live.
+            Set to False to disable live memory editing (cron-only updates).
     """
-    if store is None:
-        store = InMemoryStore()
-
-    system_prompt = _build_system_prompt(store, user_id)
     chat_model = init_chat_model(model)
-    checkpointer = MemorySaver()
+
+    instructions = (
+        AGENT_INSTRUCTIONS if enable_live_memory else AGENT_INSTRUCTIONS_NO_LIVE
+    )
+    backend = create_backend if enable_live_memory else None
 
     return create_deep_agent(
         model=chat_model,
         tools=tools or [],
-        system_prompt=system_prompt,
-        checkpointer=checkpointer,
-        store=store,
+        system_prompt=instructions,
+        backend=backend,
     )
 
 
-# Default agent instance for LangGraph deployment.
-# In production, the store would be backed by a database (e.g., Postgres via
-# langgraph-checkpoint-postgres). For local dev, InMemoryStore is sufficient.
-store = InMemoryStore()
+AGENT_INSTRUCTIONS_NO_LIVE = """\
+You are a helpful assistant that learns and improves over time.
+
+Your system prompt includes learned context from prior conversations,
+updated during background memory consolidation. Use this context to
+provide better, more personalized responses.
+
+## Guidelines
+
+- Reference learned context naturally — don't announce "I remember that..."
+- If global memory conflicts with user memory, prefer user-specific preferences
+- When uncertain about a preference, ask rather than assume
+- Be concise and direct
+"""
+
+# Default agent for LangGraph deployment (langgraph up / langgraph dev).
+# No checkpointer — LangGraph adds one automatically.
 model = init_chat_model("anthropic:claude-sonnet-4-6")
-checkpointer = MemorySaver()
 
 agent = create_deep_agent(
     model=model,
     tools=[],
     system_prompt=AGENT_INSTRUCTIONS,
-    checkpointer=checkpointer,
-    store=store,
+    backend=create_backend,
 )

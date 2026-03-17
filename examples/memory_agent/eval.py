@@ -182,13 +182,13 @@ def _build_system_prompt(store: InMemoryStore, user_id: str) -> str:
     """Build system prompt with current memory state."""
     parts = [AGENT_INSTRUCTIONS]
 
-    global_item = store.get(("memory", "global"), "system_prompt")
+    global_item = store.get(("memories",), "/global.md")
     if global_item and global_item.value.get("content"):
         parts.append(
             GLOBAL_MEMORY_PROMPT.format(global_memory=global_item.value["content"])
         )
 
-    user_item = store.get(("memory", "users", user_id), "system_prompt")
+    user_item = store.get(("memories",), "/user.md")
     if user_item and user_item.value.get("content"):
         parts.append(USER_MEMORY_PROMPT.format(user_memory=user_item.value["content"]))
 

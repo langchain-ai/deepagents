@@ -17,10 +17,6 @@ Usage:
 
     # All users (local dev / small scale)
     python cron.py --all
-
-    # With a real scheduler (e.g., crontab), one job per user:
-    # 0 3 * * * cd /path/to/memory_agent && python cron.py --user alice
-    # 0 3 * * * cd /path/to/memory_agent && python cron.py --user bob
 """
 
 from __future__ import annotations
@@ -28,6 +24,7 @@ from __future__ import annotations
 import json
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import UTC, datetime
 from typing import Any
 
 from langchain.chat_models import init_chat_model
@@ -39,25 +36,33 @@ from memory_agent.prompts import CRON_CONSOLIDATION_PROMPT
 
 logger = logging.getLogger(__name__)
 
-GLOBAL_MEMORY_NAMESPACE = ("memory", "global")
-USER_MEMORY_NAMESPACE_PREFIX = ("memory", "users")
-MEMORY_KEY = "system_prompt"
+MEMORIES_NAMESPACE = ("memories",)
 THREADS_NAMESPACE_PREFIX = ("threads",)
 
 
-def _load_memory(store: BaseStore, namespace: tuple[str, ...], key: str) -> str:
-    """Load a memory document from the store."""
-    item = store.get(namespace, key)
+def _read_memory_file(store: BaseStore, key: str) -> str:
+    """Read a memory file from the store (same format as StoreBackend)."""
+    item = store.get(MEMORIES_NAMESPACE, key)
     if item is None:
         return ""
     return item.value.get("content", "")
 
 
-def _save_memory(
-    store: BaseStore, namespace: tuple[str, ...], key: str, content: str
-) -> None:
-    """Save a memory document to the store."""
-    store.put(namespace, key, {"content": content})
+def _write_memory_file(store: BaseStore, key: str, content: str) -> None:
+    """Write a memory file to the store (same format as StoreBackend)."""
+    now = datetime.now(tz=UTC).isoformat()
+    existing = store.get(MEMORIES_NAMESPACE, key)
+    created = existing.value.get("created_at", now) if existing else now
+    store.put(
+        MEMORIES_NAMESPACE,
+        key,
+        {
+            "content": content,
+            "encoding": "utf-8",
+            "created_at": created,
+            "modified_at": now,
+        },
+    )
 
 
 def _format_thread(thread: dict[str, Any]) -> str:
@@ -106,7 +111,7 @@ def consolidate_user(
     trigger so consolidation scales horizontally.
 
     Reads the user's recent threads, analyzes them with an LLM, and
-    updates both global memory and the user's personal memory.
+    updates both /memories/global.md and /memories/user.md in the store.
 
     Args:
         store: The LangGraph store for reading/writing memories.
@@ -124,9 +129,8 @@ def consolidate_user(
         logger.info("No threads to consolidate for user=%s", user_id)
         return {"global_memory": "", "user_memory": ""}
 
-    current_global = _load_memory(store, GLOBAL_MEMORY_NAMESPACE, MEMORY_KEY)
-    user_namespace = (*USER_MEMORY_NAMESPACE_PREFIX, user_id)
-    current_user = _load_memory(store, user_namespace, MEMORY_KEY)
+    current_global = _read_memory_file(store, "/global.md")
+    current_user = _read_memory_file(store, "/user.md")
 
     formatted_threads = "\n\n---\n\n".join(_format_thread(t) for t in threads)
 
@@ -159,8 +163,8 @@ def consolidate_user(
     new_global = result.get("global_memory", current_global)
     new_user = result.get("user_memory", current_user)
 
-    _save_memory(store, GLOBAL_MEMORY_NAMESPACE, MEMORY_KEY, new_global)
-    _save_memory(store, user_namespace, MEMORY_KEY, new_user)
+    _write_memory_file(store, "/global.md", new_global)
+    _write_memory_file(store, "/user.md", new_user)
 
     logger.info(
         "Consolidated memories for user=%s (global: %d chars, user: %d chars)",
@@ -198,8 +202,8 @@ def run_all_users(
     if store is None:
         store = InMemoryStore()
 
-    namespaces = store.list_namespaces(prefix=USER_MEMORY_NAMESPACE_PREFIX, max_depth=3)
-    user_ids = list({ns[2] for ns in namespaces if len(ns) > 2})
+    namespaces = store.list_namespaces(prefix=THREADS_NAMESPACE_PREFIX, max_depth=2)
+    user_ids = list({ns[1] for ns in namespaces if len(ns) > 1})
 
     if not user_ids:
         user_ids = ["default"]
@@ -259,8 +263,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.user:
-        store = InMemoryStore()
-        consolidate_user(store=store, user_id=args.user, model=args.model)
+        consolidate_user(store=InMemoryStore(), user_id=args.user, model=args.model)
     elif args.all:
         run_all_users(model=args.model, max_workers=args.max_workers)
     else:

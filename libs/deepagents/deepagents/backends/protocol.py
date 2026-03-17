@@ -377,7 +377,7 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         """Async version of `grep`."""
         return await asyncio.to_thread(self.grep, pattern, path, glob)
 
-    def glob_info(self, pattern: str, path: str = "/") -> "GlobResult":
+    def glob(self, pattern: str, path: str = "/") -> "GlobResult":
         """Find files matching a glob pattern.
 
         Args:
@@ -394,11 +394,19 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         Returns:
             GlobResult with matching files or error.
         """
-        raise NotImplementedError
+        if type(self).glob_info is not BackendProtocol.glob_info:
+            warnings.warn(
+                "Implement `glob` instead of `glob_info`.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            return self.glob_info(pattern, path)
 
-    async def aglob_info(self, pattern: str, path: str = "/") -> "GlobResult":
-        """Async version of glob_info."""
-        return await asyncio.to_thread(self.glob_info, pattern, path)
+        raise NotImplementedError("Subclasses must implement `glob`.")
+
+    async def aglob(self, pattern: str, path: str = "/") -> "GlobResult":
+        """Async version of `glob`."""
+        return await asyncio.to_thread(self.glob, pattern, path)
 
     def write(
         self,
@@ -535,6 +543,32 @@ class BackendProtocol(abc.ABC):  # noqa: B024
             stacklevel=2,
         )
         return await self.als(path)
+
+    def glob_info(self, pattern: str, path: str = "/") -> "GlobResult":
+        """Find files matching a glob pattern.
+
+        !!! warning "Deprecated"
+            Use `glob` instead.
+        """
+        warnings.warn(
+            "`glob_info` is deprecated; use `glob` instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.glob(pattern, path)
+
+    async def aglob_info(self, pattern: str, path: str = "/") -> "GlobResult":
+        """Async version of `glob_info`.
+
+        !!! warning "Deprecated"
+            Use `aglob` instead.
+        """
+        warnings.warn(
+            "`aglob_info` is deprecated; use `aglob` instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return await self.aglob(pattern, path)
 
     def grep_raw(
         self,

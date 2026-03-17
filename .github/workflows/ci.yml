@@ -280,7 +280,6 @@ jobs:
       - test-daytona
       - test-modal
       - test-runloop
-      - test-quickjs
       - benchmark-deepagents
     if: always()
     runs-on: ubuntu-latest

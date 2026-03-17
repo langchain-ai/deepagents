@@ -106,6 +106,9 @@ keep-runtime-typing = true
 [tool.ruff.lint.flake8-annotations]
 allow-star-arg-any = true
 
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
+
 [tool.ruff.lint.isort]
 force-single-line = false
 combine-as-imports = true
@@ -136,6 +139,10 @@ ignore-var-parameters = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+addopts = "-m 'not benchmark'"
+markers = [
+    "benchmark: wall-time benchmarks for construction performance",
+]
 
 [tool.ty.environment]
 python-version = "3.11"

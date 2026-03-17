@@ -1,4 +1,4 @@
-.PHONY: lint format type typecheck test help test_integration test_watch run-hello-world run-terminal-bench-modal run-terminal-bench-docker run-terminal-bench-daytona run-terminal-bench-runloop format_unsafe
+.PHONY: lint format type typecheck test help test_integration test_watch run-hello-world run-terminal-bench-modal run-terminal-bench-docker run-terminal-bench-daytona run-terminal-bench-runloop format_unsafe radar radar-from-summary
 
 .DEFAULT_GOAL := help
 
@@ -40,6 +40,20 @@ run-terminal-bench-docker: ## Run terminal-bench on Docker
 run-terminal-bench-runloop: ## Run terminal-bench on Runloop
 	@mkdir -p jobs/terminal-bench
 	harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper --dataset terminal-bench@2.0 -n 10 --jobs-dir jobs/terminal-bench --env runloop
+
+######################
+# CHARTS
+######################
+
+RADAR_OUTPUT ?= charts/radar.png
+
+radar: ## Generate eval radar chart (toy data by default)
+	uv run --extra charts python scripts/generate_radar.py --toy -o $(RADAR_OUTPUT)
+
+SUMMARY_JSON ?= evals_summary.json
+
+radar-from-summary: ## Generate radar chart from evals_summary.json
+	uv run --extra charts python scripts/generate_radar.py --summary $(SUMMARY_JSON) -o $(RADAR_OUTPUT)
 
 ######################
 # LINTING AND FORMATTING

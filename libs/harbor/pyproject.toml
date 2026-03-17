@@ -29,6 +29,11 @@ dependencies = [
     "deepagents-cli",
 ]
 
+[project.optional-dependencies]
+charts = [
+    "matplotlib>=3.9.0",
+]
+
 [dependency-groups]
 test = [
     "pytest>=8.4.2",

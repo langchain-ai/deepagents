@@ -121,7 +121,7 @@ class LoadingWidget(Static):
     def on_mount(self) -> None:
         """Start animation on mount."""
         self._start_time = time()
-        self.set_interval(0.1, self._update_animation)
+        self._animation_timer = self.set_interval(0.1, self._update_animation)
 
     def _update_animation(self) -> None:
         """Update spinner and elapsed time."""
@@ -170,5 +170,16 @@ class LoadingWidget(Static):
         if self._status_widget:
             self._status_widget.update(f" {self._status}... ")
 
+    def on_unmount(self) -> None:
+        """Stop the timer when removed from the DOM."""
+        self._stop_timer()
+
+    def _stop_timer(self) -> None:
+        """Stop the animation interval timer if running."""
+        if hasattr(self, "_animation_timer") and self._animation_timer is not None:
+            self._animation_timer.stop()
+            self._animation_timer = None
+
     def stop(self) -> None:
-        """Stop the animation (widget will be removed by caller)."""
+        """Stop the animation and its timer."""
+        self._stop_timer()

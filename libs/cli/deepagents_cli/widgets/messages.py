@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import asyncio
 import json
 import logging
 import re
@@ -274,7 +275,8 @@ class AssistantMessage(_TimestampClickMixin, Vertical):
     """Widget displaying an assistant message with markdown support.
 
     Uses MarkdownStream for smoother streaming instead of re-rendering
-    the full content on each update.
+    the full content on each update. Streaming tokens are batched over a
+    short interval to reduce layout reflow pressure on the event loop.
     """
 
     DEFAULT_CSS = """
@@ -290,6 +292,8 @@ class AssistantMessage(_TimestampClickMixin, Vertical):
     }
     """
 
+    _STREAM_BATCH_SECONDS: float = 0.05
+
     def __init__(self, content: str = "", **kwargs: Any) -> None:
         """Initialize an assistant message.
 
@@ -301,6 +305,8 @@ class AssistantMessage(_TimestampClickMixin, Vertical):
         self._content = content
         self._markdown: Markdown | None = None
         self._stream: MarkdownStream | None = None
+        self._pending_chunks: list[str] = []
+        self._flush_task: asyncio.Task[None] | None = None
 
     def compose(self) -> ComposeResult:  # noqa: PLR6301  # Textual widget method convention
         """Compose the assistant message layout.
@@ -334,11 +340,31 @@ class AssistantMessage(_TimestampClickMixin, Vertical):
             self._stream = Markdown.get_stream(self._get_markdown())
         return self._stream
 
+    async def _flush_pending(self) -> None:
+        """Flush all pending chunks to the MarkdownStream in one write."""
+        if not self._pending_chunks:
+            return
+        batch = "".join(self._pending_chunks)
+        self._pending_chunks.clear()
+        stream = self._ensure_stream()
+        await stream.write(batch)
+
+    async def _delayed_flush(self) -> None:
+        """Wait for the batch interval then flush pending chunks."""
+        try:
+            await asyncio.sleep(self._STREAM_BATCH_SECONDS)
+            await self._flush_pending()
+        except asyncio.CancelledError:
+            pass
+        finally:
+            self._flush_task = None
+
     async def append_content(self, text: str) -> None:
         """Append content to the message (for streaming).
 
-        Uses MarkdownStream for smoother rendering instead of re-rendering
-        the full content on each chunk.
+        Chunks are batched and flushed to the MarkdownStream at most once
+        per `_STREAM_BATCH_SECONDS` to reduce layout reflow pressure on
+        the Textual event loop.
 
         Args:
             text: Text to append
@@ -346,8 +372,9 @@ class AssistantMessage(_TimestampClickMixin, Vertical):
         if not text:
             return
         self._content += text
-        stream = self._ensure_stream()
-        await stream.write(text)
+        self._pending_chunks.append(text)
+        if self._flush_task is None:
+            self._flush_task = asyncio.create_task(self._delayed_flush())
 
     async def write_initial_content(self) -> None:
         """Write initial content if provided at construction time."""
@@ -357,6 +384,10 @@ class AssistantMessage(_TimestampClickMixin, Vertical):
 
     async def stop_stream(self) -> None:
         """Stop the streaming and finalize the content."""
+        if self._flush_task is not None:
+            self._flush_task.cancel()
+            self._flush_task = None
+        await self._flush_pending()
         if self._stream is not None:
             await self._stream.stop()
             self._stream = None

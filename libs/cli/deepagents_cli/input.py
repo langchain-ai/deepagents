@@ -701,8 +701,12 @@ def _resolve_existing_pasted_path(path: Path) -> Path | None:
     except (OSError, RuntimeError) as e:
         logger.debug("Path resolution failed for %r: %s", path, e)
         return None
-    if resolved.exists() and resolved.is_file():
-        return resolved
+    try:
+        if resolved.exists() and resolved.is_file():
+            return resolved
+    except (OSError, ValueError) as e:
+        logger.debug("Path existence check failed for %r: %s", resolved, e)
+        return None
 
     fuzzy = _resolve_with_unicode_space_variants(path)
     if fuzzy is None:
@@ -712,8 +716,12 @@ def _resolve_existing_pasted_path(path: Path) -> Path | None:
     except (OSError, RuntimeError) as e:
         logger.debug("Unicode-space resolution failed for %r: %s", fuzzy, e)
         return None
-    if resolved_fuzzy.exists() and resolved_fuzzy.is_file():
-        return resolved_fuzzy
+    try:
+        if resolved_fuzzy.exists() and resolved_fuzzy.is_file():
+            return resolved_fuzzy
+    except (OSError, ValueError) as e:
+        logger.debug("Fuzzy path existence check failed for %r: %s", resolved_fuzzy, e)
+        return None
     return None
 
 

@@ -881,6 +881,11 @@ class ChatInput(Vertical):
         # immediately recurse into the same replacement path.
         self._applying_inline_path_replacement = False
 
+        # Track previous text length so we can skip expensive filesystem
+        # path detection on single-character typing (normal keystrokes).
+        # Dropped paths are always multi-character paste/insert events.
+        self._prev_text_len = 0
+
         # Track current suggestions for click handling
         self._current_suggestions: list[tuple[str, str]] = []
         self._current_selected_index = 0
@@ -935,6 +940,14 @@ class ChatInput(Vertical):
         text = event.text_area.text
         self._sync_media_tracker_to_text(text)
 
+        # Detect whether this change looks like a multi-character paste/drop
+        # rather than a single keystroke. Filesystem-backed path detection is
+        # expensive (stat syscalls) and only relevant for drop/paste payloads,
+        # so we skip it entirely for normal single-char typing.
+        text_len = len(text)
+        is_bulk_change = abs(text_len - self._prev_text_len) > 1
+        self._prev_text_len = text_len
+
         # History handlers explicitly decide mode and stripped display text.
         # Skip mode detection here so recalled entries don't inherit stale mode.
         if self._text_area and self._text_area._skip_history_change_events > 0:
@@ -952,13 +965,13 @@ class ChatInput(Vertical):
 
         if self._applying_inline_path_replacement:
             self._applying_inline_path_replacement = False
-        elif self._apply_inline_dropped_path_replacement(text):
+        elif is_bulk_change and self._apply_inline_dropped_path_replacement(text):
             return
 
-        # Checked after the guards above so we skip the (potentially slow)
-        # filesystem lookup when the text change came from history navigation
-        # or prefix stripping, which never need path detection.
-        is_path_payload = self._is_dropped_path_payload(text)
+        # Only run the (potentially slow) filesystem-backed path detection
+        # when the change looks like a paste/drop (multi-character insert).
+        # Single-character typing changes skip this entirely.
+        is_path_payload = is_bulk_change and self._is_dropped_path_payload(text)
 
         # Guard: skip mode re-detection after we programmatically stripped
         # a prefix character.

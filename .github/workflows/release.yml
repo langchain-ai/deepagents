@@ -694,6 +694,7 @@ jobs:
       - name: Update release PR label
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PKG_NAME: ${{ needs.build.outputs.pkg-name }}
         run: |
           # Find the release PR that was merged (look for PR associated with this commit)
           PR_NUMBER=$(gh api "/repos/${{ github.repository }}/commits/${{ github.sha }}/pulls" --jq '.[0].number // empty')
@@ -708,5 +709,27 @@ jobs:
               echo "PR #$PR_NUMBER does not have 'autorelease: pending' label, skipping (not a release PR)"
             fi
           else
-            echo "No PR found for commit ${{ github.sha }}, skipping label update"
+            echo "No PR found via commit ${{ github.sha }}, searching by label..."
+            # Fallback: find the most recently merged release PR with autorelease: pending.
+            # This handles manual dispatch where github.sha may not be the merge commit
+            # (e.g., other commits landed on main between the merge and the manual trigger).
+            PR_NUMBER=$(gh pr list --repo "${{ github.repository }}" \
+              --state merged \
+              --label "autorelease: pending" \
+              --label "release" \
+              --search "\"release($PKG_NAME)\" in:title" \
+              --json number --jq '.[0].number // empty') || {
+              echo "::warning::gh pr list failed. Label swap could not be performed automatically."
+              echo "Manual fix: gh pr edit <PR_NUMBER> --remove-label 'autorelease: pending' --add-label 'autorelease: tagged'"
+              exit 0
+            }
+            if [ -n "$PR_NUMBER" ]; then
+              echo "Found release PR #$PR_NUMBER via label search, updating labels..."
+              if ! gh pr edit "$PR_NUMBER" --remove-label "autorelease: pending" --add-label "autorelease: tagged"; then
+                echo "::warning::Failed to update labels on PR #$PR_NUMBER. Manual fix required."
+                echo "Run: gh pr edit $PR_NUMBER --remove-label 'autorelease: pending' --add-label 'autorelease: tagged'"
+              fi
+            else
+              echo "::warning::No release PR with 'autorelease: pending' found for $PKG_NAME. Manual label update may be required."
+            fi
           fi

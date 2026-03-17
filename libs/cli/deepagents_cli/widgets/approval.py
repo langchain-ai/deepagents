@@ -131,11 +131,6 @@ class ApprovalMenu(Container):
         """Set the future to resolve when user decides."""
         self._future = future
 
-    @property
-    def future(self) -> asyncio.Future[dict[str, str]] | None:
-        """The future that resolves when the user makes a decision."""
-        return self._future
-
     def _check_expandable_command(self) -> bool:
         """Check if there's a shell command that can be expanded.
 

@@ -1255,26 +1255,31 @@ class DeepAgentsApp(App):
                 # Placeholder failed — fall back to showing the menu directly
                 # so the future is always resolvable.
                 self._approval_placeholder = None
-                await self._mount_approval_widget(menu)
+                await self._mount_approval_widget(menu, result_future)
                 return result_future
 
             self.run_worker(
-                self._deferred_show_approval(placeholder, menu),
+                self._deferred_show_approval(placeholder, menu, result_future),
                 exclusive=False,
             )
         else:
-            await self._mount_approval_widget(menu)
+            await self._mount_approval_widget(menu, result_future)
 
         return result_future
 
-    async def _mount_approval_widget(self, menu: ApprovalMenu) -> None:
+    async def _mount_approval_widget(
+        self,
+        menu: ApprovalMenu,
+        result_future: asyncio.Future[dict[str, str]],
+    ) -> None:
         """Mount the approval menu widget inline in the messages area.
 
         If mounting fails, clears `_pending_approval_widget` and propagates
-        the exception via `menu.future`.
+        the exception via `result_future`.
 
         Args:
             menu: The `ApprovalMenu` instance to mount.
+            result_future: The future to resolve/reject for the caller.
         """
         try:
             messages = self.query_one("#messages", Container)
@@ -1287,11 +1292,14 @@ class DeepAgentsApp(App):
                 menu.id,
             )
             self._pending_approval_widget = None
-            if menu.future and not menu.future.done():
-                menu.future.set_exception(e)
+            if not result_future.done():
+                result_future.set_exception(e)
 
     async def _deferred_show_approval(
-        self, placeholder: Static, menu: ApprovalMenu
+        self,
+        placeholder: Static,
+        menu: ApprovalMenu,
+        result_future: asyncio.Future[dict[str, str]],
     ) -> None:
         """Wait until the user is idle, then swap the placeholder for the real menu.
 
@@ -1302,6 +1310,7 @@ class DeepAgentsApp(App):
         Args:
             placeholder: The temporary placeholder widget currently mounted.
             menu: The `ApprovalMenu` to show once the user stops typing.
+            result_future: The future backing this approval flow.
         """
         deadline = _monotonic() + _DEFERRED_APPROVAL_TIMEOUT_SECONDS
         while self._is_user_typing():  # Simple polling
@@ -1321,8 +1330,8 @@ class DeepAgentsApp(App):
             )
             self._approval_placeholder = None
             self._pending_approval_widget = None
-            if menu.future and not menu.future.done():
-                menu.future.cancel()
+            if not result_future.done():
+                result_future.cancel()
             return
 
         self._approval_placeholder = None
@@ -1333,7 +1342,7 @@ class DeepAgentsApp(App):
                 "Failed to remove approval placeholder during swap",
                 exc_info=True,
             )
-        await self._mount_approval_widget(menu)
+        await self._mount_approval_widget(menu, result_future)
 
     def _on_auto_approve_enabled(self) -> None:
         """Handle auto-approve being enabled via the HITL approval menu.

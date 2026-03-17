@@ -25,7 +25,6 @@ from textual.screen import ModalScreen
 from textual.widgets import Checkbox, Input, Static
 
 from deepagents_cli.app import (
-    _DEFERRED_APPROVAL_TIMEOUT_SECONDS,
     _ITERM_CURSOR_GUIDE_OFF,
     _ITERM_CURSOR_GUIDE_ON,
     _TYPING_IDLE_THRESHOLD_SECONDS,
@@ -1931,6 +1930,7 @@ class TestDeferredShowApproval:
 
         async def fake_mount_approval(  # noqa: RUF029
             m: ApprovalMenu,  # noqa: ARG001
+            f: asyncio.Future[dict[str, str]],  # noqa: ARG001
         ) -> None:
             nonlocal mount_called
             mount_called = True
@@ -1942,7 +1942,7 @@ class TestDeferredShowApproval:
             app._last_typed_at = None
 
         typing_task = asyncio.create_task(stop_typing())
-        await app._deferred_show_approval(placeholder, menu)
+        await app._deferred_show_approval(placeholder, menu, future)
         await typing_task
 
         assert remove_called, "placeholder.remove() should have been called"
@@ -1962,6 +1962,7 @@ class TestDeferredShowApproval:
 
         async def fake_mount_approval(  # noqa: RUF029
             m: ApprovalMenu,  # noqa: ARG001
+            f: asyncio.Future[dict[str, str]],  # noqa: ARG001
         ) -> None:
             nonlocal mount_called
             mount_called = True
@@ -1973,7 +1974,7 @@ class TestDeferredShowApproval:
         menu = ApprovalMenu(action_requests[0])
         menu.set_future(future)
 
-        await app._deferred_show_approval(placeholder, menu)
+        await app._deferred_show_approval(placeholder, menu, future)
 
         assert not mount_called, "_mount_approval_widget should NOT have been called"
         assert future.cancelled(), "future should have been cancelled"
@@ -2003,6 +2004,7 @@ class TestDeferredShowApproval:
 
         async def fake_mount_approval(  # noqa: RUF029
             m: ApprovalMenu,  # noqa: ARG001
+            f: asyncio.Future[dict[str, str]],  # noqa: ARG001
         ) -> None:
             nonlocal mount_called
             mount_called = True
@@ -2016,7 +2018,7 @@ class TestDeferredShowApproval:
 
         # Patch the timeout to be tiny so the test doesn't actually wait 30s
         with patch("deepagents_cli.app._DEFERRED_APPROVAL_TIMEOUT_SECONDS", 0.05):
-            await app._deferred_show_approval(placeholder, menu)
+            await app._deferred_show_approval(placeholder, menu, future)
 
         assert remove_called, "placeholder.remove() should have been called"
         assert mount_called, (

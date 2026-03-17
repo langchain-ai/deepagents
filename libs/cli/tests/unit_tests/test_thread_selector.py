@@ -800,19 +800,25 @@ class TestThreadSelectorBuildTitle:
         assert "abc12345" in title
 
     def test_current_thread_with_url(self) -> None:
-        """Title with a LangSmith URL should produce a Rich Text with a link."""
-        from rich.text import Text
+        """Title with a LangSmith URL should produce Content with a link."""
+        from textual.color import Color as TColor
+        from textual.content import Content
+        from textual.style import Style as TStyle
 
         screen = ThreadSelectorScreen(current_thread="abc12345")
         title = screen._build_title(
             thread_url="https://smith.langchain.com/p/t/abc12345"
         )
-        assert isinstance(title, Text)
+        assert isinstance(title, Content)
         assert "abc12345" in title.plain
 
-        spans = [s for s in title._spans if s.style and "link" in str(s.style)]
+        spans = [
+            s for s in title._spans if isinstance(s.style, TStyle) and s.style.link
+        ]
         assert len(spans) > 0
-        assert "cyan" in str(spans[0].style)
+        style = spans[0].style
+        assert isinstance(style, TStyle)
+        assert style.foreground == TColor.parse("cyan")
 
     async def test_title_widget_has_id(self) -> None:
         """Title widget should be queryable by ID for URL updates."""
@@ -833,7 +839,7 @@ class TestFetchThreadUrl:
 
     async def test_successful_url_updates_title(self) -> None:
         """Background worker should update the title with a clickable link."""
-        from rich.text import Text
+        from textual.content import Content
 
         with (
             _patch_list_threads(),
@@ -853,7 +859,7 @@ class TestFetchThreadUrl:
                 assert isinstance(screen, ThreadSelectorScreen)
                 title_widget = screen.query_one("#thread-title", Static)
                 content = title_widget._Static__content
-                assert isinstance(content, Text)
+                assert isinstance(content, Content)
                 assert "abc12345" in content.plain
 
     async def test_timeout_leaves_title_unchanged(self) -> None:
@@ -2473,11 +2479,11 @@ class TestUpgradeThreadMessageLink:
 
     async def test_noop_when_widget_unmounted(self) -> None:
         """Unmounted widget should not be updated even when link resolves."""
-        from rich.text import Text
+        from textual.content import Content
 
         app = DeepAgentsApp()
         app._build_thread_message = AsyncMock(  # type: ignore[assignment]
-            return_value=Text("Resumed thread: tid-1")
+            return_value=Content("Resumed thread: tid-1")
         )
         widget = MagicMock()
         widget.parent = None
@@ -2492,11 +2498,11 @@ class TestUpgradeThreadMessageLink:
         widget.update.assert_not_called()
 
     async def test_updates_widget_when_link_resolves(self) -> None:
-        """Resolved Rich text should replace widget content."""
-        from rich.text import Text
+        """Resolved Content should replace widget content."""
+        from textual.content import Content
 
         app = DeepAgentsApp()
-        linked = Text("Resumed thread: tid-1")
+        linked = Content("Resumed thread: tid-1")
         app._build_thread_message = AsyncMock(return_value=linked)  # type: ignore[assignment]
         widget = MagicMock()
         widget.parent = object()
@@ -2525,20 +2531,25 @@ class TestBuildThreadMessage:
         assert isinstance(result, str)
 
     async def test_hyperlinked_when_tracing_configured(self) -> None:
-        """Returns Rich Text with hyperlink when LangSmith URL is available."""
-        from rich.text import Text
+        """Returns Content with hyperlink when LangSmith URL is available."""
+        from textual.content import Content
+        from textual.style import Style as TStyle
 
         app = DeepAgentsApp()
         url = "https://smith.langchain.com/o/org/projects/p/proj/t/tid-123"
         with patch("deepagents_cli.app.build_langsmith_thread_url", return_value=url):
             result = await app._build_thread_message("Resumed thread", "tid-123")
 
-        assert isinstance(result, Text)
+        assert isinstance(result, Content)
         assert "Resumed thread: " in result.plain
         assert "tid-123" in result.plain
-        spans = [s for s in result._spans if s.style and "link" in str(s.style)]
+        spans = [
+            s for s in result._spans if isinstance(s.style, TStyle) and s.style.link
+        ]
         assert len(spans) == 1
-        assert url in str(spans[0].style)
+        style = spans[0].style
+        assert isinstance(style, TStyle)
+        assert style.link == url
 
     async def test_fallback_on_timeout(self) -> None:
         """Returns plain string when URL resolution times out."""

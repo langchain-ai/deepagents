@@ -3,16 +3,22 @@
 import asyncio
 import base64
 import json
+import logging
 import shlex
 
 from deepagents.backends.protocol import (
     EditResult,
     ExecuteResponse,
     FileInfo,
+    GlobResult,
     GrepMatch,
+    GrepResult,
+    LsResult,
+    ReadResult,
     SandboxBackendProtocol,
     WriteResult,
 )
+from deepagents.backends.utils import check_empty_content, create_file_data
 from harbor.environments.base import BaseEnvironment
 
 _SYNC_NOT_SUPPORTED = "This backend only supports async execution. Use the async variant instead."
@@ -22,6 +28,8 @@ _EXIT_NOT_FOUND = 1
 _EXIT_MULTIPLE_MATCHES = 2
 _EXIT_FILE_MISSING = 3
 _EXIT_DECODE_FAILED = 4
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_COMMAND_TIMEOUT_SEC = 300
 """Default per-command timeout (5 minutes) to prevent stuck command hangs."""
@@ -143,42 +151,46 @@ class HarborSandbox(SandboxBackendProtocol):
         file_path: str,
         offset: int = 0,
         limit: int = 2000,
-    ) -> str:
-        """Read file content with line numbers using shell commands."""
-        # Escape file path for shell
+    ) -> ReadResult:
+        """Read raw file content for the requested line range.
+
+        Line-number formatting is applied by the middleware, so this method
+        returns unformatted text matching the contract of `ReadResult`.
+        """
         safe_path = shlex.quote(file_path)
 
-        # Check if file exists and handle empty files
         cmd = f"""
 if [ ! -f {safe_path} ]; then
     echo "Error: File not found"
     exit 1
 fi
 if [ ! -s {safe_path} ]; then
-    echo "System reminder: File exists but has empty contents"
     exit 0
 fi
-# Use awk to add line numbers and handle offset/limit
 awk -v offset={offset} -v limit={limit} '
-    NR > offset && NR <= offset + limit {{
-        printf "%6d\\t%s\\n", NR, $0
-    }}
+    NR > offset && NR <= offset + limit {{ print }}
     NR > offset + limit {{ exit }}
 ' {safe_path}
 """
         result = await self.aexecute(cmd)
 
         if result.exit_code != 0 or "Error: File not found" in result.output:
-            return f"Error: File '{file_path}' not found"
+            return ReadResult(error=f"File '{file_path}' not found")
 
-        return result.output.rstrip()
+        content = result.output.rstrip()
+
+        empty_msg = check_empty_content(content)
+        if empty_msg:
+            return ReadResult(file_data=create_file_data(empty_msg))
+
+        return ReadResult(file_data=create_file_data(content))
 
     def read(
         self,
         file_path: str,
         offset: int = 0,
         limit: int = 2000,
-    ) -> str:
+    ) -> ReadResult:
         """Read file content with line numbers using shell commands."""
         raise NotImplementedError(_SYNC_NOT_SUPPORTED)
 
@@ -333,7 +345,7 @@ __DEEPAGENTS_EOF__
         """Edit a file by replacing string occurrences using shell commands."""
         raise NotImplementedError(_SYNC_NOT_SUPPORTED)
 
-    async def als_info(self, path: str) -> list[FileInfo]:
+    async def als(self, path: str) -> LsResult:
         """List directory contents with metadata using shell commands."""
         safe_path = shlex.quote(path)
 
@@ -355,7 +367,11 @@ done
         result = await self.aexecute(cmd)
 
         if result.exit_code != 0:
-            return []
+            detail = result.output.strip() if result.output else ""
+            return LsResult(
+                error=f"Directory not found or not accessible: {path}"
+                + (f" ({detail})" if detail else "")
+            )
 
         file_infos: list[FileInfo] = []
         for line in result.output.strip().split("\n"):
@@ -364,19 +380,21 @@ done
             parts = line.split("|")
             if len(parts) == _PIPE_FIELD_COUNT:
                 file_infos.append({"path": parts[0], "is_dir": parts[1] == "true"})
+            else:
+                logger.debug("Skipping malformed ls output line: %r", line)
 
-        return file_infos
+        return LsResult(entries=file_infos)
 
-    def ls_info(self, path: str) -> list[FileInfo]:
+    def ls(self, path: str) -> LsResult:
         """List directory contents with metadata using shell commands."""
         raise NotImplementedError(_SYNC_NOT_SUPPORTED)
 
-    async def agrep_raw(
+    async def agrep(
         self,
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
-    ) -> list[GrepMatch] | str:
+    ) -> GrepResult:
         """Search for pattern in files using grep."""
         search_path = shlex.quote(path or ".")
 
@@ -391,12 +409,19 @@ done
         # Escape pattern for grep
         safe_pattern = shlex.quote(pattern)
 
-        cmd = f"grep {grep_opts} {glob_pattern} -e {safe_pattern} {search_path} 2>/dev/null || true"
+        cmd = f"grep {grep_opts} {glob_pattern} -e {safe_pattern} {search_path} 2>/dev/null"
         result = await self.aexecute(cmd)
+
+        # grep exit codes: 0=matches found, 1=no matches, 2+=error
+        if result.exit_code is not None and result.exit_code > 1:
+            detail = result.output.strip() if result.output else ""
+            return GrepResult(
+                error=f"Grep failed (exit {result.exit_code})" + (f": {detail}" if detail else "")
+            )
 
         output = result.output.rstrip()
         if not output:
-            return []
+            return GrepResult(matches=[])
 
         # Parse grep output into GrepMatch objects
         matches: list[GrepMatch] = []
@@ -413,20 +438,21 @@ done
                         }
                     )
                 except ValueError:
+                    logger.debug("Skipping malformed grep output line: %r", line)
                     continue
 
-        return matches
+        return GrepResult(matches=matches)
 
-    def grep_raw(
+    def grep(
         self,
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
-    ) -> list[GrepMatch] | str:
+    ) -> GrepResult:
         """Search for pattern in files using grep."""
         raise NotImplementedError(_SYNC_NOT_SUPPORTED)
 
-    async def aglob_info(self, pattern: str, path: str = "/") -> list[FileInfo]:
+    async def aglob(self, pattern: str, path: str = "/") -> GlobResult:
         """Find files matching glob pattern using shell commands.
 
         Please note that this implementation does not currently support all glob
@@ -451,11 +477,15 @@ done
         result = await self.aexecute(cmd)
 
         if result.exit_code != 0:
-            return []
+            detail = result.output.strip() if result.output else ""
+            return GlobResult(
+                error=f"Path not found or not accessible: {path}"
+                + (f" ({detail})" if detail else "")
+            )
 
         output = result.output.strip()
         if not output:
-            return []
+            return GlobResult(matches=[])
 
         # Parse output into FileInfo dicts
         file_infos: list[FileInfo] = []
@@ -470,9 +500,11 @@ done
                         "is_dir": parts[1] == "true",
                     }
                 )
+            else:
+                logger.debug("Skipping malformed glob output line: %r", line)
 
-        return file_infos
+        return GlobResult(matches=file_infos)
 
-    def glob_info(self, pattern: str, path: str = "/") -> list[FileInfo]:
+    def glob(self, pattern: str, path: str = "/") -> GlobResult:
         """Find files matching glob pattern using shell commands."""
         raise NotImplementedError(_SYNC_NOT_SUPPORTED)

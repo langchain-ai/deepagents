@@ -11,6 +11,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NoReturn
 
+from rich.markup import escape as escape_markup
+
 from deepagents_cli.config import console, get_glyphs
 from deepagents_cli.integrations.sandbox_provider import (
     SandboxNotFoundError,
@@ -39,7 +41,9 @@ def _run_sandbox_setup(backend: SandboxBackendProtocol, setup_script_path: str) 
         msg = f"Setup script not found: {setup_script_path}"
         raise FileNotFoundError(msg)
 
-    console.print(f"[dim]Running setup script: {setup_script_path}...[/dim]")
+    console.print(
+        f"[dim]Running setup script: {escape_markup(setup_script_path)}...[/dim]"
+    )
 
     # Read script content
     script_content = script_path.read_text(encoding="utf-8")
@@ -53,7 +57,7 @@ def _run_sandbox_setup(backend: SandboxBackendProtocol, setup_script_path: str) 
 
     if result.exit_code != 0:
         console.print(f"[red]Setup script failed (exit {result.exit_code}):[/red]")
-        console.print(f"[dim]{result.output}[/dim]")
+        console.print(f"[dim]{escape_markup(result.output)}[/dim]")
         msg = "Setup failed - aborting"
         raise RuntimeError(msg)
 

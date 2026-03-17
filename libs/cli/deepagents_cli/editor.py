@@ -120,6 +120,9 @@ def open_in_editor(current_text: str) -> str | None:
         # Normalize line endings
         edited = edited.replace("\r\n", "\n").replace("\r", "\n")
 
+        # Strip trailing newlines that editors append (POSIX convention)
+        edited = edited.rstrip("\n")
+
         # Treat empty result as cancellation
         if not edited.strip():
             return None

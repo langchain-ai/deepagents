@@ -3119,6 +3119,8 @@ class DeepAgentsApp(App):
 
         if edited is not None:
             chat_input._text_area.text = edited
+            lines = edited.split("\n")
+            chat_input._text_area.move_cursor((len(lines) - 1, len(lines[-1])))
         chat_input.focus_input()
 
     def on_paste(self, event: Paste) -> None:

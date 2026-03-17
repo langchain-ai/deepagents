@@ -42,18 +42,19 @@ async def test_store_backend_async_crud_and_search():
     assert isinstance(msg2, EditResult) and msg2.error is None and msg2.occurrences == 1
 
     # als_info (path prefix filter)
-    infos = await be.als_info("/docs/")
+    infos = (await be.als("/docs/")).entries
+    assert infos is not None
     assert any(i["path"] == "/docs/readme.md" for i in infos)
 
-    # agrep_raw
-    matches = await be.agrep_raw("hi", path="/")
-    assert isinstance(matches, list) and any(m["path"] == "/docs/readme.md" for m in matches)
+    # agrep
+    matches = (await be.agrep("hi", path="/")).matches
+    assert matches is not None and any(m["path"] == "/docs/readme.md" for m in matches)
 
-    # aglob_info
-    g = await be.aglob_info("*.md", path="/")
+    # aglob
+    g = (await be.aglob("*.md", path="/")).matches
     assert len(g) == 0
 
-    g2 = await be.aglob_info("**/*.md", path="/")
+    g2 = (await be.aglob("**/*.md", path="/")).matches
     assert any(i["path"] == "/docs/readme.md" for i in g2)
 
 
@@ -75,7 +76,8 @@ async def test_store_backend_als_nested_directories():
         res = await be.awrite(path, content)
         assert res.error is None
 
-    root_listing = await be.als_info("/")
+    root_listing = (await be.als("/")).entries
+    assert root_listing is not None
     root_paths = [fi["path"] for fi in root_listing]
     assert "/config.json" in root_paths
     assert "/src/" in root_paths
@@ -85,20 +87,22 @@ async def test_store_backend_als_nested_directories():
     assert "/docs/readme.md" not in root_paths
     assert "/docs/api/reference.md" not in root_paths
 
-    src_listing = await be.als_info("/src/")
+    src_listing = (await be.als("/src/")).entries
+    assert src_listing is not None
     src_paths = [fi["path"] for fi in src_listing]
     assert "/src/main.py" in src_paths
     assert "/src/utils/" in src_paths
     assert "/src/utils/helper.py" not in src_paths
 
-    utils_listing = await be.als_info("/src/utils/")
+    utils_listing = (await be.als("/src/utils/")).entries
+    assert utils_listing is not None
     utils_paths = [fi["path"] for fi in utils_listing]
     assert "/src/utils/helper.py" in utils_paths
     assert "/src/utils/common.py" in utils_paths
     assert len(utils_paths) == 2
 
-    empty_listing = await be.als_info("/nonexistent/")
-    assert empty_listing == []
+    empty_listing = await be.als("/nonexistent/")
+    assert empty_listing.entries == []
 
 
 async def test_store_backend_als_trailing_slash():
@@ -115,11 +119,14 @@ async def test_store_backend_als_trailing_slash():
         res = await be.awrite(path, content)
         assert res.error is None
 
-    listing_from_root = await be.als_info("/")
+    listing_from_root = (await be.als("/")).entries
+    assert listing_from_root is not None
     assert len(listing_from_root) > 0
 
-    listing1 = await be.als_info("/dir/")
-    listing2 = await be.als_info("/dir")
+    listing1 = (await be.als("/dir/")).entries
+    listing2 = (await be.als("/dir")).entries
+    assert listing1 is not None
+    assert listing2 is not None
     assert len(listing1) == len(listing2)
     assert [fi["path"] for fi in listing1] == [fi["path"] for fi in listing2]
 
@@ -208,9 +215,9 @@ async def test_store_backend_agrep_with_glob():
         res = await be.awrite(path, content)
         assert res.error is None
 
-    # agrep_raw with glob filter for .py files only
-    matches = await be.agrep_raw("import", path="/", glob="*.py")
-    assert isinstance(matches, list)
+    # agrep with glob filter for .py files only
+    matches = (await be.agrep("import", path="/", glob="*.py")).matches
+    assert matches is not None
     py_matches = [m["path"] for m in matches if m["path"].endswith(".py")]
     assert len(py_matches) >= 2  # Should match test.py and main.py
 
@@ -234,14 +241,14 @@ async def test_store_backend_aglob_patterns():
         assert res.error is None
 
     # Recursive glob for all .py files
-    infos = await be.aglob_info("**/*.py", path="/")
+    infos = (await be.aglob("**/*.py", path="/")).matches
     py_files = [i["path"] for i in infos]
     assert "/src/main.py" in py_files
     assert "/src/utils/helper.py" in py_files
     assert "/tests/test_main.py" in py_files
 
     # Glob for markdown files
-    md_infos = await be.aglob_info("**/*.md", path="/")
+    md_infos = (await be.aglob("**/*.md", path="/")).matches
     md_files = [i["path"] for i in md_infos]
     assert "/readme.md" in md_files
     assert "/docs/api.md" in md_files
@@ -279,8 +286,8 @@ async def test_store_backend_agrep_invalid_regex():
     assert res.error is None
 
     # Special characters are treated literally, not regex
-    result = await be.agrep_raw("[invalid", path="/")
-    assert isinstance(result, list)  # Returns empty list, not error
+    result = await be.agrep("[invalid", path="/")
+    assert result.matches is not None  # Returns empty list, not error
 
 
 @pytest.mark.parametrize("file_format", ["v1", "v2"])

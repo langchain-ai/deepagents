@@ -32,9 +32,9 @@ With this middleware installed, the agent receives a `repl` tool that runs each 
 - The REPL is stateless. Each call starts from a fresh QuickJS context, so variables, functions, and other values defined in one `repl` call are not available in the next one.
 - Execution uses [QuickJS](https://bellard.org/quickjs/), so JavaScript support is limited to what QuickJS provides. It is good for small computations, control flow, JSON manipulation, and calling exposed foreign functions, but it is not a browser or Node.js runtime and does not provide their APIs.
 - Foreign functions support passing primitive values between JavaScript and Python, including `int`, `float`, `bool`, `str`, and `None`. Lists and dictionaries returned from Python are also supported and are bridged back into JavaScript arrays and objects.
+- Async foreign functions are supported. Because QuickJS callbacks are synchronous, awaitables are delegated to a dedicated daemon-thread event loop and their resolved results are returned back into the REPL call.
 
 ## Current limitations
 
 - Does not work with HIL in the REPL.
-- Does not support async foreign functions in the REPL yet.
 - Does not support `ToolRuntime` yet.

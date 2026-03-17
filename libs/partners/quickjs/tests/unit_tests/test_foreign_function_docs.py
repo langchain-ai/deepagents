@@ -15,10 +15,10 @@ from langchain_quickjs._foreign_function_docs import (
     _get_return_annotation,
     _render_typed_dict_definition,
     format_foreign_function_docs,
-    get_ptc_implementations,
     render_external_functions_section,
     render_foreign_function_section,
 )
+from langchain_quickjs._foreign_functions import get_ptc_implementations
 
 
 class UserLookup(TypedDict):

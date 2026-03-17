@@ -26,6 +26,11 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  # Separate opened events so external/tier labels are never lost to cancellation
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}-${{ github.event.action == 'opened' && 'opened' || 'update' }}
+  cancel-in-progress: ${{ github.event.action != 'opened' }}
+
 jobs:
   label:
     if: github.event_name != 'workflow_dispatch'
@@ -330,26 +335,49 @@ jobs:
 
             const TRUSTED_THRESHOLD = 5;
 
-            let mergedCount = 0;
+            async function ensureLabel(name, color = 'b76e79') {
+              try {
+                await github.rest.issues.getLabel({ owner, repo, name });
+              } catch (e) {
+                if (e.status !== 404) throw e;
+                await github.rest.issues.createLabel({ owner, repo, name, color });
+              }
+            }
+
+            let mergedCount;
             try {
               const result = await github.rest.search.issuesAndPullRequests({
                 q: `repo:${owner}/${repo} is:pr is:merged author:"${author}"`,
                 per_page: 1,
               });
-              mergedCount = result?.data?.total_count ?? 0;
+              mergedCount = result?.data?.total_count;
             } catch (error) {
               if (error?.status !== 422) throw error;
               core.warning(`Search failed for ${author}; skipping tier label.`);
               return;
             }
 
+            if (mergedCount == null) {
+              core.warning(`Search response missing total_count for ${author}; skipping tier label.`);
+              return;
+            }
+
             if (mergedCount >= TRUSTED_THRESHOLD) {
+              await ensureLabel('trusted-contributor');
               await github.rest.issues.addLabels({
                 owner, repo,
                 issue_number: prNumber,
                 labels: ['trusted-contributor'],
               });
               console.log(`Applied 'trusted-contributor' to #${prNumber} (${mergedCount} merged PRs)`);
+            } else if (mergedCount === 0) {
+              await ensureLabel('new-contributor');
+              await github.rest.issues.addLabels({
+                owner, repo,
+                issue_number: prNumber,
+                labels: ['new-contributor'],
+              });
+              console.log(`Applied 'new-contributor' to #${prNumber} (0 merged PRs from ${author})`);
             } else {
               console.log(`No tier label for ${author} (${mergedCount} merged PRs)`);
             }
@@ -381,7 +409,7 @@ jobs:
             const LABEL_COLOR = 'b76e79';
 
             const sizeLabels = ['size: XS', 'size: S', 'size: M', 'size: L', 'size: XL'];
-            const tierLabels = ['trusted-contributor'];
+            const tierLabels = ['new-contributor', 'trusted-contributor'];
             const allTypeLabels = ['feature', 'fix', 'documentation', 'linting', 'refactor',
               'performance', 'tests', 'infra', 'revert', 'release', 'breaking'];
 
@@ -415,14 +443,14 @@ jobs:
               } catch (e) {
                 if (e.status !== 404) core.warning(`Membership check failed for ${author}: ${e.message}`);
               }
-              let mergedCount = 0;
+              let mergedCount = null;
               if (isExternal) {
                 try {
                   const result = await github.rest.search.issuesAndPullRequests({
                     q: `repo:${owner}/${repo} is:pr is:merged author:"${author}"`,
                     per_page: 1,
                   });
-                  mergedCount = result?.data?.total_count ?? 0;
+                  mergedCount = result?.data?.total_count ?? null;
                 } catch (e) {
                   if (e?.status !== 422) throw e;
                   core.warning(`Search failed for ${author}; skipping tier.`);
@@ -480,6 +508,8 @@ jobs:
               labels.add(info.isExternal ? 'external' : 'internal');
               if (info.isExternal && info.mergedCount >= TRUSTED_THRESHOLD) {
                 labels.add('trusted-contributor');
+              } else if (info.isExternal && info.mergedCount === 0) {
+                labels.add('new-contributor');
               }
 
               // Size + file labels

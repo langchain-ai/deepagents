@@ -196,7 +196,7 @@ class TestSubcommandHelpFlags:
 
 
 class TestShortFlags:
-    """Test that short flag aliases (-a, -M, -v) parse correctly."""
+    """Test that short flag aliases (-a, -M, -S, -v, -y) parse correctly."""
 
     def test_short_agent_flag(self) -> None:
         """Verify -a sets agent."""
@@ -224,6 +224,18 @@ class TestShortFlags:
         ):
             parse_args()
         assert exc_info.value.code in (0, None)
+
+    def test_short_auto_approve_flag(self) -> None:
+        """Verify -y sets auto_approve."""
+        with patch.object(sys, "argv", ["deepagents", "-y"]):
+            args = parse_args()
+        assert args.auto_approve is True
+
+    def test_short_shell_allow_list_flag(self) -> None:
+        """Verify -S sets shell_allow_list."""
+        with patch.object(sys, "argv", ["deepagents", "-S", "ls,cat"]):
+            args = parse_args()
+        assert args.shell_allow_list == "ls,cat"
 
 
 class TestQuietArg:

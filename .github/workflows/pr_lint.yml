@@ -57,11 +57,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: "🚫 Reject empty scope"
-        if: contains(github.event.pull_request.title, '():')
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
-          echo "::error::PR title has empty scope parentheses: '${{ github.event.pull_request.title }}'"
-          echo "Either remove the parentheses or provide a scope (e.g., 'fix(cli): ...')."
-          exit 1
+          if [[ "$PR_TITLE" =~ ^[a-z]+\(\)[!]?: ]]; then
+            echo "::error::PR title has empty scope parentheses: '$PR_TITLE'"
+            echo "Either remove the parentheses or provide a scope (e.g., 'fix(cli): ...')."
+            exit 1
+          fi
       - name: "✅ Validate Conventional Commits Format"
         uses: amannn/action-semantic-pull-request@v6
         env:

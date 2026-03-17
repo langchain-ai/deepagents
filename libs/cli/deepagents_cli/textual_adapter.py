@@ -6,27 +6,38 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 import uuid
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
+
+    from rich.console import Console
+
+    from deepagents_cli.ask_user import AskUserWidgetResult, Question
 
 from langchain.agents.middleware.human_in_the_loop import (
     ApproveDecision,
     EditDecision,
     HITLRequest,
-    HITLResponse,
     RejectDecision,
 )
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.types import Command, Interrupt
 from pydantic import TypeAdapter, ValidationError
 
+from deepagents_cli._debug import configure_debug_logging
+from deepagents_cli.ask_user import AskUserRequest
+from deepagents_cli.config import settings
+from deepagents_cli.configurable_model import CLIContext  # noqa: TC001
 from deepagents_cli.file_ops import FileOpTracker
-from deepagents_cli.image_utils import create_multimodal_content
-from deepagents_cli.input import ImageTracker, parse_file_mentions
+from deepagents_cli.hooks import dispatch_hook
+from deepagents_cli.input import MediaTracker, parse_file_mentions
+from deepagents_cli.media_utils import create_multimodal_content
 from deepagents_cli.tool_display import format_tool_message_content
 from deepagents_cli.widgets.messages import (
     AppMessage,
@@ -37,31 +48,247 @@ from deepagents_cli.widgets.messages import (
 )
 
 logger = logging.getLogger(__name__)
+configure_debug_logging(logger)
+
+_git_branch_cache: dict[str, str | None] = {}
+"""Cache git-branch lookups by current working directory."""
+
+SpinnerStatus = Literal["Thinking", "Offloading"] | None
+"""Valid spinner display states, or `None` to hide."""
+
+
+@dataclass
+class ModelStats:
+    """Token stats for a single model within a session.
+
+    Attributes:
+        request_count: Number of LLM API requests made to this model.
+        input_tokens: Cumulative input tokens sent to this model.
+        output_tokens: Cumulative output tokens received from this model.
+    """
+
+    request_count: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+
+
+@dataclass
+class SessionStats:
+    """Stats accumulated over a single agent turn (or full session).
+
+    Attributes:
+        request_count: Total LLM API requests made (each chunk with
+            usage_metadata counts as one completed request).
+        input_tokens: Cumulative input tokens across all LLM requests.
+        output_tokens: Cumulative output tokens across all LLM requests.
+        wall_time_seconds: Wall-clock duration from stream start to end.
+        per_model: Per-model breakdown keyed by model name.
+            Populated only when `record_request` receives a non-empty
+            `model_name`. Empty dict means no named-model requests were
+            recorded; `print_usage_table` omits the model table in that case and
+            shows only the wall-time line (if applicable).
+    """
+
+    request_count: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    wall_time_seconds: float = 0.0
+    per_model: dict[str, ModelStats] = field(default_factory=dict)
+
+    def record_request(
+        self,
+        model_name: str,
+        input_toks: int,
+        output_toks: int,
+    ) -> None:
+        """Accumulate token counts for one completed LLM request.
+
+        Updates both the session totals and the per-model breakdown.
+
+        Args:
+            model_name: The model that served this request (used as the
+                per-model key). Pass an empty string to skip the per-model
+                breakdown for this request.
+            input_toks: Input tokens for this request.
+            output_toks: Output tokens for this request.
+        """
+        self.request_count += 1
+        self.input_tokens += input_toks
+        self.output_tokens += output_toks
+        if model_name:
+            entry = self.per_model.setdefault(model_name, ModelStats())
+            entry.request_count += 1
+            entry.input_tokens += input_toks
+            entry.output_tokens += output_toks
+
+    def merge(self, other: SessionStats) -> None:
+        """Merge another `SessionStats` into this one (mutates *self*).
+
+        Used to accumulate per-turn stats into a session-level total.
+
+        Args:
+            other: The stats to fold in.
+        """
+        self.request_count += other.request_count
+        self.input_tokens += other.input_tokens
+        self.output_tokens += other.output_tokens
+        self.wall_time_seconds += other.wall_time_seconds
+        for model, ms in other.per_model.items():
+            entry = self.per_model.setdefault(model, ModelStats())
+            entry.request_count += ms.request_count
+            entry.input_tokens += ms.input_tokens
+            entry.output_tokens += ms.output_tokens
+
+
+def format_token_count(count: int) -> str:
+    """Format a token count into a human-readable short string.
+
+    Args:
+        count: Number of tokens.
+
+    Returns:
+        Formatted string like `"12.5K"`, `"1.2M"`, or `"500"`.
+    """
+    if count >= 1_000_000:  # noqa: PLR2004
+        return f"{count / 1_000_000:.1f}M"
+    if count >= 1000:  # noqa: PLR2004
+        return f"{count / 1000:.1f}K"
+    return str(count)
+
+
+def print_usage_table(
+    stats: SessionStats,
+    wall_time: float,
+    console: Console,
+) -> None:
+    """Print a model-usage stats table to a Rich console.
+
+    When the session spans multiple models each gets its own row with a
+    totals row appended; single-model sessions show one row.
+
+    Args:
+        stats: Cumulative session stats.
+        wall_time: Total wall-clock time in seconds.
+        console: Rich console for output.
+    """
+    from rich.table import Table
+
+    has_time = wall_time >= 0.1  # noqa: PLR2004
+    if not (stats.request_count or stats.input_tokens or has_time):
+        return
+
+    if stats.per_model:
+        multi_model = len(stats.per_model) > 1
+
+        table = Table(
+            show_header=True,
+            header_style="bold",
+            box=None,
+            padding=(0, 2, 0, 0),
+            show_edge=False,
+        )
+        table.add_column("Model", style="dim")
+        table.add_column("Reqs", justify="right", style="dim")
+        table.add_column("InputTok", justify="right", style="dim")
+        table.add_column("OutputTok", justify="right", style="dim")
+
+        if multi_model:
+            for model_name, ms in stats.per_model.items():
+                table.add_row(
+                    model_name,
+                    str(ms.request_count),
+                    format_token_count(ms.input_tokens),
+                    format_token_count(ms.output_tokens),
+                )
+            table.add_row(
+                "Total",
+                str(stats.request_count),
+                format_token_count(stats.input_tokens),
+                format_token_count(stats.output_tokens),
+            )
+        else:
+            model_label = next(iter(stats.per_model))
+            table.add_row(
+                model_label,
+                str(stats.request_count),
+                format_token_count(stats.input_tokens),
+                format_token_count(stats.output_tokens),
+            )
+
+        console.print()
+        console.print("[bold]Usage Stats[/bold]")
+        console.print(table)
+    if has_time:
+        console.print()
+        console.print(f"[dim]Agent active  {wall_time:.1f}s[/dim]")
+
 
 # Type alias matching HITLResponse["decisions"] element type
 HITLDecision = ApproveDecision | EditDecision | RejectDecision
 
 _HITL_REQUEST_ADAPTER = TypeAdapter(HITLRequest)
+_ASK_USER_INTERRUPT_ADAPTER = TypeAdapter(AskUserRequest)
+"""Validator for incoming `ask_user` interrupt payloads."""
+
+
+def _get_git_branch() -> str | None:
+    """Return the current git branch name, or None if not in a repo."""
+    import subprocess  # noqa: S404
+
+    try:
+        cwd = str(Path.cwd())
+    except OSError:
+        logger.debug("Could not determine cwd for git branch lookup", exc_info=True)
+        return None
+    if cwd in _git_branch_cache:
+        return _git_branch_cache[cwd]
+
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],  # noqa: S607
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+        if result.returncode == 0:
+            branch = result.stdout.strip() or None
+            _git_branch_cache[cwd] = branch
+            return branch
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        logger.debug("Could not determine git branch", exc_info=True)
+    _git_branch_cache[cwd] = None
+    return None
 
 
 def _build_stream_config(
     thread_id: str,
     assistant_id: str | None,
+    *,
+    sandbox_type: str | None = None,
 ) -> dict[str, Any]:
     """Build the LangGraph stream config dict.
 
     The `thread_id` in `configurable` is automatically propagated as run
     metadata by LangGraph, so it can be used for LangSmith filtering without
-    a separate metadata key.
+    a separate metadata key. Includes the current working directory (`cwd`),
+    git branch, and sandbox type in metadata when available.
 
     Args:
         thread_id: The CLI session thread identifier.
         assistant_id: The agent/assistant identifier, if any.
+        sandbox_type: Sandbox provider name for trace metadata, or `None`
+            if no sandbox is active.
 
     Returns:
         Config dict with `configurable` and `metadata` keys.
     """
-    metadata: dict[str, str] = {}
+    try:
+        cwd = str(Path.cwd())
+    except OSError:
+        logger.warning("Could not determine working directory", exc_info=True)
+        cwd = ""
+    metadata: dict[str, str] = {"cwd": cwd} if cwd else {}
     if assistant_id:
         metadata.update(
             {
@@ -70,6 +297,11 @@ def _build_stream_config(
                 "updated_at": datetime.now(UTC).isoformat(),
             }
         )
+    branch = _get_git_branch()
+    if branch:
+        metadata["git_branch"] = branch
+    if sandbox_type and sandbox_type != "none":
+        metadata["sandbox_type"] = sandbox_type
     return {
         "configurable": {"thread_id": thread_id},
         "metadata": metadata,
@@ -118,14 +350,20 @@ class TextualUIAdapter:
     allowing the app to sync its status bar and session state.
     """
 
-    _scroll_to_bottom: Callable[[], None] | None
-    """Callback to scroll chat to bottom."""
+    _request_ask_user: (
+        Callable[
+            [list[Question]],
+            Awaitable[asyncio.Future[AskUserWidgetResult] | None],
+        ]
+        | None
+    )
+    """Async callback for `ask_user` interrupts.
 
-    _set_spinner: Callable[[str | None], Awaitable[None]] | None
-    """Callback to show/hide loading spinner.
-
-    Pass `None` to hide, or a status string to show.
+    When awaited, returns a `Future` that resolves to user answers.
     """
+
+    _set_spinner: Callable[[SpinnerStatus], Awaitable[None]] | None
+    """Callback to show/hide loading spinner."""
 
     _set_active_message: Callable[[str | None], None] | None
     """Callback to set the active streaming message ID (pass `None` to clear)."""
@@ -145,10 +383,16 @@ class TextualUIAdapter:
         update_status: Callable[[str], None],
         request_approval: Callable[..., Awaitable[Any]],
         on_auto_approve_enabled: Callable[[], None] | None = None,
-        scroll_to_bottom: Callable[[], None] | None = None,
-        set_spinner: Callable[[str | None], Awaitable[None]] | None = None,
+        set_spinner: Callable[[SpinnerStatus], Awaitable[None]] | None = None,
         set_active_message: Callable[[str | None], None] | None = None,
         sync_message_content: Callable[[str, str], None] | None = None,
+        request_ask_user: (
+            Callable[
+                [list[Question]],
+                Awaitable[asyncio.Future[AskUserWidgetResult] | None],
+            ]
+            | None
+        ) = None,
     ) -> None:
         """Initialize the adapter.
 
@@ -160,20 +404,21 @@ class TextualUIAdapter:
                 "Auto-approve all" from an approval dialog.
 
                 Used by the app to sync the status bar indicator and session state.
-            scroll_to_bottom: Callback to scroll chat to bottom.
             set_spinner: Callback to show/hide loading spinner (pass `None` to hide).
             set_active_message: Callback to set the active streaming message ID.
             sync_message_content: Callback to sync final content back to the
                 message store after streaming completes.
+            request_ask_user: Async callable that displays an `ask_user` widget
+                and returns a `Future` resolving to user answers.
         """
         self._mount_message = mount_message
         self._update_status = update_status
         self._request_approval = request_approval
         self._on_auto_approve_enabled = on_auto_approve_enabled
-        self._scroll_to_bottom = scroll_to_bottom
         self._set_spinner = set_spinner
         self._set_active_message = set_active_message
         self._sync_message_content = sync_message_content
+        self._request_ask_user = request_ask_user
 
         # State tracking
         self._current_tool_messages: dict[str, ToolCallMessage] = {}
@@ -237,6 +482,29 @@ def _build_interrupted_ai_message(
     )
 
 
+def _read_mentioned_file(file_path: Path, max_embed_bytes: int) -> str:
+    """Read a mentioned file for inline embedding (sync, for use with to_thread).
+
+    Args:
+        file_path: Resolved path to the file.
+        max_embed_bytes: Size threshold; larger files get a reference only.
+
+    Returns:
+        Markdown snippet with the file content or a size-exceeded reference.
+    """
+    file_size = file_path.stat().st_size
+    if file_size > max_embed_bytes:
+        size_kb = file_size // 1024
+        return (
+            f"\n### {file_path.name}\n"
+            f"Path: `{file_path}`\n"
+            f"Size: {size_kb}KB (too large to embed, "
+            "use read_file tool to view)"
+        )
+    content = file_path.read_text(encoding="utf-8")
+    return f"\n### {file_path.name}\nPath: `{file_path}`\n```\n{content}\n```"
+
+
 async def execute_task_textual(
     user_input: str,
     agent: Any,  # noqa: ANN401  # Dynamic agent graph type
@@ -244,8 +512,11 @@ async def execute_task_textual(
     session_state: Any,  # noqa: ANN401  # Dynamic session state type
     adapter: TextualUIAdapter,
     backend: Any = None,  # noqa: ANN401  # Dynamic backend type
-    image_tracker: ImageTracker | None = None,
-) -> None:
+    image_tracker: MediaTracker | None = None,
+    context: CLIContext | None = None,
+    *,
+    sandbox_type: str | None = None,
+) -> SessionStats:
     """Execute a task with output directed to Textual UI.
 
     This is the Textual-compatible version of execute_task() that uses
@@ -259,12 +530,22 @@ async def execute_task_textual(
         adapter: The TextualUIAdapter for UI operations
         backend: Optional backend for file operations
         image_tracker: Optional tracker for images
+        context: Optional `CLIContext` with model override and params, passed
+            to the graph via `context=`.
+        sandbox_type: Sandbox provider name for trace metadata, or `None`
+            if no sandbox is active.
+
+    Returns:
+        Stats accumulated over this turn (request count, token counts,
+            wall-clock time).
 
     Raises:
         ValidationError: If HITL request validation fails (re-raised).
     """
-    # Parse file mentions and inject content if any
-    prompt_text, mentioned_files = parse_file_mentions(user_input)
+    # Parse file mentions and inject content if any — offload blocking I/O
+    prompt_text, mentioned_files = await asyncio.to_thread(
+        parse_file_mentions, user_input
+    )
 
     # Max file size to embed inline (256KB, matching mistral-vibe)
     # Larger files get a reference instead - use read_file tool to view them
@@ -274,22 +555,10 @@ async def execute_task_textual(
         context_parts = [prompt_text, "\n\n## Referenced Files\n"]
         for file_path in mentioned_files:
             try:
-                file_size = file_path.stat().st_size
-                if file_size > max_embed_bytes:
-                    # File too large - include reference instead of content
-                    size_kb = file_size // 1024
-                    context_parts.append(
-                        f"\n### {file_path.name}\n"
-                        f"Path: `{file_path}`\n"
-                        f"Size: {size_kb}KB (too large to embed, "
-                        "use read_file tool to view)"
-                    )
-                else:
-                    content = file_path.read_text()
-                    context_parts.append(
-                        f"\n### {file_path.name}\n"
-                        f"Path: `{file_path}`\n```\n{content}\n```"
-                    )
+                part = await asyncio.to_thread(
+                    _read_mentioned_file, file_path, max_embed_bytes
+                )
+                context_parts.append(part)
             except Exception as e:  # noqa: BLE001  # Resilient adapter error handling
                 context_parts.append(
                     f"\n### {file_path.name}\n[Error reading file: {e}]"
@@ -298,20 +567,28 @@ async def execute_task_textual(
     else:
         final_input = prompt_text
 
-    # Include images in the message content
+    # Include images and videos in the message content
     images_to_send = []
+    videos_to_send = []
     if image_tracker:
         images_to_send = image_tracker.get_images()
-    if images_to_send:
-        message_content = create_multimodal_content(final_input, images_to_send)
+        videos_to_send = image_tracker.get_videos()
+    if images_to_send or videos_to_send:
+        message_content = create_multimodal_content(
+            final_input, images_to_send, videos_to_send
+        )
     else:
         message_content = final_input
 
     thread_id = session_state.thread_id
-    config = _build_stream_config(thread_id, assistant_id)
+    config = _build_stream_config(thread_id, assistant_id, sandbox_type=sandbox_type)
+
+    await dispatch_hook("session.start", {"thread_id": thread_id})
 
     captured_input_tokens = 0
     captured_output_tokens = 0
+    turn_stats = SessionStats()
+    start_time = time.monotonic()
 
     # Show spinner
     if adapter._set_spinner:
@@ -330,7 +607,7 @@ async def execute_task_textual(
     pending_text_by_namespace: dict[tuple, str] = {}
     assistant_message_by_namespace: dict[tuple, Any] = {}
 
-    # Clear images from tracker after creating the message
+    # Clear media from tracker after creating the message
     if image_tracker:
         image_tracker.clear()
 
@@ -344,18 +621,20 @@ async def execute_task_textual(
     try:
         while True:
             interrupt_occurred = False
-            hitl_response: dict[str, HITLResponse] = {}
             suppress_resumed_output = False
             pending_interrupts: dict[str, HITLRequest] = {}
+            pending_ask_user: dict[str, AskUserRequest] = {}
 
             async for chunk in agent.astream(
                 stream_input,
                 stream_mode=["messages", "updates"],
                 subgraphs=True,
                 config=config,
+                context=context,
                 durability="exit",
             ):
-                if not isinstance(chunk, tuple) or len(chunk) != 3:  # noqa: PLR2004  # Retry count threshold
+                if not isinstance(chunk, tuple) or len(chunk) != 3:  # noqa: PLR2004  # stream chunk is a 3-tuple (namespace, mode, data)
+                    logger.debug("Skipping non-3-tuple chunk: %s", type(chunk).__name__)
                     continue
 
                 namespace, current_stream_mode, data = chunk
@@ -378,18 +657,39 @@ async def execute_task_textual(
                         interrupts: list[Interrupt] = data["__interrupt__"]
                         if interrupts:
                             for interrupt_obj in interrupts:
-                                try:
-                                    validated_request = (
-                                        _HITL_REQUEST_ADAPTER.validate_python(
-                                            interrupt_obj.value
+                                iv = interrupt_obj.value
+                                if (
+                                    isinstance(iv, dict)
+                                    and iv.get("type") == "ask_user"
+                                ):
+                                    try:
+                                        validated_ask_user = (
+                                            _ASK_USER_INTERRUPT_ADAPTER.validate_python(
+                                                iv
+                                            )
                                         )
-                                    )
-                                    pending_interrupts[interrupt_obj.id] = (
-                                        validated_request
-                                    )
-                                    interrupt_occurred = True
-                                except ValidationError:  # noqa: TRY203  # Re-raise preserves exception context in handler
-                                    raise
+                                        pending_ask_user[interrupt_obj.id] = (
+                                            validated_ask_user
+                                        )
+                                        interrupt_occurred = True
+                                        await dispatch_hook("input.required", {})
+                                    except ValidationError:
+                                        logger.exception(
+                                            "Invalid ask_user interrupt payload"
+                                        )
+                                        raise
+                                else:
+                                    try:
+                                        validated_request = (
+                                            _HITL_REQUEST_ADAPTER.validate_python(iv)
+                                        )
+                                        pending_interrupts[interrupt_obj.id] = (
+                                            validated_request
+                                        )
+                                        interrupt_occurred = True
+                                        await dispatch_hook("input.required", {})
+                                    except ValidationError:  # noqa: TRY203  # Re-raise preserves exception context in handler
+                                        raise
 
                     # Check for todo updates (not yet implemented in Textual UI)
                     chunk_data = next(iter(data.values())) if data else None
@@ -404,12 +704,23 @@ async def execute_task_textual(
                 elif current_stream_mode == "messages":
                     # Skip subagent outputs - only render main agent content in chat
                     if not is_main_agent:
+                        logger.debug("Skipping subagent message ns=%s", ns_key)
                         continue
 
-                    if not isinstance(data, tuple) or len(data) != 2:  # noqa: PLR2004  # Tool call part index
+                    if not isinstance(data, tuple) or len(data) != 2:  # noqa: PLR2004  # message stream data is a 2-tuple (message, metadata)
+                        logger.debug(
+                            "Skipping non-2-tuple message data: type=%s",
+                            type(data).__name__,
+                        )
                         continue
 
                     message, metadata = data
+                    logger.debug(
+                        "Processing message: type=%s id=%s has_content_blocks=%s",
+                        type(message).__name__,
+                        getattr(message, "id", None),
+                        hasattr(message, "content_blocks"),
+                    )
 
                     # Filter out summarization model output, but keep UI feedback.
                     # The summarization model streams AIMessage chunks tagged
@@ -420,7 +731,7 @@ async def execute_task_textual(
                         if not summarization_in_progress:
                             summarization_in_progress = True
                             if adapter._set_spinner:
-                                await adapter._set_spinner("Summarizing")
+                                await adapter._set_spinner("Offloading")
                         continue
 
                     # Regular (non-summarization) chunks resumed — summarization
@@ -470,6 +781,10 @@ async def execute_task_textual(
                                 tool_msg.set_success(output_str)
                             else:
                                 tool_msg.set_error(output_str or "Error")
+                                await dispatch_hook(
+                                    "tool.error",
+                                    {"tool_names": [tool_msg._tool_name]},
+                                )
                             # Clean up - remove from tracking dict after status update
                             adapter._current_tool_messages.pop(tool_id, None)
 
@@ -492,31 +807,44 @@ async def execute_task_textual(
 
                     # Extract token usage (before content_blocks check
                     # - usage may be on any chunk)
-                    if adapter._token_tracker and hasattr(message, "usage_metadata"):
+                    if hasattr(message, "usage_metadata"):
                         usage = message.usage_metadata
                         if usage:
-                            # Use total_tokens which includes input + output
+                            input_toks = usage.get("input_tokens", 0)
+                            output_toks = usage.get("output_tokens", 0)
                             total_toks = usage.get("total_tokens", 0)
-                            if total_toks:
+                            active_model = settings.model_name or ""
+                            if input_toks or output_toks:
+                                # Model gives split counts — preferred path
+                                turn_stats.record_request(
+                                    active_model, input_toks, output_toks
+                                )
+                                captured_input_tokens = max(
+                                    captured_input_tokens, input_toks + output_toks
+                                )
+                            elif total_toks:
+                                # Fallback: model gives only total (no split)
+                                turn_stats.record_request(active_model, total_toks, 0)
                                 captured_input_tokens = max(
                                     captured_input_tokens, total_toks
                                 )
-                            else:
-                                # Fallback to input + output if total not provided
-                                input_toks = usage.get("input_tokens", 0)
-                                output_toks = usage.get("output_tokens", 0)
-                                if input_toks or output_toks:
-                                    total = input_toks + output_toks
-                                    captured_input_tokens = max(
-                                        captured_input_tokens, total
-                                    )
 
                     # Check if this is an AIMessageChunk with content
                     if not hasattr(message, "content_blocks"):
+                        logger.debug(
+                            "Message has no content_blocks: type=%s",
+                            type(message).__name__,
+                        )
                         continue
 
                     # Process content blocks
-                    for block in message.content_blocks:
+                    blocks = message.content_blocks
+                    logger.debug(
+                        "content_blocks count=%d blocks=%s",
+                        len(blocks),
+                        repr(blocks)[:500],
+                    )
+                    for block in blocks:
                         block_type = block.get("type")
 
                         if block_type == "text":
@@ -549,12 +877,6 @@ async def execute_task_textual(
                                 # streaming (uses MarkdownStream internally for
                                 # better performance)
                                 await current_msg.append_content(text)
-
-                                # Sticky scroll: scroll to bottom only if user is
-                                # near bottom. This lets users scroll away and
-                                # stay where they are
-                                if adapter._scroll_to_bottom:
-                                    adapter._scroll_to_bottom()
 
                         elif block_type in {"tool_call_chunk", "tool_call"}:
                             chunk_name = block.get("name")
@@ -630,6 +952,12 @@ async def execute_task_textual(
                                 pending_text_by_namespace[ns_key] = ""
                                 assistant_message_by_namespace.pop(ns_key, None)
 
+                            logger.debug(
+                                "Tool call buffer: name=%s id=%s args=%s",
+                                buffer_name,
+                                buffer_id,
+                                repr(parsed_args)[:200],
+                            )
                             if (
                                 buffer_id is not None
                                 and buffer_id not in displayed_tool_ids
@@ -644,13 +972,14 @@ async def execute_task_textual(
                                     await adapter._set_spinner(None)
 
                                 # Mount tool call message
+                                logger.debug(
+                                    "Mounting ToolCallMessage: %s(%s)",
+                                    buffer_name,
+                                    repr(parsed_args)[:200],
+                                )
                                 tool_msg = ToolCallMessage(buffer_name, parsed_args)
                                 await adapter._mount_message(tool_msg)
                                 adapter._current_tool_messages[buffer_id] = tool_msg
-
-                                # Sticky scroll after tool call is shown
-                                if adapter._scroll_to_bottom:
-                                    adapter._scroll_to_bottom()
 
                             tool_call_buffers.pop(buffer_key, None)
 
@@ -692,36 +1021,138 @@ async def execute_task_textual(
             # Handle HITL after stream completes
             if interrupt_occurred:
                 any_rejected = False
+                resume_payload: dict[str, Any] = {}
+
+                for interrupt_id, ask_req in list(pending_ask_user.items()):
+                    questions = ask_req["questions"]
+
+                    if adapter._request_ask_user:
+                        if adapter._set_spinner:
+                            await adapter._set_spinner(None)
+                        result: dict[str, Any] = {
+                            "type": "error",
+                            "error": "ask_user callback returned no response",
+                        }
+                        try:
+                            future = await adapter._request_ask_user(questions)
+                        except Exception:
+                            logger.exception("Failed to mount ask_user widget")
+                            result = {
+                                "type": "error",
+                                "error": "failed to display ask_user prompt",
+                            }
+                            future = None
+
+                        if future is None:
+                            logger.error(
+                                "ask_user callback returned no Future; "
+                                "reporting as error"
+                            )
+                        else:
+                            try:
+                                future_result = await future
+                                if isinstance(future_result, dict):
+                                    result = future_result
+                                else:
+                                    logger.error(
+                                        "ask_user future returned non-dict result: %s",
+                                        type(future_result).__name__,
+                                    )
+                                    result = {
+                                        "type": "error",
+                                        "error": "invalid ask_user widget result",
+                                    }
+                            except Exception:
+                                logger.exception(
+                                    "ask_user future resolution failed; "
+                                    "reporting as error"
+                                )
+                                result = {
+                                    "type": "error",
+                                    "error": "failed to receive ask_user response",
+                                }
+
+                        result_type = result.get("type")
+                        if result_type == "answered":
+                            answers = result.get("answers", [])
+                            if isinstance(answers, list):
+                                resume_payload[interrupt_id] = {"answers": answers}
+                                tool_id = ask_req["tool_call_id"]
+                                if tool_id in adapter._current_tool_messages:
+                                    tool_msg = adapter._current_tool_messages[tool_id]
+                                    tool_msg.set_success("User answered")
+                                    adapter._current_tool_messages.pop(tool_id, None)
+                            else:
+                                logger.error(
+                                    "ask_user answered payload had non-list "
+                                    "answers: %s",
+                                    type(answers).__name__,
+                                )
+                                resume_payload[interrupt_id] = {
+                                    "status": "error",
+                                    "error": "invalid ask_user answers payload",
+                                    "answers": ["" for _ in questions],
+                                }
+                                any_rejected = True
+                        elif result_type == "cancelled":
+                            resume_payload[interrupt_id] = {
+                                "status": "cancelled",
+                                "answers": ["" for _ in questions],
+                            }
+                            any_rejected = True
+                        else:
+                            error_text = result.get("error")
+                            if not isinstance(error_text, str) or not error_text:
+                                error_text = "ask_user interaction failed"
+                            resume_payload[interrupt_id] = {
+                                "status": "error",
+                                "error": error_text,
+                                "answers": ["" for _ in questions],
+                            }
+                            any_rejected = True
+                    else:
+                        logger.warning(
+                            "ask_user interrupt received but no UI callback is "
+                            "registered; reporting as error"
+                        )
+                        resume_payload[interrupt_id] = {
+                            "status": "error",
+                            "error": "ask_user not supported by this UI",
+                            "answers": ["" for _ in questions],
+                        }
 
                 for interrupt_id, hitl_request in list(pending_interrupts.items()):
                     action_requests = hitl_request["action_requests"]
 
                     if session_state.auto_approve:
-                        # Auto-approve silently - start running animation
                         decisions: list[HITLDecision] = [
                             ApproveDecision(type="approve") for _ in action_requests
                         ]
-                        hitl_response[interrupt_id] = {"decisions": decisions}
-                        # Mark all tools as running
+                        resume_payload[interrupt_id] = {"decisions": decisions}
                         for tool_msg in list(adapter._current_tool_messages.values()):
                             tool_msg.set_running()
                     else:
                         # Batch approval - one dialog for all parallel tool calls
+                        await dispatch_hook(
+                            "permission.request",
+                            {
+                                "tool_names": [
+                                    r.get("name", "") for r in action_requests
+                                ]
+                            },
+                        )
                         future = await adapter._request_approval(
                             action_requests, assistant_id
                         )
                         decision = await future
 
-                        # Handle the batch decision
                         if isinstance(decision, dict):
                             decision_type = decision.get("type")
 
                             if decision_type == "auto_approve_all":
-                                # Enable auto-approve for session
                                 session_state.auto_approve = True
                                 if adapter._on_auto_approve_enabled:
                                     adapter._on_auto_approve_enabled()
-                                # Approve all
                                 decisions = [
                                     ApproveDecision(type="approve")
                                     for _ in action_requests
@@ -731,10 +1162,12 @@ async def execute_task_textual(
                                 )
                                 for tool_msg in tool_msgs:
                                     tool_msg.set_running()
-                                # Mark file ops as approved
                                 for action_request in action_requests:
                                     tool_name = action_request.get("name")
-                                    if tool_name in {"write_file", "edit_file"}:
+                                    if tool_name in {
+                                        "write_file",
+                                        "edit_file",
+                                    }:
                                         args = action_request.get("args", {})
                                         if isinstance(args, dict):
                                             file_op_tracker.mark_hitl_approved(
@@ -742,7 +1175,6 @@ async def execute_task_textual(
                                             )
 
                             elif decision_type == "approve":
-                                # Approve all
                                 decisions = [
                                     ApproveDecision(type="approve")
                                     for _ in action_requests
@@ -752,10 +1184,12 @@ async def execute_task_textual(
                                 )
                                 for tool_msg in tool_msgs:
                                     tool_msg.set_running()
-                                # Mark file ops as approved
                                 for action_request in action_requests:
                                     tool_name = action_request.get("name")
-                                    if tool_name in {"write_file", "edit_file"}:
+                                    if tool_name in {
+                                        "write_file",
+                                        "edit_file",
+                                    }:
                                         args = action_request.get("args", {})
                                         if isinstance(args, dict):
                                             file_op_tracker.mark_hitl_approved(
@@ -763,7 +1197,6 @@ async def execute_task_textual(
                                             )
 
                             elif decision_type == "reject":
-                                # Reject all
                                 decisions = [
                                     RejectDecision(type="reject")
                                     for _ in action_requests
@@ -805,24 +1238,26 @@ async def execute_task_textual(
                             adapter._current_tool_messages.clear()
                             any_rejected = True
 
-                        hitl_response[interrupt_id] = {"decisions": decisions}
+                        resume_payload[interrupt_id] = {"decisions": decisions}
 
                         if any_rejected:
                             break
 
                 suppress_resumed_output = any_rejected
 
-            if interrupt_occurred and hitl_response:
-                if suppress_resumed_output:
+            if interrupt_occurred and resume_payload:
+                if suppress_resumed_output and not pending_ask_user:
                     await adapter._mount_message(
                         AppMessage(
                             "Command rejected. Tell the agent what you'd like instead."
                         )
                     )
-                    return
+                    turn_stats.wall_time_seconds = time.monotonic() - start_time
+                    return turn_stats
 
-                stream_input = Command(resume=hitl_response)
+                stream_input = Command(resume=resume_payload)
             else:
+                await dispatch_hook("task.complete", {"thread_id": thread_id})
                 break
 
     except asyncio.CancelledError:
@@ -833,7 +1268,7 @@ async def execute_task_textual(
         if adapter._set_active_message:
             adapter._set_active_message(None)
 
-        # Hide spinner (may still show "Summarizing" if interrupted mid-summary)
+        # Hide spinner (may still show "Offloading" if interrupted mid-offload)
         if adapter._set_spinner:
             await adapter._set_spinner(None)
 
@@ -863,6 +1298,7 @@ async def execute_task_textual(
         adapter._current_tool_messages.clear()
 
         # Report tokens even on interrupt (or restore display if none captured)
+        turn_stats.wall_time_seconds = time.monotonic() - start_time
         if adapter._token_tracker:
             if captured_input_tokens or captured_output_tokens:
                 adapter._token_tracker.add(
@@ -870,7 +1306,7 @@ async def execute_task_textual(
                 )
             else:
                 adapter._token_tracker.show()  # Restore previous value
-        return
+        return turn_stats
 
     except KeyboardInterrupt:
         # Clear active message immediately so it won't block pruning
@@ -880,7 +1316,7 @@ async def execute_task_textual(
         if adapter._set_active_message:
             adapter._set_active_message(None)
 
-        # Hide spinner (may still show "Summarizing" if interrupted mid-summary)
+        # Hide spinner (may still show "Offloading" if interrupted mid-offload)
         if adapter._set_spinner:
             await adapter._set_spinner(None)
 
@@ -910,6 +1346,7 @@ async def execute_task_textual(
         adapter._current_tool_messages.clear()
 
         # Report tokens even on interrupt (or restore display if none captured)
+        turn_stats.wall_time_seconds = time.monotonic() - start_time
         if adapter._token_tracker:
             if captured_input_tokens or captured_output_tokens:
                 adapter._token_tracker.add(
@@ -917,11 +1354,13 @@ async def execute_task_textual(
                 )
             else:
                 adapter._token_tracker.show()  # Restore previous value
-        return
+        return turn_stats
 
-    # Update token tracker
+    # Update token tracker and return stats
+    turn_stats.wall_time_seconds = time.monotonic() - start_time
     if adapter._token_tracker and (captured_input_tokens or captured_output_tokens):
         adapter._token_tracker.add(captured_input_tokens, captured_output_tokens)
+    return turn_stats
 
 
 async def _flush_assistant_text_ns(

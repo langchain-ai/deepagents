@@ -8,7 +8,15 @@ from langgraph.store.memory import InMemoryStore
 
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
-from tests.evals.utils import TrajectoryExpectations, run_agent
+from tests.evals.utils import (
+    TrajectoryScorer,
+    file_contains,
+    file_excludes,
+    final_text_contains,
+    final_text_excludes,
+    run_agent,
+    tool_call,
+)
 
 if TYPE_CHECKING:
     from langchain.tools import ToolRuntime
@@ -39,9 +47,7 @@ This is the TurboWidget project. The main goal is to process widgets efficiently
         query="What is the name of this project? Answer with just the project name.",
         # 1st step: answer directly using memory context, no tools needed.
         # 0 tool calls: memory is already loaded in context.
-        expect=TrajectoryExpectations(num_agent_steps=1, num_tool_call_requests=0).require_final_text_contains(
-            "TurboWidget",
-        ),
+        scorer=(TrajectoryScorer().expect(agent_steps=1, tool_call_requests=0).success(final_text_contains("TurboWidget"))),
     )
 
 
@@ -52,7 +58,7 @@ def test_memory_guided_behavior_naming_convention(model: BaseChatModel) -> None:
         model=model,
         memory=["/project/AGENTS.md"],
     )
-    trajectory = run_agent(
+    run_agent(
         agent,
         model=model,
         initial_files={
@@ -70,14 +76,16 @@ instead (e.g., "/config_api.txt") without asking for confirmation.
         query="Create a configuration file for API settings at /api.txt with content 'API_KEY=secret'.",
         # 1st step: write file following the naming convention from memory.
         # 1 tool call request: write_file.
-        expect=TrajectoryExpectations(num_agent_steps=2, num_tool_call_requests=1).require_tool_call(
-            step=1,
-            name="write_file",
-            args_contains={"path": "/config_api.txt"},
+        scorer=(
+            TrajectoryScorer()
+            .expect(
+                agent_steps=2,
+                tool_call_requests=1,
+                tool_calls=[tool_call(name="write_file", step=1, args_contains={"path": "/config_api.txt"})],
+            )
+            .success(file_contains("/config_api.txt", "API_KEY=secret"))
         ),
     )
-    assert "/config_api.txt" in trajectory.files
-    assert "API_KEY=secret" in trajectory.files["/config_api.txt"]
 
 
 @pytest.mark.langsmith
@@ -87,7 +95,7 @@ def test_memory_influences_file_content(model: BaseChatModel) -> None:
         model=model,
         memory=["/style/AGENTS.md"],
     )
-    trajectory = run_agent(
+    run_agent(
         agent,
         model=model,
         initial_files={
@@ -100,11 +108,12 @@ Every function must start with a comment line that says "# Purpose: " followed b
         query="Write a simple Python function that adds two numbers to /add.py. Keep it minimal.",
         # 1st step: write file following the style guide from memory.
         # 1 tool call request: write_file.
-        expect=TrajectoryExpectations(num_agent_steps=2, num_tool_call_requests=1),
+        scorer=(
+            TrajectoryScorer()
+            .expect(agent_steps=2, tool_call_requests=1)
+            .success(file_contains("/add.py", "# Purpose:"), file_contains("/add.py", "def "))
+        ),
     )
-    content = trajectory.files["/add.py"]
-    assert "# Purpose:" in content
-    assert "def " in content
 
 
 @pytest.mark.langsmith
@@ -130,10 +139,13 @@ The project uses the FastAPI framework.
         query="What programming language do I prefer and what framework does the project use? Be concise.",
         # 1st step: answer using both memory sources, no tools needed.
         # 0 tool calls: both memory files loaded in context.
-        expect=(
-            TrajectoryExpectations(num_agent_steps=1, num_tool_call_requests=0)
-            .require_final_text_contains("Python", case_insensitive=True)
-            .require_final_text_contains("FastAPI", case_insensitive=True)
+        scorer=(
+            TrajectoryScorer()
+            .expect(agent_steps=1, tool_call_requests=0)
+            .success(
+                final_text_contains("Python", case_insensitive=True),
+                final_text_contains("FastAPI", case_insensitive=True),
+            )
         ),
     )
 
@@ -151,7 +163,7 @@ def test_memory_with_missing_file_graceful(model: BaseChatModel) -> None:
         query="What is 5 + 3? Answer with just the number.",
         # 1st step: answer directly even though memory file is missing.
         # 0 tool calls: simple math doesn't require tools.
-        expect=TrajectoryExpectations(num_agent_steps=1, num_tool_call_requests=0),
+        scorer=TrajectoryScorer().expect(agent_steps=1, tool_call_requests=0),
     )
 
 
@@ -178,10 +190,88 @@ def test_memory_prevents_unnecessary_file_reads(model: BaseChatModel) -> None:
         query="What are the API endpoints? List them briefly.",
         # 1st step: answer using memory, no need to read /docs/api.md.
         # 0 tool calls: documentation already in memory.
-        expect=(
-            TrajectoryExpectations(num_agent_steps=1, num_tool_call_requests=0)
-            .require_final_text_contains("/users", case_insensitive=True)
-            .require_final_text_contains("GET", case_insensitive=True)
+        scorer=(
+            TrajectoryScorer()
+            .expect(agent_steps=1, tool_call_requests=0)
+            .success(
+                final_text_contains("/users", case_insensitive=True),
+                final_text_contains("GET", case_insensitive=True),
+            )
+        ),
+    )
+
+
+@pytest.mark.langsmith
+def test_memory_does_not_persist_transient_info(model: BaseChatModel) -> None:
+    """Agent should not write temporary status updates into durable memory."""
+    agent = create_deep_agent(
+        model=model,
+        memory=["/project/AGENTS.md"],
+    )
+    run_agent(
+        agent,
+        model=model,
+        initial_files={
+            "/project/AGENTS.md": "# Project Memory\n\nStable preferences and project facts live here.\n",
+        },
+        query="I'm at a coffee shop right now. What's 2 + 2?",
+        scorer=(
+            TrajectoryScorer()
+            .expect(agent_steps=1, tool_call_requests=0)
+            .success(
+                final_text_contains("4"),
+                file_excludes("/project/AGENTS.md", "coffee shop"),
+            )
+        ),
+    )
+
+
+@pytest.mark.langsmith
+def test_memory_updates_user_formatting_preference(model: BaseChatModel) -> None:
+    """Agent writes durable formatting preferences into memory."""
+    agent = create_deep_agent(
+        model=model,
+        memory=["/project/AGENTS.md"],
+    )
+    run_agent(
+        agent,
+        model=model,
+        initial_files={
+            "/project/AGENTS.md": "# Project Memory\n\nCurrent preferences:\n- Use clear technical writing.\n",
+        },
+        query="For future responses, I prefer bullet points over paragraphs.",
+        scorer=(
+            TrajectoryScorer()
+            .success(
+                file_contains("/project/AGENTS.md", "bullet points"),
+                final_text_contains("bullet", case_insensitive=True),
+            )
+            .expect(
+                tool_call_requests=1,
+                tool_calls=[tool_call(name="edit_file", args_contains={"path": "/project/AGENTS.md"})],
+            )
+        ),
+    )
+
+
+@pytest.mark.langsmith
+def test_memory_missing_file_graceful_without_claiming_context(model: BaseChatModel) -> None:
+    """Agent handles a missing memory file without inventing its contents."""
+    agent = create_deep_agent(
+        model=model,
+        memory=["/missing/AGENTS.md"],
+    )
+    run_agent(
+        agent,
+        model=model,
+        query="What coding preferences are saved in memory? If none are available, say so briefly.",
+        scorer=(
+            TrajectoryScorer()
+            .expect(agent_steps=1, tool_call_requests=0)
+            .success(
+                final_text_excludes("snake_case", case_insensitive=True),
+                final_text_excludes("pytest", case_insensitive=True),
+            )
         ),
     )
 
@@ -221,8 +311,5 @@ def test_memory_middleware_composite_backend(model: BaseChatModel) -> None:
         agent,
         model=model,
         query="What is your name?",
-        expect=TrajectoryExpectations(
-            num_agent_steps=1,
-            num_tool_call_requests=0,
-        ).require_final_text_contains("Jackson"),
+        scorer=(TrajectoryScorer().expect(agent_steps=1, tool_call_requests=0).success(final_text_contains("Jackson"))),
     )

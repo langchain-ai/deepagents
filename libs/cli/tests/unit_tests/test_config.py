@@ -10,15 +10,18 @@ import pytest
 from deepagents_cli import model_config
 from deepagents_cli.config import (
     RECOMMENDED_SAFE_SHELL_COMMANDS,
+    SHELL_ALLOW_ALL,
     ModelResult,
     Settings,
     _create_model_from_class,
+    _create_model_via_init,
     _get_provider_kwargs,
     build_langsmith_thread_url,
     create_model,
     detect_provider,
     fetch_langsmith_project_url,
     get_langsmith_project_name,
+    newline_shortcut,
     parse_shell_allow_list,
     reset_langsmith_url_cache,
     settings,
@@ -26,8 +29,10 @@ from deepagents_cli.config import (
 )
 from deepagents_cli.model_config import ModelConfigError, clear_caches
 from deepagents_cli.project_utils import (
+    ProjectContext,
     find_project_agent_md as _find_project_agent_md,
     find_project_root as _find_project_root,
+    get_server_project_context,
 )
 
 
@@ -73,6 +78,46 @@ class TestProjectRootDetection:
         # Should find inner repo, not outer
         result = _find_project_root(inner_repo)
         assert result == inner_repo
+
+
+class TestProjectContext:
+    """Tests for explicit project context handling."""
+
+    def test_from_user_cwd_uses_explicit_path_not_process_cwd(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Project context should resolve from the provided user cwd."""
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        (project_root / ".git").mkdir()
+        user_cwd = project_root / "src"
+        user_cwd.mkdir()
+
+        other_cwd = tmp_path / "elsewhere"
+        other_cwd.mkdir()
+        monkeypatch.chdir(other_cwd)
+
+        context = ProjectContext.from_user_cwd(user_cwd)
+
+        assert context.user_cwd == user_cwd.resolve()
+        assert context.project_root == project_root
+
+    def test_get_server_project_context_from_env_mapping(self, tmp_path: Path) -> None:
+        """Server context should reconstruct explicit cwd and project root."""
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        user_cwd = project_root / "src"
+        user_cwd.mkdir()
+
+        env = {
+            "DA_SERVER_CWD": str(user_cwd),
+            "DA_SERVER_PROJECT_ROOT": str(project_root),
+        }
+        context = get_server_project_context(env)
+
+        assert context is not None
+        assert context.user_cwd == user_cwd.resolve()
+        assert context.project_root == project_root.resolve()
 
 
 class TestProjectAgentMdFinding:
@@ -187,6 +232,20 @@ class TestSettingsGetProjectAgentMdPath:
         s = Settings.__new__(Settings)
         s.project_root = tmp_path
         assert s.get_project_agent_md_path() == []
+
+
+class TestNewlineShortcut:
+    """Tests for platform-specific newline shortcut labels."""
+
+    def test_returns_option_enter_on_macos(self) -> None:
+        """Should show Option+Enter on darwin."""
+        with patch("deepagents_cli.config.sys.platform", "darwin"):
+            assert newline_shortcut() == "Option+Enter"
+
+    def test_returns_ctrl_j_on_non_macos(self) -> None:
+        """Should show Ctrl+J on non-darwin platforms."""
+        with patch("deepagents_cli.config.sys.platform", "linux"):
+            assert newline_shortcut() == "Ctrl+J"
 
 
 class TestValidateModelCapabilities:
@@ -754,6 +813,27 @@ class TestParseShellAllowList:
         # Which simplifies to: len(recommended) + 1
         assert len(result) == len(RECOMMENDED_SAFE_SHELL_COMMANDS) + 1
 
+    def test_all_returns_sentinel(self) -> None:
+        """Test that 'all' returns SHELL_ALLOW_ALL sentinel."""
+        result = parse_shell_allow_list("all")
+        assert result is SHELL_ALLOW_ALL
+
+    def test_all_case_insensitive(self) -> None:
+        """Test that 'ALL', 'All', etc. all return sentinel."""
+        for variant in ["ALL", "All", "aLl", "  all  "]:
+            result = parse_shell_allow_list(variant)
+            assert result is SHELL_ALLOW_ALL
+
+    def test_all_mixed_with_commands_raises(self) -> None:
+        """Combining 'all' with other commands should raise ValueError."""
+        with pytest.raises(ValueError, match="Cannot combine 'all'"):
+            parse_shell_allow_list("all,ls")
+
+    def test_all_mixed_case_insensitive_raises(self) -> None:
+        """Combining 'ALL' with other commands should also raise."""
+        with pytest.raises(ValueError, match="Cannot combine 'all'"):
+            parse_shell_allow_list("ls,ALL,cat")
+
     def test_empty_commands_ignored(self) -> None:
         """Test that empty strings from split are ignored."""
         result = parse_shell_allow_list("ls,,cat,,,grep,")
@@ -898,7 +978,7 @@ class TestFetchLangsmithProjectUrl:
             patch("langsmith.Client") as mock_client_cls,
         ):
             mock_client_cls.return_value.read_project.side_effect = lambda **_kwargs: (
-                time.sleep(0.1)
+                time.sleep(0.02)
             )
             result = fetch_langsmith_project_url("my-project")
 
@@ -1216,41 +1296,37 @@ class TestOpenRouterHeaders:
         """Clear model config cache before each test."""
         clear_caches()
 
-    def test_injects_default_headers(self) -> None:
-        """Injects HTTP-Referer and X-Title for openrouter provider."""
+    def test_injects_attribution_kwargs(self) -> None:
+        """Injects app_url and app_title for openrouter provider."""
         kwargs = _get_provider_kwargs("openrouter")
 
-        assert "default_headers" in kwargs
-        assert kwargs["default_headers"]["HTTP-Referer"] == (
-            "https://github.com/langchain-ai/deepagents"
-        )
-        assert kwargs["default_headers"]["X-Title"] == "Deep Agents CLI"
+        assert kwargs["app_url"] == "https://github.com/langchain-ai/deepagents"
+        assert kwargs["app_title"] == "Deep Agents CLI"
 
-    def test_per_model_headers_override_defaults(self, tmp_path: Path) -> None:
-        """Per-model default_headers override built-in defaults."""
+    def test_per_model_attribution_overrides_defaults(self, tmp_path: Path) -> None:
+        """Per-model app_title overrides built-in default."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
 [models.providers.openrouter]
 models = ["deepseek/deepseek-chat"]
 
 [models.providers.openrouter.params."deepseek/deepseek-chat"]
-default_headers = {X-Title = "My Custom App"}
+app_title = "My Custom App"
 """)
         with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
             kwargs = _get_provider_kwargs(
                 "openrouter", model_name="deepseek/deepseek-chat"
             )
 
-        assert kwargs["default_headers"]["X-Title"] == "My Custom App"
-        # Built-in HTTP-Referer should still be present
-        assert kwargs["default_headers"]["HTTP-Referer"] == (
-            "https://github.com/langchain-ai/deepagents"
-        )
+        assert kwargs["app_title"] == "My Custom App"
+        # Built-in app_url should still be present
+        assert kwargs["app_url"] == "https://github.com/langchain-ai/deepagents"
 
-    def test_no_headers_for_other_providers(self) -> None:
-        """Other providers do not get OpenRouter attribution headers."""
+    def test_no_attribution_for_other_providers(self) -> None:
+        """Other providers do not get OpenRouter attribution kwargs."""
         kwargs = _get_provider_kwargs("openai")
-        assert "default_headers" not in kwargs
+        assert "app_url" not in kwargs
+        assert "app_title" not in kwargs
 
 
 class TestCreateModelFromClass:
@@ -1539,6 +1615,82 @@ class TestCreateModelEdgeCaseParsing:
         mock_default.assert_called_once()
 
 
+class TestCreateModelViaInitImportError:
+    """Tests for _create_model_via_init() ImportError handling."""
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_missing_package_error(self, mock_init: Mock) -> None:
+        """Shows install hint when provider package is not installed."""
+        mock_init.side_effect = ImportError(
+            "No module named 'langchain_nvidia_ai_endpoints'"
+        )
+        with (
+            patch("importlib.util.find_spec", return_value=None),
+            pytest.raises(
+                ModelConfigError,
+                match="Missing package for provider 'nvidia'",
+            ),
+        ):
+            _create_model_via_init("nemotron", "nvidia", {})
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_installed_but_broken_import(self, mock_init: Mock) -> None:
+        """Shows real error when package is installed but import fails internally."""
+        mock_init.side_effect = ImportError("cannot import name 'foo' from 'bar'")
+        mock_spec = Mock()
+        with (
+            patch("importlib.util.find_spec", return_value=mock_spec) as mock_find_spec,
+            pytest.raises(
+                ModelConfigError,
+                match="installed but failed to import",
+            ),
+        ):
+            _create_model_via_init("nemotron", "nvidia", {})
+        mock_find_spec.assert_called_once_with("langchain_nvidia_ai_endpoints")
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_installed_but_broken_includes_original_error(
+        self, mock_init: Mock
+    ) -> None:
+        """Original ImportError message is included when package is installed."""
+        mock_init.side_effect = ImportError("some transitive dep missing")
+        mock_spec = Mock()
+        with (
+            patch("importlib.util.find_spec", return_value=mock_spec),
+            pytest.raises(ModelConfigError, match="some transitive dep missing"),
+        ):
+            _create_model_via_init("nemotron", "nvidia", {})
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_unknown_provider_fallback_package_name(self, mock_init: Mock) -> None:
+        """Unknown provider falls back to langchain-{provider} package name."""
+        mock_init.side_effect = ImportError("no module")
+        with (
+            patch("importlib.util.find_spec", return_value=None),
+            pytest.raises(
+                ModelConfigError,
+                match=r"pip install langchain-custom_provider",
+            ),
+        ):
+            _create_model_via_init("some-model", "custom_provider", {})
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_find_spec_raises_falls_back_to_missing(self, mock_init: Mock) -> None:
+        """find_spec failure falls back to 'missing package' message."""
+        mock_init.side_effect = ImportError("no module")
+        with (
+            patch(
+                "importlib.util.find_spec",
+                side_effect=ModuleNotFoundError("no parent"),
+            ),
+            pytest.raises(
+                ModelConfigError,
+                match="Missing package",
+            ),
+        ):
+            _create_model_via_init("model", "dotted.provider", {})
+
+
 class TestDetectProvider:
     """Tests for detect_provider() auto-detection from model names."""
 
@@ -1553,6 +1705,8 @@ class TestDetectProvider:
             ("claude-sonnet-4-5", "anthropic"),
             ("claude-opus-4-5", "anthropic"),
             ("gemini-3.1-pro-preview", "google_genai"),
+            ("nemotron-3-nano-30b-a3b", "nvidia"),
+            ("nvidia/nemotron-3-nano-30b-a3b", "nvidia"),
             ("llama3", None),
             ("mistral-large", None),
             ("some-unknown-model", None),

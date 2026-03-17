@@ -3,29 +3,29 @@
 Provides `run_non_interactive` which runs a single user task against the
 agent graph, streams results to stdout, and exits with an appropriate code.
 
-Shell commands are gated by an optional allow-list. When no allow-list is
-set, shell is disabled and all other tool calls are auto-approved via the
-`auto_approve` flag. When an allow-list is provided, shell is enabled and
-all tool calls (shell and non-shell) pass through HITL, where non-shell
-tools are approved unconditionally and shell commands are validated against
-the list.
+The agent runs inside a `langgraph dev` server subprocess, connected via
+the `RemoteAgent` client (see `server_manager.server_session`).
+
+Shell commands are gated by an optional allow-list (`--shell-allow-list`):
+
+- Not set → shell disabled, all other tool calls auto-approved.
+- `recommended` or explicit list → shell enabled, commands validated
+    against the list; non-shell tools approved unconditionally.
+- `all` → shell enabled, any command allowed, all tools auto-approved.
 
 An optional quiet mode (`--quiet` / `-q`) redirects all console output to
 stderr, leaving stdout exclusively for the agent's response text.
-
-Note: in non-interactive mode (`-n`), auto-approval is determined solely by
-whether a `--shell-allow-list` is present, not by the `--auto-approve` CLI
-flag. See `run_non_interactive` for details.
 """
 
 from __future__ import annotations
 
-import contextlib
 import logging
 import sys
 import threading
+import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from langchain.agents.middleware.human_in_the_loop import ActionRequest, HITLRequest
@@ -33,11 +33,14 @@ from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.types import Command, Interrupt
 from pydantic import TypeAdapter, ValidationError
 from rich.console import Console
+from rich.markup import escape as escape_markup
 from rich.style import Style
 from rich.text import Text
 
-from deepagents_cli.agent import DEFAULT_AGENT_NAME, create_cli_agent
+from deepagents_cli._version import __version__
+from deepagents_cli.agent import DEFAULT_AGENT_NAME
 from deepagents_cli.config import (
+    SHELL_ALLOW_ALL,
     SHELL_TOOL_NAMES,
     build_langsmith_thread_url,
     create_model,
@@ -45,13 +48,21 @@ from deepagents_cli.config import (
     settings,
 )
 from deepagents_cli.file_ops import FileOpTracker
+from deepagents_cli.hooks import dispatch_hook, dispatch_hook_fire_and_forget
 from deepagents_cli.model_config import ModelConfigError
-from deepagents_cli.sessions import generate_thread_id, get_checkpointer
-from deepagents_cli.tools import fetch_url, http_request, web_search
+from deepagents_cli.sessions import generate_thread_id
+from deepagents_cli.textual_adapter import SessionStats, print_usage_table
+from deepagents_cli.unicode_security import (
+    check_url_safety,
+    detect_dangerous_unicode,
+    format_warning_detail,
+    iter_string_values,
+    looks_like_url_key,
+    summarize_issues,
+)
 
 if TYPE_CHECKING:
     from langchain_core.runnables import RunnableConfig
-    from langgraph.pregel import Pregel
 
 logger = logging.getLogger(__name__)
 
@@ -98,40 +109,48 @@ def _write_newline() -> None:
 
 @dataclass
 class StreamState:
-    """Mutable state accumulated while iterating over the agent stream.
-
-    Attributes:
-        quiet: When `True`, diagnostic formatting that would otherwise go
-            to stdout (e.g. separator newlines before tool notifications)
-            is suppressed so that stdout contains only agent response text.
-        stream: When `True` (default), text chunks are written to stdout
-            as they arrive. When `False`, text is buffered in `full_response`
-            and flushed after the agent finishes.
-        full_response: Accumulated text fragments from the AI message stream.
-        tool_call_buffers: Maps a tool-call index or ID to its name/ID
-            metadata for in-progress tool calls.
-        pending_interrupts: Maps interrupt IDs to their validated HITL
-            requests that are awaiting decisions.
-        hitl_response: Maps interrupt IDs to dicts containing a `'decisions'`
-            key with a list of decision dicts (each having a `'type'` key of
-            `'approve'` or `'reject'`).
-
-            Used to resume the agent after HITL processing.
-        interrupt_occurred: Flag indicating whether any HITL interrupt was
-            received during the current stream pass.
-    """
+    """Mutable state accumulated while iterating over the agent stream."""
 
     quiet: bool = False
+    """When `True`, diagnostic formatting that would otherwise go to stdout
+    (e.g. separator newlines before tool notifications) is suppressed so that
+    stdout contains only agent response text."""
+
     stream: bool = True
+    """When `True` (default), text chunks are written to stdout as they arrive.
+
+    When `False`, text is buffered in `full_response` and flushed after the
+    agent finishes.
+    """
+
     full_response: list[str] = field(default_factory=list)
+    """Accumulated text fragments from the AI message stream."""
+
     tool_call_buffers: dict[int | str, dict[str, str | None]] = field(
         default_factory=dict
     )
+    """Maps a tool-call index or ID to its name/ID metadata for in-progress
+    tool calls."""
+
     pending_interrupts: dict[str, HITLRequest] = field(default_factory=dict)
+    """Maps interrupt IDs to their validated HITL requests that are awaiting
+    decisions."""
+
     hitl_response: dict[str, dict[str, list[dict[str, str]]]] = field(
         default_factory=dict
     )
+    """Maps interrupt IDs to dicts containing a `'decisions'` key with a list of
+    decision dicts (each having a `'type'` key of `'approve'` or `'reject'`).
+
+    Used to resume the agent after HITL processing.
+    """
+
     interrupt_occurred: bool = False
+    """Flag indicating whether any HITL interrupt was received during the
+    current stream pass."""
+
+    stats: SessionStats = field(default_factory=SessionStats)
+    """Accumulated model usage stats for this stream."""
 
 
 @dataclass
@@ -210,6 +229,7 @@ def _process_interrupts(
                 continue
             state.pending_interrupts[interrupt_obj.id] = validated_request
             state.interrupt_occurred = True
+            dispatch_hook_fire_and_forget("input.required", {})
 
 
 def _process_ai_message(
@@ -229,6 +249,18 @@ def _process_ai_message(
         state: Stream state for accumulating response text and tool-call buffers.
         console: Rich console for formatted output.
     """
+    # Extract token usage for stats accumulation
+    usage = getattr(message_obj, "usage_metadata", None)
+    if usage:
+        input_toks = usage.get("input_tokens", 0)
+        output_toks = usage.get("output_tokens", 0)
+        total_toks = usage.get("total_tokens", 0)
+        active_model = settings.model_name or ""
+        if input_toks or output_toks:
+            state.stats.record_request(active_model, input_toks, output_toks)
+        elif total_toks:
+            state.stats.record_request(active_model, total_toks, 0)
+
     if not hasattr(message_obj, "content_blocks"):
         logger.debug("AIMessage missing content_blocks attribute, skipping")
         return
@@ -260,7 +292,9 @@ def _process_ai_message(
                 state.tool_call_buffers[buffer_key]["name"] = chunk_name
                 if state.full_response and not state.quiet:
                     _write_newline()
-                console.print(f"[dim]🔧 Calling tool: {chunk_name}[/dim]")
+                console.print(
+                    f"[dim]🔧 Calling tool: {escape_markup(chunk_name)}[/dim]"
+                )
 
 
 def _process_message_chunk(
@@ -300,7 +334,7 @@ def _process_message_chunk(
     elif isinstance(message_obj, ToolMessage):
         record = file_op_tracker.complete_with_message(message_obj)
         if record and record.diff:
-            console.print(f"[dim]📝 {record.display_path}[/dim]")
+            console.print(f"[dim]📝 {escape_markup(record.display_path)}[/dim]")
 
 
 def _process_stream_chunk(
@@ -351,9 +385,13 @@ def _make_hitl_decision(
 ) -> dict[str, str]:
     """Decide whether to approve or reject a single action request.
 
+    This function is only invoked when a restrictive shell allow-list is
+    configured (not `all`). When shell is disabled or unrestricted,
+    `interrupt_on` is empty and this function is bypassed entirely.
+
     Shell tools are always gated: if an allow-list is configured, the command
     is validated against it; if no allow-list is configured, shell commands
-    are rejected outright (defense-in-depth -- the caller should disable
+    are rejected outright (defense-in-depth — the caller should disable
     shell tools when no allow-list is present, but this function fails
     closed regardless). Non-shell tools are approved unconditionally.
 
@@ -367,6 +405,9 @@ def _make_hitl_decision(
         Decision dict with a `type` key (`"approve"` or `"reject"`)
             and an optional `message` key with a human-readable explanation.
     """
+    for warning in _collect_action_request_warnings(action_request):
+        console.print(f"[yellow]Warning:[/yellow] {warning}")
+
     action_name = action_request.get("name", "")
 
     if action_name in SHELL_TOOL_NAMES:
@@ -388,12 +429,14 @@ def _make_hitl_decision(
         command = action_request.get("args", {}).get("command", "")
 
         if is_shell_command_allowed(command, settings.shell_allow_list):
-            console.print(f"[dim]✓ Auto-approved: {command}[/dim]")
+            console.print(f"[dim]✓ Auto-approved: {escape_markup(command)}[/dim]")
             return {"type": "approve"}
 
         allowed_list_str = ", ".join(settings.shell_allow_list)
-        console.print(f"\n[red]Shell command rejected:[/red] {command}")
-        console.print(f"[yellow]Allowed commands:[/yellow] {allowed_list_str}")
+        console.print(f"\n[red]Shell command rejected:[/red] {escape_markup(command)}")
+        console.print(
+            f"[yellow]Allowed commands:[/yellow] {escape_markup(allowed_list_str)}"
+        )
         return {
             "type": "reject",
             "message": (
@@ -403,8 +446,43 @@ def _make_hitl_decision(
             ),
         }
 
-    console.print(f"[dim]✓ Auto-approved action: {action_name}[/dim]")
+    console.print(f"[dim]✓ Auto-approved action: {escape_markup(action_name)}[/dim]")
     return {"type": "approve"}
+
+
+def _collect_action_request_warnings(action_request: ActionRequest) -> list[str]:
+    """Collect Unicode/URL safety warnings for one action request.
+
+    Recursively inspects all nested string values in action arguments.
+
+    Returns:
+        Warning messages for suspicious values in action arguments.
+    """
+    warnings: list[str] = []
+    args = action_request.get("args", {})
+    if not isinstance(args, dict):
+        return warnings
+
+    tool_name = str(action_request.get("name", "unknown"))
+
+    for arg_path, text in iter_string_values(args):
+        issues = detect_dangerous_unicode(text)
+        if issues:
+            warnings.append(
+                f"{tool_name}.{arg_path} contains hidden Unicode "
+                f"({summarize_issues(issues)})"
+            )
+
+        if looks_like_url_key(arg_path):
+            safety = check_url_safety(text)
+            if safety.safe:
+                continue
+            detail = format_warning_detail(safety.warnings)
+            if safety.decoded_domain:
+                detail = f"{detail}; decoded host: {safety.decoded_domain}"
+            warnings.append(f"{tool_name}.{arg_path} URL warning: {detail}")
+
+    return warnings
 
 
 def _process_hitl_interrupts(state: StreamState, console: Console) -> None:
@@ -429,7 +507,7 @@ def _process_hitl_interrupts(state: StreamState, console: Console) -> None:
 
 
 async def _stream_agent(
-    agent: Pregel,
+    agent: Any,  # noqa: ANN401
     stream_input: dict[str, Any] | Command,
     config: RunnableConfig,
     state: StreamState,
@@ -439,7 +517,7 @@ async def _stream_agent(
     """Consume the full agent stream and update *state* with results.
 
     Args:
-        agent: The compiled LangGraph agent.
+        agent: The agent (Pregel or RemoteAgent).
         stream_input: Either the initial user message dict or a
             `Command(resume=...)` for HITL continuation.
         config: LangGraph runnable config (thread ID, metadata, etc.).
@@ -458,7 +536,7 @@ async def _stream_agent(
 
 
 async def _run_agent_loop(
-    agent: Pregel,
+    agent: Any,  # noqa: ANN401
     message: str,
     config: RunnableConfig,
     console: Console,
@@ -474,7 +552,7 @@ async def _run_agent_loop(
     runaway retries (e.g. the agent repeatedly attempting rejected commands).
 
     Args:
-        agent: The compiled LangGraph agent.
+        agent: The agent (Pregel or RemoteAgent).
         message: The user's task message.
         config: LangGraph runnable config.
         console: Rich console for formatted output.
@@ -494,6 +572,11 @@ async def _run_agent_loop(
     stream_input: dict[str, Any] | Command = {
         "messages": [{"role": "user", "content": message}]
     }
+
+    thread_id = config.get("configurable", {}).get("thread_id", "")
+    await dispatch_hook("session.start", {"thread_id": thread_id})
+
+    start_time = time.monotonic()
 
     # Initial stream
     await _stream_agent(agent, stream_input, config, state, console, file_op_tracker)
@@ -516,6 +599,8 @@ async def _run_agent_loop(
             agent, stream_input, config, state, console, file_op_tracker
         )
 
+    wall_time = time.monotonic() - start_time
+
     if state.full_response:
         if not state.stream:
             _write_text("".join(state.full_response))
@@ -535,6 +620,10 @@ async def _run_agent_loop(
             )
             console.print(link_text)
         console.print("[green]✓ Task completed[/green]")
+        print_usage_table(state.stats, wall_time, console)
+
+    await dispatch_hook("task.complete", {"thread_id": thread_id})
+    await dispatch_hook("session.end", {"thread_id": thread_id})
 
 
 def _build_non_interactive_header(
@@ -559,6 +648,8 @@ def _build_non_interactive_header(
     """
     default_label = " (default)" if assistant_id == DEFAULT_AGENT_NAME else ""
     parts: list[tuple[str, str | Style]] = [
+        (f"CLI: v{__version__}", "dim"),
+        (" | ", "dim"),
         (f"Agent: {assistant_id}{default_label}", "dim"),
     ]
 
@@ -593,14 +684,22 @@ async def run_non_interactive(
     profile_override: dict[str, Any] | None = None,
     quiet: bool = False,
     stream: bool = True,
+    mcp_config_path: str | None = None,
+    no_mcp: bool = False,
+    trust_project_mcp: bool = False,
 ) -> int:
     """Run a single task non-interactively and exit.
 
-    When no `shell_allow_list` is configured, shell execution is disabled
-    and all other tool calls are auto-approved (no HITL prompts). When an
-    allow-list **is** provided, shell execution is enabled but gated by the
-    list; commands not in the list are rejected with an error message sent
-    back to the agent.
+    The agent is created with `interactive=False`, which tailors the system
+    prompt for autonomous headless execution (no clarification questions,
+    reasonable assumptions).
+
+    Shell access and auto-approval are controlled by `--shell-allow-list`:
+
+    - Not set → shell disabled, all other tools auto-approved.
+    - `recommended` or explicit list → shell enabled, commands gated by
+        allow-list; non-shell tools approved unconditionally.
+    - `all` → shell enabled, any command allowed, all tools auto-approved.
 
     Note: startup header rendering avoids synchronous LangSmith URL lookups.
     A background thread resolves the thread URL concurrently and the result is
@@ -629,6 +728,12 @@ async def run_non_interactive(
 
             When `False`, the full response is buffered and written to stdout in
             one shot after the agent finishes.
+        mcp_config_path: Optional path to MCP servers JSON configuration file.
+            Merged on top of auto-discovered configs (highest precedence).
+        no_mcp: Disable all MCP tool loading.
+        trust_project_mcp: When `True`, allow project-level stdio MCP
+            servers. When `False` (default), project stdio servers are
+            silently skipped.
 
     Returns:
         Exit code: 0 for success, 1 for error, 130 for keyboard interrupt.
@@ -646,85 +751,104 @@ async def run_non_interactive(
         console.print(f"[bold red]Error:[/bold red] {e}")
         return 1
 
-    model = result.model
     result.apply_to_settings()
     thread_id = generate_thread_id()
 
+    try:
+        cwd = str(Path.cwd())
+    except OSError:
+        logger.warning("Could not determine working directory", exc_info=True)
+        cwd = ""
+    metadata: dict[str, str] = {
+        "assistant_id": assistant_id,
+        "agent_name": assistant_id,
+        "updated_at": datetime.now(UTC).isoformat(),
+    }
+    if cwd:
+        metadata["cwd"] = cwd
+    if sandbox_type and sandbox_type != "none":
+        metadata["sandbox_type"] = sandbox_type
+    from deepagents_cli.textual_adapter import _get_git_branch
+
+    branch = _get_git_branch()
+    if branch:
+        metadata["git_branch"] = branch
+
     config: RunnableConfig = {
         "configurable": {"thread_id": thread_id},
-        "metadata": {
-            "assistant_id": assistant_id,
-            "agent_name": assistant_id,
-            "updated_at": datetime.now(UTC).isoformat(),
-        },
+        "metadata": metadata,
     }
 
     thread_url_lookup: ThreadUrlLookupState | None = None
     if not quiet:
         thread_url_lookup = _start_langsmith_thread_url_lookup(thread_id)
-        console.print("[dim]Running task non-interactively...[/dim]")
+        console.print(Text("Running task non-interactively...", style="dim"))
         header = _build_non_interactive_header(assistant_id, thread_id)
         console.print(header)
-        console.print()
 
-    sandbox_backend = None
-    exit_stack = contextlib.ExitStack()
+    import asyncio
 
-    if sandbox_type != "none":
-        # Conditional: sandbox_factory transitively imports provider modules
-        # and SDKs — skip that cost for the common no-sandbox path.
-        from deepagents_cli.integrations.sandbox_factory import (
-            create_sandbox,
-        )
+    from deepagents_cli.server_manager import server_session
 
+    # Launch MCP preload concurrently with server startup
+    mcp_task: asyncio.Task[Any] | None = None
+    if not no_mcp and not quiet:
         try:
-            sandbox_cm = create_sandbox(
-                sandbox_type,
-                sandbox_id=sandbox_id,
-                setup_script_path=sandbox_setup,
+            from deepagents_cli.main import _preload_session_mcp_server_info
+
+            mcp_task = asyncio.create_task(
+                _preload_session_mcp_server_info(
+                    mcp_config_path=mcp_config_path,
+                    no_mcp=no_mcp,
+                    trust_project_mcp=trust_project_mcp,
+                )
             )
-            sandbox_backend = exit_stack.enter_context(sandbox_cm)
-        except (ImportError, ValueError) as e:
-            logger.exception("Sandbox creation failed")
-            console.print(f"[red]Sandbox creation failed: {e}[/red]")
-            return 1
-        except NotImplementedError as e:
-            logger.exception("Unsupported sandbox type %r", sandbox_type)
-            console.print(
-                f"[red]Sandbox type '{sandbox_type}' is not yet supported: {e}[/red]"
-            )
-            return 1
-        except RuntimeError as e:
-            logger.exception("Sandbox creation failed")
-            console.print(f"[red]Sandbox creation failed: {e}[/red]")
-            return 1
+        except Exception:
+            logger.warning("MCP metadata preload task creation failed", exc_info=True)
 
     try:
-        async with get_checkpointer() as checkpointer:
-            tools = [http_request, fetch_url]
-            if settings.has_tavily:
-                tools.append(web_search)
+        enable_shell = bool(settings.shell_allow_list)
+        shell_is_unrestricted = isinstance(
+            settings.shell_allow_list, type(SHELL_ALLOW_ALL)
+        )
+        use_auto_approve = not enable_shell or shell_is_unrestricted
 
-            # If an allow-list is provided, enable shell but disable
-            # auto-approve so HITL can gate commands. If no allow-list, disable
-            # shell entirely and auto-approve all other tools.
-            enable_shell = bool(settings.shell_allow_list)
-            use_auto_approve = not enable_shell
+        if not quiet:
+            console.print(Text("Starting LangGraph server...", style="dim"))
 
-            agent, composite_backend = create_cli_agent(
-                model=model,
-                assistant_id=assistant_id,
-                tools=tools,
-                sandbox=sandbox_backend,
-                sandbox_type=sandbox_type if sandbox_type != "none" else None,
-                auto_approve=use_auto_approve,
-                enable_shell=enable_shell,
-                checkpointer=checkpointer,
-            )
+        async with server_session(
+            assistant_id=assistant_id,
+            model_name=model_name,
+            model_params=model_params,
+            auto_approve=use_auto_approve,
+            sandbox_type=sandbox_type,
+            sandbox_id=sandbox_id,
+            sandbox_setup=sandbox_setup,
+            enable_shell=enable_shell,
+            enable_ask_user=False,
+            mcp_config_path=mcp_config_path,
+            no_mcp=no_mcp,
+            trust_project_mcp=trust_project_mcp,
+            interactive=False,
+        ) as (agent, _server_proc):
+            # Collect MCP preload result (ran concurrently with server startup)
+            if mcp_task is not None:
+                try:
+                    mcp_info = await mcp_task
+                    if mcp_info:
+                        tool_count = sum(len(s.tools) for s in mcp_info)
+                        if tool_count:
+                            label = "MCP tool" if tool_count == 1 else "MCP tools"
+                            console.print(
+                                f"[green]✓ Loaded {tool_count} {label}[/green]"
+                            )
+                except Exception:
+                    logger.warning("MCP metadata preload failed", exc_info=True)
 
-            file_op_tracker = FileOpTracker(
-                assistant_id=assistant_id, backend=composite_backend
-            )
+            if not quiet:
+                console.print("[green]✓ Server ready[/green]")
+
+            file_op_tracker = FileOpTracker(assistant_id=assistant_id, backend=None)
 
             await _run_agent_loop(
                 agent,
@@ -736,13 +860,12 @@ async def run_non_interactive(
                 stream=stream,
                 thread_url_lookup=thread_url_lookup,
             )
-            return 0
 
     except KeyboardInterrupt:
         console.print("\n[yellow]Interrupted[/yellow]")
         return 130
     except HITLIterationLimitError as e:
-        console.print(f"\n[red]{e}[/red]")
+        console.print(f"\n[red]{escape_markup(str(e))}[/red]")
         console.print(
             "[yellow]Hint: The agent may be repeatedly attempting commands "
             "that are not in the allow-list. Consider expanding the "
@@ -751,18 +874,14 @@ async def run_non_interactive(
         return 1
     except (ValueError, OSError) as e:
         logger.exception("Error during non-interactive execution")
-        console.print(f"\n[red]Error: {e}[/red]")
+        console.print(f"\n[red]Error: {escape_markup(str(e))}[/red]")
         return 1
     except Exception as e:
         logger.exception("Unexpected error during non-interactive execution")
-        console.print(f"\n[red]Unexpected error ({type(e).__name__}): {e}[/red]")
+        console.print(
+            f"\n[red]Unexpected error ({type(e).__name__}): "
+            f"{escape_markup(str(e))}[/red]"
+        )
         return 1
-    finally:
-        try:
-            exit_stack.close()
-        except (OSError, RuntimeError) as cleanup_err:
-            msg = "Failed to clean up resources during exit"
-            logger.warning("%s: %s", msg, cleanup_err, exc_info=True)
-            console.print(
-                f"[yellow]Warning: Resource cleanup failed: {cleanup_err}[/yellow]"
-            )
+    else:
+        return 0

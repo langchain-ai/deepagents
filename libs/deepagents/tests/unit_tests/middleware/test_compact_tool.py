@@ -8,7 +8,12 @@ from unittest.mock import MagicMock, NonCallableMagicMock, patch
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.types import Command
 
-from deepagents.middleware.summarization import SummarizationMiddleware, SummarizationToolMiddleware
+from deepagents.middleware.summarization import (
+    SummarizationMiddleware,
+    SummarizationToolMiddleware,
+    create_summarization_tool_middleware,
+)
+from tests.unit_tests.chat_model import GenericFakeChatModel
 
 
 def _make_mock_backend() -> MagicMock:
@@ -620,3 +625,13 @@ class TestIsEligibleForCompaction:
         runtime = _make_runtime(messages)
         result = await mw._arun_compact(runtime)
         assert "Nothing to compact" in result.update["messages"][0].content
+
+
+def test_create_summarization_tool_middleware_returns_instance() -> None:
+    """Factory returns a `SummarizationToolMiddleware` with a compact tool."""
+    model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+    model.profile = {"max_input_tokens": 120_000}
+    mw = create_summarization_tool_middleware(model, MagicMock())
+
+    assert isinstance(mw, SummarizationToolMiddleware)
+    assert mw.tools[0].name == "compact_conversation"

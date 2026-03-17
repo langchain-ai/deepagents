@@ -14,6 +14,11 @@ from typing import Any
 from deepagents.backends import DEFAULT_EXECUTE_TIMEOUT
 
 from deepagents_cli.config import MAX_ARG_LENGTH, get_glyphs
+from deepagents_cli.unicode_security import strip_dangerous_unicode
+
+_HIDDEN_CHAR_MARKER = " [hidden chars removed]"
+"""Marker appended to display values that had dangerous Unicode stripped, so
+users know the value was modified for safety."""
 
 
 def _format_timeout(seconds: int) -> str:
@@ -69,6 +74,27 @@ def truncate_value(value: str, max_length: int = MAX_ARG_LENGTH) -> str:
     if len(value) > max_length:
         return value[:max_length] + get_glyphs().ellipsis
     return value
+
+
+def _sanitize_display_value(value: object, *, max_length: int = MAX_ARG_LENGTH) -> str:
+    """Sanitize a value for safe, compact terminal display.
+
+    Hidden/deceptive Unicode controls are stripped. When stripping occurs, a
+    marker is appended so users know the value changed for display safety.
+
+    Args:
+        value: Any value to display.
+        max_length: Maximum display length before truncation.
+
+    Returns:
+        Sanitized display string.
+    """
+    raw = str(value)
+    sanitized = strip_dangerous_unicode(raw)
+    display = truncate_value(sanitized, max_length)
+    if sanitized != raw:
+        return display + _HIDDEN_CHAR_MARKER
+    return display
 
 
 def format_tool_display(tool_name: str, tool_args: dict) -> str:
@@ -130,28 +156,28 @@ def format_tool_display(tool_name: str, tool_args: dict) -> str:
         if path_value is None:
             path_value = tool_args.get("path")
         if path_value is not None:
-            path = abbreviate_path(str(path_value))
+            path_raw = strip_dangerous_unicode(str(path_value))
+            path = abbreviate_path(path_raw)
+            if path_raw != str(path_value):
+                path += _HIDDEN_CHAR_MARKER
             return f"{prefix} {tool_name}({path})"
 
     elif tool_name == "web_search":
         # Web search: show the query string
         if "query" in tool_args:
-            query = str(tool_args["query"])
-            query = truncate_value(query, 100)
+            query = _sanitize_display_value(tool_args["query"], max_length=100)
             return f'{prefix} {tool_name}("{query}")'
 
     elif tool_name == "grep":
         # Grep: show the search pattern
         if "pattern" in tool_args:
-            pattern = str(tool_args["pattern"])
-            pattern = truncate_value(pattern, 70)
+            pattern = _sanitize_display_value(tool_args["pattern"], max_length=70)
             return f'{prefix} {tool_name}("{pattern}")'
 
     elif tool_name == "execute":
         # Execute: show the command, and timeout only if non-default
         if "command" in tool_args:
-            command = str(tool_args["command"])
-            command = truncate_value(command, 120)
+            command = _sanitize_display_value(tool_args["command"], max_length=120)
             timeout = _coerce_timeout_seconds(tool_args.get("timeout"))
             if timeout is not None and timeout != DEFAULT_EXECUTE_TIMEOUT:
                 timeout_str = _format_timeout(timeout)
@@ -161,25 +187,27 @@ def format_tool_display(tool_name: str, tool_args: dict) -> str:
     elif tool_name == "ls":
         # ls: show directory, or empty if current directory
         if tool_args.get("path"):
-            path = abbreviate_path(str(tool_args["path"]))
+            path_raw = strip_dangerous_unicode(str(tool_args["path"]))
+            path = abbreviate_path(path_raw)
+            if path_raw != str(tool_args["path"]):
+                path += _HIDDEN_CHAR_MARKER
             return f"{prefix} {tool_name}({path})"
         return f"{prefix} {tool_name}()"
 
     elif tool_name == "glob":
         # Glob: show the pattern
         if "pattern" in tool_args:
-            pattern = str(tool_args["pattern"])
-            pattern = truncate_value(pattern, 80)
+            pattern = _sanitize_display_value(tool_args["pattern"], max_length=80)
             return f'{prefix} {tool_name}("{pattern}")'
 
     elif tool_name == "http_request":
         # HTTP: show method and URL
         parts = []
         if "method" in tool_args:
-            parts.append(str(tool_args["method"]).upper())
+            method = _sanitize_display_value(tool_args["method"], max_length=16)
+            parts.append(method.upper())
         if "url" in tool_args:
-            url = str(tool_args["url"])
-            url = truncate_value(url, 80)
+            url = _sanitize_display_value(tool_args["url"], max_length=80)
             parts.append(url)
         if parts:
             return f"{prefix} {tool_name}({' '.join(parts)})"
@@ -187,22 +215,25 @@ def format_tool_display(tool_name: str, tool_args: dict) -> str:
     elif tool_name == "fetch_url":
         # Fetch URL: show the URL being fetched
         if "url" in tool_args:
-            url = str(tool_args["url"])
-            url = truncate_value(url, 80)
+            url = _sanitize_display_value(tool_args["url"], max_length=80)
             return f'{prefix} {tool_name}("{url}")'
 
     elif tool_name == "task":
         # Task: show the task description
         if "description" in tool_args:
-            desc = str(tool_args["description"])
-            desc = truncate_value(desc, 100)
+            desc = _sanitize_display_value(tool_args["description"], max_length=100)
             return f'{prefix} {tool_name}("{desc}")'
+
+    elif tool_name == "ask_user":
+        if "questions" in tool_args and isinstance(tool_args["questions"], list):
+            count = len(tool_args["questions"])
+            label = "question" if count == 1 else "questions"
+            return f"{prefix} {tool_name}({count} {label})"
 
     elif tool_name == "compact_conversation":
         return f"{prefix} {tool_name}()"
 
     elif tool_name == "write_todos":
-        # Todos: show count of items
         if "todos" in tool_args and isinstance(tool_args["todos"], list):
             count = len(tool_args["todos"])
             return f"{prefix} {tool_name}({count} items)"
@@ -210,7 +241,9 @@ def format_tool_display(tool_name: str, tool_args: dict) -> str:
     # Fallback: generic formatting for unknown tools
     # Show all arguments in key=value format
     args_str = ", ".join(
-        f"{k}={truncate_value(str(v), 50)}" for k, v in tool_args.items()
+        f"{_sanitize_display_value(k, max_length=30)}="
+        f"{_sanitize_display_value(v, max_length=50)}"
+        for k, v in tool_args.items()
     )
     return f"{prefix} {tool_name}({args_str})"
 
@@ -218,11 +251,12 @@ def format_tool_display(tool_name: str, tool_args: dict) -> str:
 def _format_content_block(block: dict) -> str:
     """Format a single content block dict for display.
 
-    Replaces large binary payloads (e.g. base64 image data) with a
+    Replaces large binary payloads (e.g. base64 image/video data) with a
     human-readable placeholder so they don't flood the terminal.
 
     Args:
-        block: An `ImageContentBlock` dictionary.
+        block: An `ImageContentBlock`, `VideoContentBlock`, or `FileContentBlock`
+            dictionary.
 
     Returns:
         A display-friendly string for the block.
@@ -232,6 +266,16 @@ def _format_content_block(block: dict) -> str:
         size_kb = len(b64) * 3 // 4 // 1024  # approximate decoded size
         mime = block.get("mime_type", "image")
         return f"[Image: {mime}, ~{size_kb}KB]"
+    if block.get("type") == "video" and isinstance(block.get("base64"), str):
+        b64 = block["base64"]
+        size_kb = len(b64) * 3 // 4 // 1024  # approximate decoded size
+        mime = block.get("mime_type", "video")
+        return f"[Video: {mime}, ~{size_kb}KB]"
+    if block.get("type") == "file" and isinstance(block.get("base64"), str):
+        b64 = block["base64"]
+        size_kb = len(b64) * 3 // 4 // 1024  # approximate decoded size
+        mime = block.get("mime_type", "file")
+        return f"[File: {mime}, ~{size_kb}KB]"
     try:
         return json.dumps(block)
     except (TypeError, ValueError):

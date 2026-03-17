@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, ClassVar
+import logging
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from textual.binding import Binding, BindingType
 from textual.containers import Container, Vertical, VerticalScroll
+from textual.content import Content
 from textual.events import (
     Click,  # noqa: TC002 - needed at runtime for Textual event dispatch
 )
+from textual.fuzzy import Matcher
 from textual.message import Message
 from textual.screen import ModalScreen
 from textual.widgets import Input, Static
@@ -16,14 +19,18 @@ from textual.widgets import Input, Static
 if TYPE_CHECKING:
     from textual.app import ComposeResult
 
-from deepagents_cli.config import CharsetMode, _detect_charset_mode, get_glyphs
+from deepagents_cli.config import CharsetMode, Glyphs, _detect_charset_mode, get_glyphs
 from deepagents_cli.model_config import (
     ModelConfig,
+    ModelProfileEntry,
     clear_default_model,
     get_available_models,
+    get_model_profiles,
     has_provider_credentials,
     save_default_model,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class ModelOption(Static):
@@ -31,7 +38,7 @@ class ModelOption(Static):
 
     def __init__(
         self,
-        label: str,
+        label: str | Content,
         model_spec: str,
         provider: str,
         index: int,
@@ -42,7 +49,8 @@ class ModelOption(Static):
         """Initialize a model option.
 
         Args:
-            label: The display text for the option.
+            label: Display content — a `Content` object (preferred) or a
+                plain string that `Static` will parse as markup.
             model_spec: The model specification (provider:model format).
             provider: The provider name.
             index: The index of this option in the filtered list.
@@ -96,8 +104,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         Binding("k", "move_up", "Up", show=False, priority=True),
         Binding("down", "move_down", "Down", show=False, priority=True),
         Binding("j", "move_down", "Down", show=False, priority=True),
-        Binding("tab", "move_down", "Down", show=False, priority=True),
-        Binding("shift+tab", "move_up", "Up", show=False, priority=True),
+        Binding("tab", "tab_complete", "Tab complete", show=False, priority=True),
         Binding("pageup", "page_up", "Page up", show=False, priority=True),
         Binding("pagedown", "page_down", "Page down", show=False, priority=True),
         Binding("enter", "select", "Select", show=False, priority=True),
@@ -184,18 +191,29 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         margin-top: 1;
         text-align: center;
     }
+
+    ModelSelectorScreen .model-detail-footer {
+        height: 4;
+        padding: 0 2;
+        border-top: solid $primary-lighten-2;
+    }
     """
 
     def __init__(
         self,
         current_model: str | None = None,
         current_provider: str | None = None,
+        cli_profile_override: dict[str, Any] | None = None,
     ) -> None:
         """Initialize the ModelSelectorScreen.
 
         Args:
             current_model: The currently active model name (to highlight).
             current_provider: The provider of the current model.
+            cli_profile_override: Extra profile fields from `--profile-override`.
+
+                Merged on top of upstream + config.toml profiles so that CLI
+                overrides appear with `*` markers in the detail footer.
         """
         super().__init__()
         self._current_model = current_model
@@ -213,13 +231,13 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         self._options_container: Container | None = None
         self._option_widgets: list[ModelOption] = []
         self._filter_text = ""
-        self._rebuild_needed = True
         self._current_spec: str | None = None
         if current_model and current_provider:
             self._current_spec = f"{current_provider}:{current_model}"
 
         config = ModelConfig.load()
         self._default_spec: str | None = config.default_model
+        self._profiles = get_model_profiles(cli_override=cli_profile_override)
 
     def _find_current_model_index(self) -> int:
         """Find the index of the current model in the filtered list.
@@ -266,11 +284,15 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 self._options_container = Container(id="model-options")
                 yield self._options_container
 
+            # Model detail footer
+            yield Static("", classes="model-detail-footer", id="model-detail-footer")
+
             # Help text
             help_text = (
-                f"{glyphs.arrow_up}/{glyphs.arrow_down}/tab navigate {glyphs.bullet} "
-                f"Enter select {glyphs.bullet} Ctrl+S set default "
-                f"{glyphs.bullet} Esc cancel"
+                f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate"
+                f" {glyphs.bullet} Enter select"
+                f" {glyphs.bullet} Ctrl+S set default"
+                f" {glyphs.bullet} Esc cancel"
             )
             yield Static(help_text, classes="model-selector-help")
 
@@ -281,6 +303,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             container.styles.border = ("ascii", "green")
 
         await self._update_display()
+        self._update_footer()
 
         # Focus the filter input
         filter_input = self.query_one("#model-filter", Input)
@@ -292,9 +315,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         Args:
             event: The input changed event.
         """
-        self._filter_text = event.value.lower()
+        self._filter_text = event.value
         self._update_filtered_list()
-        self._rebuild_needed = True
         self.call_after_refresh(self._update_display)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
@@ -316,20 +338,40 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         self.dismiss((event.model_spec, event.provider))
 
     def _update_filtered_list(self) -> None:
-        """Update the filtered models based on search text."""
-        if not self._filter_text:
+        """Update the filtered models based on search text using fuzzy matching.
+
+        Results are sorted by match score (best first).
+        """
+        query = self._filter_text.strip()
+        if not query:
             self._filtered_models = list(self._all_models)
-            # Re-select current model when filter is cleared
             self._selected_index = self._find_current_model_index()
-        else:
-            self._filtered_models = [
-                (model_spec, provider)
-                for model_spec, provider in self._all_models
-                if self._filter_text in model_spec.lower()
-            ]
-            # Reset selection if out of bounds
-            if self._selected_index >= len(self._filtered_models):
-                self._selected_index = max(0, len(self._filtered_models) - 1)
+            return
+
+        tokens = query.split()
+
+        try:
+            matchers = [Matcher(token, case_sensitive=False) for token in tokens]
+            scored: list[tuple[float, str, str]] = []
+            for spec, provider in self._all_models:
+                scores = [m.match(spec) for m in matchers]
+                if all(s > 0 for s in scores):
+                    scored.append((min(scores), spec, provider))
+        except Exception:
+            # graceful fallback if Matcher fails on edge-case input
+            logger.warning(
+                "Fuzzy matcher failed for query %r, falling back to full list",
+                query,
+                exc_info=True,
+            )
+            self._filtered_models = list(self._all_models)
+            self._selected_index = self._find_current_model_index()
+            return
+
+        self._filtered_models = [
+            (spec, provider) for score, spec, provider in sorted(scored, reverse=True)
+        ]
+        self._selected_index = 0
 
     async def _update_display(self) -> None:
         """Render the model list grouped by provider.
@@ -343,17 +385,35 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
 
         await self._options_container.remove_children()
         self._option_widgets = []
-        self._rebuild_needed = False
 
         if not self._filtered_models:
-            no_matches = Static("[dim]No matching models[/dim]")
+            no_matches = Static(Content.styled("No matching models", "dim"))
             await self._options_container.mount(no_matches)
+            self._update_footer()
             return
 
-        # Group by provider
-        by_provider: dict[str, list[str]] = {}
+        # Group by provider, preserving insertion order so models from the
+        # same provider cluster together in the visual list.
+        by_provider: dict[str, list[tuple[str, str]]] = {}
         for model_spec, provider in self._filtered_models:
-            by_provider.setdefault(provider, []).append(model_spec)
+            by_provider.setdefault(provider, []).append((model_spec, provider))
+
+        # Rebuild _filtered_models to match the provider-grouped display
+        # order. Without this, _filtered_models stays in score-sorted order
+        # while _option_widgets follow provider-grouped order, causing
+        # _update_footer to look up the wrong model for the highlighted
+        # index.
+        grouped_order: list[tuple[str, str]] = []
+        for entries in by_provider.values():
+            grouped_order.extend(entries)
+
+        # Remap selected_index so the same model stays highlighted.
+        old_spec = self._filtered_models[self._selected_index][0]
+        self._filtered_models = grouped_order
+        self._selected_index = next(
+            (i for i, (s, _) in enumerate(grouped_order) if s == old_spec),
+            0,
+        )
 
         glyphs = get_glyphs()
         flat_index = 0
@@ -364,13 +424,17 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         if self._current_model and self._current_provider:
             current_spec = f"{self._current_provider}:{self._current_model}"
 
+        # Resolve credentials upfront so the widget-building loop
+        # stays focused on layout
+        creds = {p: has_provider_credentials(p) for p in by_provider}
+
         # Collect all widgets first, then batch-mount once to avoid
         # individual DOM mutations per widget
         all_widgets: list[Static] = []
 
-        for provider, model_specs in by_provider.items():
+        for provider, model_entries in by_provider.items():
             # Provider header with credential indicator
-            has_creds = has_provider_credentials(provider)
+            has_creds = creds[provider]
             if has_creds is True:
                 cred_indicator = glyphs.checkmark
             elif has_creds is False:
@@ -379,12 +443,16 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 cred_indicator = f"{glyphs.question} credentials unknown"
             all_widgets.append(
                 Static(
-                    f"[bold]{provider}[/bold] [dim]{cred_indicator}[/dim]",
+                    Content.from_markup(
+                        "[bold]$provider[/bold] [dim]$cred[/dim]",
+                        provider=provider,
+                        cred=cred_indicator,
+                    ),
                     classes="model-provider-header",
                 )
             )
 
-            for model_spec in model_specs:
+            for model_spec, _prov in model_entries:
                 is_current = model_spec == current_spec
                 is_selected = flat_index == self._selected_index
 
@@ -400,6 +468,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                     current=is_current,
                     has_creds=has_creds,
                     is_default=model_spec == self._default_spec,
+                    status=self._get_model_status(model_spec),
                 )
                 widget = ModelOption(
                     label=label,
@@ -429,6 +498,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             else:
                 selected_widget.scroll_visible(animate=False)
 
+        self._update_footer()
+
     @staticmethod
     def _format_option_label(
         model_spec: str,
@@ -437,7 +508,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         current: bool,
         has_creds: bool | None,
         is_default: bool = False,
-    ) -> str:
+        status: str | None = None,
+    ) -> Content:
         """Build the display label for a model option.
 
         Args:
@@ -446,21 +518,177 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             current: Whether this is the active model.
             has_creds: Credential status (True/False/None).
             is_default: Whether this is the configured default model.
+            status: Model status from profile (e.g., `'deprecated'`,
+                `'beta'`, `'alpha'`). `'deprecated'` renders in red;
+                other non-None values render in yellow.
 
         Returns:
-            Rich-markup label string.
+            Styled Content label.
         """
         glyphs = get_glyphs()
         cursor = f"{glyphs.cursor} " if selected else "  "
         if not has_creds:
-            spec_text = f"[yellow]{model_spec}[/yellow]"
+            spec = Content.styled(model_spec, "yellow")
         elif is_default:
-            spec_text = f"[cyan]{model_spec}[/cyan]"
+            spec = Content.styled(model_spec, "cyan")
         else:
-            spec_text = model_spec
-        suffix = " [dim](current)[/dim]" if current else ""
-        default_suffix = " [cyan](default)[/cyan]" if is_default else ""
-        return f"{cursor}{spec_text}{suffix}{default_suffix}"
+            spec = Content(model_spec)
+        suffix = Content.styled(" (current)", "dim") if current else Content("")
+        default_suffix = (
+            Content.styled(" (default)", "cyan") if is_default else Content("")
+        )
+        if status == "deprecated":
+            status_suffix = Content.styled(" (deprecated)", "red")
+        elif status:
+            status_suffix = Content.styled(f" ({status})", "yellow")
+        else:
+            status_suffix = Content("")
+        return Content.assemble(cursor, spec, suffix, default_suffix, status_suffix)
+
+    @staticmethod
+    def _format_footer(
+        profile_entry: ModelProfileEntry | None,
+        glyphs: Glyphs,
+    ) -> Content:
+        """Build the detail footer text for the highlighted model.
+
+        Args:
+            profile_entry: Profile data with override tracking, or None.
+            glyphs: Glyph set for display characters.
+
+        Returns:
+            Styled `Content` for the 4-line footer.
+        """
+        from deepagents_cli.textual_adapter import format_token_count
+
+        if profile_entry is None or not profile_entry["profile"]:
+            return Content.styled("Model profile not available :(\n\n\n", "dim")
+
+        profile = profile_entry["profile"]
+        overridden = profile_entry["overridden_keys"]
+
+        def _mark(key: str, text: str) -> Content:
+            if key in overridden:
+                return Content.styled(f"*{text}", "yellow")
+            return Content(text)
+
+        def _format_token(key: str, suffix: str) -> Content | None:
+            """Format a token-count profile key, falling back to the raw value.
+
+            Returns:
+                Styled `Content` with override marker, or None if key absent.
+            """
+            val = profile.get(key)
+            if val is None:
+                return None
+            try:
+                text = f"{format_token_count(int(val))} {suffix}"
+            except (ValueError, TypeError, OverflowError):
+                text = f"{val} {suffix}"
+            return _mark(key, text)
+
+        def _format_flags(keys: list[tuple[str, str]]) -> list[Content]:
+            """Render boolean profile keys as green (on) or dim (off) labels.
+
+            Returns:
+                List of styled `Content` objects for present keys.
+            """
+            parts: list[Content] = []
+            for key, label in keys:
+                if key in profile:
+                    base = (
+                        Content.styled(label, "green")
+                        if profile[key]
+                        else Content.styled(label, "dim")
+                    )
+                    if key in overridden:
+                        base = Content.assemble(Content.styled("*", "yellow"), base)
+                    parts.append(base)
+            return parts
+
+        # Line 1: Context window
+        token_keys = [("max_input_tokens", "in"), ("max_output_tokens", "out")]
+        ctx_parts = [p for k, s in token_keys if (p := _format_token(k, s)) is not None]
+        bullet_sep = Content(f" {glyphs.bullet} ")
+        line1 = (
+            Content.assemble("Context: ", bullet_sep.join(ctx_parts))
+            if ctx_parts
+            else Content("")
+        )
+
+        # Line 2: Input modalities
+        modality_keys = [
+            ("text_inputs", "text"),
+            ("image_inputs", "image"),
+            ("audio_inputs", "audio"),
+            ("pdf_inputs", "pdf"),
+            ("video_inputs", "video"),
+        ]
+        modality_parts = _format_flags(modality_keys)
+        space = Content(" ")
+        line2 = (
+            Content.assemble("Input: ", space.join(modality_parts))
+            if modality_parts
+            else Content("")
+        )
+
+        # Line 3: Capabilities
+        capability_keys = [
+            ("reasoning_output", "reasoning"),
+            ("tool_calling", "tool calling"),
+            ("structured_output", "structured output"),
+        ]
+        cap_parts = _format_flags(capability_keys)
+        line3 = (
+            Content.assemble("Capabilities: ", space.join(cap_parts))
+            if cap_parts
+            else Content("")
+        )
+
+        # Line 4: Override notice
+        displayed_keys = {k for k, _ in token_keys + modality_keys + capability_keys}
+        has_visible_override = bool(overridden & displayed_keys)
+        line4 = (
+            Content.from_markup("[dim][yellow]*[/yellow] = override[/dim]")
+            if has_visible_override
+            else Content("")
+        )
+
+        return Content.assemble(line1, "\n", line2, "\n", line3, "\n", line4)
+
+    def _get_model_status(self, model_spec: str) -> str | None:
+        """Look up the status field for a model from its profile.
+
+        Args:
+            model_spec: The `provider:model` string.
+
+        Returns:
+            Status string (e.g., `'deprecated'`) if the model has a profile
+            with a `status` key, otherwise None.
+        """
+        entry = self._profiles.get(model_spec)
+        if entry is None:
+            return None
+        profile = entry.get("profile")
+        if not profile:
+            return None
+        return profile.get("status")
+
+    def _update_footer(self) -> None:
+        """Update the detail footer for the currently highlighted model."""
+        footer = self.query_one("#model-detail-footer", Static)
+        if not self._filtered_models:
+            footer.update(Content.styled("No model selected", "dim"))
+            return
+        index = min(self._selected_index, len(self._filtered_models) - 1)
+        spec, _ = self._filtered_models[index]
+        entry = self._profiles.get(spec)
+        try:
+            text = self._format_footer(entry, get_glyphs())
+        except (KeyError, ValueError, TypeError):  # Resilient footer rendering
+            logger.warning("Failed to format footer for %s", spec, exc_info=True)
+            text = Content.styled("Could not load profile details\n\n\n", "dim")
+        footer.update(text)
 
     def _move_selection(self, delta: int) -> None:
         """Move selection by delta, updating only the affected widgets.
@@ -486,6 +714,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 current=old_widget.model_spec == self._current_spec,
                 has_creds=old_widget.has_creds,
                 is_default=old_widget.model_spec == self._default_spec,
+                status=self._get_model_status(old_widget.model_spec),
             )
         )
 
@@ -499,6 +728,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 current=new_widget.model_spec == self._current_spec,
                 has_creds=new_widget.has_creds,
                 is_default=new_widget.model_spec == self._default_spec,
+                status=self._get_model_status(new_widget.model_spec),
             )
         )
 
@@ -509,6 +739,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         else:
             new_widget.scroll_visible()
 
+        self._update_footer()
+
     def action_move_up(self) -> None:
         """Move selection up."""
         self._move_selection(-1)
@@ -516,6 +748,15 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
     def action_move_down(self) -> None:
         """Move selection down."""
         self._move_selection(1)
+
+    def action_tab_complete(self) -> None:
+        """Replace search text with the currently selected model spec."""
+        if not self._filtered_models:
+            return
+        model_spec, _ = self._filtered_models[self._selected_index]
+        filter_input = self.query_one("#model-filter", Input)
+        filter_input.value = model_spec
+        filter_input.cursor_position = len(model_spec)
 
     def _visible_page_size(self) -> int:
         """Return the number of model options that fit in one visual page.
@@ -581,12 +822,14 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         elif custom_input:
             self.dismiss((custom_input, ""))
 
-    def action_set_default(self) -> None:
+    async def action_set_default(self) -> None:
         """Toggle the highlighted model as the default.
 
         If the highlighted model is already the default, clears it.
         Otherwise sets it as the new default.
         """
+        import asyncio
+
         if not self._filtered_models or not self._option_widgets:
             return
 
@@ -595,32 +838,37 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
 
         if model_spec == self._default_spec:
             # Already default — clear it
-            if clear_default_model():
+            if await asyncio.to_thread(clear_default_model):
                 self._default_spec = None
-                self._rebuild_needed = True
                 self.call_after_refresh(self._update_display)
-                help_widget.update("[bold]Default cleared[/bold]")
+                help_widget.update(Content.styled("Default cleared", "bold"))
                 self.set_timer(3.0, self._restore_help_text)
             else:
-                help_widget.update("[bold red]Failed to clear default[/bold red]")
+                help_widget.update(
+                    Content.styled("Failed to clear default", "bold red")
+                )
                 self.set_timer(3.0, self._restore_help_text)
-        elif save_default_model(model_spec):
+        elif await asyncio.to_thread(save_default_model, model_spec):
             self._default_spec = model_spec
-            self._rebuild_needed = True
             self.call_after_refresh(self._update_display)
-            help_widget.update(f"[bold]Default set to {model_spec}[/bold]")
+            help_widget.update(
+                Content.from_markup(
+                    "[bold]Default set to $spec[/bold]", spec=model_spec
+                )
+            )
             self.set_timer(3.0, self._restore_help_text)
         else:
-            help_widget.update("[bold red]Failed to save default[/bold red]")
+            help_widget.update(Content.styled("Failed to save default", "bold red"))
             self.set_timer(3.0, self._restore_help_text)
 
     def _restore_help_text(self) -> None:
         """Restore the default help text after a temporary message."""
         glyphs = get_glyphs()
         help_text = (
-            f"{glyphs.arrow_up}/{glyphs.arrow_down}/tab navigate {glyphs.bullet} "
-            f"Enter select {glyphs.bullet} Ctrl+S set default "
-            f"{glyphs.bullet} Esc cancel"
+            f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate"
+            f" {glyphs.bullet} Enter select"
+            f" {glyphs.bullet} Ctrl+S set default"
+            f" {glyphs.bullet} Esc cancel"
         )
         help_widget = self.query_one(".model-selector-help", Static)
         help_widget.update(help_text)

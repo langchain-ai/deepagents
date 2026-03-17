@@ -1,3 +1,4 @@
+import json
 import re
 import uuid
 from collections.abc import Sequence
@@ -9,20 +10,14 @@ import pytest
 import requests
 from langchain.agents.middleware import ModelCallLimitMiddleware
 from langchain.agents.middleware.types import AgentMiddleware
-from langchain.chat_models import init_chat_model
 from langchain_core.language_models import BaseChatModel
 from langchain_core.load import load
 from langchain_core.messages import AnyMessage, HumanMessage
 from langgraph.checkpoint.memory import InMemorySaver
-from langsmith import Client
 
 from deepagents import create_deep_agent
 from deepagents.backends.filesystem import FilesystemBackend
-from deepagents.middleware.summarization import (
-    SummarizationMiddleware,
-    SummarizationToolMiddleware,
-    compute_summarization_defaults,
-)
+from deepagents.middleware.summarization import create_summarization_tool_middleware
 from tests.evals.utils import AgentTrajectory, run_agent
 
 # URL for a large file that will trigger summarization
@@ -50,7 +45,7 @@ SYSTEM_PROMPT = dedent(
     """
 )
 
-ls_client = Client()
+_FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 
 def _write_file(p: Path, content: str) -> None:
@@ -61,7 +56,7 @@ def _write_file(p: Path, content: str) -> None:
 
 def _setup_summarization_test(
     tmp_path: Path,
-    model_name: str,
+    model: BaseChatModel,
     max_input_tokens: int,
     middleware: Sequence[AgentMiddleware] = (),
     *,
@@ -82,24 +77,13 @@ def _setup_summarization_test(
     backend = FilesystemBackend(root_dir=str(root), virtual_mode=True)
     checkpointer = InMemorySaver()
 
-    model = init_chat_model(model_name)
     if model.profile is None:
         model.profile = {}
-    # Lower artificially to trigger summarization more easily
     model.profile["max_input_tokens"] = max_input_tokens
 
     all_middleware: list[AgentMiddleware] = list(middleware)
     if include_compact_tool:
-        summarization_defaults = compute_summarization_defaults(model)
-        summarization_middleware = SummarizationMiddleware(
-            model=model,
-            backend=backend,
-            trigger=summarization_defaults["trigger"],
-            keep=summarization_defaults["keep"],
-            trim_tokens_to_summarize=None,
-            truncate_args_settings=summarization_defaults["truncate_args_settings"],
-        )
-        all_middleware.append(SummarizationToolMiddleware(summarization_middleware))
+        all_middleware.append(create_summarization_tool_middleware(model, backend))
 
     agent = create_deep_agent(
         model=model,
@@ -114,9 +98,9 @@ def _setup_summarization_test(
 
 
 @pytest.mark.langsmith
-def test_summarize_continues_task(tmp_path: Path, model: BaseChatModel, model_name: str) -> None:
+def test_summarize_continues_task(tmp_path: Path, model: BaseChatModel) -> None:
     """Test that summarization triggers and the agent can continue reading a large file."""
-    agent, _, _ = _setup_summarization_test(tmp_path, model_name, 15_000)
+    agent, _, _ = _setup_summarization_test(tmp_path, model, 15_000)
     thread_id = uuid.uuid4().hex[:8]
 
     trajectory = run_agent(
@@ -153,13 +137,13 @@ def test_summarize_continues_task(tmp_path: Path, model: BaseChatModel, model_na
 
 
 @pytest.mark.langsmith
-def test_summarization_offloads_to_filesystem(tmp_path: Path, model: BaseChatModel, model_name: str) -> None:
+def test_summarization_offloads_to_filesystem(tmp_path: Path, model: BaseChatModel) -> None:
     """Test that conversation history is offloaded to filesystem during summarization.
 
     This verifies the summarization middleware correctly writes conversation history
     as markdown to the backend at /conversation_history/{thread_id}.md.
     """
-    agent, _, root = _setup_summarization_test(tmp_path, model_name, 15_000)
+    agent, _, root = _setup_summarization_test(tmp_path, model, 15_000)
     thread_id = uuid.uuid4().hex[:8]
 
     _ = run_agent(
@@ -223,16 +207,20 @@ def _called_compact(trajectory: AgentTrajectory) -> bool:
 
 
 def _load_seed_messages() -> list[AnyMessage]:
-    """Load seed messages from the shared LangSmith run."""
-    run = ls_client.read_run("7c1618cc-0447-40b4-8c4e-c4dc5ad32c21")
-    return load(run.outputs["messages"])
+    """Load seed messages from a local fixture file.
+
+    The fixture was originally captured from LangSmith run
+    `7c1618cc-0447-40b4-8c4e-c4dc5ad32c21`.
+    """
+    fixture = _FIXTURES_DIR / "summarization_seed_messages.json"
+    data = json.loads(fixture.read_text())
+    return load(data)
 
 
-@pytest.mark.skip(reason="Requires permissions to read ls_client.read_run")
 @pytest.mark.langsmith
-def test_compact_tool_new_task(tmp_path: Path, model: BaseChatModel, model_name: str) -> None:
+def test_compact_tool_new_task(tmp_path: Path, model: BaseChatModel) -> None:
 
-    agent, _, _ = _setup_summarization_test(tmp_path, model_name, 35_000, include_compact_tool=True)
+    agent, _, _ = _setup_summarization_test(tmp_path, model, 35_000, include_compact_tool=True)
 
     seed = _load_seed_messages()
     query = "Thanks. Let's move on to a completely new task. To prepare, first spec out how to upgrade a web app to Typescript 5.5"
@@ -244,11 +232,10 @@ def test_compact_tool_new_task(tmp_path: Path, model: BaseChatModel, model_name:
     assert _called_compact(trajectory)
 
 
-@pytest.mark.skip(reason="Requires permissions to read ls_client.read_run")
 @pytest.mark.langsmith
-def test_compact_tool_not_overly_sensitive(tmp_path: Path, model: BaseChatModel, model_name: str) -> None:
+def test_compact_tool_not_overly_sensitive(tmp_path: Path, model: BaseChatModel) -> None:
 
-    agent, _, _ = _setup_summarization_test(tmp_path, model_name, 35_000, include_compact_tool=True)
+    agent, _, _ = _setup_summarization_test(tmp_path, model, 35_000, include_compact_tool=True)
 
     seed = _load_seed_messages()
     query = "Moving on, what are the two primary OpenAI APIs supported?"
@@ -260,9 +247,8 @@ def test_compact_tool_not_overly_sensitive(tmp_path: Path, model: BaseChatModel,
     assert not _called_compact(trajectory)
 
 
-@pytest.mark.skip(reason="Requires permissions to read ls_client.read_run")
 @pytest.mark.langsmith
-def test_compact_tool_large_reads(tmp_path: Path, model: BaseChatModel, model_name: str) -> None:
+def test_compact_tool_large_reads(tmp_path: Path, model: BaseChatModel) -> None:
     another_large_file = "https://raw.githubusercontent.com/langchain-ai/deepagents/5c90376c02754c67d448908e55d1e953f54b8acd/libs/deepagents/deepagents/middleware/filesystem.py"
 
     response = requests.get(another_large_file, timeout=30)
@@ -270,7 +256,7 @@ def test_compact_tool_large_reads(tmp_path: Path, model: BaseChatModel, model_na
 
     agent, backend, _ = _setup_summarization_test(
         tmp_path,
-        model_name,
+        model,
         35_000,
         middleware=[ModelCallLimitMiddleware(run_limit=3)],
         include_compact_tool=True,

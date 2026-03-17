@@ -2,12 +2,13 @@
 
 from typing import ClassVar
 
-import pytest
 from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Container
 from textual.screen import ModalScreen
+from textual.widgets import Input, Static
 
+from deepagents_cli.model_config import ModelProfileEntry
 from deepagents_cli.widgets.model_selector import ModelSelectorScreen
 
 
@@ -316,3 +317,626 @@ class TestModelSelectorCurrentModelPreselection:
                 f"After clearing filter, expected index {current_index} "
                 f"but got {screen._selected_index}"
             )
+
+
+class TestModelSelectorFuzzyMatching:
+    """Tests for fuzzy search filtering."""
+
+    async def test_fuzzy_exact_substring_still_works(self) -> None:
+        """Exact substring matches should still work with fuzzy matching."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.show_selector()
+            await pilot.pause()
+
+            screen = app.screen
+            assert isinstance(screen, ModelSelectorScreen)
+
+            for char in "claude":
+                await pilot.press(char)
+            await pilot.pause()
+
+            specs = [spec for spec, _ in screen._filtered_models]
+            assert any("claude" in s for s in specs), (
+                f"'claude' substring should match. Got: {specs}"
+            )
+
+    async def test_fuzzy_subsequence_match(self) -> None:
+        """Subsequence queries like 'cs45' should match 'claude-sonnet-4-5'."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.show_selector()
+            await pilot.pause()
+
+            screen = app.screen
+            assert isinstance(screen, ModelSelectorScreen)
+
+            for char in "cs45":
+                await pilot.press(char)
+            await pilot.pause()
+
+            specs = [spec for spec, _ in screen._filtered_models]
+            assert any("claude-sonnet-4-5" in s for s in specs), (
+                f"'cs45' should fuzzy-match claude-sonnet-4-5. Got: {specs}"
+            )
+
+    async def test_fuzzy_across_hyphen(self) -> None:
+        """Queries should match across hyphens (e.g., 'gpt4' matches 'gpt-4o')."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.show_selector()
+            await pilot.pause()
+
+            screen = app.screen
+            assert isinstance(screen, ModelSelectorScreen)
+
+            for char in "gpt4":
+                await pilot.press(char)
+            await pilot.pause()
+
+            specs = [spec for spec, _ in screen._filtered_models]
+            assert any("gpt-4" in s for s in specs), (
+                f"'gpt4' should fuzzy-match gpt-4 models. Got: {specs}"
+            )
+
+    async def test_fuzzy_case_insensitive(self) -> None:
+        """Fuzzy matching should be case-insensitive."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.show_selector()
+            await pilot.pause()
+
+            screen = app.screen
+            assert isinstance(screen, ModelSelectorScreen)
+
+            # Type uppercase "CLAUDE"
+            for char in "CLAUDE":
+                await pilot.press(char)
+            await pilot.pause()
+
+            specs = [spec for spec, _ in screen._filtered_models]
+            assert any("claude" in s for s in specs), (
+                f"'CLAUDE' should case-insensitively match claude models. Got: {specs}"
+            )
+
+    async def test_fuzzy_no_match(self) -> None:
+        """A query that matches nothing should produce an empty filtered list."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.show_selector()
+            await pilot.pause()
+
+            screen = app.screen
+            assert isinstance(screen, ModelSelectorScreen)
+
+            for char in "xyz999qqq":
+                await pilot.press(char)
+            await pilot.pause()
+
+            assert len(screen._filtered_models) == 0
+
+    async def test_fuzzy_ranking_better_match_first(self) -> None:
+        """Better fuzzy matches should rank higher than weaker matches."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.show_selector()
+            await pilot.pause()
+
+            screen = app.screen
+            assert isinstance(screen, ModelSelectorScreen)
+
+            for char in "claude":
+                await pilot.press(char)
+            await pilot.pause()
+
+            specs = [spec for spec, _ in screen._filtered_models]
+            assert len(specs) > 0
+            # First result should be a strong match containing the query
+            assert "claude" in specs[0].lower()
+
+    async def test_empty_filter_shows_all(self) -> None:
+        """Empty filter should show all models in original order."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.show_selector()
+            await pilot.pause()
+
+            screen = app.screen
+            assert isinstance(screen, ModelSelectorScreen)
+
+            total = len(screen._filtered_models)
+            assert total == len(screen._all_models)
+
+    async def test_whitespace_filter_shows_all(self) -> None:
+        """Whitespace-only filter should be treated as empty."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.show_selector()
+            await pilot.pause()
+
+            screen = app.screen
+            assert isinstance(screen, ModelSelectorScreen)
+
+            await pilot.press("space", "space", "space")
+            await pilot.pause()
+
+            assert len(screen._filtered_models) == len(screen._all_models)
+
+    async def test_selection_clamped_on_filter(self) -> None:
+        """Selected index should stay valid when filter results shrink."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.show_selector()
+            await pilot.pause()
+
+            screen = app.screen
+            assert isinstance(screen, ModelSelectorScreen)
+
+            # Move selection down several times
+            for _ in range(5):
+                await pilot.press("down")
+            await pilot.pause()
+
+            # Now type a filter that produces fewer results
+            for char in "claude":
+                await pilot.press(char)
+            await pilot.pause()
+
+            assert screen._filtered_models, "Filter should match claude models"
+            assert screen._selected_index == 0, (
+                "Fuzzy filter should reset selection to best match (index 0)"
+            )
+
+    async def test_enter_selects_fuzzy_result(self) -> None:
+        """Pressing Enter after fuzzy filtering should select the top result."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.show_selector()
+            await pilot.pause()
+
+            screen = app.screen
+            assert isinstance(screen, ModelSelectorScreen)
+
+            for char in "claude":
+                await pilot.press(char)
+            await pilot.pause()
+
+            assert len(screen._filtered_models) > 0
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert app.dismissed is True
+            assert app.result is not None
+            model_spec, _ = app.result
+            assert "claude" in model_spec.lower()
+
+    async def test_fuzzy_space_separated_tokens(self) -> None:
+        """Space-separated tokens should each fuzzy-match independently."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.show_selector()
+            await pilot.pause()
+
+            screen = app.screen
+            assert isinstance(screen, ModelSelectorScreen)
+
+            # "claude sonnet" should match models containing both subsequences
+            for char in "claude sonnet":
+                await pilot.press(char)
+            await pilot.pause()
+
+            specs = [spec for spec, _ in screen._filtered_models]
+            assert any("claude" in s and "sonnet" in s for s in specs), (
+                f"'claude sonnet' should match claude-sonnet models. Got: {specs}"
+            )
+
+    async def test_tab_noop_when_no_matches(self) -> None:
+        """Tab should do nothing when filter matches no models."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.show_selector()
+            await pilot.pause()
+
+            screen = app.screen
+            assert isinstance(screen, ModelSelectorScreen)
+
+            # Type gibberish that matches nothing
+            for char in "xyz999qqq":
+                await pilot.press(char)
+            await pilot.pause()
+
+            assert len(screen._filtered_models) == 0
+
+            # Press tab - should not crash or change input
+            await pilot.press("tab")
+            await pilot.pause()
+
+            filter_input = screen.query_one("#model-filter", Input)
+            assert filter_input.value == "xyz999qqq"
+
+    async def test_tab_autocompletes_after_navigation(self) -> None:
+        """Tab should autocomplete the model navigated to, not just index 0."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.show_selector()
+            await pilot.pause()
+
+            screen = app.screen
+            assert isinstance(screen, ModelSelectorScreen)
+
+            # Type a partial filter
+            for char in "claude":
+                await pilot.press(char)
+            await pilot.pause()
+
+            assert len(screen._filtered_models) > 1, (
+                "Need multiple claude matches to test navigation"
+            )
+
+            # Navigate down to select a different model
+            await pilot.press("down")
+            await pilot.pause()
+
+            assert screen._selected_index == 1
+            expected_spec, _ = screen._filtered_models[1]
+
+            # Press tab - should autocomplete the navigated-to model
+            await pilot.press("tab")
+            await pilot.pause()
+
+            filter_input = screen.query_one("#model-filter", Input)
+            assert filter_input.value == expected_spec
+
+    async def test_tab_autocompletes_selected_model(self) -> None:
+        """Tab should replace search text with the selected model spec."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.show_selector()
+            await pilot.pause()
+
+            screen = app.screen
+            assert isinstance(screen, ModelSelectorScreen)
+
+            # Type a partial filter
+            for char in "claude":
+                await pilot.press(char)
+            await pilot.pause()
+
+            assert len(screen._filtered_models) > 0
+            expected_spec, _ = screen._filtered_models[screen._selected_index]
+
+            # Press tab - should replace filter text with selected model spec
+            await pilot.press("tab")
+            await pilot.pause()
+
+            filter_input = screen.query_one("#model-filter", Input)
+            assert filter_input.value == expected_spec
+
+    async def test_navigation_after_fuzzy_filter(self) -> None:
+        """Arrow keys should work correctly on fuzzy-filtered results."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.show_selector()
+            await pilot.pause()
+
+            screen = app.screen
+            assert isinstance(screen, ModelSelectorScreen)
+
+            for char in "claude":
+                await pilot.press(char)
+            await pilot.pause()
+
+            count = len(screen._filtered_models)
+            assert count > 1, "Need multiple claude matches to test navigation"
+            initial = screen._selected_index
+            await pilot.press("down")
+            await pilot.pause()
+            assert screen._selected_index == (initial + 1) % count
+
+
+class TestFilteredModelsWidgetSync:
+    """Tests that _filtered_models indices match _option_widgets after display."""
+
+    def test_display_reorders_filtered_models_to_match_widgets(self) -> None:
+        """After _update_display, _filtered_models order matches _option_widgets.
+
+        Fuzzy search sorts by score, which can interleave providers. The
+        display groups models by provider. _filtered_models must be reordered
+        to match so that _update_footer looks up the correct model for the
+        highlighted widget index.
+        """
+        screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
+        # Simulate score-sorted filtered list that interleaves providers
+        screen._filtered_models = [
+            ("openai:gpt-5", "openai"),
+            ("anthropic:claude-opus", "anthropic"),
+            ("openai:gpt-4", "openai"),
+            ("anthropic:claude-sonnet", "anthropic"),
+        ]
+        screen._selected_index = 0
+
+        # Group by provider (same logic as _update_display)
+        by_provider: dict[str, list[tuple[str, str]]] = {}
+        for spec, prov in screen._filtered_models:
+            by_provider.setdefault(prov, []).append((spec, prov))
+
+        grouped: list[tuple[str, str]] = []
+        for entries in by_provider.values():
+            grouped.extend(entries)
+
+        # Verify that grouping reorders: openai models cluster, then anthropic
+        assert grouped == [
+            ("openai:gpt-5", "openai"),
+            ("openai:gpt-4", "openai"),
+            ("anthropic:claude-opus", "anthropic"),
+            ("anthropic:claude-sonnet", "anthropic"),
+        ]
+        # The original _filtered_models had anthropic:claude-opus at index 1
+        # but after grouping it moves to index 2. Without the fix,
+        # navigating to widget index 1 (openai:gpt-4) would look up
+        # _filtered_models[1] = anthropic:claude-opus — wrong model.
+        assert screen._filtered_models[1] != grouped[1]
+
+
+class TestFormatOptionLabel:
+    """Tests for _format_option_label."""
+
+    def test_deprecated_model_shows_tag(self) -> None:
+        """Deprecated models should show a red (deprecated) tag."""
+        label = ModelSelectorScreen._format_option_label(
+            "anthropic:old-model",
+            selected=False,
+            current=False,
+            has_creds=True,
+            status="deprecated",
+        )
+        assert "(deprecated)" in label.plain
+        assert "[red]" in label.markup
+
+    def test_non_deprecated_model_no_tag(self) -> None:
+        """Models without deprecated status should not show the tag."""
+        label = ModelSelectorScreen._format_option_label(
+            "anthropic:claude-sonnet-4-5",
+            selected=False,
+            current=False,
+            has_creds=True,
+            status=None,
+        )
+        assert "(deprecated)" not in label.plain
+
+    def test_other_status_renders_yellow(self) -> None:
+        """Non-deprecated statuses (e.g., beta) render yellow, not red."""
+        label = ModelSelectorScreen._format_option_label(
+            "anthropic:new-model",
+            selected=False,
+            current=False,
+            has_creds=True,
+            status="beta",
+        )
+        assert "(deprecated)" not in label.plain
+        assert "(beta)" in label.plain
+        assert "[yellow]" in label.markup
+
+    def test_all_suffixes_coexist(self) -> None:
+        """Current + default + deprecated all render together."""
+        label = ModelSelectorScreen._format_option_label(
+            "anthropic:old-model",
+            selected=False,
+            current=True,
+            has_creds=True,
+            is_default=True,
+            status="deprecated",
+        )
+        assert "(current)" in label.plain
+        assert "(default)" in label.plain
+        assert "(deprecated)" in label.plain
+
+
+class TestGetModelStatus:
+    """Tests for _get_model_status profile lookup."""
+
+    def test_returns_status_when_present(self) -> None:
+        """Status is returned when profile entry has the key."""
+        screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
+        screen._profiles = {
+            "anthropic:old-model": ModelProfileEntry(
+                profile={"status": "deprecated"},
+                overridden_keys=frozenset(),
+            ),
+        }
+        assert screen._get_model_status("anthropic:old-model") == "deprecated"
+
+    def test_returns_none_when_no_profile_entry(self) -> None:
+        """None is returned when model spec is not in profiles."""
+        screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
+        screen._profiles = {}
+        assert screen._get_model_status("anthropic:missing") is None
+
+    def test_returns_none_when_no_status_key(self) -> None:
+        """None is returned when profile exists but has no status key."""
+        screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
+        screen._profiles = {
+            "anthropic:model": ModelProfileEntry(
+                profile={"max_input_tokens": 200000},
+                overridden_keys=frozenset(),
+            ),
+        }
+        assert screen._get_model_status("anthropic:model") is None
+
+    def test_returns_none_when_profile_empty(self) -> None:
+        """None is returned when profile dict is empty."""
+        screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
+        screen._profiles = {
+            "anthropic:model": ModelProfileEntry(
+                profile={},
+                overridden_keys=frozenset(),
+            ),
+        }
+        assert screen._get_model_status("anthropic:model") is None
+
+
+class TestModelDetailFooter:
+    """Tests for the model detail footer in the selector."""
+
+    def test_format_footer_full_profile(self) -> None:
+        """Full profile renders token counts, modalities, and capabilities."""
+        from deepagents_cli.config import UNICODE_GLYPHS
+        from deepagents_cli.model_config import ModelProfileEntry
+
+        entry = ModelProfileEntry(
+            profile={
+                "max_input_tokens": 200000,
+                "max_output_tokens": 64000,
+                "text_inputs": True,
+                "image_inputs": True,
+                "pdf_inputs": False,
+                "reasoning_output": True,
+                "tool_calling": True,
+                "structured_output": False,
+            },
+            overridden_keys=frozenset(),
+        )
+        result = ModelSelectorScreen._format_footer(entry, UNICODE_GLYPHS)
+        text = str(result)
+        assert "200.0K" in text
+        assert "64.0K" in text
+        assert "text" in text
+        assert "image" in text
+        assert "tool calling" in text
+        assert "reasoning" in text
+        # No override marker
+        assert "* =" not in text
+
+    def test_format_footer_no_profile(self) -> None:
+        """None profile shows 'Model profile not available'."""
+        from deepagents_cli.config import UNICODE_GLYPHS
+
+        result = ModelSelectorScreen._format_footer(None, UNICODE_GLYPHS)
+        assert "Model profile not available :(" in str(result)
+
+    def test_format_footer_overridden_fields(self) -> None:
+        """Overridden fields show yellow * marker and override legend."""
+        from deepagents_cli.config import UNICODE_GLYPHS
+        from deepagents_cli.model_config import ModelProfileEntry
+
+        entry = ModelProfileEntry(
+            profile={
+                "max_input_tokens": 100000,
+                "max_output_tokens": 64000,
+                "tool_calling": True,
+            },
+            overridden_keys=frozenset({"max_input_tokens"}),
+        )
+        result = ModelSelectorScreen._format_footer(entry, UNICODE_GLYPHS)
+        text = str(result)
+        assert "*" in text
+        assert "= override" in text
+        assert "[yellow]" in result.markup
+
+    def test_format_footer_partial_profile(self) -> None:
+        """Profile with only token counts still renders without crash."""
+        from deepagents_cli.config import UNICODE_GLYPHS
+        from deepagents_cli.model_config import ModelProfileEntry
+
+        entry = ModelProfileEntry(
+            profile={"max_input_tokens": 4096},
+            overridden_keys=frozenset(),
+        )
+        result = ModelSelectorScreen._format_footer(entry, UNICODE_GLYPHS)
+        text = str(result)
+        assert "4096" in text or "4.1K" in text or "4.0K" in text
+        # Should not crash and should have content
+        assert "No profile data" not in text
+
+    def test_format_footer_empty_profile(self) -> None:
+        """Empty profile dict shows 'Model profile not available'."""
+        from deepagents_cli.config import UNICODE_GLYPHS
+        from deepagents_cli.model_config import ModelProfileEntry
+
+        entry = ModelProfileEntry(
+            profile={},
+            overridden_keys=frozenset(),
+        )
+        result = ModelSelectorScreen._format_footer(entry, UNICODE_GLYPHS)
+        assert "Model profile not available :(" in str(result)
+
+    def test_format_footer_override_on_non_displayed_key(self) -> None:
+        """Override on a non-displayed key should not show legend."""
+        from deepagents_cli.config import UNICODE_GLYPHS
+        from deepagents_cli.model_config import ModelProfileEntry
+
+        entry = ModelProfileEntry(
+            profile={"max_input_tokens": 4096, "supports_thinking": True},
+            overridden_keys=frozenset({"supports_thinking"}),
+        )
+        result = ModelSelectorScreen._format_footer(entry, UNICODE_GLYPHS)
+        assert "= override" not in str(result)
+
+    def test_format_footer_non_numeric_tokens(self) -> None:
+        """Non-numeric token values render gracefully instead of crashing."""
+        from deepagents_cli.config import UNICODE_GLYPHS
+        from deepagents_cli.model_config import ModelProfileEntry
+
+        entry = ModelProfileEntry(
+            profile={"max_input_tokens": "unlimited", "max_output_tokens": 64000},
+            overridden_keys=frozenset(),
+        )
+        result = ModelSelectorScreen._format_footer(entry, UNICODE_GLYPHS)
+        text = str(result)
+        assert "unlimited" in text
+        assert "64.0K" in text
+
+    async def test_footer_updates_on_navigation(self) -> None:
+        """Footer content changes when navigating to a different model."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.show_selector()
+            await pilot.pause()
+
+            screen = app.screen
+            assert isinstance(screen, ModelSelectorScreen)
+
+            footer = screen.query_one("#model-detail-footer", Static)
+            initial_content = str(footer.content)
+            assert "Context:" in initial_content or "No profile" in initial_content
+
+            await pilot.press("down")
+            await pilot.pause()
+
+            updated_content = str(footer.content)
+            assert "Context:" in updated_content or "No profile" in updated_content
+
+    async def test_footer_shows_on_mount(self) -> None:
+        """Footer is populated with structural content on initial mount."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.show_selector()
+            await pilot.pause()
+
+            screen = app.screen
+            assert isinstance(screen, ModelSelectorScreen)
+
+            footer = screen.query_one("#model-detail-footer", Static)
+            content = str(footer.content)
+            assert "Context:" in content or "No profile" in content
+
+    async def test_footer_no_model_when_filter_empty(self) -> None:
+        """Footer shows 'No model selected' when filter matches nothing."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.show_selector()
+            await pilot.pause()
+
+            for char in "xyz999qqq":
+                await pilot.press(char)
+            # Pump several frames so all deferred call_after_refresh
+            # callbacks complete after the last keystroke
+            for _ in range(5):
+                await pilot.pause()
+
+            screen = app.screen
+            assert isinstance(screen, ModelSelectorScreen)
+            assert len(screen._filtered_models) == 0
+            footer = screen.query_one("#model-detail-footer", Static)
+            assert "No model selected" in str(footer.content)

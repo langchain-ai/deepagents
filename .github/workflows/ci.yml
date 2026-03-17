@@ -38,16 +38,26 @@ jobs:
       daytona: ${{ steps.filter.outputs.daytona }}
       modal: ${{ steps.filter.outputs.modal }}
       runloop: ${{ steps.filter.outputs.runloop }}
+      quickjs: ${{ steps.filter.outputs.quickjs }}
     steps:
       - name: "📋 Checkout Code"
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: "🔍 Check for changes"
-        uses: dorny/paths-filter@v3
+        uses: dorny/paths-filter@v4
         id: filter
         with:
           # Each package filter includes workflow/action paths so that CI
           # infrastructure changes are validated against all packages.
+          #
+          # NOTE: Do NOT add negation patterns (e.g. '!libs/foo/**/*.md')
+          # here. dorny/paths-filter evaluates patterns with OR logic, so a
+          # negation like '!libs/deepagents/**/*.md' becomes "match anything
+          # NOT in that glob" — causing unrelated files (e.g. .github/
+          # templates) to match every filter and trigger full CI.
+          # See: https://github.com/dorny/paths-filter/issues/97
           filters: |
             deepagents:
               - 'libs/deepagents/**'
@@ -82,6 +92,12 @@ jobs:
               - '.github/actions/**'
             runloop:
               - 'libs/partners/runloop/**'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/_lint.yml'
+              - '.github/workflows/_test.yml'
+              - '.github/actions/**'
+            quickjs:
+              - 'libs/partners/quickjs/**'
               - '.github/workflows/ci.yml'
               - '.github/workflows/_lint.yml'
               - '.github/workflows/_test.yml'
@@ -142,6 +158,15 @@ jobs:
       working-directory: "libs/partners/runloop"
       python-version: "3.11"
 
+  lint-quickjs:
+    name: "🧹 Lint quickjs"
+    needs: changes
+    if: needs.changes.outputs.quickjs == 'true' || github.event_name == 'push'
+    uses: ./.github/workflows/_lint.yml
+    with:
+      working-directory: "libs/partners/quickjs"
+      python-version: "3.11"
+
   # Run unit tests on changed packages
   test-deepagents:
     name: "🧪 Test deepagents"
@@ -155,6 +180,7 @@ jobs:
     with:
       working-directory: "libs/deepagents"
       python-version: ${{ matrix.python-version }}
+      coverage: ${{ matrix.python-version == '3.12' }}
 
   test-cli:
     name: "🧪 Test cli"
@@ -168,6 +194,7 @@ jobs:
     with:
       working-directory: "libs/cli"
       python-version: ${{ matrix.python-version }}
+      coverage: ${{ matrix.python-version == '3.12' }}
 
   test-harbor:
     name: "🧪 Test harbor"
@@ -181,6 +208,7 @@ jobs:
     with:
       working-directory: "libs/harbor"
       python-version: ${{ matrix.python-version }}
+      coverage: ${{ matrix.python-version == '3.12' }}
 
   test-daytona:
     name: "🧪 Test daytona"
@@ -194,6 +222,7 @@ jobs:
     with:
       working-directory: "libs/partners/daytona"
       python-version: ${{ matrix.python-version }}
+      coverage: ${{ matrix.python-version == '3.12' }}
 
   test-modal:
     name: "🧪 Test modal"
@@ -207,6 +236,7 @@ jobs:
     with:
       working-directory: "libs/partners/modal"
       python-version: ${{ matrix.python-version }}
+      coverage: ${{ matrix.python-version == '3.12' }}
 
   test-runloop:
     name: "🧪 Test runloop"
@@ -220,6 +250,7 @@ jobs:
     with:
       working-directory: "libs/partners/runloop"
       python-version: ${{ matrix.python-version }}
+      coverage: ${{ matrix.python-version == '3.12' }}
 
   # Final status check - ensures all jobs passed
   ci_success:
@@ -232,12 +263,14 @@ jobs:
       - lint-daytona
       - lint-modal
       - lint-runloop
+      - lint-quickjs
       - test-deepagents
       - test-cli
       - test-harbor
       - test-daytona
       - test-modal
       - test-runloop
+      - test-quickjs
     if: always()
     runs-on: ubuntu-latest
     steps:

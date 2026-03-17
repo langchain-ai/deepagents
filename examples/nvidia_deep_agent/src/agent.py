@@ -4,7 +4,7 @@ General-purpose deep agent showcasing multi-model architecture:
 - Frontier model as orchestrator and data processor
 - NVIDIA Nemotron Super for research
 - NVIDIA GPU skills (cuDF analytics, cuML ML, data visualization, document processing)
-- Modal GPU sandbox for code execution with CompositeBackend routing
+- Modal GPU sandbox for code execution with uploaded memory and skills
 
 Inspired by NVIDIA's AIQ Blueprint. For the full blueprint with
 NeMo Agent Toolkit, evaluation harnesses, knowledge layer, and frontend,

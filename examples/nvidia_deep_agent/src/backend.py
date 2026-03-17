@@ -1,7 +1,10 @@
-"""Backend configuration: Modal sandbox + FilesystemBackend for memory/skills."""
+"""Backend configuration: Modal sandbox with uploaded memory and skills."""
+
+from __future__ import annotations
+
+from pathlib import Path
 
 import modal
-from deepagents.backends import CompositeBackend, FilesystemBackend
 from langchain_modal import ModalSandbox
 
 # --- Sandbox ---
@@ -25,15 +28,38 @@ cpu_image = modal.Image.debian_slim().pip_install(
     "pandas", "numpy", "scipy", "scikit-learn", "matplotlib", "seaborn"
 )
 
+# --- Local assets to upload into the sandbox ---
+_EXAMPLE_DIR = Path(__file__).resolve().parent.parent
+
+
+def _collect_uploads() -> list[tuple[str, bytes]]:
+    """Read local memory and skills files to upload into the sandbox."""
+    files: list[tuple[str, bytes]] = []
+
+    # Memory: src/AGENTS.md → /memory/AGENTS.md
+    agents_md = _EXAMPLE_DIR / "src" / "AGENTS.md"
+    if agents_md.exists():
+        files.append(("/memory/AGENTS.md", agents_md.read_bytes()))
+
+    # Skills: skills/**/* → /skills/**/*
+    skills_dir = _EXAMPLE_DIR / "skills"
+    if skills_dir.is_dir():
+        for path in sorted(skills_dir.rglob("*")):
+            if path.is_file():
+                rel = path.relative_to(skills_dir)
+                files.append((f"/skills/{rel}", path.read_bytes()))
+
+    return files
+
 
 # --- Backend Factory ---
 
-def create_backend(runtime):
-    """Create a CompositeBackend: Modal sandbox + filesystem for memory/skills.
 
-    Memory and skills are stored on the local filesystem via FilesystemBackend.
-    The agent can read and edit these files directly, and changes persist
-    across restarts (useful for committing agent improvements back to git).
+def create_backend(runtime):
+    """Create a ModalSandbox backend with uploaded memory and skills.
+
+    Local memory and skills files are uploaded into the sandbox so the
+    agent reads them remotely instead of accessing the host filesystem.
     """
     ctx = runtime.context or {}
     sandbox_type = ctx.get("sandbox_type", "gpu")
@@ -57,10 +83,13 @@ def create_backend(runtime):
             create_kwargs["image"] = cpu_image
         sandbox = modal.Sandbox.create(**create_kwargs)
 
-    return CompositeBackend(
-        default=ModalSandbox(sandbox=sandbox),
-        routes={
-            "/memory/": FilesystemBackend(root_dir="./src", virtual_mode=True),
-            "/skills/": FilesystemBackend(root_dir="./skills", virtual_mode=True),
-        },
-    )
+    backend = ModalSandbox(sandbox=sandbox)
+
+    # Upload local memory and skills into the sandbox
+    files = _collect_uploads()
+    if files:
+        dirs = sorted({str(Path(p).parent) for p, _ in files})
+        backend.execute(f"mkdir -p {' '.join(dirs)}")
+        backend.upload_files(files)
+
+    return backend

@@ -161,7 +161,7 @@ class SummarizationDefaults(TypedDict):
     truncate_args_settings: TruncateArgsSettings
 
 
-def compute_summarization_defaults(model: BaseChatModel) -> SummarizationDefaults:
+def compute_summarization_defaults(model: BaseChatModel | _ConfigurableModel) -> SummarizationDefaults:
     """Compute default summarization settings based on model profile.
 
     Args:

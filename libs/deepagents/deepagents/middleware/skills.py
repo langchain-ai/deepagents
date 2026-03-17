@@ -550,7 +550,11 @@ async def _adownload_and_parse_skills(
     no_skill_md: list[str] = []
     for (dir_path, skill_md_path), response in zip(skill_md_paths, responses, strict=True):
         if response.error:
-            no_skill_md.append(dir_path)
+            # Only treat "file_not_found" as a potential skill pack.
+            # Other errors (permission_denied, is_directory, invalid_path)
+            # indicate the directory itself is inaccessible.
+            if response.error == "file_not_found":
+                no_skill_md.append(dir_path)
             continue
 
         if response.content is None:

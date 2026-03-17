@@ -1476,3 +1476,30 @@ class TestCreateDeepAgentKwargsWorkaround:
             "Revert the **kwargs workaround in create_cli_agent() back to "
             "direct keyword arguments and delete this test."
         )
+
+
+class TestLsEntriesShim:
+    """Remind us to remove the `_ls_entries` compat shim in test_end_to_end.py.
+
+    The PyPI SDK <0.5 returns a raw `list` from `ls_info`; >=0.5 returns
+    `LsResult` with `.entries`. Once the pin is bumped to >=0.5.0 the shim
+    should be deleted and callers inlined to `backend.ls_info(path).entries`.
+    """
+
+    def test_remove_ls_entries_shim_when_sdk_pin_is_bumped(self) -> None:
+        import tomllib
+
+        pyproject = Path(__file__).resolve().parents[2] / "pyproject.toml"
+        with pyproject.open("rb") as f:
+            data = tomllib.load(f)
+
+        deps = data["project"]["dependencies"]
+        sdk_pin = next(d for d in deps if d.startswith("deepagents=="))
+        pinned_version = sdk_pin.split("==")[1]
+        major, minor = (int(x) for x in pinned_version.split(".")[:2])
+
+        assert (major, minor) < (0, 5), (
+            f"SDK pin is now {pinned_version} (>=0.5.0). "
+            "Delete `_ls_entries()` from test_end_to_end.py and inline "
+            "`backend.ls_info(path).entries` at call sites."
+        )

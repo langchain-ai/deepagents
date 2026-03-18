@@ -24,6 +24,7 @@ permissions:
 
 env:
   UV_NO_SYNC: "true"
+  UV_FROZEN: "true"
 
 jobs:
   build:
@@ -47,7 +48,7 @@ jobs:
 
       - name: "📦 Install Test Dependencies"
         shell: bash
-        run: uv sync --group test --locked
+        run: uv sync --group test
 
       - name: "🧪 Run Unit Tests"
         shell: bash

@@ -9,6 +9,7 @@ import abc
 import asyncio
 import inspect
 import logging
+import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import lru_cache
@@ -263,7 +264,7 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         `DeprecationWarning`.
     """
 
-    def ls_info(self, path: str) -> "LsResult":
+    def ls(self, path: str) -> "LsResult":
         """List all files in a directory with metadata.
 
         Args:
@@ -272,11 +273,19 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         Returns:
             LsResult with directory entries or error.
         """
+        if type(self).ls_info is not BackendProtocol.ls_info:
+            warnings.warn(
+                "`ls_info` is deprecated; rename to `ls` instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            return self.ls_info(path)
+
         raise NotImplementedError
 
-    async def als_info(self, path: str) -> "LsResult":
-        """Async version of ls_info."""
-        return await asyncio.to_thread(self.ls_info, path)
+    async def als(self, path: str) -> "LsResult":
+        """Async version of `ls`."""
+        return await asyncio.to_thread(self.ls, path)
 
     def read(
         self,
@@ -315,7 +324,7 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         """Async version of read."""
         return await asyncio.to_thread(self.read, file_path, offset, limit)
 
-    def grep_raw(
+    def grep(
         self,
         pattern: str,
         path: str | None = None,
@@ -349,18 +358,26 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         Returns:
             GrepResult with matches or error.
         """
+        if type(self).grep_raw is not BackendProtocol.grep_raw:
+            warnings.warn(
+                "`grep_raw` is deprecated; rename to `grep` instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            return self.grep_raw(pattern, path, glob)
+
         raise NotImplementedError
 
-    async def agrep_raw(
+    async def agrep(
         self,
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
     ) -> "GrepResult":
-        """Async version of grep_raw."""
-        return await asyncio.to_thread(self.grep_raw, pattern, path, glob)
+        """Async version of `grep`."""
+        return await asyncio.to_thread(self.grep, pattern, path, glob)
 
-    def glob_info(self, pattern: str, path: str = "/") -> "GlobResult":
+    def glob(self, pattern: str, path: str = "/") -> "GlobResult":
         """Find files matching a glob pattern.
 
         Args:
@@ -377,11 +394,19 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         Returns:
             GlobResult with matching files or error.
         """
+        if type(self).glob_info is not BackendProtocol.glob_info:
+            warnings.warn(
+                "`glob_info` is deprecated; rename to `glob` instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            return self.glob_info(pattern, path)
+
         raise NotImplementedError
 
-    async def aglob_info(self, pattern: str, path: str = "/") -> "GlobResult":
-        """Async version of glob_info."""
-        return await asyncio.to_thread(self.glob_info, pattern, path)
+    async def aglob(self, pattern: str, path: str = "/") -> "GlobResult":
+        """Async version of `glob`."""
+        return await asyncio.to_thread(self.glob, pattern, path)
 
     def write(
         self,
@@ -490,6 +515,96 @@ class BackendProtocol(abc.ABC):  # noqa: B024
     async def adownload_files(self, paths: list[str]) -> list[FileDownloadResponse]:
         """Async version of download_files."""
         return await asyncio.to_thread(self.download_files, paths)
+
+    # -- deprecated methods --------------------------------------------------
+
+    def ls_info(self, path: str) -> "LsResult":
+        """List all files in a directory with metadata.
+
+        !!! warning "Deprecated"
+            Use `ls` instead.
+        """
+        warnings.warn(
+            "`ls_info` is deprecated; use `ls` instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.ls(path)
+
+    async def als_info(self, path: str) -> "LsResult":
+        """Async version of `ls_info`.
+
+        !!! warning "Deprecated"
+            Use `als` instead.
+        """
+        warnings.warn(
+            "`als_info` is deprecated; use `als` instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return await self.als(path)
+
+    def glob_info(self, pattern: str, path: str = "/") -> "GlobResult":
+        """Find files matching a glob pattern.
+
+        !!! warning "Deprecated"
+            Use `glob` instead.
+        """
+        warnings.warn(
+            "`glob_info` is deprecated; use `glob` instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.glob(pattern, path)
+
+    async def aglob_info(self, pattern: str, path: str = "/") -> "GlobResult":
+        """Async version of `glob_info`.
+
+        !!! warning "Deprecated"
+            Use `aglob` instead.
+        """
+        warnings.warn(
+            "`aglob_info` is deprecated; use `aglob` instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return await self.aglob(pattern, path)
+
+    def grep_raw(
+        self,
+        pattern: str,
+        path: str | None = None,
+        glob: str | None = None,
+    ) -> "GrepResult":
+        """Search for a literal text pattern in files.
+
+        !!! warning "Deprecated"
+            Use `grep` instead.
+        """
+        warnings.warn(
+            "`grep_raw` is deprecated; use `grep` instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.grep(pattern, path, glob)
+
+    async def agrep_raw(
+        self,
+        pattern: str,
+        path: str | None = None,
+        glob: str | None = None,
+    ) -> "GrepResult":
+        """Async version of `grep_raw`.
+
+        !!! warning "Deprecated"
+            Use `agrep` instead.
+        """
+        warnings.warn(
+            "`agrep_raw` is deprecated; use `agrep` instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return await self.agrep(pattern, path, glob)
 
 
 @dataclass

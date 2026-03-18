@@ -27,7 +27,7 @@ async def test_filesystem_backend_async_normal_mode(tmp_path: Path):
     be = FilesystemBackend(root_dir=str(root), virtual_mode=False)
 
     # als_info absolute path - should only list files in root, not subdirectories
-    infos = (await be.als_info(str(root))).entries
+    infos = (await be.als(str(root))).entries
     assert infos is not None
     paths = {i["path"] for i in infos}
     assert str(f1) in paths  # File in root should be listed
@@ -43,12 +43,12 @@ async def test_filesystem_backend_async_normal_mode(tmp_path: Path):
     msg2 = await be.awrite(str(root / "new.txt"), "new content")
     assert isinstance(msg2, WriteResult) and msg2.error is None and msg2.path.endswith("new.txt")
 
-    # agrep_raw
-    matches = (await be.agrep_raw("hello", path=str(root))).matches
+    # agrep
+    matches = (await be.agrep("hello", path=str(root))).matches
     assert matches is not None and any(m["path"].endswith("a.txt") for m in matches)
 
-    # aglob_info
-    g = (await be.aglob_info("*.py", path=str(root))).matches
+    # aglob
+    g = (await be.aglob("*.py", path=str(root))).matches
     assert any(i["path"] == str(f2) for i in g)
 
 
@@ -63,7 +63,7 @@ async def test_filesystem_backend_async_virtual_mode(tmp_path: Path):
     be = FilesystemBackend(root_dir=str(root), virtual_mode=True)
 
     # als_info from virtual root - should only list files in root, not subdirectories
-    infos = (await be.als_info("/")).entries
+    infos = (await be.als("/")).entries
     assert infos is not None
     paths = {i["path"] for i in infos}
     assert "/a.txt" in paths  # File in root should be listed
@@ -82,16 +82,16 @@ async def test_filesystem_backend_async_virtual_mode(tmp_path: Path):
     assert isinstance(msg2, WriteResult) and msg2.error is None
     assert (root / "new.txt").exists()
 
-    # agrep_raw limited to path
-    matches = (await be.agrep_raw("virt", path="/")).matches
+    # agrep limited to path
+    matches = (await be.agrep("virt", path="/")).matches
     assert matches is not None and any(m["path"] == "/a.txt" for m in matches)
 
-    # aglob_info
-    g = (await be.aglob_info("**/*.md", path="/")).matches
+    # aglob
+    g = (await be.aglob("**/*.md", path="/")).matches
     assert any(i["path"] == "/dir/b.md" for i in g)
 
     # literal search should work with special regex chars like "[" and "("
-    result_bracket = await be.agrep_raw("[", path="/")
+    result_bracket = await be.agrep("[", path="/")
     assert result_bracket.matches is not None  # Should not error, returns empty list or matches
 
     # path traversal blocked
@@ -117,7 +117,7 @@ async def test_filesystem_backend_als_nested_directories(tmp_path: Path):
 
     be = FilesystemBackend(root_dir=str(root), virtual_mode=True)
 
-    root_listing = (await be.als_info("/")).entries
+    root_listing = (await be.als("/")).entries
     assert root_listing is not None
     root_paths = [fi["path"] for fi in root_listing]
     assert "/config.json" in root_paths
@@ -126,21 +126,21 @@ async def test_filesystem_backend_als_nested_directories(tmp_path: Path):
     assert "/src/main.py" not in root_paths
     assert "/src/utils/helper.py" not in root_paths
 
-    src_listing = (await be.als_info("/src/")).entries
+    src_listing = (await be.als("/src/")).entries
     assert src_listing is not None
     src_paths = [fi["path"] for fi in src_listing]
     assert "/src/main.py" in src_paths
     assert "/src/utils/" in src_paths
     assert "/src/utils/helper.py" not in src_paths
 
-    utils_listing = (await be.als_info("/src/utils/")).entries
+    utils_listing = (await be.als("/src/utils/")).entries
     assert utils_listing is not None
     utils_paths = [fi["path"] for fi in utils_listing]
     assert "/src/utils/helper.py" in utils_paths
     assert "/src/utils/common.py" in utils_paths
     assert len(utils_paths) == 2
 
-    empty_listing = await be.als_info("/nonexistent/")
+    empty_listing = await be.als("/nonexistent/")
     assert empty_listing.entries == []
 
 
@@ -159,7 +159,7 @@ async def test_filesystem_backend_als_normal_mode_nested(tmp_path: Path):
 
     be = FilesystemBackend(root_dir=str(root), virtual_mode=False)
 
-    root_listing = (await be.als_info(str(root))).entries
+    root_listing = (await be.als(str(root))).entries
     assert root_listing is not None
     root_paths = [fi["path"] for fi in root_listing]
 
@@ -167,7 +167,7 @@ async def test_filesystem_backend_als_normal_mode_nested(tmp_path: Path):
     assert str(root / "subdir") + "/" in root_paths
     assert str(root / "subdir" / "file2.txt") not in root_paths
 
-    subdir_listing = (await be.als_info(str(root / "subdir"))).entries
+    subdir_listing = (await be.als(str(root / "subdir"))).entries
     assert subdir_listing is not None
     subdir_paths = [fi["path"] for fi in subdir_listing]
     assert str(root / "subdir" / "file2.txt") in subdir_paths
@@ -189,23 +189,23 @@ async def test_filesystem_backend_als_trailing_slash(tmp_path: Path):
 
     be = FilesystemBackend(root_dir=str(root), virtual_mode=True)
 
-    listing_with_slash = (await be.als_info("/")).entries
+    listing_with_slash = (await be.als("/")).entries
     assert listing_with_slash is not None
     assert len(listing_with_slash) > 0
 
-    listing = (await be.als_info("/")).entries
+    listing = (await be.als("/")).entries
     assert listing is not None
     paths = [fi["path"] for fi in listing]
     assert paths == sorted(paths)
 
-    listing1 = (await be.als_info("/dir/")).entries
-    listing2 = (await be.als_info("/dir")).entries
+    listing1 = (await be.als("/dir/")).entries
+    listing2 = (await be.als("/dir")).entries
     assert listing1 is not None
     assert listing2 is not None
     assert len(listing1) == len(listing2)
     assert [fi["path"] for fi in listing1] == [fi["path"] for fi in listing2]
 
-    empty = await be.als_info("/nonexistent/")
+    empty = await be.als("/nonexistent/")
     assert empty.entries == []
 
 
@@ -500,8 +500,8 @@ async def test_filesystem_agrep_with_glob(tmp_path: Path):
     (root / "test.txt").write_text("import nothing")
     (root / "main.py").write_text("import sys")
 
-    # agrep_raw with glob filter
-    matches = (await be.agrep_raw("import", path="/", glob="*.py")).matches
+    # agrep with glob filter
+    matches = (await be.agrep("import", path="/", glob="*.py")).matches
     assert matches is not None
     py_files = [m["path"] for m in matches]
     assert any("test.py" in p for p in py_files)
@@ -526,7 +526,7 @@ async def test_filesystem_aglob_recursive(tmp_path: Path):
         write_file(path, content)
 
     # Recursive glob for all .py files
-    infos = (await be.aglob_info("**/*.py", path="/")).matches
+    infos = (await be.aglob("**/*.py", path="/")).matches
     py_files = [i["path"] for i in infos]
     assert any("main.py" in p for p in py_files)
     assert any("helper.py" in p for p in py_files)

@@ -156,6 +156,25 @@ def format_token_count(count: int) -> str:
     return str(count)
 
 
+def _format_duration(seconds: float) -> str:
+    """Format a duration in seconds into a human-readable string.
+
+    Args:
+        seconds: Duration in seconds.
+
+    Returns:
+        Formatted string like `"2.3s"`, `"5m 12s"`, or `"1h 23m 4s"`.
+    """
+    rounded = round(seconds, 1)
+    if rounded < 60:  # noqa: PLR2004
+        return f"{rounded:.1f}s"
+    minutes, secs = divmod(int(rounded), 60)
+    if minutes < 60:  # noqa: PLR2004
+        return f"{minutes}m {secs}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h {minutes}m {secs}s"
+
+
 def print_usage_table(
     stats: SessionStats,
     wall_time: float,
@@ -220,7 +239,11 @@ def print_usage_table(
         console.print(table)
     if has_time:
         console.print()
-        console.print(f"[dim]Agent active  {wall_time:.1f}s[/dim]")
+        console.print(
+            f"Agent active  {_format_duration(wall_time)}",
+            style="dim",
+            highlight=False,
+        )
 
 
 # Type alias matching HITLResponse["decisions"] element type

@@ -86,8 +86,13 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.models_override || inputs.models || 'all' }}
+  cancel-in-progress: true
+
 env:
   UV_NO_SYNC: "true"
+  UV_FROZEN: "true"
 
 jobs:
   prep:
@@ -145,7 +150,7 @@ jobs:
           working-directory: libs/deepagents
 
       - name: "📦 Install Dependencies"
-        run: uv sync --group test --group evals --locked
+        run: uv sync --group test --group evals
 
       - name: "📊 Run Evals"
         run: make evals

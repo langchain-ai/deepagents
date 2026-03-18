@@ -428,14 +428,14 @@ class TestFilesystemMiddleware:
             ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={})
         )
 
-        def slow_glob_info(*_args: object, **_kwargs: object) -> list[dict[str, str]]:
+        def slow_glob(*_args: object, **_kwargs: object) -> list[dict[str, str]]:
             time.sleep(2)
             return []
 
         with (
             patch.object(filesystem_middleware, "GLOB_TIMEOUT", 0.5),
             patch.object(middleware, "_get_backend", return_value=backend),
-            patch.object(backend, "glob_info", side_effect=slow_glob_info),
+            patch.object(backend, "glob", side_effect=slow_glob),
         ):
             result = glob_search_tool.invoke(
                 {

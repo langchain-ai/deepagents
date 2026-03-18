@@ -74,6 +74,7 @@ ignore = [
     "ISC001",  # Messes with the formatter
     "ANN401",  # Dynamically typed expressions (typing.Any) are disallowed — too strict for generic wrappers
 ]
+extend-safe-fixes = ["PLR6201"]
 
 [tool.ruff.lint.flake8-annotations]
 allow-star-arg-any = true

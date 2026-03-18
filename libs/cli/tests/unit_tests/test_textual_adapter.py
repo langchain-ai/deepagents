@@ -23,6 +23,7 @@ from deepagents_cli.textual_adapter import (
     TextualUIAdapter,
     _build_interrupted_ai_message,
     _build_stream_config,
+    _format_duration,
     _is_summarization_chunk,
     execute_task_textual,
     format_token_count,
@@ -941,3 +942,44 @@ class TestPrintUsageTable:
         print_usage_table(stats, wall_time=0.01, console=console)
         output = buf.getvalue()
         assert output.strip() == ""
+
+
+# ---------------------------------------------------------------------------
+# _format_duration tests
+# ---------------------------------------------------------------------------
+
+
+class TestFormatDuration:
+    """Tests for `_format_duration` human-readable formatter."""
+
+    def test_sub_minute(self) -> None:
+        assert _format_duration(45.3) == "45.3s"
+
+    def test_exactly_one_minute(self) -> None:
+        assert _format_duration(60.0) == "1m 0s"
+
+    def test_minutes_and_seconds(self) -> None:
+        assert _format_duration(125.7) == "2m 5s"
+
+    def test_exactly_one_hour(self) -> None:
+        assert _format_duration(3600.0) == "1h 0m 0s"
+
+    def test_hours_minutes_seconds(self) -> None:
+        # 1383.5s -> 23m 3s
+        assert _format_duration(1383.5) == "23m 3s"
+
+    def test_large_duration(self) -> None:
+        # 2h 30m 45s = 9045s
+        assert _format_duration(9045.0) == "2h 30m 45s"
+
+    def test_zero(self) -> None:
+        assert _format_duration(0.0) == "0.0s"
+
+    def test_fractional_under_minute(self) -> None:
+        assert _format_duration(0.1) == "0.1s"
+
+    def test_rounding_near_minute_boundary(self) -> None:
+        assert _format_duration(59.95) == "1m 0s"
+
+    def test_just_under_minute_no_rounding(self) -> None:
+        assert _format_duration(59.94) == "59.9s"

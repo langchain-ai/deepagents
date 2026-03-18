@@ -420,12 +420,19 @@ def _build_task_tool(  # noqa: C901
         )
 
     def _validate_and_prepare_state(subagent_type: str, description: str, runtime: ToolRuntime) -> tuple[Runnable, dict, RunnableConfig]:
-        """Prepare state and config for invocation."""
+        """Prepare state and config for invocation.
+
+        Only ``recursion_limit`` is forwarded from the parent config so that
+        subagent-specific metadata (``tags``, ``lc_agent_name``, etc.) is not
+        overridden.
+        """
         subagent = subagent_graphs[subagent_type]
-        # Create a new state dict to avoid mutating the original
         subagent_state = {k: v for k, v in runtime.state.items() if k not in _EXCLUDED_STATE_KEYS}
         subagent_state["messages"] = [HumanMessage(content=description)]
-        config: RunnableConfig = cast("RunnableConfig", getattr(runtime, "config", {}))
+        parent_config: RunnableConfig = cast("RunnableConfig", getattr(runtime, "config", {}))
+        config: RunnableConfig = {}
+        if "recursion_limit" in parent_config:
+            config["recursion_limit"] = parent_config["recursion_limit"]
         return subagent, subagent_state, config
 
     def task(

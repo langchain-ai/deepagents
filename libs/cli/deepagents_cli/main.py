@@ -1305,6 +1305,18 @@ def cli_main() -> None:
                         )
                 except Exception:
                     logger.debug("Failed to check for optional tools", exc_info=True)
+            # Validate sandbox provider deps before spawning server subprocess
+            if args.sandbox and args.sandbox not in {"none", "langsmith"}:
+                from deepagents_cli.integrations.sandbox_factory import (
+                    verify_sandbox_deps,
+                )
+
+                try:
+                    verify_sandbox_deps(args.sandbox)
+                except ImportError as exc:
+                    console.print(f"[bold red]Error:[/bold red] {exc}")
+                    sys.exit(1)
+
             # Non-interactive mode - execute single task and exit
             from deepagents_cli.non_interactive import run_non_interactive
 
@@ -1401,6 +1413,18 @@ def cli_main() -> None:
             # Generate new thread ID if not resuming
             if thread_id is None:
                 thread_id = generate_thread_id()
+
+            # Validate sandbox provider deps before spawning server subprocess
+            if args.sandbox and args.sandbox not in {"none", "langsmith"}:
+                from deepagents_cli.integrations.sandbox_factory import (
+                    verify_sandbox_deps,
+                )
+
+                try:
+                    verify_sandbox_deps(args.sandbox)
+                except ImportError as exc:
+                    console.print(f"[bold red]Error:[/bold red] {exc}")
+                    sys.exit(1)
 
             # Check project MCP trust before launching TUI
             mcp_trust_decision = _check_mcp_project_trust(

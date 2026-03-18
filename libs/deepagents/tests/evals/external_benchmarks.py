@@ -1,12 +1,25 @@
 from __future__ import annotations
 
+import copy
+import inspect
 import json
 import re
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import pytest
+from langchain_core.tools import StructuredTool
+from langgraph.checkpoint.memory import MemorySaver
+from langsmith import testing as t
+
 from deepagents import create_deep_agent
+from tests.evals.data.bfcl_apis.message_api import MessageAPI
+from tests.evals.data.bfcl_apis.ticket_api import TicketAPI
+from tests.evals.data.bfcl_apis.trading_bot import TradingBot
+from tests.evals.data.bfcl_apis.travel_booking import TravelAPI
+from tests.evals.data.bfcl_apis.vehicle_control import VehicleControlAPI
 from tests.evals.utils import (
     AgentTrajectory,
     SuccessAssertion,
@@ -153,19 +166,150 @@ def run_nexus_case(case: dict[str, Any], model: BaseChatModel) -> None:
     )
 
 
+# ---------------------------------------------------------------------------
+# BFCL v3: live stateful tools
+# ---------------------------------------------------------------------------
+
+_BFCL_CLASS_REGISTRY: dict[str, type] = {
+    "VehicleControlAPI": VehicleControlAPI,
+    "MessageAPI": MessageAPI,
+    "TradingBot": TradingBot,
+    "TravelAPI": TravelAPI,
+    "TicketAPI": TicketAPI,
+}
+
+_BFCL_SYSTEM_PROMPT = (
+    "You are an assistant with access to domain-specific API tools. "
+    "Use these tools to accomplish the user's requests. "
+    "Do not use the task tool or any subagent delegation. "
+    "Do not use file tools (ls, read_file, write_file, etc.)."
+)
+
+
+def _instantiate_bfcl_apis(case: dict[str, Any]) -> dict[str, Any]:
+    """Create and load BFCL API instances from case config."""
+    instances: dict[str, Any] = {}
+    for class_name in case["involved_classes"]:
+        cls = _BFCL_CLASS_REGISTRY[class_name]
+        instance = cls()
+        config = copy.deepcopy(case["initial_config"].get(class_name, {}))
+        instance._load_scenario(config, long_context=False)  # noqa: SLF001
+        instances[class_name] = instance
+    return instances
+
+
+def _wrap_bfcl_methods_as_tools(instances: dict[str, Any]) -> list[StructuredTool]:
+    """Wrap all public methods of BFCL API instances as StructuredTools."""
+    tools: list[StructuredTool] = []
+    for instance in instances.values():
+        for method_name, method in inspect.getmembers(instance, predicate=inspect.ismethod):
+            if method_name.startswith("_"):
+                continue
+            tools.append(
+                StructuredTool.from_function(
+                    func=method,
+                    name=method_name,
+                    description=(method.__doc__ or "").strip(),
+                )
+            )
+    return tools
+
+
+def _fix_bfcl_gt_call(call_str: str) -> str:
+    """Fix known issues in BFCL ground truth call strings."""
+    # Strip sender_id kwarg (not in MessageAPI.send_message signature)
+    return re.sub(r"sender_id=['\"][^'\"]*['\"],\s*", "", call_str)
+
+
+def _replay_bfcl_ground_truth(case: dict[str, Any]) -> dict[str, Any]:
+    """Replay ground truth calls on fresh API instances."""
+    gt_instances = _instantiate_bfcl_apis(case)
+    methods: dict[str, Any] = {}
+    for instance in gt_instances.values():
+        for name, method in inspect.getmembers(instance, predicate=inspect.ismethod):
+            if not name.startswith("_"):
+                methods[name] = method
+    for turn_gt in case["ground_truth"]:
+        for call_str in turn_gt:
+            try:
+                eval(_fix_bfcl_gt_call(call_str), {"__builtins__": {}}, methods)  # noqa: S307
+            except Exception:  # noqa: BLE001
+                pass  # Some GT calls reference missing methods (e.g. view_messages_received)
+    return gt_instances
+
+
+def _bfcl_state_diff(
+    model_instances: dict[str, Any],
+    gt_instances: dict[str, Any],
+    case: dict[str, Any],
+) -> str:
+    """Return human-readable diff of model vs ground-truth API state."""
+    diffs: list[str] = []
+    for class_name in case["involved_classes"]:
+        model_inst = model_instances[class_name]
+        gt_inst = gt_instances[class_name]
+        for attr_name in vars(gt_inst):
+            if attr_name.startswith("_"):
+                continue
+            model_val = getattr(model_inst, attr_name)
+            gt_val = getattr(gt_inst, attr_name)
+            if model_val != gt_val:
+                diffs.append(f"  {class_name}.{attr_name}: got={model_val!r}, expected={gt_val!r}")
+    return "\n".join(diffs)
+
+
 def run_bfcl_case(case: dict[str, Any], model: BaseChatModel) -> None:
-    agent = _create_file_backed_agent(model)
-    run_agent(
-        agent,
+    """Run a BFCL v3 case with live stateful API tools."""
+    model_instances = _instantiate_bfcl_apis(case)
+    tools = _wrap_bfcl_methods_as_tools(model_instances)
+
+    agent = create_deep_agent(
         model=model,
-        query=case["prompt"],
-        initial_files=case["files"],
-        scorer=_create_text_scorer(case),
-        eval_metadata=_external_eval_metadata(
-            case_id=case["id"],
-            vertical="tool_calling",
-            origin_benchmark="bfcl",
-            difficulty=str(case.get("difficulty", "hard")),
-            tags=["curated", "hard", "tool_calling", *case.get("axes", [])],
-        ),
+        tools=tools,
+        system_prompt=_BFCL_SYSTEM_PROMPT,
+        checkpointer=MemorySaver(),
     )
+
+    thread_id = str(uuid.uuid4())
+    config = {"configurable": {"thread_id": thread_id}}
+
+    t.log_inputs(
+        {
+            "case_id": case["id"],
+            "category": case["category"],
+            "num_turns": case["num_turns"],
+            "involved_classes": case["involved_classes"],
+            "model": str(getattr(model, "model", None) or getattr(model, "model_name", "")),
+            "eval_metadata": _external_eval_metadata(
+                case_id=case["id"],
+                vertical="tool_calling",
+                origin_benchmark="bfcl",
+                difficulty=str(case.get("difficulty", "hard")),
+                tags=["curated", "hard", "tool_calling", *case.get("axes", [])],
+            ),
+        }
+    )
+
+    # Multi-turn conversation
+    for turn_messages in case["conversation"]:
+        if turn_messages:
+            invoke_inputs: dict[str, Any] = {"messages": turn_messages}
+        else:
+            invoke_inputs = {
+                "messages": [
+                    {"role": "user", "content": "Please continue and complete any remaining tasks."}
+                ]
+            }
+        result = agent.invoke(invoke_inputs, config)
+
+    t.log_outputs(result)
+
+    # Score via state comparison
+    gt_instances = _replay_bfcl_ground_truth(case)
+    diff = _bfcl_state_diff(model_instances, gt_instances, case)
+
+    if diff:
+        t.log_feedback(key="correctness", value=0)
+        pytest.fail(f"BFCL state mismatch for {case['id']}:\n{diff}", pytrace=False)
+    else:
+        t.log_feedback(key="correctness", value=1)

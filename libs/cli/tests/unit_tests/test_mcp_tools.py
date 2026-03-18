@@ -1478,6 +1478,11 @@ class TestCheckStdioServer:
         ):
             _check_stdio_server("test-server", {"command": "npx"})
 
+    def test_missing_command_key(self) -> None:
+        """Raises RuntimeError when config lacks `command` key."""
+        with pytest.raises(RuntimeError, match="missing 'command' in config"):
+            _check_stdio_server("test-server", {})
+
 
 class TestCheckRemoteServer:
     """Tests for _check_remote_server pre-flight validation."""
@@ -1539,6 +1544,26 @@ class TestCheckRemoteServer:
         ):
             await _check_remote_server("test-server", {"url": "http://"})
 
+    async def test_missing_url_key(self) -> None:
+        """Raises RuntimeError when config lacks `url` key."""
+        with pytest.raises(RuntimeError, match="missing 'url' in config"):
+            await _check_remote_server("test-server", {})
+
+    async def test_timeout(self) -> None:
+        """Raises RuntimeError on connection timeout."""
+        import httpx
+
+        mock_client = AsyncMock()
+        mock_client.head.side_effect = httpx.TimeoutException("timed out")
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with (
+            patch("httpx.AsyncClient", return_value=mock_client),
+            pytest.raises(RuntimeError, match="unreachable"),
+        ):
+            await _check_remote_server("test-server", {"url": "http://slow:8080"})
+
 
 class TestHealthCheckIntegration:
     """Tests for health check integration in _load_tools_from_config."""
@@ -1558,9 +1583,103 @@ class TestHealthCheckIntegration:
 
         with (
             patch("deepagents_cli.mcp_tools.shutil.which", return_value=None),
-            pytest.raises(RuntimeError, match="not found on PATH"),
+            pytest.raises(RuntimeError, match="Pre-flight health check"),
         ):
             await get_mcp_tools(path)
 
         # session() should never be called — health check fails first
         mock_client.session.assert_not_called()
+
+    @patch("langchain_mcp_adapters.client.MultiServerMCPClient")
+    async def test_remote_health_check_failure_skips_session(
+        self,
+        mock_client_class: MagicMock,
+        write_config: Callable[..., str],
+    ) -> None:
+        """Remote health check failure prevents session creation."""
+        import httpx
+
+        path = write_config(
+            {"mcpServers": {"api": {"type": "sse", "url": "http://down:9999"}}}
+        )
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+
+        mock_http = AsyncMock()
+        mock_http.head.side_effect = httpx.TransportError("refused")
+        mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+        mock_http.__aexit__ = AsyncMock(return_value=False)
+
+        with (
+            patch("httpx.AsyncClient", return_value=mock_http),
+            pytest.raises(RuntimeError, match="Pre-flight health check"),
+        ):
+            await get_mcp_tools(path)
+
+        mock_client.session.assert_not_called()
+
+    @patch("langchain_mcp_adapters.client.MultiServerMCPClient")
+    async def test_multi_server_collects_all_failures(
+        self,
+        mock_client_class: MagicMock,
+        write_config: Callable[..., str],
+    ) -> None:
+        """All server failures are reported in a single error."""
+        path = write_config(
+            {
+                "mcpServers": {
+                    "a": {"command": "missing-a", "args": []},
+                    "b": {"command": "missing-b", "args": []},
+                }
+            }
+        )
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+
+        with (
+            patch("deepagents_cli.mcp_tools.shutil.which", return_value=None),
+            pytest.raises(RuntimeError) as exc_info,
+        ):
+            await get_mcp_tools(path)
+
+        error_msg = str(exc_info.value)
+        assert "missing-a" in error_msg
+        assert "missing-b" in error_msg
+        mock_client.session.assert_not_called()
+
+    @patch("langchain_mcp_adapters.client.MultiServerMCPClient")
+    async def test_mixed_stdio_and_remote_checks(
+        self,
+        mock_client_class: MagicMock,
+        write_config: Callable[..., str],
+    ) -> None:
+        """Both stdio and remote health checks run for mixed configs."""
+        import httpx
+
+        path = write_config(
+            {
+                "mcpServers": {
+                    "local": {"command": "missing-cmd", "args": []},
+                    "remote": {"type": "sse", "url": "http://down:9999"},
+                }
+            }
+        )
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+
+        mock_http = AsyncMock()
+        mock_http.head.side_effect = httpx.TransportError("refused")
+        mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+        mock_http.__aexit__ = AsyncMock(return_value=False)
+
+        with (
+            patch("deepagents_cli.mcp_tools.shutil.which", return_value=None),
+            patch("httpx.AsyncClient", return_value=mock_http),
+            pytest.raises(RuntimeError) as exc_info,
+        ):
+            await get_mcp_tools(path)
+
+        # Both failures appear in the error message
+        error_msg = str(exc_info.value)
+        assert "missing-cmd" in error_msg
+        assert "down:9999" in error_msg

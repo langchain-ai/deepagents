@@ -378,9 +378,12 @@ def _check_stdio_server(server_name: str, server_config: dict[str, Any]) -> None
         server_config: Server configuration dictionary with `command` key.
 
     Raises:
-        RuntimeError: If the command is not found on PATH.
+        RuntimeError: If the command is missing from config or not found on PATH.
     """
-    command = server_config["command"]
+    command = server_config.get("command")
+    if command is None:
+        msg = f"MCP server '{server_name}': missing 'command' in config."
+        raise RuntimeError(msg)
     if shutil.which(command) is None:
         msg = (
             f"MCP server '{server_name}': command '{command}' not found on PATH. "
@@ -395,18 +398,22 @@ async def _check_remote_server(server_name: str, server_config: dict[str, Any]) 
     Sends a lightweight HEAD request with a 2-second timeout to detect DNS
     failures, refused connections, and network timeouts early, before the MCP
     session handshake. HTTP error responses (4xx, 5xx) are not treated as
-    failures — only transport-level errors raise.
+    failures — only transport errors, invalid URLs, and OS-level socket
+    errors raise.
 
     Args:
         server_name: Name of the server (for error messages).
         server_config: Server configuration dictionary with `url` key.
 
     Raises:
-        RuntimeError: If the server URL is unreachable.
+        RuntimeError: If the server URL is unreachable or invalid.
     """
     import httpx
 
-    url = server_config["url"]
+    url = server_config.get("url")
+    if url is None:
+        msg = f"MCP server '{server_name}': missing 'url' in config."
+        raise RuntimeError(msg)
     try:
         async with httpx.AsyncClient() as client:
             await client.head(url, timeout=2)
@@ -443,13 +450,23 @@ async def _load_tools_from_config(
     )
     from langchain_mcp_adapters.tools import load_mcp_tools
 
-    # Pre-flight health checks (before allocating any resources)
+    # Pre-flight health checks (best-effort early detection; the session setup
+    # below has its own error handling for TOCTOU races).
+    errors: list[str] = []
     for server_name, server_config in config["mcpServers"].items():
         server_type = _resolve_server_type(server_config)
-        if server_type in _SUPPORTED_REMOTE_TYPES:
-            await _check_remote_server(server_name, server_config)
-        else:
-            _check_stdio_server(server_name, server_config)
+        try:
+            if server_type in _SUPPORTED_REMOTE_TYPES:
+                await _check_remote_server(server_name, server_config)
+            elif server_type == "stdio":
+                _check_stdio_server(server_name, server_config)
+        except RuntimeError as exc:
+            errors.append(str(exc))
+    if errors:
+        msg = "Pre-flight health check(s) failed:\n" + "\n".join(
+            f"  - {e}" for e in errors
+        )
+        raise RuntimeError(msg)
 
     # Create connections dict for MultiServerMCPClient
     # Convert Claude Desktop format to langchain-mcp-adapters format

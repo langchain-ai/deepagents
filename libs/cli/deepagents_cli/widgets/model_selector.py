@@ -19,7 +19,7 @@ from textual.widgets import Input, Static
 if TYPE_CHECKING:
     from textual.app import ComposeResult
 
-from deepagents_cli.config import CharsetMode, Glyphs, _detect_charset_mode, get_glyphs
+from deepagents_cli.config import Glyphs, get_glyphs, is_ascii_mode
 from deepagents_cli.model_config import (
     ModelConfig,
     ModelProfileEntry,
@@ -298,7 +298,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
 
     async def on_mount(self) -> None:
         """Set up the screen on mount."""
-        if _detect_charset_mode() == CharsetMode.ASCII:
+        if is_ascii_mode():
             container = self.query_one(Vertical)
             container.styles.border = ("ascii", "green")
 

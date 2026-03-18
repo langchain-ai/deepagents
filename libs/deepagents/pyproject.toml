@@ -82,8 +82,9 @@ build-backend = "setuptools.build_meta"
 
 [tool.ruff]
 line-length = 150
-# Exclude any files that shouldn't be linted
-exclude = []
+# Vendored BFCL benchmark files — skip both lint and format
+exclude = ["tests/evals/data/bfcl_apis"]
+force-exclude = true
 
 [tool.ruff.format]
 docstring-code-format = true  # Formats code blocks in docstrings

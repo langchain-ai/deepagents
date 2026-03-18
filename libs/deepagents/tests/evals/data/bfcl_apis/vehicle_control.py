@@ -48,6 +48,7 @@ DEFAULT_STATE = {
 
 
 class VehicleControlAPI:
+
     def __init__(self):
         """
         Initializes the vehicle control API with default values.
@@ -109,9 +110,7 @@ class VehicleControlAPI:
         self.acTemperature = scenario.get(
             "acTemperature", DEFAULT_STATE_COPY["acTemperature"]
         )  # in degree Celsius
-        self.fanSpeed = scenario.get(
-            "fanSpeed", DEFAULT_STATE_COPY["fanSpeed"]
-        )  # 0 to 100
+        self.fanSpeed = scenario.get("fanSpeed", DEFAULT_STATE_COPY["fanSpeed"])  # 0 to 100
         self.acMode = scenario.get(
             "acMode", DEFAULT_STATE_COPY["acMode"]
         )  # auto, cool, heat, defrost
@@ -142,9 +141,7 @@ class VehicleControlAPI:
         self.cruiseStatus = scenario.get(
             "cruiseStatus", DEFAULT_STATE_COPY["cruiseStatus"]
         )  # active, inactive
-        self.destination = scenario.get(
-            "destination", DEFAULT_STATE_COPY["destination"]
-        )
+        self.destination = scenario.get("destination", DEFAULT_STATE_COPY["destination"])
         self.frontLeftTirePressure = scenario.get(
             "frontLeftTirePressure", DEFAULT_STATE_COPY["frontLeftTirePressure"]
         )
@@ -199,9 +196,7 @@ class VehicleControlAPI:
                 )
             }
         if self.brakePedalStatus != "pressed":
-            return {
-                "error": "Brake pedal needs to be pressed when starting the engine."
-            }
+            return {"error": "Brake pedal needs to be pressed when starting the engine."}
         if self._brakePedalForce != 1000.0:
             return {"error": "Must press the brake fully before starting the engine."}
         if self.fuelLevel < MIN_FUEL_LEVEL:
@@ -304,9 +299,7 @@ class VehicleControlAPI:
             outsideTemperature (float): The outside temperature in degree Celsius.
         """
         if self.long_context:
-            LONG_WEATHER_EXTENSION["outsideTemperature"] = self._random.uniform(
-                -10.0, 40.0
-            )
+            LONG_WEATHER_EXTENSION["outsideTemperature"] = self._random.uniform(-10.0, 40.0)
             return LONG_WEATHER_EXTENSION
         return {"outsideTemperature": self._random.uniform(-10.0, 40.0)}
 
@@ -335,9 +328,7 @@ class VehicleControlAPI:
             self.headLightStatus = "off"
             return {"headlightStatus": "off"}
 
-    def displayCarStatus(
-        self, option: str
-    ) -> Dict[str, Union[str, float, Dict[str, str]]]:
+    def displayCarStatus(self, option: str) -> Dict[str, Union[str, float, Dict[str, str]]]:
         """
         Displays the status of the vehicle based on the provided display option.
         Args:
@@ -416,11 +407,7 @@ class VehicleControlAPI:
                     "_parkingBrakeForce": 500.0,
                     "_slopeAngle": 10.0,
                 }
-            return {
-                "parkingBrakeStatus": "engaged",
-                "_parkingBrakeForce": 500.0,
-                "_slopeAngle": 10.0,
-            }
+            return {"parkingBrakeStatus": "engaged", "_parkingBrakeForce": 500.0, "_slopeAngle": 10.0}
         else:
             self.parkingBrakeStatus = "released"
             self._parkingBrakeForce = 0.0
@@ -432,11 +419,7 @@ class VehicleControlAPI:
                     "_parkingBrakeForce": 0.0,
                     "_slopeAngle": 10.0,
                 }
-            return {
-                "parkingBrakeStatus": "released",
-                "_parkingBrakeForce": 0.0,
-                "_slopeAngle": 10.0,
-            }
+            return {"parkingBrakeStatus": "released", "_parkingBrakeForce": 0.0, "_slopeAngle": 10.0}
 
     def pressBrakePedal(self, pedalPosition: float) -> Dict[str, Union[str, float]]:
         """
@@ -690,15 +673,12 @@ class VehicleControlAPI:
         """
         # This is the healthy standard the vehicle use, though the user might have different preferences
         healthy_tire_pressure = (
-            30
-            <= (
+            30 <= (
                 self.frontLeftTirePressure
                 + self.frontRightTirePressure
                 + self.rearLeftTirePressure
                 + self.rearRightTirePressure
-            )
-            / 4
-            <= 35
+            ) / 4 <= 35
         )
 
         tire_status = {

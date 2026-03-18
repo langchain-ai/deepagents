@@ -58,25 +58,19 @@ class TravelAPI:
         self.booking_record = scenario.get(
             "booking_record", DEFAULT_STATE_COPY["booking_record"]
         )
-        self.access_token = scenario.get(
-            "access_token", DEFAULT_STATE_COPY["access_token"]
-        )
+        self.access_token = scenario.get("access_token", DEFAULT_STATE_COPY["access_token"])
         self.token_type = scenario.get("token_type", DEFAULT_STATE_COPY["token_type"])
         self.token_expires_in = scenario.get(
             "token_expires_in", DEFAULT_STATE_COPY["token_expires_in"]
         )
-        self.token_scope = scenario.get(
-            "token_scope", DEFAULT_STATE_COPY["token_scope"]
-        )
+        self.token_scope = scenario.get("token_scope", DEFAULT_STATE_COPY["token_scope"])
         self.user_first_name = scenario.get(
             "user_first_name", DEFAULT_STATE_COPY["user_first_name"]
         )
         self.user_last_name = scenario.get(
             "user_last_name", DEFAULT_STATE_COPY["user_last_name"]
         )
-        self.budget_limit = scenario.get(
-            "budget_limit", DEFAULT_STATE_COPY["budget_limit"]
-        )
+        self.budget_limit = scenario.get("budget_limit", DEFAULT_STATE_COPY["budget_limit"])
         self.long_context = long_context
 
         if self.long_context:
@@ -421,9 +415,7 @@ class TravelAPI:
         elif travel_class == "first":
             factor = 5
         else:
-            raise ValueError(
-                "Invalid travel class. Options are: economy, business, first."
-            )
+            raise ValueError("Invalid travel class. Options are: economy, business, first.")
 
         # Determine the multiplier based on the travel date
         digit_sum = sum(int(char) for char in travel_date if char.isdigit())
@@ -443,9 +435,7 @@ class TravelAPI:
             cost = float(base_costs[travel_pair] * factor * travel_date_multiplier)
             travel_cost_list = [cost]
             self._flight_cost_lookup = {
-                f"{travel_from}|{travel_to}|{travel_class}|{travel_date}": {
-                    "cost": cost
-                }
+                f"{travel_from}|{travel_to}|{travel_class}|{travel_date}": {"cost": cost}
             }
 
         return {"travel_cost_list": travel_cost_list}

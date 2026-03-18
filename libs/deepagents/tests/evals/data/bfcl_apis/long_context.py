@@ -1,5 +1,5 @@
 # Stub for BFCL long_context constants.
-# We set long_context=False for all cases, so these values are never read at runtime.
+# We set long_context=False for all cases, so these are never accessed.
 # Vendoring the real file would add ~92K tokens of constant data.
 
 CAR_STATUS_METADATA_EXTENSION = ""

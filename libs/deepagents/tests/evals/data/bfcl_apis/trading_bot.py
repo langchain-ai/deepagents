@@ -170,9 +170,7 @@ class TradingBot:
             int(k) if isinstance(k, str) and k.isdigit() else k: v
             for k, v in self.orders.items()
         }
-        self.account_info = scenario.get(
-            "account_info", DEFAULT_STATE_COPY["account_info"]
-        )
+        self.account_info = scenario.get("account_info", DEFAULT_STATE_COPY["account_info"])
         self.authenticated = scenario.get(
             "authenticated", DEFAULT_STATE_COPY["authenticated"]
         )
@@ -327,9 +325,7 @@ class TradingBot:
         if order_id not in self.orders:
             return {"error": f"Order with ID {order_id} not found."}
         if self.orders[order_id]["status"] == "Completed":
-            return {
-                "error": f"Can't cancel order {order_id}. Order is already completed."
-            }
+            return {"error": f"Can't cancel order {order_id}. Order is already completed."}
         self.orders[order_id]["status"] = "Cancelled"
         return {"order_id": order_id, "status": "Cancelled"}
 
@@ -404,9 +400,7 @@ class TradingBot:
             new_balance (float): Updated account balance after the transaction.
         """
         if not self.authenticated:
-            return {
-                "error": "User not authenticated. Please log in to make a transaction."
-            }
+            return {"error": "User not authenticated. Please log in to make a transaction."}
         if self.market_status != "Open":
             return {"error": "Market is closed. Transactions are not allowed."}
         if amount <= 0:
@@ -494,9 +488,7 @@ class TradingBot:
             new_balance (float): Updated account balance after funding.
         """
         if not self.authenticated:
-            return {
-                "error": "User not authenticated. Please log in to fund the account."
-            }
+            return {"error": "User not authenticated. Please log in to fund the account."}
         if amount <= 0:
             return {"error": "Funding amount must be positive."}
         self.account_info["balance"] += amount
@@ -539,9 +531,7 @@ class TradingBot:
             watchlist (List[str]): List of stock symbols in the watchlist.
         """
         if not self.authenticated:
-            return [
-                "Error: User not authenticated. Please log in to view the watchlist."
-            ]
+            return ["Error: User not authenticated. Please log in to view the watchlist."]
 
         if self.long_context:
             watch_list = self.watch_list.copy()
@@ -558,9 +548,7 @@ class TradingBot:
         """
         if not self.authenticated:
             return [
-                {
-                    "error": "User not authenticated. Please log in to view order history."
-                }
+                {"error": "User not authenticated. Please log in to view order history."}
             ]
 
         return {"history": list(self.orders.keys())}
@@ -669,9 +657,7 @@ class TradingBot:
                 self.watch_list.append(stock)
         return {"watchlist": self.watch_list}
 
-    def notify_price_change(
-        self, stocks: List[str], threshold: float
-    ) -> Dict[str, str]:
+    def notify_price_change(self, stocks: List[str], threshold: float) -> Dict[str, str]:
         """
         Notify if there is a significant price change in the stocks.
 
@@ -694,6 +680,4 @@ class TradingBot:
                 "notification": f"Stocks {', '.join(changed_stocks)} have significant price changes."
             }
         else:
-            return {
-                "notification": "No significant price changes in the selected stocks."
-            }
+            return {"notification": "No significant price changes in the selected stocks."}

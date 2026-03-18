@@ -1788,9 +1788,9 @@ class DeepAgentsApp(App):
     async def _open_url_command(self, command: str, cmd: str) -> None:
         """Open a URL in the browser and display a clickable link.
 
-        The browser opens immediately regardless of busy state. Chat output
-        (user echo + clickable link) is deferred until the current task
-        finishes so it doesn't inject mid-agent-output.
+        The browser opens immediately regardless of busy state. When the app is
+        busy, a queued indicator is shown and the real chat output (user echo
+        + clickable link) replaces it after the current task finishes.
 
         Args:
             command: The raw command text (displayed as user message).
@@ -1800,8 +1800,16 @@ class DeepAgentsApp(App):
         webbrowser.open(url)
 
         if self._agent_running or self._shell_running:
-            # Defer chat output until the current task finishes.
+            queued_widget = QueuedUserMessage(command)
+            self._queued_widgets.append(queued_widget)
+            await self._mount_message(queued_widget)
+
             async def _mount_output() -> None:
+                # Remove the ephemeral queued widget, then mount real output.
+                if queued_widget in self._queued_widgets:
+                    self._queued_widgets.remove(queued_widget)
+                with suppress(Exception):
+                    await queued_widget.remove()
                 await self._mount_message(UserMessage(command))
                 link = Content.styled(url, TStyle(dim=True, italic=True, link=url))
                 await self._mount_message(AppMessage(link))

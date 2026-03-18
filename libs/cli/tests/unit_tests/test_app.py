@@ -2482,7 +2482,7 @@ class TestSlashCommandBypass:
 class TestBypassFrozensetDrift:
     """Ensure bypass frozensets stay in sync with _handle_command dispatch.
 
-    Every slash command must appear in exactly one of the four policy
+    Every slash command must appear in exactly one of the five policy
     frozensets (derived from `command_registry.COMMANDS`) AND in
     `_handle_command`. Adding a command to one without the other will fail
     these tests.
@@ -2743,3 +2743,56 @@ class TestDeferredActions:
 
             assert len(app._pending_messages) == 1
             assert app._pending_messages[0].text == "/model gpt-4"
+
+    async def test_can_bypass_queue_side_effect_free(self) -> None:
+        """SIDE_EFFECT_FREE commands bypass regardless of busy state."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            for cmd in ("/changelog", "/docs", "/feedback", "/mcp"):
+                assert app._can_bypass_queue(cmd) is True
+
+                # Still bypass even when agent/shell running
+                app._agent_running = True
+                assert app._can_bypass_queue(cmd) is True
+                app._agent_running = False
+
+                app._shell_running = True
+                assert app._can_bypass_queue(cmd) is True
+                app._shell_running = False
+
+    async def test_can_bypass_queue_empty_string(self) -> None:
+        """Empty string should not bypass the queue."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._can_bypass_queue("") is False
+
+    async def test_defer_action_mixed_kinds_preserves_ordering(self) -> None:
+        """Deferring mixed kinds keeps ordering; same-kind replaces in place."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            executed: list[str] = []
+
+            async def first_model() -> None:  # noqa: RUF029
+                executed.append("first_model")
+
+            async def thread_fn() -> None:  # noqa: RUF029
+                executed.append("thread")
+
+            async def second_model() -> None:  # noqa: RUF029
+                executed.append("second_model")
+
+            app._defer_action(DeferredAction(kind="model_switch", execute=first_model))
+            app._defer_action(DeferredAction(kind="thread_switch", execute=thread_fn))
+            app._defer_action(DeferredAction(kind="model_switch", execute=second_model))
+
+            assert len(app._deferred_actions) == 2
+            assert app._deferred_actions[0].kind == "thread_switch"
+            assert app._deferred_actions[1].kind == "model_switch"
+
+            await app._drain_deferred_actions()
+            assert executed == ["thread", "second_model"]

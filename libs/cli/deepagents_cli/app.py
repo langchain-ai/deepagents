@@ -275,32 +275,28 @@ typing before showing the approval widget regardless."""
 
 @dataclass(frozen=True, slots=True)
 class QueuedMessage:
-    """Represents a queued user message awaiting processing.
-
-    Attributes:
-        text: The message text content.
-        mode: The input mode that determines message routing.
-    """
+    """Represents a queued user message awaiting processing."""
 
     text: str
+    """The message text content."""
+
     mode: InputMode
+    """The input mode that determines message routing."""
 
 
 DeferredActionKind = Literal["model_switch", "thread_switch"]
 """Valid `DeferredAction.kind` values for type-checked deduplication."""
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class DeferredAction:
-    """An action deferred until the current busy state resolves.
-
-    Attributes:
-        kind: Identity key for deduplication — one of `DeferredActionKind`.
-        execute: Async callable that performs the actual work.
-    """
+    """An action deferred until the current busy state resolves."""
 
     kind: DeferredActionKind
+    """Identity key for deduplication — one of `DeferredActionKind`."""
+
     execute: Callable[[], Awaitable[None]]
+    """Async callable that performs the actual work."""
 
 
 class TextualTokenTracker:
@@ -1738,6 +1734,13 @@ class DeepAgentsApp(App):
             await self._maybe_drain_deferred()
         except Exception:
             logger.exception("Failed to drain deferred actions during shell cleanup")
+            with suppress(Exception):
+                await self._mount_message(
+                    ErrorMessage(
+                        "A deferred action failed after task completion. "
+                        "You may need to retry the operation."
+                    )
+                )
         await self._process_next_from_queue()
 
     async def _kill_shell_process(self) -> None:
@@ -2411,6 +2414,13 @@ class DeepAgentsApp(App):
             await self._maybe_drain_deferred()
         except Exception:
             logger.exception("Failed to drain deferred actions during agent cleanup")
+            with suppress(Exception):
+                await self._mount_message(
+                    ErrorMessage(
+                        "A deferred action failed after task completion. "
+                        "You may need to retry the operation."
+                    )
+                )
 
         # Process next message from queue if any
         await self._process_next_from_queue()
@@ -2935,7 +2945,7 @@ class DeepAgentsApp(App):
         self._deferred_actions.append(action)
 
     async def _maybe_drain_deferred(self) -> None:
-        """Drain deferred actions if not blocked by connection or active work."""
+        """Drain deferred actions unless a server connection is still in progress."""
         if not self._connecting:
             await self._drain_deferred_actions()
 
@@ -2946,14 +2956,19 @@ class DeepAgentsApp(App):
             try:
                 await action.execute()
             except Exception:
-                logger.exception("Failed to execute deferred action %r", action.kind)
-                label = action.kind.replace("_", " ")
-                await self._mount_message(
-                    ErrorMessage(
-                        f"Deferred {label} failed unexpectedly. "
-                        "You may need to retry the operation."
-                    )
+                logger.exception(
+                    "Failed to execute deferred action %r (callable=%r)",
+                    action.kind,
+                    action.execute,
                 )
+                label = action.kind.replace("_", " ")
+                with suppress(Exception):
+                    await self._mount_message(
+                        ErrorMessage(
+                            f"Deferred {label} failed unexpectedly. "
+                            "You may need to retry the operation."
+                        )
+                    )
 
     def _cancel_worker(self, worker: Worker[None] | None) -> None:
         """Discard the message queue and cancel an active worker.
@@ -3715,18 +3730,17 @@ class DeepAgentsApp(App):
 
 @dataclass(frozen=True)
 class AppResult:
-    """Result from running the Textual application.
-
-    Attributes:
-        return_code: Exit code (0 for success, non-zero for error).
-        thread_id: The final thread ID at shutdown. May differ from the
-            initial thread ID if the user switched threads via `/threads`.
-        session_stats: Cumulative usage stats across all turns in the session.
-    """
+    """Result from running the Textual application."""
 
     return_code: int
+    """Exit code (0 for success, non-zero for error)."""
+
     thread_id: str | None
+    """The final thread ID at shutdown. May differ from the initial thread ID if
+    the user switched threads via `/threads`."""
+
     session_stats: SessionStats = field(default_factory=SessionStats)
+    """Cumulative usage stats across all turns in the session."""
 
 
 async def run_textual_app(

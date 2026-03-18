@@ -29,6 +29,12 @@ from textual.style import Style as TStyle
 from textual.widgets import Static
 
 from deepagents_cli.clipboard import copy_selection_to_clipboard
+from deepagents_cli.command_registry import (
+    ALWAYS_IMMEDIATE,
+    BYPASS_WHEN_CONNECTING,
+    IMMEDIATE_UI,
+    SIDE_EFFECT_FREE,
+)
 from deepagents_cli.config import (
     DOCS_URL,
     SHELL_TOOL_NAMES,
@@ -265,22 +271,6 @@ key presses.
 _DEFERRED_APPROVAL_TIMEOUT_SECONDS: float = 30.0
 """Maximum seconds the deferred-approval worker will wait for the user to stop
 typing before showing the approval widget regardless."""
-
-# ---------------------------------------------------------------------------
-# Slash-command bypass tiers
-# ---------------------------------------------------------------------------
-_ALWAYS_IMMEDIATE: frozenset[str] = frozenset({"/quit", "/q"})
-"""Execute regardless of any busy state (incl. thread switching)."""
-
-_BYPASS_WHEN_CONNECTING: frozenset[str] = frozenset({"/version"})
-"""Bypass only during initial connection, not during agent/shell."""
-
-_IMMEDIATE_UI: frozenset[str] = frozenset({"/model", "/threads"})
-"""Open modal UI immediately; actual side-effect deferred by callback.
-
-Any command added here MUST defer its real work to a selector callback
-(via `_defer_action`). The bypass is unconditional — no busy-state check.
-"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -1554,13 +1544,13 @@ class DeepAgentsApp(App):
             `True` if the command should bypass the busy-state queue.
         """
         cmd = value.split(maxsplit=1)[0] if value else ""
-        if cmd in _BYPASS_WHEN_CONNECTING:
+        if cmd in BYPASS_WHEN_CONNECTING:
             return self._connecting and not (self._agent_running or self._shell_running)
-        if cmd in _IMMEDIATE_UI:
+        if cmd in IMMEDIATE_UI:
             # Only bare form (no args) bypasses — /model opens selector,
             # /model <name> does a direct switch that shouldn't race with agent.
             return value == cmd
-        return False
+        return cmd in SIDE_EFFECT_FREE
 
     async def on_chat_input_submitted(self, event: ChatInput.Submitted) -> None:
         """Handle submitted input from ChatInput widget."""
@@ -1573,7 +1563,7 @@ class DeepAgentsApp(App):
         await dispatch_hook("user.prompt", {})
 
         # /quit and /q always execute immediately, even mid-thread-switch.
-        if mode == "command" and value.lower().strip() in _ALWAYS_IMMEDIATE:
+        if mode == "command" and value.lower().strip() in ALWAYS_IMMEDIATE:
             self.exit()
             return
 

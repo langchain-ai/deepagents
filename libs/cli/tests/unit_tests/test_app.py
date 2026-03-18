@@ -2479,6 +2479,64 @@ class TestSlashCommandBypass:
             assert len(app._pending_messages) == 0
 
 
+class TestBypassFrozensetDrift:
+    """Ensure bypass frozensets stay in sync with _handle_command dispatch.
+
+    Every slash command must appear in exactly one of the four policy
+    frozensets (derived from `command_registry.COMMANDS`) AND in
+    `_handle_command`. Adding a command to one without the other will fail
+    these tests.
+    """
+
+    @staticmethod
+    def _handled_commands() -> set[str]:
+        """Extract slash-command literals from `_handle_command` source."""
+        import ast
+        import inspect
+        import textwrap
+
+        source = textwrap.dedent(inspect.getsource(DeepAgentsApp._handle_command))
+        tree = ast.parse(source)
+
+        handled: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                val = node.value.strip()
+                if val.startswith("/") and len(val) > 1:
+                    handled.add(val)
+        return handled
+
+    def test_all_bypass_commands_are_handled(self) -> None:
+        """Every command in a bypass frozenset must appear in _handle_command."""
+        from deepagents_cli.command_registry import (
+            ALWAYS_IMMEDIATE,
+            BYPASS_WHEN_CONNECTING,
+            IMMEDIATE_UI,
+            SIDE_EFFECT_FREE,
+        )
+
+        handled = self._handled_commands()
+        bypass = (
+            ALWAYS_IMMEDIATE | BYPASS_WHEN_CONNECTING | IMMEDIATE_UI | SIDE_EFFECT_FREE
+        )
+        missing = bypass - handled
+        assert not missing, (
+            f"Bypass commands {missing} are not handled in _handle_command. "
+            "Add a handler or remove from the bypass frozenset."
+        )
+
+    def test_all_handled_commands_are_classified(self) -> None:
+        """Every command in _handle_command must be in a policy frozenset."""
+        from deepagents_cli.command_registry import ALL_CLASSIFIED
+
+        handled = self._handled_commands()
+        missing = handled - ALL_CLASSIFIED
+        assert not missing, (
+            f"Commands {missing} in _handle_command are not in any bypass "
+            "or QUEUE_BOUND frozenset. Classify them explicitly."
+        )
+
+
 class TestDeferredActions:
     """Test deferred action queueing and draining."""
 

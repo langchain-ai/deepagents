@@ -187,6 +187,7 @@ ignore = [
     "TD003",   # Missing issue link in TODO
 ]
 unfixable = ["B028"] # People should intentionally tune the stacklevel
+extend-safe-fixes = ["PLR6201"]
 
 flake8-annotations.allow-star-arg-any = true
 flake8-annotations.mypy-init-return = true

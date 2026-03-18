@@ -103,6 +103,7 @@ ignore = [
     "PLC0414", # Import alias does not rename original package — conflicts with type-checker re-export conventions
 ]
 unfixable = ["B028"]  # Rules that shouldn't be auto-fixed
+extend-safe-fixes = ["PLR6201"]
 
 [tool.ruff.lint.pyupgrade]
 keep-runtime-typing = true

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import contextlib
 import importlib
+import importlib.util
+import logging
 import os
 import shlex
 import string
@@ -19,6 +21,8 @@ from deepagents_cli.integrations.sandbox_provider import (
     SandboxNotFoundError,
     SandboxProvider,
 )
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from collections.abc import Generator
@@ -453,7 +457,56 @@ def _get_provider(provider_name: str) -> SandboxProvider:
     raise ValueError(msg)
 
 
+def verify_sandbox_deps(provider: str) -> None:
+    """Check that the required packages for a sandbox provider are installed.
+
+    Uses `importlib.util.find_spec` for a lightweight check with no actual
+    imports. Call this in the CLI process *before* spawning the server
+    subprocess so users get a clear, actionable error instead of an opaque
+    server crash.
+
+    Args:
+        provider: Sandbox provider name (e.g. `'daytona'`).
+
+    Raises:
+        ImportError: If the provider's backend package is not installed.
+    """
+    if not provider or provider in {"none", "langsmith"}:
+        return
+
+    # Map provider name → (backend module, pip extra).
+    # Only the backend module is checked because the underlying SDK is a
+    # transitive dependency of the backend package.
+    backend_modules: dict[str, tuple[str, str]] = {
+        "daytona": ("langchain_daytona", "daytona"),
+        "modal": ("langchain_modal", "modal"),
+        "runloop": ("langchain_runloop", "runloop"),
+    }
+
+    entry = backend_modules.get(provider)
+    if entry is None:
+        logger.debug(
+            "No backend_modules entry for provider %r; skipping pre-flight check",
+            provider,
+        )
+        return
+
+    module_name, extra = entry
+    try:
+        found = importlib.util.find_spec(module_name) is not None
+    except (ImportError, ValueError):
+        found = False
+
+    if not found:
+        msg = (
+            f"Missing dependencies for '{provider}' sandbox. "
+            f"Install with: pip install 'deepagents-cli[{extra}]'"
+        )
+        raise ImportError(msg)
+
+
 __all__ = [
     "create_sandbox",
     "get_default_working_dir",
+    "verify_sandbox_deps",
 ]

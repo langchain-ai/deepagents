@@ -10,7 +10,7 @@ deepagents.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
@@ -23,8 +23,8 @@ from tests.evals.llm_judge import llm_judge
 from tests.evals.utils import TrajectoryScorer, run_agent
 
 # ---------------------------------------------------------------------------
-# Test cases — each describes an underspecified user request and criteria
-# for evaluating the agent's followup questions.
+# Test cases — each describes a user request (varying in specificity) and
+# criteria for evaluating the agent's followup questions.
 # ---------------------------------------------------------------------------
 
 FOLLOWUP_CASES = [
@@ -90,7 +90,7 @@ FOLLOWUP_CASES = [
     FOLLOWUP_CASES,
     ids=[c["id"] for c in FOLLOWUP_CASES],
 )
-def test_followup_question_quality(model: BaseChatModel, case: dict) -> None:
+def test_followup_question_quality(model: BaseChatModel, case: dict[str, Any]) -> None:
     """Agent asks relevant followup questions for an underspecified request."""
     agent = create_deep_agent(model=model)
     run_agent(

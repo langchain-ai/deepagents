@@ -11,6 +11,7 @@ Ported from agent-builder-graphs eval suite and adapted for the deepagents
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -22,7 +23,6 @@ from pydantic import BaseModel, Field
 
 from tests.evals.utils import AgentTrajectory, SuccessAssertion
 
-# Default judge model — callers can override via constructor.
 _DEFAULT_JUDGE_MODEL = "claude-sonnet-4-6"
 
 _JUDGE_SYSTEM_PROMPT = """\
@@ -51,7 +51,7 @@ def _grade_conversation_tool(**_kwargs: object) -> str:
     return "no-op"
 
 
-@dataclass(frozen=True)
+@dataclass
 class LLMJudge(SuccessAssertion):
     """Grade the agent's responses against criteria using an LLM judge."""
 
@@ -59,10 +59,10 @@ class LLMJudge(SuccessAssertion):
     """Human-readable criteria the agent's responses must satisfy."""
 
     judge_model: str = _DEFAULT_JUDGE_MODEL
-    """Model identifier for the judge (default: claude-sonnet-4-6)."""
+    """Model identifier for the judge LLM."""
 
-    # Cache so check() and describe_failure() share one judge call instead of two.
-    _grade_cache: dict = field(default_factory=dict, repr=False, compare=False, hash=False)
+    # Single-slot cache so check() and describe_failure() share one judge call.
+    _last_grades: list[dict[str, object]] | None = field(default=None, repr=False, compare=False, hash=False)
 
     def __post_init__(self) -> None:
         if not self.criteria:
@@ -79,7 +79,7 @@ class LLMJudge(SuccessAssertion):
             Whether every criterion passed.
         """
         grades = self._grade(trajectory)
-        self._grade_cache[id(trajectory)] = grades
+        self._last_grades = grades
         return all(g["grade"] == 1 for g in grades)
 
     def describe_failure(self, trajectory: AgentTrajectory) -> str:
@@ -91,7 +91,7 @@ class LLMJudge(SuccessAssertion):
         Returns:
             A failure description including per-criterion feedback.
         """
-        grades = self._grade_cache.pop(id(trajectory), None) or self._grade(trajectory)
+        grades = self._last_grades if self._last_grades is not None else self._grade(trajectory)
         failed = [g for g in grades if g["grade"] != 1]
         parts = [f"Criteria {g['criteria_index']}: {g['feedback']}" for g in failed]
         return f"{len(failed)}/{len(grades)} criteria failed — " + "; ".join(parts)
@@ -100,7 +100,7 @@ class LLMJudge(SuccessAssertion):
     # internals
     # ------------------------------------------------------------------
 
-    def _grade(self, trajectory: AgentTrajectory) -> list[dict]:
+    def _grade(self, trajectory: AgentTrajectory) -> list[dict[str, object]]:
         """Call the judge model and return per-criterion grades.
 
         Args:
@@ -118,16 +118,19 @@ class LLMJudge(SuccessAssertion):
             msg = "Cannot grade trajectory: no steps contain text content. The LLM judge requires at least one text response to evaluate."
             raise ValueError(msg)
 
-        model = init_chat_model(self.judge_model, temperature=0)
-        model_with_tools = model.bind_tools([_grade_conversation_tool], tool_choice="grade_conversation")
-
-        result = model_with_tools.invoke(
-            [
-                SystemMessage(content=_JUDGE_SYSTEM_PROMPT),
-                HumanMessage(content=user_prompt),
-                *conversation,
-            ]
-        )
+        try:
+            model = init_chat_model(self.judge_model, temperature=0)
+            model_with_tools = model.bind_tools([_grade_conversation_tool], tool_choice="grade_conversation")
+            result = model_with_tools.invoke(
+                [
+                    SystemMessage(content=_JUDGE_SYSTEM_PROMPT),
+                    HumanMessage(content=user_prompt),
+                    *conversation,
+                ]
+            )
+        except Exception as exc:
+            msg = f"LLM judge call failed (model={self.judge_model!r}, criteria_count={len(self.criteria)}): {exc}"
+            raise RuntimeError(msg) from exc
 
         tool_calls = result.tool_calls
         if not tool_calls or len(tool_calls) != 1:
@@ -136,10 +139,10 @@ class LLMJudge(SuccessAssertion):
 
         args = tool_calls[0].get("args")
         if not isinstance(args, dict) or "grades" not in args:
-            msg = f"Judge tool call missing 'args' or 'grades' key: {tool_calls[0]!r:.300}"
+            msg = f"Judge tool call missing 'args' or 'grades' key: {repr(tool_calls[0])[:300]}"
             raise ValueError(msg)
 
-        grades: list[dict] = args["grades"]
+        grades: list[dict[str, object]] = args["grades"]
         if len(grades) != len(self.criteria):
             msg = f"Judge returned {len(grades)} grades for {len(self.criteria)} criteria"
             raise ValueError(msg)
@@ -150,14 +153,20 @@ class LLMJudge(SuccessAssertion):
                     msg = f"Judge grade dict missing required key '{key}': {g!r}"
                     raise ValueError(msg)
 
-        # Log per-criterion feedback to LangSmith.
+        # Log aggregate judge result to LangSmith.
         passed = sum(1 for g in grades if g.get("grade") == 1)
         failed = len(grades) - passed
-        t.log_feedback(
-            key="llm_judge_all_passed",
-            score=1.0 if failed == 0 else 0.0,
-            comment=f"{passed}/{len(grades)} criteria passed",
-        )
+        try:
+            t.log_feedback(
+                key="llm_judge_all_passed",
+                score=1.0 if failed == 0 else 0.0,
+                comment=f"{passed}/{len(grades)} criteria passed",
+            )
+        except Exception:  # noqa: BLE001
+            warnings.warn(
+                "Failed to log LLM judge feedback to LangSmith",
+                stacklevel=2,
+            )
 
         return grades
 

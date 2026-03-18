@@ -58,6 +58,7 @@ scorer = (
 | `test_skills.py` | Skill discovery, reading, and application from `SKILL.md` files |
 | `test_hitl.py` | Human-in-the-loop via `interrupt_on` approvals, subagent HITL, custom interrupt configs |
 | `test_memory.py` | Memory recall and behavior guidance from `AGENTS.md` files, preference persistence, composite backends |
+| `test_memory_multiturn.py` | Multi-turn memory: implicit preference extraction, explicit remember instructions, transient info filtering |
 | `test_summarization.py` | Summarization middleware triggers, post-summarization task continuation, history offload to filesystem |
 | `test_subagents.py` | Subagent delegation behavior |
 | `test_system_prompt.py` | System prompt adherence |

@@ -11,7 +11,7 @@ from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.types import Command
 from pydantic import ValidationError
 from rich.console import Console
@@ -456,6 +456,261 @@ class TestExecuteTaskTextualSummarizationFeedback:
 
         assert any(
             isinstance(widget, SummarizationMessage) for widget in mounted_widgets
+        )
+
+
+def _tool_call_message(
+    name: str, args: dict[str, Any], tool_id: str
+) -> SimpleNamespace:
+    """Build a message-like object with content_blocks containing one tool call."""
+    return SimpleNamespace(
+        content_blocks=[
+            {"type": "tool_call", "name": name, "args": args, "id": tool_id}
+        ]
+    )
+
+
+class TestExecuteTaskTextualParallelToolSpinner:
+    """Regression tests for #1796: premature spinner with parallel tools."""
+
+    async def test_spinner_not_shown_until_all_parallel_tools_complete(self) -> None:
+        """With two parallel tools, Thinking appears only at start and after last."""
+        statuses: list[str | None] = []
+
+        async def record_spinner(status: str | None) -> None:
+            await asyncio.sleep(0)
+            statuses.append(status)
+
+        async def mount_message(_widget: object) -> None:
+            await asyncio.sleep(0)
+
+        chunks = [
+            (
+                (),
+                "messages",
+                (
+                    _tool_call_message("task", {"task": "a"}, "tool-a"),
+                    {},
+                ),
+            ),
+            (
+                (),
+                "messages",
+                (
+                    _tool_call_message("task", {"task": "b"}, "tool-b"),
+                    {},
+                ),
+            ),
+            (
+                (),
+                "messages",
+                (
+                    ToolMessage(content="result a", tool_call_id="tool-a"),
+                    {},
+                ),
+            ),
+            (
+                (),
+                "messages",
+                (
+                    ToolMessage(content="result b", tool_call_id="tool-b"),
+                    {},
+                ),
+            ),
+        ]
+
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=record_spinner,
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+            adapter=adapter,
+        )
+
+        assert statuses[0] == "Thinking"
+        thinking_count = sum(1 for s in statuses if s == "Thinking")
+        assert thinking_count == 2, (
+            "Expected exactly 2 Thinking calls (start + after last tool); "
+            f"got {thinking_count}: {statuses}"
+        )
+
+    async def test_spinner_shown_after_single_tool_completes(self) -> None:
+        """Spinner should show Thinking after the only tool completes."""
+        statuses: list[str | None] = []
+
+        async def record_spinner(status: str | None) -> None:
+            await asyncio.sleep(0)
+            statuses.append(status)
+
+        chunks = [
+            (
+                (),
+                "messages",
+                (
+                    _tool_call_message("ls", {"path": "."}, "tool-1"),
+                    {},
+                ),
+            ),
+            (
+                (),
+                "messages",
+                (
+                    ToolMessage(content="file1.py", tool_call_id="tool-1"),
+                    {},
+                ),
+            ),
+        ]
+
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=record_spinner,
+        )
+
+        await execute_task_textual(
+            user_input="list files",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+            adapter=adapter,
+        )
+
+        assert statuses[-1] == "Thinking"
+
+    async def test_spinner_with_three_parallel_tools_out_of_order(self) -> None:
+        """Three parallel tools completed out of order; Thinking after all."""
+        statuses: list[str | None] = []
+
+        async def record_spinner(status: str | None) -> None:
+            await asyncio.sleep(0)
+            statuses.append(status)
+
+        tc = _tool_call_message
+        chunks = [
+            ((), "messages", (tc("task", {"task": "a"}, "tool-a"), {})),
+            ((), "messages", (tc("task", {"task": "b"}, "tool-b"), {})),
+            ((), "messages", (tc("task", {"task": "c"}, "tool-c"), {})),
+            # Complete out of dispatch order: B, A, C
+            (
+                (),
+                "messages",
+                (
+                    ToolMessage(
+                        content="result b",
+                        tool_call_id="tool-b",
+                    ),
+                    {},
+                ),
+            ),
+            (
+                (),
+                "messages",
+                (
+                    ToolMessage(
+                        content="result a",
+                        tool_call_id="tool-a",
+                    ),
+                    {},
+                ),
+            ),
+            (
+                (),
+                "messages",
+                (
+                    ToolMessage(
+                        content="result c",
+                        tool_call_id="tool-c",
+                    ),
+                    {},
+                ),
+            ),
+        ]
+
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=record_spinner,
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+            adapter=adapter,
+        )
+
+        thinking_count = sum(1 for s in statuses if s == "Thinking")
+        assert thinking_count == 2, (
+            "Expected exactly 2 Thinking calls (start + after last tool); "
+            f"got {thinking_count}: {statuses}"
+        )
+
+    async def test_spinner_recovers_with_untracked_tool_id(self) -> None:
+        """Spinner still shows Thinking with an untracked tool_call_id."""
+        statuses: list[str | None] = []
+
+        async def record_spinner(status: str | None) -> None:
+            await asyncio.sleep(0)
+            statuses.append(status)
+
+        tc = _tool_call_message
+        chunks = [
+            ((), "messages", (tc("task", {"task": "a"}, "tool-a"), {})),
+            # Result with a tool_call_id that was never dispatched
+            (
+                (),
+                "messages",
+                (
+                    ToolMessage(
+                        content="result a",
+                        tool_call_id="tool-a",
+                    ),
+                    {},
+                ),
+            ),
+            (
+                (),
+                "messages",
+                (
+                    ToolMessage(
+                        content="unknown",
+                        tool_call_id="tool-unknown",
+                    ),
+                    {},
+                ),
+            ),
+        ]
+
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=record_spinner,
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+            adapter=adapter,
+        )
+
+        # After the tracked tool completes, dict is empty so spinner should show.
+        # The untracked ToolMessage should not break spinner recovery.
+        thinking_calls = [i for i, s in enumerate(statuses) if s == "Thinking"]
+        assert len(thinking_calls) >= 2, (
+            f"Expected at least 2 Thinking calls; got {len(thinking_calls)}: {statuses}"
         )
 
 

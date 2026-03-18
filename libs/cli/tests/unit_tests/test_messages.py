@@ -632,6 +632,15 @@ class TestGenericPreviewTruncation:
         assert result.truncation is None
         assert result.content.plain == "short output"
 
+    def test_unknown_tool_exact_preview_lines_not_truncated(self) -> None:
+        """Output with exactly _PREVIEW_LINES lines should NOT be line-truncated."""
+        msg = self._make_msg()
+        output = "\n".join(f"line {i}" for i in range(msg._PREVIEW_LINES))
+        result = msg._format_output(output, is_preview=True)
+        # Boundary: exactly at limit should pass through without line truncation
+        truncation = result.truncation or ""
+        assert result.truncation is None or "more lines" not in truncation
+
     def test_unknown_tool_full_output_no_truncation(self) -> None:
         """Non-preview mode should return full output regardless of length."""
         msg = self._make_msg()

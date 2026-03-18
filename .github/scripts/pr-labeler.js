@@ -95,7 +95,7 @@ function init(github, owner, repo, config) {
   // ── File-based labels ─────────────────────────────────────────────
 
   function buildFileRules() {
-    return fileRulesDef.map(rule => {
+    return fileRulesDef.map((rule, i) => {
       let test;
       if (rule.prefix) test = p => p.startsWith(rule.prefix);
       else if (rule.suffix) test = p => p.endsWith(rule.suffix);
@@ -103,6 +103,11 @@ function init(github, owner, repo, config) {
       else if (rule.pattern) {
         const re = new RegExp(rule.pattern);
         test = p => re.test(p);
+      } else {
+        throw new Error(
+          `fileRules[${i}] (label: "${rule.label}") has no recognized matcher ` +
+          `(expected one of: prefix, suffix, exact, pattern)`
+        );
       }
       return { label: rule.label, test };
     });
@@ -203,6 +208,45 @@ function init(github, owner, repo, config) {
     return info;
   }
 
+  // ── Tier label resolution ───────────────────────────────────────────
+
+  async function applyTierLabel(issueNumber, author, { skipNewContributor = false } = {}) {
+    const core = require('@actions/core');
+    let mergedCount;
+    try {
+      const result = await github.rest.search.issuesAndPullRequests({
+        q: `repo:${owner}/${repo} is:pr is:merged author:"${author}"`,
+        per_page: 1,
+      });
+      mergedCount = result?.data?.total_count;
+    } catch (error) {
+      if (error?.status !== 422) throw error;
+      core.warning(`Search failed for ${author}; skipping tier label.`);
+      return;
+    }
+
+    if (mergedCount == null) {
+      core.warning(`Search response missing total_count for ${author}; skipping tier label.`);
+      return;
+    }
+
+    let tierLabel = null;
+    if (mergedCount >= trustedThreshold) tierLabel = 'trusted-contributor';
+    else if (mergedCount === 0 && !skipNewContributor) tierLabel = 'new-contributor';
+
+    if (tierLabel) {
+      await ensureLabel(tierLabel);
+      await github.rest.issues.addLabels({
+        owner, repo, issue_number: issueNumber, labels: [tierLabel],
+      });
+      console.log(`Applied '${tierLabel}' to #${issueNumber} (${mergedCount} merged PRs)`);
+    } else {
+      console.log(`No tier label for ${author} (${mergedCount} merged PRs)`);
+    }
+
+    return tierLabel;
+  }
+
   return {
     ensureLabel,
     getSizeLabel,
@@ -213,6 +257,7 @@ function init(github, owner, repo, config) {
     allTypeLabels,
     checkMembership,
     getContributorInfo,
+    applyTierLabel,
     sizeLabels,
     tierLabels,
     trustedThreshold,
@@ -220,4 +265,9 @@ function init(github, owner, repo, config) {
   };
 }
 
-module.exports = { loadConfig, init };
+function loadAndInit(github, owner, repo) {
+  const config = loadConfig();
+  return { config, h: init(github, owner, repo, config) };
+}
+
+module.exports = { loadConfig, init, loadAndInit };

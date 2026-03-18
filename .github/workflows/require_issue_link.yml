@@ -116,8 +116,11 @@ jobs:
                 if (error.status === 404) {
                   console.log(`Issue #${num} not found — skipping`);
                 } else {
-                  core.warning(
-                    `Failed to fetch issue #${num} (${error.status}): ${error.message} — skipping`,
+                  // Non-404 errors (rate limit, server error) must not be
+                  // silently skipped — they could cause false enforcement
+                  // (closing a legitimate PR whose assignment can't be verified).
+                  throw new Error(
+                    `Cannot verify assignee for issue #${num} (${error.status}): ${error.message}`,
                   );
                 }
               }

@@ -51,7 +51,12 @@
     "deepagents-cli": "cli",
     "cli": "cli",
     "harbor": "harbor",
-    "acp": "acp"
+    "acp": "acp",
+    "docs": "documentation",
+    "infra": "infra",
+    "deps": "dependencies",
+    "examples": "examples",
+    "daytona": "daytona"
   },
   "fileRules": [
     {

@@ -48,13 +48,9 @@ jobs:
               return;
             }
 
-            const helpers = require('./.github/scripts/pr-labeler.js');
-            const config = helpers.loadConfig();
-            const h = helpers.init(github, owner, repo, config);
+            const { config, h } = require('./.github/scripts/pr-labeler.js').loadAndInit(github, owner, repo);
 
-            const tierLabels = ['new-contributor', 'trusted-contributor'];
-
-            for (const name of [...h.sizeLabels, ...tierLabels]) {
+            for (const name of [...h.sizeLabels, ...h.tierLabels]) {
               await h.ensureLabel(name);
             }
 
@@ -107,7 +103,7 @@ jobs:
                   { owner, repo, issue_number: pr.number, per_page: 100 },
                 )).map(l => l.name ?? '');
 
-                const managed = [...h.sizeLabels, ...tierLabels, ...h.allTypeLabels];
+                const managed = [...h.sizeLabels, ...h.tierLabels, ...h.allTypeLabels];
                 for (const name of currentLabels) {
                   if (managed.includes(name) && !labels.has(name)) {
                     try {

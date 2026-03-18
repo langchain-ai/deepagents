@@ -805,7 +805,10 @@ class ToolCallMessage(Vertical):
             lines.extend([Content.assemble("    ", stats), Content("")])
 
         # Format each item
-        lines.extend(self._format_single_todo(item, is_preview=is_preview) for item in items[:max_items])
+        lines.extend(
+            self._format_single_todo(item, is_preview=is_preview)
+            for item in items[:max_items]
+        )
 
         truncation = None
         if is_preview and len(items) > max_items:
@@ -854,7 +857,9 @@ class ToolCallMessage(Vertical):
             parts.append(Content.styled(f"{completed} done", "green"))
         return Content.styled(" | ", "dim").join(parts) if parts else Content("")
 
-    def _format_single_todo(self, item: dict | str, *, is_preview: bool = True) -> Content:  # noqa: PLR6301  # Grouped as method for widget cohesion
+    def _format_single_todo(  # noqa: PLR6301
+        self, item: dict | str, *, is_preview: bool = True,
+    ) -> Content:
         """Format a single todo item.
 
         Args:

@@ -902,8 +902,8 @@ class DeepAgentsApp(App):
                 lambda: asyncio.create_task(self._load_thread_history())
             )
 
-        # Drain deferred actions (e.g. model/thread switch queued during connection)
-        # if the agent is not actively running.
+        # Drain deferred actions (e.g. model/thread switch queued during connection) if
+        # the agent is not actively running.
         if self._deferred_actions and not self._agent_running:
             self.call_after_refresh(
                 lambda: asyncio.create_task(self._drain_deferred_actions())
@@ -1528,14 +1528,16 @@ class DeepAgentsApp(App):
                 cmd = value.lower().strip()
                 # /version can run during connection (no server needed), but
                 # still queues when an agent or shell is actively running.
-                if cmd == "/version" and self._connecting and not (
-                    self._agent_running or self._shell_running
+                if (
+                    cmd == "/version"
+                    and self._connecting
+                    and not (self._agent_running or self._shell_running)
                 ):
                     await self._process_message(value, mode)
                     return
                 # /model (no args) and /threads open a selector UI immediately;
                 # the actual switch is deferred via the selector callbacks.
-                if cmd == "/model" or cmd == "/threads":
+                if cmd in {"/model", "/threads"}:
                     await self._process_message(value, mode)
                     return
 
@@ -3234,9 +3236,13 @@ class DeepAgentsApp(App):
                 model_spec, _ = result
                 if self._agent_running or self._shell_running or self._connecting:
                     self._deferred_actions.append(
-                        partial(self._switch_model, model_spec, extra_kwargs=extra_kwargs)
+                        partial(
+                            self._switch_model, model_spec, extra_kwargs=extra_kwargs
+                        )
                     )
-                    self.notify("Model will switch after current task completes.", timeout=3)
+                    self.notify(
+                        "Model will switch after current task completes.", timeout=3
+                    )
                 else:
                     self.call_later(
                         partial(
@@ -3284,7 +3290,9 @@ class DeepAgentsApp(App):
             if result is not None:
                 if self._agent_running or self._shell_running or self._connecting:
                     self._deferred_actions.append(partial(self._resume_thread, result))
-                    self.notify("Thread will switch after current task completes.", timeout=3)
+                    self.notify(
+                        "Thread will switch after current task completes.", timeout=3
+                    )
                 else:
                     self.call_later(self._resume_thread, result)
             if self._chat_input:

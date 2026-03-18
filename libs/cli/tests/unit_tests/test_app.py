@@ -2461,7 +2461,7 @@ class TestDeferredActions:
 
             executed = []
 
-            async def action() -> None:
+            async def action() -> None:  # noqa: RUF029
                 executed.append("ran")
 
             app._deferred_actions.append(action)
@@ -2481,7 +2481,7 @@ class TestDeferredActions:
 
             executed = []
 
-            async def action() -> None:
+            async def action() -> None:  # noqa: RUF029
                 executed.append("ran")
 
             app._deferred_actions.append(action)
@@ -2500,7 +2500,7 @@ class TestDeferredActions:
 
             executed = []
 
-            async def action() -> None:
+            async def action() -> None:  # noqa: RUF029
                 executed.append("ran")
 
             app._deferred_actions.append(action)
@@ -2552,10 +2552,11 @@ class TestDeferredActions:
 
             executed = []
 
-            async def bad_action() -> None:
-                raise RuntimeError("boom")
+            async def bad_action() -> None:  # noqa: RUF029
+                msg = "boom"
+                raise RuntimeError(msg)
 
-            async def good_action() -> None:
+            async def good_action() -> None:  # noqa: RUF029
                 executed.append("ok")
 
             app._deferred_actions.append(bad_action)

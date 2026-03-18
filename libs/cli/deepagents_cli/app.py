@@ -768,6 +768,13 @@ class DeepAgentsApp(App):
                 group="startup-update-check",
             )
 
+        # Prewarm deferred widget imports in a thread so first use is instant
+        self.run_worker(
+            asyncio.to_thread(self._prewarm_deferred_imports),
+            exclusive=True,
+            group="startup-import-prewarm",
+        )
+
         # Focus the input (autocomplete is now built into ChatInput)
         self._chat_input.focus_input()
 
@@ -971,6 +978,23 @@ class DeepAgentsApp(App):
                 w.remove()
             self._queued_widgets.clear()
         self._deferred_actions.clear()
+
+    @staticmethod
+    def _prewarm_deferred_imports() -> None:
+        """Background-load widgets deferred from module level.
+
+        Populates `sys.modules` so the first user-triggered inline import
+        is a cheap dict lookup instead of a cold module load.
+        """
+        from deepagents_cli.widgets.approval import ApprovalMenu  # noqa: F401
+        from deepagents_cli.widgets.ask_user import AskUserMenu  # noqa: F401
+        from deepagents_cli.widgets.model_selector import (
+            ModelSelectorScreen,  # noqa: F401
+        )
+        from deepagents_cli.widgets.thread_selector import (  # noqa: F401
+            DeleteThreadConfirmScreen,
+            ThreadSelectorScreen,
+        )
 
     async def _prewarm_threads_cache(self) -> None:  # noqa: PLR6301  # Worker hook kept as instance method
         """Prewarm thread selector cache without blocking app startup."""

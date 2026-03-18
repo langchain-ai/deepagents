@@ -11,9 +11,10 @@ from textual.app import App, ComposeResult
 from textual.containers import Container
 from textual.widgets import Static
 
+from deepagents_cli.command_registry import SLASH_COMMANDS
 from deepagents_cli.input import MediaTracker
 from deepagents_cli.widgets import chat_input as chat_input_module
-from deepagents_cli.widgets.autocomplete import MAX_SUGGESTIONS, SLASH_COMMANDS
+from deepagents_cli.widgets.autocomplete import MAX_SUGGESTIONS
 from deepagents_cli.widgets.chat_input import (
     ChatInput,
     ChatTextArea,

@@ -17,6 +17,7 @@ from textual.reactive import reactive
 from textual.widgets import Static, TextArea
 from textual.widgets.text_area import Selection
 
+from deepagents_cli.command_registry import SLASH_COMMANDS
 from deepagents_cli.config import (
     COLORS,
     MODE_DISPLAY_GLYPHS,
@@ -27,7 +28,6 @@ from deepagents_cli.config import (
 )
 from deepagents_cli.input import IMAGE_PLACEHOLDER_PATTERN, VIDEO_PLACEHOLDER_PATTERN
 from deepagents_cli.widgets.autocomplete import (
-    SLASH_COMMANDS,
     CompletionResult,
     FuzzyFileController,
     MultiCompletionManager,

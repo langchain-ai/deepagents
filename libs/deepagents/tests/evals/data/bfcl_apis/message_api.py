@@ -84,7 +84,9 @@ class MessageAPI:
         self.message_count = scenario.get(
             "message_count", DEFAULT_STATE_COPY["message_count"]
         )
-        self.current_user = scenario.get("current_user", DEFAULT_STATE_COPY["current_user"])
+        self.current_user = scenario.get(
+            "current_user", DEFAULT_STATE_COPY["current_user"]
+        )
 
     def __eq__(self, value: object) -> bool:
         if not isinstance(value, MessageAPI):
@@ -167,7 +169,9 @@ class MessageAPI:
         """
         return {"login_status": bool(self.current_user)}
 
-    def send_message(self, receiver_id: str, message: str) -> Dict[str, Union[str, bool]]:
+    def send_message(
+        self, receiver_id: str, message: str
+    ) -> Dict[str, Union[str, bool]]:
         """
         Send a message to a user.
         Args:

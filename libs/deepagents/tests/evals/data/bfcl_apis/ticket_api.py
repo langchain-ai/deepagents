@@ -40,11 +40,15 @@ class TicketAPI:
             scenario (Dict): A dictionary containing ticket data.
         """
         DEFAULT_STATE_COPY = deepcopy(DEFAULT_STATE)
-        self.ticket_queue = scenario.get("ticket_queue", DEFAULT_STATE_COPY["ticket_queue"])
+        self.ticket_queue = scenario.get(
+            "ticket_queue", DEFAULT_STATE_COPY["ticket_queue"]
+        )
         self.ticket_counter = scenario.get(
             "ticket_counter", DEFAULT_STATE_COPY["ticket_counter"]
         )
-        self.current_user = scenario.get("current_user", DEFAULT_STATE_COPY["current_user"])
+        self.current_user = scenario.get(
+            "current_user", DEFAULT_STATE_COPY["current_user"]
+        )
 
     def create_ticket(
         self, title: str, description: str = "", priority: int = 1
@@ -65,7 +69,9 @@ class TicketAPI:
             priority (int): Priority level of the ticket.
         """
         if not self.current_user:
-            return {"error": "User not authenticated. Please log in to create a ticket."}
+            return {
+                "error": "User not authenticated. Please log in to create a ticket."
+            }
         if priority < 1 or priority > 5:
             return {"error": "Invalid priority. Priority must be between 1 and 5."}
         ticket = {

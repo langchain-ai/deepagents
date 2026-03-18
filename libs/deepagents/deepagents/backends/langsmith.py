@@ -5,8 +5,6 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from langsmith.sandbox import ResourceNotFoundError, SandboxClientError
-
 from deepagents.backends.protocol import (
     ExecuteResponse,
     FileDownloadResponse,
@@ -81,6 +79,8 @@ class LangSmithSandbox(BaseSandbox):
             List of FileDownloadResponse objects, one per input path.
             Response order matches input order.
         """
+        from langsmith.sandbox import ResourceNotFoundError, SandboxClientError  # noqa: PLC0415
+
         responses: list[FileDownloadResponse] = []
         for path in paths:
             try:
@@ -90,10 +90,7 @@ class LangSmithSandbox(BaseSandbox):
                 responses.append(FileDownloadResponse(path=path, content=None, error="file_not_found"))
             except SandboxClientError as e:
                 msg = str(e).lower()
-                if "is a directory" in msg:
-                    error = "is_directory"
-                else:
-                    error = "file_not_found"
+                error = "is_directory" if "is a directory" in msg else "file_not_found"
                 responses.append(FileDownloadResponse(path=path, content=None, error=error))
         return responses
 
@@ -110,6 +107,8 @@ class LangSmithSandbox(BaseSandbox):
             List of FileUploadResponse objects, one per input file.
             Response order matches input order.
         """
+        from langsmith.sandbox import SandboxClientError  # noqa: PLC0415
+
         responses: list[FileUploadResponse] = []
         for path, content in files:
             try:

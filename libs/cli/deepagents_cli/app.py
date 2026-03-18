@@ -1117,6 +1117,8 @@ class DeepAgentsApp(App):
             container: The `#messages` container to mount into.
             widget: The widget to mount.
         """
+        if not container.is_attached:
+            return
         first_queued = self._queued_widgets[0] if self._queued_widgets else None
         if first_queued is not None and first_queued.parent is container:
             try:
@@ -2307,7 +2309,12 @@ class DeepAgentsApp(App):
             # when streaming aborts before tool results arrive.
             if self._ui_adapter:
                 self._ui_adapter.finalize_pending_tools_with_error(f"Agent error: {e}")
-            await self._mount_message(ErrorMessage(f"Agent error: {e}"))
+            try:
+                await self._mount_message(ErrorMessage(f"Agent error: {e}"))
+            except Exception:
+                logger.debug(
+                    "Could not mount error message (app closing?)", exc_info=True
+                )
         finally:
             # Clean up loading widget and agent state
             await self._cleanup_agent_task()
@@ -2763,6 +2770,12 @@ class DeepAgentsApp(App):
         try:
             messages = self.query_one("#messages", Container)
         except NoMatches:
+            return
+
+        # During shutdown (e.g. Ctrl+D mid-stream) the container may still
+        # be in the DOM tree but already detached, so mount() would raise
+        # MountError. Bail out silently — the app is exiting anyway.
+        if not messages.is_attached:
             return
 
         # Store message data for virtualization

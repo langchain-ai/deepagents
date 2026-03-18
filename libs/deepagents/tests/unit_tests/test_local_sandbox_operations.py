@@ -245,8 +245,7 @@ class TestLocalSandboxOperations:
         # Try to write again
         result = sandbox.write(test_path, "Second content")
 
-        assert result.error is not None
-        assert "already exists" in result.error.lower()
+        assert result.error == "file_exists"
         # Verify original content unchanged
         exec_result = sandbox.execute(f"cat {test_path}")
         assert exec_result.output.strip() == "First content"
@@ -356,8 +355,7 @@ class TestLocalSandboxOperations:
 
         result = sandbox.read(test_path)
 
-        assert result.error is not None
-        assert "not found" in result.error.lower()
+        assert result.error == "file_not_found"
 
     def test_read_empty_file(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test reading an empty file."""
@@ -543,8 +541,7 @@ class TestLocalSandboxOperations:
 
         result = sandbox.edit(test_path, "apple", "pear", replace_all=False)
 
-        assert result.error is not None
-        assert "multiple times" in result.error.lower()
+        assert result.error == "multiple_matches_found"
         # Verify file unchanged
         read_result = sandbox.read(test_path)
         assert read_result.error is None
@@ -577,8 +574,7 @@ class TestLocalSandboxOperations:
 
         result = sandbox.edit(test_path, "nonexistent", "replacement")
 
-        assert result.error is not None
-        assert "not found" in result.error.lower()
+        assert result.error == "string_not_found"
 
     def test_edit_nonexistent_file(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test editing a file that doesn't exist."""
@@ -586,8 +582,7 @@ class TestLocalSandboxOperations:
 
         result = sandbox.edit(test_path, "old", "new")
 
-        assert result.error is not None
-        assert "not found" in result.error.lower()
+        assert result.error == "file_not_found"
 
     def test_edit_special_characters(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test editing with special characters and regex metacharacters."""

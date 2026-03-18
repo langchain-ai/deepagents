@@ -237,7 +237,7 @@ def test_edit_file_nonexistent_file() -> None:
     # Verify the error message in the ToolMessage
     tool_message = result["messages"][-2]
     assert isinstance(tool_message, ToolMessage)
-    assert tool_message.content == "Error: File '/nonexistent.txt' not found"
+    assert tool_message.content == "file_not_found"
 
     # Verify the file doesn't exist in state
     assert "/nonexistent.txt" not in result.get("files", {}), "Nonexistent file should not be in state"
@@ -292,7 +292,7 @@ def test_edit_file_string_not_found() -> None:
 
     tool_message = result["messages"][-2]
     assert isinstance(tool_message, ToolMessage)
-    assert tool_message.content == "Error: String not found in file: 'goodbye'"
+    assert tool_message.content == "string_not_found"
 
 
 def test_grep_finds_written_file() -> None:

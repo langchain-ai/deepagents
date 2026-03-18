@@ -977,3 +977,9 @@ class TestFormatDuration:
 
     def test_fractional_under_minute(self) -> None:
         assert _format_duration(0.1) == "0.1s"
+
+    def test_rounding_near_minute_boundary(self) -> None:
+        assert _format_duration(59.95) == "1m 0s"
+
+    def test_just_under_minute_no_rounding(self) -> None:
+        assert _format_duration(59.94) == "59.9s"

@@ -165,9 +165,10 @@ def _format_duration(seconds: float) -> str:
     Returns:
         Formatted string like `"2.3s"`, `"5m 12s"`, or `"1h 23m 4s"`.
     """
-    if seconds < 60:  # noqa: PLR2004
-        return f"{seconds:.1f}s"
-    minutes, secs = divmod(int(seconds), 60)
+    rounded = round(seconds, 1)
+    if rounded < 60:  # noqa: PLR2004
+        return f"{rounded:.1f}s"
+    minutes, secs = divmod(int(rounded), 60)
     if minutes < 60:  # noqa: PLR2004
         return f"{minutes}m {secs}s"
     hours, minutes = divmod(minutes, 60)

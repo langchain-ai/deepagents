@@ -47,8 +47,12 @@ scorer = (
 | `utils.py` | Core framework: `AgentTrajectory`, assertion classes, `TrajectoryScorer`, `run_agent` entry point |
 | `llm_judge.py` | LLM-as-judge `SuccessAssertion` — grades agent answers against human-readable criteria |
 | `conftest.py` | pytest fixtures: `--model` CLI option, `model` / `model_name` fixtures, LangSmith metadata |
+| `external_benchmarks.py` | Runner logic for curated external benchmarks (FRAMES, Nexus, BFCL v3) with state-comparison scoring |
+| `memory_agent_bench/` | MemoryAgentBench (ICLR 2026) runner: configs, data loading, and evaluation utils |
 | `pytest_reporter.py` | Custom pytest plugin: collects efficiency data and prints/writes a summary report |
 | `fixtures/` | Static test data |
+| `data/benchmark_samples/` | Curated case data for external benchmarks |
+| `data/bfcl_apis/` | Stateful Python API implementations for BFCL v3 tool-calling evals |
 
 ### Test suites
 
@@ -65,6 +69,8 @@ scorer = (
 | `test_tool_usage_relational.py` | Multi-step tool chaining with dependent data lookups (user -> location -> weather) |
 | `test_tool_selection.py` | Picking the right tool from intent (direct, indirect, multi-step) with independent mock tools |
 | `test_followup_quality.py` | Followup question relevance for underspecified requests (LLM judge) |
+| `test_external_benchmarks.py` | Curated hard cases from FRAMES (multi-hop retrieval), Nexus (nested function composition), and BFCL v3 (multi-turn stateful tool calling) |
+| `memory_agent_bench/test_memory_agent_bench.py` | MemoryAgentBench (ICLR 2026): long-context memory recall and QA over chunked context |
 
 ## Writing a new eval
 

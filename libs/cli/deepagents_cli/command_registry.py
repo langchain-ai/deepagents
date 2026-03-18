@@ -23,6 +23,9 @@ class BypassTier(StrEnum):
     IMMEDIATE_UI = "immediate_ui"
     """Open modal UI immediately; real work deferred via `_defer_action` callback."""
 
+    SIDE_EFFECT_FREE = "side_effect_free"
+    """Execute the side effect immediately; defer chat output until idle."""
+
     QUEUED = "queued"
     """Must wait in the queue when the app is busy."""
 
@@ -51,7 +54,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand(
         name="/changelog",
         description="Open changelog in browser",
-        bypass_tier=BypassTier.QUEUED,
+        bypass_tier=BypassTier.SIDE_EFFECT_FREE,
     ),
     SlashCommand(
         name="/clear",
@@ -62,7 +65,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand(
         name="/docs",
         description="Open documentation in browser",
-        bypass_tier=BypassTier.QUEUED,
+        bypass_tier=BypassTier.SIDE_EFFECT_FREE,
     ),
     SlashCommand(
         name="/editor",
@@ -72,7 +75,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand(
         name="/feedback",
         description="Submit a bug report or feature request",
-        bypass_tier=BypassTier.QUEUED,
+        bypass_tier=BypassTier.SIDE_EFFECT_FREE,
     ),
     SlashCommand(
         name="/help",
@@ -82,7 +85,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand(
         name="/mcp",
         description="Show active MCP servers and tools",
-        bypass_tier=BypassTier.QUEUED,
+        bypass_tier=BypassTier.SIDE_EFFECT_FREE,
         hidden_keywords="servers",
     ),
     SlashCommand(
@@ -172,13 +175,20 @@ BYPASS_WHEN_CONNECTING: frozenset[str] = _build_bypass_set(BypassTier.CONNECTING
 IMMEDIATE_UI: frozenset[str] = _build_bypass_set(BypassTier.IMMEDIATE_UI)
 """Commands that open modal UI immediately, deferring real work."""
 
+SIDE_EFFECT_FREE: frozenset[str] = _build_bypass_set(BypassTier.SIDE_EFFECT_FREE)
+"""Commands whose side effect fires immediately; chat output deferred until idle."""
+
 QUEUE_BOUND: frozenset[str] = _build_bypass_set(BypassTier.QUEUED)
 """Commands that must wait in the queue when the app is busy."""
 
 ALL_CLASSIFIED: frozenset[str] = (
-    ALWAYS_IMMEDIATE | BYPASS_WHEN_CONNECTING | IMMEDIATE_UI | QUEUE_BOUND
+    ALWAYS_IMMEDIATE
+    | BYPASS_WHEN_CONNECTING
+    | IMMEDIATE_UI
+    | SIDE_EFFECT_FREE
+    | QUEUE_BOUND
 )
-"""Union of all four tiers — used by drift tests."""
+"""Union of all five tiers — used by drift tests."""
 
 
 # ---------------------------------------------------------------------------

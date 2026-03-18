@@ -2482,7 +2482,7 @@ class TestSlashCommandBypass:
 class TestBypassFrozensetDrift:
     """Ensure bypass frozensets stay in sync with _handle_command dispatch.
 
-    Every slash command must appear in exactly one of the four policy
+    Every slash command must appear in exactly one of the five policy
     frozensets (derived from `command_registry.COMMANDS`) AND in
     `_handle_command`. Adding a command to one without the other will fail
     these tests.
@@ -2512,10 +2512,13 @@ class TestBypassFrozensetDrift:
             ALWAYS_IMMEDIATE,
             BYPASS_WHEN_CONNECTING,
             IMMEDIATE_UI,
+            SIDE_EFFECT_FREE,
         )
 
         handled = self._handled_commands()
-        bypass = ALWAYS_IMMEDIATE | BYPASS_WHEN_CONNECTING | IMMEDIATE_UI
+        bypass = (
+            ALWAYS_IMMEDIATE | BYPASS_WHEN_CONNECTING | IMMEDIATE_UI | SIDE_EFFECT_FREE
+        )
         missing = bypass - handled
         assert not missing, (
             f"Bypass commands {missing} are not handled in _handle_command. "
@@ -2741,12 +2744,20 @@ class TestDeferredActions:
             assert len(app._pending_messages) == 1
             assert app._pending_messages[0].text == "/model gpt-4"
 
-    async def test_queued_commands_do_not_bypass(self) -> None:
-        """QUEUED commands (e.g. /changelog, /docs) must not bypass the queue."""
+    async def test_side_effect_free_bypasses_queue(self) -> None:
+        """SIDE_EFFECT_FREE commands bypass the queue."""
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            for cmd in ("/changelog", "/docs", "/feedback", "/mcp", "/help"):
+            for cmd in ("/changelog", "/docs", "/feedback", "/mcp"):
+                assert app._can_bypass_queue(cmd) is True
+
+    async def test_queued_commands_do_not_bypass(self) -> None:
+        """QUEUED commands must not bypass the queue."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            for cmd in ("/help", "/clear", "/tokens"):
                 assert app._can_bypass_queue(cmd) is False
 
     async def test_can_bypass_queue_empty_string(self) -> None:

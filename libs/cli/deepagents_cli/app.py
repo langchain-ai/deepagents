@@ -33,6 +33,7 @@ from deepagents_cli.command_registry import (
     ALWAYS_IMMEDIATE,
     BYPASS_WHEN_CONNECTING,
     IMMEDIATE_UI,
+    SIDE_EFFECT_FREE,
 )
 from deepagents_cli.config import (
     DOCS_URL,
@@ -283,7 +284,7 @@ class QueuedMessage:
     """The input mode that determines message routing."""
 
 
-DeferredActionKind = Literal["model_switch", "thread_switch"]
+DeferredActionKind = Literal["model_switch", "thread_switch", "chat_output"]
 """Valid `DeferredAction.kind` values for type-checked deduplication."""
 
 
@@ -1545,7 +1546,7 @@ class DeepAgentsApp(App):
             # Only bare form (no args) bypasses — /model opens selector,
             # /model <name> does a direct switch that shouldn't race with agent.
             return value == cmd
-        return False
+        return cmd in SIDE_EFFECT_FREE
 
     async def on_chat_input_submitted(self, event: ChatInput.Submitted) -> None:
         """Handle submitted input from ChatInput widget."""
@@ -1787,13 +1788,31 @@ class DeepAgentsApp(App):
     async def _open_url_command(self, command: str, cmd: str) -> None:
         """Open a URL in the browser and display a clickable link.
 
+        The browser opens immediately regardless of busy state. Chat output
+        (user echo + clickable link) is deferred until the current task
+        finishes so it doesn't inject mid-agent-output.
+
         Args:
             command: The raw command text (displayed as user message).
             cmd: The normalized slash command used to look up the URL.
         """
         url = _COMMAND_URLS[cmd]
-        await self._mount_message(UserMessage(command))
         webbrowser.open(url)
+
+        if self._agent_running or self._shell_running:
+            # Defer chat output until the current task finishes.
+            async def _mount_output() -> None:
+                await self._mount_message(UserMessage(command))
+                link = Content.styled(url, TStyle(dim=True, italic=True, link=url))
+                await self._mount_message(AppMessage(link))
+
+            # Append directly — no dedup; each URL command gets its own output.
+            self._deferred_actions.append(
+                DeferredAction(kind="chat_output", execute=_mount_output)
+            )
+            return
+
+        await self._mount_message(UserMessage(command))
         link = Content.styled(url, TStyle(dim=True, italic=True, link=url))
         await self._mount_message(AppMessage(link))
 

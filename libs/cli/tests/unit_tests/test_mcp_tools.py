@@ -1,7 +1,7 @@
 """Tests for MCP tools configuration loading and validation."""
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Generator
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -11,6 +11,8 @@ from deepagents_cli.mcp_tools import (
     MCPServerInfo,
     MCPSessionManager,
     MCPToolInfo,
+    _check_remote_server,
+    _check_stdio_server,
     _filter_project_stdio_servers,
     classify_discovered_configs,
     discover_mcp_configs,
@@ -447,6 +449,18 @@ class TestLoadMCPConfig:
 
 class TestGetMCPTools:
     """Test MCP tools loading from configuration."""
+
+    @pytest.fixture(autouse=True)
+    def _bypass_health_checks(self) -> Generator[None]:
+        """Bypass pre-flight health checks for all tests in this class."""
+        with (
+            patch("deepagents_cli.mcp_tools._check_stdio_server"),
+            patch(
+                "deepagents_cli.mcp_tools._check_remote_server",
+                new_callable=AsyncMock,
+            ),
+        ):
+            yield
 
     @patch("langchain_mcp_adapters.tools.load_mcp_tools")
     @patch("langchain_mcp_adapters.client.MultiServerMCPClient")
@@ -1441,3 +1455,112 @@ class TestFilterProjectStdioServers:
         config = {"mcpServers": {"a": {"command": "x", "args": []}}}
         result = _filter_project_stdio_servers(config)
         assert result["mcpServers"] == {}
+
+
+class TestCheckStdioServer:
+    """Tests for _check_stdio_server pre-flight validation."""
+
+    def test_command_not_found(self) -> None:
+        """Raises RuntimeError with server name and command when missing."""
+        with (
+            patch("deepagents_cli.mcp_tools.shutil.which", return_value=None),
+            pytest.raises(
+                RuntimeError,
+                match="MCP server 'test-server': command 'nonexistent' not found",
+            ),
+        ):
+            _check_stdio_server("test-server", {"command": "nonexistent"})
+
+    def test_command_exists(self) -> None:
+        """No error when command exists on PATH."""
+        with patch(
+            "deepagents_cli.mcp_tools.shutil.which", return_value="/usr/bin/npx"
+        ):
+            _check_stdio_server("test-server", {"command": "npx"})
+
+
+class TestCheckRemoteServer:
+    """Tests for _check_remote_server pre-flight validation."""
+
+    async def test_unreachable(self) -> None:
+        """Raises RuntimeError when URL is unreachable."""
+        import httpx
+
+        mock_client = AsyncMock()
+        mock_client.head.side_effect = httpx.TransportError("connection refused")
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with (
+            patch("httpx.AsyncClient", return_value=mock_client),
+            pytest.raises(RuntimeError, match="unreachable"),
+        ):
+            await _check_remote_server("test-server", {"url": "http://localhost:9999"})
+
+    async def test_reachable(self) -> None:
+        """No error when URL responds."""
+        mock_client = AsyncMock()
+        mock_client.head = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("httpx.AsyncClient", return_value=mock_client):
+            await _check_remote_server("test-server", {"url": "http://localhost:8080"})
+
+        mock_client.head.assert_awaited_once_with("http://localhost:8080", timeout=2)
+
+    async def test_unreachable_os_error(self) -> None:
+        """Raises RuntimeError on OS-level socket errors."""
+        mock_client = AsyncMock()
+        mock_client.head.side_effect = OSError("Network is unreachable")
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with (
+            patch("httpx.AsyncClient", return_value=mock_client),
+            pytest.raises(RuntimeError, match="unreachable"),
+        ):
+            await _check_remote_server(
+                "test-server", {"url": "http://10.255.255.1:9999"}
+            )
+
+    async def test_invalid_url(self) -> None:
+        """Raises RuntimeError on malformed URLs."""
+        import httpx
+
+        mock_client = AsyncMock()
+        mock_client.head.side_effect = httpx.InvalidURL("Invalid URL")
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with (
+            patch("httpx.AsyncClient", return_value=mock_client),
+            pytest.raises(RuntimeError, match="unreachable"),
+        ):
+            await _check_remote_server("test-server", {"url": "http://"})
+
+
+class TestHealthCheckIntegration:
+    """Tests for health check integration in _load_tools_from_config."""
+
+    @patch("langchain_mcp_adapters.client.MultiServerMCPClient")
+    async def test_stdio_health_check_failure_skips_session(
+        self,
+        mock_client_class: MagicMock,
+        write_config: Callable[..., str],
+    ) -> None:
+        """Health check failure cleans up and does not call client.session()."""
+        path = write_config(
+            {"mcpServers": {"fs": {"command": "missing-cmd", "args": []}}}
+        )
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+
+        with (
+            patch("deepagents_cli.mcp_tools.shutil.which", return_value=None),
+            pytest.raises(RuntimeError, match="not found on PATH"),
+        ):
+            await get_mcp_tools(path)
+
+        # session() should never be called — health check fails first
+        mock_client.session.assert_not_called()

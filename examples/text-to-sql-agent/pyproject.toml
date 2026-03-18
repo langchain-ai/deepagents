@@ -22,3 +22,6 @@ Repository = "https://github.com/langchain-ai/deepagents/tree/main/examples/text
 [build-system]
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"

@@ -5,8 +5,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from deepagents_cli.command_registry import SLASH_COMMANDS
 from deepagents_cli.config import Settings
-from deepagents_cli.widgets.autocomplete import SLASH_COMMANDS
 
 _RELOAD_ENV_KEYS = (
     "OPENAI_API_KEY",

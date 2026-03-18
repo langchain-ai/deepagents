@@ -156,6 +156,25 @@ def format_token_count(count: int) -> str:
     return str(count)
 
 
+def _format_duration(seconds: float) -> str:
+    """Format a duration in seconds into a human-readable string.
+
+    Args:
+        seconds: Duration in seconds.
+
+    Returns:
+        Formatted string like `"2.3s"`, `"5m 12s"`, or `"1h 23m 4s"`.
+    """
+    rounded = round(seconds, 1)
+    if rounded < 60:  # noqa: PLR2004
+        return f"{rounded:.1f}s"
+    minutes, secs = divmod(int(rounded), 60)
+    if minutes < 60:  # noqa: PLR2004
+        return f"{minutes}m {secs}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h {minutes}m {secs}s"
+
+
 def print_usage_table(
     stats: SessionStats,
     wall_time: float,
@@ -220,7 +239,11 @@ def print_usage_table(
         console.print(table)
     if has_time:
         console.print()
-        console.print(f"[dim]Agent active  {wall_time:.1f}s[/dim]")
+        console.print(
+            f"Agent active  {_format_duration(wall_time)}",
+            style="dim",
+            highlight=False,
+        )
 
 
 # Type alias matching HITLResponse["decisions"] element type
@@ -745,7 +768,7 @@ async def execute_task_textual(
                                 "Failed to mount summarization notification",
                                 exc_info=True,
                             )
-                        if adapter._set_spinner:
+                        if adapter._set_spinner and not adapter._current_tool_messages:
                             await adapter._set_spinner("Thinking")
 
                     if isinstance(message, HumanMessage):
@@ -768,14 +791,12 @@ async def execute_task_textual(
                         tool_content = format_tool_message_content(message.content)
                         record = file_op_tracker.complete_with_message(message)
 
-                        # Reshow spinner after tool result
-                        if adapter._set_spinner:
-                            await adapter._set_spinner("Thinking")
-
                         # Update tool call status with output
                         tool_id = getattr(message, "tool_call_id", None)
                         if tool_id and tool_id in adapter._current_tool_messages:
-                            tool_msg = adapter._current_tool_messages[tool_id]
+                            # Pop before widget calls so the dict drains even
+                            # if set_success/set_error raises.
+                            tool_msg = adapter._current_tool_messages.pop(tool_id)
                             output_str = str(tool_content) if tool_content else ""
                             if tool_status == "success":
                                 tool_msg.set_success(output_str)
@@ -785,8 +806,19 @@ async def execute_task_textual(
                                     "tool.error",
                                     {"tool_names": [tool_msg._tool_name]},
                                 )
-                            # Clean up - remove from tracking dict after status update
-                            adapter._current_tool_messages.pop(tool_id, None)
+                        elif tool_id:
+                            logger.debug(
+                                "ToolMessage tool_call_id=%s not in "
+                                "_current_tool_messages; spinner gating "
+                                "may be stale",
+                                tool_id,
+                            )
+
+                        # Reshow spinner only when all in-flight tools have
+                        # completed (avoids premature "Thinking..." when
+                        # parallel tool calls are active).
+                        if adapter._set_spinner and not adapter._current_tool_messages:
+                            await adapter._set_spinner("Thinking")
 
                         # Show file operation results - always show diffs in chat
                         if record:
@@ -1006,7 +1038,7 @@ async def execute_task_textual(
                         "Failed to mount summarization notification",
                         exc_info=True,
                     )
-                if adapter._set_spinner:
+                if adapter._set_spinner and not adapter._current_tool_messages:
                     await adapter._set_spinner("Thinking")
 
             # Flush any remaining text from all namespaces

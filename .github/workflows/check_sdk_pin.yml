@@ -30,21 +30,15 @@ jobs:
       - name: Compare SDK version to CLI pin
         id: check
         run: |
-          SDK_VERSION=$(grep -Pom1 '(?<=^version = ")[0-9]+\.[0-9]+\.[0-9]+' libs/deepagents/pyproject.toml) || {
-            echo "::error file=libs/deepagents/pyproject.toml::Failed to extract SDK version. Expected a line matching: version = \"X.Y.Z\""
-            exit 1
-          }
+          SDK_VERSION=$(sed -nE 's/^version = "([0-9]+\.[0-9]+\.[0-9]+)".*/\1/p' libs/deepagents/pyproject.toml | head -1)
           if [[ -z "$SDK_VERSION" ]]; then
-            echo "::error file=libs/deepagents/pyproject.toml::SDK version is empty. Found: version = \"\""
+            echo "::error file=libs/deepagents/pyproject.toml::Failed to extract SDK version. Expected a line matching: version = \"X.Y.Z\""
             exit 1
           fi
 
-          CLI_SDK_PIN=$(grep -Pom1 '(?<=deepagents==)[0-9]+\.[0-9]+\.[0-9]+' libs/cli/pyproject.toml) || {
-            echo "::error file=libs/cli/pyproject.toml::Failed to extract CLI SDK pin. Expected a dependency matching: deepagents==X.Y.Z"
-            exit 1
-          }
+          CLI_SDK_PIN=$(sed -nE 's/.*deepagents==([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' libs/cli/pyproject.toml | head -1)
           if [[ -z "$CLI_SDK_PIN" ]]; then
-            echo "::error file=libs/cli/pyproject.toml::CLI SDK pin is empty"
+            echo "::error file=libs/cli/pyproject.toml::Failed to extract CLI SDK pin. Expected a dependency matching: deepagents==X.Y.Z"
             exit 1
           fi
 

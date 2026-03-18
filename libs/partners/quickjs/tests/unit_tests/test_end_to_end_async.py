@@ -51,6 +51,13 @@ async def capture_thread_name() -> str:
     return threading.current_thread().name
 
 
+async def async_boom() -> str:
+    """Raise an exception after yielding to the event loop."""
+    await asyncio.sleep(0)
+    msg = "boom"
+    raise RuntimeError(msg)
+
+
 async def test_deepagent_with_quickjs_interpreter() -> None:
     """Basic async test with QuickJS interpreter."""
     model = GenericFakeChatModel(
@@ -278,6 +285,45 @@ async def test_quickjs_async_timeout_error() -> None:
     assert result["messages"][-1].content == "timeout hit"
 
 
+async def test_quickjs_async_tool_exception() -> None:
+    """Verify what happens when an async QuickJS foreign function raises."""
+    model = GenericFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "repl",
+                            "args": {"code": "print(async_boom())"},
+                            "id": "call_1",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="done"),
+            ]
+        )
+    )
+
+    agent = create_deep_agent(
+        model=model,
+        middleware=[QuickJSMiddleware(ptc=[async_boom])],
+    )
+
+    result = await agent.ainvoke(
+        {
+            "messages": [
+                HumanMessage(content="Use the repl to call the async tool that raises")
+            ]
+        }
+    )
+
+    tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+    assert len(tool_messages) == 1
+    assert tool_messages[0].content
+
+
 async def test_quickjs_async_toolruntime_configurable_foreign_function() -> None:
     """Verify async QuickJS foreign tool calls see configurable runtime data."""
     model = GenericFakeChatModel(
@@ -356,3 +402,56 @@ async def test_quickjs_async_foreign_function_runs_on_daemon_loop_thread() -> No
     assert thread_name != threading.current_thread().name
     assert thread_name.startswith("Thread-")
     assert result["messages"][-1].content_blocks == [{"type": "text", "text": "done"}]
+
+
+async def test_quickjs_async_parallel_agents() -> None:
+    """Verify five agents can run in parallel with QuickJS middleware."""
+
+    async def _run_agent(
+        index: int,
+    ) -> tuple[int, dict[str, object], GenericFakeChatModel]:
+        """Run agent."""
+        model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "repl",
+                                "args": {"code": f"print({index} * 10)"},
+                                "id": f"call_{index}",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content=f"done-{index}"),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=model,
+            middleware=[QuickJSMiddleware()],
+        )
+        result = await agent.ainvoke(
+            {
+                "messages": [
+                    HumanMessage(content=f"Use the repl to multiply {index} by 10")
+                ]
+            }
+        )
+        return index, result, model
+
+    runs = await asyncio.gather(*(_run_agent(index) for index in range(50)))
+
+    assert len(runs) == 50
+    for index, result, model in runs:
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert [msg.content for msg in tool_messages] == [str(index * 10)]
+        assert result["messages"][-1].content == f"done-{index}"
+        assert len(model.call_history) == 2
+        assert (
+            model.call_history[0]["messages"][-1].content
+            == f"Use the repl to multiply {index} by 10"
+        )

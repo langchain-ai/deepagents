@@ -17,18 +17,17 @@ from textual.reactive import reactive
 from textual.widgets import Static, TextArea
 from textual.widgets.text_area import Selection
 
+from deepagents_cli.command_registry import SLASH_COMMANDS
 from deepagents_cli.config import (
     COLORS,
     MODE_DISPLAY_GLYPHS,
     MODE_PREFIXES,
     PREFIX_TO_MODE,
-    CharsetMode,
-    _detect_charset_mode,
     get_glyphs,
+    is_ascii_mode,
 )
 from deepagents_cli.input import IMAGE_PLACEHOLDER_PATTERN, VIDEO_PLACEHOLDER_PATTERN
 from deepagents_cli.widgets.autocomplete import (
-    SLASH_COMMANDS,
     CompletionResult,
     FuzzyFileController,
     MultiCompletionManager,
@@ -37,6 +36,15 @@ from deepagents_cli.widgets.autocomplete import (
 from deepagents_cli.widgets.history import HistoryManager
 
 logger = logging.getLogger(__name__)
+
+
+def _default_history_path() -> Path:
+    """Return the default history file path.
+
+    Extracted as a function so tests can monkeypatch it to a temp path,
+    preventing test runs from polluting `~/.deepagents/history.jsonl`.
+    """
+    return Path.home() / ".deepagents" / "history.jsonl"
 
 
 _PASTE_BURST_CHAR_GAP_SECONDS = 0.03
@@ -557,6 +565,12 @@ class ChatTextArea(TextArea):
             self.insert("\n")
             return
 
+        if event.key == "ctrl+u":
+            event.prevent_default()
+            event.stop()
+            self._delete_current_line()
+            return
+
         if event.key == "backspace" and self._delete_image_placeholder(backwards=True):
             event.prevent_default()
             event.stop()
@@ -715,6 +729,28 @@ class ChatTextArea(TextArea):
         self._backslash_pending_time = None
         self.text = ""
         self.move_cursor((0, 0))
+
+    def _delete_current_line(self) -> None:
+        """Delete the current line under the cursor.
+
+        If the text has only one line, clears its content entirely. Otherwise
+        removes the line at the cursor row (along with its newline separator)
+        and moves the cursor to column 0 of the new current row.
+        """
+        lines = self.text.split("\n")
+        row, _ = self.cursor_location
+        if row >= len(lines):
+            return
+        if len(lines) == 1:
+            # Single line — clear content only
+            self.text = ""
+            self.move_cursor((0, 0))
+            return
+
+        lines.pop(row)
+        new_row = min(row, len(lines) - 1)
+        self.text = "\n".join(lines)
+        self.move_cursor((new_row, 0))
 
 
 class _CompletionViewAdapter:
@@ -887,7 +923,7 @@ class ChatInput(Vertical):
 
         # Set up history manager
         if history_file is None:
-            history_file = Path.home() / ".deepagents" / "history.jsonl"
+            history_file = _default_history_path()
         self._history = HistoryManager(history_file)
 
     def compose(self) -> ComposeResult:  # noqa: PLR6301  # Textual widget method convention
@@ -904,7 +940,7 @@ class ChatInput(Vertical):
 
     def on_mount(self) -> None:
         """Initialize components after mount."""
-        if _detect_charset_mode() == CharsetMode.ASCII:
+        if is_ascii_mode():
             self.styles.border = ("ascii", "cyan")
 
         self._text_area = self.query_one("#chat-input", ChatTextArea)

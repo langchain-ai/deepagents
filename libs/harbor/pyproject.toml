@@ -102,6 +102,7 @@ ignore = [
     "TD002",   # Missing author in TODO
     "TD003",   # Missing issue link in TODO
 ]
+extend-safe-fixes = ["PLR6201"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"

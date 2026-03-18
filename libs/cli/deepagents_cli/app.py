@@ -18,13 +18,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
-from rich.text import Text
-from textual.app import App
+from textual.app import App, ScreenStackError
 from textual.binding import Binding, BindingType
 from textual.containers import Container, VerticalScroll
+from textual.content import Content
 from textual.css.query import NoMatches
 from textual.message import Message
 from textual.screen import ModalScreen
+from textual.style import Style as TStyle
+from textual.widgets import Static
 
 from deepagents_cli.clipboard import copy_selection_to_clipboard
 from deepagents_cli.config import (
@@ -44,6 +46,7 @@ from deepagents_cli.hooks import dispatch_hook
 from deepagents_cli.model_config import ModelSpec, save_recent_model
 from deepagents_cli.textual_adapter import (
     SessionStats,
+    SpinnerStatus,
     TextualUIAdapter,
     _get_git_branch,
     execute_task_textual,
@@ -82,15 +85,12 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from deepagents.backends import CompositeBackend
-    from deepagents.backends.protocol import BackendProtocol
-    from deepagents.middleware.summarization import SummarizationMiddleware
     from langchain_core.runnables import RunnableConfig
     from langgraph.pregel import Pregel
     from textual.app import ComposeResult
     from textual.events import Click, MouseUp, Paste
     from textual.scrollbar import ScrollUp
     from textual.widget import Widget
-    from textual.widgets import Static
     from textual.worker import Worker
 
     from deepagents_cli.ask_user import AskUserWidgetResult, Question
@@ -122,38 +122,6 @@ _IS_ITERM = (
 # Where OSC = ESC ] (0x1b 0x5d) and ST = ESC \ (0x1b 0x5c)
 _ITERM_CURSOR_GUIDE_OFF = "\x1b]1337;HighlightCursorLine=no\x1b\\"
 _ITERM_CURSOR_GUIDE_ON = "\x1b]1337;HighlightCursorLine=yes\x1b\\"
-
-
-def _format_compact_limit(
-    keep: tuple[str, int | float], context_limit: int | None
-) -> str:
-    """Format compact retention settings into a human-readable limit string.
-
-    Args:
-        keep: Retention policy tuple from summarization defaults.
-        context_limit: Model context limit when available.
-
-    Returns:
-        A short display string describing the compact retention limit.
-    """
-    keep_type, keep_value = keep
-
-    if keep_type == "messages":
-        count = int(keep_value)
-        noun = "message" if count == 1 else "messages"
-        return f"last {count} {noun}"
-
-    if keep_type == "tokens":
-        return f"{format_token_count(int(keep_value))} tokens"
-
-    if keep_type == "fraction":
-        percent = float(keep_value) * 100
-        if context_limit is not None:
-            token_limit = max(1, int(context_limit * float(keep_value)))
-            return f"{format_token_count(token_limit)} tokens"
-        return f"{percent:.0f}% of context window"
-
-    return "current retention threshold"
 
 
 def _write_iterm_escape(sequence: str) -> None:
@@ -286,6 +254,18 @@ def _extract_model_params_flag(raw_arg: str) -> tuple[str, dict[str, Any] | None
 
 
 InputMode = Literal["normal", "shell", "command"]
+
+_TYPING_IDLE_THRESHOLD_SECONDS: float = 2.0
+"""Seconds since the last keystroke after which the user is considered idle and
+a pending approval widget can be shown.
+
+Two seconds balances responsiveness with avoiding accidental approval
+key presses.
+"""
+
+_DEFERRED_APPROVAL_TIMEOUT_SECONDS: float = 30.0
+"""Maximum seconds the deferred-approval worker will wait for the user to stop
+typing before showing the approval widget regardless."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -535,6 +515,13 @@ class DeepAgentsApp(App):
             show=False,
             priority=True,
         ),
+        Binding(
+            "ctrl+x",
+            "open_editor",
+            "Open Editor",
+            show=False,
+            priority=True,
+        ),
         # Approval menu keys (handled at App level for reliability)
         Binding("up", "approval_up", "Up", show=False),
         Binding("k", "approval_up", "Up", show=False),
@@ -602,8 +589,8 @@ class DeepAgentsApp(App):
             profile_override: Extra profile fields from `--profile-override`,
                 retained so later profile-aware behavior stays consistent with
                 the CLI override, including model selection details,
-                compaction budget display, and on-demand `create_model()`
-                calls such as `/compact`.
+                offload budget display, and on-demand `create_model()`
+                calls such as `/offload`.
             server_proc: LangGraph server process for the interactive session.
             server_kwargs: When provided, server startup is deferred.
 
@@ -629,6 +616,11 @@ class DeepAgentsApp(App):
         self._server_kwargs = server_kwargs
         self._mcp_preload_kwargs = mcp_preload_kwargs
         self._connecting = server_kwargs is not None
+        # Extract sandbox type from server kwargs for trace metadata.
+        # ServerConfig.__post_init__ normalizes "none" → None, but server_kwargs carries
+        # the raw argparse value, so guard against both.
+        raw = (server_kwargs or {}).get("sandbox_type")
+        self._sandbox_type: str | None = raw if raw and raw != "none" else None
         self._model_override: str | None = None
         self._model_params_override: dict[str, Any] | None = None
         self._mcp_tool_count = sum(len(s.tools) for s in (mcp_server_info or []))
@@ -648,6 +640,9 @@ class DeepAgentsApp(App):
         self._shell_running = False
         self._loading_widget: LoadingWidget | None = None
         self._token_tracker: TextualTokenTracker | None = None
+        # Typing-aware approval deferral state
+        self._last_typed_at: float | None = None
+        self._approval_placeholder: Static | None = None
         # Cumulative usage stats across all turns in this session
         self._session_stats: SessionStats = SessionStats()
         # User message queue for sequential processing
@@ -712,8 +707,9 @@ class DeepAgentsApp(App):
 
     async def on_mount(self) -> None:
         """Initialize components after mount."""
+        chat = self.query_one("#chat", VerticalScroll)
+        chat.anchor()
         if _detect_charset_mode() == CharsetMode.ASCII:
-            chat = self.query_one("#chat", VerticalScroll)
             chat.styles.scrollbar_size_vertical = 0
 
         self._status_bar = self.query_one("#status-bar", StatusBar)
@@ -805,7 +801,6 @@ class DeepAgentsApp(App):
             update_status=self._update_status,
             request_approval=self._request_approval,
             on_auto_approve_enabled=self._on_auto_approve_enabled,
-            scroll_to_bottom=self._scroll_chat_to_bottom,
             set_spinner=self._set_spinner,
             set_active_message=self._set_active_message,
             sync_message_content=self._sync_message_content,
@@ -1000,24 +995,6 @@ class DeepAgentsApp(App):
         if self._status_bar:
             self._status_bar.hide_tokens()
 
-    def _scroll_chat_to_bottom(self) -> None:
-        """Scroll chat to bottom using sticky scroll pattern.
-
-        Only scrolls if user is already at/near the bottom.
-        This prevents dragging the user back if they've scrolled up to read.
-        """
-        chat = self.query_one("#chat", VerticalScroll)
-
-        # Nothing to scroll if content fits in viewport
-        if chat.max_scroll_y <= 0:
-            return
-
-        # Sticky scroll: only scroll to bottom if user is near the bottom
-        # "Near" means within 100 pixels of the bottom (about 6-7 lines)
-        distance_from_bottom = chat.max_scroll_y - chat.scroll_y
-        if distance_from_bottom < 100:  # noqa: PLR2004  # Pixel distance threshold for sticky scroll
-            chat.scroll_end(animate=False)
-
     def _check_hydration_needed(self) -> None:
         """Check if we need to hydrate messages from the store.
 
@@ -1165,12 +1142,11 @@ class DeepAgentsApp(App):
 
         return children[-1] == self._loading_widget
 
-    async def _set_spinner(self, status: str | None) -> None:
+    async def _set_spinner(self, status: SpinnerStatus) -> None:
         """Show, update, or hide the loading spinner.
 
         Args:
-            status: The status text to display (e.g., "Thinking", "Summarizing"),
-                or `None` to hide the spinner.
+            status: The spinner status to display, or `None` to hide.
         """
         if status is None:
             # Hide
@@ -1192,8 +1168,8 @@ class DeepAgentsApp(App):
             if not self._is_spinner_at_correct_position(messages):
                 await self._loading_widget.remove()
                 await self._mount_before_queued(messages, self._loading_widget)
-        # NOTE: Don't call _scroll_chat_to_bottom() here - it would re-anchor
-        # and drag user back to bottom if they've scrolled away during streaming
+        # NOTE: Don't call anchor() here - it would re-anchor and drag user back
+        # to bottom if they've scrolled away during streaming
 
     async def _request_approval(
         self,
@@ -1249,7 +1225,8 @@ class DeepAgentsApp(App):
                             f"✓ Auto-approved shell command (allow-list): {command}"
                         )
                         await self._mount_before_queued(messages, auto_msg)
-                    self._scroll_chat_to_bottom()
+                    with suppress(NoMatches, ScreenStackError):
+                        self.query_one("#chat", VerticalScroll).anchor()
                 except Exception:  # noqa: S110, BLE001  # Resilient auto-message display
                     pass  # Don't fail if we can't show the message
 
@@ -1265,27 +1242,114 @@ class DeepAgentsApp(App):
         menu = ApprovalMenu(action_requests, assistant_id, id=unique_id)
         menu.set_future(result_future)
 
-        # Store reference
         self._pending_approval_widget = menu
 
-        # Mount approval inline in messages area (not replacing ChatInput)
+        if self._is_user_typing():
+            # Show a placeholder until the user stops typing, then swap in the
+            # real ApprovalMenu.  This prevents accidental key presses (e.g.
+            # 'y', 'n') from triggering approval decisions mid-sentence.
+            placeholder = Static(
+                "Waiting for typing to finish...",
+                classes="approval-placeholder",
+            )
+            self._approval_placeholder = placeholder
+            try:
+                messages = self.query_one("#messages", Container)
+                await self._mount_before_queued(messages, placeholder)
+                self.call_after_refresh(placeholder.scroll_visible)
+            except Exception:
+                logger.exception("Failed to mount approval placeholder")
+                # Placeholder failed — fall back to showing the menu directly
+                # so the future is always resolvable.
+                self._approval_placeholder = None
+                await self._mount_approval_widget(menu, result_future)
+                return result_future
+
+            self.run_worker(
+                self._deferred_show_approval(placeholder, menu, result_future),
+                exclusive=False,
+            )
+        else:
+            await self._mount_approval_widget(menu, result_future)
+
+        return result_future
+
+    async def _mount_approval_widget(
+        self,
+        menu: ApprovalMenu,
+        result_future: asyncio.Future[dict[str, str]],
+    ) -> None:
+        """Mount the approval menu widget inline in the messages area.
+
+        If mounting fails, clears `_pending_approval_widget` and propagates
+        the exception via `result_future`.
+
+        Args:
+            menu: The `ApprovalMenu` instance to mount.
+            result_future: The future to resolve/reject for the caller.
+        """
         try:
             messages = self.query_one("#messages", Container)
             await self._mount_before_queued(messages, menu)
-            # Scroll to make approval visible (but don't re-anchor)
             self.call_after_refresh(menu.scroll_visible)
-            # Focus approval menu
             self.call_after_refresh(menu.focus)
         except Exception as e:
             logger.exception(
                 "Failed to mount approval menu (id=%s) in messages container",
-                unique_id,
+                menu.id,
             )
             self._pending_approval_widget = None
             if not result_future.done():
                 result_future.set_exception(e)
 
-        return result_future
+    async def _deferred_show_approval(
+        self,
+        placeholder: Static,
+        menu: ApprovalMenu,
+        result_future: asyncio.Future[dict[str, str]],
+    ) -> None:
+        """Wait until the user is idle, then swap the placeholder for the real menu.
+
+        Exits early if the placeholder has already been detached (e.g. the
+        approval was cancelled while waiting).  In that case the future is
+        cancelled so the caller is not left hanging.
+
+        Args:
+            placeholder: The temporary placeholder widget currently mounted.
+            menu: The `ApprovalMenu` to show once the user stops typing.
+            result_future: The future backing this approval flow.
+        """
+        deadline = _monotonic() + _DEFERRED_APPROVAL_TIMEOUT_SECONDS
+        while self._is_user_typing():  # Simple polling
+            if _monotonic() > deadline:
+                logger.warning(
+                    "Timed out waiting for user to stop typing; showing approval now"
+                )
+                break
+            await asyncio.sleep(0.2)
+
+        # Guard: if the placeholder was already removed (e.g. agent cancelled
+        # the approval while we were waiting), clean up and cancel the future.
+        if not placeholder.is_attached:
+            logger.warning(
+                "Approval placeholder detached before menu shown (id=%s)",
+                menu.id,
+            )
+            self._approval_placeholder = None
+            self._pending_approval_widget = None
+            if not result_future.done():
+                result_future.cancel()
+            return
+
+        self._approval_placeholder = None
+        try:
+            await placeholder.remove()
+        except Exception:
+            logger.warning(
+                "Failed to remove approval placeholder during swap",
+                exc_info=True,
+            )
+        await self._mount_approval_widget(menu, result_future)
 
     def _on_auto_approve_enabled(self) -> None:
         """Handle auto-approve being enabled via the HITL approval menu.
@@ -1459,11 +1523,42 @@ class DeepAgentsApp(App):
         if self._status_bar:
             self._status_bar.set_mode(event.mode)
 
+    def on_chat_input_typing(
+        self,
+        event: ChatInput.Typing,  # noqa: ARG002  # Textual event handler signature
+    ) -> None:
+        """Record the most recent keystroke time for typing-aware approval deferral."""
+        self._last_typed_at = _monotonic()
+
+    def _is_user_typing(self) -> bool:
+        """Return whether the user typed recently (within the idle threshold).
+
+        Returns:
+            `True` if the last recorded typing event occurred within the last
+                `_TYPING_IDLE_THRESHOLD_SECONDS` seconds, `False` otherwise.
+        """
+        if self._last_typed_at is None:
+            return False
+        return (_monotonic() - self._last_typed_at) < _TYPING_IDLE_THRESHOLD_SECONDS
+
     async def on_approval_menu_decided(
         self,
         event: Any,  # noqa: ARG002, ANN401  # Textual event handler signature
     ) -> None:
         """Handle approval menu decision - remove from messages and refocus input."""
+        # Defensively remove any lingering placeholder (should already be gone
+        # once the deferred worker swaps it, but guard against edge cases).
+        if self._approval_placeholder is not None:
+            if self._approval_placeholder.is_attached:
+                try:
+                    await self._approval_placeholder.remove()
+                except Exception:
+                    logger.warning(
+                        "Failed to remove approval placeholder during cleanup",
+                        exc_info=True,
+                    )
+            self._approval_placeholder = None
+
         # Remove ApprovalMenu using stored reference
         if self._pending_approval_widget:
             await self._pending_approval_widget.remove()
@@ -1543,9 +1638,9 @@ class DeepAgentsApp(App):
             if proc.returncode and proc.returncode != 0:
                 await self._mount_message(ErrorMessage(f"Exit code: {proc.returncode}"))
 
-            # Scroll to show the output (user-initiated command, so scroll is expected)
-            chat = self.query_one("#chat", VerticalScroll)
-            chat.scroll_end(animate=False)
+            # Anchor to bottom so shell output stays visible
+            with suppress(NoMatches, ScreenStackError):
+                self.query_one("#chat", VerticalScroll).anchor()
 
         except OSError as e:
             logger.exception("Failed to execute shell command: %s", command)
@@ -1620,12 +1715,11 @@ class DeepAgentsApp(App):
         url = _COMMAND_URLS[cmd]
         await self._mount_message(UserMessage(command))
         webbrowser.open(url)
-        link = Text(url, style="dim italic")
-        link.stylize(f"link {url}", 0)
+        link = Content.styled(url, TStyle(dim=True, italic=True, link=url))
         await self._mount_message(AppMessage(link))
 
     @staticmethod
-    async def _build_thread_message(prefix: str, thread_id: str) -> str | Text:
+    async def _build_thread_message(prefix: str, thread_id: str) -> str | Content:
         """Build a thread status message, hyperlinking the ID when possible.
 
         Attempts to resolve the LangSmith thread URL with a short timeout.
@@ -1637,7 +1731,7 @@ class DeepAgentsApp(App):
             thread_id: The thread identifier.
 
         Returns:
-            A Rich `Text` with a clickable thread ID, or a plain string.
+            `Content` with a clickable thread ID, or a plain string.
         """
         try:
             url = await asyncio.wait_for(
@@ -1648,9 +1742,9 @@ class DeepAgentsApp(App):
             url = None
 
         if url:
-            return Text.assemble(
+            return Content.assemble(
                 f"{prefix}: ",
-                (thread_id, f"link {url}"),
+                (thread_id, TStyle(link=url)),
             )
         return f"{prefix}: {thread_id}"
 
@@ -1689,8 +1783,7 @@ class DeepAgentsApp(App):
             webbrowser.open(url)
         except Exception:
             logger.debug("Could not open browser for URL: %s", url, exc_info=True)
-        link = Text(url, style="dim italic")
-        link.stylize(f"link {url}", 0)
+        link = Content.styled(url, TStyle(dim=True, italic=True, link=url))
         await self._mount_message(AppMessage(link))
 
     async def _handle_command(self, command: str) -> None:
@@ -1705,21 +1798,24 @@ class DeepAgentsApp(App):
             self.exit()
         elif cmd == "/help":
             await self._mount_message(UserMessage(command))
-            help_text = Text(
-                "Commands: /quit, /clear, /compact, /mcp, "
+            help_body = (
+                "Commands: /quit, /clear, /offload, /editor, /mcp, "
                 "/model [--model-params JSON] [--default], /reload, /remember, "
                 "/tokens, /threads, /trace, /changelog, /docs, /feedback, /help\n\n"
                 "Interactive Features:\n"
                 "  Enter           Submit your message\n"
                 f"  {newline_shortcut():<15} Insert newline\n"
+                "  Ctrl+X          Open prompt in external editor\n"
                 "  Shift+Tab       Toggle auto-approve mode\n"
                 "  @filename       Auto-complete files and inject content\n"
                 "  /command        Slash commands (/help, /clear, /quit)\n"
                 "  !command        Run shell commands directly\n\n"
-                f"Docs: {DOCS_URL}",
-                style="dim italic",
+                "Docs: "
             )
-            help_text.stylize(f"link {DOCS_URL}", help_text.plain.index(DOCS_URL))
+            help_text = Content.assemble(
+                (help_body, "dim italic"),
+                (DOCS_URL, TStyle(dim=True, italic=True, link=DOCS_URL)),
+            )
             await self._mount_message(AppMessage(help_text))
 
         elif cmd in {"/changelog", "/docs", "/feedback"}:
@@ -1773,9 +1869,11 @@ class DeepAgentsApp(App):
                 await self._mount_message(
                     AppMessage(f"Started new thread: {new_thread_id}")
                 )
-        elif cmd == "/compact":
+        elif cmd == "/editor":
+            await self.action_open_editor()
+        elif cmd in {"/offload", "/compact"}:
             await self._mount_message(UserMessage(command))
-            await self._handle_compact()
+            await self._handle_offload()
         elif cmd == "/threads":
             await self._show_thread_selector()
         elif cmd == "/trace":
@@ -1920,18 +2018,9 @@ class DeepAgentsApp(App):
             await self._mount_message(UserMessage(command))
             await self._mount_message(AppMessage(f"Unknown command: {cmd}"))
 
-        # Scroll to bottom after command output is rendered.
-        # Use call_after_refresh so the layout pass completes first;
-        # otherwise max_scroll_y is still stale.
-        def _scroll_after_command() -> None:
-            try:
-                chat = self.query_one("#chat", VerticalScroll)
-                if chat.max_scroll_y > 0:
-                    chat.scroll_end(animate=False)
-            except NoMatches:
-                pass
-
-        self.call_after_refresh(_scroll_after_command)
+        # Anchor to bottom so command output stays visible
+        with suppress(NoMatches, ScreenStackError):
+            self.query_one("#chat", VerticalScroll).anchor()
 
     async def _get_conversation_token_count(self) -> int | None:
         """Return the approximate conversation-only token count.
@@ -1960,8 +2049,8 @@ class DeepAgentsApp(App):
             logger.debug("Failed to retrieve conversation token count", exc_info=True)
             return None
 
-    def _resolve_compact_budget_str(self) -> str | None:
-        """Resolve the compaction retention budget as a human-readable string.
+    def _resolve_offload_budget_str(self) -> str | None:
+        """Resolve the offload retention budget as a human-readable string.
 
         Instantiates a model and computes summarization defaults, so this is
         not a trivial accessor.
@@ -1981,40 +2070,35 @@ class DeepAgentsApp(App):
                 profile_overrides=self._profile_override,
             )
             defaults = compute_summarization_defaults(result.model)
-            return _format_compact_limit(
+            from deepagents_cli.offload import format_offload_limit
+
+            return format_offload_limit(
                 defaults["keep"],
                 settings.model_context_limit,
             )
         except Exception:  # best-effort for /tokens display
-            logger.debug("Failed to compute compaction budget string", exc_info=True)
+            logger.debug("Failed to compute offload budget string", exc_info=True)
             return None
 
-    async def _handle_compact(self) -> None:
-        """Compact the conversation by summarizing old messages.
+    async def _handle_offload(self) -> None:
+        """Offload older messages to free context window space."""
+        from deepagents_cli.offload import (
+            OffloadModelError,
+            OffloadThresholdNotMet,
+            perform_offload,
+        )
 
-        Writes a `_summarization_event` into the agent's checkpointed state.
-        On the next model call, `SummarizationMiddleware.wrap_model_call` reads
-        this event and presents the summary plus recent messages to the model
-        instead of the full history.
-
-        Compaction is a no-op when the conversation's total token count is
-        within the `keep` budget. Until that threshold is exceeded the user
-        sees "Nothing to compact" with the retention budget and a pointer to
-        `/tokens` for a full breakdown.
-        """
         if not self._agent or not self._lc_thread_id:
             await self._mount_message(
-                AppMessage("Nothing to compact \u2014 start a conversation first")
+                AppMessage("Nothing to offload \u2014 start a conversation first")
             )
             return
 
         if self._agent_running:
             await self._mount_message(
-                AppMessage("Cannot compact while agent is running")
+                AppMessage("Cannot offload while agent is running")
             )
             return
-
-        from langchain_core.messages.utils import count_tokens_approximately
 
         config: RunnableConfig = {"configurable": {"thread_id": self._lc_thread_id}}
 
@@ -2026,312 +2110,101 @@ class DeepAgentsApp(App):
 
         if not state_values:
             await self._mount_message(
-                AppMessage("Nothing to compact \u2014 start a conversation first")
+                AppMessage("Nothing to offload \u2014 start a conversation first")
             )
             return
 
-        messages = state_values.get("messages", [])
-
-        # Prevent concurrent user input while compaction modifies state
+        # Prevent concurrent user input while offload modifies state
         self._agent_running = True
         try:
+            await dispatch_hook("context.offload", {})
+            # Keep old hook name for backward compatibility
             await dispatch_hook("context.compact", {})
-            await self._set_spinner("Compacting")
+            await self._set_spinner("Offloading")
 
-            from deepagents.middleware.summarization import (
-                SummarizationEvent,
-                SummarizationMiddleware,
-                compute_summarization_defaults,
-            )
-
-            try:
-                model_spec = f"{settings.model_provider}:{settings.model_name}"
-                result = create_model(
-                    model_spec,
-                    profile_overrides=self._profile_override,
-                )
-                model = result.model
-            except Exception as exc:  # noqa: BLE001  # surface model config errors to user
-                await self._mount_message(
-                    ErrorMessage(
-                        f"Compaction requires a working model configuration: {exc}"
-                    )
-                )
-                return
-
-            # create_model() receives --profile-override via self._profile_override,
-            # but settings.model_context_limit may have been set by additional
-            # runtime logic. Patch it into the fresh model when it differs from
-            # the profile value.
-            ctx = settings.model_context_limit
-            if ctx is not None:
-                # Guard against models that lack a profile dict
-                # (custom/non-standard providers)
-                profile = getattr(model, "profile", None)
-                native = (
-                    profile.get("max_input_tokens")
-                    if isinstance(profile, dict)
-                    else None
-                )
-                if native != ctx:
-                    merged = (
-                        {**profile, "max_input_tokens": ctx}
-                        if isinstance(profile, dict)
-                        else {"max_input_tokens": ctx}
-                    )
-                    with suppress(AttributeError, TypeError, ValueError):
-                        model.profile = merged  # type: ignore[union-attr]
-
-            defaults = compute_summarization_defaults(model)
-            compact_backend = self._backend
-            if compact_backend is None:
-                from deepagents.backends.filesystem import FilesystemBackend
-
-                compact_backend = FilesystemBackend()
-                logger.info("Using local FilesystemBackend for compaction")
-            middleware = SummarizationMiddleware(
-                model=model,
-                backend=compact_backend,
-                keep=defaults["keep"],
-                trim_tokens_to_summarize=None,
-            )
-
-            # Rebuild the message list the model would see, accounting for
-            # any prior compaction
-            event = state_values.get("_summarization_event")
-            effective = middleware._apply_event_to_messages(messages, event)
-
-            cutoff = middleware._determine_cutoff_index(effective)
-            compact_limit = _format_compact_limit(
-                defaults["keep"],
-                settings.model_context_limit,
-            )
-
-            if cutoff == 0:
-                conv_tokens = count_tokens_approximately(effective)
-                conv_str = format_token_count(conv_tokens)
-                total_context = (
+            result = await perform_offload(
+                messages=state_values.get("messages", []),
+                prior_event=state_values.get("_summarization_event"),
+                thread_id=self._lc_thread_id,
+                model_spec=(f"{settings.model_provider}:{settings.model_name}"),
+                profile_overrides=self._profile_override,
+                context_limit=settings.model_context_limit,
+                total_context_tokens=(
                     self._token_tracker.current_context if self._token_tracker else 0
-                )
-                context_limit = settings.model_context_limit
+                ),
+                backend=self._backend,
+            )
 
+            if isinstance(result, OffloadThresholdNotMet):
+                conv_str = format_token_count(result.conversation_tokens)
                 if (
-                    total_context > 0
-                    and context_limit is not None
-                    and total_context > context_limit
+                    result.total_context_tokens > 0
+                    and result.context_limit is not None
+                    and result.total_context_tokens > result.context_limit
                 ):
-                    # Case A: total context exceeds model limit but
-                    # conversation is within keep budget — excess is
-                    # system prompt + tool overhead that compaction
-                    # cannot reduce
-                    total_str = format_token_count(total_context)
+                    total_str = format_token_count(
+                        result.total_context_tokens,
+                    )
                     await self._mount_message(
                         AppMessage(
-                            f"Nothing to compact \u2014 conversation is only "
-                            f"~{conv_str} tokens.\n\n"
-                            f"Total context ({total_str} tokens) is mostly "
-                            f"system prompt and tool overhead, which "
-                            f"compaction cannot reduce.\n\n"
+                            f"Offload threshold not met \u2014 conversation "
+                            f"is only ~{conv_str} tokens.\n\n"
+                            f"The remaining context "
+                            f"({total_str} tokens) is system overhead "
+                            f"that can't be offloaded.\n\n"
                             f"Use /tokens for a full breakdown."
                         )
                     )
                 else:
-                    # Case B: genuinely within budget
                     await self._mount_message(
                         AppMessage(
-                            f"Nothing to compact \u2014 conversation "
+                            f"Offload threshold not met \u2014 conversation "
                             f"(~{conv_str} tokens) is within the "
-                            f"retention budget ({compact_limit}).\n\n"
+                            f"retention budget "
+                            f"({result.budget_str}).\n\n"
                             f"Use /tokens for a full breakdown."
                         )
                     )
                 return
 
-            to_summarize, to_keep = middleware._partition_messages(effective, cutoff)
-
-            tokens_summarized = count_tokens_approximately(to_summarize)
-            tokens_kept = count_tokens_approximately(to_keep)
-            tokens_before = tokens_summarized + tokens_kept
-
-            # Generate summary first so no side effects occur if the LLM fails
-            summary = await middleware._acreate_summary(to_summarize)
-
-            offload_result = await self._offload_messages_for_compact(
-                to_summarize,
-                middleware,
-                backend=compact_backend,
-            )
-            if offload_result is None:
-                # Actual failure (read/write error)
-                await self._mount_message(
-                    ErrorMessage(
-                        "Warning: conversation history could not be saved to "
-                        "storage. Older messages will not be recoverable. "
-                    )
-                )
-            # offload_result == "" means nothing to offload (not an error)
-            file_path = offload_result or None
-
-            summary_msg = middleware._build_new_messages_with_path(summary, file_path)[
-                0
-            ]
-
-            # Compute token savings and append to the summary message so the
-            # model is aware of how much context was reclaimed.
-            tokens_summary = count_tokens_approximately([summary_msg])
-            tokens_after = tokens_summary + tokens_kept
-            before = format_token_count(tokens_before)
-            after = format_token_count(tokens_after)
-            pct = (
-                round((tokens_before - tokens_after) / tokens_before * 100)
-                if tokens_before > 0
-                else 0
-            )
-            summarized_before = format_token_count(tokens_summarized)
-            summarized_after = format_token_count(tokens_summary)
-            savings_note = (
-                f"\n\n{len(to_summarize)} messages were compacted "
-                f"({summarized_before} \u2192 {summarized_after} tokens). "
-                f"Total context: {before} \u2192 {after} tokens "
-                f"({pct}% decrease), "
-                f"{len(to_keep)} messages unchanged."
-            )
-            summary_msg.content += savings_note
-
-            state_cutoff = middleware._compute_state_cutoff(event, cutoff)
-
-            new_event: SummarizationEvent = {
-                "cutoff_index": state_cutoff,
-                "summary_message": summary_msg,  # ty: ignore[invalid-argument-type]
-                "file_path": file_path,
-            }
+            # OffloadResult — success
+            if result.offload_warning:
+                await self._mount_message(ErrorMessage(result.offload_warning))
 
             if remote := self._remote_agent():
-                # After a dev-server restart, SQLite checkpoints may exist even
-                # when the remote thread record has not yet been re-created.
-                # Ensure the HTTP-side thread exists before updating state.
                 await remote.aensure_thread(config)  # ty: ignore[invalid-argument-type]
 
-            await self._agent.aupdate_state(config, {"_summarization_event": new_event})
+            await self._agent.aupdate_state(
+                config, {"_summarization_event": result.new_event}
+            )
 
+            before = format_token_count(result.tokens_before)
+            after = format_token_count(result.tokens_after)
             await self._mount_message(
                 AppMessage(
-                    "Conversation compacted. "
-                    f"Summarized {len(to_summarize)} messages into a concise summary.\n"
-                    f"Summarized context: {summarized_before} \u2192 "
-                    f"{summarized_after} tokens\n"
-                    f"Total context: {before} \u2192 {after} tokens "
-                    f"({pct}% decrease), {len(to_keep)} messages unchanged."
+                    f"Offloaded {result.messages_offloaded} older messages, "
+                    f"freeing up context window space.\n"
+                    f"Context: {before} \u2192 {after} tokens "
+                    f"({result.pct_decrease}% decrease), "
+                    f"{result.messages_kept} messages kept."
                 )
             )
 
-            # Approximate token count via count_tokens_approximately (content
-            # tokens only; excludes system prompts and tool schemas). The next
-            # agent turn replaces this with the real count from usage_metadata.
             if self._token_tracker:
-                self._token_tracker.add(tokens_after)
+                self._token_tracker.add(result.tokens_after)
 
-        except Exception as exc:  # surface compaction errors to user
-            logger.exception("Compaction failed")
-            await self._mount_message(ErrorMessage(f"Compaction failed: {exc}"))
+        except OffloadModelError as exc:
+            logger.warning("Offload model creation failed: %s", exc, exc_info=True)
+            await self._mount_message(ErrorMessage(str(exc)))
+        except Exception as exc:  # surface offload errors to user
+            logger.exception("Offload failed")
+            await self._mount_message(ErrorMessage(f"Offload failed: {exc}"))
         finally:
             self._agent_running = False
             try:
                 await self._set_spinner(None)
             except Exception:  # best-effort spinner cleanup
-                logger.exception("Failed to dismiss spinner after compaction")
-
-    async def _offload_messages_for_compact(
-        self,
-        messages: list[Any],
-        middleware: SummarizationMiddleware,
-        *,
-        backend: BackendProtocol | None = None,
-    ) -> str | None:
-        """Write messages to backend storage before compaction.
-
-        Appends messages as a timestamped markdown section to the conversation
-        history file, matching the `SummarizationMiddleware` offload pattern.
-
-        Filters out prior summary messages using the middleware's
-        `_filter_summary_messages` to avoid storing summaries-of-summaries.
-
-        Args:
-            messages: Messages to offload.
-            middleware: `SummarizationMiddleware` instance for filtering.
-            backend: Backend to persist conversation history to. Defaults to
-                `self._backend` when omitted.
-
-        Returns:
-            File path where history was stored, `""` (empty string) if there
-            were no non-summary messages to offload (not an error), or `None`
-            if the write failed.
-        """
-        from datetime import UTC, datetime
-
-        from langchain_core.messages import get_buffer_string
-
-        history_backend = backend or self._backend
-        if history_backend is None:
-            logger.warning("No backend configured; cannot offload messages")
-            return None
-
-        path = f"/conversation_history/{self._lc_thread_id}.md"
-
-        # Exclude prior summaries so the offloaded history contains only
-        # original messages
-        filtered = middleware._filter_summary_messages(messages)
-        if not filtered:
-            # Nothing to offload — all messages were summaries. Not an error.
-            return ""
-
-        timestamp = datetime.now(UTC).isoformat()
-        buf = get_buffer_string(filtered)
-        new_section = f"## Compacted at {timestamp}\n\n{buf}\n\n"
-
-        existing_content = ""
-        try:
-            responses = await history_backend.adownload_files([path])
-            resp = responses[0] if responses else None
-            if resp and resp.content is not None and resp.error is None:
-                existing_content = resp.content.decode("utf-8")
-        except Exception as exc:  # abort write on read failure
-            logger.warning(
-                "Failed to read existing history at %s; aborting offload to "
-                "avoid overwriting prior history: %s",
-                path,
-                exc,
-                exc_info=True,
-            )
-            return None
-
-        combined = existing_content + new_section
-
-        try:
-            result = (
-                await history_backend.aedit(path, existing_content, combined)
-                if existing_content
-                else await history_backend.awrite(path, combined)
-            )
-            if result is None or result.error:
-                error_detail = result.error if result else "backend returned None"
-                logger.warning(
-                    "Failed to offload compact history to %s: %s",
-                    path,
-                    error_detail,
-                )
-                return None
-        except Exception as exc:  # defensive: surface write failures gracefully
-            logger.warning(
-                "Exception offloading compact history to %s: %s",
-                path,
-                exc,
-                exc_info=True,
-            )
-            return None
-
-        logger.debug("Offloaded %d messages to %s", len(filtered), path)
-        return path
+                logger.exception("Failed to dismiss spinner after offload")
 
     async def _handle_user_message(self, message: str) -> None:
         """Handle a user message to send to the agent.
@@ -2342,13 +2215,9 @@ class DeepAgentsApp(App):
         # Mount the user message
         await self._mount_message(UserMessage(message))
 
-        # Scroll to bottom when user sends a new message
-        try:
-            chat = self.query_one("#chat", VerticalScroll)
-            if chat.max_scroll_y > 0:
-                chat.scroll_end(animate=False)
-        except NoMatches:
-            pass
+        # Anchor to bottom so streaming response stays visible
+        with suppress(NoMatches, ScreenStackError):
+            self.query_one("#chat", VerticalScroll).anchor()
 
         # Check if agent is available
         if self._agent and self._ui_adapter and self._session_state:
@@ -2386,6 +2255,7 @@ class DeepAgentsApp(App):
                 adapter=self._ui_adapter,
                 backend=self._backend,
                 image_tracker=self._image_tracker,
+                sandbox_type=self._sandbox_type,
                 context=CLIContext(
                     model=self._model_override,
                     model_params=self._model_params_override or {},
@@ -2563,7 +2433,7 @@ class DeepAgentsApp(App):
         In server mode the LangGraph dev server can report an empty thread state
         after a restart even when checkpoints exist on disk. When that happens,
         read the latest checkpoint directly so resumed threads can still load
-        history and compact correctly.
+        history and offload correctly.
 
         Args:
             thread_id: Thread ID to fetch from checkpoint storage.
@@ -2687,7 +2557,7 @@ class DeepAgentsApp(App):
         """
         try:
             thread_msg = await self._build_thread_message(prefix, thread_id)
-            if not isinstance(thread_msg, Text):
+            if not isinstance(thread_msg, Content):
                 logger.debug(
                     "Skipping thread link upgrade for %s: URL did not resolve",
                     thread_id,
@@ -2816,7 +2686,7 @@ class DeepAgentsApp(App):
                 thread_id=history_thread_id,
             )
 
-            # 10. Scroll once
+            # 10. Scroll once to bottom after history loads
             def scroll_to_end() -> None:
                 with suppress(NoMatches):
                     chat = self.query_one("#chat", VerticalScroll)
@@ -3223,6 +3093,36 @@ class DeepAgentsApp(App):
         if self._pending_approval_widget:
             self._pending_approval_widget.action_select_reject()
 
+    async def action_open_editor(self) -> None:
+        """Open the current prompt text in an external editor ($VISUAL/$EDITOR)."""
+        from deepagents_cli.editor import open_in_editor
+
+        chat_input = self._chat_input
+        if not chat_input or not chat_input._text_area:
+            return
+
+        current_text = chat_input._text_area.text or ""
+
+        edited: str | None = None
+        try:
+            with self.suspend():
+                edited = open_in_editor(current_text)
+        except Exception:
+            logger.warning("External editor failed", exc_info=True)
+            self.notify(
+                "External editor failed. Check $VISUAL/$EDITOR.",
+                severity="error",
+                timeout=5,
+            )
+            chat_input.focus_input()
+            return
+
+        if edited is not None:
+            chat_input._text_area.text = edited
+            lines = edited.split("\n")
+            chat_input._text_area.move_cursor((len(lines) - 1, len(lines[-1])))
+        chat_input.focus_input()
+
     def on_paste(self, event: Paste) -> None:
         """Route unfocused paste events to chat input for drag/drop reliability."""
         if not self._chat_input:
@@ -3598,16 +3498,9 @@ class DeepAgentsApp(App):
                 await self._mount_message(AppMessage(f"Switched to {display}"))
             logger.info("Model switched to %s (via configurable middleware)", display)
 
-            # Scroll to bottom so the confirmation message is visible
-            def _scroll_after_switch() -> None:
-                try:
-                    chat = self.query_one("#chat", VerticalScroll)
-                    if chat.max_scroll_y > 0:
-                        chat.scroll_end(animate=False)
-                except NoMatches:
-                    pass
-
-            self.call_after_refresh(_scroll_after_switch)
+            # Anchor to bottom so the confirmation message is visible
+            with suppress(NoMatches, ScreenStackError):
+                self.query_one("#chat", VerticalScroll).anchor()
         finally:
             self._model_switching = False
 
@@ -3711,9 +3604,9 @@ async def run_textual_app(
         mcp_server_info: MCP server metadata for the `/mcp` viewer.
         profile_override: Extra profile fields from `--profile-override`,
             retained so later profile-aware behavior stays consistent with
-            the CLI override, including model selection details, compaction
-            budget display, and on-demand `create_model()` calls such as
-            `/compact`.
+            the CLI override, including model selection details, offload
+            budget display, and on-demand `create_model()` calls such
+            as `/offload`.
         server_proc: LangGraph server process for the interactive session.
         server_kwargs: Kwargs for deferred `start_server_and_get_agent` call.
         mcp_preload_kwargs: Kwargs for concurrent MCP metadata preload.

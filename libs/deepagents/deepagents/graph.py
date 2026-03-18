@@ -20,6 +20,7 @@ from langgraph.types import Checkpointer
 from deepagents._models import resolve_model
 from deepagents.backends import StateBackend
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
+from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
@@ -85,7 +86,8 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
     *,
     system_prompt: str | SystemMessage | None = None,
     middleware: Sequence[AgentMiddleware] = (),
-    subagents: list[SubAgent | CompiledSubAgent] | None = None,
+    subagents: Sequence[SubAgent | CompiledSubAgent] | None = None,
+    async_subagents: list[AsyncSubAgent] | None = None,
     skills: list[str] | None = None,
     memory: list[str] | None = None,
     response_format: ResponseFormat | None = None,
@@ -149,6 +151,12 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
             - (optional) `tools`
             - (optional) `model` (either a `LanguageModelLike` instance or `dict` settings)
             - (optional) `middleware` (list of `AgentMiddleware`)
+        async_subagents: Optional list of async subagent specs for remote LangGraph servers.
+
+            Each spec should be an `AsyncSubAgent` dict with `name`, `description`,
+            and `graph_id`. Optionally include `url` for remote deployments (omit
+            for ASGI transport). Async subagents run as background jobs with tools
+            for launching, checking, updating, cancelling, and listing jobs.
         skills: Optional list of skill source paths (e.g., `["/skills/user/", "/skills/project/"]`).
 
             Paths must be specified using POSIX conventions (forward slashes) and are relative
@@ -269,6 +277,9 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
             PatchToolCallsMiddleware(),
         ]
     )
+
+    if async_subagents:
+        deepagent_middleware.append(AsyncSubAgentMiddleware(async_subagents=async_subagents))
 
     if middleware:
         deepagent_middleware.extend(middleware)

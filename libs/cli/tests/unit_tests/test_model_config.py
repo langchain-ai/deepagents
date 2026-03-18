@@ -1039,6 +1039,239 @@ api_key_env = "SOME_KEY"
         assert "empty" not in models
 
 
+class TestDisabledProviders:
+    """Tests for provider hiding via `enabled = false`."""
+
+    def test_enabled_false_hides_registry_provider(self, tmp_path: Path) -> None:
+        """Registry provider with `enabled = false` is hidden."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.anthropic]
+enabled = false
+""")
+        fake_profiles = {
+            "claude-sonnet-4-5": {"tool_calling": True},
+        }
+
+        def mock_load(module_path: str) -> dict[str, Any]:
+            if module_path == "langchain_anthropic.data._profiles":
+                return fake_profiles
+            msg = "not installed"
+            raise ImportError(msg)
+
+        with (
+            patch(
+                "deepagents_cli.model_config._load_provider_profiles",
+                side_effect=mock_load,
+            ),
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+        ):
+            models = get_available_models()
+
+        assert "anthropic" not in models
+
+    def test_enabled_false_hides_config_only_provider(self, tmp_path: Path) -> None:
+        """A config-only provider with `enabled = false` is not shown."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.custom]
+enabled = false
+models = ["my-model"]
+api_key_env = "CUSTOM_KEY"
+""")
+        with (
+            patch(
+                "deepagents_cli.model_config._load_provider_profiles",
+                side_effect=ImportError("not installed"),
+            ),
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+        ):
+            models = get_available_models()
+
+        assert "custom" not in models
+
+    def test_enabled_true_preserves_provider(self, tmp_path: Path) -> None:
+        """A provider with `enabled = true` behaves normally."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.anthropic]
+enabled = true
+""")
+        fake_profiles = {
+            "claude-sonnet-4-5": {"tool_calling": True},
+        }
+
+        def mock_load(module_path: str) -> dict[str, Any]:
+            if module_path == "langchain_anthropic.data._profiles":
+                return fake_profiles
+            msg = "not installed"
+            raise ImportError(msg)
+
+        with (
+            patch(
+                "deepagents_cli.model_config._load_provider_profiles",
+                side_effect=mock_load,
+            ),
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+        ):
+            models = get_available_models()
+
+        assert "anthropic" in models
+        assert "claude-sonnet-4-5" in models["anthropic"]
+
+    def test_enabled_false_excludes_from_profiles(self, tmp_path: Path) -> None:
+        """A disabled provider is excluded from get_model_profiles()."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.anthropic]
+enabled = false
+""")
+        fake_profiles = {
+            "claude-sonnet-4-5": {
+                "tool_calling": True,
+                "max_input_tokens": 200000,
+            },
+        }
+
+        def mock_load(module_path: str) -> dict[str, Any]:
+            if module_path == "langchain_anthropic.data._profiles":
+                return fake_profiles
+            msg = "not installed"
+            raise ImportError(msg)
+
+        with (
+            patch(
+                "deepagents_cli.model_config._load_provider_profiles",
+                side_effect=mock_load,
+            ),
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+        ):
+            profiles = get_model_profiles()
+
+        assert "anthropic:claude-sonnet-4-5" not in profiles
+
+    def test_enabled_false_excludes_config_only_from_profiles(
+        self, tmp_path: Path
+    ) -> None:
+        """A disabled config-only provider is excluded from profiles."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.custom]
+enabled = false
+models = ["my-model"]
+api_key_env = "CUSTOM_KEY"
+""")
+        with (
+            patch(
+                "deepagents_cli.model_config._load_provider_profiles",
+                side_effect=ImportError("not installed"),
+            ),
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+        ):
+            profiles = get_model_profiles()
+
+        assert "custom:my-model" not in profiles
+
+    def test_disabled_provider_does_not_affect_others(self, tmp_path: Path) -> None:
+        """Disabling one provider does not affect other providers."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.anthropic]
+enabled = false
+
+[models.providers.custom]
+models = ["my-model"]
+api_key_env = "CUSTOM_KEY"
+""")
+        fake_profiles = {
+            "claude-sonnet-4-5": {"tool_calling": True},
+        }
+
+        def mock_load(module_path: str) -> dict[str, Any]:
+            if module_path == "langchain_anthropic.data._profiles":
+                return fake_profiles
+            msg = "not installed"
+            raise ImportError(msg)
+
+        with (
+            patch(
+                "deepagents_cli.model_config._load_provider_profiles",
+                side_effect=mock_load,
+            ),
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+        ):
+            models = get_available_models()
+
+        assert "anthropic" not in models
+        assert "custom" in models
+        assert "my-model" in models["custom"]
+
+
+class TestIsProviderEnabled:
+    """Tests for ModelConfig.is_provider_enabled()."""
+
+    def test_returns_true_when_not_in_config(self) -> None:
+        """Providers not in config are enabled by default."""
+        config = ModelConfig()
+        assert config.is_provider_enabled("anthropic") is True
+
+    def test_returns_true_when_enabled_not_set(self, tmp_path: Path) -> None:
+        """Provider without `enabled` field is enabled."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.anthropic]
+api_key_env = "ANTHROPIC_API_KEY"
+""")
+        config = ModelConfig.load(config_path)
+        assert config.is_provider_enabled("anthropic") is True
+
+    def test_returns_false_when_enabled_false(self, tmp_path: Path) -> None:
+        """`enabled = false` disables the provider."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.anthropic]
+enabled = false
+""")
+        config = ModelConfig.load(config_path)
+        assert config.is_provider_enabled("anthropic") is False
+
+    def test_returns_true_for_nonempty_models_list(self, tmp_path: Path) -> None:
+        """Provider with models is enabled."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.anthropic]
+models = ["claude-sonnet-4-5"]
+""")
+        config = ModelConfig.load(config_path)
+        assert config.is_provider_enabled("anthropic") is True
+
+    def test_enabled_false_takes_precedence_over_models(self, tmp_path: Path) -> None:
+        """`enabled = false` hides provider even with models listed."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.anthropic]
+enabled = false
+models = ["claude-sonnet-4-5"]
+""")
+        config = ModelConfig.load(config_path)
+        assert config.is_provider_enabled("anthropic") is False
+
+    def test_string_false_not_treated_as_disabled(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """String `"false"` is not bool `false`; provider stays enabled."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.anthropic]
+enabled = "false"
+""")
+        with caplog.at_level(logging.WARNING, logger="deepagents_cli.model_config"):
+            config = ModelConfig.load(config_path)
+
+        assert config.is_provider_enabled("anthropic") is True
+        assert any("non-boolean" in r.message for r in caplog.records)
+
+
 class TestProfileModuleFromClassPath:
     """Tests for _profile_module_from_class_path() helper."""
 
@@ -1348,6 +1581,36 @@ api_key_env = "FIREWORKS_API_KEY"
             patch.dict("os.environ", {}, clear=True),
         ):
             assert has_provider_credentials("fireworks") is False
+
+    def test_class_path_provider_without_api_key_env_returns_true(self, tmp_path):
+        """Returns True for class_path provider with no api_key_env.
+
+        class_path providers manage their own auth (e.g., custom headers, JWT)
+        so they should be treated as having credentials available.
+        """
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.cis]
+class_path = "agent_forge.integrations:CISChat"
+models = ["aviato-turbo"]
+""")
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            assert has_provider_credentials("cis") is True
+
+    def test_class_path_with_api_key_env_respects_env_var(self, tmp_path):
+        """api_key_env takes precedence over class_path for credential check."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.cis]
+class_path = "agent_forge.integrations:CISChat"
+models = ["aviato-turbo"]
+api_key_env = "CIS_API_KEY"
+""")
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch.dict("os.environ", {}, clear=True),
+        ):
+            assert has_provider_credentials("cis") is False
 
     def test_returns_none_for_totally_unknown_provider(self):
         """Returns None for provider not in hardcoded map or config.

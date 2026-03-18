@@ -47,6 +47,7 @@ Use a **plain tool** when:
 * The tool is specific to a single consumer (e.g. CLI-only)
 """
 
+from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentJob, AsyncSubAgentMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.skills import SkillsMiddleware
@@ -58,6 +59,9 @@ from deepagents.middleware.summarization import (
 )
 
 __all__ = [
+    "AsyncSubAgent",
+    "AsyncSubAgentJob",
+    "AsyncSubAgentMiddleware",
     "CompiledSubAgent",
     "FilesystemMiddleware",
     "MemoryMiddleware",

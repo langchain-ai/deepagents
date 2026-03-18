@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.metadata
 import json
 import logging
 import os
@@ -37,6 +38,7 @@ if TYPE_CHECKING:
     from langchain_core.runnables import RunnableConfig
 
 from deepagents_harbor.backend import HarborSandbox
+from deepagents_harbor.metadata import InfraMetadata, collect_sandbox_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -155,11 +157,15 @@ class DeepAgentsWrapper(BaseAgent):
             Formatted system prompt with directory context
         """
         # Get directory information from backend
-        ls_info = await backend.als_info(".")
+        ls_result = await backend.als(".")
         current_dir = (await backend.aexecute("pwd")).output
 
-        total_files = len(ls_info) if ls_info else 0
-        first_files = ls_info[:_MAX_FILE_LISTING] if ls_info else []
+        if ls_result.error:
+            logger.warning("Failed to list working directory: %s", ls_result.error)
+
+        entries = ls_result.entries or []
+        total_files = len(entries)
+        first_files = entries[:_MAX_FILE_LISTING]
 
         # Build file listing header based on actual count
         if total_files == 0:
@@ -202,6 +208,13 @@ class DeepAgentsWrapper(BaseAgent):
             raise TypeError(msg)
 
         backend = HarborSandbox(environment)
+
+        # Infrastructure metadata for noise analysis
+        try:
+            infra_meta = await collect_sandbox_metadata(backend)
+        except Exception:  # noqa: BLE001  # metadata is supplementary; never abort a trial
+            logger.warning("Failed to collect infrastructure metadata", exc_info=True)
+            infra_meta = None
 
         # Create agent based on mode (CLI vs SDK)
         if self._use_cli_agent:
@@ -284,12 +297,24 @@ class DeepAgentsWrapper(BaseAgent):
                 config=config,
             )
 
-        self._save_trajectory(environment, instruction, result)
+        self._save_trajectory(environment, instruction, result, infra_meta)
 
     def _save_trajectory(
-        self, environment: BaseEnvironment, instruction: str, result: dict
+        self,
+        environment: BaseEnvironment,
+        instruction: str,
+        result: dict,
+        infra_meta: InfraMetadata | None = None,
     ) -> None:
-        """Save current trajectory to logs directory."""
+        """Save current trajectory to logs directory.
+
+        Args:
+            environment: Harbor environment with trial paths.
+            instruction: The task instruction given to the agent.
+            result: Agent invocation result containing messages.
+            infra_meta: Infrastructure metadata collected at trial start,
+                if available.
+        """
         # Track token usage and cost for this run
         total_prompt_tokens = 0
         total_completion_tokens = 0
@@ -394,7 +419,9 @@ class DeepAgentsWrapper(BaseAgent):
                 model_name=self._model_name,
                 extra={
                     "framework": "deepagents",
-                    "langchain_version": "1.0+",
+                    "langchain_version": importlib.metadata.version("langchain"),
+                    "langchain_core_version": importlib.metadata.version("langchain-core"),
+                    **({"infrastructure": infra_meta.to_dict()} if infra_meta else {}),
                 },
             ),
             steps=steps,

@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from deepagents_cli.app import DeepAgentsApp
+from deepagents_cli.command_registry import SLASH_COMMANDS
 from deepagents_cli.config import settings
 from deepagents_cli.offload import (
     OffloadModelError,
@@ -17,7 +18,6 @@ from deepagents_cli.offload import (
     offload_messages_to_backend,
 )
 from deepagents_cli.textual_adapter import format_token_count
-from deepagents_cli.widgets.autocomplete import SLASH_COMMANDS
 from deepagents_cli.widgets.messages import AppMessage, ErrorMessage
 
 # Patch target for perform_offload (business logic)

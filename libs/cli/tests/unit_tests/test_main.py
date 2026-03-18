@@ -12,6 +12,7 @@ import pytest
 from deepagents_cli.app import AppResult, DeepAgentsApp, run_textual_app
 from deepagents_cli.config import build_langsmith_thread_url, reset_langsmith_url_cache
 from deepagents_cli.main import (
+    _ripgrep_install_hint,
     check_optional_tools,
     format_tool_warning_cli,
     format_tool_warning_tui,
@@ -353,19 +354,252 @@ class TestCheckOptionalTools:
         assert missing == ["ripgrep"]
 
 
+class TestRipgrepInstallHint:
+    """Tests for platform-specific ripgrep install hints."""
+
+    def test_macos_brew(self) -> None:
+        """Returns brew command on macOS when brew is available."""
+
+        def _which(cmd: str) -> str | None:
+            return "/opt/homebrew/bin/brew" if cmd == "brew" else None
+
+        with (
+            patch("deepagents_cli.main.sys") as mock_sys,
+            patch("deepagents_cli.main.shutil.which", side_effect=_which),
+        ):
+            mock_sys.platform = "darwin"
+            assert _ripgrep_install_hint() == "brew install ripgrep"
+
+    def test_macos_port(self) -> None:
+        """Falls back to MacPorts when brew is absent."""
+
+        def _which(cmd: str) -> str | None:
+            return "/opt/local/bin/port" if cmd == "port" else None
+
+        with (
+            patch("deepagents_cli.main.sys") as mock_sys,
+            patch("deepagents_cli.main.shutil.which", side_effect=_which),
+        ):
+            mock_sys.platform = "darwin"
+            assert _ripgrep_install_hint() == "sudo port install ripgrep"
+
+    def test_linux_apt(self) -> None:
+        """Returns apt-get command on Debian/Ubuntu."""
+
+        def _which(cmd: str) -> str | None:
+            return "/usr/bin/apt-get" if cmd == "apt-get" else None
+
+        with (
+            patch("deepagents_cli.main.sys") as mock_sys,
+            patch("deepagents_cli.main.shutil.which", side_effect=_which),
+        ):
+            mock_sys.platform = "linux"
+            assert _ripgrep_install_hint() == "sudo apt-get install ripgrep"
+
+    def test_linux_dnf(self) -> None:
+        """Returns dnf command on Fedora/RHEL."""
+
+        def _which(cmd: str) -> str | None:
+            return "/usr/bin/dnf" if cmd == "dnf" else None
+
+        with (
+            patch("deepagents_cli.main.sys") as mock_sys,
+            patch("deepagents_cli.main.shutil.which", side_effect=_which),
+        ):
+            mock_sys.platform = "linux"
+            assert _ripgrep_install_hint() == "sudo dnf install ripgrep"
+
+    def test_linux_pacman(self) -> None:
+        """Returns pacman command on Arch."""
+
+        def _which(cmd: str) -> str | None:
+            return "/usr/bin/pacman" if cmd == "pacman" else None
+
+        with (
+            patch("deepagents_cli.main.sys") as mock_sys,
+            patch("deepagents_cli.main.shutil.which", side_effect=_which),
+        ):
+            mock_sys.platform = "linux"
+            assert _ripgrep_install_hint() == "sudo pacman -S ripgrep"
+
+    def test_linux_zypper(self) -> None:
+        """Returns zypper command on openSUSE."""
+
+        def _which(cmd: str) -> str | None:
+            return "/usr/bin/zypper" if cmd == "zypper" else None
+
+        with (
+            patch("deepagents_cli.main.sys") as mock_sys,
+            patch("deepagents_cli.main.shutil.which", side_effect=_which),
+        ):
+            mock_sys.platform = "linux"
+            assert _ripgrep_install_hint() == "sudo zypper install ripgrep"
+
+    def test_linux_apk(self) -> None:
+        """Returns apk command on Alpine."""
+
+        def _which(cmd: str) -> str | None:
+            return "/sbin/apk" if cmd == "apk" else None
+
+        with (
+            patch("deepagents_cli.main.sys") as mock_sys,
+            patch("deepagents_cli.main.shutil.which", side_effect=_which),
+        ):
+            mock_sys.platform = "linux"
+            assert _ripgrep_install_hint() == "sudo apk add ripgrep"
+
+    def test_linux_nix(self) -> None:
+        """Returns nix-env command on NixOS."""
+
+        def _which(cmd: str) -> str | None:
+            if cmd == "nix-env":
+                return "/nix/var/nix/profiles/default/bin/nix-env"
+            return None
+
+        with (
+            patch("deepagents_cli.main.sys") as mock_sys,
+            patch("deepagents_cli.main.shutil.which", side_effect=_which),
+        ):
+            mock_sys.platform = "linux"
+            assert _ripgrep_install_hint() == "nix-env -iA nixpkgs.ripgrep"
+
+    def test_win32_choco(self) -> None:
+        """Returns choco command on Windows when available."""
+
+        def _which(cmd: str) -> str | None:
+            if cmd == "choco":
+                return "C:\\ProgramData\\chocolatey\\bin\\choco.exe"
+            return None
+
+        with (
+            patch("deepagents_cli.main.sys") as mock_sys,
+            patch("deepagents_cli.main.shutil.which", side_effect=_which),
+        ):
+            mock_sys.platform = "win32"
+            assert _ripgrep_install_hint() == "choco install ripgrep"
+
+    def test_win32_scoop(self) -> None:
+        """Returns scoop command on Windows when available."""
+
+        def _which(cmd: str) -> str | None:
+            if cmd == "scoop":
+                return "C:\\Users\\user\\scoop\\shims\\scoop.exe"
+            return None
+
+        with (
+            patch("deepagents_cli.main.sys") as mock_sys,
+            patch("deepagents_cli.main.shutil.which", side_effect=_which),
+        ):
+            mock_sys.platform = "win32"
+            assert _ripgrep_install_hint() == "scoop install ripgrep"
+
+    def test_win32_winget(self) -> None:
+        """Returns winget command on Windows when available."""
+
+        def _which(cmd: str) -> str | None:
+            return "C:\\winget.exe" if cmd == "winget" else None
+
+        with (
+            patch("deepagents_cli.main.sys") as mock_sys,
+            patch("deepagents_cli.main.shutil.which", side_effect=_which),
+        ):
+            mock_sys.platform = "win32"
+            assert _ripgrep_install_hint() == "winget install BurntSushi.ripgrep"
+
+    def test_darwin_no_manager_falls_through(self) -> None:
+        """Falls through to cross-platform on macOS without brew/port."""
+
+        def _which(cmd: str) -> str | None:
+            return "/usr/bin/cargo" if cmd == "cargo" else None
+
+        with (
+            patch("deepagents_cli.main.sys") as mock_sys,
+            patch("deepagents_cli.main.shutil.which", side_effect=_which),
+        ):
+            mock_sys.platform = "darwin"
+            assert _ripgrep_install_hint() == "cargo install ripgrep"
+
+    def test_linux_no_manager_falls_through(self) -> None:
+        """Falls through to URL on Linux without any package manager."""
+        with (
+            patch("deepagents_cli.main.sys") as mock_sys,
+            patch("deepagents_cli.main.shutil.which", return_value=None),
+        ):
+            mock_sys.platform = "linux"
+            assert "github.com/BurntSushi/ripgrep" in _ripgrep_install_hint()
+
+    def test_cargo_fallback(self) -> None:
+        """Falls back to cargo when no system package manager found."""
+
+        def _which(cmd: str) -> str | None:
+            return "/usr/bin/cargo" if cmd == "cargo" else None
+
+        with (
+            patch("deepagents_cli.main.sys") as mock_sys,
+            patch("deepagents_cli.main.shutil.which", side_effect=_which),
+        ):
+            mock_sys.platform = "freebsd"
+            assert _ripgrep_install_hint() == "cargo install ripgrep"
+
+    def test_conda_fallback(self) -> None:
+        """Falls back to conda when no other manager found."""
+
+        def _which(cmd: str) -> str | None:
+            return "/usr/bin/conda" if cmd == "conda" else None
+
+        with (
+            patch("deepagents_cli.main.sys") as mock_sys,
+            patch("deepagents_cli.main.shutil.which", side_effect=_which),
+        ):
+            mock_sys.platform = "freebsd"
+            assert _ripgrep_install_hint() == "conda install -c conda-forge ripgrep"
+
+    def test_url_fallback(self) -> None:
+        """Returns GitHub URL when nothing is detected."""
+        with (
+            patch("deepagents_cli.main.sys") as mock_sys,
+            patch("deepagents_cli.main.shutil.which", return_value=None),
+        ):
+            mock_sys.platform = "freebsd"
+            hint = _ripgrep_install_hint()
+            assert hint.startswith("https://")
+            assert "github.com/BurntSushi/ripgrep" in hint
+
+
 class TestFormatToolWarnings:
     """Tests for TUI and CLI warning formatters."""
 
-    def test_tui_format_contains_url(self) -> None:
-        """TUI format includes the install URL as plain text."""
-        msg = format_tool_warning_tui("ripgrep")
-        assert "https://github.com/BurntSushi/ripgrep#installation" in msg
+    def test_tui_format_contains_install_hint(self) -> None:
+        """TUI format includes a platform-specific install hint."""
+        hint_patch = patch(
+            "deepagents_cli.main._ripgrep_install_hint",
+            return_value="brew install ripgrep",
+        )
+        with hint_patch:
+            msg = format_tool_warning_tui("ripgrep")
+        assert "brew install ripgrep" in msg
         assert "[link=" not in msg
 
-    def test_cli_format_contains_rich_link(self) -> None:
-        """CLI format wraps the URL in Rich `[link]` markup."""
-        msg = format_tool_warning_cli("ripgrep")
-        assert "[link=https://github.com/BurntSushi/ripgrep#installation]" in msg
+    def test_cli_format_contains_install_hint(self) -> None:
+        """CLI format includes a platform-specific install hint."""
+        hint_patch = patch(
+            "deepagents_cli.main._ripgrep_install_hint",
+            return_value="brew install ripgrep",
+        )
+        with hint_patch:
+            msg = format_tool_warning_cli("ripgrep")
+        assert "brew install ripgrep" in msg
+
+    def test_cli_format_wraps_url_in_rich_link(self) -> None:
+        """CLI format wraps URL fallback in Rich `[link]` markup."""
+        url = "https://github.com/BurntSushi/ripgrep#installation"
+        hint_patch = patch(
+            "deepagents_cli.main._ripgrep_install_hint",
+            return_value=url,
+        )
+        with hint_patch:
+            msg = format_tool_warning_cli("ripgrep")
+        assert f"[link={url}]" in msg
         assert "[/link]" in msg
 
     def test_both_formats_contain_suppress_hint(self) -> None:

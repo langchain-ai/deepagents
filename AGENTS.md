@@ -256,7 +256,9 @@ When adding a user-facing CLI feature (new slash command, keybinding, workflow),
 
 **Slash commands:**
 
-Slash commands are defined in `SLASH_COMMANDS` in `libs/cli/deepagents_cli/widgets/autocomplete.py` as `(name, description, hidden_keywords)` tuples. Hidden keywords are space-separated terms that participate in fuzzy matching but are never displayed. To add an alias for an existing command, append it to the `hidden_keywords` string — do not create a duplicate command entry. For example, `/threads` has `sessions` as a hidden keyword so typing "sessions" surfaces it.
+Slash commands are defined as `SlashCommand` entries in the `COMMANDS` tuple in `libs/cli/deepagents_cli/command_registry.py`. Each entry declares the command name, description, `bypass_tier` (queue-bypass classification), optional `hidden_keywords` for fuzzy matching, and optional `aliases`. Bypass-tier frozensets and the `SLASH_COMMANDS` autocomplete list are derived automatically — no other file should hard-code command metadata.
+
+To add a new slash command: (1) add a `SlashCommand` entry to `COMMANDS` (keep alphabetical order), (2) set the appropriate `bypass_tier`, (3) add a handler branch in `_handle_command` in `app.py`, (4) run `make lint && make test` — the drift test will catch any mismatch.
 
 **Adding a new model provider:**
 

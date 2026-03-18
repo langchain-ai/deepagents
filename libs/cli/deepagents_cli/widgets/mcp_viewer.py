@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 
     from deepagents_cli.mcp_tools import MCPServerInfo
 
-from deepagents_cli.config import CharsetMode, _detect_charset_mode, get_glyphs
+from deepagents_cli.config import get_glyphs, is_ascii_mode
 
 
 class MCPToolItem(Static):
@@ -300,7 +300,7 @@ class MCPViewerScreen(ModalScreen[None]):
 
     async def on_mount(self) -> None:
         """Apply ASCII border fallback if needed."""
-        if _detect_charset_mode() == CharsetMode.ASCII:
+        if is_ascii_mode():
             container = self.query_one(Vertical)
             container.styles.border = ("ascii", "green")
 

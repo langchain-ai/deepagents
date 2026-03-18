@@ -176,11 +176,6 @@ class Glyphs:
     # Diff-specific
     gutter_bar: str  # ▌ vs |
 
-    # Tree connectors (full prefixes for tree display)
-    tree_branch: str  # "├── " vs "+-- "
-    tree_last: str  # "└── " vs "`-- "
-    tree_vertical: str  # "│   " vs "|   "
-
     # Status bar
     git_branch: str  # "↗" vs "git:"
 
@@ -207,9 +202,6 @@ UNICODE_GLYPHS = Glyphs(
     box_horizontal="─",
     box_double_horizontal="═",
     gutter_bar="▌",
-    tree_branch="├── ",
-    tree_last="└── ",
-    tree_vertical="│   ",
     git_branch="↗",
 )
 
@@ -235,9 +227,6 @@ ASCII_GLYPHS = Glyphs(
     box_horizontal="-",
     box_double_horizontal="=",
     gutter_bar="|",
-    tree_branch="+-- ",
-    tree_last="`-- ",
-    tree_vertical="|   ",
     git_branch="git:",
 )
 
@@ -356,6 +345,18 @@ def reset_glyphs_cache() -> None:
     """Reset the glyphs cache (for testing)."""
     global _glyphs_cache  # noqa: PLW0603  # Module-level cache requires global statement
     _glyphs_cache = None
+
+
+def is_ascii_mode() -> bool:
+    """Check whether the terminal is in ASCII charset mode.
+
+    Convenience wrapper so widgets can branch on charset without importing
+    both `_detect_charset_mode` and `CharsetMode`.
+
+    Returns:
+        `True` when the detected charset mode is ASCII.
+    """
+    return _detect_charset_mode() == CharsetMode.ASCII
 
 
 def newline_shortcut() -> str:

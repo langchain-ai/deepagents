@@ -18,9 +18,8 @@ if TYPE_CHECKING:
 
 from deepagents_cli.config import (
     SHELL_TOOL_NAMES,
-    CharsetMode,
-    _detect_charset_mode,
     get_glyphs,
+    is_ascii_mode,
 )
 from deepagents_cli.unicode_security import (
     check_url_safety,
@@ -276,7 +275,7 @@ class ApprovalMenu(Container):
 
     async def on_mount(self) -> None:
         """Focus self on mount and update tool info."""
-        if _detect_charset_mode() == CharsetMode.ASCII:
+        if is_ascii_mode():
             self.styles.border = ("ascii", "yellow")
 
         if not self._is_minimal:

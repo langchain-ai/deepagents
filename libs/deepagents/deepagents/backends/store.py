@@ -352,12 +352,16 @@ class StoreBackend(BackendProtocol):
         normalized_path = path if path.endswith("/") else path + "/"
 
         for item in items:
+            normalized_key = str(item.key)
+            if not normalized_key.startswith("/"):
+                normalized_key = "/" + normalized_key
+
             # Check if file is in the specified directory or a subdirectory
-            if not str(item.key).startswith(normalized_path):
+            if not normalized_key.startswith(normalized_path):
                 continue
 
             # Get the relative path after the directory
-            relative = str(item.key)[len(normalized_path) :]
+            relative = normalized_key[len(normalized_path) :]
 
             # If relative path contains '/', it's in a subdirectory
             if "/" in relative:
@@ -376,7 +380,7 @@ class StoreBackend(BackendProtocol):
             size = len("\n".join(raw)) if isinstance(raw, list) else len(raw)
             infos.append(
                 {
-                    "path": item.key,
+                    "path": normalized_key,
                     "is_dir": False,
                     "size": int(size),
                     "modified_at": fd.get("modified_at", ""),

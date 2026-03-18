@@ -128,6 +128,36 @@ def test_store_backend_ls_trailing_slash():
     assert [fi["path"] for fi in listing1] == [fi["path"] for fi in listing2]
 
 
+def test_store_backend_ls_root_handles_bare_store_keys() -> None:
+    rt = make_runtime()
+    be = StoreBackend(rt, namespace=lambda _ctx: ("filesystem",))
+
+    bare_items = {
+        "test.md": "root file",
+        "notes/todo.md": "nested file",
+    }
+
+    for key, content in bare_items.items():
+        rt.store.put(
+            ("filesystem",),
+            key,
+            {
+                "content": content,
+                "encoding": "utf-8",
+                "created_at": "2026-03-18T00:00:00Z",
+                "modified_at": "2026-03-18T00:00:00Z",
+            },
+        )
+
+    listing = be.ls("/").entries
+    assert listing is not None
+
+    paths = [entry["path"] for entry in listing]
+    assert "/test.md" in paths
+    assert "/notes/" in paths
+    assert "/notes/todo.md" not in paths
+
+
 @pytest.mark.parametrize("file_format", ["v1", "v2"])
 def test_store_backend_intercept_large_tool_result(file_format):
     """Test that StoreBackend properly handles large tool result interception."""

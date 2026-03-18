@@ -83,6 +83,12 @@ COMMANDS: tuple[SlashCommand, ...] = (
         bypass_tier=BypassTier.QUEUED,
     ),
     SlashCommand(
+        name="/login",
+        description="Login to GitHub Copilot",
+        bypass_tier=BypassTier.SIDE_EFFECT_FREE,
+        hidden_keywords="auth github",
+    ),
+    SlashCommand(
         name="/mcp",
         description="Show active MCP servers and tools",
         bypass_tier=BypassTier.SIDE_EFFECT_FREE,

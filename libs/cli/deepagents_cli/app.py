@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
+from textual import work
 from textual.app import App, ScreenStackError
 from textual.binding import Binding, BindingType
 from textual.containers import Container, VerticalScroll
@@ -1907,7 +1908,8 @@ class DeepAgentsApp(App):
             help_body = (
                 "Commands: /quit, /clear, /offload, /editor, /mcp, "
                 "/model [--model-params JSON] [--default], /reload, /remember, "
-                "/tokens, /threads, /trace, /changelog, /docs, /feedback, /help\n\n"
+                "/tokens, /threads, /trace, /changelog, /docs, /feedback, "
+                "/login, /help\n\n"
                 "Interactive Features:\n"
                 "  Enter           Submit your message\n"
                 f"  {newline_shortcut():<15} Insert newline\n"
@@ -1956,6 +1958,9 @@ class DeepAgentsApp(App):
                 logger.warning("Unexpected error looking up SDK version", exc_info=True)
                 sdk_line = "deepagents (SDK) version: unknown"
             await self._mount_message(AppMessage(f"{cli_line}\n{sdk_line}"))
+        elif cmd == "/login":
+            await self._mount_message(UserMessage(command))
+            self._login_copilot_worker()
         elif cmd == "/clear":
             self._pending_messages.clear()
             self._queued_widgets.clear()
@@ -2933,6 +2938,140 @@ class DeepAgentsApp(App):
             message_id,
             content=content,
             is_streaming=False,
+        )
+
+    @work(thread=True)
+    def _login_copilot_worker(self) -> None:
+        import os
+
+        try:
+            import langchain_githubcopilot_chat.auth as copilot_auth
+            from langchain_githubcopilot_chat import ChatGithubCopilot
+        except ImportError:
+            self.call_from_thread(
+                self._mount_message,
+                ErrorMessage(
+                    "langchain-githubcopilot-chat is not installed. "
+                    "Run: uv pip install langchain-githubcopilot-chat"
+                ),
+            )
+            return
+
+        mounted_messages = []
+
+        def _intercept_print(*args: Any, **_kwargs: Any) -> None:
+            text = " ".join(str(a) for a in args)
+            if not text.strip() or text.startswith("==="):
+                return
+            msg_widget = AppMessage(text)
+            mounted_messages.append(msg_widget)
+            self.call_from_thread(self._mount_message, msg_widget)
+
+        original_print = getattr(copilot_auth, "print", None)
+        try:
+            copilot_auth.print = _intercept_print
+            token = copilot_auth.get_copilot_token()
+            if token:
+                os.environ["GITHUB_TOKEN"] = token
+
+                try:
+                    from pathlib import Path
+
+                    import dotenv
+
+                    from deepagents_cli.config import _find_dotenv_from_start_path
+
+                    env_path = _find_dotenv_from_start_path(Path.cwd()) or Path(".env")
+                    if not env_path.exists():
+                        env_path.touch()
+                    dotenv.set_key(str(env_path), "GITHUB_TOKEN", token)
+                    self.call_from_thread(
+                        self._mount_message,
+                        AppMessage("Saved GITHUB_TOKEN to .env file."),
+                    )
+                except Exception as env_e:  # noqa: BLE001
+                    self.call_from_thread(
+                        self._mount_message,
+                        ErrorMessage(f"Could not save GITHUB_TOKEN to .env: {env_e}"),
+                    )
+
+                def remove_messages() -> None:
+                    for msg in mounted_messages:
+                        msg.remove()
+
+                self.call_from_thread(remove_messages)
+
+                self._fetch_and_save_copilot_models(ChatGithubCopilot, token)
+        except Exception as e:  # noqa: BLE001
+            msg = f"Login failed: {e}"
+            self.call_from_thread(self._mount_message, ErrorMessage(msg))
+        finally:
+            if original_print:
+                copilot_auth.print = original_print
+            else:
+                del copilot_auth.print
+
+    def _fetch_and_save_copilot_models(self, chat_cls: type, token: str) -> None:
+        """Fetch available Copilot models from the API and persist them to config.
+
+        Calls `ChatGithubCopilot.get_available_models()`, filters to chat
+        models that support tool calling, writes the list under
+        `[providers.githubcopilot]` in config.toml, and clears the model
+        cache so `/model` reflects the new models immediately.
+
+        Args:
+            chat_cls: The `ChatGithubCopilot` class (passed in to avoid a
+                second import inside a nested scope).
+            token: The GitHub Copilot token used to authenticate the API call.
+        """
+        from deepagents_cli.model_config import clear_caches, save_provider_models
+
+        provider = "githubcopilot"
+        class_path = "langchain_githubcopilot_chat.chat_models:ChatGithubCopilot"
+
+        try:
+            raw_models = chat_cls.get_available_models(github_token=token)
+        except Exception as e:  # noqa: BLE001
+            self.call_from_thread(
+                self._mount_message,
+                AppMessage(
+                    "Logged in to GitHub Copilot, but could not fetch model list: "
+                    f"{e}\nYou can still use models via /model githubcopilot:<model-id>"
+                ),
+            )
+            return
+
+        # Keep only chat models; the API also returns embedding models etc.
+        model_ids = sorted(
+            m["id"]
+            for m in raw_models
+            if m.get("object") == "model"
+            and "chat" in m.get("capabilities", {}).get("type", "")
+        )
+
+        # Fall back to all returned model ids if capability filtering yields nothing.
+        if not model_ids:
+            model_ids = sorted(m["id"] for m in raw_models if m.get("id"))
+
+        save_provider_models(
+            provider,
+            model_ids,
+            class_path=class_path,
+        )
+        # Clear all caches so get_available_models() and /model reflect the change.
+        clear_caches()
+
+        count = len(model_ids)
+        preview_limit = 3
+        preview = ", ".join(model_ids[:preview_limit])
+        suffix = f", … (+{count - preview_limit} more)" if count > preview_limit else ""
+        self.call_from_thread(
+            self._mount_message,
+            AppMessage(
+                f"Successfully logged in to GitHub Copilot! "
+                f"{count} model(s) available: {preview}{suffix}\n"
+                f"Use /model to switch, e.g. /model githubcopilot:<model-id>"
+            ),
         )
 
     async def _clear_messages(self) -> None:

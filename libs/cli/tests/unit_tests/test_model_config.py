@@ -413,6 +413,7 @@ class TestProviderApiKeyEnv:
         assert PROVIDER_API_KEY_ENV["cohere"] == "COHERE_API_KEY"
         assert PROVIDER_API_KEY_ENV["deepseek"] == "DEEPSEEK_API_KEY"
         assert PROVIDER_API_KEY_ENV["fireworks"] == "FIREWORKS_API_KEY"
+        assert PROVIDER_API_KEY_ENV["githubcopilot"] == "GITHUB_TOKEN"
         assert PROVIDER_API_KEY_ENV["google_genai"] == "GOOGLE_API_KEY"
         assert PROVIDER_API_KEY_ENV["google_vertexai"] == "GOOGLE_CLOUD_PROJECT"
         assert PROVIDER_API_KEY_ENV["groq"] == "GROQ_API_KEY"

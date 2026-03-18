@@ -535,6 +535,7 @@ class Settings:
         google_api_key: Google API key if available.
         nvidia_api_key: NVIDIA API key if available.
         tavily_api_key: Tavily API key if available.
+        github_token: GitHub Token if available.
         google_cloud_project: Google Cloud project ID for VertexAI
             authentication.
         deepagents_langchain_project: LangSmith project name for deepagents
@@ -554,6 +555,7 @@ class Settings:
     google_api_key: str | None
     nvidia_api_key: str | None
     tavily_api_key: str | None
+    github_token: str | None
 
     # Google Cloud configuration (for VertexAI)
     google_cloud_project: str | None
@@ -589,6 +591,7 @@ class Settings:
         google_key = os.environ.get("GOOGLE_API_KEY") or None
         nvidia_key = os.environ.get("NVIDIA_API_KEY") or None
         tavily_key = os.environ.get("TAVILY_API_KEY") or None
+        github_token = os.environ.get("GITHUB_TOKEN") or None
         google_cloud_project = os.environ.get("GOOGLE_CLOUD_PROJECT")
 
         # Detect LangSmith configuration
@@ -614,6 +617,7 @@ class Settings:
             google_api_key=google_key,
             nvidia_api_key=nvidia_key,
             tavily_api_key=tavily_key,
+            github_token=github_token,
             google_cloud_project=google_cloud_project,
             deepagents_langchain_project=deepagents_langchain_project,
             user_langchain_project=user_langchain_project,
@@ -647,6 +651,7 @@ class Settings:
             "google_api_key",
             "nvidia_api_key",
             "tavily_api_key",
+            "github_token",
         }
         reloadable_fields = (
             "openai_api_key",
@@ -654,6 +659,7 @@ class Settings:
             "google_api_key",
             "nvidia_api_key",
             "tavily_api_key",
+            "github_token",
             "google_cloud_project",
             "deepagents_langchain_project",
             "project_root",
@@ -687,6 +693,7 @@ class Settings:
             "google_api_key": os.environ.get("GOOGLE_API_KEY") or None,
             "nvidia_api_key": os.environ.get("NVIDIA_API_KEY") or None,
             "tavily_api_key": os.environ.get("TAVILY_API_KEY") or None,
+            "github_token": os.environ.get("GITHUB_TOKEN") or None,
             "google_cloud_project": os.environ.get("GOOGLE_CLOUD_PROJECT"),
             "deepagents_langchain_project": os.environ.get(
                 "DEEPAGENTS_LANGSMITH_PROJECT"

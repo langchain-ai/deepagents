@@ -189,6 +189,7 @@ PROVIDER_API_KEY_ENV: dict[str, str] = {
     "cohere": "COHERE_API_KEY",
     "deepseek": "DEEPSEEK_API_KEY",
     "fireworks": "FIREWORKS_API_KEY",
+    "githubcopilot": "GITHUB_TOKEN",
     "google_genai": "GOOGLE_API_KEY",
     "google_vertexai": "GOOGLE_CLOUD_PROJECT",
     "groq": "GROQ_API_KEY",
@@ -1563,3 +1564,78 @@ def save_recent_model(model_spec: str, config_path: Path | None = None) -> bool:
         This function does not preserve comments in the config file.
     """
     return _save_model_field("recent", model_spec, config_path)
+
+
+def save_provider_models(
+    provider_name: str,
+    models: list[str],
+    class_path: str | None = None,
+    config_path: Path | None = None,
+) -> bool:
+    """Persist a provider's model list (and optional class path) into config.toml.
+
+    Reads the existing config, upserts `[models.providers.<provider_name>].models`
+    (and optionally `class_path`), then writes back atomically.  The
+    `_available_models_cache` is cleared so that the next call to
+    `get_available_models()` picks up the new models immediately.
+
+    Args:
+        provider_name: The provider key used in `[models.providers]`
+            (e.g., `"githubcopilot"`).
+        models: List of model identifiers to store.
+        class_path: Optional fully-qualified class path in `module:ClassName` format.
+            When supplied it is written to `[providers.<provider_name>].class_path`
+            so that `create_model` can instantiate it without the langchain registry.
+        config_path: Path to config file.
+
+            Defaults to `~/.deepagents/config.toml`.
+
+    Returns:
+        True if save succeeded, False if it failed due to I/O errors.
+
+    Note:
+        This function does not preserve comments in the config file.
+    """
+    if config_path is None:
+        config_path = DEFAULT_CONFIG_PATH
+
+    try:
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if config_path.exists():
+            with config_path.open("rb") as f:
+                data = tomllib.load(f)
+        else:
+            data = {}
+
+        if "models" not in data:
+            data["models"] = {}
+        if "providers" not in data["models"]:
+            data["models"]["providers"] = {}
+
+        provider_section: dict[str, object] = dict(
+            data["models"]["providers"].get(provider_name, {})
+        )
+        provider_section["models"] = models
+        if class_path is not None:
+            provider_section["class_path"] = class_path
+
+        data["models"]["providers"][provider_name] = provider_section
+
+        fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "wb") as f:
+                tomli_w.dump(data, f)
+            Path(tmp_path).replace(config_path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                Path(tmp_path).unlink()
+            raise
+    except (OSError, tomllib.TOMLDecodeError):
+        logger.exception("Could not save provider models for '%s'", provider_name)
+        return False
+    else:
+        global _available_models_cache, _default_config_cache  # noqa: PLW0603
+        _available_models_cache = None
+        _default_config_cache = None
+        return True

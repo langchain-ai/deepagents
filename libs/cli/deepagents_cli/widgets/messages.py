@@ -858,7 +858,10 @@ class ToolCallMessage(Vertical):
         return Content.styled(" | ", "dim").join(parts) if parts else Content("")
 
     def _format_single_todo(  # noqa: PLR6301
-        self, item: dict | str, *, is_preview: bool = True,
+        self,
+        item: dict | str,
+        *,
+        is_preview: bool = True,
     ) -> Content:
         """Format a single todo item.
 

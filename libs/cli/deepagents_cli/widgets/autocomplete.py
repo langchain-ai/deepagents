@@ -438,7 +438,7 @@ def _fuzzy_search(
 
 
 class FuzzyFileController:
-    """Controller for @ file completion with fuzzy matching from project root."""
+    """Controller for @ file completion with fuzzy matching from cwd."""
 
     def __init__(
         self,
@@ -449,7 +449,7 @@ class FuzzyFileController:
 
         Args:
             view: View to render suggestions to
-            cwd: Starting directory to find project root from
+            cwd: Starting directory for file listing
         """
         self._view = view
         self._cwd = cwd or Path.cwd()
@@ -461,11 +461,26 @@ class FuzzyFileController:
     def _get_files(self) -> list[str]:
         """Get cached file list or refresh.
 
+        Lists files relative to cwd so the user sees paths matching their
+        current working directory, not the repository root.
+
         Returns:
-            List of project file paths.
+            List of file paths relative to cwd.
         """
         if self._file_cache is None:
-            self._file_cache = _get_project_files(self._project_root)
+            raw = _get_project_files(self._project_root)
+            if self._cwd != self._project_root:
+                try:
+                    rel_prefix = self._cwd.relative_to(self._project_root)
+                    prefix = str(rel_prefix)
+                    self._file_cache = [
+                        f[len(prefix) + 1 :] for f in raw
+                        if f.startswith(prefix + "/") or f.startswith(prefix + "\\")
+                    ]
+                except ValueError:
+                    self._file_cache = raw
+            else:
+                self._file_cache = raw
         return self._file_cache
 
     def refresh_cache(self) -> None:
@@ -476,11 +491,9 @@ class FuzzyFileController:
         """Pre-populate the file cache off the event loop."""
         if self._file_cache is not None:
             return
-        # Best-effort; _get_files() falls back to sync on failure.
+        # Best-effort; _get_files() applies the cwd filter.
         with contextlib.suppress(Exception):
-            self._file_cache = await asyncio.to_thread(
-                _get_project_files, self._project_root
-            )
+            await asyncio.to_thread(self._get_files)
 
     @staticmethod
     def can_handle(text: str, cursor_index: int) -> bool:

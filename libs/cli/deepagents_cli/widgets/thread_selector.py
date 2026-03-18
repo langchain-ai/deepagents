@@ -27,10 +27,9 @@ if TYPE_CHECKING:
     from textual.events import Click, Key
 
 from deepagents_cli.config import (
-    CharsetMode,
-    _detect_charset_mode,
     build_langsmith_thread_url,
     get_glyphs,
+    is_ascii_mode,
 )
 from deepagents_cli.sessions import ThreadInfo
 from deepagents_cli.widgets._links import open_style_link
@@ -871,7 +870,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
     async def on_mount(self) -> None:
         """Fetch threads, configure border for ASCII terminals, and build the list."""
-        if _detect_charset_mode() == CharsetMode.ASCII:
+        if is_ascii_mode():
             container = self.query_one("#thread-selector-shell", Vertical)
             container.styles.border = ("ascii", "green")
 

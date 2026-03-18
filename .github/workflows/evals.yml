@@ -67,6 +67,7 @@ on:
           - "ollama:qwen3.5:397b-cloud"
           - "ollama:deepseek-v3.2:cloud"
           - "baseten:zai-org/GLM-5"
+          - "baseten:MiniMaxAI/MiniMax-M2.7"
           - "baseten:MiniMaxAI/MiniMax-M2.5"
           - "baseten:moonshotai/Kimi-K2.5"
           - "baseten:deepseek-ai/DeepSeek-V3.2"

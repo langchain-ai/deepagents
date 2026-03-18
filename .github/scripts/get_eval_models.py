@@ -41,6 +41,7 @@ SET0: list[str] = [
     "google_genai:gemini-3.1-pro-preview",
     # Baseten
     "baseten:zai-org/GLM-5",
+    "baseten:MiniMaxAI/MiniMax-M2.7",
     "baseten:MiniMaxAI/MiniMax-M2.5",
     "baseten:moonshotai/Kimi-K2.5",
     "baseten:deepseek-ai/DeepSeek-V3.2",

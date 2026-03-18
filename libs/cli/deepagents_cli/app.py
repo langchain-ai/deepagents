@@ -54,8 +54,6 @@ from deepagents_cli.config import (
 )
 from deepagents_cli.hooks import dispatch_hook
 from deepagents_cli.model_config import ModelSpec, save_recent_model
-from deepagents_cli.widgets.approval import ApprovalMenu
-from deepagents_cli.widgets.ask_user import AskUserMenu
 from deepagents_cli.widgets.chat_input import ChatInput
 from deepagents_cli.widgets.loading import LoadingWidget
 from deepagents_cli.widgets.message_store import (
@@ -72,12 +70,7 @@ from deepagents_cli.widgets.messages import (
     ToolCallMessage,
     UserMessage,
 )
-from deepagents_cli.widgets.model_selector import ModelSelectorScreen
 from deepagents_cli.widgets.status import StatusBar
-from deepagents_cli.widgets.thread_selector import (
-    DeleteThreadConfirmScreen,
-    ThreadSelectorScreen,
-)
 from deepagents_cli.widgets.welcome import WelcomeBanner
 
 logger = logging.getLogger(__name__)
@@ -100,6 +93,8 @@ if TYPE_CHECKING:
     from deepagents_cli.remote_client import RemoteAgent
     from deepagents_cli.server import ServerProcess
     from deepagents_cli.textual_adapter import TextualUIAdapter
+    from deepagents_cli.widgets.approval import ApprovalMenu
+    from deepagents_cli.widgets.ask_user import AskUserMenu
 
 # iTerm2 Cursor Guide Workaround
 # ===============================
@@ -1283,6 +1278,8 @@ class DeepAgentsApp(App):
                 await asyncio.sleep(0.1)
 
         # Create menu with unique ID to avoid conflicts
+        from deepagents_cli.widgets.approval import ApprovalMenu
+
         unique_id = f"approval-menu-{uuid.uuid4().hex[:8]}"
         menu = ApprovalMenu(action_requests, assistant_id, id=unique_id)
         menu.set_future(result_future)
@@ -1466,6 +1463,8 @@ class DeepAgentsApp(App):
                         )
                     break
                 await asyncio.sleep(0.1)
+
+        from deepagents_cli.widgets.ask_user import AskUserMenu
 
         unique_id = f"ask-user-menu-{uuid.uuid4().hex[:8]}"
         menu = AskUserMenu(questions, id=unique_id)
@@ -3076,6 +3075,8 @@ class DeepAgentsApp(App):
         5. If approval menu is active, reject it
         6. If agent is running, interrupt it
         """
+        from deepagents_cli.widgets.thread_selector import ThreadSelectorScreen
+
         if (
             isinstance(self.screen, ThreadSelectorScreen)
             and self.screen.is_delete_confirmation_open
@@ -3121,6 +3122,11 @@ class DeepAgentsApp(App):
 
     def action_quit_app(self) -> None:
         """Handle quit action (Ctrl+D)."""
+        from deepagents_cli.widgets.thread_selector import (
+            DeleteThreadConfirmScreen,
+            ThreadSelectorScreen,
+        )
+
         if isinstance(self.screen, ThreadSelectorScreen):
             self.screen.action_delete_thread()
             return
@@ -3183,6 +3189,8 @@ class DeepAgentsApp(App):
         web search, URL fetch) run without prompting. Updates the status
         bar indicator and session state.
         """
+        from deepagents_cli.widgets.thread_selector import ThreadSelectorScreen
+
         if isinstance(self.screen, ThreadSelectorScreen):
             self.screen.action_focus_previous_filter()
             return
@@ -3356,6 +3364,8 @@ class DeepAgentsApp(App):
         """
         from functools import partial
 
+        from deepagents_cli.widgets.model_selector import ModelSelectorScreen
+
         def handle_result(result: tuple[str, str] | None) -> None:
             """Handle the model selector result."""
             if result is not None:
@@ -3410,6 +3420,7 @@ class DeepAgentsApp(App):
         from functools import partial
 
         from deepagents_cli.sessions import get_cached_threads, get_thread_limit
+        from deepagents_cli.widgets.thread_selector import ThreadSelectorScreen
 
         current = self._session_state.thread_id if self._session_state else None
         thread_limit = get_thread_limit()

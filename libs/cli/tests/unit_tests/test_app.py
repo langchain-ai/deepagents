@@ -125,7 +125,9 @@ class TestThreadCachePrewarm:
                     "deepagents_cli.sessions.get_cached_threads",
                     return_value=cached_threads,
                 ),
-                patch("deepagents_cli.app.ThreadSelectorScreen") as mock_screen_cls,
+                patch(
+                    "deepagents_cli.widgets.thread_selector.ThreadSelectorScreen"
+                ) as mock_screen_cls,
                 patch.object(app, "push_screen") as mock_push_screen,
             ):
                 mock_screen = MagicMock()

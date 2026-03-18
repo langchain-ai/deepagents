@@ -981,11 +981,21 @@ class DeepAgentsApp(App):
 
     @staticmethod
     def _prewarm_deferred_imports() -> None:
-        """Background-load widgets deferred from module level.
+        """Background-load modules deferred from the startup path.
 
         Populates `sys.modules` so the first user-triggered inline import
         is a cheap dict lookup instead of a cold module load.
         """
+        # Widgets deferred from app.py module level
+        # Heavy deps deferred from textual_adapter / tool_display —
+        # hit on first message send and first tool approval
+        from deepagents.backends import DEFAULT_EXECUTE_TIMEOUT  # noqa: F401
+        from langchain.agents.middleware.human_in_the_loop import (  # noqa: F401
+            ApproveDecision,
+        )
+        from langchain_core.messages import AIMessage  # noqa: F401
+        from langgraph.types import Command  # noqa: F401
+
         from deepagents_cli.widgets.approval import ApprovalMenu  # noqa: F401
         from deepagents_cli.widgets.ask_user import AskUserMenu  # noqa: F401
         from deepagents_cli.widgets.model_selector import (

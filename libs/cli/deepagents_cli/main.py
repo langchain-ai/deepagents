@@ -76,6 +76,45 @@ _RIPGREP_SUPPRESS_HINT = (
 )
 
 
+def _ripgrep_install_hint() -> str:
+    """Return a platform-specific install command for ripgrep.
+
+    Falls back to the GitHub URL when the platform isn't recognized.
+    """
+    plat = sys.platform
+    if plat == "darwin":
+        if shutil.which("brew"):
+            return "brew install ripgrep"
+        if shutil.which("port"):
+            return "sudo port install ripgrep"
+    elif plat == "linux":
+        if shutil.which("apt-get"):
+            return "sudo apt-get install ripgrep"
+        if shutil.which("dnf"):
+            return "sudo dnf install ripgrep"
+        if shutil.which("pacman"):
+            return "sudo pacman -S ripgrep"
+        if shutil.which("zypper"):
+            return "sudo zypper install ripgrep"
+        if shutil.which("apk"):
+            return "sudo apk add ripgrep"
+        if shutil.which("nix-env"):
+            return "nix-env -iA nixpkgs.ripgrep"
+    elif plat == "win32":
+        if shutil.which("choco"):
+            return "choco install ripgrep"
+        if shutil.which("scoop"):
+            return "scoop install ripgrep"
+        if shutil.which("winget"):
+            return "winget install BurntSushi.ripgrep"
+    # Cross-platform fallbacks
+    if shutil.which("cargo"):
+        return "cargo install ripgrep"
+    if shutil.which("conda"):
+        return "conda install -c conda-forge ripgrep"
+    return _RIPGREP_URL
+
+
 def check_optional_tools(*, config_path: Path | None = None) -> list[str]:
     """Check for recommended external tools and return missing tool names.
 
@@ -108,27 +147,31 @@ def format_tool_warning_tui(tool: str) -> str:
         Plain-text warning suitable for `App.notify`.
     """
     if tool == "ripgrep":
+        hint = _ripgrep_install_hint()
         return (
             "ripgrep is not installed; the grep tool will use a slower fallback.\n"
-            f"\nInstall: {_RIPGREP_URL}\n\n"
+            f"\nInstall: {hint}\n\n"
             f"{_RIPGREP_SUPPRESS_HINT}"
         )
     return f"{tool} is not installed."
 
 
 def format_tool_warning_cli(tool: str) -> str:
-    """Format a missing-tool warning for non-interactive Rich console output.
+    """Format a missing-tool warning for non-interactive console output.
 
     Args:
         tool: Name of the missing tool.
 
     Returns:
-        Rich-markup string suitable for `console.print`.
+        Warning string suitable for `console.print`.
     """
     if tool == "ripgrep":
+        hint = _ripgrep_install_hint()
+        if hint.startswith("http"):
+            hint = f"[link={hint}]{hint}[/link]"
         return (
             "ripgrep is not installed; the grep tool will use a slower fallback.\n"
-            f"Install: [link={_RIPGREP_URL}]{_RIPGREP_URL}[/link]\n\n"
+            f"Install: {hint}\n\n"
             f"{_RIPGREP_SUPPRESS_HINT}\n"
         )
     return f"{tool} is not installed."

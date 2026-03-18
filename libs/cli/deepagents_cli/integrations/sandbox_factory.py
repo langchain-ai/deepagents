@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import importlib
 import importlib.util
+import logging
 import os
 import shlex
 import string
@@ -20,6 +21,8 @@ from deepagents_cli.integrations.sandbox_provider import (
     SandboxNotFoundError,
     SandboxProvider,
 )
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from collections.abc import Generator
@@ -482,10 +485,19 @@ def verify_sandbox_deps(provider: str) -> None:
 
     entry = backend_modules.get(provider)
     if entry is None:
-        return  # Unknown provider — downstream code will handle it
+        logger.debug(
+            "No backend_modules entry for provider %r; skipping pre-flight check",
+            provider,
+        )
+        return
 
     module_name, extra = entry
-    if importlib.util.find_spec(module_name) is None:
+    try:
+        found = importlib.util.find_spec(module_name) is not None
+    except (ImportError, ValueError):
+        found = False
+
+    if not found:
         msg = (
             f"Missing dependencies for '{provider}' sandbox. "
             f"Install with: pip install 'deepagents-cli[{extra}]'"

@@ -43,16 +43,23 @@ class TestVerifySandboxDeps:
     """Tests for the early sandbox dependency check."""
 
     @pytest.mark.parametrize(
-        "provider",
-        ["daytona", "modal", "runloop"],
+        ("provider", "expected_module"),
+        [
+            ("daytona", "langchain_daytona"),
+            ("modal", "langchain_modal"),
+            ("runloop", "langchain_runloop"),
+        ],
     )
-    def test_raises_import_error_when_backend_missing(self, provider: str) -> None:
+    def test_raises_import_error_when_backend_missing(
+        self, provider: str, expected_module: str
+    ) -> None:
         """Should raise ImportError with install instructions."""
+        mock_find_spec = patch(
+            "deepagents_cli.integrations.sandbox_factory.importlib.util.find_spec",
+            return_value=None,
+        )
         with (
-            patch(
-                "deepagents_cli.integrations.sandbox_factory.importlib.util.find_spec",
-                return_value=None,
-            ),
+            mock_find_spec as find_spec,
             pytest.raises(
                 ImportError,
                 match=rf"Missing dependencies for '{provider}' sandbox.*"
@@ -60,6 +67,8 @@ class TestVerifySandboxDeps:
             ),
         ):
             verify_sandbox_deps(provider)
+
+        find_spec.assert_called_once_with(expected_module)
 
     @pytest.mark.parametrize(
         "provider",
@@ -73,6 +82,21 @@ class TestVerifySandboxDeps:
             return_value=spec_sentinel,
         ):
             verify_sandbox_deps(provider)  # should not raise
+
+    @pytest.mark.parametrize(
+        "exc_cls",
+        [ImportError, ValueError],
+    )
+    def test_raises_when_find_spec_throws(self, exc_cls: type) -> None:
+        """find_spec can raise ImportError/ValueError in corrupted envs."""
+        with (
+            patch(
+                "deepagents_cli.integrations.sandbox_factory.importlib.util.find_spec",
+                side_effect=exc_cls("broken"),
+            ),
+            pytest.raises(ImportError, match="Missing dependencies"),
+        ):
+            verify_sandbox_deps("daytona")
 
     @pytest.mark.parametrize("provider", ["none", "langsmith", "", None])
     def test_skips_builtin_and_empty_providers(self, provider: str | None) -> None:

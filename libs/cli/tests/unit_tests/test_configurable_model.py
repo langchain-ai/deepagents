@@ -8,8 +8,8 @@ from langchain.agents.middleware.types import ModelRequest, ModelResponse
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 
+from deepagents_cli._cli_context import CLIContext
 from deepagents_cli.configurable_model import (
-    CLIContext,
     ConfigurableModelMiddleware,
     _is_anthropic_model,
 )

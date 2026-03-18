@@ -11,7 +11,6 @@ warnings.filterwarnings("ignore", module="langchain_core._api.deprecation")
 import argparse
 import asyncio
 import contextlib
-import functools
 import importlib.util
 import json
 import logging
@@ -237,15 +236,6 @@ def parse_args() -> argparse.Namespace:
     """
     from deepagents_cli.output import add_json_output_arg
     from deepagents_cli.skills import setup_skills_parser
-    from deepagents_cli.ui import (
-        build_help_parent,
-        show_help,
-        show_list_help,
-        show_reset_help,
-        show_threads_delete_help,
-        show_threads_help,
-        show_threads_list_help,
-    )
 
     # Factory that builds an argparse Action whose __call__ invokes the
     # supplied *help_fn* instead of argparse's default help text.  Each
@@ -297,9 +287,21 @@ def parse_args() -> argparse.Namespace:
 
         return _ShowHelp
 
-    help_parent = functools.partial(
-        build_help_parent, make_help_action=_make_help_action
-    )
+    # Lazy wrapper: defers `ui` import until the help action fires (i.e.,
+    # only when the user passes `-h`). This avoids pulling in Rich and config at
+    # parse time for the common non-help path.
+    def _lazy_help(fn_name: str) -> Callable[[], None]:
+        def _show() -> None:
+            from deepagents_cli import ui
+
+            getattr(ui, fn_name)()
+
+        return _show
+
+    def help_parent(help_fn: Callable[[], None]) -> list[argparse.ArgumentParser]:
+        parent = argparse.ArgumentParser(add_help=False)
+        parent.add_argument("-h", "--help", action=_make_help_action(help_fn))
+        return [parent]
 
     parser = argparse.ArgumentParser(
         description=("Deep Agents - AI Coding Assistant"),
@@ -312,14 +314,14 @@ def parse_args() -> argparse.Namespace:
         "help",
         help="Show help information",
         add_help=False,
-        parents=help_parent(show_help),
+        parents=help_parent(_lazy_help("show_help")),
     )
 
     subparsers.add_parser(
         "list",
         help="List all available agents",
         add_help=False,
-        parents=help_parent(show_list_help),
+        parents=help_parent(_lazy_help("show_list_help")),
     )
     add_json_output_arg(subparsers.choices["list"])
 
@@ -327,7 +329,7 @@ def parse_args() -> argparse.Namespace:
         "reset",
         help="Reset an agent",
         add_help=False,
-        parents=help_parent(show_reset_help),
+        parents=help_parent(_lazy_help("show_reset_help")),
     )
     add_json_output_arg(reset_parser)
     reset_parser.add_argument("--agent", required=True, help="Name of agent to reset")
@@ -345,7 +347,7 @@ def parse_args() -> argparse.Namespace:
         "threads",
         help="Manage conversation threads",
         add_help=False,
-        parents=help_parent(show_threads_help),
+        parents=help_parent(_lazy_help("show_threads_help")),
     )
     add_json_output_arg(threads_parser)
     threads_sub = threads_parser.add_subparsers(dest="threads_command")
@@ -355,7 +357,7 @@ def parse_args() -> argparse.Namespace:
         aliases=["ls"],
         help="List threads",
         add_help=False,
-        parents=help_parent(show_threads_list_help),
+        parents=help_parent(_lazy_help("show_threads_list_help")),
     )
     add_json_output_arg(threads_list)
     threads_list.add_argument(
@@ -397,7 +399,7 @@ def parse_args() -> argparse.Namespace:
         "delete",
         help="Delete a thread",
         add_help=False,
-        parents=help_parent(show_threads_delete_help),
+        parents=help_parent(_lazy_help("show_threads_delete_help")),
     )
     add_json_output_arg(threads_delete)
     threads_delete.add_argument("thread_id", help="Thread ID to delete")
@@ -589,7 +591,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "-h",
         "--help",
-        action=_make_help_action(show_help),
+        action=_make_help_action(_lazy_help("show_help")),
     )
 
     return parser.parse_args()

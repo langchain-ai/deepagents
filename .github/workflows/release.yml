@@ -45,6 +45,7 @@ on:
 env:
   PYTHON_VERSION: "3.11"
   UV_NO_SYNC: "true"
+  UV_FROZEN: "true"
 
 permissions:
   contents: write # Required for creating GitHub releases
@@ -529,7 +530,7 @@ jobs:
           uv run python -c "import $IMPORT_NAME; print(dir($IMPORT_NAME))"
 
       - name: Import test dependencies
-        run: uv sync --group test --locked
+        run: uv sync --group test
         working-directory: ${{ env.WORKING_DIR }}
 
       # Overwrite the local version of the package with the built version

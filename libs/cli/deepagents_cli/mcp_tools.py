@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -29,7 +30,10 @@ class MCPToolInfo:
     """Metadata for a single MCP tool."""
 
     name: str
+    """Tool name (may include server name prefix)."""
+
     description: str
+    """Human-readable description of what the tool does."""
 
 
 @dataclass
@@ -37,8 +41,13 @@ class MCPServerInfo:
     """Metadata for a connected MCP server and its tools."""
 
     name: str
+    """Server name from the MCP configuration."""
+
     transport: str
+    """Transport type (`stdio`, `sse`, or `http`)."""
+
     tools: list[MCPToolInfo] = field(default_factory=list)
+    """Tools exposed by this server."""
 
 
 _SUPPORTED_REMOTE_TYPES = {"sse", "http"}
@@ -361,6 +370,54 @@ class MCPSessionManager:
         await self.exit_stack.aclose()
 
 
+def _check_stdio_server(server_name: str, server_config: dict[str, Any]) -> None:
+    """Verify that a stdio server's command exists on PATH.
+
+    Args:
+        server_name: Name of the server (for error messages).
+        server_config: Server configuration dictionary with `command` key.
+
+    Raises:
+        RuntimeError: If the command is not found on PATH.
+    """
+    command = server_config["command"]
+    if shutil.which(command) is None:
+        msg = (
+            f"MCP server '{server_name}': command '{command}' not found on PATH. "
+            "Install it or check your MCP config."
+        )
+        raise RuntimeError(msg)
+
+
+async def _check_remote_server(server_name: str, server_config: dict[str, Any]) -> None:
+    """Check network connectivity to a remote MCP server URL.
+
+    Sends a lightweight HEAD request with a 2-second timeout to detect DNS
+    failures, refused connections, and network timeouts early, before the MCP
+    session handshake. HTTP error responses (4xx, 5xx) are not treated as
+    failures — only transport-level errors raise.
+
+    Args:
+        server_name: Name of the server (for error messages).
+        server_config: Server configuration dictionary with `url` key.
+
+    Raises:
+        RuntimeError: If the server URL is unreachable.
+    """
+    import httpx
+
+    url = server_config["url"]
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.head(url, timeout=2)
+    except (httpx.TransportError, httpx.InvalidURL, OSError) as exc:
+        msg = (
+            f"MCP server '{server_name}': URL '{url}' is unreachable: {exc}. "
+            "Check that the URL is correct and the server is running."
+        )
+        raise RuntimeError(msg) from exc
+
+
 async def _load_tools_from_config(
     config: dict[str, Any],
 ) -> tuple[list[BaseTool], MCPSessionManager, list[MCPServerInfo]]:
@@ -385,6 +442,14 @@ async def _load_tools_from_config(
         StreamableHttpConnection,
     )
     from langchain_mcp_adapters.tools import load_mcp_tools
+
+    # Pre-flight health checks (before allocating any resources)
+    for server_name, server_config in config["mcpServers"].items():
+        server_type = _resolve_server_type(server_config)
+        if server_type in _SUPPORTED_REMOTE_TYPES:
+            await _check_remote_server(server_name, server_config)
+        else:
+            _check_stdio_server(server_name, server_config)
 
     # Create connections dict for MultiServerMCPClient
     # Convert Claude Desktop format to langchain-mcp-adapters format

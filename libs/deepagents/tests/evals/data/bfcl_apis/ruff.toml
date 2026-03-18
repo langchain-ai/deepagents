@@ -1,0 +1,3 @@
+# Vendored from BFCL benchmark (github.com/ShishirPatil/gorilla) — skip all lint rules
+[lint]
+select = []

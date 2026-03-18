@@ -556,6 +556,12 @@ class ChatTextArea(TextArea):
             self.insert("\n")
             return
 
+        if event.key == "ctrl+u":
+            event.prevent_default()
+            event.stop()
+            self._delete_current_line()
+            return
+
         if event.key == "backspace" and self._delete_image_placeholder(backwards=True):
             event.prevent_default()
             event.stop()
@@ -714,6 +720,28 @@ class ChatTextArea(TextArea):
         self._backslash_pending_time = None
         self.text = ""
         self.move_cursor((0, 0))
+
+    def _delete_current_line(self) -> None:
+        """Delete the current line under the cursor.
+
+        If the text has only one line, clears its content entirely. Otherwise
+        removes the line at the cursor row (along with its newline separator)
+        and moves the cursor to column 0 of the new current row.
+        """
+        lines = self.text.split("\n")
+        row, _ = self.cursor_location
+        if row >= len(lines):
+            return
+        if len(lines) == 1:
+            # Single line — clear content only
+            self.text = ""
+            self.move_cursor((0, 0))
+            return
+
+        lines.pop(row)
+        new_row = min(row, len(lines) - 1)
+        self.text = "\n".join(lines)
+        self.move_cursor((new_row, 0))
 
 
 class _CompletionViewAdapter:

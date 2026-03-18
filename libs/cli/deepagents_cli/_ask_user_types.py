@@ -1,8 +1,8 @@
 """Lightweight types for the ask-user interrupt protocol.
 
-Extracted from `ask_user` so hot-path modules (`app`, `textual_adapter`) can
-import `AskUserRequest` and friends without pulling in the langchain middleware
-stack.
+Extracted from `ask_user` so `textual_adapter` can import `AskUserRequest` at
+module level — and `app` can reference the types at type-check time — without
+pulling in the langchain middleware stack.
 """
 
 from __future__ import annotations

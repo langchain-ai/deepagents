@@ -34,9 +34,9 @@ from deepagents_cli._cli_context import CLIContext  # noqa: TC001
 from deepagents_cli._debug import configure_debug_logging
 from deepagents_cli._session_stats import (
     ModelStats as ModelStats,
-    SessionStats,
-    SpinnerStatus,
-    format_token_count,
+    SessionStats as SessionStats,
+    SpinnerStatus as SpinnerStatus,
+    format_token_count as format_token_count,
 )
 from deepagents_cli.config import settings
 from deepagents_cli.file_ops import FileOpTracker
@@ -57,6 +57,27 @@ configure_debug_logging(logger)
 
 _git_branch_cache: dict[str, str | None] = {}
 """Cache git-branch lookups by current working directory."""
+
+_hitl_adapter_cache: TypeAdapter | None = None
+"""Lazy singleton for the HITL request validator."""
+
+
+def _get_hitl_request_adapter(hitl_request_type: type) -> TypeAdapter:
+    """Return a cached `TypeAdapter(HITLRequest)`.
+
+    Avoids re-compiling the pydantic schema on every `execute_task_textual` call.
+
+    Args:
+        hitl_request_type: The `HITLRequest` class (passed in because
+            it is imported locally by the caller).
+
+    Returns:
+        Shared `TypeAdapter` instance.
+    """
+    global _hitl_adapter_cache  # noqa: PLW0603
+    if _hitl_adapter_cache is None:
+        _hitl_adapter_cache = TypeAdapter(hitl_request_type)
+    return _hitl_adapter_cache
 
 
 def _format_duration(seconds: float) -> str:
@@ -478,7 +499,7 @@ async def execute_task_textual(
     from langchain_core.messages import HumanMessage, ToolMessage
     from langgraph.types import Command
 
-    hitl_request_adapter = TypeAdapter(HITLRequest)
+    hitl_request_adapter = _get_hitl_request_adapter(HITLRequest)
 
     # Parse file mentions and inject content if any — offload blocking I/O
     prompt_text, mentioned_files = await asyncio.to_thread(

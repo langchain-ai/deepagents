@@ -986,25 +986,28 @@ class DeepAgentsApp(App):
         Populates `sys.modules` so the first user-triggered inline import
         is a cheap dict lookup instead of a cold module load.
         """
-        # Widgets deferred from app.py module level
-        # Heavy deps deferred from textual_adapter / tool_display —
-        # hit on first message send and first tool approval
-        from deepagents.backends import DEFAULT_EXECUTE_TIMEOUT  # noqa: F401
-        from langchain.agents.middleware.human_in_the_loop import (  # noqa: F401
-            ApproveDecision,
-        )
-        from langchain_core.messages import AIMessage  # noqa: F401
-        from langgraph.types import Command  # noqa: F401
+        try:
+            # Heavy deps deferred from textual_adapter / tool_display —
+            # hit on first message send and first tool approval
+            from deepagents.backends import DEFAULT_EXECUTE_TIMEOUT  # noqa: F401
+            from langchain.agents.middleware.human_in_the_loop import (  # noqa: F401
+                ApproveDecision,
+            )
+            from langchain_core.messages import AIMessage  # noqa: F401
+            from langgraph.types import Command  # noqa: F401
 
-        from deepagents_cli.widgets.approval import ApprovalMenu  # noqa: F401
-        from deepagents_cli.widgets.ask_user import AskUserMenu  # noqa: F401
-        from deepagents_cli.widgets.model_selector import (
-            ModelSelectorScreen,  # noqa: F401
-        )
-        from deepagents_cli.widgets.thread_selector import (  # noqa: F401
-            DeleteThreadConfirmScreen,
-            ThreadSelectorScreen,
-        )
+            # Widgets deferred from app.py module level
+            from deepagents_cli.widgets.approval import ApprovalMenu  # noqa: F401
+            from deepagents_cli.widgets.ask_user import AskUserMenu  # noqa: F401
+            from deepagents_cli.widgets.model_selector import (
+                ModelSelectorScreen,  # noqa: F401
+            )
+            from deepagents_cli.widgets.thread_selector import (  # noqa: F401
+                DeleteThreadConfirmScreen,
+                ThreadSelectorScreen,
+            )
+        except Exception:
+            logger.debug("Could not prewarm deferred imports", exc_info=True)
 
     async def _prewarm_threads_cache(self) -> None:  # noqa: PLR6301  # Worker hook kept as instance method
         """Prewarm thread selector cache without blocking app startup."""

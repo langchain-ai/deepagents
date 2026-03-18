@@ -2,8 +2,8 @@
 
 This module handles rendering tool calls and tool messages for the TUI.
 
-Imported on the startup path via `textual_adapter`. Heavy SDK dependencies
-(e.g., `backends`) are deferred to function bodies.
+Imported at module level by `textual_adapter` (itself deferred from the startup
+path). Heavy SDK dependencies (e.g., `backends`) are deferred to function bodies.
 """
 
 import json

@@ -853,7 +853,6 @@ def setup_skills_parser(
 
         return _show
 
-    # Inline build_help_parent to avoid importing ui at parse time.
     def help_parent(help_fn: Callable[[], None]) -> list[argparse.ArgumentParser]:
         parent = argparse.ArgumentParser(add_help=False)
         parent.add_argument("-h", "--help", action=make_help_action(help_fn))

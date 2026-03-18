@@ -38,6 +38,15 @@ from deepagents_cli.widgets.history import HistoryManager
 logger = logging.getLogger(__name__)
 
 
+def _default_history_path() -> Path:
+    """Return the default history file path.
+
+    Extracted as a function so tests can monkeypatch it to a temp path,
+    preventing test runs from polluting `~/.deepagents/history.jsonl`.
+    """
+    return Path.home() / ".deepagents" / "history.jsonl"
+
+
 _PASTE_BURST_CHAR_GAP_SECONDS = 0.03
 """Maximum time between chars to treat input as a paste-like burst."""
 
@@ -914,7 +923,7 @@ class ChatInput(Vertical):
 
         # Set up history manager
         if history_file is None:
-            history_file = Path.home() / ".deepagents" / "history.jsonl"
+            history_file = _default_history_path()
         self._history = HistoryManager(history_file)
 
     def compose(self) -> ComposeResult:  # noqa: PLR6301  # Textual widget method convention

@@ -112,7 +112,7 @@ def _ripgrep_install_hint() -> str:
         return "cargo install ripgrep"
     if shutil.which("conda"):
         return "conda install -c conda-forge ripgrep"
-    return f"See {_RIPGREP_URL}"
+    return _RIPGREP_URL
 
 
 def check_optional_tools(*, config_path: Path | None = None) -> list[str]:
@@ -157,16 +157,18 @@ def format_tool_warning_tui(tool: str) -> str:
 
 
 def format_tool_warning_cli(tool: str) -> str:
-    """Format a missing-tool warning for non-interactive Rich console output.
+    """Format a missing-tool warning for non-interactive console output.
 
     Args:
         tool: Name of the missing tool.
 
     Returns:
-        Rich-markup string suitable for `console.print`.
+        Warning string suitable for `console.print`.
     """
     if tool == "ripgrep":
         hint = _ripgrep_install_hint()
+        if hint.startswith("http"):
+            hint = f"[link={hint}]{hint}[/link]"
         return (
             "ripgrep is not installed; the grep tool will use a slower fallback.\n"
             f"Install: {hint}\n\n"

@@ -22,9 +22,8 @@ from deepagents_cli.config import (
     MODE_DISPLAY_GLYPHS,
     MODE_PREFIXES,
     PREFIX_TO_MODE,
-    CharsetMode,
-    _detect_charset_mode,
     get_glyphs,
+    is_ascii_mode,
 )
 from deepagents_cli.input import IMAGE_PLACEHOLDER_PATTERN, VIDEO_PLACEHOLDER_PATTERN
 from deepagents_cli.widgets.autocomplete import (
@@ -904,7 +903,7 @@ class ChatInput(Vertical):
 
     def on_mount(self) -> None:
         """Initialize components after mount."""
-        if _detect_charset_mode() == CharsetMode.ASCII:
+        if is_ascii_mode():
             self.styles.border = ("ascii", "cyan")
 
         self._text_area = self.query_one("#chat-input", ChatTextArea)

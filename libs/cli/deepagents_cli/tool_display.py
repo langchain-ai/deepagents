@@ -277,6 +277,7 @@ def _format_content_block(block: dict) -> str:
         mime = block.get("mime_type", "file")
         return f"[File: {mime}, ~{size_kb}KB]"
     try:
+        # Preserve non-ASCII characters (CJK, emoji, etc.) instead of \uXXXX escapes
         return json.dumps(block, ensure_ascii=False)
     except (TypeError, ValueError):
         return str(block)
@@ -299,6 +300,7 @@ def format_tool_message_content(content: Any) -> str:  # noqa: ANN401  # Content
                 parts.append(_format_content_block(item))
             else:
                 try:
+                    # Preserve non-ASCII characters (CJK, emoji, etc.)
                     parts.append(json.dumps(item, ensure_ascii=False))
                 except (TypeError, ValueError):
                     parts.append(str(item))

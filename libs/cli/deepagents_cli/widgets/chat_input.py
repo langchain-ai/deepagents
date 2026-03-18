@@ -725,11 +725,13 @@ class ChatTextArea(TextArea):
         """Delete the current line under the cursor.
 
         If the text has only one line, clears its content entirely. Otherwise
-        removes the line at the cursor row (including its trailing newline) and
-        moves the cursor to column 0 of the new current row.
+        removes the line at the cursor row (along with its newline separator)
+        and moves the cursor to column 0 of the new current row.
         """
         lines = self.text.split("\n")
         row, _ = self.cursor_location
+        if row >= len(lines):
+            return
         if len(lines) == 1:
             # Single line — clear content only
             self.text = ""

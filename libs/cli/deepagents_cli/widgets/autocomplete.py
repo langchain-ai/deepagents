@@ -477,7 +477,8 @@ class FuzzyFileController:
                     rel_prefix = self._cwd.relative_to(self._project_root)
                     prefix = str(rel_prefix)
                     self._file_cache = [
-                        f[len(prefix) + 1 :] for f in raw
+                        f[len(prefix) + 1 :]
+                        for f in raw
                         if f.startswith((prefix + "/", prefix + "\\"))
                     ]
                 except ValueError:

@@ -22,6 +22,8 @@ concurrency:
 
 permissions:
   contents: read
+  # Required for CodSpeed OIDC authentication in _benchmark.yml
+  id-token: write
 
 env:
   UV_NO_SYNC: "true"
@@ -38,6 +40,7 @@ jobs:
       daytona: ${{ steps.filter.outputs.daytona }}
       modal: ${{ steps.filter.outputs.modal }}
       runloop: ${{ steps.filter.outputs.runloop }}
+      quickjs: ${{ steps.filter.outputs.quickjs }}
     steps:
       - name: "📋 Checkout Code"
         uses: actions/checkout@v6
@@ -45,7 +48,7 @@ jobs:
           fetch-depth: 0
 
       - name: "🔍 Check for changes"
-        uses: dorny/paths-filter@v3
+        uses: dorny/paths-filter@v4
         id: filter
         with:
           # Each package filter includes workflow/action paths so that CI
@@ -91,6 +94,12 @@ jobs:
               - '.github/actions/**'
             runloop:
               - 'libs/partners/runloop/**'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/_lint.yml'
+              - '.github/workflows/_test.yml'
+              - '.github/actions/**'
+            quickjs:
+              - 'libs/partners/quickjs/**'
               - '.github/workflows/ci.yml'
               - '.github/workflows/_lint.yml'
               - '.github/workflows/_test.yml'
@@ -149,6 +158,15 @@ jobs:
     uses: ./.github/workflows/_lint.yml
     with:
       working-directory: "libs/partners/runloop"
+      python-version: "3.11"
+
+  lint-quickjs:
+    name: "🧹 Lint quickjs"
+    needs: changes
+    if: needs.changes.outputs.quickjs == 'true' || github.event_name == 'push'
+    uses: ./.github/workflows/_lint.yml
+    with:
+      working-directory: "libs/partners/quickjs"
       python-version: "3.11"
 
   # Run unit tests on changed packages
@@ -236,6 +254,18 @@ jobs:
       python-version: ${{ matrix.python-version }}
       coverage: ${{ matrix.python-version == '3.12' }}
 
+  # Run CodSpeed benchmarks on SDK changes
+  benchmark-deepagents:
+    name: "⏱️ Benchmark deepagents"
+    needs: changes
+    # TODO: re-enable once CodSpeed integration is ready
+    #if: needs.changes.outputs.deepagents == 'true' || github.event_name == 'push'
+    if: false
+    uses: ./.github/workflows/_benchmark.yml
+    with:
+      working-directory: "libs/deepagents"
+    secrets: inherit
+
   # Final status check - ensures all jobs passed
   ci_success:
     name: "✅ CI Success"
@@ -247,12 +277,14 @@ jobs:
       - lint-daytona
       - lint-modal
       - lint-runloop
+      - lint-quickjs
       - test-deepagents
       - test-cli
       - test-harbor
       - test-daytona
       - test-modal
       - test-runloop
+      - benchmark-deepagents
     if: always()
     runs-on: ubuntu-latest
     steps:

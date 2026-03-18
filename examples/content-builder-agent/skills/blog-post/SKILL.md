@@ -1,19 +1,9 @@
 ---
 name: blog-post
-description: Use this skill when writing long-form blog posts, tutorials, or educational articles that require structure, depth, and SEO considerations
+description: Writes and structures long-form blog posts, creates tutorial outlines, and optimizes content for SEO with cover image generation. Use when the user asks to write a blog post, article, how-to guide, tutorial, technical writeup, thought leadership piece, or long-form content.
 ---
 
 # Blog Post Writing Skill
-
-This skill provides a structured workflow for creating high-quality blog posts that educate and engage readers.
-
-## When to Use This Skill
-
-Use this skill when asked to:
-- Write a blog post or article
-- Create a tutorial or how-to guide
-- Develop educational long-form content
-- Write thought leadership pieces
 
 ## Research First (Required)
 

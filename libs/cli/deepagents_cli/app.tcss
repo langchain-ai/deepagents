@@ -21,8 +21,10 @@ Screen {
     margin-bottom: 1;
 }
 
-/* Messages area */
+/* Messages area — uses undocumented "stream" layout (Textual ≥5.2.0) for
+   O(1) append performance via incremental placement caching. */
 #messages {
+    layout: stream;
     height: auto;
 }
 
@@ -47,6 +49,16 @@ Screen {
     padding: 0 1;
     background: $surface;
     border: solid $warning;
+}
+
+/* Placeholder shown while the user is actively typing (approval deferred) */
+.approval-placeholder {
+    height: auto;
+    margin: 1 0;
+    padding: 0 1;
+    border: solid $panel;
+    color: $text-muted;
+    text-style: italic;
 }
 
 .approval-menu .approval-title {

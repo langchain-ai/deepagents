@@ -3,7 +3,7 @@
 from typing import Any
 
 from langchain.agents.middleware import AgentMiddleware, AgentState
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.runtime import Runtime
 from langgraph.types import Overwrite
 
@@ -21,7 +21,7 @@ class PatchToolCallsMiddleware(AgentMiddleware):
         # Iterate over the messages and add any dangling tool calls
         for i, msg in enumerate(messages):
             patched_messages.append(msg)
-            if msg.type == "ai" and msg.tool_calls:
+            if isinstance(msg, AIMessage) and msg.tool_calls:
                 for tool_call in msg.tool_calls:
                     corresponding_tool_msg = next(
                         (msg for msg in messages[i:] if msg.type == "tool" and msg.tool_call_id == tool_call["id"]),  # ty: ignore[unresolved-attribute]

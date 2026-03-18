@@ -92,7 +92,7 @@ Web search, remote sandboxes, persistent memory, human-in-the-loop approval, and
 ### Why should I use this?
 
 - **100% open source** — MIT licensed, fully extensible
-- **Provider agnostic** — Works with any Large Language Model model that supports tool calling, including both frontier and open models
+- **Provider agnostic** — Works with any Large Language Model that supports tool calling, including both frontier and open models
 - **Built on LangGraph** — Production-ready runtime with streaming, persistence, and checkpointing
 - **Batteries included** — Planning, file access, sub-agents, and context management work out of the box
 - **Get started in seconds** — `uv add deepagents` and you have a working agent

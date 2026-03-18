@@ -5,7 +5,8 @@
 #   curl -LsSf https://raw.githubusercontent.com/langchain-ai/deepagents/main/libs/cli/scripts/install.sh | bash
 #
 # Environment variables:
-#   DEEPAGENTS_EXTRAS  — comma-separated pip extras, e.g. "anthropic" or "anthropic,groq"
+#   DEEPAGENTS_EXTRAS  — comma-separated pip extras, e.g. "anthropic",
+#                        "anthropic,groq", or "daytona"
 #                        (see pyproject.toml for available extras)
 #   DEEPAGENTS_PYTHON  — Python version to use (default: 3.13)
 #   UV_BIN             — path to uv binary (auto-detected if unset)
@@ -20,7 +21,7 @@ if [[ -n "$EXTRAS" ]]; then
   EXTRAS="${EXTRAS#[}"
   EXTRAS="${EXTRAS%]}"
   if [[ ! "$EXTRAS" =~ ^[-a-zA-Z0-9,]+$ ]]; then
-    echo "Error: DEEPAGENTS_EXTRAS must be comma-separated extra names, e.g. 'anthropic,groq'" >&2
+    echo "Error: DEEPAGENTS_EXTRAS must be comma-separated extra names, e.g. 'anthropic,groq' or 'daytona'" >&2
     exit 1
   fi
   EXTRAS="[${EXTRAS}]"

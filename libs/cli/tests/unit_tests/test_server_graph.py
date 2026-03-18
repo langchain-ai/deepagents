@@ -42,6 +42,7 @@ class TestServerGraph:
             "deepagents_cli.agent",
             DEFAULT_AGENT_NAME="agent",
             create_cli_agent=create_cli_agent,
+            load_async_subagents=MagicMock(return_value=None),
         )
 
         model_result = SimpleNamespace(
@@ -125,5 +126,6 @@ class TestServerGraph:
             mcp_server_info=mcp_server_info,
             cwd=None,
             project_context=None,
+            async_subagents=None,
         )
         assert module.graph is graph_obj

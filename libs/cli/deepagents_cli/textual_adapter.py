@@ -156,6 +156,25 @@ def format_token_count(count: int) -> str:
     return str(count)
 
 
+def _format_duration(seconds: float) -> str:
+    """Format a duration in seconds into a human-readable string.
+
+    Args:
+        seconds: Duration in seconds.
+
+    Returns:
+        Formatted string like `"2.3s"`, `"5m 12s"`, or `"1h 23m 4s"`.
+    """
+    rounded = round(seconds, 1)
+    if rounded < 60:  # noqa: PLR2004
+        return f"{rounded:.1f}s"
+    minutes, secs = divmod(int(rounded), 60)
+    if minutes < 60:  # noqa: PLR2004
+        return f"{minutes}m {secs}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h {minutes}m {secs}s"
+
+
 def print_usage_table(
     stats: SessionStats,
     wall_time: float,
@@ -220,7 +239,11 @@ def print_usage_table(
         console.print(table)
     if has_time:
         console.print()
-        console.print(f"[dim]Agent active  {wall_time:.1f}s[/dim]")
+        console.print(
+            f"Agent active  {_format_duration(wall_time)}",
+            style="dim",
+            highlight=False,
+        )
 
 
 # Type alias matching HITLResponse["decisions"] element type
@@ -264,17 +287,21 @@ def _get_git_branch() -> str | None:
 def _build_stream_config(
     thread_id: str,
     assistant_id: str | None,
+    *,
+    sandbox_type: str | None = None,
 ) -> dict[str, Any]:
     """Build the LangGraph stream config dict.
 
     The `thread_id` in `configurable` is automatically propagated as run
     metadata by LangGraph, so it can be used for LangSmith filtering without
-    a separate metadata key. Includes the current working directory (`cwd`)
-    and git branch in metadata when available.
+    a separate metadata key. Includes the current working directory (`cwd`),
+    git branch, and sandbox type in metadata when available.
 
     Args:
         thread_id: The CLI session thread identifier.
         assistant_id: The agent/assistant identifier, if any.
+        sandbox_type: Sandbox provider name for trace metadata, or `None`
+            if no sandbox is active.
 
     Returns:
         Config dict with `configurable` and `metadata` keys.
@@ -296,6 +323,8 @@ def _build_stream_config(
     branch = _get_git_branch()
     if branch:
         metadata["git_branch"] = branch
+    if sandbox_type and sandbox_type != "none":
+        metadata["sandbox_type"] = sandbox_type
     return {
         "configurable": {"thread_id": thread_id},
         "metadata": metadata,
@@ -508,6 +537,8 @@ async def execute_task_textual(
     backend: Any = None,  # noqa: ANN401  # Dynamic backend type
     image_tracker: MediaTracker | None = None,
     context: CLIContext | None = None,
+    *,
+    sandbox_type: str | None = None,
 ) -> SessionStats:
     """Execute a task with output directed to Textual UI.
 
@@ -524,6 +555,8 @@ async def execute_task_textual(
         image_tracker: Optional tracker for images
         context: Optional `CLIContext` with model override and params, passed
             to the graph via `context=`.
+        sandbox_type: Sandbox provider name for trace metadata, or `None`
+            if no sandbox is active.
 
     Returns:
         Stats accumulated over this turn (request count, token counts,
@@ -571,7 +604,7 @@ async def execute_task_textual(
         message_content = final_input
 
     thread_id = session_state.thread_id
-    config = _build_stream_config(thread_id, assistant_id)
+    config = _build_stream_config(thread_id, assistant_id, sandbox_type=sandbox_type)
 
     await dispatch_hook("session.start", {"thread_id": thread_id})
 

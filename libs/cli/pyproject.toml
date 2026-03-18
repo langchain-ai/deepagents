@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "deepagents-cli"
-version = "0.0.32"
+version = "0.0.34"
 description = "Terminal interface for Deep Agents - interactive AI agent with file operations, shell access, and sub-agent capabilities."
 readme = "README.md"
 license = { text = "MIT" }
@@ -51,9 +51,6 @@ dependencies = [
 
     # Sandbox integrations
     "langsmith[sandbox]>=0.7.7",
-    "daytona>=0.113.0,<1.0.0",
-    "modal>=0.65.0,<2.0.0",
-    "runloop-api-client>=0.69.0",
 
     # Tools
     "tavily-python>=0.7.21,<1.0.0",
@@ -98,6 +95,15 @@ openrouter = ["langchain-openrouter>=0.1.0,<2.0.0"]
 perplexity = ["langchain-perplexity>=1.0.0,<2.0.0"]
 vertexai = ["langchain-google-vertexai>=3.0.0,<4.0.0"]
 xai = ["langchain-xai>=1.0.0,<2.0.0"]
+
+# Sandbox providers
+daytona = ["langchain-daytona>=0.0.4"]
+modal = ["langchain-modal>=0.0.2"]
+runloop = ["langchain-runloop>=0.0.3"]
+all-sandboxes = [
+    "deepagents-cli[daytona,modal,runloop]",
+]
+
 all-providers = [
     "deepagents-cli[anthropic,baseten,bedrock,cohere,deepseek,fireworks,google-genai,groq,huggingface,ibm,litellm,mistralai,nvidia,ollama,openai,openrouter,perplexity,vertexai,xai]",
 ]
@@ -140,10 +146,18 @@ packages = ["deepagents_cli"]
 
 [tool.uv.sources]
 deepagents = { path = "../deepagents", editable = true }
+langchain-daytona = { path = "../partners/daytona", editable = true }
+langchain-modal = { path = "../partners/modal", editable = true }
+langchain-runloop = { path = "../partners/runloop", editable = true }
 
 [tool.ty.environment]
 python-version = "3.11"
-extra-paths = ["../deepagents"]
+extra-paths = [
+    "../deepagents",
+    "../partners/daytona",
+    "../partners/modal",
+    "../partners/runloop",
+]
 
 [tool.ty.rules]
 # https://docs.astral.sh/ty/rules/
@@ -173,6 +187,7 @@ ignore = [
     "TD003",   # Missing issue link in TODO
 ]
 unfixable = ["B028"] # People should intentionally tune the stacklevel
+extend-safe-fixes = ["PLR6201"]
 
 flake8-annotations.allow-star-arg-any = true
 flake8-annotations.mypy-init-return = true
@@ -241,6 +256,7 @@ omit = ["tests/*"]
 timeout = 30  # Default timeout for all tests (can be overridden per-test)
 
 addopts = "--strict-markers --strict-config --durations=5"
+markers = ["benchmark: marks tests as benchmarks (select with '-m benchmark')"]
 # pytest-benchmark warns once per xdist worker that benchmarks are disabled
 # under parallel execution. Both plugins are needed: xdist for `make test`,
 # benchmark for `make benchmark`. Suppress the noise here.

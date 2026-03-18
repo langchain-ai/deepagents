@@ -101,6 +101,7 @@ SLASH_COMMANDS: list[tuple[str, str, str]] = [
     ("/changelog", "Open changelog in browser", ""),
     ("/clear", "Clear chat and start new thread", "reset"),
     ("/docs", "Open documentation in browser", ""),
+    ("/editor", "Open prompt in external editor ($EDITOR)", ""),
     ("/feedback", "Submit a bug report or feature request", ""),
     ("/mcp", "Show active MCP servers and tools", "servers"),
     ("/model", "Switch or configure model (--model-params, --default)", ""),

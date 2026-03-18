@@ -23,7 +23,7 @@ on:
   workflow_dispatch:
     inputs:
       models:
-        description: "Preset model selection"
+        description: "Model set to evaluate. Set definitions: .github/scripts/get_eval_models.py. Or pick a single model."
         required: true
         default: "all"
         type: choice
@@ -78,7 +78,7 @@ on:
           - "fireworks:fireworks/glm-5"
           - "fireworks:fireworks/minimax-m2p5"
       models_override:
-        description: "Override: comma-separated models (e.g. 'openai:gpt-4.1,openai:o3'). Takes priority over dropdown when non-empty."
+        description: "Custom model list (overrides dropdown). Comma-separated 'provider:model' specs, e.g. 'openai:gpt-4.1,anthropic:claude-sonnet-4-6'. Leave empty to use the preset selection above."
         required: false
         default: ""
         type: string
@@ -86,8 +86,13 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.models_override || inputs.models || 'all' }}
+  cancel-in-progress: true
+
 env:
   UV_NO_SYNC: "true"
+  UV_FROZEN: "true"
 
 jobs:
   prep:
@@ -145,7 +150,7 @@ jobs:
           working-directory: libs/deepagents
 
       - name: "📦 Install Dependencies"
-        run: uv sync --group test --group evals --locked
+        run: uv sync --group test --group evals
 
       - name: "📊 Run Evals"
         run: make evals

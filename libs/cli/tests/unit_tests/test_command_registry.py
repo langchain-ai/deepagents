@@ -9,7 +9,6 @@ from deepagents_cli.command_registry import (
     COMMANDS,
     IMMEDIATE_UI,
     QUEUE_BOUND,
-    SIDE_EFFECT_FREE,
     SLASH_COMMANDS,
 )
 
@@ -54,7 +53,6 @@ class TestBypassTiers:
             ALWAYS_IMMEDIATE,
             BYPASS_WHEN_CONNECTING,
             IMMEDIATE_UI,
-            SIDE_EFFECT_FREE,
             QUEUE_BOUND,
         ]
         for i, a in enumerate(tiers):
@@ -63,11 +61,7 @@ class TestBypassTiers:
 
     def test_all_classified_is_union(self) -> None:
         assert ALL_CLASSIFIED == (
-            ALWAYS_IMMEDIATE
-            | BYPASS_WHEN_CONNECTING
-            | IMMEDIATE_UI
-            | SIDE_EFFECT_FREE
-            | QUEUE_BOUND
+            ALWAYS_IMMEDIATE | BYPASS_WHEN_CONNECTING | IMMEDIATE_UI | QUEUE_BOUND
         )
 
     def test_aliases_in_correct_tier(self) -> None:

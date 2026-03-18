@@ -2482,7 +2482,7 @@ class TestSlashCommandBypass:
 class TestBypassFrozensetDrift:
     """Ensure bypass frozensets stay in sync with _handle_command dispatch.
 
-    Every slash command must appear in exactly one of the five policy
+    Every slash command must appear in exactly one of the four policy
     frozensets (derived from `command_registry.COMMANDS`) AND in
     `_handle_command`. Adding a command to one without the other will fail
     these tests.
@@ -2512,13 +2512,10 @@ class TestBypassFrozensetDrift:
             ALWAYS_IMMEDIATE,
             BYPASS_WHEN_CONNECTING,
             IMMEDIATE_UI,
-            SIDE_EFFECT_FREE,
         )
 
         handled = self._handled_commands()
-        bypass = (
-            ALWAYS_IMMEDIATE | BYPASS_WHEN_CONNECTING | IMMEDIATE_UI | SIDE_EFFECT_FREE
-        )
+        bypass = ALWAYS_IMMEDIATE | BYPASS_WHEN_CONNECTING | IMMEDIATE_UI
         missing = bypass - handled
         assert not missing, (
             f"Bypass commands {missing} are not handled in _handle_command. "
@@ -2744,23 +2741,13 @@ class TestDeferredActions:
             assert len(app._pending_messages) == 1
             assert app._pending_messages[0].text == "/model gpt-4"
 
-    async def test_can_bypass_queue_side_effect_free(self) -> None:
-        """SIDE_EFFECT_FREE commands bypass regardless of busy state."""
+    async def test_queued_commands_do_not_bypass(self) -> None:
+        """QUEUED commands (e.g. /changelog, /docs) must not bypass the queue."""
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-
-            for cmd in ("/changelog", "/docs", "/feedback", "/mcp"):
-                assert app._can_bypass_queue(cmd) is True
-
-                # Still bypass even when agent/shell running
-                app._agent_running = True
-                assert app._can_bypass_queue(cmd) is True
-                app._agent_running = False
-
-                app._shell_running = True
-                assert app._can_bypass_queue(cmd) is True
-                app._shell_running = False
+            for cmd in ("/changelog", "/docs", "/feedback", "/mcp", "/help"):
+                assert app._can_bypass_queue(cmd) is False
 
     async def test_can_bypass_queue_empty_string(self) -> None:
         """Empty string should not bypass the queue."""

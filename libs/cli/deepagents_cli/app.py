@@ -33,7 +33,6 @@ from deepagents_cli.command_registry import (
     ALWAYS_IMMEDIATE,
     BYPASS_WHEN_CONNECTING,
     IMMEDIATE_UI,
-    SIDE_EFFECT_FREE,
 )
 from deepagents_cli.config import (
     DOCS_URL,
@@ -1546,7 +1545,7 @@ class DeepAgentsApp(App):
             # Only bare form (no args) bypasses — /model opens selector,
             # /model <name> does a direct switch that shouldn't race with agent.
             return value == cmd
-        return cmd in SIDE_EFFECT_FREE
+        return False
 
     async def on_chat_input_submitted(self, event: ChatInput.Submitted) -> None:
         """Handle submitted input from ChatInput widget."""

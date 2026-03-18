@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import copy
 import inspect
 import json
@@ -193,7 +194,7 @@ def _instantiate_bfcl_apis(case: dict[str, Any]) -> dict[str, Any]:
         cls = _BFCL_CLASS_REGISTRY[class_name]
         instance = cls()
         config = copy.deepcopy(case["initial_config"].get(class_name, {}))
-        instance._load_scenario(config, long_context=False)  # noqa: SLF001
+        instance._load_scenario(config, long_context=False)
         instances[class_name] = instance
     return instances
 
@@ -224,17 +225,16 @@ def _fix_bfcl_gt_call(call_str: str) -> str:
 def _replay_bfcl_ground_truth(case: dict[str, Any]) -> dict[str, Any]:
     """Replay ground truth calls on fresh API instances."""
     gt_instances = _instantiate_bfcl_apis(case)
-    methods: dict[str, Any] = {}
-    for instance in gt_instances.values():
-        for name, method in inspect.getmembers(instance, predicate=inspect.ismethod):
-            if not name.startswith("_"):
-                methods[name] = method
+    methods: dict[str, Any] = {
+        name: method
+        for instance in gt_instances.values()
+        for name, method in inspect.getmembers(instance, predicate=inspect.ismethod)
+        if not name.startswith("_")
+    }
     for turn_gt in case["ground_truth"]:
         for call_str in turn_gt:
-            try:
+            with contextlib.suppress(Exception):  # Some GT calls reference missing methods
                 eval(_fix_bfcl_gt_call(call_str), {"__builtins__": {}}, methods)  # noqa: S307
-            except Exception:  # noqa: BLE001
-                pass  # Some GT calls reference missing methods (e.g. view_messages_received)
     return gt_instances
 
 

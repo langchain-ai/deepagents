@@ -74,6 +74,7 @@ ignore = [
     "ANN401",  # Dynamically typed expressions (typing.Any) are disallowed — too strict for generic wrappers
     "ASYNC109",  # StructuredTool async wrapper should mirror sync tool parameters
 ]
+extend-safe-fixes = ["PLR6201"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"

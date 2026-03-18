@@ -5,15 +5,6 @@ description: "Guide for creating effective skills that extend agent capabilities
 
 # Skill Creator
 
-This skill provides guidance for creating effective skills.
-
-## About Skills
-
-Skills are modular, self-contained packages that extend agent capabilities by providing
-specialized knowledge, workflows, and tools. Think of them as "onboarding guides" for specific
-domains or tasks—they transform a general-purpose agent into a specialized agent
-equipped with procedural knowledge and domain expertise.
-
 ### Skill Location for Deepagents
 
 The deepagents CLI loads skills from four directories, listed here from lowest to highest precedence:
@@ -40,13 +31,6 @@ Example directory layout:
 │   └── SKILL.md
 └── ...
 ```
-
-### What Skills Provide
-
-1. Specialized workflows - Multi-step procedures for specific domains
-2. Tool integrations - Instructions for working with specific file formats or APIs
-3. Domain expertise - Company-specific knowledge, schemas, business logic
-4. Bundled resources - Scripts, references, and assets for complex and repetitive tasks
 
 ## Core Principles
 

@@ -22,6 +22,8 @@ concurrency:
 
 permissions:
   contents: read
+  # Required for CodSpeed OIDC authentication in _benchmark.yml
+  id-token: write
 
 env:
   UV_NO_SYNC: "true"
@@ -46,7 +48,7 @@ jobs:
           fetch-depth: 0
 
       - name: "🔍 Check for changes"
-        uses: dorny/paths-filter@v3
+        uses: dorny/paths-filter@v4
         id: filter
         with:
           # Each package filter includes workflow/action paths so that CI
@@ -252,19 +254,17 @@ jobs:
       python-version: ${{ matrix.python-version }}
       coverage: ${{ matrix.python-version == '3.12' }}
 
-  test-quickjs:
-    name: "🧪 Test quickjs"
+  # Run CodSpeed benchmarks on SDK changes
+  benchmark-deepagents:
+    name: "⏱️ Benchmark deepagents"
     needs: changes
-    if: needs.changes.outputs.quickjs == 'true' || github.event_name == 'push'
-    strategy:
-      matrix:
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
-      fail-fast: false
-    uses: ./.github/workflows/_test.yml
+    # TODO: re-enable once CodSpeed integration is ready
+    #if: needs.changes.outputs.deepagents == 'true' || github.event_name == 'push'
+    if: false
+    uses: ./.github/workflows/_benchmark.yml
     with:
-      working-directory: "libs/partners/quickjs"
-      python-version: ${{ matrix.python-version }}
-      coverage: ${{ matrix.python-version == '3.12' }}
+      working-directory: "libs/deepagents"
+    secrets: inherit
 
   # Final status check - ensures all jobs passed
   ci_success:
@@ -284,7 +284,7 @@ jobs:
       - test-daytona
       - test-modal
       - test-runloop
-      - test-quickjs
+      - benchmark-deepagents
     if: always()
     runs-on: ubuntu-latest
     steps:

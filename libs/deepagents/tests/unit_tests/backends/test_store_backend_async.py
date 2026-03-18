@@ -1,10 +1,13 @@
 """Async tests for StoreBackend."""
 
+from functools import partial
+
+import pytest
 from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
 from langgraph.store.memory import InMemoryStore
 
-from deepagents.backends.protocol import EditResult, WriteResult
+from deepagents.backends.protocol import EditResult, ReadResult, WriteResult
 from deepagents.backends.store import StoreBackend
 from deepagents.middleware.filesystem import FilesystemMiddleware
 
@@ -30,26 +33,28 @@ async def test_store_backend_async_crud_and_search():
     assert isinstance(msg, WriteResult) and msg.error is None and msg.path == "/docs/readme.md"
 
     # aread
-    txt = await be.aread("/docs/readme.md")
-    assert "hello store" in txt
+    read_result = await be.aread("/docs/readme.md")
+    assert isinstance(read_result, ReadResult) and read_result.file_data is not None
+    assert "hello store" in read_result.file_data["content"]
 
     # aedit
     msg2 = await be.aedit("/docs/readme.md", "hello", "hi", replace_all=False)
     assert isinstance(msg2, EditResult) and msg2.error is None and msg2.occurrences == 1
 
     # als_info (path prefix filter)
-    infos = await be.als_info("/docs/")
+    infos = (await be.als("/docs/")).entries
+    assert infos is not None
     assert any(i["path"] == "/docs/readme.md" for i in infos)
 
-    # agrep_raw
-    matches = await be.agrep_raw("hi", path="/")
-    assert isinstance(matches, list) and any(m["path"] == "/docs/readme.md" for m in matches)
+    # agrep
+    matches = (await be.agrep("hi", path="/")).matches
+    assert matches is not None and any(m["path"] == "/docs/readme.md" for m in matches)
 
-    # aglob_info
-    g = await be.aglob_info("*.md", path="/")
+    # aglob
+    g = (await be.aglob("*.md", path="/")).matches
     assert len(g) == 0
 
-    g2 = await be.aglob_info("**/*.md", path="/")
+    g2 = (await be.aglob("**/*.md", path="/")).matches
     assert any(i["path"] == "/docs/readme.md" for i in g2)
 
 
@@ -71,7 +76,8 @@ async def test_store_backend_als_nested_directories():
         res = await be.awrite(path, content)
         assert res.error is None
 
-    root_listing = await be.als_info("/")
+    root_listing = (await be.als("/")).entries
+    assert root_listing is not None
     root_paths = [fi["path"] for fi in root_listing]
     assert "/config.json" in root_paths
     assert "/src/" in root_paths
@@ -81,20 +87,22 @@ async def test_store_backend_als_nested_directories():
     assert "/docs/readme.md" not in root_paths
     assert "/docs/api/reference.md" not in root_paths
 
-    src_listing = await be.als_info("/src/")
+    src_listing = (await be.als("/src/")).entries
+    assert src_listing is not None
     src_paths = [fi["path"] for fi in src_listing]
     assert "/src/main.py" in src_paths
     assert "/src/utils/" in src_paths
     assert "/src/utils/helper.py" not in src_paths
 
-    utils_listing = await be.als_info("/src/utils/")
+    utils_listing = (await be.als("/src/utils/")).entries
+    assert utils_listing is not None
     utils_paths = [fi["path"] for fi in utils_listing]
     assert "/src/utils/helper.py" in utils_paths
     assert "/src/utils/common.py" in utils_paths
     assert len(utils_paths) == 2
 
-    empty_listing = await be.als_info("/nonexistent/")
-    assert empty_listing == []
+    empty_listing = await be.als("/nonexistent/")
+    assert empty_listing.entries == []
 
 
 async def test_store_backend_als_trailing_slash():
@@ -111,11 +119,14 @@ async def test_store_backend_als_trailing_slash():
         res = await be.awrite(path, content)
         assert res.error is None
 
-    listing_from_root = await be.als_info("/")
+    listing_from_root = (await be.als("/")).entries
+    assert listing_from_root is not None
     assert len(listing_from_root) > 0
 
-    listing1 = await be.als_info("/dir/")
-    listing2 = await be.als_info("/dir")
+    listing1 = (await be.als("/dir/")).entries
+    listing2 = (await be.als("/dir")).entries
+    assert listing1 is not None
+    assert listing2 is not None
     assert len(listing1) == len(listing2)
     assert [fi["path"] for fi in listing1] == [fi["path"] for fi in listing2]
 
@@ -130,8 +141,8 @@ async def test_store_backend_async_errors():
     assert isinstance(err, EditResult) and err.error and "not found" in err.error
 
     # aread missing file
-    content = await be.aread("/nonexistent.txt")
-    assert "Error" in content or "not found" in content.lower()
+    read_result = await be.aread("/nonexistent.txt")
+    assert isinstance(read_result, ReadResult) and read_result.error is not None
 
 
 async def test_store_backend_aedit_replace_all():
@@ -153,16 +164,18 @@ async def test_store_backend_aedit_replace_all():
     assert res3.error is None
     assert res3.occurrences == 2
 
-    content = await be.aread("/test.txt")
-    assert "qux bar qux baz" in content
+    read_result = await be.aread("/test.txt")
+    assert read_result.file_data is not None
+    assert "qux bar qux baz" in read_result.file_data["content"]
 
     # Now test replace_all=False with unique string (should succeed)
     res4 = await be.aedit("/test.txt", "bar", "xyz", replace_all=False)
     assert res4.error is None
     assert res4.occurrences == 1
 
-    content2 = await be.aread("/test.txt")
-    assert "qux xyz qux baz" in content2
+    read_result2 = await be.aread("/test.txt")
+    assert read_result2.file_data is not None
+    assert "qux xyz qux baz" in read_result2.file_data["content"]
 
 
 async def test_store_backend_aread_with_offset_and_limit():
@@ -176,7 +189,9 @@ async def test_store_backend_aread_with_offset_and_limit():
     assert res.error is None
 
     # Read with offset
-    content_offset = await be.aread("/multi.txt", offset=2, limit=3)
+    read_result = await be.aread("/multi.txt", offset=2, limit=3)
+    assert read_result.file_data is not None
+    content_offset = read_result.file_data["content"]
     assert "Line 3" in content_offset
     assert "Line 4" in content_offset
     assert "Line 5" in content_offset
@@ -200,9 +215,9 @@ async def test_store_backend_agrep_with_glob():
         res = await be.awrite(path, content)
         assert res.error is None
 
-    # agrep_raw with glob filter for .py files only
-    matches = await be.agrep_raw("import", path="/", glob="*.py")
-    assert isinstance(matches, list)
+    # agrep with glob filter for .py files only
+    matches = (await be.agrep("import", path="/", glob="*.py")).matches
+    assert matches is not None
     py_matches = [m["path"] for m in matches if m["path"].endswith(".py")]
     assert len(py_matches) >= 2  # Should match test.py and main.py
 
@@ -226,14 +241,14 @@ async def test_store_backend_aglob_patterns():
         assert res.error is None
 
     # Recursive glob for all .py files
-    infos = await be.aglob_info("**/*.py", path="/")
+    infos = (await be.aglob("**/*.py", path="/")).matches
     py_files = [i["path"] for i in infos]
     assert "/src/main.py" in py_files
     assert "/src/utils/helper.py" in py_files
     assert "/tests/test_main.py" in py_files
 
     # Glob for markdown files
-    md_infos = await be.aglob_info("**/*.md", path="/")
+    md_infos = (await be.aglob("**/*.md", path="/")).matches
     md_files = [i["path"] for i in md_infos]
     assert "/readme.md" in md_files
     assert "/docs/api.md" in md_files
@@ -271,14 +286,18 @@ async def test_store_backend_agrep_invalid_regex():
     assert res.error is None
 
     # Special characters are treated literally, not regex
-    result = await be.agrep_raw("[invalid", path="/")
-    assert isinstance(result, list)  # Returns empty list, not error
+    result = await be.agrep("[invalid", path="/")
+    assert result.matches is not None  # Returns empty list, not error
 
 
-async def test_store_backend_intercept_large_tool_result_async():
+@pytest.mark.parametrize("file_format", ["v1", "v2"])
+async def test_store_backend_intercept_large_tool_result_async(file_format):
     """Test that StoreBackend properly handles large tool result interception in async context."""
     rt = make_runtime()
-    middleware = FilesystemMiddleware(backend=StoreBackend, tool_token_limit_before_evict=1000)
+    middleware = FilesystemMiddleware(
+        backend=partial(StoreBackend, file_format=file_format),
+        tool_token_limit_before_evict=1000,
+    )
 
     large_content = "y" * 5000
     tool_message = ToolMessage(content=large_content, tool_call_id="test_456")
@@ -290,13 +309,18 @@ async def test_store_backend_intercept_large_tool_result_async():
 
     stored_content = rt.store.get(("filesystem",), "/large_tool_results/test_456")
     assert stored_content is not None
-    assert stored_content.value["content"] == [large_content]
+    expected = [large_content] if file_format == "v1" else large_content
+    assert stored_content.value["content"] == expected
 
 
-async def test_store_backend_aintercept_large_tool_result_async():
+@pytest.mark.parametrize("file_format", ["v1", "v2"])
+async def test_store_backend_aintercept_large_tool_result_async(file_format):
     """Test async intercept path uses async store methods (fixes InvalidStateError with BatchedStore)."""
     rt = make_runtime()
-    middleware = FilesystemMiddleware(backend=StoreBackend, tool_token_limit_before_evict=1000)
+    middleware = FilesystemMiddleware(
+        backend=partial(StoreBackend, file_format=file_format),
+        tool_token_limit_before_evict=1000,
+    )
 
     large_content = "z" * 5000
     artifact_payload = {"kind": "structured", "value": {"key": "v"}}
@@ -327,4 +351,5 @@ async def test_store_backend_aintercept_large_tool_result_async():
     # Verify content was stored via async path
     stored_content = await rt.store.aget(("filesystem",), "/large_tool_results/test_async_789")
     assert stored_content is not None
-    assert stored_content.value["content"] == [large_content]
+    expected = [large_content] if file_format == "v1" else large_content
+    assert stored_content.value["content"] == expected

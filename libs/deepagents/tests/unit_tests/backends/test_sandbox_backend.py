@@ -30,6 +30,7 @@ class MockSandbox(BaseSandbox):
 
     def __init__(self) -> None:
         self.last_command = None
+        self._next_output: str = "1"
 
     @property
     def id(self) -> str:
@@ -37,8 +38,9 @@ class MockSandbox(BaseSandbox):
 
     def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
         self.last_command = command
-        # Return "1" for edit commands (simulates 1 occurrence replaced)
-        return ExecuteResponse(output="1", exit_code=0, truncated=False)
+        output = self._next_output
+        self._next_output = "1"
+        return ExecuteResponse(output=output, exit_code=0, truncated=False)
 
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
         return [FileUploadResponse(path=f[0], error=None) for f in files]
@@ -113,6 +115,7 @@ def test_heredoc_command_templates_end_with_newline() -> None:
 def test_sandbox_read_uses_payload() -> None:
     """Test that read() bundles all params into a single base64 payload."""
     sandbox = MockSandbox()
+    sandbox._next_output = json.dumps({"content": "mock content", "encoding": "utf-8"})
 
     sandbox.read("/test/file.txt", offset=5, limit=50)
 
@@ -191,13 +194,13 @@ def test_sandbox_grep_literal_search() -> None:
     sandbox.execute = mock_execute
 
     # Test with parentheses (should be literal, not regex grouping)
-    matches = sandbox.grep_raw("def __init__(", path="/test")
-    assert isinstance(matches, list)
+    matches = sandbox.grep("def __init__(", path="/test").matches
+    assert matches is not None
     assert len(matches) == 2
 
     # Test with pipe character (should be literal, not regex OR)
-    matches = sandbox.grep_raw("str | int", path="/test")
-    assert isinstance(matches, list)
+    matches = sandbox.grep("str | int", path="/test").matches
+    assert matches is not None
 
     # Verify the command uses grep -rHnF for literal search (combined flags)
     assert sandbox.last_command is not None

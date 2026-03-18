@@ -26,9 +26,7 @@ class _NormalizedSubstringsPresent(SuccessAssertion):
 
     @staticmethod
     def _normalize(text: str) -> str:
-        normalized = re.sub(r"\s+", "", text).lower()
-        normalized = normalized.replace("'", "").replace('"', "").replace("`", "")
-        return normalized
+        return re.sub(r"\s+", "", text).lower().replace("'", "").replace('"', "").replace("`", "")
 
     def check(self, trajectory: AgentTrajectory) -> bool:
         answer = self._normalize(trajectory.answer)

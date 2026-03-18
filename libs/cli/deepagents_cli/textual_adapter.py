@@ -16,24 +16,24 @@ from typing import TYPE_CHECKING, Any, Literal
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
+    from langchain.agents.middleware.human_in_the_loop import (
+        ApproveDecision,
+        EditDecision,
+        HITLRequest,
+        RejectDecision,
+    )
+    from langchain_core.messages import AIMessage
+    from langgraph.types import Command, Interrupt
     from rich.console import Console
 
-    from deepagents_cli.ask_user import AskUserWidgetResult, Question
+    from deepagents_cli._ask_user_types import AskUserWidgetResult, Question
 
-from langchain.agents.middleware.human_in_the_loop import (
-    ApproveDecision,
-    EditDecision,
-    HITLRequest,
-    RejectDecision,
-)
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-from langgraph.types import Command, Interrupt
 from pydantic import TypeAdapter, ValidationError
 
+from deepagents_cli._ask_user_types import AskUserRequest
+from deepagents_cli._cli_context import CLIContext  # noqa: TC001
 from deepagents_cli._debug import configure_debug_logging
-from deepagents_cli.ask_user import AskUserRequest
 from deepagents_cli.config import settings
-from deepagents_cli.configurable_model import CLIContext  # noqa: TC001
 from deepagents_cli.file_ops import FileOpTracker
 from deepagents_cli.hooks import dispatch_hook
 from deepagents_cli.input import MediaTracker, parse_file_mentions
@@ -246,10 +246,10 @@ def print_usage_table(
         )
 
 
-# Type alias matching HITLResponse["decisions"] element type
-HITLDecision = ApproveDecision | EditDecision | RejectDecision
+if TYPE_CHECKING:
+    # Type alias matching HITLResponse["decisions"] element type
+    HITLDecision = ApproveDecision | EditDecision | RejectDecision
 
-_HITL_REQUEST_ADAPTER = TypeAdapter(HITLRequest)
 _ASK_USER_INTERRUPT_ADAPTER = TypeAdapter(AskUserRequest)
 """Validator for incoming `ask_user` interrupt payloads."""
 
@@ -482,6 +482,8 @@ def _build_interrupted_ai_message(
     Returns:
         AIMessage with accumulated content and tool calls, or None if empty.
     """
+    from langchain_core.messages import AIMessage
+
     main_ns_key = ()
     accumulated_text = pending_text_by_namespace.get(main_ns_key, "").strip()
 
@@ -565,6 +567,16 @@ async def execute_task_textual(
     Raises:
         ValidationError: If HITL request validation fails (re-raised).
     """
+    from langchain.agents.middleware.human_in_the_loop import (
+        ApproveDecision,
+        HITLRequest,
+        RejectDecision,
+    )
+    from langchain_core.messages import HumanMessage, ToolMessage
+    from langgraph.types import Command
+
+    hitl_request_adapter = TypeAdapter(HITLRequest)
+
     # Parse file mentions and inject content if any — offload blocking I/O
     prompt_text, mentioned_files = await asyncio.to_thread(
         parse_file_mentions, user_input
@@ -704,7 +716,7 @@ async def execute_task_textual(
                                 else:
                                     try:
                                         validated_request = (
-                                            _HITL_REQUEST_ADAPTER.validate_python(iv)
+                                            hitl_request_adapter.validate_python(iv)
                                         )
                                         pending_interrupts[interrupt_obj.id] = (
                                             validated_request

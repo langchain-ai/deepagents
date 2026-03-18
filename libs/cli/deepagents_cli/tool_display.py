@@ -11,8 +11,6 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
-from deepagents.backends import DEFAULT_EXECUTE_TIMEOUT
-
 from deepagents_cli.config import MAX_ARG_LENGTH, get_glyphs
 from deepagents_cli.unicode_security import strip_dangerous_unicode
 
@@ -179,6 +177,8 @@ def format_tool_display(tool_name: str, tool_args: dict) -> str:
         if "command" in tool_args:
             command = _sanitize_display_value(tool_args["command"], max_length=120)
             timeout = _coerce_timeout_seconds(tool_args.get("timeout"))
+            from deepagents.backends import DEFAULT_EXECUTE_TIMEOUT
+
             if timeout is not None and timeout != DEFAULT_EXECUTE_TIMEOUT:
                 timeout_str = _format_timeout(timeout)
                 return f'{prefix} {tool_name}("{command}", timeout={timeout_str})'

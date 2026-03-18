@@ -28,6 +28,7 @@ from textual.screen import ModalScreen
 from textual.style import Style as TStyle
 from textual.widgets import Static
 
+from deepagents_cli._cli_context import CLIContext
 from deepagents_cli.clipboard import copy_selection_to_clipboard
 from deepagents_cli.command_registry import (
     ALWAYS_IMMEDIATE,
@@ -46,7 +47,6 @@ from deepagents_cli.config import (
     newline_shortcut,
     settings,
 )
-from deepagents_cli.configurable_model import CLIContext
 from deepagents_cli.hooks import dispatch_hook
 from deepagents_cli.model_config import ModelSpec, save_recent_model
 from deepagents_cli.textual_adapter import (
@@ -98,7 +98,7 @@ if TYPE_CHECKING:
     from textual.widget import Widget
     from textual.worker import Worker
 
-    from deepagents_cli.ask_user import AskUserWidgetResult, Question
+    from deepagents_cli._ask_user_types import AskUserWidgetResult, Question
     from deepagents_cli.mcp_tools import MCPServerInfo
     from deepagents_cli.remote_client import RemoteAgent
     from deepagents_cli.server import ServerProcess

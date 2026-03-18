@@ -1,7 +1,7 @@
 """Tests for runtime config reload behavior."""
 
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 
 import pytest
 
@@ -137,16 +137,35 @@ class TestReloadFromEnvironment:
     def test_calls_dotenv_load(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        """Reload should anchor dotenv loading to the explicit start path."""
+        """Reload should anchor dotenv loading to explicit `.env` files."""
         settings = Settings.from_environment(start_path=tmp_path)
         mock_load = MagicMock(return_value=False)
         env_file = tmp_path / ".env"
+        env_local_file = tmp_path / ".env.local"
         env_file.write_text("OPENAI_API_KEY=sk-test\n")
+        env_local_file.write_text("LANGSMITH_TRACING=true\n")
         monkeypatch.setattr("deepagents_cli.config.dotenv.load_dotenv", mock_load)
 
         settings.reload_from_environment(start_path=tmp_path)
 
-        mock_load.assert_called_once_with(dotenv_path=env_file, override=True)
+        assert mock_load.call_args_list == [
+            call(dotenv_path=env_file, override=True),
+            call(dotenv_path=env_local_file, override=True),
+        ]
+
+    def test_calls_dotenv_load_for_env_local_only(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Reload should load `.env.local` even when `.env` is absent."""
+        settings = Settings.from_environment(start_path=tmp_path)
+        mock_load = MagicMock(return_value=False)
+        env_local_file = tmp_path / ".env.local"
+        env_local_file.write_text("LANGSMITH_TRACING=true\n")
+        monkeypatch.setattr("deepagents_cli.config.dotenv.load_dotenv", mock_load)
+
+        settings.reload_from_environment(start_path=tmp_path)
+
+        mock_load.assert_called_once_with(dotenv_path=env_local_file, override=True)
 
     def test_multiple_simultaneous_changes(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path

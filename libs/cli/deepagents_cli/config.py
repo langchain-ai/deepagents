@@ -28,25 +28,29 @@ from deepagents_cli.project_utils import (
 logger = logging.getLogger(__name__)
 
 
-def _find_dotenv_from_start_path(start_path: Path) -> Path | None:
-    """Find the nearest `.env` file from an explicit start path upward.
+def _find_dotenv_files_from_start_path(start_path: Path) -> list[Path]:
+    """Find the nearest `.env` / `.env.local` files from a start path upward.
 
     Args:
         start_path: Directory to start searching from.
 
     Returns:
-        Path to the nearest `.env` file, or `None` if not found.
+        Ordered dotenv files from the nearest matching directory.
     """
     current = start_path.expanduser().resolve()
     for parent in [current, *list(current.parents)]:
-        candidate = parent / ".env"
-        try:
-            if candidate.is_file():
-                return candidate
-        except OSError:
-            logger.warning("Could not inspect .env candidate %s", candidate)
-            return None
-    return None
+        candidates = [parent / ".env", parent / ".env.local"]
+        existing: list[Path] = []
+        for candidate in candidates:
+            try:
+                if candidate.is_file():
+                    existing.append(candidate)
+            except OSError:
+                logger.warning("Could not inspect .env candidate %s", candidate)
+                return []
+        if existing:
+            return existing
+    return []
 
 
 def _load_dotenv(*, start_path: Path | None = None, override: bool = False) -> bool:
@@ -60,12 +64,27 @@ def _load_dotenv(*, start_path: Path | None = None, override: bool = False) -> b
         `True` when a dotenv file was loaded, `False` otherwise.
     """
     if start_path is None:
-        return dotenv.load_dotenv(override=override)
+        loaded = False
+        for candidate in (Path(".env"), Path(".env.local")):
+            try:
+                if candidate.is_file():
+                    loaded = (
+                        dotenv.load_dotenv(dotenv_path=candidate, override=override)
+                        or loaded
+                    )
+            except OSError:
+                logger.warning("Could not inspect .env candidate %s", candidate)
+                return loaded
+        return loaded or dotenv.load_dotenv(override=override)
 
-    dotenv_path = _find_dotenv_from_start_path(start_path)
-    if dotenv_path is None:
+    dotenv_paths = _find_dotenv_files_from_start_path(start_path)
+    if not dotenv_paths:
         return False
-    return dotenv.load_dotenv(dotenv_path=dotenv_path, override=override)
+
+    loaded = False
+    for dotenv_path in dotenv_paths:
+        loaded = dotenv.load_dotenv(dotenv_path=dotenv_path, override=override) or loaded
+    return loaded
 
 
 _bootstrap_project_context = _get_server_project_context()

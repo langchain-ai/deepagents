@@ -266,6 +266,22 @@ _DEFERRED_APPROVAL_TIMEOUT_SECONDS: float = 30.0
 """Maximum seconds the deferred-approval worker will wait for the user to stop
 typing before showing the approval widget regardless."""
 
+# ---------------------------------------------------------------------------
+# Slash-command bypass tiers
+# ---------------------------------------------------------------------------
+_ALWAYS_IMMEDIATE: frozenset[str] = frozenset({"/quit", "/q"})
+"""Execute regardless of any busy state (incl. thread switching)."""
+
+_BYPASS_WHEN_CONNECTING: frozenset[str] = frozenset({"/version"})
+"""Bypass only during initial connection, not during agent/shell."""
+
+_IMMEDIATE_UI: frozenset[str] = frozenset({"/model", "/threads"})
+"""Open modal UI immediately; actual side-effect deferred by callback.
+
+Any command added here MUST defer its real work to a selector callback
+(via `_defer_action`). The bypass is unconditional — no busy-state check.
+"""
+
 
 @dataclass(frozen=True, slots=True)
 class QueuedMessage:
@@ -278,6 +294,23 @@ class QueuedMessage:
 
     text: str
     mode: InputMode
+
+
+DeferredActionKind = Literal["model_switch", "thread_switch"]
+"""Valid `DeferredAction.kind` values for type-checked deduplication."""
+
+
+@dataclass(frozen=True, slots=True)
+class DeferredAction:
+    """An action deferred until the current busy state resolves.
+
+    Attributes:
+        kind: Identity key for deduplication — one of `DeferredActionKind`.
+        execute: Async callable that performs the actual work.
+    """
+
+    kind: DeferredActionKind
+    execute: Callable[[], Awaitable[None]]
 
 
 class TextualTokenTracker:
@@ -647,10 +680,11 @@ class DeepAgentsApp(App):
         # User message queue for sequential processing
         self._pending_messages: deque[QueuedMessage] = deque()
         self._queued_widgets: deque[QueuedUserMessage] = deque()
-        self._deferred_actions: list[Callable[[], Awaitable[None]]] = []
         self._processing_pending = False
         self._thread_switching = False
         self._model_switching = False
+        # Deferred actions executed after the current busy state resolves
+        self._deferred_actions: list[DeferredAction] = []
         # Message virtualization store
         self._message_store = MessageStore()
         # Lazily imported here to avoid pulling image dependencies into
@@ -909,9 +943,16 @@ class DeepAgentsApp(App):
 
             async def _safe_drain() -> None:
                 try:
-                    await self._drain_deferred_actions()
+                    await self._maybe_drain_deferred()
                 except Exception:
                     logger.exception("Unhandled error while draining deferred actions")
+                    with suppress(Exception):
+                        await self._mount_message(
+                            ErrorMessage(
+                                "A deferred action failed during startup. "
+                                "You may need to retry the operation."
+                            )
+                        )
 
             self.call_after_refresh(lambda: asyncio.create_task(_safe_drain()))
 
@@ -1503,6 +1544,24 @@ class DeepAgentsApp(App):
             logger.warning("Unrecognized input mode %r, treating as normal", mode)
             await self._handle_user_message(value)
 
+    def _can_bypass_queue(self, value: str) -> bool:
+        """Check if a slash command can skip the message queue.
+
+        Args:
+            value: The lowered, stripped command string (e.g. `/model`).
+
+        Returns:
+            `True` if the command should bypass the busy-state queue.
+        """
+        cmd = value.split(maxsplit=1)[0] if value else ""
+        if cmd in _BYPASS_WHEN_CONNECTING:
+            return self._connecting and not (self._agent_running or self._shell_running)
+        if cmd in _IMMEDIATE_UI:
+            # Only bare form (no args) bypasses — /model opens selector,
+            # /model <name> does a direct switch that shouldn't race with agent.
+            return value == cmd
+        return False
+
     async def on_chat_input_submitted(self, event: ChatInput.Submitted) -> None:
         """Handle submitted input from ChatInput widget."""
         value = event.value
@@ -1513,8 +1572,8 @@ class DeepAgentsApp(App):
 
         await dispatch_hook("user.prompt", {})
 
-        # /quit should always work immediately, even during thread switching.
-        if mode == "command" and value.lower().strip() in {"/quit", "/q"}:
+        # /quit and /q always execute immediately, even mid-thread-switch.
+        if mode == "command" and value.lower().strip() in _ALWAYS_IMMEDIATE:
             self.exit()
             return
 
@@ -1531,24 +1590,9 @@ class DeepAgentsApp(App):
         # instead of processing. Messages queued during connection are drained
         # once the server is ready (see on_deep_agents_app_server_ready).
         if self._agent_running or self._shell_running or self._connecting:
-            # Allow certain commands to bypass the queue.
-            if mode == "command":
-                cmd = value.lower().strip()
-                # /version can run during connection (no server needed), but
-                # still queues when an agent or shell is actively running.
-                if (
-                    cmd == "/version"
-                    and self._connecting
-                    and not (self._agent_running or self._shell_running)
-                ):
-                    await self._process_message(value, mode)
-                    return
-                # /model (no args) and /threads open a selector UI immediately;
-                # the actual switch is deferred via the selector callbacks.
-                if cmd in {"/model", "/threads"}:
-                    await self._process_message(value, mode)
-                    return
-
+            if mode == "command" and self._can_bypass_queue(value.lower().strip()):
+                await self._process_message(value, mode)
+                return
             self._pending_messages.append(QueuedMessage(text=value, mode=mode))
             queued_widget = QueuedUserMessage(value)
             self._queued_widgets.append(queued_widget)
@@ -1700,9 +1744,10 @@ class DeepAgentsApp(App):
             await self._mount_message(AppMessage("Command interrupted"))
         if self._chat_input:
             self._chat_input.set_cursor_active(active=True)
-        # Execute deferred actions (e.g. model/thread switch) now that shell is idle
-        if not self._connecting:
-            await self._drain_deferred_actions()
+        try:
+            await self._maybe_drain_deferred()
+        except Exception:
+            logger.exception("Failed to drain deferred actions during shell cleanup")
         await self._process_next_from_queue()
 
     async def _kill_shell_process(self) -> None:
@@ -2372,9 +2417,10 @@ class DeepAgentsApp(App):
         if self._token_tracker:
             self._token_tracker.show()
 
-        # Execute deferred actions (e.g. model/thread switch) now that agent is idle
-        if not self._connecting:
-            await self._drain_deferred_actions()
+        try:
+            await self._maybe_drain_deferred()
+        except Exception:
+            logger.exception("Failed to drain deferred actions during agent cleanup")
 
         # Process next message from queue if any
         await self._process_next_from_queue()
@@ -2884,18 +2930,38 @@ class DeepAgentsApp(App):
         self._queued_widgets.clear()
         self._deferred_actions.clear()
 
+    def _defer_action(self, action: DeferredAction) -> None:
+        """Queue a deferred action, replacing any existing action of the same kind.
+
+        Last-write-wins: if the user selects a model twice while busy, only the
+        final selection runs.
+
+        Args:
+            action: The deferred action to queue.
+        """
+        self._deferred_actions = [
+            a for a in self._deferred_actions if a.kind != action.kind
+        ]
+        self._deferred_actions.append(action)
+
+    async def _maybe_drain_deferred(self) -> None:
+        """Drain deferred actions if not blocked by connection or active work."""
+        if not self._connecting:
+            await self._drain_deferred_actions()
+
     async def _drain_deferred_actions(self) -> None:
         """Execute deferred actions queued while busy (e.g. model/thread switch)."""
         while self._deferred_actions:
             action = self._deferred_actions.pop(0)
             try:
-                await action()
+                await action.execute()
             except Exception:
-                logger.exception("Failed to execute deferred action: %r", action)
+                logger.exception("Failed to execute deferred action %r", action.kind)
+                label = action.kind.replace("_", " ")
                 await self._mount_message(
                     ErrorMessage(
-                        "A deferred action failed unexpectedly. "
-                        "Check the log for details."
+                        f"Deferred {label} failed unexpectedly. "
+                        "You may need to retry the operation."
                     )
                 )
 
@@ -3260,9 +3326,14 @@ class DeepAgentsApp(App):
             if result is not None:
                 model_spec, _ = result
                 if self._agent_running or self._shell_running or self._connecting:
-                    self._deferred_actions.append(
-                        partial(
-                            self._switch_model, model_spec, extra_kwargs=extra_kwargs
+                    self._defer_action(
+                        DeferredAction(
+                            kind="model_switch",
+                            execute=partial(
+                                self._switch_model,
+                                model_spec,
+                                extra_kwargs=extra_kwargs,
+                            ),
                         )
                     )
                     self.notify(
@@ -3314,7 +3385,12 @@ class DeepAgentsApp(App):
             """Handle the thread selector result."""
             if result is not None:
                 if self._agent_running or self._shell_running or self._connecting:
-                    self._deferred_actions.append(partial(self._resume_thread, result))
+                    self._defer_action(
+                        DeferredAction(
+                            kind="thread_switch",
+                            execute=partial(self._resume_thread, result),
+                        )
+                    )
                     self.notify(
                         "Thread will switch after current task completes.", timeout=3
                     )

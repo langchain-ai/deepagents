@@ -29,6 +29,7 @@ from deepagents_cli.app import (
     _ITERM_CURSOR_GUIDE_ON,
     _TYPING_IDLE_THRESHOLD_SECONDS,
     DeepAgentsApp,
+    DeferredAction,
     QueuedMessage,
     TextualSessionState,
     _write_iterm_escape,
@@ -2487,12 +2488,14 @@ class TestDeferredActions:
         async with app.run_test() as pilot:
             await pilot.pause()
 
-            executed = []
+            executed: list[str] = []
 
             async def action() -> None:  # noqa: RUF029
                 executed.append("ran")
 
-            app._deferred_actions.append(action)
+            app._deferred_actions.append(
+                DeferredAction(kind="model_switch", execute=action)
+            )
             app._agent_running = True
 
             # Simulate agent finishing
@@ -2507,12 +2510,14 @@ class TestDeferredActions:
         async with app.run_test() as pilot:
             await pilot.pause()
 
-            executed = []
+            executed: list[str] = []
 
             async def action() -> None:  # noqa: RUF029
                 executed.append("ran")
 
-            app._deferred_actions.append(action)
+            app._deferred_actions.append(
+                DeferredAction(kind="model_switch", execute=action)
+            )
             app._shell_running = True
 
             await app._cleanup_shell_task()
@@ -2526,12 +2531,14 @@ class TestDeferredActions:
         async with app.run_test() as pilot:
             await pilot.pause()
 
-            executed = []
+            executed: list[str] = []
 
             async def action() -> None:  # noqa: RUF029
                 executed.append("ran")
 
-            app._deferred_actions.append(action)
+            app._deferred_actions.append(
+                DeferredAction(kind="model_switch", execute=action)
+            )
             app._agent_running = True
             app._connecting = True
 
@@ -2549,7 +2556,9 @@ class TestDeferredActions:
             async def action() -> None:
                 pass
 
-            app._deferred_actions.append(action)
+            app._deferred_actions.append(
+                DeferredAction(kind="model_switch", execute=action)
+            )
             app._discard_queue()
 
             assert len(app._deferred_actions) == 0
@@ -2563,7 +2572,9 @@ class TestDeferredActions:
             async def action() -> None:
                 pass
 
-            app._deferred_actions.append(action)
+            app._deferred_actions.append(
+                DeferredAction(kind="model_switch", execute=action)
+            )
             app._connecting = True
 
             app.on_deep_agents_app_server_start_failed(
@@ -2578,7 +2589,7 @@ class TestDeferredActions:
         async with app.run_test() as pilot:
             await pilot.pause()
 
-            executed = []
+            executed: list[str] = []
 
             async def bad_action() -> None:  # noqa: RUF029
                 msg = "boom"
@@ -2587,10 +2598,90 @@ class TestDeferredActions:
             async def good_action() -> None:  # noqa: RUF029
                 executed.append("ok")
 
-            app._deferred_actions.append(bad_action)
-            app._deferred_actions.append(good_action)
+            app._deferred_actions.append(
+                DeferredAction(kind="model_switch", execute=bad_action)
+            )
+            app._deferred_actions.append(
+                DeferredAction(kind="thread_switch", execute=good_action)
+            )
 
             await app._drain_deferred_actions()
 
             assert executed == ["ok"]
             assert len(app._deferred_actions) == 0
+
+    async def test_defer_action_deduplicates_by_kind(self) -> None:
+        """Deferring two actions of the same kind keeps only the last."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            executed: list[str] = []
+
+            async def first() -> None:  # noqa: RUF029
+                executed.append("first")
+
+            async def second() -> None:  # noqa: RUF029
+                executed.append("second")
+
+            app._defer_action(DeferredAction(kind="model_switch", execute=first))
+            app._defer_action(DeferredAction(kind="model_switch", execute=second))
+
+            assert len(app._deferred_actions) == 1
+            await app._drain_deferred_actions()
+            assert executed == ["second"]
+
+    async def test_can_bypass_queue_version_only_connecting(self) -> None:
+        """/version bypasses only during connection, not agent/shell."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            # Connecting only → bypass
+            app._connecting = True
+            app._agent_running = False
+            app._shell_running = False
+            assert app._can_bypass_queue("/version") is True
+
+            # Agent running (even if connecting) → no bypass
+            app._agent_running = True
+            assert app._can_bypass_queue("/version") is False
+
+            # Shell running (even if connecting) → no bypass
+            app._agent_running = False
+            app._shell_running = True
+            assert app._can_bypass_queue("/version") is False
+
+            # Not connecting → no bypass
+            app._connecting = False
+            app._shell_running = False
+            assert app._can_bypass_queue("/version") is False
+
+    async def test_can_bypass_queue_bare_model_bypasses(self) -> None:
+        """Bare /model should bypass the queue."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._can_bypass_queue("/model") is True
+            assert app._can_bypass_queue("/threads") is True
+
+    async def test_can_bypass_queue_model_with_args_no_bypass(self) -> None:
+        """/model with args should NOT bypass (direct switch must queue)."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._can_bypass_queue("/model gpt-4") is False
+            assert app._can_bypass_queue("/model --default foo") is False
+
+    async def test_model_with_args_still_queues(self) -> None:
+        """/model gpt-4 should be queued when busy, not bypass."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+
+            app.post_message(ChatInput.Submitted("/model gpt-4", "command"))
+            await pilot.pause()
+
+            assert len(app._pending_messages) == 1
+            assert app._pending_messages[0].text == "/model gpt-4"

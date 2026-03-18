@@ -41,6 +41,7 @@ SET0: list[str] = [
     "google_genai:gemini-3.1-pro-preview",
     # Baseten
     "baseten:zai-org/GLM-5",
+    "baseten:MiniMaxAI/MiniMax-M2.7",
     "baseten:MiniMaxAI/MiniMax-M2.5",
     "baseten:moonshotai/Kimi-K2.5",
     "baseten:deepseek-ai/DeepSeek-V3.2",
@@ -48,6 +49,7 @@ SET0: list[str] = [
     # Fireworks
     "fireworks:fireworks/qwen3-vl-235b-a22b-thinking",
     "fireworks:fireworks/deepseek-v3-0324",
+    "fireworks:fireworks/minimax-m2p7",
     "fireworks:fireworks/minimax-m2p1",
     "fireworks:fireworks/kimi-k2p5",
     "fireworks:fireworks/glm-5",
@@ -64,9 +66,11 @@ SET1: list[str] = [
     "google_genai:gemini-3.1-pro-preview",
     "google_genai:gemini-2.5-pro",
     "ollama:glm-5",
+    "ollama:minimax-m2.7",
     "ollama:minimax-m2.5",
     "ollama:qwen3.5:397b-cloud",
     "baseten:zai-org/GLM-5",
+    "baseten:MiniMaxAI/MiniMax-M2.7",
     "baseten:MiniMaxAI/MiniMax-M2.5",
     "fireworks:fireworks/qwen3-vl-235b-a22b-thinking",
 ]
@@ -82,6 +86,7 @@ SET2: list[str] = [
     "xai:grok-3-mini-fast",
     # Ollama Cloud
     "ollama:glm-5",
+    "ollama:minimax-m2.7",
     "ollama:minimax-m2.5",
     "ollama:nemotron-3-nano:30b",
     "ollama:cogito-2.1:671b",

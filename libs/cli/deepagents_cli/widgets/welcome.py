@@ -22,7 +22,6 @@ from deepagents_cli.config import (
     get_banner,
     get_glyphs,
     get_langsmith_project_name,
-    newline_shortcut,
 )
 from deepagents_cli.widgets._links import open_style_link
 
@@ -34,6 +33,7 @@ _TIPS: list[str] = [
     "Use /remember to save learnings from this conversation",
     "Use /model to switch models mid-conversation",
     "Press ctrl+x to compose prompts in your external editor",
+    "Press ctrl+u to delete the current line in the chat input",
 ]
 """Rotating tips shown in the welcome footer.
 
@@ -247,23 +247,15 @@ def build_connecting_footer() -> Content:
 
 
 def build_welcome_footer() -> Content:
-    """Build the two-line footer shown at the bottom of the welcome banner.
+    """Build the footer shown at the bottom of the welcome banner.
 
     Includes a randomly selected tip to help users discover features.
 
     Returns:
-        Content with the ready prompt, a tip, and keyboard shortcut help line.
+        Content with the ready prompt and a tip.
     """
     tip = random.choice(_TIPS)  # noqa: S311
-    bullet = get_glyphs().bullet
     return Content.assemble(
         ("\nReady to code! What would you like to build?\n", COLORS["primary"]),
-        (f"Tip: {tip}\n", "dim italic"),
-        (
-            (
-                f"Enter send {bullet} {newline_shortcut()} newline "
-                f"{bullet} @ files {bullet} / commands"
-            ),
-            "dim",
-        ),
+        (f"Tip: {tip}", "dim italic"),
     )

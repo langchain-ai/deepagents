@@ -598,3 +598,53 @@ class TestMountMessageIdSync:
             widget.id = data.id
 
         assert widget.id == "my-custom-id"
+
+
+class TestGenericPreviewTruncation:
+    """Tests for generic MCP tool preview truncation fallback."""
+
+    def _make_msg(self, tool_name: str = "mcp_custom_tool") -> ToolCallMessage:
+        """Create a ToolCallMessage with the given tool name."""
+        return ToolCallMessage(tool_name, {})
+
+    def test_unknown_tool_many_lines_truncated_in_preview(self) -> None:
+        """Unknown tool output exceeding line limit should be truncated."""
+        msg = self._make_msg()
+        output = "\n".join(f"line {i}" for i in range(10))
+        result = msg._format_output(output, is_preview=True)
+        assert result.truncation is not None
+        assert "more lines" in result.truncation
+
+    def test_unknown_tool_long_single_line_truncated_in_preview(self) -> None:
+        """Unknown tool output exceeding char limit should be char-truncated."""
+        msg = self._make_msg()
+        output = "x" * 500
+        result = msg._format_output(output, is_preview=True)
+        assert result.truncation is not None
+        assert "100 more chars" in result.truncation
+        assert len(result.content.plain) == 400
+
+    def test_unknown_tool_short_output_no_truncation(self) -> None:
+        """Short output from unknown tool should pass through untruncated."""
+        msg = self._make_msg()
+        output = "short output"
+        result = msg._format_output(output, is_preview=True)
+        assert result.truncation is None
+        assert result.content.plain == "short output"
+
+    def test_unknown_tool_exact_preview_lines_not_truncated(self) -> None:
+        """Output with exactly _PREVIEW_LINES lines should NOT be line-truncated."""
+        msg = self._make_msg()
+        output = "\n".join(f"line {i}" for i in range(msg._PREVIEW_LINES))
+        result = msg._format_output(output, is_preview=True)
+        # Boundary: exactly at limit should pass through without line truncation
+        truncation = result.truncation or ""
+        assert result.truncation is None or "more lines" not in truncation
+
+    def test_unknown_tool_full_output_no_truncation(self) -> None:
+        """Non-preview mode should return full output regardless of length."""
+        msg = self._make_msg()
+        output = "x" * 500
+        result = msg._format_output(output, is_preview=False)
+        assert result.truncation is None
+        assert result.content.plain == output

@@ -805,7 +805,7 @@ class ToolCallMessage(Vertical):
             lines.extend([Content.assemble("    ", stats), Content("")])
 
         # Format each item
-        lines.extend(self._format_single_todo(item) for item in items[:max_items])
+        lines.extend(self._format_single_todo(item, is_preview=is_preview) for item in items[:max_items])
 
         truncation = None
         if is_preview and len(items) > max_items:
@@ -854,8 +854,12 @@ class ToolCallMessage(Vertical):
             parts.append(Content.styled(f"{completed} done", "green"))
         return Content.styled(" | ", "dim").join(parts) if parts else Content("")
 
-    def _format_single_todo(self, item: dict | str) -> Content:  # noqa: PLR6301  # Grouped as method for widget cohesion
+    def _format_single_todo(self, item: dict | str, *, is_preview: bool = True) -> Content:  # noqa: PLR6301  # Grouped as method for widget cohesion
         """Format a single todo item.
+
+        Args:
+            item: Todo item dict or string.
+            is_preview: Truncate content at ``_MAX_TODO_CONTENT_LEN`` when True.
 
         Returns:
             Styled `Content` with checkbox and status styling.
@@ -867,7 +871,7 @@ class ToolCallMessage(Vertical):
             text = str(item)
             status = "pending"
 
-        if len(text) > _MAX_TODO_CONTENT_LEN:
+        if is_preview and len(text) > _MAX_TODO_CONTENT_LEN:
             text = text[: _MAX_TODO_CONTENT_LEN - 3] + "..."
 
         glyphs = get_glyphs()

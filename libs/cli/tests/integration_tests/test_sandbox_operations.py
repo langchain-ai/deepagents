@@ -4,9 +4,9 @@ This module tests the core file operations implemented in BaseSandbox:
 - write(): Create new files
 - read(): Read file contents
 - edit(): String replacement in files
-- ls_info(): List directory contents
-- grep_raw(): Search for patterns
-- glob_info(): Pattern matching for files
+- ls(): List directory contents
+- grep(): Search for patterns
+- glob(): Pattern matching for files
 
 All tests run on a single sandbox instance (class-scoped fixture)
 to avoid the overhead of spinning up multiple containers.
@@ -629,18 +629,19 @@ class TestSandboxOperations:
         assert "red cat" in file_content
         assert "The quick red cat jumps" in file_content
 
-    # ==================== ls_info() tests ====================
+    # ==================== ls() tests ====================
 
-    def test_ls_info_path_is_absolute(self, sandbox: SandboxBackendProtocol) -> None:
-        """Test that files returned from ls_info have absolute paths."""
+    def test_ls_path_is_absolute(self, sandbox: SandboxBackendProtocol) -> None:
+        """Test that files returned from ls have absolute paths."""
         base_dir = "/tmp/test_sandbox_ops/ls_absolute"
         sandbox.execute(f"mkdir -p {base_dir}")
         sandbox.write(f"{base_dir}/file.txt", "content")
-        result = sandbox.ls_info(base_dir)
-        assert len(result) == 1
-        assert result[0]["path"] == "/tmp/test_sandbox_ops/ls_absolute/file.txt"
+        result = sandbox.ls(base_dir)
+        assert result.entries is not None
+        assert len(result.entries) == 1
+        assert result.entries[0]["path"] == "/tmp/test_sandbox_ops/ls_absolute/file.txt"
 
-    def test_ls_info_basic_directory(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_ls_basic_directory(self, sandbox: SandboxBackendProtocol) -> None:
         """Test listing a directory with files and subdirectories."""
         base_dir = "/tmp/test_sandbox_ops/ls_test"
         sandbox.execute(f"mkdir -p {base_dir}")
@@ -648,81 +649,81 @@ class TestSandboxOperations:
         sandbox.write(f"{base_dir}/file2.txt", "content2")
         sandbox.execute(f"mkdir -p {base_dir}/subdir")
 
-        result = sandbox.ls_info(base_dir)
+        result = sandbox.ls(base_dir)
 
-        assert len(result) == 3
-        paths = [info["path"] for info in result]
+        assert result.entries is not None
+        assert len(result.entries) == 3
+        paths = [info["path"] for info in result.entries]
         assert f"{base_dir}/file1.txt" in paths
         assert f"{base_dir}/file2.txt" in paths
         assert f"{base_dir}/subdir" in paths
         # Check is_dir flag
-        for info in result:
+        for info in result.entries:
             if info["path"] == f"{base_dir}/subdir":
                 assert info["is_dir"] is True
             else:
                 assert info["is_dir"] is False
 
-    def test_ls_info_empty_directory(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_ls_empty_directory(self, sandbox: SandboxBackendProtocol) -> None:
         """Test listing an empty directory."""
         empty_dir = "/tmp/test_sandbox_ops/empty_dir"
         sandbox.execute(f"mkdir -p {empty_dir}")
 
-        result = sandbox.ls_info(empty_dir)
+        result = sandbox.ls(empty_dir)
 
-        assert result == []
+        assert result.entries == []
 
-    def test_ls_info_nonexistent_directory(
-        self, sandbox: SandboxBackendProtocol
-    ) -> None:
+    def test_ls_nonexistent_directory(self, sandbox: SandboxBackendProtocol) -> None:
         """Test listing a directory that doesn't exist."""
         nonexistent_dir = "/tmp/test_sandbox_ops/does_not_exist"
 
-        result = sandbox.ls_info(nonexistent_dir)
+        result = sandbox.ls(nonexistent_dir)
 
-        assert result == []
+        assert result.entries == []
 
-    def test_ls_info_hidden_files(self, sandbox: SandboxBackendProtocol) -> None:
-        """Test that ls_info includes hidden files (starting with .)."""
+    def test_ls_hidden_files(self, sandbox: SandboxBackendProtocol) -> None:
+        """Test that ls includes hidden files (starting with .)."""
         base_dir = "/tmp/test_sandbox_ops/hidden_test"
         sandbox.execute(f"mkdir -p {base_dir}")
         sandbox.write(f"{base_dir}/.hidden", "hidden content")
         sandbox.write(f"{base_dir}/visible.txt", "visible content")
 
-        result = sandbox.ls_info(base_dir)
+        result = sandbox.ls(base_dir)
 
-        paths = [info["path"] for info in result]
+        assert result.entries is not None
+        paths = [info["path"] for info in result.entries]
         assert f"{base_dir}/.hidden" in paths
         assert f"{base_dir}/visible.txt" in paths
 
-    def test_ls_info_directory_with_spaces(
-        self, sandbox: SandboxBackendProtocol
-    ) -> None:
+    def test_ls_directory_with_spaces(self, sandbox: SandboxBackendProtocol) -> None:
         """Test listing a directory that has spaces in file/dir names."""
         base_dir = "/tmp/test_sandbox_ops/ls_spaces"
         sandbox.execute(f"mkdir -p '{base_dir}'")
         sandbox.write(f"{base_dir}/file with spaces.txt", "content")
         sandbox.execute(f"mkdir -p '{base_dir}/dir with spaces'")
 
-        result = sandbox.ls_info(base_dir)
+        result = sandbox.ls(base_dir)
 
-        paths = [info["path"] for info in result]
+        assert result.entries is not None
+        paths = [info["path"] for info in result.entries]
         assert f"{base_dir}/file with spaces.txt" in paths
         assert f"{base_dir}/dir with spaces" in paths
 
-    def test_ls_info_unicode_filenames(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_ls_unicode_filenames(self, sandbox: SandboxBackendProtocol) -> None:
         """Test listing directory with unicode filenames."""
         base_dir = "/tmp/test_sandbox_ops/ls_unicode"
         sandbox.execute(f"mkdir -p {base_dir}")
         sandbox.write(f"{base_dir}/测试文件.txt", "content")
         sandbox.write(f"{base_dir}/файл.txt", "content")
 
-        result = sandbox.ls_info(base_dir)
+        result = sandbox.ls(base_dir)
 
-        paths = [info["path"] for info in result]
+        assert result.entries is not None
+        paths = [info["path"] for info in result.entries]
         # Should contain the unicode filenames
         assert len(paths) == 2
 
-    def test_ls_info_large_directory(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_ls_large_directory(self, sandbox: SandboxBackendProtocol) -> None:
         """Test listing a directory with many files."""
         base_dir = "/tmp/test_sandbox_ops/ls_large"
         # Create 50 files in a single command (much faster than loop)
@@ -734,28 +735,29 @@ class TestSandboxOperations:
             "echo 'content' > file_$(printf '%03d' $i).txt; done"
         )
 
-        result = sandbox.ls_info(base_dir)
+        result = sandbox.ls(base_dir)
 
-        assert len(result) == 50
-        paths = [info["path"] for info in result]
+        assert result.entries is not None
+        assert len(result.entries) == 50
+        paths = [info["path"] for info in result.entries]
         assert f"{base_dir}/file_000.txt" in paths
         assert f"{base_dir}/file_049.txt" in paths
 
-    def test_ls_info_path_with_trailing_slash(
-        self, sandbox: SandboxBackendProtocol
-    ) -> None:
+    def test_ls_path_with_trailing_slash(self, sandbox: SandboxBackendProtocol) -> None:
         """Test that trailing slash in path is handled correctly."""
         base_dir = "/tmp/test_sandbox_ops/ls_trailing"
         sandbox.execute(f"mkdir -p {base_dir}")
         sandbox.write(f"{base_dir}/file.txt", "content")
 
         # List with trailing slash
-        result = sandbox.ls_info(f"{base_dir}/")
+        result = sandbox.ls(f"{base_dir}/")
 
         # Should work the same as without trailing slash
-        assert len(result) >= 1 or result == []  # Implementation dependent
+        assert (
+            result.entries is not None and len(result.entries) >= 1
+        ) or result.entries == []  # Implementation dependent
 
-    def test_ls_info_special_characters_in_filenames(
+    def test_ls_special_characters_in_filenames(
         self, sandbox: SandboxBackendProtocol
     ) -> None:
         """Test listing files with special characters in names."""
@@ -766,14 +768,15 @@ class TestSandboxOperations:
         sandbox.write(f"{base_dir}/file[2].txt", "content")
         sandbox.write(f"{base_dir}/file-3.txt", "content")
 
-        result = sandbox.ls_info(base_dir)
+        result = sandbox.ls(base_dir)
 
-        paths = [info["path"] for info in result]
+        assert result.entries is not None
+        paths = [info["path"] for info in result.entries]
         assert f"{base_dir}/file(1).txt" in paths
         assert f"{base_dir}/file[2].txt" in paths
         assert f"{base_dir}/file-3.txt" in paths
 
-    # ==================== grep_raw() tests ====================
+    # ==================== grep() tests ====================
 
     def test_grep_basic_search(self, sandbox: SandboxBackendProtocol) -> None:
         """Test basic grep search for a literal pattern (not regex)."""
@@ -782,16 +785,16 @@ class TestSandboxOperations:
         sandbox.write(f"{base_dir}/file1.txt", "Hello world\nGoodbye world")
         sandbox.write(f"{base_dir}/file2.txt", "Hello there\nGoodbye friend")
 
-        result = sandbox.grep_raw("Hello", path=base_dir)
+        result = sandbox.grep("Hello", path=base_dir)
 
-        assert isinstance(result, list)
-        assert len(result) == 2
+        assert result.matches is not None
+        assert len(result.matches) == 2
         # Check that both files matched
-        paths = [match["path"] for match in result]
+        paths = [match["path"] for match in result.matches]
         assert any("file1.txt" in p for p in paths)
         assert any("file2.txt" in p for p in paths)
         # Check line numbers
-        for match in result:
+        for match in result.matches:
             assert match["line"] == 1
             assert "Hello" in match["text"]
 
@@ -803,11 +806,11 @@ class TestSandboxOperations:
         sandbox.write(f"{base_dir}/test.py", "pattern")
         sandbox.write(f"{base_dir}/test.md", "pattern")
 
-        result = sandbox.grep_raw("pattern", path=base_dir, glob="*.py")
+        result = sandbox.grep("pattern", path=base_dir, glob="*.py")
 
-        assert isinstance(result, list)
-        assert len(result) == 1
-        assert "test.py" in result[0]["path"]
+        assert result.matches is not None
+        assert len(result.matches) == 1
+        assert "test.py" in result.matches[0]["path"]
 
     def test_grep_no_matches(self, sandbox: SandboxBackendProtocol) -> None:
         """Test grep when no matches are found."""
@@ -815,10 +818,10 @@ class TestSandboxOperations:
         sandbox.execute(f"mkdir -p {base_dir}")
         sandbox.write(f"{base_dir}/file.txt", "Hello world")
 
-        result = sandbox.grep_raw("nonexistent", path=base_dir)
+        result = sandbox.grep("nonexistent", path=base_dir)
 
-        assert isinstance(result, list)
-        assert len(result) == 0
+        assert result.matches is not None
+        assert len(result.matches) == 0
 
     def test_grep_multiple_matches_per_file(
         self, sandbox: SandboxBackendProtocol
@@ -829,12 +832,12 @@ class TestSandboxOperations:
         content = "apple\nbanana\napple\norange\napple"
         sandbox.write(f"{base_dir}/fruits.txt", content)
 
-        result = sandbox.grep_raw("apple", path=base_dir)
+        result = sandbox.grep("apple", path=base_dir)
 
-        assert isinstance(result, list)
-        assert len(result) == 3
+        assert result.matches is not None
+        assert len(result.matches) == 3
         # Check line numbers
-        line_numbers = [match["line"] for match in result]
+        line_numbers = [match["line"] for match in result.matches]
         assert line_numbers == [1, 3, 5]
 
     def test_grep_literal_string_matching(
@@ -846,11 +849,11 @@ class TestSandboxOperations:
         sandbox.write(f"{base_dir}/numbers.txt", "test123\ntest456\nabcdef")
 
         # Pattern is treated as literal string, not regex
-        result = sandbox.grep_raw("test123", path=base_dir)
+        result = sandbox.grep("test123", path=base_dir)
 
-        assert isinstance(result, list)
-        assert len(result) == 1
-        assert "test123" in result[0]["text"]
+        assert result.matches is not None
+        assert len(result.matches) == 1
+        assert "test123" in result.matches[0]["text"]
 
     def test_grep_unicode_pattern(self, sandbox: SandboxBackendProtocol) -> None:
         """Test grep with unicode pattern and content."""
@@ -858,11 +861,11 @@ class TestSandboxOperations:
         sandbox.execute(f"mkdir -p {base_dir}")
         sandbox.write(f"{base_dir}/unicode.txt", "Hello 世界\nПривет мир\n测试 pattern")
 
-        result = sandbox.grep_raw("世界", path=base_dir)
+        result = sandbox.grep("世界", path=base_dir)
 
-        assert isinstance(result, list)
-        assert len(result) == 1
-        assert "世界" in result[0]["text"]
+        assert result.matches is not None
+        assert len(result.matches) == 1
+        assert "世界" in result.matches[0]["text"]
 
     def test_grep_case_sensitivity(self, sandbox: SandboxBackendProtocol) -> None:
         """Test that grep is case-sensitive by default."""
@@ -870,12 +873,12 @@ class TestSandboxOperations:
         sandbox.execute(f"mkdir -p {base_dir}")
         sandbox.write(f"{base_dir}/case.txt", "Hello\nhello\nHELLO")
 
-        result = sandbox.grep_raw("Hello", path=base_dir)
+        result = sandbox.grep("Hello", path=base_dir)
 
-        assert isinstance(result, list)
+        assert result.matches is not None
         # Should only match "Hello", not "hello" or "HELLO"
-        assert len(result) == 1
-        assert "Hello" in result[0]["text"]
+        assert len(result.matches) == 1
+        assert "Hello" in result.matches[0]["text"]
 
     def test_grep_with_special_characters(
         self, sandbox: SandboxBackendProtocol
@@ -888,26 +891,26 @@ class TestSandboxOperations:
         )
 
         # Test with dollar sign (treated as literal)
-        result = sandbox.grep_raw("$100", path=base_dir)
-        assert isinstance(result, list)
-        assert len(result) == 1
-        assert "$100" in result[0]["text"]
+        result = sandbox.grep("$100", path=base_dir)
+        assert result.matches is not None
+        assert len(result.matches) == 1
+        assert "$100" in result.matches[0]["text"]
 
         # Test with brackets (treated as literal)
-        result = sandbox.grep_raw("[a-z]*", path=base_dir)
-        assert isinstance(result, list)
-        assert len(result) == 1
-        assert "[a-z]*" in result[0]["text"]
+        result = sandbox.grep("[a-z]*", path=base_dir)
+        assert result.matches is not None
+        assert len(result.matches) == 1
+        assert "[a-z]*" in result.matches[0]["text"]
 
     def test_grep_empty_directory(self, sandbox: SandboxBackendProtocol) -> None:
         """Test grep in a directory with no files."""
         base_dir = "/tmp/test_sandbox_ops/grep_empty_dir"
         sandbox.execute(f"mkdir -p {base_dir}")
 
-        result = sandbox.grep_raw("anything", path=base_dir)
+        result = sandbox.grep("anything", path=base_dir)
 
-        assert isinstance(result, list)
-        assert len(result) == 0
+        assert result.matches is not None
+        assert len(result.matches) == 0
 
     def test_grep_across_nested_directories(
         self, sandbox: SandboxBackendProtocol
@@ -919,10 +922,10 @@ class TestSandboxOperations:
         sandbox.write(f"{base_dir}/sub1/level1.txt", "target here")
         sandbox.write(f"{base_dir}/sub1/sub2/level2.txt", "target here")
 
-        result = sandbox.grep_raw("target", path=base_dir)
+        result = sandbox.grep("target", path=base_dir)
 
-        assert isinstance(result, list)
-        assert len(result) == 3
+        assert result.matches is not None
+        assert len(result.matches) == 3
         # Should find matches in all nested levels
 
     def test_grep_with_multiline_matches(self, sandbox: SandboxBackendProtocol) -> None:
@@ -932,13 +935,13 @@ class TestSandboxOperations:
         content = "\n".join([f"Line {i}" for i in range(1, 101)])
         sandbox.write(f"{base_dir}/long.txt", content)
 
-        result = sandbox.grep_raw("Line 50", path=base_dir)
+        result = sandbox.grep("Line 50", path=base_dir)
 
-        assert isinstance(result, list)
-        assert len(result) == 1
-        assert result[0]["line"] == 50
+        assert result.matches is not None
+        assert len(result.matches) == 1
+        assert result.matches[0]["line"] == 50
 
-    # ==================== glob_info() tests ====================
+    # ==================== glob() tests ====================
 
     def test_glob_basic_pattern(self, sandbox: SandboxBackendProtocol) -> None:
         """Test glob with basic wildcard pattern."""
@@ -948,10 +951,11 @@ class TestSandboxOperations:
         sandbox.write(f"{base_dir}/file2.txt", "content")
         sandbox.write(f"{base_dir}/file3.py", "content")
 
-        result = sandbox.glob_info("*.txt", path=base_dir)
+        result = sandbox.glob("*.txt", path=base_dir)
 
-        assert len(result) == 2
-        paths = [info["path"] for info in result]
+        assert result.matches is not None
+        assert len(result.matches) == 2
+        paths = [info["path"] for info in result.matches]
         assert "file1.txt" in paths
         assert "file2.txt" in paths
         assert not any(".py" in p for p in paths)
@@ -964,10 +968,11 @@ class TestSandboxOperations:
         sandbox.write(f"{base_dir}/subdir1/nested1.txt", "content")
         sandbox.write(f"{base_dir}/subdir2/nested2.txt", "content")
 
-        result = sandbox.glob_info("**/*.txt", path=base_dir)
+        result = sandbox.glob("**/*.txt", path=base_dir)
 
-        assert len(result) >= 2  # At least the nested files
-        paths = [info["path"] for info in result]
+        assert result.matches is not None
+        assert len(result.matches) >= 2  # At least the nested files
+        paths = [info["path"] for info in result.matches]
         assert any("nested1.txt" in p for p in paths)
         assert any("nested2.txt" in p for p in paths)
 
@@ -977,9 +982,10 @@ class TestSandboxOperations:
         sandbox.execute(f"mkdir -p {base_dir}")
         sandbox.write(f"{base_dir}/file.txt", "content")
 
-        result = sandbox.glob_info("*.py", path=base_dir)
+        result = sandbox.glob("*.py", path=base_dir)
 
-        assert result == []
+        assert result.matches is not None
+        assert result.matches == []
 
     def test_glob_with_directories(self, sandbox: SandboxBackendProtocol) -> None:
         """Test that glob includes directories in results."""
@@ -987,12 +993,13 @@ class TestSandboxOperations:
         sandbox.execute(f"mkdir -p {base_dir}/dir1 {base_dir}/dir2")
         sandbox.write(f"{base_dir}/file.txt", "content")
 
-        result = sandbox.glob_info("*", path=base_dir)
+        result = sandbox.glob("*", path=base_dir)
 
-        assert len(result) == 3
+        assert result.matches is not None
+        assert len(result.matches) == 3
         # Check is_dir flags
-        dir_count = sum(1 for info in result if info["is_dir"])
-        file_count = sum(1 for info in result if not info["is_dir"])
+        dir_count = sum(1 for info in result.matches if info["is_dir"])
+        file_count = sum(1 for info in result.matches if not info["is_dir"])
         assert dir_count == 2
         assert file_count == 1
 
@@ -1004,10 +1011,11 @@ class TestSandboxOperations:
         sandbox.write(f"{base_dir}/test.txt", "content")
         sandbox.write(f"{base_dir}/test.md", "content")
 
-        result = sandbox.glob_info("*.py", path=base_dir)
+        result = sandbox.glob("*.py", path=base_dir)
 
-        assert len(result) == 1
-        assert "test.py" in result[0]["path"]
+        assert result.matches is not None
+        assert len(result.matches) == 1
+        assert "test.py" in result.matches[0]["path"]
 
     def test_glob_hidden_files_explicitly(
         self, sandbox: SandboxBackendProtocol
@@ -1019,10 +1027,11 @@ class TestSandboxOperations:
         sandbox.write(f"{base_dir}/.hidden2", "content")
         sandbox.write(f"{base_dir}/visible.txt", "content")
 
-        result = sandbox.glob_info(".*", path=base_dir)
+        result = sandbox.glob(".*", path=base_dir)
 
         # Should only match hidden files
-        paths = [info["path"] for info in result]
+        assert result.matches is not None
+        paths = [info["path"] for info in result.matches]
         assert ".hidden1" in paths or ".hidden2" in paths
         # Should not match visible.txt
         assert not any("visible" in p for p in paths)
@@ -1036,10 +1045,11 @@ class TestSandboxOperations:
         sandbox.write(f"{base_dir}/file3.txt", "content")
         sandbox.write(f"{base_dir}/fileA.txt", "content")
 
-        result = sandbox.glob_info("file[1-2].txt", path=base_dir)
+        result = sandbox.glob("file[1-2].txt", path=base_dir)
 
-        assert len(result) == 2
-        paths = [info["path"] for info in result]
+        assert result.matches is not None
+        assert len(result.matches) == 2
+        paths = [info["path"] for info in result.matches]
         assert "file1.txt" in paths
         assert "file2.txt" in paths
         assert "file3.txt" not in paths
@@ -1053,11 +1063,12 @@ class TestSandboxOperations:
         sandbox.write(f"{base_dir}/file2.txt", "content")
         sandbox.write(f"{base_dir}/file10.txt", "content")
 
-        result = sandbox.glob_info("file?.txt", path=base_dir)
+        result = sandbox.glob("file?.txt", path=base_dir)
 
         # Should match file1.txt and file2.txt, but not file10.txt
-        assert len(result) == 2
-        paths = [info["path"] for info in result]
+        assert result.matches is not None
+        assert len(result.matches) == 2
+        paths = [info["path"] for info in result.matches]
         assert "file10.txt" not in paths
 
     def test_glob_multiple_extensions(self, sandbox: SandboxBackendProtocol) -> None:
@@ -1070,11 +1081,13 @@ class TestSandboxOperations:
         sandbox.write(f"{base_dir}/file.js", "content")
 
         # Using separate patterns (implementation may support brace expansion)
-        result_txt = sandbox.glob_info("*.txt", path=base_dir)
-        result_py = sandbox.glob_info("*.py", path=base_dir)
+        result_txt = sandbox.glob("*.txt", path=base_dir)
+        result_py = sandbox.glob("*.py", path=base_dir)
 
-        assert len(result_txt) == 1
-        assert len(result_py) == 1
+        assert result_txt.matches is not None
+        assert result_py.matches is not None
+        assert len(result_txt.matches) == 1
+        assert len(result_py.matches) == 1
 
     def test_glob_deeply_nested_pattern(self, sandbox: SandboxBackendProtocol) -> None:
         """Test glob with deeply nested directory structure."""
@@ -1083,9 +1096,10 @@ class TestSandboxOperations:
         sandbox.write(f"{base_dir}/a/b/c/d/deep.txt", "content")
         sandbox.write(f"{base_dir}/a/b/other.txt", "content")
 
-        result = sandbox.glob_info("**/deep.txt", path=base_dir)
+        result = sandbox.glob("**/deep.txt", path=base_dir)
 
-        assert len(result) >= 1
+        assert result.matches is not None
+        assert len(result.matches) >= 1
         # Should find the deeply nested file
 
     def test_glob_with_no_path_argument(self, sandbox: SandboxBackendProtocol) -> None:
@@ -1095,10 +1109,10 @@ class TestSandboxOperations:
         sandbox.write(f"{base_dir}/file.txt", "content")
 
         # Call with explicit path to match expected signature
-        result = sandbox.glob_info("*.txt", path=base_dir)
+        result = sandbox.glob("*.txt", path=base_dir)
 
         # Should work with explicit path
-        assert isinstance(result, list)
+        assert result.matches is not None
 
     # ==================== Integration tests ====================
 
@@ -1142,16 +1156,19 @@ class TestSandboxOperations:
         sandbox.write(f"{base_dir}/subdir2/file3.txt", "file 3")
 
         # List root directory
-        ls_result = sandbox.ls_info(base_dir)
-        paths = [info["path"] for info in ls_result]
+        ls_result = sandbox.ls(base_dir)
+        assert ls_result.entries is not None
+        paths = [info["path"] for info in ls_result.entries]
         assert f"{base_dir}/root.txt" in paths
         assert f"{base_dir}/subdir1" in paths
         assert f"{base_dir}/subdir2" in paths
 
         # Glob for txt files
-        glob_result = sandbox.glob_info("**/*.txt", path=base_dir)
-        assert len(glob_result) == 3
+        glob_result = sandbox.glob("**/*.txt", path=base_dir)
+        assert glob_result.matches is not None
+        assert len(glob_result.matches) == 3
 
         # Grep for a pattern
-        grep_result = sandbox.grep_raw("file", path=base_dir)
-        assert len(grep_result) >= 3  # At least 3 matches
+        grep_result = sandbox.grep("file", path=base_dir)
+        assert grep_result.matches is not None
+        assert len(grep_result.matches) >= 3  # At least 3 matches

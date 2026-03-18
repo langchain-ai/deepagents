@@ -22,7 +22,9 @@ from deepagents.backends.protocol import (
     FileFormat,
     FileInfo,
     FileUploadResponse,
-    GrepMatch,
+    GlobResult,
+    GrepResult,
+    LsResult,
     ReadResult,
     WriteResult,
 )
@@ -327,7 +329,7 @@ class StoreBackend(BackendProtocol):
 
         return all_items
 
-    def ls_info(self, path: str) -> list[FileInfo]:
+    def ls(self, path: str) -> LsResult:
         """List files and directories in the specified directory (non-recursive).
 
         Args:
@@ -385,7 +387,7 @@ class StoreBackend(BackendProtocol):
         infos.extend(FileInfo(path=subdir, is_dir=True, size=0, modified_at="") for subdir in sorted(subdirs))
 
         infos.sort(key=lambda x: x.get("path", ""))
-        return infos
+        return LsResult(entries=infos)
 
     def read(
         self,
@@ -592,12 +594,12 @@ class StoreBackend(BackendProtocol):
 
     # Removed legacy grep() convenience to keep lean surface
 
-    def grep_raw(
+    def grep(
         self,
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
-    ) -> list[GrepMatch] | str:
+    ) -> GrepResult:
         """Search store files for a literal text pattern."""
         store = self._get_store()
         namespace = self._get_namespace()
@@ -610,7 +612,7 @@ class StoreBackend(BackendProtocol):
                 continue
         return grep_matches_from_files(files, pattern, path, glob)
 
-    def glob_info(self, pattern: str, path: str = "/") -> list[FileInfo]:
+    def glob(self, pattern: str, path: str = "/") -> GlobResult:
         """Find files matching a glob pattern in the store."""
         store = self._get_store()
         namespace = self._get_namespace()
@@ -623,7 +625,7 @@ class StoreBackend(BackendProtocol):
                 continue
         result = _glob_search_files(files, pattern, path)
         if result == "No files found":
-            return []
+            return GlobResult(matches=[])
         paths = result.split("\n")
         infos: list[FileInfo] = []
         for p in paths:
@@ -642,7 +644,7 @@ class StoreBackend(BackendProtocol):
                     "modified_at": fd.get("modified_at", "") if fd else "",
                 }
             )
-        return infos
+        return GlobResult(matches=infos)
 
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
         """Upload multiple files to the store.

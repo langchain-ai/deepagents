@@ -11,6 +11,11 @@ on:
         description: "Prompt for the agent"
         required: true
 
+# Cancel superseded runs when @deepagents is mentioned multiple times on the same PR/issue
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.issue.number || github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   deepagents:
     if: |

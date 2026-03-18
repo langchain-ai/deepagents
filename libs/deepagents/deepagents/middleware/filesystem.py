@@ -31,6 +31,9 @@ from deepagents.backends.protocol import (
     BackendProtocol,
     EditResult,
     FileData as FileData,  # Re-export for backwards compatibility
+    GlobResult,
+    GrepResult,
+    LsResult,
     ReadResult,
     SandboxBackendProtocol,
     WriteResult,
@@ -510,7 +513,20 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 validated_path = validate_path(path)
             except ValueError as e:
                 return f"Error: {e}"
-            infos = resolved_backend.ls_info(validated_path)
+            ls_result = resolved_backend.ls(validated_path)
+            if isinstance(ls_result, LsResult):
+                if ls_result.error:
+                    return f"Error: {ls_result.error}"
+                infos = ls_result.entries or []
+            else:
+                warnings.warn(
+                    "Returning a plain `list` from `backend.ls_info()` is deprecated. "
+                    "Return an `LsResult` instead. Returning `list` will not be "
+                    "supported in a future version.",
+                    DeprecationWarning,
+                    stacklevel=1,
+                )
+                infos = ls_result
             paths = [fi.get("path", "") for fi in infos]
             result = truncate_if_too_long(paths)
             return str(result)
@@ -525,7 +541,20 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 validated_path = validate_path(path)
             except ValueError as e:
                 return f"Error: {e}"
-            infos = await resolved_backend.als_info(validated_path)
+            ls_result = await resolved_backend.als(validated_path)
+            if isinstance(ls_result, LsResult):
+                if ls_result.error:
+                    return f"Error: {ls_result.error}"
+                infos = ls_result.entries or []
+            else:
+                warnings.warn(
+                    "Returning a plain `list` from `backend.als_info()` is deprecated. "
+                    "Return an `LsResult` instead. Returning `list` will not be "
+                    "supported in a future version.",
+                    DeprecationWarning,
+                    stacklevel=1,
+                )
+                infos = ls_result
             paths = [fi.get("path", "") for fi in infos]
             result = truncate_if_too_long(paths)
             return str(result)
@@ -781,7 +810,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             coroutine=async_edit_file,
         )
 
-    def _create_glob_tool(self) -> BaseTool:
+    def _create_glob_tool(self) -> BaseTool:  # noqa: C901
         """Create the glob tool."""
         tool_description = self._custom_tool_descriptions.get("glob") or GLOB_TOOL_DESCRIPTION
 
@@ -797,11 +826,24 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             except ValueError as e:
                 return f"Error: {e}"
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(resolved_backend.glob_info, pattern, path=validated_path)
+                future = executor.submit(resolved_backend.glob, pattern, path=validated_path)
                 try:
-                    infos = future.result(timeout=GLOB_TIMEOUT)
+                    glob_result = future.result(timeout=GLOB_TIMEOUT)
                 except concurrent.futures.TimeoutError:
                     return f"Error: glob timed out after {GLOB_TIMEOUT}s. Try a more specific pattern or a narrower path."
+            if isinstance(glob_result, GlobResult):
+                if glob_result.error:
+                    return f"Error: {glob_result.error}"
+                infos = glob_result.matches or []
+            else:
+                warnings.warn(
+                    "Returning a plain `list` from `backend.glob_info()` is deprecated. "
+                    "Return a `GlobResult` instead. Returning `list` will not be "
+                    "supported in a future version.",
+                    DeprecationWarning,
+                    stacklevel=1,
+                )
+                infos = glob_result
             paths = [fi.get("path", "") for fi in infos]
             result = truncate_if_too_long(paths)
             return str(result)
@@ -818,12 +860,25 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             except ValueError as e:
                 return f"Error: {e}"
             try:
-                infos = await asyncio.wait_for(
-                    resolved_backend.aglob_info(pattern, path=validated_path),
+                glob_result = await asyncio.wait_for(
+                    resolved_backend.aglob(pattern, path=validated_path),
                     timeout=GLOB_TIMEOUT,
                 )
             except TimeoutError:
                 return f"Error: glob timed out after {GLOB_TIMEOUT}s. Try a more specific pattern or a narrower path."
+            if isinstance(glob_result, GlobResult):
+                if glob_result.error:
+                    return f"Error: {glob_result.error}"
+                infos = glob_result.matches or []
+            else:
+                warnings.warn(
+                    "Returning a plain `list` from `backend.glob_info()` is deprecated. "
+                    "Return a `GlobResult` instead. Returning `list` will not be "
+                    "supported in a future version.",
+                    DeprecationWarning,
+                    stacklevel=1,
+                )
+                infos = glob_result
             paths = [fi.get("path", "") for fi in infos]
             result = truncate_if_too_long(paths)
             return str(result)
@@ -851,10 +906,30 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         ) -> str:
             """Synchronous wrapper for grep tool."""
             resolved_backend = self._get_backend(runtime)
-            raw = resolved_backend.grep_raw(pattern, path=path, glob=glob)
-            if isinstance(raw, str):
-                return raw
-            formatted = format_grep_matches(raw, output_mode)
+            grep_result = resolved_backend.grep(pattern, path=path, glob=glob)
+            if isinstance(grep_result, GrepResult):
+                if grep_result.error:
+                    return grep_result.error
+                matches = grep_result.matches or []
+            elif isinstance(grep_result, str):
+                warnings.warn(
+                    "Returning a plain `str` from `backend.grep_raw()` is deprecated. "
+                    "Return a `GrepResult` instead. Returning `str` will not be "
+                    "supported in a future version.",
+                    DeprecationWarning,
+                    stacklevel=1,
+                )
+                return grep_result
+            else:
+                warnings.warn(
+                    "Returning a plain `list` from `backend.grep_raw()` is deprecated. "
+                    "Return a `GrepResult` instead. Returning `list` will not be "
+                    "supported in a future version.",
+                    DeprecationWarning,
+                    stacklevel=1,
+                )
+                matches = grep_result
+            formatted = format_grep_matches(matches, output_mode)
             return truncate_if_too_long(formatted)
 
         async def async_grep(
@@ -869,10 +944,30 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         ) -> str:
             """Asynchronous wrapper for grep tool."""
             resolved_backend = self._get_backend(runtime)
-            raw = await resolved_backend.agrep_raw(pattern, path=path, glob=glob)
-            if isinstance(raw, str):
-                return raw
-            formatted = format_grep_matches(raw, output_mode)
+            grep_result = await resolved_backend.agrep(pattern, path=path, glob=glob)
+            if isinstance(grep_result, GrepResult):
+                if grep_result.error:
+                    return grep_result.error
+                matches = grep_result.matches or []
+            elif isinstance(grep_result, str):
+                warnings.warn(
+                    "Returning a plain `str` from `backend.agrep_raw()` is deprecated. "
+                    "Return a `GrepResult` instead. Returning `str` will not be "
+                    "supported in a future version.",
+                    DeprecationWarning,
+                    stacklevel=1,
+                )
+                return grep_result
+            else:
+                warnings.warn(
+                    "Returning a plain `list` from `backend.agrep_raw()` is deprecated. "
+                    "Return a `GrepResult` instead. Returning `list` will not be "
+                    "supported in a future version.",
+                    DeprecationWarning,
+                    stacklevel=1,
+                )
+                matches = grep_result
+            formatted = format_grep_matches(matches, output_mode)
             return truncate_if_too_long(formatted)
 
         return StructuredTool.from_function(

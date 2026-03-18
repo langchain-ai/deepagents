@@ -33,7 +33,9 @@ from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.types import Command, Interrupt
 from pydantic import TypeAdapter, ValidationError
 from rich.console import Console
+from rich.live import Live
 from rich.markup import escape as escape_markup
+from rich.spinner import Spinner as RichSpinner
 from rich.style import Style
 from rich.text import Text
 
@@ -107,6 +109,51 @@ def _write_newline() -> None:
     sys.stdout.flush()
 
 
+class _ConsoleSpinner:
+    """Animated spinner for non-interactive verbose output.
+
+    Uses Rich's `Live` display with a transient braille-dot spinner that
+    disappears when stopped, keeping terminal output clean.
+    """
+
+    def __init__(self, console: Console) -> None:
+        self._console = console
+        self._live: Live | None = None
+
+    def start(self, message: str = "Working...") -> None:
+        """Start the spinner with the given message.
+
+        No-op if the spinner is already running. Fails silently if the console
+        cannot support live display.
+
+        Args:
+            message: Status text to display next to the spinner.
+        """
+        if self._live is not None:
+            return
+        renderable = RichSpinner(
+            "dots",
+            text=Text(f" {message}", style="dim"),
+            style="dim",
+        )
+        try:
+            self._live = Live(renderable, console=self._console, transient=True)
+            self._live.start()
+        except (AttributeError, TypeError, OSError) as exc:
+            logger.warning("Spinner start failed: %s", exc)
+            self._live = None
+
+    def stop(self) -> None:
+        """Stop the spinner if running. Can be restarted with `start`."""
+        if self._live is not None:
+            try:
+                self._live.stop()
+            except (AttributeError, TypeError, OSError) as exc:
+                logger.warning("Spinner stop failed: %s", exc)
+            finally:
+                self._live = None
+
+
 @dataclass
 class StreamState:
     """Mutable state accumulated while iterating over the agent stream."""
@@ -151,6 +198,9 @@ class StreamState:
 
     stats: SessionStats = field(default_factory=SessionStats)
     """Accumulated model usage stats for this stream."""
+
+    spinner: _ConsoleSpinner | None = None
+    """Optional animated spinner shown during agent work in verbose mode."""
 
 
 @dataclass
@@ -272,6 +322,8 @@ def _process_ai_message(
             text = block.get("text", "")
             if text:
                 if state.stream:
+                    if state.spinner:
+                        state.spinner.stop()
                     _write_text(text)
                 state.full_response.append(text)
         elif block_type in {"tool_call_chunk", "tool_call"}:
@@ -290,10 +342,13 @@ def _process_ai_message(
                 state.tool_call_buffers[buffer_key] = {"name": None, "id": None}
             if chunk_name:
                 state.tool_call_buffers[buffer_key]["name"] = chunk_name
+                if state.spinner:
+                    state.spinner.stop()
                 if state.full_response and not state.quiet:
                     _write_newline()
                 console.print(
-                    f"[dim]🔧 Calling tool: {escape_markup(chunk_name)}[/dim]"
+                    f"[dim]🔧 Calling tool: {escape_markup(chunk_name)}[/dim]",
+                    highlight=False,
                 )
 
 
@@ -334,7 +389,14 @@ def _process_message_chunk(
     elif isinstance(message_obj, ToolMessage):
         record = file_op_tracker.complete_with_message(message_obj)
         if record and record.diff:
-            console.print(f"[dim]📝 {escape_markup(record.display_path)}[/dim]")
+            if state.spinner:
+                state.spinner.stop()
+            console.print(
+                f"[dim]📝 {escape_markup(record.display_path)}[/dim]",
+                highlight=False,
+            )
+        if state.spinner:
+            state.spinner.start()
 
 
 def _process_stream_chunk(
@@ -525,14 +587,20 @@ async def _stream_agent(
         console: Rich console for formatted output.
         file_op_tracker: Tracker for file-operation diffs.
     """
-    async for chunk in agent.astream(
-        stream_input,
-        stream_mode=["messages", "updates"],
-        subgraphs=True,
-        config=config,
-        durability="exit",
-    ):
-        _process_stream_chunk(chunk, state, console, file_op_tracker)
+    if state.spinner:
+        state.spinner.start()
+    try:
+        async for chunk in agent.astream(
+            stream_input,
+            stream_mode=["messages", "updates"],
+            subgraphs=True,
+            config=config,
+            durability="exit",
+        ):
+            _process_stream_chunk(chunk, state, console, file_op_tracker)
+    finally:
+        if state.spinner:
+            state.spinner.stop()
 
 
 async def _run_agent_loop(
@@ -568,7 +636,8 @@ async def _run_agent_loop(
     Raises:
         HITLIterationLimitError: If the HITL iteration limit is exceeded.
     """
-    state = StreamState(quiet=quiet, stream=stream)
+    spinner = None if quiet else _ConsoleSpinner(console)
+    state = StreamState(quiet=quiet, stream=stream, spinner=spinner)
     stream_input: dict[str, Any] | Command = {
         "messages": [{"role": "user", "content": message}]
     }
@@ -766,6 +835,8 @@ async def run_non_interactive(
     }
     if cwd:
         metadata["cwd"] = cwd
+    if sandbox_type and sandbox_type != "none":
+        metadata["sandbox_type"] = sandbox_type
     from deepagents_cli.textual_adapter import _get_git_branch
 
     branch = _get_git_branch()

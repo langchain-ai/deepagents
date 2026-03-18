@@ -224,6 +224,10 @@ IMPORTANT: `Content` requires **Textual's** `Style` (`textual.style.Style`) for 
 
 **Decision rule:** if the value could ever come from outside the codebase (user input, tool output, API responses, file contents), use `from_markup` with `$var`. If it's a hardcoded string, glyph, or computed int, `styled` is fine.
 
+**Rich `console.print()` and number highlighting:**
+
+`console.print()` defaults to `highlight=True`, which runs `ReprHighlighter` and auto-applies bold + cyan to any detected numbers. This visually overrides subtle styles like `dim` (bold cancels dim in most terminals). Pass `highlight=False` on any `console.print()` call where the content contains numbers and consistent dim/subtle styling matters.
+
 **Textual patterns used in this codebase:**
 
 - **Workers** (`@work` decorator) for async operations - see [Workers guide](https://textual.textualize.io/guide/workers/)
@@ -245,6 +249,10 @@ The CLI must stay fast to launch. Never import heavy packages (e.g., `deepagents
 **CLI help screen:**
 
 The `deepagents --help` screen is hand-maintained in `ui.show_help()`, separate from the argparse definitions in `main.parse_args()`. When adding a new CLI flag, update **both** files. A drift-detection test (`test_args.TestHelpScreenDrift`) fails if a flag is registered in argparse but missing from the help screen.
+
+**Splash screen tips:**
+
+When adding a user-facing CLI feature (new slash command, keybinding, workflow), add a corresponding tip to the `_TIPS` list in `libs/cli/deepagents_cli/widgets/welcome.py`. Tips are shown randomly on startup to help users discover features. Keep tips short and action-oriented (e.g., `"Press ctrl+x to compose prompts in your external editor"`).
 
 **Slash commands:**
 

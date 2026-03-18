@@ -20,7 +20,10 @@ from deepagents.backends.protocol import (
     FileDownloadResponse,
     FileInfo,
     FileUploadResponse,
+    GlobResult,
     GrepMatch,
+    GrepResult,
+    LsResult,
     ReadResult,
     SandboxBackendProtocol,
     WriteResult,
@@ -237,7 +240,7 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
             ExecuteResponse with combined output, exit code, and truncation flag.
         """
 
-    def ls_info(self, path: str) -> list[FileInfo]:
+    def ls(self, path: str) -> LsResult:
         """Structured listing with file metadata using os.scandir."""
         path_b64 = base64.b64encode(path.encode("utf-8")).decode("ascii")
         cmd = f"""python3 -c "
@@ -273,7 +276,7 @@ except PermissionError:
             except json.JSONDecodeError:
                 continue
 
-        return file_infos
+        return LsResult(entries=file_infos)
 
     def read(
         self,
@@ -367,12 +370,12 @@ except PermissionError:
         # External storage - no files_update needed
         return EditResult(path=file_path, files_update=None, occurrences=count)
 
-    def grep_raw(
+    def grep(
         self,
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
-    ) -> list[GrepMatch] | str:
+    ) -> GrepResult:
         """Structured search results or error string for invalid input."""
         search_path = shlex.quote(path or ".")
 
@@ -392,7 +395,7 @@ except PermissionError:
 
         output = result.output.rstrip()
         if not output:
-            return []
+            return GrepResult(matches=[])
 
         # Parse grep output into GrepMatch objects
         matches: list[GrepMatch] = []
@@ -408,10 +411,10 @@ except PermissionError:
                     }
                 )
 
-        return matches
+        return GrepResult(matches=matches)
 
-    def glob_info(self, pattern: str, path: str = "/") -> list[FileInfo]:
-        """Structured glob matching returning FileInfo dicts."""
+    def glob(self, pattern: str, path: str = "/") -> GlobResult:
+        """Structured glob matching returning GlobResult."""
         # Encode pattern and path as base64 to avoid escaping issues
         pattern_b64 = base64.b64encode(pattern.encode("utf-8")).decode("ascii")
         path_b64 = base64.b64encode(path.encode("utf-8")).decode("ascii")
@@ -421,7 +424,7 @@ except PermissionError:
 
         output = result.output.strip()
         if not output:
-            return []
+            return GlobResult(matches=[])
 
         # Parse JSON output into FileInfo dicts
         file_infos: list[FileInfo] = []
@@ -437,7 +440,7 @@ except PermissionError:
             except json.JSONDecodeError:
                 continue
 
-        return file_infos
+        return GlobResult(matches=file_infos)
 
     @property
     @abstractmethod

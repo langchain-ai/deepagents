@@ -5,7 +5,7 @@ from typing import Any, TypeVar
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig, TodoListMiddleware
-from langchain.agents.middleware.types import AgentMiddleware
+from langchain.agents.middleware.types import AgentMiddleware, ResponseT
 from langchain.agents.structured_output import ResponseFormat
 from langchain_anthropic import ChatAnthropic
 from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
@@ -86,12 +86,12 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
     tools: Sequence[BaseTool | Callable | dict[str, Any]] | None = None,
     *,
     system_prompt: str | SystemMessage | None = None,
-    middleware: Sequence[AgentMiddleware] = (),
+    middleware: Sequence[AgentMiddleware[Any, ContextT, ResponseT]] = (),
     subagents: Sequence[SubAgent | CompiledSubAgent] | None = None,
     async_subagents: list[AsyncSubAgent] | None = None,
     skills: list[str] | None = None,
     memory: list[str] | None = None,
-    response_format: ResponseFormat | None = None,
+    response_format: ResponseFormat[ResponseT] | None = None,
     context_schema: type[ContextT] | None = None,
     checkpointer: Checkpointer | None = None,
     store: BaseStore | None = None,

@@ -1232,7 +1232,8 @@ class TestRunAgentTaskMediaTracker:
             assert app._ui_adapter is not None
 
             with patch(
-                "deepagents_cli.app.execute_task_textual", new_callable=AsyncMock
+                "deepagents_cli.textual_adapter.execute_task_textual",
+                new_callable=AsyncMock,
             ) as mock_execute:
                 await app._run_agent_task("hello")
 
@@ -1252,7 +1253,7 @@ class TestRunAgentTaskMediaTracker:
             app._ui_adapter._current_tool_messages = {"tool-1": pending_tool}
 
             with patch(
-                "deepagents_cli.app.execute_task_textual",
+                "deepagents_cli.textual_adapter.execute_task_textual",
                 new_callable=AsyncMock,
                 side_effect=RuntimeError("boom"),
             ):

@@ -29,6 +29,11 @@ from textual.style import Style as TStyle
 from textual.widgets import Static
 
 from deepagents_cli._cli_context import CLIContext
+from deepagents_cli._session_stats import (
+    SessionStats,
+    SpinnerStatus,
+    format_token_count,
+)
 from deepagents_cli.clipboard import copy_selection_to_clipboard
 from deepagents_cli.command_registry import (
     ALWAYS_IMMEDIATE,
@@ -49,14 +54,6 @@ from deepagents_cli.config import (
 )
 from deepagents_cli.hooks import dispatch_hook
 from deepagents_cli.model_config import ModelSpec, save_recent_model
-from deepagents_cli.textual_adapter import (
-    SessionStats,
-    SpinnerStatus,
-    TextualUIAdapter,
-    _get_git_branch,
-    execute_task_textual,
-    format_token_count,
-)
 from deepagents_cli.widgets.approval import ApprovalMenu
 from deepagents_cli.widgets.ask_user import AskUserMenu
 from deepagents_cli.widgets.chat_input import ChatInput
@@ -102,6 +99,7 @@ if TYPE_CHECKING:
     from deepagents_cli.mcp_tools import MCPServerInfo
     from deepagents_cli.remote_client import RemoteAgent
     from deepagents_cli.server import ServerProcess
+    from deepagents_cli.textual_adapter import TextualUIAdapter
 
 # iTerm2 Cursor Guide Workaround
 # ===============================
@@ -740,6 +738,8 @@ class DeepAgentsApp(App):
             self._status_bar.set_auto_approve(enabled=True)
 
         # Set git branch in status bar
+        from deepagents_cli.textual_adapter import _get_git_branch
+
         self._status_bar.branch = _get_git_branch() or ""
 
         # Create session state
@@ -816,6 +816,8 @@ class DeepAgentsApp(App):
 
     def _init_agent_adapter(self) -> None:
         """Create the UI adapter and kick off background cache prewarming."""
+        from deepagents_cli.textual_adapter import TextualUIAdapter
+
         self._ui_adapter = TextualUIAdapter(
             mount_message=self._mount_message,
             update_status=self._update_status,
@@ -2351,6 +2353,8 @@ class DeepAgentsApp(App):
         # Caller ensures _ui_adapter is set (checked in _handle_user_message)
         if self._ui_adapter is None:
             return
+        from deepagents_cli.textual_adapter import execute_task_textual
+
         turn_stats: SessionStats | None = None
         try:
             turn_stats = await execute_task_textual(

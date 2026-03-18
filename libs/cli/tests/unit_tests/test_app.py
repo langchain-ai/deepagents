@@ -2449,6 +2449,34 @@ class TestSlashCommandBypass:
 
             pm.assert_called_once_with("/threads", "command")
 
+    async def test_threads_blocked_during_thread_switching(self) -> None:
+        """/threads should NOT bypass the thread-switching guard."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._thread_switching = True
+
+            with patch.object(app, "_process_message", new_callable=AsyncMock) as pm:
+                app.post_message(ChatInput.Submitted("/threads", "command"))
+                await pilot.pause()
+
+            pm.assert_not_called()
+            assert len(app._pending_messages) == 0
+
+    async def test_model_blocked_during_thread_switching(self) -> None:
+        """/model should NOT bypass the thread-switching guard."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._thread_switching = True
+
+            with patch.object(app, "_process_message", new_callable=AsyncMock) as pm:
+                app.post_message(ChatInput.Submitted("/model", "command"))
+                await pilot.pause()
+
+            pm.assert_not_called()
+            assert len(app._pending_messages) == 0
+
 
 class TestDeferredActions:
     """Test deferred action queueing and draining."""

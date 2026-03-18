@@ -902,12 +902,18 @@ class DeepAgentsApp(App):
                 lambda: asyncio.create_task(self._load_thread_history())
             )
 
-        # Drain deferred actions (e.g. model/thread switch queued during connection) if
-        # the agent is not actively running.
+        # Drain deferred actions (e.g. model/thread switch queued during connection)
+        # if the agent is not actively running. Wrapped in a helper so that
+        # exceptions are logged rather than becoming unhandled task errors.
         if self._deferred_actions and not self._agent_running:
-            self.call_after_refresh(
-                lambda: asyncio.create_task(self._drain_deferred_actions())
-            )
+
+            async def _safe_drain() -> None:
+                try:
+                    await self._drain_deferred_actions()
+                except Exception:
+                    logger.exception("Unhandled error while draining deferred actions")
+
+            self.call_after_refresh(lambda: asyncio.create_task(_safe_drain()))
 
         # Drain any messages the user typed while the server was starting.
         # (If an initial prompt exists, its cleanup path will drain the queue.)
@@ -2858,7 +2864,7 @@ class DeepAgentsApp(App):
             )
 
     def _discard_queue(self) -> None:
-        """Clear pending messages and remove queued widgets from the DOM."""
+        """Clear pending messages, deferred actions, and queued widgets."""
         self._pending_messages.clear()
         for w in self._queued_widgets:
             w.remove()
@@ -2866,13 +2872,19 @@ class DeepAgentsApp(App):
         self._deferred_actions.clear()
 
     async def _drain_deferred_actions(self) -> None:
-        """Execute deferred actions (model/thread switch) now that agent is idle."""
+        """Execute deferred actions queued while busy (e.g. model/thread switch)."""
         while self._deferred_actions:
             action = self._deferred_actions.pop(0)
             try:
                 await action()
             except Exception:
-                logger.exception("Failed to execute deferred action")
+                logger.exception("Failed to execute deferred action: %r", action)
+                await self._mount_message(
+                    ErrorMessage(
+                        "A deferred action failed unexpectedly. "
+                        "Check the log for details."
+                    )
+                )
 
     def _cancel_worker(self, worker: Worker[None] | None) -> None:
         """Discard the message queue and cancel an active worker.

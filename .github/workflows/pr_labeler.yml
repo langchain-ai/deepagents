@@ -2,26 +2,34 @@
 # contributor classification labels in a single sequential workflow.
 #
 # Consolidates pr_size_labeler.yml, pr_labeler_file.yml,
-# pr_labeler_title.yml, and PR-handling from tag-external-contributions.yml
+# pr_labeler_title.yml, and PR-handling from tag-external-issues.yml
 # into one workflow to eliminate race conditions from concurrent label
-# mutations.
+# mutations. tag-external-issues.yml remains active for issue-only
+# labeling. Backfill lives in pr_labeler_backfill.yml.
 #
-# Size thresholds:
-#   XS: < 50, S: < 200, M: < 500, L: < 1000, XL: >= 1000
+# Config and shared logic live in .github/scripts/pr-labeler-config.json
+# and .github/scripts/pr-labeler.js — update those when adding partners.
+#
+# Setup Requirements:
+# 1. Create a GitHub App with permissions:
+#    - Repository: Pull requests (write)
+#    - Repository: Issues (write)
+#    - Organization: Members (read)
+# 2. Install the app on your organization and this repository
+# 3. Add these repository secrets:
+#    - ORG_MEMBERSHIP_APP_ID: Your app's ID
+#    - ORG_MEMBERSHIP_APP_PRIVATE_KEY: Your app's private key
+#
+# The GitHub App token is required to check private organization membership
+# and to propagate label events to downstream workflows.
 
 name: "PR Labeler"
 
 on:
-  # Safe since we're not checking out or running the PR's code.
+  # Safe since we only check out the base branch, not the PR's code.
   # Never check out the PR's head in a pull_request_target job.
   pull_request_target:
     types: [opened, synchronize, reopened, edited]
-  workflow_dispatch:
-    inputs:
-      max_items:
-        description: "Maximum number of open PRs to process"
-        default: "100"
-        type: string
 
 permissions:
   contents: read
@@ -33,7 +41,6 @@ concurrency:
 
 jobs:
   label:
-    if: github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -41,6 +48,10 @@ jobs:
       issues: write
 
     steps:
+      # Checks out the base branch (NOT the PR head) so that
+      # require('./.github/scripts/pr-labeler.js') resolves.
+      - uses: actions/checkout@v6
+
       - name: Generate GitHub App token
         if: github.event.action == 'opened'
         id: app-token
@@ -49,6 +60,14 @@ jobs:
           app-id: ${{ secrets.ORG_MEMBERSHIP_APP_ID }}
           private-key: ${{ secrets.ORG_MEMBERSHIP_APP_PRIVATE_KEY }}
 
+      - name: Verify App token
+        if: github.event.action == 'opened'
+        run: |
+          if [ -z "${{ steps.app-token.outputs.token }}" ]; then
+            echo "::error::GitHub App token generation failed — cannot classify contributor"
+            exit 1
+          fi
+
       - name: Check org membership
         if: github.event.action == 'opened'
         id: check-membership
@@ -56,36 +75,14 @@ jobs:
         with:
           github-token: ${{ steps.app-token.outputs.token }}
           script: |
+            const { owner, repo } = context.repo;
+            const { h } = require('./.github/scripts/pr-labeler.js').loadAndInit(github, owner, repo);
+
             const author = context.payload.sender.login;
-
-            // GitHub App bots are not org members but should be
-            // treated as internal — skip the membership check.
-            if (context.payload.sender.type === 'Bot') {
-              console.log(`${author} is a Bot — treating as internal`);
-              core.setOutput('is-external', 'false');
-              return;
-            }
-
-            try {
-              const membership = await github.rest.orgs.getMembershipForUser({
-                org: 'langchain-ai',
-                username: author,
-              });
-              if (membership.data.state === 'active') {
-                console.log(`${author} is an active member of langchain-ai`);
-                core.setOutput('is-external', 'false');
-              } else {
-                console.log(`${author} has pending membership`);
-                core.setOutput('is-external', 'true');
-              }
-            } catch (error) {
-              if (error.status === 404) {
-                console.log(`${author} is not a member of langchain-ai`);
-              } else {
-                core.warning(`Membership check error (${error.status}): ${error.message}`);
-              }
-              core.setOutput('is-external', 'true');
-            }
+            const { isExternal } = await h.checkMembership(
+              author, context.payload.sender.type,
+            );
+            core.setOutput('is-external', isExternal ? 'true' : 'false');
 
       # Rename `deepagents` scope → `sdk` for non-release PRs.
       # Release PRs (e.g. `release(deepagents): 1.2.0`) are left
@@ -158,6 +155,8 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const { owner, repo } = context.repo;
+            const { h } = require('./.github/scripts/pr-labeler.js').loadAndInit(github, owner, repo);
+
             const pr = context.payload.pull_request;
             if (!pr) return;
             const prNumber = pr.number;
@@ -166,65 +165,28 @@ jobs:
             const toAdd = new Set();
             const toRemove = new Set();
 
-            async function ensureLabel(name, color = 'b76e79') {
-              try {
-                await github.rest.issues.getLabel({ owner, repo, name });
-              } catch (e) {
-                if (e.status !== 404) throw e;
-                await github.rest.issues.createLabel({ owner, repo, name, color });
-              }
-            }
-
             const currentLabels = (await github.paginate(
               github.rest.issues.listLabelsOnIssue,
               { owner, repo, issue_number: prNumber, per_page: 100 },
             )).map(l => l.name ?? '');
 
-            // ── Size + file labels (skip on 'edited' — content unchanged) ──
+            // ── Size + file labels (skip on 'edited' — files unchanged) ──
             if (action !== 'edited') {
-              const sizeLabels = ['size: XS', 'size: S', 'size: M', 'size: L', 'size: XL'];
-              for (const sl of sizeLabels) await ensureLabel(sl);
+              for (const sl of h.sizeLabels) await h.ensureLabel(sl);
 
               const files = await github.paginate(github.rest.pulls.listFiles, {
                 owner, repo, pull_number: prNumber, per_page: 100,
               });
 
-              const excludedFiles = new Set(['poetry.lock', 'uv.lock']);
-              const totalChanged = files.reduce((sum, f) => {
-                const p = f.filename ?? '';
-                if (p.startsWith('docs/') || excludedFiles.has(p)) return sum;
-                return sum + (f.additions ?? 0) + (f.deletions ?? 0);
-              }, 0);
-
-              let sizeLabel = 'size: XL';
-              if (totalChanged < 50) sizeLabel = 'size: XS';
-              else if (totalChanged < 200) sizeLabel = 'size: S';
-              else if (totalChanged < 500) sizeLabel = 'size: M';
-              else if (totalChanged < 1000) sizeLabel = 'size: L';
-
+              const { totalChanged, sizeLabel } = h.computeSize(files);
               toAdd.add(sizeLabel);
-              for (const sl of sizeLabels) {
+              for (const sl of h.sizeLabels) {
                 if (currentLabels.includes(sl) && sl !== sizeLabel) toRemove.add(sl);
               }
               console.log(`Size: ${totalChanged} changed lines → ${sizeLabel}`);
 
-              // File-based labels
-              const fileRules = [
-                { label: 'deepagents', test: p => p.startsWith('libs/deepagents/') },
-                { label: 'cli', test: p => p.startsWith('libs/cli/') },
-                { label: 'acp', test: p => p.startsWith('libs/acp/') },
-                { label: 'harbor', test: p => p.startsWith('libs/harbor/') },
-                { label: 'github_actions', test: p =>
-                  p.startsWith('.github/workflows/') || p.startsWith('.github/actions/') },
-                { label: 'dependencies', test: p =>
-                  p.endsWith('pyproject.toml') || p === 'uv.lock' ||
-                  /(?:^|\/)requirements[^/]*\.txt$/.test(p) || p.endsWith('poetry.lock') },
-              ];
-
-              for (const rule of fileRules) {
-                if (files.some(f => rule.test(f.filename ?? ''))) {
-                  toAdd.add(rule.label);
-                }
+              for (const label of h.matchFileLabels(files)) {
+                toAdd.add(label);
               }
             }
 
@@ -232,39 +194,14 @@ jobs:
             // Use renamed title if the scope-rename step rewrote it,
             // since pr.title still reflects the pre-update value.
             const title = process.env.RENAMED_TITLE || pr.title || '';
-            const titleMatch = title.match(/^(\w+)(?:\(([^)]+)\))?(!)?:/);
-            if (titleMatch) {
-              const type = titleMatch[1].toLowerCase();
-              const scopeStr = titleMatch[2] ?? '';
-              const breaking = !!titleMatch[3];
-
-              const typeToLabel = {
-                feat: 'feature', fix: 'fix', docs: 'documentation',
-                style: 'linting', refactor: 'refactor', perf: 'performance',
-                test: 'tests', build: 'infra', ci: 'infra', chore: 'infra',
-                revert: 'revert', release: 'release', breaking: 'breaking',
-              };
-
-              const typeLabel = typeToLabel[type];
-              if (typeLabel) {
-                const allTypeLabels = [...new Set(Object.values(typeToLabel))];
-                for (const tl of allTypeLabels) {
-                  if (currentLabels.includes(tl) && tl !== typeLabel) toRemove.add(tl);
-                }
-                toAdd.add(typeLabel);
-              }
-
-              if (breaking) toAdd.add('breaking');
-
-              const scopeToLabel = {
-                deepagents: 'deepagents', sdk: 'deepagents',
-                'deepagents-cli': 'cli', cli: 'cli',
-                harbor: 'harbor', acp: 'acp',
-              };
-
-              for (const scope of scopeStr.split(',').map(s => s.trim()).filter(Boolean)) {
-                const scopeLabel = scopeToLabel[scope];
-                if (scopeLabel) toAdd.add(scopeLabel);
+            const { labels: titleLabels, typeLabel } = h.matchTitleLabels(title);
+            for (const label of titleLabels) {
+              toAdd.add(label);
+            }
+            // Remove stale type labels only when a type was detected
+            if (typeLabel) {
+              for (const tl of h.allTypeLabels) {
+                if (currentLabels.includes(tl) && !titleLabels.has(tl)) toRemove.add(tl);
               }
             }
 
@@ -280,7 +217,7 @@ jobs:
             // 422 if any label in the batch is missing, which would prevent
             // ALL labels from being applied).
             for (const name of toAdd) {
-              await ensureLabel(name);
+              await h.ensureLabel(name);
             }
 
             for (const name of toRemove) {
@@ -304,6 +241,18 @@ jobs:
             const removed = [...toRemove].filter(r => !toAdd.has(r));
             console.log(`PR #${prNumber}: +[${addList.join(', ')}] -[${removed.join(', ')}]`);
 
+      - name: Apply contributor tier label
+        if: github.event.action == 'opened' && steps.check-membership.outputs.is-external == 'true'
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          script: |
+            const { owner, repo } = context.repo;
+            const { h } = require('./.github/scripts/pr-labeler.js').loadAndInit(github, owner, repo);
+
+            const pr = context.payload.pull_request;
+            await h.applyTierLabel(pr.number, pr.user.login);
+
       - name: Add external label
         if: github.event.action == 'opened' && steps.check-membership.outputs.is-external == 'true'
         uses: actions/github-script@v8
@@ -314,268 +263,13 @@ jobs:
           github-token: ${{ steps.app-token.outputs.token }}
           script: |
             const { owner, repo } = context.repo;
+            const { h } = require('./.github/scripts/pr-labeler.js').loadAndInit(github, owner, repo);
+
             const prNumber = context.payload.pull_request.number;
+            await h.ensureLabel('external');
             await github.rest.issues.addLabels({
               owner, repo,
               issue_number: prNumber,
               labels: ['external'],
             });
             console.log(`Added 'external' label to PR #${prNumber}`);
-
-      - name: Apply contributor tier label
-        if: github.event.action == 'opened' && steps.check-membership.outputs.is-external == 'true'
-        uses: actions/github-script@v8
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const { owner, repo } = context.repo;
-            const pr = context.payload.pull_request;
-            const author = pr.user.login;
-            const prNumber = pr.number;
-
-            const TRUSTED_THRESHOLD = 5;
-
-            async function ensureLabel(name, color = 'b76e79') {
-              try {
-                await github.rest.issues.getLabel({ owner, repo, name });
-              } catch (e) {
-                if (e.status !== 404) throw e;
-                await github.rest.issues.createLabel({ owner, repo, name, color });
-              }
-            }
-
-            let mergedCount;
-            try {
-              const result = await github.rest.search.issuesAndPullRequests({
-                q: `repo:${owner}/${repo} is:pr is:merged author:"${author}"`,
-                per_page: 1,
-              });
-              mergedCount = result?.data?.total_count;
-            } catch (error) {
-              if (error?.status !== 422) throw error;
-              core.warning(`Search failed for ${author}; skipping tier label.`);
-              return;
-            }
-
-            if (mergedCount == null) {
-              core.warning(`Search response missing total_count for ${author}; skipping tier label.`);
-              return;
-            }
-
-            if (mergedCount >= TRUSTED_THRESHOLD) {
-              await ensureLabel('trusted-contributor');
-              await github.rest.issues.addLabels({
-                owner, repo,
-                issue_number: prNumber,
-                labels: ['trusted-contributor'],
-              });
-              console.log(`Applied 'trusted-contributor' to #${prNumber} (${mergedCount} merged PRs)`);
-            } else if (mergedCount === 0) {
-              await ensureLabel('new-contributor');
-              await github.rest.issues.addLabels({
-                owner, repo,
-                issue_number: prNumber,
-                labels: ['new-contributor'],
-              });
-              console.log(`Applied 'new-contributor' to #${prNumber} (0 merged PRs from ${author})`);
-            } else {
-              console.log(`No tier label for ${author} (${mergedCount} merged PRs)`);
-            }
-
-  backfill:
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    permissions:
-      pull-requests: write
-      issues: write
-
-    steps:
-      - name: Generate GitHub App token
-        id: app-token
-        uses: actions/create-github-app-token@v3
-        with:
-          app-id: ${{ secrets.ORG_MEMBERSHIP_APP_ID }}
-          private-key: ${{ secrets.ORG_MEMBERSHIP_APP_PRIVATE_KEY }}
-
-      - name: Backfill labels on open PRs
-        uses: actions/github-script@v8
-        with:
-          github-token: ${{ steps.app-token.outputs.token }}
-          script: |
-            const { owner, repo } = context.repo;
-            const maxItems = parseInt('${{ inputs.max_items }}') || 100;
-
-            const TRUSTED_THRESHOLD = 5;
-            const LABEL_COLOR = 'b76e79';
-
-            const sizeLabels = ['size: XS', 'size: S', 'size: M', 'size: L', 'size: XL'];
-            const tierLabels = ['new-contributor', 'trusted-contributor'];
-            const allTypeLabels = ['feature', 'fix', 'documentation', 'linting', 'refactor',
-              'performance', 'tests', 'infra', 'revert', 'release', 'breaking'];
-
-            for (const name of [...sizeLabels, ...tierLabels]) {
-              try {
-                await github.rest.issues.getLabel({ owner, repo, name });
-              } catch (e) {
-                if (e.status !== 404) throw e;
-                await github.rest.issues.createLabel({ owner, repo, name, color: LABEL_COLOR });
-                console.log(`Created label: ${name}`);
-              }
-            }
-
-            const contributorCache = new Map();
-
-            async function getContributorInfo(author, userType) {
-              if (contributorCache.has(author)) return contributorCache.get(author);
-
-              if (userType === 'Bot') {
-                const info = { isExternal: false, mergedCount: 0 };
-                contributorCache.set(author, info);
-                return info;
-              }
-
-              let isExternal = true;
-              try {
-                const membership = await github.rest.orgs.getMembershipForUser({
-                  org: 'langchain-ai', username: author,
-                });
-                isExternal = membership.data.state !== 'active';
-              } catch (e) {
-                if (e.status !== 404) core.warning(`Membership check failed for ${author}: ${e.message}`);
-              }
-              let mergedCount = null;
-              if (isExternal) {
-                try {
-                  const result = await github.rest.search.issuesAndPullRequests({
-                    q: `repo:${owner}/${repo} is:pr is:merged author:"${author}"`,
-                    per_page: 1,
-                  });
-                  mergedCount = result?.data?.total_count ?? null;
-                } catch (e) {
-                  if (e?.status !== 422) throw e;
-                  core.warning(`Search failed for ${author}; skipping tier.`);
-                }
-              }
-              const info = { isExternal, mergedCount };
-              contributorCache.set(author, info);
-              return info;
-            }
-
-            function getSizeLabel(lines) {
-              if (lines < 50) return 'size: XS';
-              if (lines < 200) return 'size: S';
-              if (lines < 500) return 'size: M';
-              if (lines < 1000) return 'size: L';
-              return 'size: XL';
-            }
-
-            const typeToLabel = {
-              feat: 'feature', fix: 'fix', docs: 'documentation',
-              style: 'linting', refactor: 'refactor', perf: 'performance',
-              test: 'tests', build: 'infra', ci: 'infra', chore: 'infra',
-              revert: 'revert', release: 'release', breaking: 'breaking',
-            };
-
-            const scopeToLabel = {
-              deepagents: 'deepagents', sdk: 'deepagents',
-              'deepagents-cli': 'cli', cli: 'cli',
-              harbor: 'harbor', acp: 'acp',
-            };
-
-            const fileRules = [
-              { label: 'deepagents', test: p => p.startsWith('libs/deepagents/') },
-              { label: 'cli', test: p => p.startsWith('libs/cli/') },
-              { label: 'acp', test: p => p.startsWith('libs/acp/') },
-              { label: 'harbor', test: p => p.startsWith('libs/harbor/') },
-              { label: 'github_actions', test: p =>
-                p.startsWith('.github/workflows/') || p.startsWith('.github/actions/') },
-              { label: 'dependencies', test: p =>
-                p.endsWith('pyproject.toml') || p === 'uv.lock' ||
-                /(?:^|\/)requirements[^/]*\.txt$/.test(p) || p.endsWith('poetry.lock') },
-            ];
-
-            const prs = await github.paginate(github.rest.pulls.list, {
-              owner, repo, state: 'open', per_page: 100,
-            });
-
-            let processed = 0;
-            for (const pr of prs) {
-              if (processed >= maxItems) break;
-              const author = pr.user.login;
-              const info = await getContributorInfo(author, pr.user.type);
-              const labels = new Set();
-
-              labels.add(info.isExternal ? 'external' : 'internal');
-              if (info.isExternal && info.mergedCount >= TRUSTED_THRESHOLD) {
-                labels.add('trusted-contributor');
-              } else if (info.isExternal && info.mergedCount === 0) {
-                labels.add('new-contributor');
-              }
-
-              // Size + file labels
-              const files = await github.paginate(github.rest.pulls.listFiles, {
-                owner, repo, pull_number: pr.number, per_page: 100,
-              });
-              const excludedFiles = new Set(['poetry.lock', 'uv.lock']);
-              const totalChanged = files.reduce((sum, f) => {
-                const p = f.filename ?? '';
-                if (p.startsWith('docs/') || excludedFiles.has(p)) return sum;
-                return sum + (f.additions ?? 0) + (f.deletions ?? 0);
-              }, 0);
-              labels.add(getSizeLabel(totalChanged));
-
-              for (const rule of fileRules) {
-                if (files.some(f => rule.test(f.filename ?? ''))) labels.add(rule.label);
-              }
-
-              // Title labels
-              const titleMatch = (pr.title ?? '').match(/^(\w+)(?:\(([^)]+)\))?(!)?:/);
-              if (titleMatch) {
-                const type = titleMatch[1].toLowerCase();
-                const scopeStr = titleMatch[2] ?? '';
-                const typeLabel = typeToLabel[type];
-                if (typeLabel) labels.add(typeLabel);
-                if (titleMatch[3]) labels.add('breaking');
-                for (const scope of scopeStr.split(',').map(s => s.trim()).filter(Boolean)) {
-                  const sl = scopeToLabel[scope];
-                  if (sl) labels.add(sl);
-                }
-              }
-
-              // Ensure all labels exist before batch add
-              for (const name of labels) {
-                try {
-                  await github.rest.issues.getLabel({ owner, repo, name });
-                } catch (e) {
-                  if (e.status !== 404) throw e;
-                  await github.rest.issues.createLabel({ owner, repo, name, color: LABEL_COLOR });
-                }
-              }
-
-              // Remove stale managed labels
-              const currentLabels = (await github.paginate(
-                github.rest.issues.listLabelsOnIssue,
-                { owner, repo, issue_number: pr.number, per_page: 100 },
-              )).map(l => l.name ?? '');
-
-              const managed = [...sizeLabels, ...tierLabels, ...allTypeLabels];
-              for (const name of currentLabels) {
-                if (managed.includes(name) && !labels.has(name)) {
-                  try {
-                    await github.rest.issues.removeLabel({
-                      owner, repo, issue_number: pr.number, name,
-                    });
-                  } catch (e) {
-                    if (e.status !== 404) throw e;
-                  }
-                }
-              }
-
-              await github.rest.issues.addLabels({
-                owner, repo, issue_number: pr.number, labels: [...labels],
-              });
-              console.log(`PR #${pr.number} (${author}): ${[...labels].join(', ')}`);
-              processed++;
-            }
-
-            console.log(`\nBackfill complete. Processed ${processed} PRs. ${contributorCache.size} unique authors.`);

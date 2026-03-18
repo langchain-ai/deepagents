@@ -1,6 +1,6 @@
 [project]
 name = "deepagents"
-version = "0.4.7"
+version = "0.5.0"
 
 description = "General purpose 'deep agent' with sub-agent spawning, todo list capabilities, and mock file system. Built on LangGraph."
 readme = "README.md"
@@ -20,9 +20,9 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
-    "langchain-core>=1.2.10,<2.0.0",
-    "langchain>=1.2.10,<2.0.0",
-    "langchain-anthropic>=1.3.3,<2.0.0",
+    "langchain-core>=1.2.19,<2.0.0",
+    "langchain>=1.2.12,<2.0.0",
+    "langchain-anthropic>=1.3.5,<2.0.0",
     "langchain-google-genai>=4.2.0,<5.0.0",
     "wcmatch",
 ]
@@ -41,6 +41,8 @@ Reddit = "https://www.reddit.com/r/LangChain/"
 [dependency-groups]
 test = [
   "pytest",
+  "pytest-benchmark",
+  "pytest-codspeed",
   "pytest-cov",
   "pytest-xdist",
   "pytest-timeout>=2.3.1,<3.0.0",
@@ -55,12 +57,20 @@ test = [
 ]
 
 evals = [
-  "langchain-xai",
-  "langchain-mistralai",
+  "langsmith",
+  "langchain-anthropic",
+  "langchain-baseten",
   "langchain-deepseek",
-  "langchain-groq",
-  "langchain-ollama",
   "langchain-fireworks",
+  "langchain-google-genai",
+  "langchain-groq",
+  "langchain-mistralai",
+  "langchain-ollama",
+  "langchain-openai",
+  "langchain-xai",
+  "datasets>=3.0.0",
+  "nltk>=3.9.0",
+  "tiktoken>=0.8.0",
 ]
 
 [build-system]
@@ -91,12 +101,16 @@ ignore = [
     "PLC0414", # Import alias does not rename original package — conflicts with type-checker re-export conventions
 ]
 unfixable = ["B028"]  # Rules that shouldn't be auto-fixed
+extend-safe-fixes = ["PLR6201"]
 
 [tool.ruff.lint.pyupgrade]
 keep-runtime-typing = true
 
 [tool.ruff.lint.flake8-annotations]
 allow-star-arg-any = true
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
 
 [tool.ruff.lint.isort]
 force-single-line = false
@@ -128,6 +142,10 @@ ignore-var-parameters = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+addopts = "-m 'not benchmark'"
+markers = [
+    "benchmark: wall-time benchmarks for construction performance",
+]
 
 [tool.ty.environment]
 python-version = "3.11"

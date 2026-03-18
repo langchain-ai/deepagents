@@ -123,7 +123,6 @@ class TestTopLevelHelp:
         # Should contain global help content
         assert "deepagents" in output.lower()
         assert "--help" in output
-        assert "--ask-user" in output
 
     def test_help_subcommand_parses(self) -> None:
         """Running `deepagents help` should parse as command='help'.
@@ -197,7 +196,7 @@ class TestSubcommandHelpFlags:
 
 
 class TestShortFlags:
-    """Test that short flag aliases (-a, -M, -v) parse correctly."""
+    """Test that short flag aliases (-a, -M, -S, -v, -y) parse correctly."""
 
     def test_short_agent_flag(self) -> None:
         """Verify -a sets agent."""
@@ -225,6 +224,18 @@ class TestShortFlags:
         ):
             parse_args()
         assert exc_info.value.code in (0, None)
+
+    def test_short_auto_approve_flag(self) -> None:
+        """Verify -y sets auto_approve."""
+        with patch.object(sys, "argv", ["deepagents", "-y"]):
+            args = parse_args()
+        assert args.auto_approve is True
+
+    def test_short_shell_allow_list_flag(self) -> None:
+        """Verify -S sets shell_allow_list."""
+        with patch.object(sys, "argv", ["deepagents", "-S", "ls,cat"]):
+            args = parse_args()
+        assert args.shell_allow_list == "ls,cat"
 
 
 class TestQuietArg:
@@ -378,3 +389,50 @@ class TestHelpScreenDrift:
             f"Flags in argparse but missing from show_threads_list_help(): {missing}\n"
             "Add them to the Options section in ui.show_threads_list_help()."
         )
+
+
+class TestJsonArg:
+    """Tests for `--json` argument parsing."""
+
+    def test_default_text(self) -> None:
+        """Verify output_format defaults to text."""
+        with patch.object(sys, "argv", ["deepagents"]):
+            args = parse_args()
+        assert args.output_format == "text"
+
+    def test_json_shortcut(self) -> None:
+        """Verify --json sets output_format to json."""
+        with patch.object(sys, "argv", ["deepagents", "--json"]):
+            args = parse_args()
+        assert args.output_format == "json"
+
+    def test_json_before_subcommand(self) -> None:
+        """Verify --json works before a subcommand."""
+        with patch.object(sys, "argv", ["deepagents", "--json", "list"]):
+            args = parse_args()
+        assert args.command == "list"
+        assert args.output_format == "json"
+
+    def test_json_after_subcommand(self) -> None:
+        """Verify --json works after a subcommand."""
+        with patch.object(sys, "argv", ["deepagents", "list", "--json"]):
+            args = parse_args()
+        assert args.command == "list"
+        assert args.output_format == "json"
+
+    def test_output_format_flag_removed(self) -> None:
+        """Verify --output-format is no longer accepted."""
+        with (
+            patch.object(sys, "argv", ["deepagents", "--output-format", "json"]),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            parse_args()
+        assert exc_info.value.code == 2
+
+    def test_json_after_nested_subcommand(self) -> None:
+        """Verify --json works after nested subcommands."""
+        with patch.object(sys, "argv", ["deepagents", "skills", "list", "--json"]):
+            args = parse_args()
+        assert args.command == "skills"
+        assert args.skills_command == "list"
+        assert args.output_format == "json"

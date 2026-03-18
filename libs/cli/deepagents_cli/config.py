@@ -10,21 +10,70 @@ import re
 import shlex
 import sys
 import threading
-import uuid
 from dataclasses import dataclass
 from enum import StrEnum
 from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from urllib.parse import unquote, urlparse
 
 import dotenv
 from rich.console import Console
 
 from deepagents_cli._version import __version__
+from deepagents_cli.project_utils import (
+    get_server_project_context as _get_server_project_context,
+)
 
 logger = logging.getLogger(__name__)
 
-dotenv.load_dotenv()
+
+def _find_dotenv_from_start_path(start_path: Path) -> Path | None:
+    """Find the nearest `.env` file from an explicit start path upward.
+
+    Args:
+        start_path: Directory to start searching from.
+
+    Returns:
+        Path to the nearest `.env` file, or `None` if not found.
+    """
+    current = start_path.expanduser().resolve()
+    for parent in [current, *list(current.parents)]:
+        candidate = parent / ".env"
+        try:
+            if candidate.is_file():
+                return candidate
+        except OSError:
+            logger.warning("Could not inspect .env candidate %s", candidate)
+            return None
+    return None
+
+
+def _load_dotenv(*, start_path: Path | None = None, override: bool = False) -> bool:
+    """Load environment variables, optionally anchored to an explicit path.
+
+    Args:
+        start_path: Directory to use for `.env` discovery.
+        override: Whether loaded values should override existing env vars.
+
+    Returns:
+        `True` when a dotenv file was loaded, `False` otherwise.
+    """
+    if start_path is None:
+        return dotenv.load_dotenv(override=override)
+
+    dotenv_path = _find_dotenv_from_start_path(start_path)
+    if dotenv_path is None:
+        return False
+    return dotenv.load_dotenv(dotenv_path=dotenv_path, override=override)
+
+
+_bootstrap_project_context = _get_server_project_context()
+_bootstrap_start_path = (
+    _bootstrap_project_context.user_cwd if _bootstrap_project_context else None
+)
+
+_load_dotenv(start_path=_bootstrap_start_path)
 
 # CRITICAL: Override LANGSMITH_PROJECT to route agent traces to separate project
 # LangSmith reads LANGSMITH_PROJECT at invocation time, so we override it here
@@ -195,8 +244,8 @@ ASCII_GLYPHS = Glyphs(
 _glyphs_cache: Glyphs | None = None
 """Module-level cache for detected glyphs."""
 
-_editable_cache: bool | None = None
-"""Module-level cache for editable install detection."""
+_editable_cache: tuple[bool, str | None] | None = None
+"""Module-level cache for editable install info: (is_editable, source_path)."""
 
 _langsmith_url_cache: tuple[str, str] | None = None
 """Module-level cache for successful LangSmith project URL lookups."""
@@ -208,30 +257,62 @@ Kept short so tracing metadata can never stall CLI flows.
 """
 
 
-def _is_editable_install() -> bool:
-    """Check if deepagents-cli is installed in editable mode.
-
-    Uses PEP 610 direct_url.json metadata to detect editable installs.
+def _resolve_editable_info() -> tuple[bool, str | None]:
+    """Parse PEP 610 `direct_url.json` once and cache both results.
 
     Returns:
-        True if installed in editable mode, False otherwise.
+        Tuple of (is_editable, contracted_source_path). The path is
+        `~`-contracted when it falls under the user's home directory, or
+        `None` when the install is non-editable or the path is unavailable.
     """
     global _editable_cache  # noqa: PLW0603  # Module-level cache requires global statement
     if _editable_cache is not None:
         return _editable_cache
 
+    editable = False
+    path: str | None = None
+
     try:
         dist = distribution("deepagents-cli")
-        direct_url = dist.read_text("direct_url.json")
-        if direct_url:
-            data = json.loads(direct_url)
-            _editable_cache = data.get("dir_info", {}).get("editable", False)
-        else:
-            _editable_cache = False
+        raw = dist.read_text("direct_url.json")
+        if raw:
+            data = json.loads(raw)
+            editable = data.get("dir_info", {}).get("editable", False)
+            if editable:
+                url = data.get("url", "")
+                if url.startswith("file://"):
+                    path = unquote(urlparse(url).path)
+                    home = str(Path.home())
+                    if path.startswith(home):
+                        path = "~" + path[len(home) :]
     except (PackageNotFoundError, FileNotFoundError, json.JSONDecodeError, TypeError):
-        _editable_cache = False
+        logger.debug(
+            "Failed to read editable install info from PEP 610 metadata",
+            exc_info=True,
+        )
 
+    _editable_cache = (editable, path)
     return _editable_cache
+
+
+def _is_editable_install() -> bool:
+    """Check if deepagents-cli is installed in editable mode.
+
+    Uses PEP 610 `direct_url.json` metadata to detect editable installs.
+
+    Returns:
+        `True` if installed in editable mode, `False` otherwise.
+    """
+    return _resolve_editable_info()[0]
+
+
+def _get_editable_install_path() -> str | None:
+    """Return the `~`-contracted source directory for an editable install.
+
+    Returns `None` for non-editable installs or when the path cannot be
+    determined.
+    """
+    return _resolve_editable_info()[1]
 
 
 def _detect_charset_mode() -> CharsetMode:
@@ -557,7 +638,7 @@ class Settings:
         Returns:
             A list of human-readable change descriptions.
         """
-        dotenv.load_dotenv(override=True)
+        _load_dotenv(start_path=start_path, override=True)
 
         api_key_fields = {
             "openai_api_key",
@@ -886,7 +967,7 @@ class Settings:
 
 
 # Global settings instance (initialized once)
-settings = Settings.from_environment()
+settings = Settings.from_environment(start_path=_bootstrap_start_path)
 
 
 class SessionState:
@@ -915,7 +996,9 @@ class SessionState:
         self.no_splash = no_splash
         self.exit_hint_until: float | None = None
         self.exit_hint_handle = None
-        self.thread_id = str(uuid.uuid4())
+        from deepagents_cli.sessions import generate_thread_id
+
+        self.thread_id = generate_thread_id()
 
     def toggle_auto_approve(self) -> bool:
         """Toggle auto-approve and return the new state.
@@ -1332,7 +1415,7 @@ def _get_default_model_spec() -> str:
     if settings.has_vertex_ai:
         return "google_vertexai:gemini-3.1-pro-preview"
     if settings.has_nvidia:
-        return "nvidia:nvidia/nemotron-3-nano-30b-a3b"
+        return "nvidia:nvidia/nemotron-3-super-120b-a12b"
 
     msg = (
         "No credentials configured. Please set one of: "
@@ -1502,6 +1585,8 @@ def _create_model_via_init(
             return init_chat_model(model_name, model_provider=provider, **kwargs)
         return init_chat_model(model_name, **kwargs)
     except ImportError as e:
+        import importlib.util
+
         package_map = {
             "anthropic": "langchain-anthropic",
             "openai": "langchain-openai",
@@ -1510,9 +1595,24 @@ def _create_model_via_init(
             "nvidia": "langchain-nvidia-ai-endpoints",
         }
         package = package_map.get(provider, f"langchain-{provider}")
-        msg = (
-            f"Missing package for provider '{provider}'. Install: pip install {package}"
-        )
+        # Convert pip package name to Python module name for import check.
+        module_name = package.replace("-", "_")
+        try:
+            spec_found = importlib.util.find_spec(module_name) is not None
+        except (ImportError, ValueError):
+            spec_found = False
+        if spec_found:
+            # Package is installed but an internal import failed — surface
+            # the real error instead of the misleading "missing package" hint.
+            msg = (
+                f"Provider package '{package}' is installed but failed to "
+                f"import for provider '{provider}': {e}"
+            )
+        else:
+            msg = (
+                f"Missing package for provider '{provider}'. "
+                f"Install: pip install {package}"
+            )
         raise ModelConfigError(msg) from e
     except (ValueError, TypeError) as e:
         spec = f"{provider}:{model_name}" if provider else model_name

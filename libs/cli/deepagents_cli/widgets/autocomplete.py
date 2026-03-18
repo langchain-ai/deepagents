@@ -6,6 +6,8 @@ for slash commands (/) and file mentions (@).
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import shutil
 
 # S404: subprocess is required for git ls-files to get project file list
@@ -98,16 +100,21 @@ SLASH_COMMANDS: list[tuple[str, str, str]] = [
     ("/help", "Show help", ""),
     ("/changelog", "Open changelog in browser", ""),
     ("/clear", "Clear chat and start new thread", "reset"),
-    ("/compact", "Summarize conversation to reduce context usage", ""),
     ("/docs", "Open documentation in browser", ""),
+    ("/editor", "Open prompt in external editor ($EDITOR)", ""),
     ("/feedback", "Submit a bug report or feature request", ""),
     ("/mcp", "Show active MCP servers and tools", "servers"),
     ("/model", "Switch or configure model (--model-params, --default)", ""),
+    (
+        "/offload",
+        "Free up context window space by offloading older messages",
+        "compact",
+    ),
     ("/quit", "Exit app", "close leave"),
     ("/reload", "Reload config from environment variables and .env", "refresh"),
     ("/remember", "Update memory and skills from conversation", ""),
     ("/tokens", "Token usage", "cost"),
-    ("/threads", "Browse and resume previous threads", "continue history"),
+    ("/threads", "Browse and resume previous threads", "continue history sessions"),
     ("/trace", "Open current thread in LangSmith", ""),
     ("/version", "Show version", ""),
 ]
@@ -491,6 +498,16 @@ class FuzzyFileController:
     def refresh_cache(self) -> None:
         """Force refresh of file cache."""
         self._file_cache = None
+
+    async def warm_cache(self) -> None:
+        """Pre-populate the file cache off the event loop."""
+        if self._file_cache is not None:
+            return
+        # Best-effort; _get_files() falls back to sync on failure.
+        with contextlib.suppress(Exception):
+            self._file_cache = await asyncio.to_thread(
+                _get_project_files, self._project_root
+            )
 
     @staticmethod
     def can_handle(text: str, cursor_index: int) -> bool:

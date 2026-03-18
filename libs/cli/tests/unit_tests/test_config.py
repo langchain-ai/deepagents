@@ -14,6 +14,7 @@ from deepagents_cli.config import (
     ModelResult,
     Settings,
     _create_model_from_class,
+    _create_model_via_init,
     _get_provider_kwargs,
     build_langsmith_thread_url,
     create_model,
@@ -28,8 +29,10 @@ from deepagents_cli.config import (
 )
 from deepagents_cli.model_config import ModelConfigError, clear_caches
 from deepagents_cli.project_utils import (
+    ProjectContext,
     find_project_agent_md as _find_project_agent_md,
     find_project_root as _find_project_root,
+    get_server_project_context,
 )
 
 
@@ -75,6 +78,46 @@ class TestProjectRootDetection:
         # Should find inner repo, not outer
         result = _find_project_root(inner_repo)
         assert result == inner_repo
+
+
+class TestProjectContext:
+    """Tests for explicit project context handling."""
+
+    def test_from_user_cwd_uses_explicit_path_not_process_cwd(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Project context should resolve from the provided user cwd."""
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        (project_root / ".git").mkdir()
+        user_cwd = project_root / "src"
+        user_cwd.mkdir()
+
+        other_cwd = tmp_path / "elsewhere"
+        other_cwd.mkdir()
+        monkeypatch.chdir(other_cwd)
+
+        context = ProjectContext.from_user_cwd(user_cwd)
+
+        assert context.user_cwd == user_cwd.resolve()
+        assert context.project_root == project_root
+
+    def test_get_server_project_context_from_env_mapping(self, tmp_path: Path) -> None:
+        """Server context should reconstruct explicit cwd and project root."""
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        user_cwd = project_root / "src"
+        user_cwd.mkdir()
+
+        env = {
+            "DA_SERVER_CWD": str(user_cwd),
+            "DA_SERVER_PROJECT_ROOT": str(project_root),
+        }
+        context = get_server_project_context(env)
+
+        assert context is not None
+        assert context.user_cwd == user_cwd.resolve()
+        assert context.project_root == project_root.resolve()
 
 
 class TestProjectAgentMdFinding:
@@ -935,7 +978,7 @@ class TestFetchLangsmithProjectUrl:
             patch("langsmith.Client") as mock_client_cls,
         ):
             mock_client_cls.return_value.read_project.side_effect = lambda **_kwargs: (
-                time.sleep(0.1)
+                time.sleep(0.02)
             )
             result = fetch_langsmith_project_url("my-project")
 
@@ -1570,6 +1613,82 @@ class TestCreateModelEdgeCaseParsing:
 
         create_model("")
         mock_default.assert_called_once()
+
+
+class TestCreateModelViaInitImportError:
+    """Tests for _create_model_via_init() ImportError handling."""
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_missing_package_error(self, mock_init: Mock) -> None:
+        """Shows install hint when provider package is not installed."""
+        mock_init.side_effect = ImportError(
+            "No module named 'langchain_nvidia_ai_endpoints'"
+        )
+        with (
+            patch("importlib.util.find_spec", return_value=None),
+            pytest.raises(
+                ModelConfigError,
+                match="Missing package for provider 'nvidia'",
+            ),
+        ):
+            _create_model_via_init("nemotron", "nvidia", {})
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_installed_but_broken_import(self, mock_init: Mock) -> None:
+        """Shows real error when package is installed but import fails internally."""
+        mock_init.side_effect = ImportError("cannot import name 'foo' from 'bar'")
+        mock_spec = Mock()
+        with (
+            patch("importlib.util.find_spec", return_value=mock_spec) as mock_find_spec,
+            pytest.raises(
+                ModelConfigError,
+                match="installed but failed to import",
+            ),
+        ):
+            _create_model_via_init("nemotron", "nvidia", {})
+        mock_find_spec.assert_called_once_with("langchain_nvidia_ai_endpoints")
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_installed_but_broken_includes_original_error(
+        self, mock_init: Mock
+    ) -> None:
+        """Original ImportError message is included when package is installed."""
+        mock_init.side_effect = ImportError("some transitive dep missing")
+        mock_spec = Mock()
+        with (
+            patch("importlib.util.find_spec", return_value=mock_spec),
+            pytest.raises(ModelConfigError, match="some transitive dep missing"),
+        ):
+            _create_model_via_init("nemotron", "nvidia", {})
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_unknown_provider_fallback_package_name(self, mock_init: Mock) -> None:
+        """Unknown provider falls back to langchain-{provider} package name."""
+        mock_init.side_effect = ImportError("no module")
+        with (
+            patch("importlib.util.find_spec", return_value=None),
+            pytest.raises(
+                ModelConfigError,
+                match=r"pip install langchain-custom_provider",
+            ),
+        ):
+            _create_model_via_init("some-model", "custom_provider", {})
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_find_spec_raises_falls_back_to_missing(self, mock_init: Mock) -> None:
+        """find_spec failure falls back to 'missing package' message."""
+        mock_init.side_effect = ImportError("no module")
+        with (
+            patch(
+                "importlib.util.find_spec",
+                side_effect=ModuleNotFoundError("no parent"),
+            ),
+            pytest.raises(
+                ModelConfigError,
+                match="Missing package",
+            ),
+        ):
+            _create_model_via_init("model", "dotted.provider", {})
 
 
 class TestDetectProvider:

@@ -23,6 +23,7 @@ from deepagents_cli.textual_adapter import (
     TextualUIAdapter,
     _build_interrupted_ai_message,
     _build_stream_config,
+    _format_duration,
     _is_summarization_chunk,
     execute_task_textual,
     format_token_count,
@@ -187,6 +188,27 @@ class TestBuildStreamConfig:
         config = _build_stream_config("t-abc", assistant_id=None)
         assert config["configurable"]["thread_id"] == "t-abc"
 
+    def test_sandbox_type_included_when_set(self) -> None:
+        """Sandbox type should appear in metadata when provided."""
+        config = _build_stream_config("t-sb", assistant_id=None, sandbox_type="daytona")
+        assert config["metadata"]["sandbox_type"] == "daytona"
+
+    def test_sandbox_type_absent_when_none(self) -> None:
+        """Sandbox type should be absent from metadata when not provided."""
+        config = _build_stream_config("t-nosb", assistant_id=None)
+        assert "sandbox_type" not in config["metadata"]
+
+    def test_sandbox_type_none_string_excluded(self) -> None:
+        """The argparse sentinel `"none"` should not leak into metadata."""
+        config = _build_stream_config("t-none", assistant_id=None, sandbox_type="none")
+        assert "sandbox_type" not in config["metadata"]
+
+    def test_no_model_keys_in_configurable(self) -> None:
+        """Model/model_params should not be in configurable."""
+        config = _build_stream_config("t-no-model", assistant_id=None)
+        assert "model" not in config["configurable"]
+        assert "model_params" not in config["configurable"]
+
 
 class TestGetGitBranch:
     """Tests for `_get_git_branch` caching."""
@@ -317,7 +339,7 @@ class TestExecuteTaskTextualSummarizationFeedback:
     """Tests for summarization spinner and notification feedback."""
 
     async def test_spinner_transitions_for_summarization_stream(self) -> None:
-        """Spinner should move Thinking -> Summarizing -> Thinking."""
+        """Spinner should move Thinking -> Offloading -> Thinking."""
         statuses: list[str | None] = []
 
         async def record_spinner(status: str | None) -> None:
@@ -352,7 +374,7 @@ class TestExecuteTaskTextualSummarizationFeedback:
         )
 
         assert statuses[0] == "Thinking"
-        assert "Summarizing" in statuses
+        assert "Offloading" in statuses
         assert statuses[-1] == "Thinking"
 
     async def test_mounts_summarization_notification_on_regular_chunk(self) -> None:
@@ -920,3 +942,44 @@ class TestPrintUsageTable:
         print_usage_table(stats, wall_time=0.01, console=console)
         output = buf.getvalue()
         assert output.strip() == ""
+
+
+# ---------------------------------------------------------------------------
+# _format_duration tests
+# ---------------------------------------------------------------------------
+
+
+class TestFormatDuration:
+    """Tests for `_format_duration` human-readable formatter."""
+
+    def test_sub_minute(self) -> None:
+        assert _format_duration(45.3) == "45.3s"
+
+    def test_exactly_one_minute(self) -> None:
+        assert _format_duration(60.0) == "1m 0s"
+
+    def test_minutes_and_seconds(self) -> None:
+        assert _format_duration(125.7) == "2m 5s"
+
+    def test_exactly_one_hour(self) -> None:
+        assert _format_duration(3600.0) == "1h 0m 0s"
+
+    def test_hours_minutes_seconds(self) -> None:
+        # 1383.5s -> 23m 3s
+        assert _format_duration(1383.5) == "23m 3s"
+
+    def test_large_duration(self) -> None:
+        # 2h 30m 45s = 9045s
+        assert _format_duration(9045.0) == "2h 30m 45s"
+
+    def test_zero(self) -> None:
+        assert _format_duration(0.0) == "0.0s"
+
+    def test_fractional_under_minute(self) -> None:
+        assert _format_duration(0.1) == "0.1s"
+
+    def test_rounding_near_minute_boundary(self) -> None:
+        assert _format_duration(59.95) == "1m 0s"
+
+    def test_just_under_minute_no_rounding(self) -> None:
+        assert _format_duration(59.94) == "59.9s"

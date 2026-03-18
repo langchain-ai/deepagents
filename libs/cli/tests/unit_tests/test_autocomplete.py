@@ -263,11 +263,11 @@ class TestSlashCommandController:
 
     def test_substring_name_match(self, controller, mock_view):
         """Substring of command name (not prefix) surfaces the command."""
-        controller.on_text_changed("/omp", 4)
+        controller.on_text_changed("/flo", 4)
 
         mock_view.render_completion_suggestions.assert_called()
         suggestions = mock_view.render_completion_suggestions.call_args[0][0]
-        assert any("/compact" in s[0] for s in suggestions)
+        assert any("/offload" in s[0] for s in suggestions)
 
     def test_true_fuzzy_match_via_misspelling(self, controller, mock_view):
         """Misspelled command surfaces via SequenceMatcher ratio."""
@@ -315,14 +315,14 @@ class TestScoreCommand:
         assert self.score("hel", "/help", "Show help") == 200
 
     def test_substring_name_returns_150(self):
-        assert self.score("omp", "/compact", "Summarize conversation") == 150
+        assert self.score("omp", "/compact", "Offload conversation") == 150
 
     def test_substring_desc_word_boundary_returns_110(self):
         assert self.score("exit", "/quit", "Exit app") == 110
 
     def test_substring_desc_mid_word_returns_90(self):
-        desc = "Summarize conversation to reduce context usage"
-        assert self.score("ex", "/compact", desc) == 90
+        desc = "Free up context window space by offloading older messages"
+        assert self.score("ex", "/offload", desc) == 90
 
     def test_no_match_returns_zero(self):
         assert self.score("zzzzz", "/help", "Show help") == 0
@@ -351,11 +351,11 @@ class TestScoreCommand:
     def test_tiers_ordering(self):
         """Prefix > substring-name > keyword > substring-desc > fuzzy."""
         prefix = self.score("hel", "/help", "Show help")
-        substr_name = self.score("omp", "/compact", "Summarize conversation")
+        substr_name = self.score("omp", "/compact", "Offload conversation")
         keyword = self.score("cont", "/threads", "Browse threads", "continue")
         desc_boundary = self.score("exit", "/quit", "Exit app")
-        compact_desc = "Summarize conversation to reduce context usage"
-        desc_mid = self.score("ex", "/compact", compact_desc)
+        offload_desc = "Free up context window space by offloading older messages"
+        desc_mid = self.score("ex", "/offload", offload_desc)
         fuzzy = self.score("hlep", "/help", "Show help")
         assert prefix > substr_name > keyword > desc_boundary > desc_mid > fuzzy > 0
 

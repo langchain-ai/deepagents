@@ -32,11 +32,10 @@ from deepagents_cli.clipboard import copy_selection_to_clipboard
 from deepagents_cli.config import (
     DOCS_URL,
     SHELL_TOOL_NAMES,
-    CharsetMode,
-    _detect_charset_mode,
     build_langsmith_thread_url,
     create_model,
     detect_provider,
+    is_ascii_mode,
     is_shell_command_allowed,
     newline_shortcut,
     settings,
@@ -709,7 +708,7 @@ class DeepAgentsApp(App):
         """Initialize components after mount."""
         chat = self.query_one("#chat", VerticalScroll)
         chat.anchor()
-        if _detect_charset_mode() == CharsetMode.ASCII:
+        if is_ascii_mode():
             chat.styles.scrollbar_size_vertical = 0
 
         self._status_bar = self.query_one("#status-bar", StatusBar)

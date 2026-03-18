@@ -31,6 +31,7 @@ jobs:
         uses: "./.github/actions/uv_setup"
         with:
           python-version: "3.14"
+          enable-cache: "false"
 
       - name: "✅ Verify pyproject.toml & _version.py Match"
         run: python .github/scripts/check_version_equality.py

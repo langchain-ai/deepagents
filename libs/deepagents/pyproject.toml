@@ -42,6 +42,8 @@ Reddit = "https://www.reddit.com/r/LangChain/"
 [dependency-groups]
 test = [
   "pytest",
+  "pytest-benchmark",
+  "pytest-codspeed",
   "pytest-cov",
   "pytest-xdist",
   "pytest-timeout>=2.3.1,<3.0.0",
@@ -101,12 +103,16 @@ ignore = [
     "PLC0414", # Import alias does not rename original package — conflicts with type-checker re-export conventions
 ]
 unfixable = ["B028"]  # Rules that shouldn't be auto-fixed
+extend-safe-fixes = ["PLR6201"]
 
 [tool.ruff.lint.pyupgrade]
 keep-runtime-typing = true
 
 [tool.ruff.lint.flake8-annotations]
 allow-star-arg-any = true
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
 
 [tool.ruff.lint.isort]
 force-single-line = false
@@ -138,6 +144,10 @@ ignore-var-parameters = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+addopts = "-m 'not benchmark'"
+markers = [
+    "benchmark: wall-time benchmarks for construction performance",
+]
 
 [tool.ty.environment]
 python-version = "3.11"

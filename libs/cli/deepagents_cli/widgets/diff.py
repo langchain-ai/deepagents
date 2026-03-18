@@ -9,7 +9,7 @@ from textual.containers import Vertical
 from textual.content import Content
 from textual.widgets import Static
 
-from deepagents_cli.config import CharsetMode, _detect_charset_mode, get_glyphs
+from deepagents_cli.config import get_glyphs, is_ascii_mode
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
@@ -193,7 +193,7 @@ class EnhancedDiff(Vertical):
 
     def on_mount(self) -> None:
         """Set border style based on charset mode."""
-        if _detect_charset_mode() == CharsetMode.ASCII:
+        if is_ascii_mode():
             self.styles.border = ("ascii", "cyan")
 
     def compose(self) -> ComposeResult:

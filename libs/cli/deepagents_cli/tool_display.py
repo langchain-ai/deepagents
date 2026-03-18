@@ -119,6 +119,9 @@ def format_tool_display(tool_name: str, tool_args: dict) -> str:
     def abbreviate_path(path_str: str, max_length: int = 60) -> str:
         """Abbreviate a file path intelligently - show basename or relative path.
 
+        For long paths, uses middle truncation to preserve both leading directory
+        context and the filename, avoiding ambiguity in monorepos/worktrees.
+
         Returns:
             Shortened path string suitable for display.
         """
@@ -146,8 +149,15 @@ def format_tool_display(tool_name: str, tool_args: dict) -> str:
         except Exception:  # noqa: BLE001  # Fallback to original string on any path resolution error
             return truncate_value(path_str, max_length)
         else:
-            # Otherwise, just show basename (filename only)
-            return path.name
+            # Middle-truncate to keep leading context and filename visible
+            name = path.name
+            if len(name) >= max_length - 4:
+                return name
+            budget = max_length - len(name) - 4  # 4 chars for "/…/"
+            parent_str = str(path.parent)
+            if budget > 0 and len(parent_str) > budget:
+                return parent_str[:budget] + "/\u2026/" + name
+            return parent_str + "/" + name
 
     # Tool-specific formatting - show the most important argument(s)
     if tool_name in {"read_file", "write_file", "edit_file"}:

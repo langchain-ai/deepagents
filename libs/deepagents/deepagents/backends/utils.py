@@ -15,7 +15,7 @@ from typing import Any, Literal, overload
 
 import wcmatch.glob as wcglob
 
-from deepagents.backends.protocol import FileData, FileInfo as _FileInfo, GrepMatch as _GrepMatch, GrepResult, ReadResult
+from deepagents.backends.protocol import EditOperationError, FileData, FileInfo as _FileInfo, GrepMatch as _GrepMatch, GrepResult, ReadResult
 
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
 
@@ -331,7 +331,7 @@ def perform_string_replacement(
     old_string: str,
     new_string: str,
     replace_all: bool = False,  # noqa: FBT001, FBT002
-) -> tuple[str, int] | str:
+) -> tuple[str, int] | EditOperationError:
     """Perform string replacement with occurrence validation.
 
     Args:
@@ -341,18 +341,15 @@ def perform_string_replacement(
         replace_all: Whether to replace all occurrences
 
     Returns:
-        Tuple of (new_content, occurrences) on success, or error message string
+        Tuple of (new_content, occurrences) on success, or error literal string
     """
     occurrences = content.count(old_string)
 
     if occurrences == 0:
-        return f"Error: String not found in file: '{old_string}'"
+        return "string_not_found"
 
     if occurrences > 1 and not replace_all:
-        return (
-            f"Error: String '{old_string}' appears {occurrences} times in file. "
-            f"Use replace_all=True to replace all instances, or provide a more specific string with surrounding context."
-        )
+        return "multiple_matches_found"
 
     new_content = content.replace(old_string, new_string)
     return new_content, occurrences

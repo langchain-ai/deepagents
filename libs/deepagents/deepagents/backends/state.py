@@ -144,7 +144,7 @@ class StateBackend(BackendProtocol):
         file_data = files.get(file_path)
 
         if file_data is None:
-            return ReadResult(error=f"File '{file_path}' not found")
+            return ReadResult(error="file_not_found")
 
         if _get_file_type(file_path) != "text":
             return ReadResult(file_data=file_data)
@@ -173,7 +173,7 @@ class StateBackend(BackendProtocol):
         files = self.runtime.state.get("files", {})
 
         if file_path in files:
-            return WriteResult(error=f"Cannot write to {file_path} because it already exists. Read and then make an edit, or write to a new path.")
+            return WriteResult(error="file_exists")
 
         new_file_data = create_file_data(content)
         return WriteResult(path=file_path, files_update={file_path: self._prepare_for_storage(new_file_data)})
@@ -193,7 +193,7 @@ class StateBackend(BackendProtocol):
         file_data = files.get(file_path)
 
         if file_data is None:
-            return EditResult(error=f"Error: File '{file_path}' not found")
+            return EditResult(error="file_not_found")
 
         content = file_data_to_string(file_data)
         result = perform_string_replacement(content, old_string, new_string, replace_all)

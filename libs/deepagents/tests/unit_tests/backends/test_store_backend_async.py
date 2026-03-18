@@ -138,7 +138,7 @@ async def test_store_backend_async_errors():
 
     # aedit missing file
     err = await be.aedit("/missing.txt", "a", "b")
-    assert isinstance(err, EditResult) and err.error and "not found" in err.error
+    assert isinstance(err, EditResult) and err.error == "file_not_found"
 
     # aread missing file
     read_result = await be.aread("/nonexistent.txt")
@@ -157,7 +157,7 @@ async def test_store_backend_aedit_replace_all():
     # Edit with replace_all=False when string appears multiple times should error
     res2 = await be.aedit("/test.txt", "foo", "qux", replace_all=False)
     assert res2.error is not None
-    assert "appears 2 times" in res2.error
+    assert res2.error == "multiple_matches_found"
 
     # Edit with replace_all=True - should replace all occurrences
     res3 = await be.aedit("/test.txt", "foo", "qux", replace_all=True)

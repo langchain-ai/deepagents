@@ -1,0 +1,216 @@
+﻿............................................................x........... [ 19%]
+.............................x..........................F..........F.... [ 39%]
+.F.............F..........F..........F.F..F....F.F...................... [ 59%]
+........................................................................ [ 79%]
+........................................................................ [ 98%]
+....                                                                     [100%]
+================================== FAILURES ===================================
+_____________________ test_filesystem_backend_normal_mode _____________________
+tests\unit_tests\backends\test_filesystem_backend.py:32: in test_filesystem_backend_normal_mode
+    assert (str(root) + "/dir/") in paths  # Directory should be listed
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   AssertionError: assert ('C:\\Users\\zavie\\AppData\\Local\\Temp\\pytest-of-zavie\\pytest-2\\test_filesystem_backend_normal0' + '/dir/') in {'C:\\Users\\zavie\\AppData\\Local\\Temp\\pytest-of-zavie\\pytest-2\\test_filesystem_backend_normal0\\a.txt', 'C:\\Users\\zavie\\AppData\\Local\\Temp\\pytest-of-zavie\\pytest-2\\test_filesystem_backend_normal0\\dir/'}
+E    +  where 'C:\\Users\\zavie\\AppData\\Local\\Temp\\pytest-of-zavie\\pytest-2\\test_filesystem_backend_normal0' = str(WindowsPath('C:/Users/zavie/AppData/Local/Temp/pytest-of-zavie/pytest-2/test_filesystem_backend_normal0'))
+_______________________ test_filesystem_download_errors _______________________
+tests\unit_tests\backends\test_filesystem_backend.py:364: in test_filesystem_download_errors
+    assert responses[0].error == "is_directory"
+E   AssertionError: assert 'permission_denied' == 'is_directory'
+E     
+E     - is_directory
+E     + permission_denied
+_________________ test_filesystem_download_directory_as_file __________________
+tests\unit_tests\backends\test_filesystem_backend.py:503: in test_filesystem_download_directory_as_file
+    assert responses[0].error == "is_directory"
+E   AssertionError: assert 'permission_denied' == 'is_directory'
+E     
+E     - is_directory
+E     + permission_denied
+__________________ test_filesystem_backend_async_normal_mode __________________
+tests\unit_tests\backends\test_filesystem_backend_async.py:35: in test_filesystem_backend_async_normal_mode
+    assert (str(root) + "/dir/") in paths  # Directory should be listed
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   AssertionError: assert ('C:\\Users\\zavie\\AppData\\Local\\Temp\\pytest-of-zavie\\pytest-2\\test_filesystem_backend_async_0' + '/dir/') in {'C:\\Users\\zavie\\AppData\\Local\\Temp\\pytest-of-zavie\\pytest-2\\test_filesystem_backend_async_0\\a.txt', 'C:\\Users\\zavie\\AppData\\Local\\Temp\\pytest-of-zavie\\pytest-2\\test_filesystem_backend_async_0\\dir/'}
+E    +  where 'C:\\Users\\zavie\\AppData\\Local\\Temp\\pytest-of-zavie\\pytest-2\\test_filesystem_backend_async_0' = str(WindowsPath('C:/Users/zavie/AppData/Local/Temp/pytest-of-zavie/pytest-2/test_filesystem_backend_async_0'))
+______________________ test_filesystem_adownload_errors _______________________
+tests\unit_tests\backends\test_filesystem_backend_async.py:367: in test_filesystem_adownload_errors
+    assert responses[0].error == "is_directory"
+E   AssertionError: assert 'permission_denied' == 'is_directory'
+E     
+E     - is_directory
+E     + permission_denied
+____________ test_local_shell_backend_execute_in_working_directory ____________
+tests\unit_tests\backends\test_local_shell_backend.py:59: in test_local_shell_backend_execute_in_working_directory
+    assert result.exit_code == 0
+E   assert 1 == 0
+E    +  where 1 = ExecuteResponse(output="[stderr] 'cat' is not recognized as an internal or external command,\n[stderr] operable program or batch file.\n\nExit code: 1", exit_code=1, truncated=False).exit_code
+__________________ test_local_shell_backend_execute_timeout ___________________
+tests\unit_tests\backends\test_local_shell_backend.py:82: in test_local_shell_backend_execute_timeout
+    assert result.exit_code == 124  # Standard timeout exit code
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   assert 1 == 124
+E    +  where 1 = ExecuteResponse(output="[stderr] 'sleep' is not recognized as an internal or external command,\n[stderr] operable program or batch file.\n\nExit code: 1", exit_code=1, truncated=False).exit_code
+__________ test_local_shell_backend_integration_shell_and_filesystem __________
+tests\unit_tests\backends\test_local_shell_backend.py:139: in test_local_shell_backend_integration_shell_and_filesystem
+    assert result.exit_code == 0
+E   AssertionError: assert 1 == 0
+E    +  where 1 = ExecuteResponse(output='[stderr] <3>WSL (9 - Relay) ERROR: CreateProcessCommon:735: execvpe(/bin/bash) failed: No such file or directory\n\nExit code: 1', exit_code=1, truncated=False).exit_code
+_______________ test_local_shell_backend_environment_variables ________________
+tests\unit_tests\backends\test_local_shell_backend.py:231: in test_local_shell_backend_environment_variables
+    assert result.exit_code == 0
+E   assert 1 == 0
+E    +  where 1 = ExecuteResponse(output="[stderr] 'sh' is not recognized as an internal or external command,\n[stderr] operable program or batch file.\n\nExit code: 1", exit_code=1, truncated=False).exit_code
+________________ test_local_shell_backend_empty_env_by_default ________________
+tests\unit_tests\backends\test_local_shell_backend.py:255: in test_local_shell_backend_empty_env_by_default
+    assert result.exit_code == 0
+E   assert 1 == 0
+E    +  where 1 = ExecuteResponse(output="[stderr] 'sh' is not recognized as an internal or external command,\n[stderr] operable program or batch file.\n\nExit code: 1", exit_code=1, truncated=False).exit_code
+============================== warnings summary ===============================
+tests/unit_tests/backends/test_backwards_compat.py::TestV1StyleWritesStateBackend::test_write_read_roundtrip
+tests/unit_tests/backends/test_backwards_compat.py::TestV1StyleWritesStateBackend::test_write_edit_read_lifecycle
+tests/unit_tests/backends/test_backwards_compat.py::TestV1StyleWritesStateBackend::test_write_edit_read_lifecycle
+tests/unit_tests/backends/test_file_format.py::test_state_edit_as_list
+  C:\Users\zavie\Downloads\Local Code\deepagents\libs\deepagents\deepagents\backends\utils.py:211: DeprecationWarning: FileData with list[str] content is deprecated. Content should be stored as a plain str.
+    return _normalize_content(file_data)
+
+tests/unit_tests/backends/test_backwards_compat.py::TestV1StyleWritesStoreBackend::test_write_edit_read_lifecycle
+tests/unit_tests/backends/test_file_format.py::test_store_edit_as_list
+  C:\Users\zavie\Downloads\Local Code\deepagents\libs\deepagents\deepagents\backends\store.py:539: DeprecationWarning: Store item with list[str] content is deprecated. Content should be stored as a plain str.
+    file_data = self._convert_store_item_to_file_data(item)
+
+tests/unit_tests/backends/test_composite_backend.py: 49 warnings
+tests/unit_tests/backends/test_store_backend.py: 35 warnings
+tests/unit_tests/backends/test_store_backend_async.py: 2 warnings
+  C:\Users\zavie\Downloads\Local Code\deepagents\libs\deepagents\deepagents\backends\store.py:483: DeprecationWarning: StoreBackend without explicit `namespace` is deprecated. Pass `namespace=lambda ctx: (...)` to StoreBackend.
+    namespace = self._get_namespace()
+
+tests/unit_tests/backends/test_composite_backend.py: 25 warnings
+tests/unit_tests/backends/test_composite_backend_async.py: 23 warnings
+tests/unit_tests/backends/test_store_backend.py: 7 warnings
+tests/unit_tests/backends/test_store_backend_async.py: 3 warnings
+  C:\Users\zavie\Downloads\Local Code\deepagents\libs\deepagents\deepagents\backends\store.py:605: DeprecationWarning: StoreBackend without explicit `namespace` is deprecated. Pass `namespace=lambda ctx: (...)` to StoreBackend.
+    namespace = self._get_namespace()
+
+tests/unit_tests/backends/test_composite_backend.py: 10 warnings
+tests/unit_tests/backends/test_composite_backend_async.py: 8 warnings
+tests/unit_tests/backends/test_store_backend_async.py: 4 warnings
+  C:\Users\zavie\Downloads\Local Code\deepagents\libs\deepagents\deepagents\backends\store.py:618: DeprecationWarning: StoreBackend without explicit `namespace` is deprecated. Pass `namespace=lambda ctx: (...)` to StoreBackend.
+    namespace = self._get_namespace()
+
+tests/unit_tests/backends/test_composite_backend.py: 11 warnings
+tests/unit_tests/backends/test_composite_backend_async.py: 8 warnings
+tests/unit_tests/backends/test_store_backend_async.py: 8 warnings
+  C:\Users\zavie\Downloads\Local Code\deepagents\libs\deepagents\deepagents\backends\store.py:343: DeprecationWarning: StoreBackend without explicit `namespace` is deprecated. Pass `namespace=lambda ctx: (...)` to StoreBackend.
+    namespace = self._get_namespace()
+
+tests/unit_tests/backends/test_composite_backend.py::test_composite_backend_store_to_store
+tests/unit_tests/backends/test_composite_backend.py::test_composite_backend_store_to_store
+tests/unit_tests/backends/test_composite_backend.py::test_composite_backend_multiple_routes
+tests/unit_tests/backends/test_composite_backend.py::test_composite_backend_execute_with_routed_backends
+tests/unit_tests/backends/test_composite_backend.py::test_composite_upload_routing
+  C:\Users\zavie\Downloads\Local Code\deepagents\libs\deepagents\deepagents\backends\store.py:410: DeprecationWarning: StoreBackend without explicit `namespace` is deprecated. Pass `namespace=lambda ctx: (...)` to StoreBackend.
+    namespace = self._get_namespace()
+
+tests/unit_tests/backends/test_composite_backend.py::test_composite_backend_multiple_routes
+tests/unit_tests/backends/test_composite_backend.py::test_edit_result_path_restored_to_full_routed_path
+  C:\Users\zavie\Downloads\Local Code\deepagents\libs\deepagents\deepagents\backends\store.py:531: DeprecationWarning: StoreBackend without explicit `namespace` is deprecated. Pass `namespace=lambda ctx: (...)` to StoreBackend.
+    namespace = self._get_namespace()
+
+tests/unit_tests/backends/test_composite_backend.py::test_composite_upload_routing
+tests/unit_tests/backends/test_composite_backend.py::test_composite_upload_download_multiple_routes
+tests/unit_tests/backends/test_composite_backend.py::test_composite_upload_download_multiple_routes
+tests/unit_tests/backends/test_composite_backend_async.py::test_composite_aupload_routing_async
+tests/unit_tests/backends/test_composite_backend_async.py::test_composite_aupload_download_multiple_routes_async
+tests/unit_tests/backends/test_composite_backend_async.py::test_composite_aupload_download_multiple_routes_async
+tests/unit_tests/backends/test_store_backend_async.py::test_store_backend_aupload_adownload
+  C:\Users\zavie\Downloads\Local Code\deepagents\libs\deepagents\deepagents\backends\store.py:663: DeprecationWarning: StoreBackend without explicit `namespace` is deprecated. Pass `namespace=lambda ctx: (...)` to StoreBackend.
+    namespace = self._get_namespace()
+
+tests/unit_tests/backends/test_composite_backend_async.py: 40 warnings
+tests/unit_tests/backends/test_store_backend_async.py: 22 warnings
+  C:\Users\zavie\Downloads\Local Code\deepagents\libs\deepagents\deepagents\backends\store.py:506: DeprecationWarning: StoreBackend without explicit `namespace` is deprecated. Pass `namespace=lambda ctx: (...)` to StoreBackend.
+    namespace = self._get_namespace()
+
+tests/unit_tests/backends/test_composite_backend_async.py: 5 warnings
+tests/unit_tests/backends/test_store_backend_async.py: 5 warnings
+  C:\Users\zavie\Downloads\Local Code\deepagents\libs\deepagents\deepagents\backends\store.py:447: DeprecationWarning: StoreBackend without explicit `namespace` is deprecated. Pass `namespace=lambda ctx: (...)` to StoreBackend.
+    namespace = self._get_namespace()
+
+tests/unit_tests/backends/test_composite_backend_async.py::test_composite_backend_multiple_routes_async
+tests/unit_tests/backends/test_composite_backend_async.py::test_aedit_result_path_restored_to_full_routed_path
+tests/unit_tests/backends/test_store_backend_async.py::test_store_backend_async_crud_and_search
+tests/unit_tests/backends/test_store_backend_async.py::test_store_backend_async_errors
+tests/unit_tests/backends/test_store_backend_async.py::test_store_backend_aedit_replace_all
+tests/unit_tests/backends/test_store_backend_async.py::test_store_backend_aedit_replace_all
+tests/unit_tests/backends/test_store_backend_async.py::test_store_backend_aedit_replace_all
+  C:\Users\zavie\Downloads\Local Code\deepagents\libs\deepagents\deepagents\backends\store.py:569: DeprecationWarning: StoreBackend without explicit `namespace` is deprecated. Pass `namespace=lambda ctx: (...)` to StoreBackend.
+    namespace = self._get_namespace()
+
+tests/unit_tests/backends/test_file_format.py::test_store_write_as_list_readable
+  C:\Users\zavie\Downloads\Local Code\deepagents\libs\deepagents\deepagents\backends\store.py:417: DeprecationWarning: Store item with list[str] content is deprecated. Content should be stored as a plain str.
+    file_data = self._convert_store_item_to_file_data(item)
+
+tests/unit_tests/backends/test_local_shell_backend.py::test_local_shell_backend_initialization
+  C:\Users\zavie\Downloads\Local Code\deepagents\libs\deepagents\tests\unit_tests\backends\test_local_shell_backend.py:15: DeprecationWarning: LocalShellBackend virtual_mode default will change in deepagents 0.5.0; please specify virtual_mode explicitly. Note: virtual_mode is for virtual path semantics (e.g., CompositeBackend routing) and optional path-based guardrails; it does not provide sandboxing or process isolation. Security note: leaving virtual_mode=False allows absolute paths and '..' to bypass root_dir, and LocalShellBackend provides no sandboxing (execute runs commands on the host; virtual_mode does not restrict shell execution). See https://reference.langchain.com/python/deepagents/ for usage guidelines.
+    backend = LocalShellBackend(root_dir=tmpdir)
+
+tests/unit_tests/backends/test_local_shell_backend.py::test_local_shell_backend_execute_simple_command
+  C:\Users\zavie\Downloads\Local Code\deepagents\libs\deepagents\tests\unit_tests\backends\test_local_shell_backend.py:25: DeprecationWarning: LocalShellBackend virtual_mode default will change in deepagents 0.5.0; please specify virtual_mode explicitly. Note: virtual_mode is for virtual path semantics (e.g., CompositeBackend routing) and optional path-based guardrails; it does not provide sandboxing or process isolation. Security note: leaving virtual_mode=False allows absolute paths and '..' to bypass root_dir, and LocalShellBackend provides no sandboxing (execute runs commands on the host; virtual_mode does not restrict shell execution). See https://reference.langchain.com/python/deepagents/ for usage guidelines.
+    backend = LocalShellBackend(root_dir=tmpdir, inherit_env=True)
+
+tests/unit_tests/backends/test_local_shell_backend.py::test_local_shell_backend_execute_with_error
+  C:\Users\zavie\Downloads\Local Code\deepagents\libs\deepagents\tests\unit_tests\backends\test_local_shell_backend.py:38: DeprecationWarning: LocalShellBackend virtual_mode default will change in deepagents 0.5.0; please specify virtual_mode explicitly. Note: virtual_mode is for virtual path semantics (e.g., CompositeBackend routing) and optional path-based guardrails; it does not provide sandboxing or process isolation. Security note: leaving virtual_mode=False allows absolute paths and '..' to bypass root_dir, and LocalShellBackend provides no sandboxing (execute runs commands on the host; virtual_mode does not restrict shell execution). See https://reference.langchain.com/python/deepagents/ for usage guidelines.
+    backend = LocalShellBackend(root_dir=tmpdir, inherit_env=True)
+
+tests/unit_tests/backends/test_local_shell_backend.py::test_local_shell_backend_execute_in_working_directory
+  C:\Users\zavie\Downloads\Local Code\deepagents\libs\deepagents\tests\unit_tests\backends\test_local_shell_backend.py:54: DeprecationWarning: LocalShellBackend virtual_mode default will change in deepagents 0.5.0; please specify virtual_mode explicitly. Note: virtual_mode is for virtual path semantics (e.g., CompositeBackend routing) and optional path-based guardrails; it does not provide sandboxing or process isolation. Security note: leaving virtual_mode=False allows absolute paths and '..' to bypass root_dir, and LocalShellBackend provides no sandboxing (execute runs commands on the host; virtual_mode does not restrict shell execution). See https://reference.langchain.com/python/deepagents/ for usage guidelines.
+    backend = LocalShellBackend(root_dir=tmpdir, inherit_env=True)
+
+tests/unit_tests/backends/test_local_shell_backend.py::test_local_shell_backend_execute_empty_command
+  C:\Users\zavie\Downloads\Local Code\deepagents\libs\deepagents\tests\unit_tests\backends\test_local_shell_backend.py:66: DeprecationWarning: LocalShellBackend virtual_mode default will change in deepagents 0.5.0; please specify virtual_mode explicitly. Note: virtual_mode is for virtual path semantics (e.g., CompositeBackend routing) and optional path-based guardrails; it does not provide sandboxing or process isolation. Security note: leaving virtual_mode=False allows absolute paths and '..' to bypass root_dir, and LocalShellBackend provides no sandboxing (execute runs commands on the host; virtual_mode does not restrict shell execution). See https://reference.langchain.com/python/deepagents/ for usage guidelines.
+    backend = LocalShellBackend(root_dir=tmpdir)
+
+tests/unit_tests/backends/test_local_shell_backend.py::test_local_shell_backend_execute_timeout
+  C:\Users\zavie\Downloads\Local Code\deepagents\libs\deepagents\tests\unit_tests\backends\test_local_shell_backend.py:77: DeprecationWarning: LocalShellBackend virtual_mode default will change in deepagents 0.5.0; please specify virtual_mode explicitly. Note: virtual_mode is for virtual path semantics (e.g., CompositeBackend routing) and optional path-based guardrails; it does not provide sandboxing or process isolation. Security note: leaving virtual_mode=False allows absolute paths and '..' to bypass root_dir, and LocalShellBackend provides no sandboxing (execute runs commands on the host; virtual_mode does not restrict shell execution). See https://reference.langchain.com/python/deepagents/ for usage guidelines.
+    backend = LocalShellBackend(root_dir=tmpdir, timeout=1.0, inherit_env=True)
+
+tests/unit_tests/backends/test_local_shell_backend.py::test_local_shell_backend_execute_output_truncation
+  C:\Users\zavie\Downloads\Local Code\deepagents\libs\deepagents\tests\unit_tests\backends\test_local_shell_backend.py:89: DeprecationWarning: LocalShellBackend virtual_mode default will change in deepagents 0.5.0; please specify virtual_mode explicitly. Note: virtual_mode is for virtual path semantics (e.g., CompositeBackend routing) and optional path-based guardrails; it does not provide sandboxing or process isolation. Security note: leaving virtual_mode=False allows absolute paths and '..' to bypass root_dir, and LocalShellBackend provides no sandboxing (execute runs commands on the host; virtual_mode does not restrict shell execution). See https://reference.langchain.com/python/deepagents/ for usage guidelines.
+    backend = LocalShellBackend(root_dir=tmpdir, max_output_bytes=100, inherit_env=True)
+
+tests/unit_tests/backends/test_local_shell_backend.py::test_local_shell_backend_environment_variables
+  C:\Users\zavie\Downloads\Local Code\deepagents\libs\deepagents\tests\unit_tests\backends\test_local_shell_backend.py:227: DeprecationWarning: LocalShellBackend virtual_mode default will change in deepagents 0.5.0; please specify virtual_mode explicitly. Note: virtual_mode is for virtual path semantics (e.g., CompositeBackend routing) and optional path-based guardrails; it does not provide sandboxing or process isolation. Security note: leaving virtual_mode=False allows absolute paths and '..' to bypass root_dir, and LocalShellBackend provides no sandboxing (execute runs commands on the host; virtual_mode does not restrict shell execution). See https://reference.langchain.com/python/deepagents/ for usage guidelines.
+    backend = LocalShellBackend(root_dir=tmpdir, env=custom_env)
+
+tests/unit_tests/backends/test_local_shell_backend.py::test_local_shell_backend_inherit_env
+  C:\Users\zavie\Downloads\Local Code\deepagents\libs\deepagents\tests\unit_tests\backends\test_local_shell_backend.py:238: DeprecationWarning: LocalShellBackend virtual_mode default will change in deepagents 0.5.0; please specify virtual_mode explicitly. Note: virtual_mode is for virtual path semantics (e.g., CompositeBackend routing) and optional path-based guardrails; it does not provide sandboxing or process isolation. Security note: leaving virtual_mode=False allows absolute paths and '..' to bypass root_dir, and LocalShellBackend provides no sandboxing (execute runs commands on the host; virtual_mode does not restrict shell execution). See https://reference.langchain.com/python/deepagents/ for usage guidelines.
+    backend = LocalShellBackend(root_dir=tmpdir, inherit_env=True)
+
+tests/unit_tests/backends/test_local_shell_backend.py::test_local_shell_backend_empty_env_by_default
+  C:\Users\zavie\Downloads\Local Code\deepagents\libs\deepagents\tests\unit_tests\backends\test_local_shell_backend.py:250: DeprecationWarning: LocalShellBackend virtual_mode default will change in deepagents 0.5.0; please specify virtual_mode explicitly. Note: virtual_mode is for virtual path semantics (e.g., CompositeBackend routing) and optional path-based guardrails; it does not provide sandboxing or process isolation. Security note: leaving virtual_mode=False allows absolute paths and '..' to bypass root_dir, and LocalShellBackend provides no sandboxing (execute runs commands on the host; virtual_mode does not restrict shell execution). See https://reference.langchain.com/python/deepagents/ for usage guidelines.
+    backend = LocalShellBackend(root_dir=tmpdir)
+
+tests/unit_tests/backends/test_local_shell_backend.py::test_local_shell_backend_stderr_formatting
+  C:\Users\zavie\Downloads\Local Code\deepagents\libs\deepagents\tests\unit_tests\backends\test_local_shell_backend.py:263: DeprecationWarning: LocalShellBackend virtual_mode default will change in deepagents 0.5.0; please specify virtual_mode explicitly. Note: virtual_mode is for virtual path semantics (e.g., CompositeBackend routing) and optional path-based guardrails; it does not provide sandboxing or process isolation. Security note: leaving virtual_mode=False allows absolute paths and '..' to bypass root_dir, and LocalShellBackend provides no sandboxing (execute runs commands on the host; virtual_mode does not restrict shell execution). See https://reference.langchain.com/python/deepagents/ for usage guidelines.
+    backend = LocalShellBackend(root_dir=tmpdir, inherit_env=True)
+
+tests/unit_tests/backends/test_local_shell_backend.py::test_local_shell_backend_async_execute
+  C:\Users\zavie\Downloads\Local Code\deepagents\libs\deepagents\tests\unit_tests\backends\test_local_shell_backend.py:276: DeprecationWarning: LocalShellBackend virtual_mode default will change in deepagents 0.5.0; please specify virtual_mode explicitly. Note: virtual_mode is for virtual path semantics (e.g., CompositeBackend routing) and optional path-based guardrails; it does not provide sandboxing or process isolation. Security note: leaving virtual_mode=False allows absolute paths and '..' to bypass root_dir, and LocalShellBackend provides no sandboxing (execute runs commands on the host; virtual_mode does not restrict shell execution). See https://reference.langchain.com/python/deepagents/ for usage guidelines.
+    backend = LocalShellBackend(root_dir=tmpdir, inherit_env=True)
+
+tests/unit_tests/backends/test_store_backend_async.py::test_store_backend_aupload_adownload
+  C:\Users\zavie\Downloads\Local Code\deepagents\libs\deepagents\deepagents\backends\store.py:693: DeprecationWarning: StoreBackend without explicit `namespace` is deprecated. Pass `namespace=lambda ctx: (...)` to StoreBackend.
+    namespace = self._get_namespace()
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/unit_tests/backends/test_filesystem_backend.py::test_filesystem_backend_normal_mode
+FAILED tests/unit_tests/backends/test_filesystem_backend.py::test_filesystem_download_errors
+FAILED tests/unit_tests/backends/test_filesystem_backend.py::test_filesystem_download_directory_as_file
+FAILED tests/unit_tests/backends/test_filesystem_backend_async.py::test_filesystem_backend_async_normal_mode
+FAILED tests/unit_tests/backends/test_filesystem_backend_async.py::test_filesystem_adownload_errors
+FAILED tests/unit_tests/backends/test_local_shell_backend.py::test_local_shell_backend_execute_in_working_directory
+FAILED tests/unit_tests/backends/test_local_shell_backend.py::test_local_shell_backend_execute_timeout
+FAILED tests/unit_tests/backends/test_local_shell_backend.py::test_local_shell_backend_integration_shell_and_filesystem
+FAILED tests/unit_tests/backends/test_local_shell_backend.py::test_local_shell_backend_environment_variables
+FAILED tests/unit_tests/backends/test_local_shell_backend.py::test_local_shell_backend_empty_env_by_default
+10 failed, 352 passed, 2 xfailed, 306 warnings in 4.42s

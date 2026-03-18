@@ -411,12 +411,12 @@ class StoreBackend(BackendProtocol):
         item: Item | None = store.get(namespace, file_path)
 
         if item is None:
-            return ReadResult(error=f"File '{file_path}' not found")
+            return ReadResult(error="file_not_found")
 
         try:
             file_data = self._convert_store_item_to_file_data(item)
-        except ValueError as e:
-            return ReadResult(error=str(e))
+        except ValueError:
+            return ReadResult(error="permission_denied")
 
         if _get_file_type(file_path) != "text":
             return ReadResult(file_data=file_data)
@@ -448,12 +448,12 @@ class StoreBackend(BackendProtocol):
         item: Item | None = await store.aget(namespace, file_path)
 
         if item is None:
-            return ReadResult(error=f"File '{file_path}' not found")
+            return ReadResult(error="file_not_found")
 
         try:
             file_data = self._convert_store_item_to_file_data(item)
-        except ValueError as e:
-            return ReadResult(error=str(e))
+        except ValueError:
+            return ReadResult(error="permission_denied")
 
         if _get_file_type(file_path) != "text":
             return ReadResult(file_data=file_data)
@@ -485,7 +485,7 @@ class StoreBackend(BackendProtocol):
         # Check if file exists
         existing = store.get(namespace, file_path)
         if existing is not None:
-            return WriteResult(error=f"Cannot write to {file_path} because it already exists. Read and then make an edit, or write to a new path.")
+            return WriteResult(error="file_exists")
 
         # Create new file
         file_data = create_file_data(content)
@@ -508,7 +508,7 @@ class StoreBackend(BackendProtocol):
         # Check if file exists using async method
         existing = await store.aget(namespace, file_path)
         if existing is not None:
-            return WriteResult(error=f"Cannot write to {file_path} because it already exists. Read and then make an edit, or write to a new path.")
+            return WriteResult(error="file_exists")
 
         # Create new file using async method
         file_data = create_file_data(content)
@@ -533,12 +533,12 @@ class StoreBackend(BackendProtocol):
         # Get existing file
         item = store.get(namespace, file_path)
         if item is None:
-            return EditResult(error=f"Error: File '{file_path}' not found")
+            return EditResult(error="file_not_found")
 
         try:
             file_data = self._convert_store_item_to_file_data(item)
-        except ValueError as e:
-            return EditResult(error=f"Error: {e}")
+        except ValueError:
+            return EditResult(error="permission_denied")
 
         content = file_data_to_string(file_data)
         result = perform_string_replacement(content, old_string, new_string, replace_all)
@@ -571,12 +571,12 @@ class StoreBackend(BackendProtocol):
         # Get existing file using async method
         item = await store.aget(namespace, file_path)
         if item is None:
-            return EditResult(error=f"Error: File '{file_path}' not found")
+            return EditResult(error="file_not_found")
 
         try:
             file_data = self._convert_store_item_to_file_data(item)
-        except ValueError as e:
-            return EditResult(error=f"Error: {e}")
+        except ValueError:
+            return EditResult(error="permission_denied")
 
         content = file_data_to_string(file_data)
         result = perform_string_replacement(content, old_string, new_string, replace_all)

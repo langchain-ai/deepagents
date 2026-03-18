@@ -303,7 +303,7 @@ except PermissionError:
         try:
             data = json.loads(output)
         except json.JSONDecodeError:
-            return ReadResult(error=f"File '{file_path}' not found")
+            return ReadResult(error="file_not_found")
 
         if "error" in data:
             return ReadResult(error=data["error"])
@@ -326,10 +326,8 @@ except PermissionError:
         cmd = _WRITE_COMMAND_TEMPLATE.format(payload_b64=payload_b64)
         result = self.execute(cmd)
 
-        # Check for errors (exit code or error message in output)
         if result.exit_code != 0 or "Error:" in result.output:
-            error_msg = result.output.strip() or f"Failed to write file '{file_path}'"
-            return WriteResult(error=error_msg)
+            return WriteResult(error="permission_denied" if result.exit_code != 0 else "file_exists")
 
         # External storage - no files_update needed
         return WriteResult(path=file_path, files_update=None)
@@ -356,15 +354,15 @@ except PermissionError:
 
         # Map exit codes to error messages
         error_messages = {
-            1: f"Error: String not found in file: '{old_string}'",
-            2: f"Error: String '{old_string}' appears multiple times. Use replace_all=True to replace all occurrences.",
-            3: f"Error: File '{file_path}' not found",
-            4: f"Error: Failed to decode edit payload: {output}",
+            1: "string_not_found",
+            2: "multiple_matches_found",
+            3: "file_not_found",
+            4: "permission_denied",
         }
         if exit_code in error_messages:
             return EditResult(error=error_messages[exit_code])
         if exit_code != 0:
-            return EditResult(error=f"Error editing file (exit code {exit_code}): {output or 'Unknown error'}")
+            return EditResult(error="permission_denied")
 
         count = int(output)
         # External storage - no files_update needed

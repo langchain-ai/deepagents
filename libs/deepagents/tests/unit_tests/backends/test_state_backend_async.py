@@ -76,14 +76,14 @@ async def test_state_backend_async_errors():
 
     # aedit missing file
     err = await be.aedit("/missing.txt", "a", "b")
-    assert isinstance(err, EditResult) and err.error and "not found" in err.error
+    assert isinstance(err, EditResult) and err.error == "file_not_found"
 
     # awrite duplicate
     res = await be.awrite("/dup.txt", "x")
     assert isinstance(res, WriteResult) and res.files_update is not None
     rt.state["files"].update(res.files_update)
     dup_err = await be.awrite("/dup.txt", "y")
-    assert isinstance(dup_err, WriteResult) and dup_err.error and "already exists" in dup_err.error
+    assert isinstance(dup_err, WriteResult) and dup_err.error == "file_exists"
 
 
 async def test_state_backend_als_nested_directories():
@@ -172,7 +172,7 @@ async def test_state_backend_aedit_replace_all():
     # Edit with replace_all=False when string appears multiple times should error
     res2 = await be.aedit("/test.txt", "hello", "hi", replace_all=False)
     assert res2.error is not None
-    assert "appears 2 times" in res2.error
+    assert res2.error == "multiple_matches_found"
 
     # Edit with replace_all=True - should replace all occurrences
     res3 = await be.aedit("/test.txt", "hello", "hi", replace_all=True)

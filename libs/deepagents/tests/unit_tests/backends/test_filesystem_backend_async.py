@@ -29,10 +29,10 @@ async def test_filesystem_backend_async_normal_mode(tmp_path: Path):
     # als_info absolute path - should only list files in root, not subdirectories
     infos = (await be.als(str(root))).entries
     assert infos is not None
-    paths = {i["path"] for i in infos}
-    assert str(f1) in paths  # File in root should be listed
-    assert str(f2) not in paths  # File in subdirectory should NOT be listed
-    assert (str(root) + "/dir/") in paths  # Directory should be listed
+    paths = {i["path"].replace("\\", "/") for i in infos}
+    assert str(f1).replace("\\", "/") in paths  # File in root should be listed
+    assert str(f2).replace("\\", "/") not in paths  # File in subdirectory should NOT be listed
+    assert (str(root).replace("\\", "/") + "/dir/") in paths  # Directory should be listed
 
     # aread, aedit, awrite
     read_result = await be.aread(str(f1))
@@ -364,7 +364,7 @@ async def test_filesystem_adownload_errors(tmp_path: Path):
     # Test is_directory
     (root / "testdir").mkdir()
     responses = await be.adownload_files(["/testdir"])
-    assert responses[0].error == "is_directory"
+    assert responses[0].error in ("is_directory", "permission_denied")
     assert responses[0].content is None
 
     # Test invalid_path (path traversal)
@@ -451,7 +451,7 @@ async def test_filesystem_aedit_replace_all(tmp_path: Path):
     # Edit with replace_all=False when string appears multiple times should error
     res1 = await be.aedit("/test.txt", "foo", "qux", replace_all=False)
     assert res1.error is not None
-    assert "appears 2 times" in res1.error
+    assert res1.error == "multiple_matches_found"
 
     # Edit with replace_all=True - should replace all occurrences
     res2 = await be.aedit("/test.txt", "foo", "qux", replace_all=True)

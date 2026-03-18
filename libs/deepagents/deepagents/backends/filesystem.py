@@ -316,7 +316,7 @@ class FilesystemBackend(BackendProtocol):
         resolved_path = self._resolve_path(file_path)
 
         if not resolved_path.exists() or not resolved_path.is_file():
-            return ReadResult(error=f"File '{file_path}' not found")
+            return ReadResult(error="file_not_found")
 
         try:
             fd = os.open(resolved_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
@@ -338,12 +338,12 @@ class FilesystemBackend(BackendProtocol):
             end_idx = min(start_idx + limit, len(lines))
 
             if start_idx >= len(lines):
-                return ReadResult(error=f"Line offset {offset} exceeds file length ({len(lines)} lines)")
+                return ReadResult(error="file_not_found")
 
             selected_lines = lines[start_idx:end_idx]
             return ReadResult(file_data=create_file_data("\n".join(selected_lines)))
-        except OSError as e:
-            return ReadResult(error=f"Error reading file '{file_path}': {e}")
+        except OSError:
+            return ReadResult(error="permission_denied")
 
     def write(
         self,
@@ -363,7 +363,7 @@ class FilesystemBackend(BackendProtocol):
         resolved_path = self._resolve_path(file_path)
 
         if resolved_path.exists():
-            return WriteResult(error=f"Cannot write to {file_path} because it already exists. Read and then make an edit, or write to a new path.")
+            return WriteResult(error="file_exists")
 
         try:
             # Create parent directories if needed
@@ -378,8 +378,8 @@ class FilesystemBackend(BackendProtocol):
                 f.write(content)
 
             return WriteResult(path=file_path, files_update=None)
-        except (OSError, UnicodeEncodeError) as e:
-            return WriteResult(error=f"Error writing file '{file_path}': {e}")
+        except (OSError, UnicodeEncodeError):
+            return WriteResult(error="permission_denied")
 
     def edit(
         self,
@@ -405,7 +405,7 @@ class FilesystemBackend(BackendProtocol):
         resolved_path = self._resolve_path(file_path)
 
         if not resolved_path.exists() or not resolved_path.is_file():
-            return EditResult(error=f"Error: File '{file_path}' not found")
+            return EditResult(error="file_not_found")
 
         try:
             # Read securely
@@ -429,8 +429,8 @@ class FilesystemBackend(BackendProtocol):
                 f.write(new_content)
 
             return EditResult(path=file_path, files_update=None, occurrences=int(occurrences))
-        except (OSError, UnicodeDecodeError, UnicodeEncodeError) as e:
-            return EditResult(error=f"Error editing file '{file_path}': {e}")
+        except (OSError, UnicodeDecodeError, UnicodeEncodeError):
+            return EditResult(error="permission_denied")
 
     def grep(
         self,

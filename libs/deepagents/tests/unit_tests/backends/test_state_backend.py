@@ -72,14 +72,14 @@ def test_state_backend_errors():
 
     # edit missing file
     err = be.edit("/missing.txt", "a", "b")
-    assert isinstance(err, EditResult) and err.error and "not found" in err.error
+    assert isinstance(err, EditResult) and err.error == "file_not_found"
 
     # write duplicate
     res = be.write("/dup.txt", "x")
     assert isinstance(res, WriteResult) and res.files_update is not None
     rt.state["files"].update(res.files_update)
     dup_err = be.write("/dup.txt", "y")
-    assert isinstance(dup_err, WriteResult) and dup_err.error and "already exists" in dup_err.error
+    assert isinstance(dup_err, WriteResult) and dup_err.error == "file_exists"
 
 
 def test_state_backend_ls_nested_directories():

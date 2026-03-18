@@ -46,6 +46,48 @@ These represent common, recoverable errors that an LLM can understand and potent
 - invalid_path: Path syntax is malformed or contains invalid characters
 """
 
+ReadOperationError = Literal[
+    "file_not_found",
+    "permission_denied",
+    "is_directory",
+]
+"""Standardized error codes for read operations."""
+
+WriteOperationError = Literal[
+    "file_exists",
+    "permission_denied",
+    "invalid_path",
+    "out_of_space",
+]
+"""Standardized error codes for write operations."""
+
+EditOperationError = Literal[
+    "file_not_found",
+    "permission_denied",
+    "string_not_found",
+    "multiple_matches_found",
+]
+"""Standardized error codes for edit operations."""
+
+LsOperationError = Literal[
+    "directory_not_found",
+    "permission_denied",
+    "not_a_directory",
+]
+"""Standardized error codes for list directory operations."""
+
+GrepOperationError = Literal[
+    "invalid_regex",
+    "directory_not_found",
+]
+"""Standardized error codes for grep operations."""
+
+GlobOperationError = Literal[
+    "invalid_pattern",
+    "directory_not_found",
+]
+"""Standardized error codes for glob operations."""
+
 
 @dataclass
 class FileDownloadResponse:
@@ -143,11 +185,11 @@ class ReadResult:
     """Result from backend read operations.
 
     Attributes:
-        error: Error message on failure, None on success.
+        error: Standardized error code on failure, None on success.
         file_data: FileData dict on success, None on failure.
     """
 
-    error: str | None = None
+    error: ReadOperationError | str | None = None
     file_data: FileData | None = None
 
 
@@ -156,7 +198,7 @@ class WriteResult:
     """Result from backend write operations.
 
     Attributes:
-        error: Error message on failure, None on success.
+        error: Standardized error code on failure, None on success.
         path: Absolute path of written file, None on failure.
         files_update: State update dict for checkpoint backends, None for external storage.
             Checkpoint backends populate this with {file_path: file_data} for LangGraph state.
@@ -168,10 +210,10 @@ class WriteResult:
         >>> # External storage
         >>> WriteResult(path="/f.txt", files_update=None)
         >>> # Error
-        >>> WriteResult(error="File exists")
+        >>> WriteResult(error="file_exists")
     """
 
-    error: str | None = None
+    error: WriteOperationError | str | None = None
     path: str | None = None
     files_update: dict[str, Any] | None = None
 
@@ -181,7 +223,7 @@ class EditResult:
     """Result from backend edit operations.
 
     Attributes:
-        error: Error message on failure, None on success.
+        error: Standardized error code on failure, None on success.
         path: Absolute path of edited file, None on failure.
         files_update: State update dict for checkpoint backends, None for external storage.
             Checkpoint backends populate this with {file_path: file_data} for LangGraph state.
@@ -194,10 +236,10 @@ class EditResult:
         >>> # External storage
         >>> EditResult(path="/f.txt", files_update=None, occurrences=2)
         >>> # Error
-        >>> EditResult(error="File not found")
+        >>> EditResult(error="file_not_found")
     """
 
-    error: str | None = None
+    error: EditOperationError | str | None = None
     path: str | None = None
     files_update: dict[str, Any] | None = None
     occurrences: int | None = None
@@ -208,11 +250,11 @@ class LsResult:
     """Result from backend ls operations.
 
     Attributes:
-        error: Error message on failure, None on success.
+        error: Standardized error code on failure, None on success.
         entries: List of file info dicts on success, None on failure.
     """
 
-    error: str | None = None
+    error: LsOperationError | str | None = None
     entries: list["FileInfo"] | None = None
 
 
@@ -221,11 +263,11 @@ class GrepResult:
     """Result from backend grep operations.
 
     Attributes:
-        error: Error message on failure, None on success.
+        error: Standardized error code on failure, None on success.
         matches: List of grep match dicts on success, None on failure.
     """
 
-    error: str | None = None
+    error: GrepOperationError | str | None = None
     matches: list["GrepMatch"] | None = None
 
 
@@ -234,11 +276,11 @@ class GlobResult:
     """Result from backend glob operations.
 
     Attributes:
-        error: Error message on failure, None on success.
+        error: Standardized error code on failure, None on success.
         matches: List of matching file info dicts on success, None on failure.
     """
 
-    error: str | None = None
+    error: GlobOperationError | str | None = None
     matches: list["FileInfo"] | None = None
 
 

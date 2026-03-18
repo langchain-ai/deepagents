@@ -345,7 +345,7 @@ __DEEPAGENTS_EOF__
         """Edit a file by replacing string occurrences using shell commands."""
         raise NotImplementedError(_SYNC_NOT_SUPPORTED)
 
-    async def als_info(self, path: str) -> LsResult:
+    async def als(self, path: str) -> LsResult:
         """List directory contents with metadata using shell commands."""
         safe_path = shlex.quote(path)
 
@@ -385,11 +385,11 @@ done
 
         return LsResult(entries=file_infos)
 
-    def ls_info(self, path: str) -> LsResult:
+    def ls(self, path: str) -> LsResult:
         """List directory contents with metadata using shell commands."""
         raise NotImplementedError(_SYNC_NOT_SUPPORTED)
 
-    async def agrep_raw(
+    async def agrep(
         self,
         pattern: str,
         path: str | None = None,
@@ -443,7 +443,7 @@ done
 
         return GrepResult(matches=matches)
 
-    def grep_raw(
+    def grep(
         self,
         pattern: str,
         path: str | None = None,
@@ -452,7 +452,7 @@ done
         """Search for pattern in files using grep."""
         raise NotImplementedError(_SYNC_NOT_SUPPORTED)
 
-    async def aglob_info(self, pattern: str, path: str = "/") -> GlobResult:
+    async def aglob(self, pattern: str, path: str = "/") -> GlobResult:
         """Find files matching glob pattern using shell commands.
 
         Please note that this implementation does not currently support all glob
@@ -505,6 +505,6 @@ done
 
         return GlobResult(matches=file_infos)
 
-    def glob_info(self, pattern: str, path: str = "/") -> GlobResult:
+    def glob(self, pattern: str, path: str = "/") -> GlobResult:
         """Find files matching glob pattern using shell commands."""
         raise NotImplementedError(_SYNC_NOT_SUPPORTED)

@@ -41,19 +41,19 @@ def test_store_backend_crud_and_search():
     assert isinstance(msg2, EditResult) and msg2.error is None and msg2.occurrences == 1
 
     # ls_info (path prefix filter)
-    infos = be.ls_info("/docs/").entries
+    infos = be.ls("/docs/").entries
     assert infos is not None
     assert any(i["path"] == "/docs/readme.md" for i in infos)
 
-    # grep_raw
-    matches = be.grep_raw("hi", path="/").matches
+    # grep
+    matches = be.grep("hi", path="/").matches
     assert matches is not None and any(m["path"] == "/docs/readme.md" for m in matches)
 
-    # glob_info
-    g = be.glob_info("*.md", path="/").matches
+    # glob
+    g = be.glob("*.md", path="/").matches
     assert len(g) == 0
 
-    g2 = be.glob_info("**/*.md", path="/").matches
+    g2 = be.glob("**/*.md", path="/").matches
     assert any(i["path"] == "/docs/readme.md" for i in g2)
 
 
@@ -74,7 +74,7 @@ def test_store_backend_ls_nested_directories():
         res = be.write(path, content)
         assert res.error is None
 
-    root_listing = be.ls_info("/").entries
+    root_listing = be.ls("/").entries
     assert root_listing is not None
     root_paths = [fi["path"] for fi in root_listing]
     assert "/config.json" in root_paths
@@ -85,21 +85,21 @@ def test_store_backend_ls_nested_directories():
     assert "/docs/readme.md" not in root_paths
     assert "/docs/api/reference.md" not in root_paths
 
-    src_listing = be.ls_info("/src/").entries
+    src_listing = be.ls("/src/").entries
     assert src_listing is not None
     src_paths = [fi["path"] for fi in src_listing]
     assert "/src/main.py" in src_paths
     assert "/src/utils/" in src_paths
     assert "/src/utils/helper.py" not in src_paths
 
-    utils_listing = be.ls_info("/src/utils/").entries
+    utils_listing = be.ls("/src/utils/").entries
     assert utils_listing is not None
     utils_paths = [fi["path"] for fi in utils_listing]
     assert "/src/utils/helper.py" in utils_paths
     assert "/src/utils/common.py" in utils_paths
     assert len(utils_paths) == 2
 
-    empty_listing = be.ls_info("/nonexistent/")
+    empty_listing = be.ls("/nonexistent/")
     assert empty_listing.entries == []
 
 
@@ -116,12 +116,12 @@ def test_store_backend_ls_trailing_slash():
         res = be.write(path, content)
         assert res.error is None
 
-    listing_from_root = be.ls_info("/").entries
+    listing_from_root = be.ls("/").entries
     assert listing_from_root is not None
     assert len(listing_from_root) > 0
 
-    listing1 = be.ls_info("/dir/").entries
-    listing2 = be.ls_info("/dir").entries
+    listing1 = be.ls("/dir/").entries
+    listing2 = be.ls("/dir").entries
     assert listing1 is not None
     assert listing2 is not None
     assert len(listing1) == len(listing2)
@@ -370,7 +370,7 @@ def test_store_backend_grep_literal_search_special_chars(pattern: str, expected_
         assert res.error is None
 
     # Test literal search with the pattern
-    matches = be.grep_raw(pattern, path="/").matches
+    matches = be.grep(pattern, path="/").matches
     assert matches is not None
     assert any(expected_file in m["path"] for m in matches), f"Pattern '{pattern}' not found in {expected_file}"
 

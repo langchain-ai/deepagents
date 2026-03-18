@@ -52,20 +52,20 @@ async def test_awrite_aread_aedit_als_agrep_aglob_state_backend():
     assert "hi world" in read_result2.file_data["content"]
 
     # als_info should include the file
-    listing = (await be.als_info("/")).entries
+    listing = (await be.als("/")).entries
     assert listing is not None
     assert any(fi["path"] == "/notes.txt" for fi in listing)
 
-    # agrep_raw
-    matches = (await be.agrep_raw("hi", path="/")).matches
+    # agrep
+    matches = (await be.agrep("hi", path="/")).matches
     assert matches is not None and any(m["path"] == "/notes.txt" for m in matches)
 
     # special characters are treated literally, not regex
-    result = await be.agrep_raw("[", path="/")
+    result = await be.agrep("[", path="/")
     assert result.matches is not None  # Returns empty list, not error
 
-    # aglob_info
-    infos = (await be.aglob_info("*.txt", path="/")).matches
+    # aglob
+    infos = (await be.aglob("*.txt", path="/")).matches
     assert any(i["path"] == "/notes.txt" for i in infos)
 
 
@@ -105,7 +105,7 @@ async def test_state_backend_als_nested_directories():
         assert res.error is None
         rt.state["files"].update(res.files_update)
 
-    root_listing = (await be.als_info("/")).entries
+    root_listing = (await be.als("/")).entries
     assert root_listing is not None
     root_paths = [fi["path"] for fi in root_listing]
     assert "/config.json" in root_paths
@@ -114,21 +114,21 @@ async def test_state_backend_als_nested_directories():
     assert "/src/main.py" not in root_paths
     assert "/src/utils/helper.py" not in root_paths
 
-    src_listing = (await be.als_info("/src/")).entries
+    src_listing = (await be.als("/src/")).entries
     assert src_listing is not None
     src_paths = [fi["path"] for fi in src_listing]
     assert "/src/main.py" in src_paths
     assert "/src/utils/" in src_paths
     assert "/src/utils/helper.py" not in src_paths
 
-    utils_listing = (await be.als_info("/src/utils/")).entries
+    utils_listing = (await be.als("/src/utils/")).entries
     assert utils_listing is not None
     utils_paths = [fi["path"] for fi in utils_listing]
     assert "/src/utils/helper.py" in utils_paths
     assert "/src/utils/common.py" in utils_paths
     assert len(utils_paths) == 2
 
-    empty_listing = await be.als_info("/nonexistent/")
+    empty_listing = await be.als("/nonexistent/")
     assert empty_listing.entries == []
 
 
@@ -147,13 +147,13 @@ async def test_state_backend_als_trailing_slash():
         assert res.error is None
         rt.state["files"].update(res.files_update)
 
-    listing_with_slash = (await be.als_info("/")).entries
+    listing_with_slash = (await be.als("/")).entries
     assert listing_with_slash is not None
     assert len(listing_with_slash) == 2
     assert "/file.txt" in [fi["path"] for fi in listing_with_slash]
     assert "/dir/" in [fi["path"] for fi in listing_with_slash]
 
-    listing_from_dir = (await be.als_info("/dir/")).entries
+    listing_from_dir = (await be.als("/dir/")).entries
     assert listing_from_dir is not None
     assert len(listing_from_dir) == 1
     assert listing_from_dir[0]["path"] == "/dir/nested.txt"
@@ -231,8 +231,8 @@ async def test_state_backend_agrep_with_pattern_and_glob():
         assert res.error is None
         rt.state["files"].update(res.files_update)
 
-    # agrep_raw with glob filter for .py files only
-    matches = (await be.agrep_raw("import", path="/", glob="*.py")).matches
+    # agrep with glob filter for .py files only
+    matches = (await be.agrep("import", path="/", glob="*.py")).matches
     assert matches is not None
     assert any(m["path"] == "/test.py" for m in matches)
     assert any(m["path"] == "/main.py" for m in matches)
@@ -259,7 +259,7 @@ async def test_state_backend_aglob_recursive():
         rt.state["files"].update(res.files_update)
 
     # Recursive glob for all .py files
-    infos = (await be.aglob_info("**/*.py", path="/")).matches
+    infos = (await be.aglob("**/*.py", path="/")).matches
     py_files = [i["path"] for i in infos]
     assert "/src/main.py" in py_files
     assert "/src/utils/helper.py" in py_files
@@ -314,21 +314,21 @@ Total projects: 3
     rt.state["files"].update(res.files_update)
 
     # Test 1: Grep with parent directory path works (establishes baseline)
-    matches_parent = (await be.agrep_raw("Project Beta", path="/large_tool_results/")).matches
+    matches_parent = (await be.agrep("Project Beta", path="/large_tool_results/")).matches
     assert matches_parent is not None
     assert len(matches_parent) == 1
     assert matches_parent[0]["path"] == evicted_path
     assert "Project Beta" in matches_parent[0]["text"]
 
     # Test 2: Grep with exact file path should also work (THIS IS THE BUG)
-    matches_exact = (await be.agrep_raw("Project Beta", path=evicted_path)).matches
+    matches_exact = (await be.agrep("Project Beta", path=evicted_path)).matches
     assert matches_exact is not None, "Expected list but got None"
     assert len(matches_exact) == 1, f"Expected 1 match but got {len(matches_exact)} matches"
     assert matches_exact[0]["path"] == evicted_path
     assert "Project Beta" in matches_exact[0]["text"]
 
     # Test 3: Verify glob also works with exact file paths
-    glob_matches = (await be.aglob_info("*", path=evicted_path)).matches
+    glob_matches = (await be.aglob("*", path=evicted_path)).matches
     assert glob_matches is not None
     assert len(glob_matches) == 1
     assert glob_matches[0]["path"] == evicted_path
@@ -352,36 +352,36 @@ async def test_state_backend_apath_edge_cases() -> None:
         rt.state["files"].update(res.files_update)
 
     # Test 1: Grep with None path should default to root
-    matches = (await be.agrep_raw("content", path=None)).matches
+    matches = (await be.agrep("content", path=None)).matches
     assert matches is not None
     assert len(matches) == 3
 
     # Test 2: Grep with trailing slash on directory
-    matches_slash = (await be.agrep_raw("nested", path="/dir/")).matches
+    matches_slash = (await be.agrep("nested", path="/dir/")).matches
     assert matches_slash is not None
     assert len(matches_slash) == 1
     assert matches_slash[0]["path"] == "/dir/nested.txt"
 
     # Test 3: Grep with no trailing slash on directory
-    matches_no_slash = (await be.agrep_raw("nested", path="/dir")).matches
+    matches_no_slash = (await be.agrep("nested", path="/dir")).matches
     assert matches_no_slash is not None
     assert len(matches_no_slash) == 1
     assert matches_no_slash[0]["path"] == "/dir/nested.txt"
 
     # Test 4: Glob with exact file path
-    glob_exact = (await be.aglob_info("*.txt", path="/file.txt")).matches
+    glob_exact = (await be.aglob("*.txt", path="/file.txt")).matches
     assert glob_exact is not None
     assert len(glob_exact) == 1
     assert glob_exact[0]["path"] == "/file.txt"
 
     # Test 5: Glob with directory and pattern
-    glob_dir = (await be.aglob_info("*.txt", path="/dir/")).matches
+    glob_dir = (await be.aglob("*.txt", path="/dir/")).matches
     assert glob_dir is not None
     assert len(glob_dir) == 1  # Only nested.txt, not deep.txt (non-recursive)
     assert glob_dir[0]["path"] == "/dir/nested.txt"
 
     # Test 6: Glob with recursive pattern
-    glob_recursive = (await be.aglob_info("**/*.txt", path="/dir/")).matches
+    glob_recursive = (await be.aglob("**/*.txt", path="/dir/")).matches
     assert glob_recursive is not None
     assert len(glob_recursive) == 2  # Both nested.txt and deep.txt
     paths = {g["path"] for g in glob_recursive}
@@ -412,7 +412,7 @@ async def test_state_backend_agrep_with_path_variations(path: str, expected_coun
         rt.state["files"].update(res.files_update)
 
     # Test the path variation
-    matches = (await be.agrep_raw("import", path=path)).matches
+    matches = (await be.agrep("import", path=path)).matches
     assert matches is not None
     assert len(matches) == expected_count
     match_paths = {m["path"] for m in matches}

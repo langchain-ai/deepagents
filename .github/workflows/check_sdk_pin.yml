@@ -30,21 +30,15 @@ jobs:
       - name: Compare SDK version to CLI pin
         id: check
         run: |
-          SDK_VERSION=$(grep -Pom1 '(?<=^version = ")[0-9]+\.[0-9]+\.[0-9]+' libs/deepagents/pyproject.toml) || {
-            echo "::error file=libs/deepagents/pyproject.toml::Failed to extract SDK version. Expected a line matching: version = \"X.Y.Z\""
-            exit 1
-          }
+          SDK_VERSION=$(sed -nE 's/^version = "([0-9]+\.[0-9]+\.[0-9]+)".*/\1/p' libs/deepagents/pyproject.toml | head -1)
           if [[ -z "$SDK_VERSION" ]]; then
-            echo "::error file=libs/deepagents/pyproject.toml::SDK version is empty. Found: version = \"\""
+            echo "::error file=libs/deepagents/pyproject.toml::Failed to extract SDK version. Expected a line matching: version = \"X.Y.Z\""
             exit 1
           fi
 
-          CLI_SDK_PIN=$(grep -Pom1 '(?<=deepagents==)[0-9]+\.[0-9]+\.[0-9]+' libs/cli/pyproject.toml) || {
-            echo "::error file=libs/cli/pyproject.toml::Failed to extract CLI SDK pin. Expected a dependency matching: deepagents==X.Y.Z"
-            exit 1
-          }
+          CLI_SDK_PIN=$(sed -nE 's/.*deepagents==([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' libs/cli/pyproject.toml | head -1)
           if [[ -z "$CLI_SDK_PIN" ]]; then
-            echo "::error file=libs/cli/pyproject.toml::CLI SDK pin is empty"
+            echo "::error file=libs/cli/pyproject.toml::Failed to extract CLI SDK pin. Expected a dependency matching: deepagents==X.Y.Z"
             exit 1
           fi
 
@@ -107,14 +101,18 @@ jobs:
               const body = [
                 marker,
                 '> [!WARNING]',
-                '> **SDK pin mismatch** — the next CLI release will fail until this is resolved.',
+                '> **SDK pin mismatch** — the CLI release workflow will fail at the "Verify CLI pins latest SDK version" step until this is resolved.',
                 '>',
                 '> | | Version |',
                 '> |---|---|',
                 `> | SDK (\`libs/deepagents/pyproject.toml\`) | \`${sdkVersion}\` |`,
                 `> | CLI pin (\`libs/cli/pyproject.toml\`) | \`${cliPin}\` |`,
                 '>',
-                `> Update \`libs/cli/pyproject.toml\` to pin \`deepagents==${sdkVersion}\`.`,
+                `> **To fix:** update \`libs/cli/pyproject.toml\` to pin \`deepagents==${sdkVersion}\`, then run \`cd libs/cli && uv lock\` and commit the lockfile update.`,
+                '>',
+                '> **To bypass:** if you intentionally need to pin an older SDK version, re-run the release workflow with `dangerous-skip-sdk-pin-check` enabled. Ensure the CLI does not contain any code that depends on functionality introduced in the newer SDK version — otherwise the published CLI will fail at runtime.',
+                '>',
+                '> See [`.github/RELEASING.md`](https://github.com/langchain-ai/deepagents/blob/main/.github/RELEASING.md#release-failed-cli-sdk-pin-mismatch) for the full recovery procedure.',
               ].join('\n');
 
               try {

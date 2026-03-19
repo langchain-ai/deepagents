@@ -474,6 +474,7 @@ class ToolCallMessage(Vertical):
         self._status = "pending"  # Waiting for approval or auto-approve
         self._output: str = ""
         self._expanded: bool = False
+        self._custom_status: str | None = None
         # Widget references (set in on_mount)
         self._status_widget: Static | None = None
         self._preview_widget: Static | None = None
@@ -630,8 +631,18 @@ class ToolCallMessage(Vertical):
             elapsed_secs = int(time() - self._start_time)
             elapsed = f" ({elapsed_secs}s)"
 
-        text = f"{frame} Running...{elapsed}"
+        text = f"{frame} {self._custom_status or 'Running...'}{elapsed}"
         self._status_widget.update(Content.styled(text, "yellow"))
+
+    def update_status(self, text: str) -> None:
+        """Update the pending/running status message with granular info.
+
+        Args:
+            text: Status text to display (e.g., "Searching...", "Fetching results...")
+        """
+        self._custom_status = text
+        if self._status == "running":
+            self._update_running_animation()
 
     def _stop_animation(self) -> None:
         """Stop the running animation."""

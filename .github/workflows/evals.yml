@@ -14,8 +14,10 @@
 #   GROQ_API_KEY       — needed for Groq-hosted models
 #   OLLAMA_API_KEY     — needed for Ollama Cloud models
 #   OLLAMA_HOST        — set to https://ollama.com for cloud inference
+#   NVIDIA_API_KEY     — needed for NVIDIA NIM models
 #   BASETEN_API_KEY    — needed for Baseten-hosted models
 #   FIREWORKS_API_KEY  — needed for Fireworks-hosted models
+#   OPENROUTER_API_KEY — needed for OpenRouter-hosted models
 
 name: "📊 Evals"
 
@@ -32,6 +34,7 @@ on:
           - set0
           - set1
           - set2
+          - open
           - "anthropic:claude-haiku-4-5-20251001"
           - "anthropic:claude-sonnet-4-20250514"
           - "anthropic:claude-sonnet-4-5-20250929"
@@ -66,8 +69,9 @@ on:
           - "ollama:qwen3-coder:480b-cloud"
           - "ollama:qwen3.5:397b-cloud"
           - "ollama:deepseek-v3.2:cloud"
+          - "nvidia:nvidia/nemotron-3-super-120b-a12b"
+          - "openrouter:minimax/minimax-m2.7"
           - "baseten:zai-org/GLM-5"
-          - "baseten:MiniMaxAI/MiniMax-M2.7"
           - "baseten:MiniMaxAI/MiniMax-M2.5"
           - "baseten:moonshotai/Kimi-K2.5"
           - "baseten:deepseek-ai/DeepSeek-V3.2"
@@ -90,7 +94,7 @@ on:
         type: string
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.models_override || inputs.models || 'all' }}
@@ -175,8 +179,10 @@ jobs:
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
       OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
       OLLAMA_HOST: "https://ollama.com"
+      NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
       BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
       FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
     steps:
       - name: "📋 Checkout Code"
         uses: actions/checkout@v6
@@ -246,7 +252,7 @@ jobs:
       - name: "📊 Generate radar chart"
         if: hashFiles('evals_summary.json') != '' && steps.install-evals.outcome == 'success'
         working-directory: libs/evals
-        run: uv run --extra charts python scripts/generate_radar.py --summary ../../evals_summary.json -o ../../charts/radar.png --title "Deep Agents Eval Results"
+        run: uv run --extra charts python scripts/generate_radar.py --summary ../../evals_summary.json -o ../../charts/radar.png --individual-dir ../../charts/individual --title "Deep Agents Eval Results"
 
       - name: "📤 Upload JSON summary"
         uses: actions/upload-artifact@v7
@@ -255,9 +261,79 @@ jobs:
           path: evals_summary.json
           if-no-files-found: warn
 
-      - name: "📤 Upload radar chart"
+      - name: "📤 Upload radar charts"
         if: hashFiles('charts/radar.png') != ''
         uses: actions/upload-artifact@v7
         with:
-          name: radar-chart
-          path: charts/radar.png
+          name: radar-charts
+          path: charts/
+
+      - name: "🖼️ Publish charts to eval-assets branch"
+        id: publish-charts
+        if: hashFiles('charts/radar.png') != ''
+        env:
+          RUN_ID: ${{ github.run_id }}
+          REPO: ${{ github.repository }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          asset_dir="runs/${RUN_ID}"
+
+          # Set up a temp workdir so we don't disturb the main checkout.
+          tmp="$(mktemp -d)"
+          cd "$tmp"
+          git init -q
+          git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${REPO}.git"
+
+          # Fetch eval-assets if it exists; otherwise start an orphan branch.
+          if git ls-remote --exit-code origin eval-assets >/dev/null 2>&1; then
+            git fetch --depth=1 origin eval-assets
+            git checkout eval-assets
+          else
+            git checkout --orphan eval-assets
+            git rm -rf . 2>/dev/null || true
+            echo "Auto-managed branch for eval chart assets. Do not merge." > README.md
+            git add README.md
+          fi
+
+          # Copy charts into run-specific directory.
+          mkdir -p "${asset_dir}"
+          cp "$GITHUB_WORKSPACE/charts/radar.png" "${asset_dir}/radar.png"
+          if [ -d "$GITHUB_WORKSPACE/charts/individual" ]; then
+            cp -r "$GITHUB_WORKSPACE/charts/individual" "${asset_dir}/individual"
+          fi
+
+          git add "${asset_dir}"
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -m "evals: add charts for run ${RUN_ID}" --allow-empty
+          git push origin eval-assets
+
+          # Expose base URL for the summary step.
+          base="https://raw.githubusercontent.com/${REPO}/eval-assets/${asset_dir}"
+          echo "base_url=${base}" >> "$GITHUB_OUTPUT"
+
+      - name: "🖼️ Append charts to summary"
+        if: steps.publish-charts.outcome == 'success'
+        env:
+          BASE_URL: ${{ steps.publish-charts.outputs.base_url }}
+        run: |
+          {
+            echo ""
+            echo "## Radar charts"
+            echo ""
+            echo "### Combined"
+            echo ""
+            echo "![Combined radar chart](${BASE_URL}/radar.png)"
+            echo ""
+
+            if [ -d charts/individual ]; then
+              echo "### Per-model"
+              echo ""
+              for img in charts/individual/*.png; do
+                name="$(basename "$img" .png)"
+                echo "![${name}](${BASE_URL}/individual/${name}.png)"
+                echo ""
+              done
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

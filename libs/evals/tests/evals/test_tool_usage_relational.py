@@ -434,7 +434,7 @@ def _create_agent(model: BaseChatModel):
     """Create agent."""
     return create_deep_agent(
         model=model,
-        tools=RELATIONAL_TOOL_NAMES,
+        tools=RELATIONAL_TOOLS,
     )
 
 

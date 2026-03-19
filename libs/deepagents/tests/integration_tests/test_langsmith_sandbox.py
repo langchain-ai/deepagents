@@ -34,11 +34,3 @@ class TestLangSmithSandboxStandard(SandboxIntegrationTests):
     @pytest.mark.xfail(reason="LangSmith runs as root and ignores file permissions")
     def test_download_error_permission_denied(self, sandbox_backend: SandboxBackendProtocol) -> None:
         super().test_download_error_permission_denied(sandbox_backend)
-
-    @pytest.mark.xfail(reason="LangSmith returns file_not_found for relative paths")
-    def test_download_error_invalid_path_relative(self, sandbox_backend: SandboxBackendProtocol) -> None:
-        super().test_download_error_invalid_path_relative(sandbox_backend)
-
-    @pytest.mark.xfail(reason="LangSmith accepts relative paths on upload")
-    def test_upload_relative_path_returns_invalid_path(self, sandbox_backend: SandboxBackendProtocol) -> None:
-        super().test_upload_relative_path_returns_invalid_path(sandbox_backend)

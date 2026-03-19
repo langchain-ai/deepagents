@@ -83,6 +83,9 @@ class LangSmithSandbox(BaseSandbox):
 
         responses: list[FileDownloadResponse] = []
         for path in paths:
+            if not path.startswith("/"):
+                responses.append(FileDownloadResponse(path=path, content=None, error="invalid_path"))
+                continue
             try:
                 content = self._sandbox.read(path)
                 responses.append(FileDownloadResponse(path=path, content=content, error=None))
@@ -111,6 +114,9 @@ class LangSmithSandbox(BaseSandbox):
 
         responses: list[FileUploadResponse] = []
         for path, content in files:
+            if not path.startswith("/"):
+                responses.append(FileUploadResponse(path=path, error="invalid_path"))
+                continue
             try:
                 self._sandbox.write(path, content)
                 responses.append(FileUploadResponse(path=path, error=None))

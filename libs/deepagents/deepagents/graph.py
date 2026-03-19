@@ -1,7 +1,7 @@
 """Deep Agents come with planning, filesystem, and subagents."""
 
 from collections.abc import Callable, Sequence
-from typing import Any
+from typing import Any, cast
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig, TodoListMiddleware
@@ -86,7 +86,6 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
     system_prompt: str | SystemMessage | None = None,
     middleware: Sequence[AgentMiddleware] = (),
     subagents: Sequence[SubAgent | CompiledSubAgent | AsyncSubAgent] | None = None,
-    async_subagents: list[AsyncSubAgent] | None = None,
     skills: list[str] | None = None,
     memory: list[str] | None = None,
     response_format: ResponseFormat | None = None,
@@ -202,7 +201,6 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
         A configured deep agent.
     """
     model = get_default_model() if model is None else resolve_model(model)
-
     backend = backend if backend is not None else (StateBackend)
 
     # Build general-purpose subagent with default middleware stack
@@ -225,16 +223,17 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
         "middleware": gp_middleware,
     }
 
-    # Process user-provided subagents to fill in defaults for model, tools, and middleware
-    processed_subagents: list[SubAgent | CompiledSubAgent] = []
-    processed_async_subagents: list[AsyncSubAgent] = list(async_subagents or [])
+    # Set up subagent middleware
+    inline_subagents: list[SubAgent | CompiledSubAgent] = []
+    async_subagents: list[AsyncSubAgent] = []
     for spec in subagents or []:
         if "graph_id" in spec:
-            processed_async_subagents.append(spec)
+            # tHen spec is an AsyncSubagent
+            async_subagents.append(cast("AsyncSubAgent", spec))
             continue
         if "runnable" in spec:
             # CompiledSubAgent - use as-is
-            processed_subagents.append(spec)
+            inline_subagents.append(spec)
         else:
             # SubAgent - fill in defaults and prepend base middleware
             subagent_model = spec.get("model", model)
@@ -259,15 +258,13 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
                 "tools": spec.get("tools", tools or []),
                 "middleware": subagent_middleware,
             }
-            processed_subagents.append(processed_spec)
+            inline_subagents.append(processed_spec)
 
-    if any(spec["name"] == GENERAL_PURPOSE_SUBAGENT["name"] for spec in processed_subagents):
-        # If an agent with general purpose name already exists in subagents, then don't add it
-        # This is how you overwrite/configure general purpose subagent
-        all_subagents: list[SubAgent | CompiledSubAgent] = processed_subagents
-    else:
-        # Otherwise - add it!
-        all_subagents = [general_purpose_spec, *processed_subagents]
+    # If an agent with general purpose name already exists in subagents, then don't add it
+    # This is how you overwrite/configure general purpose subagent
+    if not any(spec["name"] == GENERAL_PURPOSE_SUBAGENT["name"] for spec in inline_subagents):
+        # Add a general purpose subagent if it doesn't exist yet
+        inline_subagents.insert(0, general_purpose_spec)
 
     # Build main agent middleware stack
     deepagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
@@ -282,7 +279,7 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
             FilesystemMiddleware(backend=backend),
             SubAgentMiddleware(
                 backend=backend,
-                subagents=all_subagents,
+                subagents=inline_subagents,
             ),
             create_summarization_middleware(model, backend),
             AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
@@ -290,8 +287,10 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
         ]
     )
 
-    if processed_async_subagents:
-        deepagent_middleware.append(AsyncSubAgentMiddleware(async_subagents=processed_async_subagents))
+    if async_subagents:
+        # Async here means that we run these subagents in a non-blocking manner.
+        # At the moment, supporting agents deployed via langsmith deployments.
+        deepagent_middleware.append(AsyncSubAgentMiddleware(async_subagents=async_subagents))
 
     if middleware:
         deepagent_middleware.extend(middleware)

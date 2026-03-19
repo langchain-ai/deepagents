@@ -648,29 +648,17 @@ async def run_textual_cli_async(
     """
     from rich.text import Text
 
-    from deepagents_cli.app import run_textual_app
-    from deepagents_cli.config import console, create_model
-    from deepagents_cli.model_config import ModelConfigError, save_recent_model
+    from deepagents_cli.app import AppResult, run_textual_app
 
-    try:
-        result = create_model(
-            model_name,
-            extra_kwargs=model_params,
-            profile_overrides=profile_override,
-        )
-    except ModelConfigError as e:
-        from deepagents_cli.app import AppResult
-
-        console.print(f"[bold red]Error:[/bold red] {e}")
-        return AppResult(return_code=1, thread_id=None)
-
-    result.apply_to_settings()
-
-    # Persist the resolved model so [models].recent is always populated,
-    # not only after an explicit /model switch.
-    save_recent_model(f"{result.provider}:{result.model_name}")
-
-    from deepagents_cli.app import AppResult
+    # Model creation is deferred to a background worker inside the TUI so
+    # first paint is not blocked by the langchain import + init.
+    # The model_kwargs are passed through to DeepAgentsApp which runs
+    # create_model() after the splash screen is visible.
+    model_kwargs: dict[str, Any] = {
+        "model_spec": model_name,
+        "extra_kwargs": model_params,
+        "profile_overrides": profile_override,
+    }
 
     # Build kwargs for deferred server startup (runs inside the TUI)
     server_kwargs: dict[str, Any] = {
@@ -706,9 +694,12 @@ async def run_textual_cli_async(
             profile_override=profile_override,
             server_kwargs=server_kwargs,
             mcp_preload_kwargs=mcp_preload_kwargs,
+            model_kwargs=model_kwargs,
         )
     except Exception as e:
         logger.debug("App error", exc_info=True)
+        from deepagents_cli.config import console
+
         error_text = Text("Application error: ", style="red")
         error_text.append(str(e))
         console.print(error_text)

@@ -457,6 +457,7 @@ class DeepAgentsApp(App):
         server_proc: ServerProcess | None = None,
         server_kwargs: dict[str, Any] | None = None,
         mcp_preload_kwargs: dict[str, Any] | None = None,
+        model_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> None:
         """Initialize the Deep Agents application.
@@ -484,6 +485,10 @@ class DeepAgentsApp(App):
                 for `start_server_and_get_agent`.
             mcp_preload_kwargs: Kwargs for `_preload_session_mcp_server_info`,
                 run concurrently with server startup when `server_kwargs` is set.
+            model_kwargs: Kwargs for deferred `create_model()`.
+
+                When provided, model creation runs in a background worker after
+                first paint instead of blocking startup.
             **kwargs: Additional arguments passed to parent
         """
         super().__init__(**kwargs)
@@ -500,6 +505,7 @@ class DeepAgentsApp(App):
         self._server_proc = server_proc
         self._server_kwargs = server_kwargs
         self._mcp_preload_kwargs = mcp_preload_kwargs
+        self._model_kwargs = model_kwargs
         self._connecting = server_kwargs is not None
         # Extract sandbox type from server kwargs for trace metadata.
         # ServerConfig.__post_init__ normalizes "none" → None, but server_kwargs carries
@@ -725,7 +731,30 @@ class DeepAgentsApp(App):
         )
 
     async def _start_server_background(self) -> None:
-        """Background worker: start server + MCP preload concurrently."""
+        """Background worker: start server + MCP preload concurrently.
+
+        Also runs deferred model creation if `model_kwargs` was provided,
+        so the langchain import + init doesn't block first paint.
+        """
+        # Run deferred model creation before starting the server so
+        # settings.model_name / model_provider are populated for the
+        # status bar and server process.
+        if self._model_kwargs is not None:
+            from deepagents_cli.config import create_model
+            from deepagents_cli.model_config import ModelConfigError, save_recent_model
+
+            try:
+                result = create_model(**self._model_kwargs)
+            except ModelConfigError as exc:
+                self.post_message(self.ServerStartFailed(error=exc))
+                return
+            result.apply_to_settings()
+
+            # Persist the resolved model so [models].recent is always populated,
+            # not only after an explicit /model switch.
+            save_recent_model(f"{result.provider}:{result.model_name}")
+            self._model_kwargs = None  # consumed
+
         from deepagents_cli.server_manager import start_server_and_get_agent
 
         coros: list[Any] = [start_server_and_get_agent(**self._server_kwargs)]  # type: ignore[arg-type]
@@ -3763,6 +3792,7 @@ async def run_textual_app(
     server_proc: ServerProcess | None = None,
     server_kwargs: dict[str, Any] | None = None,
     mcp_preload_kwargs: dict[str, Any] | None = None,
+    model_kwargs: dict[str, Any] | None = None,
 ) -> AppResult:
     """Run the Textual application.
 
@@ -3787,6 +3817,10 @@ async def run_textual_app(
         server_proc: LangGraph server process for the interactive session.
         server_kwargs: Kwargs for deferred `start_server_and_get_agent` call.
         mcp_preload_kwargs: Kwargs for concurrent MCP metadata preload.
+        model_kwargs: Kwargs for deferred `create_model()` call.
+
+            When provided, model creation runs in a background worker after
+            first paint so the splash screen appears immediately.
 
     Returns:
         An `AppResult` with the return code and final thread ID.
@@ -3804,6 +3838,7 @@ async def run_textual_app(
         server_proc=server_proc,
         server_kwargs=server_kwargs,
         mcp_preload_kwargs=mcp_preload_kwargs,
+        model_kwargs=model_kwargs,
     )
     try:
         await app.run_async()

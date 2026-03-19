@@ -173,13 +173,7 @@ class TestRunTextualCliAsyncMcp:
     """
 
     async def test_passes_server_and_mcp_kwargs_to_textual_app(self) -> None:
-        """Interactive TUI should receive server_kwargs and mcp_preload_kwargs."""
-        model_result = SimpleNamespace(
-            model=object(),
-            provider="openai",
-            model_name="gpt-5",
-            apply_to_settings=MagicMock(),
-        )
+        """TUI should receive server, mcp_preload, and model kwargs."""
         app_result = AppResult(return_code=0, thread_id="thread-123")
         captured_kwargs: dict[str, Any] = {}
 
@@ -188,19 +182,13 @@ class TestRunTextualCliAsyncMcp:
             await asyncio.sleep(0)
             return app_result
 
-        with (
-            patch("deepagents_cli.config.console"),
-            patch("deepagents_cli.config.create_model", return_value=model_result),
-            patch("deepagents_cli.model_config.save_recent_model"),
-            patch("deepagents_cli.app.run_textual_app", new=_run_textual_app_stub),
-        ):
+        with patch("deepagents_cli.app.run_textual_app", new=_run_textual_app_stub):
             result = await run_textual_cli_async(
                 "agent",
                 thread_id="thread-123",
             )
 
         assert result == app_result
-        model_result.apply_to_settings.assert_called_once_with()
 
         # Server kwargs forwarded for deferred startup inside the TUI
         assert captured_kwargs["server_kwargs"] is not None
@@ -211,14 +199,13 @@ class TestRunTextualCliAsyncMcp:
         assert captured_kwargs["mcp_preload_kwargs"] is not None
         assert captured_kwargs["mcp_preload_kwargs"]["no_mcp"] is False
 
+        # Model kwargs forwarded for deferred create_model() inside the TUI
+        assert captured_kwargs["model_kwargs"] is not None
+        assert captured_kwargs["model_kwargs"]["model_spec"] is None
+        assert captured_kwargs["model_kwargs"]["extra_kwargs"] is None
+
     async def test_no_mcp_kwargs_when_disabled(self) -> None:
         """mcp_preload_kwargs should be None when no_mcp=True."""
-        model_result = SimpleNamespace(
-            model=object(),
-            provider="openai",
-            model_name="gpt-5",
-            apply_to_settings=MagicMock(),
-        )
         app_result = AppResult(return_code=0, thread_id="thread-123")
         captured_kwargs: dict[str, Any] = {}
 
@@ -227,12 +214,7 @@ class TestRunTextualCliAsyncMcp:
             await asyncio.sleep(0)
             return app_result
 
-        with (
-            patch("deepagents_cli.config.console"),
-            patch("deepagents_cli.config.create_model", return_value=model_result),
-            patch("deepagents_cli.model_config.save_recent_model"),
-            patch("deepagents_cli.app.run_textual_app", new=_run_textual_app_stub),
-        ):
+        with patch("deepagents_cli.app.run_textual_app", new=_run_textual_app_stub):
             await run_textual_cli_async(
                 "agent",
                 thread_id="thread-123",

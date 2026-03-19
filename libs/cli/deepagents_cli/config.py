@@ -17,15 +17,36 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import unquote, urlparse
 
-import dotenv
-from rich.console import Console
-
 from deepagents_cli._version import __version__
-from deepagents_cli.project_utils import (
-    get_server_project_context as _get_server_project_context,
-)
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Lazy bootstrap: dotenv loading, LANGSMITH_PROJECT override, and start-path
+# detection are deferred until first access of `settings` (via module
+# `__getattr__`).  This avoids disk I/O and path traversal during import for
+# callers that never touch `settings` (e.g. `deepagents --help`).
+# ---------------------------------------------------------------------------
+
+_bootstrap_done = False
+"""Whether `_ensure_bootstrap()` has executed."""
+
+_bootstrap_lock = threading.Lock()
+"""Guards `_ensure_bootstrap()` against concurrent access from the main
+thread and the prewarm worker thread."""
+
+_singleton_lock = threading.Lock()
+"""Guards lazy singleton construction in `_get_console` / `_get_settings`."""
+
+_bootstrap_start_path: Path | None = None
+"""Working directory captured at bootstrap time for dotenv and project discovery."""
+
+_original_langsmith_project: str | None = None
+"""Caller's `LANGSMITH_PROJECT` value before the CLI overrides it for agent traces.
+
+Captured inside `_ensure_bootstrap()` after dotenv loading but before the
+`LANGSMITH_PROJECT` override, so `.env`-only values are visible.
+"""
 
 
 def _find_dotenv_from_start_path(start_path: Path) -> Path | None:
@@ -45,7 +66,7 @@ def _find_dotenv_from_start_path(start_path: Path) -> Path | None:
                 return candidate
         except OSError:
             logger.warning("Could not inspect .env candidate %s", candidate)
-            return None
+            continue
     return None
 
 
@@ -59,6 +80,8 @@ def _load_dotenv(*, start_path: Path | None = None, override: bool = False) -> b
     Returns:
         `True` when a dotenv file was loaded, `False` otherwise.
     """
+    import dotenv
+
     if start_path is None:
         return dotenv.load_dotenv(override=override)
 
@@ -68,38 +91,65 @@ def _load_dotenv(*, start_path: Path | None = None, override: bool = False) -> b
     return dotenv.load_dotenv(dotenv_path=dotenv_path, override=override)
 
 
-_bootstrap_project_context = _get_server_project_context()
-_bootstrap_start_path = (
-    _bootstrap_project_context.user_cwd if _bootstrap_project_context else None
-)
+def _ensure_bootstrap() -> None:
+    """Run one-time bootstrap: dotenv loading and `LANGSMITH_PROJECT` override.
 
-_load_dotenv(start_path=_bootstrap_start_path)
+    Idempotent and thread-safe — subsequent calls are no-ops. Called
+    automatically by `_get_settings()` when `settings` is first accessed.
 
-# CRITICAL: Override LANGSMITH_PROJECT to route agent traces to separate project
-# LangSmith reads LANGSMITH_PROJECT at invocation time, so we override it here
-# and preserve the user's original value for shell commands
-_deepagents_project = os.environ.get("DEEPAGENTS_LANGSMITH_PROJECT")
-_original_langsmith_project = os.environ.get("LANGSMITH_PROJECT")
-if _deepagents_project:
-    # Override LANGSMITH_PROJECT for agent traces
-    os.environ["LANGSMITH_PROJECT"] = _deepagents_project
+    The flag is set in `finally` so that partial failures (e.g. a
+    malformed `.env`) still mark bootstrap as done — preventing infinite retry
+    loops. Exceptions are caught and logged at ERROR level; the CLI proceeds
+    with the environment as-is.
+    """
+    global _bootstrap_done, _bootstrap_start_path, _original_langsmith_project  # noqa: PLW0603
 
-from deepagents_cli.model_config import (  # noqa: E402  # Import after os.environ setup above
-    ModelConfig,
-    ModelConfigError,
-    ModelSpec,
-)
-from deepagents_cli.project_utils import (  # noqa: E402
-    find_project_agent_md as _find_project_agent_md,
-    find_project_root as _find_project_root,
-)
+    if _bootstrap_done:
+        return
+
+    with _bootstrap_lock:
+        if _bootstrap_done:  # double-check after acquiring lock
+            return
+
+        try:
+            from deepagents_cli.project_utils import (
+                get_server_project_context as _get_server_project_context,
+            )
+
+            ctx = _get_server_project_context()
+            _bootstrap_start_path = ctx.user_cwd if ctx else None
+            _load_dotenv(start_path=_bootstrap_start_path)
+
+            # Capture AFTER dotenv loading so .env-only values are visible,
+            # but BEFORE the override below replaces it.
+            _original_langsmith_project = os.environ.get("LANGSMITH_PROJECT")
+
+            # CRITICAL: Override LANGSMITH_PROJECT to route agent traces to a
+            # separate project. LangSmith reads LANGSMITH_PROJECT at invocation
+            # time, so we override it here and preserve the user's original
+            # value for shell commands.
+            deepagents_project = os.environ.get("DEEPAGENTS_LANGSMITH_PROJECT")
+            if deepagents_project:
+                os.environ["LANGSMITH_PROJECT"] = deepagents_project
+        except Exception:
+            logger.exception(
+                "Bootstrap failed; .env values and LANGSMITH_PROJECT override "
+                "may be missing. The CLI will proceed with environment as-is.",
+            )
+        finally:
+            _bootstrap_done = True
+
 
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
     from langchain_core.runnables import RunnableConfig
+    from rich.console import Console
 
-DOCS_URL = "https://docs.langchain.com/oss/python/deepagents/cli"
-"""URL for deepagents-cli documentation."""
+    # Static type stubs for lazy module attributes resolved by __getattr__.
+    # At runtime these are created on first access by _get_settings() /
+    # _get_console() and cached in globals().
+    settings: Settings
+    console: Console
 
 COLORS = {
     "primary": "#10b981",
@@ -176,11 +226,6 @@ class Glyphs:
     # Diff-specific
     gutter_bar: str  # ▌ vs |
 
-    # Tree connectors (full prefixes for tree display)
-    tree_branch: str  # "├── " vs "+-- "
-    tree_last: str  # "└── " vs "`-- "
-    tree_vertical: str  # "│   " vs "|   "
-
     # Status bar
     git_branch: str  # "↗" vs "git:"
 
@@ -207,9 +252,6 @@ UNICODE_GLYPHS = Glyphs(
     box_horizontal="─",
     box_double_horizontal="═",
     gutter_bar="▌",
-    tree_branch="├── ",
-    tree_last="└── ",
-    tree_vertical="│   ",
     git_branch="↗",
 )
 
@@ -235,9 +277,6 @@ ASCII_GLYPHS = Glyphs(
     box_horizontal="-",
     box_double_horizontal="=",
     gutter_bar="|",
-    tree_branch="+-- ",
-    tree_last="`-- ",
-    tree_vertical="|   ",
     git_branch="git:",
 )
 
@@ -358,6 +397,18 @@ def reset_glyphs_cache() -> None:
     _glyphs_cache = None
 
 
+def is_ascii_mode() -> bool:
+    """Check whether the terminal is in ASCII charset mode.
+
+    Convenience wrapper so widgets can branch on charset without importing
+    both `_detect_charset_mode` and `CharsetMode`.
+
+    Returns:
+        `True` when the detected charset mode is ASCII.
+    """
+    return _detect_charset_mode() == CharsetMode.ASCII
+
+
 def newline_shortcut() -> str:
     """Return the platform-native label for the newline keyboard shortcut.
 
@@ -440,9 +491,6 @@ MAX_ARG_LENGTH = 150
 
 # Agent configuration
 config: RunnableConfig = {"recursion_limit": 1000}
-
-# Rich console instance
-console = Console(highlight=False)
 
 
 class _ShellAllowAll(list):  # noqa: FURB189  # sentinel type, not a general-purpose list subclass
@@ -593,13 +641,18 @@ class Settings:
         # Detect LangSmith configuration
         # DEEPAGENTS_LANGSMITH_PROJECT: Project for deepagents agent tracing
         # user_langchain_project: User's ORIGINAL LANGSMITH_PROJECT (before override)
-        # Note: LANGSMITH_PROJECT was already overridden at module import time (above)
-        # so we use the saved original value, not the current os.environ value
+        # When accessed via the module-level `settings` singleton,
+        # _ensure_bootstrap() has already run and may have overridden
+        # LANGSMITH_PROJECT. We use the saved original value, not the
+        # current os.environ value. Direct callers should ensure
+        # bootstrap has run if they depend on the override.
         deepagents_langchain_project = os.environ.get("DEEPAGENTS_LANGSMITH_PROJECT")
         user_langchain_project = _original_langsmith_project  # Use saved original!
 
         # Detect project
-        project_root = _find_project_root(start_path)
+        from deepagents_cli.project_utils import find_project_root
+
+        project_root = find_project_root(start_path)
 
         # Parse shell command allow-list from environment
         # Format: comma-separated list of commands (e.g., "ls,cat,grep,pwd")
@@ -673,7 +726,9 @@ class Settings:
             shell_allow_list = previous["shell_allow_list"]
 
         try:
-            project_root = _find_project_root(start_path)
+            from deepagents_cli.project_utils import find_project_root
+
+            project_root = find_project_root(start_path)
         except OSError:
             logger.warning(
                 "Could not detect project root during reload; keeping previous value"
@@ -800,7 +855,9 @@ class Settings:
         """
         if not self.project_root:
             return []
-        return _find_project_agent_md(self.project_root)
+        from deepagents_cli.project_utils import find_project_agent_md
+
+        return find_project_agent_md(self.project_root)
 
     @staticmethod
     def _is_valid_agent_name(agent_name: str) -> bool:
@@ -964,10 +1021,6 @@ class Settings:
             Path to the `built_in_skills/` directory within the package.
         """
         return Path(__file__).parent / "built_in_skills"
-
-
-# Global settings instance (initialized once)
-settings = Settings.from_environment(start_path=_bootstrap_start_path)
 
 
 class SessionState:
@@ -1199,8 +1252,8 @@ def get_langsmith_project_name() -> str | None:
     When both are present, resolves the project name with priority:
     `settings.deepagents_langchain_project` (from
     `DEEPAGENTS_LANGSMITH_PROJECT`), then `LANGSMITH_PROJECT` from the
-    environment (note: this may already have been overridden at import
-    time to match `DEEPAGENTS_LANGSMITH_PROJECT`), then `'default'`.
+    environment (note: this may already have been overridden at bootstrap time
+    to match `DEEPAGENTS_LANGSMITH_PROJECT`), then `'default'`.
 
     Returns:
         Project name string when LangSmith tracing is active, None otherwise.
@@ -1215,7 +1268,7 @@ def get_langsmith_project_name() -> str | None:
         return None
 
     return (
-        settings.deepagents_langchain_project
+        _get_settings().deepagents_langchain_project
         or os.environ.get("LANGSMITH_PROJECT")
         or "default"
     )
@@ -1369,12 +1422,14 @@ def detect_provider(model_name: str) -> str | None:
         return "openai"
 
     if model_lower.startswith("claude"):
-        if not settings.has_anthropic and settings.has_vertex_ai:
+        s = _get_settings()
+        if not s.has_anthropic and s.has_vertex_ai:
             return "google_vertexai"
         return "anthropic"
 
     if model_lower.startswith("gemini"):
-        if settings.has_vertex_ai and not settings.has_google:
+        s = _get_settings()
+        if s.has_vertex_ai and not s.has_google:
             return "google_vertexai"
         return "google_genai"
 
@@ -1399,6 +1454,8 @@ def _get_default_model_spec() -> str:
     Raises:
         ModelConfigError: If no credentials are configured.
     """
+    from deepagents_cli.model_config import ModelConfig, ModelConfigError
+
     config = ModelConfig.load()
     if config.default_model:
         return config.default_model
@@ -1406,15 +1463,16 @@ def _get_default_model_spec() -> str:
     if config.recent_model:
         return config.recent_model
 
-    if settings.has_openai:
+    s = _get_settings()
+    if s.has_openai:
         return "openai:gpt-5.2"
-    if settings.has_anthropic:
+    if s.has_anthropic:
         return "anthropic:claude-sonnet-4-6"
-    if settings.has_google:
+    if s.has_google:
         return "google_genai:gemini-3.1-pro-preview"
-    if settings.has_vertex_ai:
+    if s.has_vertex_ai:
         return "google_vertexai:gemini-3.1-pro-preview"
-    if settings.has_nvidia:
+    if s.has_nvidia:
         return "nvidia:nvidia/nemotron-3-super-120b-a12b"
 
     msg = (
@@ -1482,6 +1540,8 @@ def _get_provider_kwargs(
     Returns:
         Dictionary of provider-specific kwargs.
     """
+    from deepagents_cli.model_config import ModelConfig
+
     config = ModelConfig.load()
     result: dict[str, Any] = config.get_kwargs(provider, model_name=model_name)
     base_url = config.get_base_url(provider)
@@ -1523,6 +1583,8 @@ def _create_model_from_class(
     from langchain_core.language_models import (
         BaseChatModel as _BaseChatModel,  # Runtime import; module level is typing only
     )
+
+    from deepagents_cli.model_config import ModelConfigError
 
     if ":" not in class_path:
         msg = (
@@ -1579,6 +1641,8 @@ def _create_model_via_init(
         ModelConfigError: On import, value, or runtime errors.
     """
     from langchain.chat_models import init_chat_model
+
+    from deepagents_cli.model_config import ModelConfigError
 
     try:
         if provider:
@@ -1645,9 +1709,10 @@ class ModelResult:
 
     def apply_to_settings(self) -> None:
         """Commit this result's metadata to global `settings`."""
-        settings.model_name = self.model_name
-        settings.model_provider = self.provider
-        settings.model_context_limit = self.context_limit
+        s = _get_settings()
+        s.model_name = self.model_name
+        s.model_provider = self.provider
+        s.model_context_limit = self.context_limit
 
 
 def _apply_profile_overrides(
@@ -1676,6 +1741,8 @@ def _apply_profile_overrides(
         ModelConfigError: If `raise_on_failure` is `True` and the model
             rejects profile assignment.
     """
+    from deepagents_cli.model_config import ModelConfigError
+
     logger.debug("Applying %s profile overrides: %s", label, overrides)
     profile = getattr(model, "profile", None)
     merged = {**profile, **overrides} if isinstance(profile, dict) else overrides
@@ -1738,6 +1805,8 @@ def create_model(
         >>> model = create_model("gpt-4o")  # Auto-detects openai
         >>> model = create_model()  # Uses environment defaults
     """
+    from deepagents_cli.model_config import ModelConfig, ModelConfigError, ModelSpec
+
     if not model_spec:
         model_spec = _get_default_model_spec()
 
@@ -1837,6 +1906,7 @@ def validate_model_capabilities(model: BaseChatModel, model_name: str) -> None:
         a warning. Exits via sys.exit(1) if model profile explicitly indicates
         tool_calling=False.
     """
+    console = _get_console()
     profile = getattr(model, "profile", None)
 
     if profile is None:
@@ -1871,3 +1941,76 @@ def validate_model_capabilities(model: BaseChatModel, model_name: str) -> None:
             f"[dim][yellow]Warning:[/yellow] Model '{model_name}' has limited context "
             f"({max_input_tokens:,} tokens). Agent performance may be affected.[/dim]"
         )
+
+
+def _get_console() -> Console:
+    """Return the lazily-initialized global `Console` instance.
+
+    Defers the `rich.console` import until console output is actually
+    needed. The result is cached in `globals()["console"]`.
+
+    Returns:
+        The global Rich `Console` singleton.
+    """
+    cached = globals().get("console")
+    if cached is not None:
+        return cached
+    with _singleton_lock:
+        cached = globals().get("console")
+        if cached is not None:
+            return cached
+        from rich.console import Console
+
+        inst = Console(highlight=False)
+        globals()["console"] = inst
+        return inst
+
+
+def _get_settings() -> Settings:
+    """Return the lazily-initialized global `Settings` instance.
+
+    Ensures bootstrap has run before constructing settings. The result is cached
+    in `globals()["settings"]` so subsequent access — including
+    `from config import settings` in other modules — resolves instantly.
+
+    Returns:
+        The global `Settings` singleton.
+    """
+    cached = globals().get("settings")
+    if cached is not None:
+        return cached
+    with _singleton_lock:
+        cached = globals().get("settings")
+        if cached is not None:
+            return cached
+        _ensure_bootstrap()
+        try:
+            inst = Settings.from_environment(start_path=_bootstrap_start_path)
+        except Exception:
+            logger.exception(
+                "Failed to initialize settings from environment (start_path=%s)",
+                _bootstrap_start_path,
+            )
+            raise
+        globals()["settings"] = inst
+        return inst
+
+
+def __getattr__(name: str) -> Settings | Console:
+    """Lazy module attributes for `settings` and `console`.
+
+    Defers heavy initialization until first access. Subsequent accesses hit
+    the module-level attribute directly (no `__getattr__` overhead).
+
+    Returns:
+        The requested lazy singleton.
+
+    Raises:
+        AttributeError: If *name* is not a lazily-provided attribute.
+    """
+    if name == "settings":
+        return _get_settings()
+    if name == "console":
+        return _get_console()
+    msg = f"module {__name__!r} has no attribute {name!r}"
+    raise AttributeError(msg)

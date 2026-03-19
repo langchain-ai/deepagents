@@ -17,16 +17,15 @@ if TYPE_CHECKING:
     from textual import events
     from textual.app import ComposeResult
 
-    from deepagents_cli.ask_user import (
+    from deepagents_cli._ask_user_types import (
         AskUserWidgetResult,
         Choice,
         Question,
     )
 
 from deepagents_cli.config import (
-    CharsetMode,
-    _detect_charset_mode,
     get_glyphs,
+    is_ascii_mode,
 )
 
 OTHER_CHOICE_LABEL = "Other (type your answer)"
@@ -110,7 +109,7 @@ class AskUserMenu(Container):
         )
 
     async def on_mount(self) -> None:  # noqa: D102
-        if _detect_charset_mode() == CharsetMode.ASCII:
+        if is_ascii_mode():
             self.styles.border = ("ascii", "green")
         self._set_active_question(0)
 

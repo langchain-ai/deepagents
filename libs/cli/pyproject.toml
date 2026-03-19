@@ -51,9 +51,6 @@ dependencies = [
 
     # Sandbox integrations
     "langsmith[sandbox]>=0.7.7",
-    "daytona>=0.113.0,<1.0.0",
-    "modal>=0.65.0,<2.0.0",
-    "runloop-api-client>=0.69.0",
 
     # Tools
     "tavily-python>=0.7.21,<1.0.0",
@@ -98,6 +95,15 @@ openrouter = ["langchain-openrouter>=0.1.0,<2.0.0"]
 perplexity = ["langchain-perplexity>=1.0.0,<2.0.0"]
 vertexai = ["langchain-google-vertexai>=3.0.0,<4.0.0"]
 xai = ["langchain-xai>=1.0.0,<2.0.0"]
+
+# Sandbox providers
+daytona = ["langchain-daytona>=0.0.4"]
+modal = ["langchain-modal>=0.0.2"]
+runloop = ["langchain-runloop>=0.0.3"]
+all-sandboxes = [
+    "deepagents-cli[daytona,modal,runloop]",
+]
+
 all-providers = [
     "deepagents-cli[anthropic,baseten,bedrock,cohere,deepseek,fireworks,google-genai,groq,huggingface,ibm,litellm,mistralai,nvidia,ollama,openai,openrouter,perplexity,vertexai,xai]",
 ]
@@ -113,6 +119,8 @@ Repository = "https://github.com/langchain-ai/deepagents"
 Issues = "https://github.com/langchain-ai/deepagents/issues"
 Changelog = "https://github.com/langchain-ai/deepagents/blob/main/libs/cli/CHANGELOG.md"
 Twitter = "https://x.com/LangChain"
+Slack = "https://www.langchain.com/join-community"
+Reddit = "https://www.reddit.com/r/LangChain/"
 
 [dependency-groups]
 test = [
@@ -121,6 +129,8 @@ test = [
     "ty>=0.0.1,<1.0.0",
     "pytest>=8.3.4,<10.0.0",
     "pytest-asyncio>=0.25.3,<2.0.0",
+    "pytest-benchmark>=5.1.0,<6.0.0",
+    "pytest-codspeed>=4.0.0,<5.0.0",
     "pytest-cov>=6.0.0,<8.0.0",
     "pytest-mock>=3.14.0,<4.0.0",
     "pytest-socket>=0.7.0,<1.0.0",
@@ -140,10 +150,18 @@ packages = ["deepagents_cli"]
 
 [tool.uv.sources]
 deepagents = { path = "../deepagents", editable = true }
+langchain-daytona = { path = "../partners/daytona", editable = true }
+langchain-modal = { path = "../partners/modal", editable = true }
+langchain-runloop = { path = "../partners/runloop", editable = true }
 
 [tool.ty.environment]
 python-version = "3.11"
-extra-paths = ["../deepagents"]
+extra-paths = [
+    "../deepagents",
+    "../partners/daytona",
+    "../partners/modal",
+    "../partners/runloop",
+]
 
 [tool.ty.rules]
 # https://docs.astral.sh/ty/rules/
@@ -173,6 +191,7 @@ ignore = [
     "TD003",   # Missing issue link in TODO
 ]
 unfixable = ["B028"] # People should intentionally tune the stacklevel
+extend-safe-fixes = ["PLR6201"]
 
 flake8-annotations.allow-star-arg-any = true
 flake8-annotations.mypy-init-return = true
@@ -241,6 +260,7 @@ omit = ["tests/*"]
 timeout = 30  # Default timeout for all tests (can be overridden per-test)
 
 addopts = "--strict-markers --strict-config --durations=5"
+markers = ["benchmark: marks tests as benchmarks (select with '-m benchmark')"]
 # pytest-benchmark warns once per xdist worker that benchmarks are disabled
 # under parallel execution. Both plugins are needed: xdist for `make test`,
 # benchmark for `make benchmark`. Suppress the noise here.

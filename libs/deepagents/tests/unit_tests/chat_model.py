@@ -17,7 +17,7 @@ from typing_extensions import override
 
 
 class GenericFakeChatModel(BaseChatModel):
-    """Generic fake chat model that can be used to test the chat model interface.
+    r"""Generic fake chat model that can be used to test the chat model interface.
 
     * Chat model should be usable in both sync and async tests
     * Invokes `on_llm_new_token` to allow for testing of callback related code for new
@@ -69,7 +69,7 @@ class GenericFakeChatModel(BaseChatModel):
         if you want to pass a list, you can use `iter` to convert it to an iterator.
     """
 
-    call_history: list[Any] = []
+    call_history: list[Any] = []  # noqa: RUF012  # Test-only model class
 
     stream_delimiter: str | None = None
     """Delimiter for chunking content during streaming.
@@ -118,7 +118,7 @@ class GenericFakeChatModel(BaseChatModel):
         generation = ChatGeneration(message=message_)
         return ChatResult(generations=[generation])
 
-    def _stream(
+    def _stream(  # noqa: C901, PLR0912  # Complex test helper with many message types
         self,
         messages: list[BaseMessage],
         stop: list[str] | None = None,

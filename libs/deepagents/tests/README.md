@@ -1,4 +1,4 @@
-# DeepAgents SDK Tests
+# Deep Agents SDK Tests
 
 ## API Keys
 
@@ -12,7 +12,7 @@
 
 ## Test Utilities
 
-Shared test utilities are in `tests/utils.py`:
+Shared test utilities are in `utils.py`:
 
 - Mock tools (`get_weather`, `get_soccer_scores`, etc.)
 - Middleware classes (`ResearchMiddleware`, `WeatherToolMiddleware`, etc.)

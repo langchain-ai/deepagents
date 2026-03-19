@@ -6,11 +6,28 @@ for slash commands (/) and file mentions (@).
 
 from __future__ import annotations
 
-import subprocess
+import asyncio
+import contextlib
+import shutil
+
+# S404: subprocess is required for git ls-files to get project file list
+import subprocess  # noqa: S404
 from difflib import SequenceMatcher
 from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
+
+from deepagents_cli.project_utils import find_project_root
+
+
+def _get_git_executable() -> str | None:
+    """Get full path to git executable using shutil.which().
+
+    Returns:
+        Full path to git executable, or None if not found.
+    """
+    return shutil.which("git")
+
 
 if TYPE_CHECKING:
     from textual import events
@@ -64,7 +81,9 @@ class CompletionController(Protocol):
         """Called when input text changes."""
         ...
 
-    def on_key(self, event: events.Key, text: str, cursor_index: int) -> CompletionResult:
+    def on_key(
+        self, event: events.Key, text: str, cursor_index: int
+    ) -> CompletionResult:
         """Handle a key event. Returns how the event was handled."""
         ...
 
@@ -77,19 +96,15 @@ class CompletionController(Protocol):
 # Slash Command Completion
 # ============================================================================
 
-SLASH_COMMANDS: list[tuple[str, str]] = [
-    ("/help", "Show help"),
-    ("/clear", "Clear chat and start new session"),
-    ("/remember", "Update memory and skills from conversation"),
-    ("/quit", "Exit app"),
-    ("/exit", "Exit app"),
-    ("/tokens", "Token usage"),
-    ("/threads", "Show session info"),
-    ("/version", "Show version"),
-]
-"""Built-in slash commands with descriptions."""
 
 MAX_SUGGESTIONS = 10
+"""UI cap so the completion popup doesn't get unwieldy."""
+
+_MIN_SLASH_FUZZY_SCORE = 25
+"""Minimum score for slash-command fuzzy matches."""
+
+_MIN_DESC_SEARCH_LEN = 2
+"""Minimum query length to search command descriptions (avoids single-char noise)."""
 
 
 class SlashCommandController:
@@ -97,22 +112,27 @@ class SlashCommandController:
 
     def __init__(
         self,
-        commands: list[tuple[str, str]],
+        commands: list[tuple[str, str, str]],
         view: CompletionView,
     ) -> None:
         """Initialize the slash command controller.
 
         Args:
-            commands: List of (command, description) tuples
-            view: View to render suggestions to
+            commands: List of `(command, description, hidden_keywords)` tuples.
+            view: View to render suggestions to.
         """
         self._commands = commands
         self._view = view
         self._suggestions: list[tuple[str, str]] = []
         self._selected_index = 0
 
-    def can_handle(self, text: str, cursor_index: int) -> bool:  # noqa: ARG002
-        """Handle input that starts with /."""
+    @staticmethod
+    def can_handle(text: str, cursor_index: int) -> bool:  # noqa: ARG004  # Required by AutocompleteProvider interface
+        """Handle input that starts with /.
+
+        Returns:
+            True if text starts with slash, indicating a command.
+        """
         return text.startswith("/")
 
     def reset(self) -> None:
@@ -121,6 +141,47 @@ class SlashCommandController:
             self._suggestions.clear()
             self._selected_index = 0
             self._view.clear_completion_suggestions()
+
+    @staticmethod
+    def _score_command(search: str, cmd: str, desc: str, keywords: str = "") -> float:
+        """Score a command against a search string. Higher = better match.
+
+        Args:
+            search: Lowercase search string (without leading `/`).
+            cmd: Command name (e.g. `'/help'`).
+            desc: Command description text.
+            keywords: Space-separated hidden keywords for matching.
+
+        Returns:
+            Score value where higher indicates better match quality.
+        """
+        if not search:
+            return 0.0
+        name = cmd.lstrip("/").lower()
+        lower_desc = desc.lower()
+        # Prefix match on command name — highest priority
+        if name.startswith(search):
+            return 200.0
+        # Substring match on command name
+        if search in name:
+            return 150.0
+        # Hidden keyword match — treated like a word-boundary description match
+        if keywords and len(search) >= _MIN_DESC_SEARCH_LEN:
+            for kw in keywords.lower().split():
+                if kw.startswith(search) or search in kw:
+                    return 120.0
+        # Substring match on description (require ≥2 chars to avoid single-letter noise)
+        if len(search) >= _MIN_DESC_SEARCH_LEN and search in lower_desc:
+            idx = lower_desc.find(search)
+            # Word-boundary bonus: match at start of description or after a space
+            if idx == 0 or lower_desc[idx - 1] == " ":
+                return 110.0
+            return 90.0
+        # Fuzzy match via SequenceMatcher on name + desc
+        name_ratio = SequenceMatcher(None, search, name).ratio()
+        desc_ratio = SequenceMatcher(None, search, lower_desc).ratio()
+        best = max(name_ratio * 60, desc_ratio * 30)
+        return best if best >= _MIN_SLASH_FUZZY_SCORE else 0.0
 
     def on_text_changed(self, text: str, cursor_index: int) -> None:
         """Update suggestions when text changes."""
@@ -135,23 +196,38 @@ class SlashCommandController:
         # Get the search string (text after /)
         search = text[1:cursor_index].lower()
 
-        # Filter commands that match
-        suggestions = [
-            (cmd, desc) for cmd, desc in self._commands if cmd.lower().startswith("/" + search)
-        ]
-
-        if len(suggestions) > MAX_SUGGESTIONS:
-            suggestions = suggestions[:MAX_SUGGESTIONS]
+        if not search:
+            # No search text — show all commands (display only cmd + desc)
+            suggestions = [(cmd, desc) for cmd, desc, _ in self._commands][
+                :MAX_SUGGESTIONS
+            ]
+        else:
+            # Score and filter commands using fuzzy matching
+            scored = [
+                (score, cmd, desc)
+                for cmd, desc, kw in self._commands
+                if (score := self._score_command(search, cmd, desc, kw)) > 0
+            ]
+            scored.sort(key=lambda x: -x[0])
+            suggestions = [(cmd, desc) for _, cmd, desc in scored[:MAX_SUGGESTIONS]]
 
         if suggestions:
             self._suggestions = suggestions
             self._selected_index = 0
-            self._view.render_completion_suggestions(self._suggestions, self._selected_index)
+            self._view.render_completion_suggestions(
+                self._suggestions, self._selected_index
+            )
         else:
             self.reset()
 
-    def on_key(self, event: events.Key, _text: str, cursor_index: int) -> CompletionResult:
-        """Handle key events for navigation and selection."""
+    def on_key(
+        self, event: events.Key, _text: str, cursor_index: int
+    ) -> CompletionResult:
+        """Handle key events for navigation and selection.
+
+        Returns:
+            CompletionResult indicating how the key was handled.
+        """
         if not self._suggestions:
             return CompletionResult.IGNORED
 
@@ -182,10 +258,16 @@ class SlashCommandController:
             return
         count = len(self._suggestions)
         self._selected_index = (self._selected_index + delta) % count
-        self._view.render_completion_suggestions(self._suggestions, self._selected_index)
+        self._view.render_completion_suggestions(
+            self._suggestions, self._selected_index
+        )
 
     def _apply_selected_completion(self, cursor_index: int) -> bool:
-        """Apply the currently selected completion."""
+        """Apply the currently selected completion.
+
+        Returns:
+            True if completion was applied, False if no suggestions.
+        """
         if not self._suggestions:
             return False
 
@@ -202,35 +284,38 @@ class SlashCommandController:
 
 # Constants for fuzzy file completion
 _MAX_FALLBACK_FILES = 1000
+"""Hard cap on files returned by the non-git glob fallback."""
+
+_MIN_FUZZY_SCORE = 15
+"""Minimum score to include in file-completion results."""
+
 _MIN_FUZZY_RATIO = 0.4
-_MIN_FUZZY_SCORE = 15  # Minimum score to include in results
-
-
-def _find_project_root(start_path: Path) -> Path:
-    """Find git root or return start_path."""
-    current = start_path.resolve()
-    for parent in [current, *list(current.parents)]:
-        if (parent / ".git").exists():
-            return parent
-    return start_path
+"""SequenceMatcher threshold for filename-only fuzzy matches."""
 
 
 def _get_project_files(root: Path) -> list[str]:
-    """Get project files using git ls-files or fallback to glob."""
-    try:
-        result = subprocess.run(
-            ["git", "ls-files"],  # noqa: S607
-            cwd=root,
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=False,
-        )
-        if result.returncode == 0:
-            files = result.stdout.strip().split("\n")
-            return [f for f in files if f]  # Filter empty strings
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        pass
+    """Get project files using git ls-files or fallback to glob.
+
+    Returns:
+        List of relative file paths from project root.
+    """
+    git_path = _get_git_executable()
+    if git_path:
+        try:
+            # S603: git_path is validated via shutil.which(), args are hardcoded
+            result = subprocess.run(  # noqa: S603
+                [git_path, "ls-files"],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+            if result.returncode == 0:
+                files = result.stdout.strip().split("\n")
+                return [f for f in files if f]  # Filter empty strings
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            pass
 
     # Fallback: simple glob (limited depth to avoid slowness)
     files = []
@@ -238,7 +323,7 @@ def _get_project_files(root: Path) -> list[str]:
         for pattern in ["*", "*/*", "*/*/*", "*/*/*/*"]:
             for p in root.glob(pattern):
                 if p.is_file() and not any(part.startswith(".") for part in p.parts):
-                    files.append(str(p.relative_to(root)))
+                    files.append(p.relative_to(root).as_posix())
                 if len(files) >= _MAX_FALLBACK_FILES:
                     break
             if len(files) >= _MAX_FALLBACK_FILES:
@@ -249,12 +334,18 @@ def _get_project_files(root: Path) -> list[str]:
 
 
 def _fuzzy_score(query: str, candidate: str) -> float:
-    """Score a candidate against query. Higher = better match."""
+    """Score a candidate against query. Higher = better match.
+
+    Returns:
+        Score value where higher indicates better match quality.
+    """
     query_lower = query.lower()
-    candidate_lower = candidate.lower()
+    # Normalize path separators for cross-platform support
+    candidate_normalized = candidate.replace("\\", "/")
+    candidate_lower = candidate_normalized.lower()
 
     # Extract filename for matching (prioritize filename over full path)
-    filename = candidate.rsplit("/", 1)[-1].lower()
+    filename = candidate_normalized.rsplit("/", 1)[-1].lower()
     filename_start = candidate_lower.rfind("/") + 1
 
     # Check filename first (higher priority)
@@ -290,17 +381,29 @@ def _fuzzy_score(query: str, candidate: str) -> float:
 
 
 def _is_dotpath(path: str) -> bool:
-    """Check if path contains dotfiles/dotdirs (e.g., .github/...)."""
+    """Check if path contains dotfiles/dotdirs (e.g., .github/...).
+
+    Returns:
+        True if path contains hidden directories or files.
+    """
     return any(part.startswith(".") for part in path.split("/"))
 
 
 def _path_depth(path: str) -> int:
-    """Get depth of path (number of / separators)."""
+    """Get depth of path (number of / separators).
+
+    Returns:
+        Number of path separators in the path.
+    """
     return path.count("/")
 
 
 def _fuzzy_search(
-    query: str, candidates: list[str], limit: int = 10, *, include_dotfiles: bool = False
+    query: str,
+    candidates: list[str],
+    limit: int = 10,
+    *,
+    include_dotfiles: bool = False,
 ) -> list[str]:
     """Return top matches sorted by score.
 
@@ -309,16 +412,27 @@ def _fuzzy_search(
         candidates: List of file paths to search
         limit: Max results to return
         include_dotfiles: Whether to include dotfiles (default False)
+
+    Returns:
+        List of matching file paths sorted by relevance score.
     """
     # Filter dotfiles unless explicitly searching for them
-    filtered = candidates if include_dotfiles else [c for c in candidates if not _is_dotpath(c)]
+    filtered = (
+        candidates
+        if include_dotfiles
+        else [c for c in candidates if not _is_dotpath(c)]
+    )
 
     if not query:
         # Empty query: show root-level files first, sorted by depth then name
         sorted_files = sorted(filtered, key=lambda p: (_path_depth(p), p.lower()))
         return sorted_files[:limit]
 
-    scored = [(score, c) for c in filtered if (score := _fuzzy_score(query, c)) >= _MIN_FUZZY_SCORE]
+    scored = [
+        (score, c)
+        for c in filtered
+        if (score := _fuzzy_score(query, c)) >= _MIN_FUZZY_SCORE
+    ]
     scored.sort(key=lambda x: -x[0])
     return [c for _, c in scored[:limit]]
 
@@ -339,13 +453,17 @@ class FuzzyFileController:
         """
         self._view = view
         self._cwd = cwd or Path.cwd()
-        self._project_root = _find_project_root(self._cwd)
+        self._project_root = find_project_root(self._cwd) or self._cwd
         self._suggestions: list[tuple[str, str]] = []
         self._selected_index = 0
         self._file_cache: list[str] | None = None
 
     def _get_files(self) -> list[str]:
-        """Get cached file list or refresh."""
+        """Get cached file list or refresh.
+
+        Returns:
+            List of project file paths.
+        """
         if self._file_cache is None:
             self._file_cache = _get_project_files(self._project_root)
         return self._file_cache
@@ -354,8 +472,23 @@ class FuzzyFileController:
         """Force refresh of file cache."""
         self._file_cache = None
 
-    def can_handle(self, text: str, cursor_index: int) -> bool:
-        """Handle input that contains @ not followed by space."""
+    async def warm_cache(self) -> None:
+        """Pre-populate the file cache off the event loop."""
+        if self._file_cache is not None:
+            return
+        # Best-effort; _get_files() falls back to sync on failure.
+        with contextlib.suppress(Exception):
+            self._file_cache = await asyncio.to_thread(
+                _get_project_files, self._project_root
+            )
+
+    @staticmethod
+    def can_handle(text: str, cursor_index: int) -> bool:
+        """Handle input that contains @ not followed by space.
+
+        Returns:
+            True if cursor is after @ and within a file mention context.
+        """
         if cursor_index <= 0 or cursor_index > len(text):
             return False
 
@@ -393,16 +526,24 @@ class FuzzyFileController:
         if suggestions:
             self._suggestions = suggestions
             self._selected_index = 0
-            self._view.render_completion_suggestions(self._suggestions, self._selected_index)
+            self._view.render_completion_suggestions(
+                self._suggestions, self._selected_index
+            )
         else:
             self.reset()
 
     def _get_fuzzy_suggestions(self, search: str) -> list[tuple[str, str]]:
-        """Get fuzzy file suggestions."""
+        """Get fuzzy file suggestions.
+
+        Returns:
+            List of (label, type_hint) tuples for matching files.
+        """
         files = self._get_files()
         # Include dotfiles only if query starts with "."
         include_dots = search.startswith(".")
-        matches = _fuzzy_search(search, files, limit=MAX_SUGGESTIONS, include_dotfiles=include_dots)
+        matches = _fuzzy_search(
+            search, files, limit=MAX_SUGGESTIONS, include_dotfiles=include_dots
+        )
 
         suggestions: list[tuple[str, str]] = []
         for path in matches:
@@ -413,8 +554,14 @@ class FuzzyFileController:
 
         return suggestions
 
-    def on_key(self, event: events.Key, text: str, cursor_index: int) -> CompletionResult:
-        """Handle key events for navigation and selection."""
+    def on_key(
+        self, event: events.Key, text: str, cursor_index: int
+    ) -> CompletionResult:
+        """Handle key events for navigation and selection.
+
+        Returns:
+            CompletionResult indicating how the key was handled.
+        """
         if not self._suggestions:
             return CompletionResult.IGNORED
 
@@ -441,10 +588,16 @@ class FuzzyFileController:
             return
         count = len(self._suggestions)
         self._selected_index = (self._selected_index + delta) % count
-        self._view.render_completion_suggestions(self._suggestions, self._selected_index)
+        self._view.render_completion_suggestions(
+            self._suggestions, self._selected_index
+        )
 
     def _apply_selected_completion(self, text: str, cursor_index: int) -> bool:
-        """Apply the currently selected completion."""
+        """Apply the currently selected completion.
+
+        Returns:
+            True if completion was applied, False if no suggestions or invalid state.
+        """
         if not self._suggestions:
             return False
 
@@ -507,8 +660,14 @@ class MultiCompletionManager:
         # Let the active controller process the change
         candidate.on_text_changed(text, cursor_index)
 
-    def on_key(self, event: events.Key, text: str, cursor_index: int) -> CompletionResult:
-        """Handle key event, delegating to active controller."""
+    def on_key(
+        self, event: events.Key, text: str, cursor_index: int
+    ) -> CompletionResult:
+        """Handle key event, delegating to active controller.
+
+        Returns:
+            CompletionResult from active controller, or IGNORED if none active.
+        """
         if self._active is None:
             return CompletionResult.IGNORED
         return self._active.on_key(event, text, cursor_index)

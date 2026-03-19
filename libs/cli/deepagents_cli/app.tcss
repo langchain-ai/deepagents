@@ -1,4 +1,4 @@
-/* DeepAgents CLI Textual Stylesheet */
+/* Deep Agents CLI Textual Stylesheet */
 
 /* Define layers for z-ordering */
 Screen {
@@ -15,19 +15,16 @@ Screen {
     background: $background;
 }
 
-/* Spacer fills remaining viewport below input */
-#chat-spacer {
-    height: auto;
-}
-
 /* Welcome banner */
 #welcome-banner {
     height: auto;
     margin-bottom: 1;
 }
 
-/* Messages area */
+/* Messages area — uses undocumented "stream" layout (Textual ≥5.2.0) for
+   O(1) append performance via incremental placement caching. */
 #messages {
+    layout: stream;
     height: auto;
 }
 
@@ -42,7 +39,7 @@ Screen {
 #input-area {
     height: auto;
     min-height: 3;
-    max-height: 12;
+    max-height: 25;
 }
 
 /* Approval Menu - inline in messages area */
@@ -54,10 +51,26 @@ Screen {
     border: solid $warning;
 }
 
+/* Placeholder shown while the user is actively typing (approval deferred) */
+.approval-placeholder {
+    height: auto;
+    margin: 1 0;
+    padding: 0 1;
+    border: solid $panel;
+    color: $text-muted;
+    text-style: italic;
+}
+
 .approval-menu .approval-title {
     text-style: bold;
     color: $warning;
     margin-bottom: 0;
+}
+
+.approval-menu .approval-command {
+    height: auto;
+    margin: 0 0 1 0;
+    padding: 0 1;
 }
 
 .approval-menu .approval-info {
@@ -145,7 +158,8 @@ Screen {
 
 /* Scrollable tool info area in approval menu */
 .approval-menu .tool-info-scroll {
-    height: 10;
+    height: auto;
+    max-height: 10;
     margin-top: 0;
 }
 
@@ -160,6 +174,61 @@ Screen {
     background: $surface-darken-1;
     padding: 0 1;
     margin-top: 0;
+}
+
+/* Ask user widget */
+.ask-user-menu {
+    height: auto;
+    margin: 1 0;
+    padding: 0 1;
+    background: $surface;
+    border: solid $success;
+}
+
+.ask-user-menu .ask-user-title {
+    text-style: bold;
+    color: $success;
+    margin-bottom: 0;
+}
+
+.ask-user-menu .ask-user-help {
+    color: $text-muted;
+    text-style: italic;
+    margin-top: 0;
+    margin-bottom: 0;
+}
+
+.ask-user-menu .ask-user-questions {
+    height: auto;
+    padding: 0 1;
+}
+
+.ask-user-menu .ask-user-question {
+    height: auto;
+    margin-bottom: 1;
+}
+
+.ask-user-menu .ask-user-question-active {
+    border-left: thick $success;
+    padding-left: 1;
+}
+
+.ask-user-menu .ask-user-question-inactive {
+    opacity: 0.5;
+    padding-left: 2;
+}
+
+.ask-user-menu .ask-user-choice {
+    height: 1;
+    padding: 0 1;
+}
+
+.ask-user-menu .ask-user-text-input {
+    margin: 1 1 0 1;
+}
+
+.ask-user-menu .ask-user-other-input {
+    margin: 1 1 0 1;
 }
 
 /* Completion popup styling (used by ChatInput) - appears BELOW input */

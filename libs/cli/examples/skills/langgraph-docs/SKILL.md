@@ -1,35 +1,28 @@
 ---
 name: langgraph-docs
-description: Use this skill for requests related to LangGraph in order to fetch relevant documentation to provide accurate, up-to-date guidance.
+description: Fetches and references LangGraph Python documentation to build stateful agents, create multi-agent workflows, and implement human-in-the-loop patterns. Use when the user asks about LangGraph, graph agents, state machines, agent orchestration, LangGraph API, or needs LangGraph implementation guidance.
 ---
 
 # langgraph-docs
 
-## Overview
-
-This skill explains how to access LangGraph Python documentation to help answer questions and guide implementation.
-
-## Instructions
+## Workflow
 
 ### 1. Fetch the Documentation Index
 
-Use the fetch_url tool to read the following URL:
-https://docs.langchain.com/llms.txt
+Use `fetch_url` to read: https://docs.langchain.com/llms.txt
 
-This provides a structured list of all available documentation with descriptions.
+This returns a structured list of all available documentation with descriptions.
 
 ### 2. Select Relevant Documentation
 
-Based on the question, identify 2-4 most relevant documentation URLs from the index. Prioritize:
-- Specific how-to guides for implementation questions
-- Core concept pages for understanding questions
-- Tutorials for end-to-end examples
-- Reference docs for API details
+Identify 2-4 most relevant URLs from the index. Prioritize:
+- **Implementation questions** — specific how-to guides
+- **Conceptual questions** — core concept pages
+- **End-to-end examples** — tutorials
+- **API details** — reference docs
 
-### 3. Fetch Selected Documentation
+### 3. Fetch and Apply
 
-Use the fetch_url tool to read the selected documentation URLs.
+Use `fetch_url` on the selected URLs, then complete the user's request using the documentation content.
 
-### 4. Provide Accurate Guidance
-
-After reading the documentation, complete the users request.
+If `fetch_url` fails or returns empty content, retry once. If it fails again, inform the user and suggest checking https://langchain-ai.github.io/langgraph/ directly.

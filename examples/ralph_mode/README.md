@@ -1,4 +1,4 @@
-# Ralph Mode for DeepAgents
+# Ralph Mode for Deep Agents
 
 ![Ralph Mode Diagram](ralph_mode_diagram.png)
 
@@ -28,7 +28,7 @@ source .venv/bin/activate
 uv pip install deepagents-cli
 
 # Download the script (or copy from examples/ralph_mode/ if you have the repo)
-curl -O https://raw.githubusercontent.com/langchain-ai/deepagents/master/examples/ralph_mode/ralph_mode.py
+curl -O https://raw.githubusercontent.com/langchain-ai/deepagents/main/examples/ralph_mode/ralph_mode.py
 
 # Run Ralph
 python ralph_mode.py "Build a Python programming course for beginners. Use git."
@@ -44,8 +44,40 @@ python ralph_mode.py "Build a Python course"
 python ralph_mode.py "Build a REST API" --iterations 5
 
 # With specific model
-python ralph_mode.py "Create a CLI tool" --model claude-haiku-4-5-20251001
+python ralph_mode.py "Create a CLI tool" --model claude-sonnet-4-6
+
+# With a specific working directory
+python ralph_mode.py "Build a web app" --work-dir ./my-project
+
+# Run in a remote sandbox (Modal, Daytona, or Runloop)
+python ralph_mode.py "Build an app" --sandbox modal
+python ralph_mode.py "Build an app" --sandbox daytona --sandbox-setup ./setup.sh
+
+# Reuse an existing sandbox instance
+python ralph_mode.py "Build an app" --sandbox modal --sandbox-id my-sandbox
+
+# Auto-approve specific shell commands (or "recommended" for safe defaults)
+python ralph_mode.py "Build an app" --shell-allow-list recommended
+python ralph_mode.py "Build an app" --shell-allow-list "ls,cat,grep,pwd"
+
+# Pass model parameters
+python ralph_mode.py "Build an app" --model-params '{"temperature": 0.5}'
+
+# Disable streaming output
+python ralph_mode.py "Build an app" --no-stream
 ```
+
+### Remote sandboxes
+
+Ralph supports running agent code in isolated remote environments via the
+`--sandbox` flag. The agent runs locally but executes all code operations in the
+remote sandbox. See the
+[sandbox documentation](https://docs.langchain.com/oss/python/deepagents/cli/overview)
+for provider setup (API keys, etc.) and the
+[sandboxes concept guide](https://docs.langchain.com/oss/python/deepagents/sandboxes)
+for architecture details.
+
+Supported providers: **Modal**, **Daytona**, **Runloop**.
 
 ## How It Works
 

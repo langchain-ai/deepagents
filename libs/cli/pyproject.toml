@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "deepagents-cli"
-version = "0.0.16"
-description = "Terminal interface for DeepAgents - interactive AI agent with file operations, shell access, and sub-agent capabilities."
+version = "0.0.34"
+description = "Terminal interface for Deep Agents - interactive AI agent with file operations, shell access, and sub-agent capabilities."
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11,<4.0"
@@ -25,40 +25,88 @@ classifiers = [
     "Topic :: Terminals",
 ]
 dependencies = [
-  # Framework
-  "deepagents==0.3.9",
-  "langchain>=1.2.7,<2.0.0",
-  "langchain-openai>=1.1.7,<2.0.0",
-  "langgraph-checkpoint-sqlite>=3.0.0,<4.0.0",
+    # Framework
+    "deepagents==0.4.11",
+    "langchain>=1.2.10,<2.0.0",
+    "langgraph>=1.1.2,<2.0.0",
+    "langgraph-checkpoint-sqlite>=3.0.0,<4.0.0",
 
-  # UI/Terminal
-  "textual>=6.0.0,<8.0.0",
-  "textual-autocomplete>=3.0.0,<5.0.0",
-  "prompt-toolkit>=3.0.52,<4.0.0",
-  "rich>=14.0.0,<15.0.0",
-  "markdownify>=0.13.0,<2.0.0",
+    # Client-server architecture
+    "langgraph-sdk>=0.3.11,<1.0.0",
+    "langgraph-cli[inmem]>=0.4.15,<1.0.0",
+    "httpx>=0.28.1,<1.0.0",
 
-  # Sandbox integrations
-  "daytona>=0.113.0,<1.0.0",
-  "modal>=0.65.0,<2.0.0",
-  "runloop-api-client>=0.69.0",
+    # Core model providers - others are added as optional
+    "langchain-anthropic>=1.3.5,<2.0.0",
+    "langchain-google-genai>=4.2.1,<5.0.0",
+    "langchain-openai>=1.1.8,<2.0.0",
 
-  # Tools
-  "tavily-python>=0.7.21,<1.0.0",
+    # UI/Terminal
+    "textual>=8.0.0,<9.0.0",
+    "textual-autocomplete>=3.0.0,<5.0.0",
+    "textual-speedups>=0.2.1,<1.0.0",
+    "prompt-toolkit>=3.0.52,<4.0.0",
+    "rich>=14.0.0,<15.0.0",
+    "markdownify>=0.13.0,<2.0.0",
 
-  # Clipboard
-  "pyperclip>=1.11.0,<2.0.0",
+    # Sandbox integrations
+    "langsmith[sandbox]>=0.7.7",
 
-  # Utilities
-  "python-dotenv>=1.0.0,<2.0.0",
-  "requests>=2.0.0,<3.0.0",
-  "pillow>=10.0.0,<13.0.0",
-  "pyyaml>=6.0.0",
-  "aiosqlite>=0.19.0,<1.0.0",
+    # Tools
+    "tavily-python>=0.7.21,<1.0.0",
+
+    # Clipboard
+    "pyperclip>=1.11.0,<2.0.0",
+
+    # Utilities
+    "uuid-utils>=0.10.0,<1.0.0",
+    "python-dotenv>=1.0.0,<2.0.0",
+    "requests>=2.0.0,<3.0.0",
+    "pillow>=10.0.0,<13.0.0",
+    "pyyaml>=6.0.0",
+    "aiosqlite>=0.19.0,<1.0.0",
+    "tomli-w>=1.0.0,<2.0.0",
+
+    # MCP
+    "langchain-mcp-adapters>=0.2.0,<1.0.0",
+
+    # ACP
+    "deepagents-acp>=0.0.4",
 ]
 
 [project.optional-dependencies]
+# Model providers
+anthropic = ["langchain-anthropic>=1.3.5,<2.0.0"]
+baseten = ["langchain-baseten>=0.1.9,<1.0.0"]
+bedrock = ["langchain-aws>=1.0.0,<2.0.0"]
+cohere = ["langchain-cohere>=0.5.0,<1.0.0"]
+deepseek = ["langchain-deepseek>=1.0.0,<2.0.0"]
+fireworks = ["langchain-fireworks>=1.0.0,<2.0.0"]
+google-genai = ["langchain-google-genai>=4.2.1,<5.0.0"]
+groq = ["langchain-groq>=1.0.0,<2.0.0"]
+huggingface = ["langchain-huggingface>=1.0.0,<2.0.0"]
+ibm = ["langchain-ibm>=1.0.0,<2.0.0"]
+litellm = ["langchain-litellm>=0.6.1,<2.0.0"]
+mistralai = ["langchain-mistralai>=1.0.0,<2.0.0"]
+nvidia = ["langchain-nvidia-ai-endpoints>=1.0.0,<2.0.0"]
+ollama = ["langchain-ollama>=1.0.0,<2.0.0"]
+openai = ["langchain-openai>=1.1.8,<2.0.0"]
+openrouter = ["langchain-openrouter>=0.1.0,<2.0.0"]
+perplexity = ["langchain-perplexity>=1.0.0,<2.0.0"]
 vertexai = ["langchain-google-vertexai>=3.0.0,<4.0.0"]
+xai = ["langchain-xai>=1.0.0,<2.0.0"]
+
+# Sandbox providers
+daytona = ["langchain-daytona>=0.0.4"]
+modal = ["langchain-modal>=0.0.2"]
+runloop = ["langchain-runloop>=0.0.3"]
+all-sandboxes = [
+    "deepagents-cli[daytona,modal,runloop]",
+]
+
+all-providers = [
+    "deepagents-cli[anthropic,baseten,bedrock,cohere,deepseek,fireworks,google-genai,groq,huggingface,ibm,litellm,mistralai,nvidia,ollama,openai,openrouter,perplexity,vertexai,xai]",
+]
 
 [project.scripts]
 deepagents = "deepagents_cli:cli_main"
@@ -69,17 +117,21 @@ Homepage = "https://docs.langchain.com/oss/python/deepagents/overview"
 Documentation = "https://reference.langchain.com/python/deepagents/"
 Repository = "https://github.com/langchain-ai/deepagents"
 Issues = "https://github.com/langchain-ai/deepagents/issues"
-Changelog = "https://github.com/langchain-ai/deepagents/blob/master/libs/cli/CHANGELOG.md"
+Changelog = "https://github.com/langchain-ai/deepagents/blob/main/libs/cli/CHANGELOG.md"
 Twitter = "https://x.com/LangChain"
+Slack = "https://www.langchain.com/join-community"
+Reddit = "https://www.reddit.com/r/LangChain/"
 
 [dependency-groups]
 test = [
     "build>=1.0.0,<2.0.0",
-    "ruff>=0.14.11,<0.15.0",
+    "ruff>=0.14.0,<1.0.0",
     "ty>=0.0.1,<1.0.0",
-    "pytest>=8.3.4,<9.0.0",
-    "pytest-asyncio>=0.25.3,<1.0.0",
-    "pytest-cov>=6.0.0,<7.0.0",
+    "pytest>=8.3.4,<10.0.0",
+    "pytest-asyncio>=0.25.3,<2.0.0",
+    "pytest-benchmark>=5.1.0,<6.0.0",
+    "pytest-codspeed>=4.0.0,<5.0.0",
+    "pytest-cov>=6.0.0,<8.0.0",
     "pytest-mock>=3.14.0,<4.0.0",
     "pytest-socket>=0.7.0,<1.0.0",
     "pytest-timeout>=2.3.1,<3.0.0",
@@ -98,33 +150,48 @@ packages = ["deepagents_cli"]
 
 [tool.uv.sources]
 deepagents = { path = "../deepagents", editable = true }
+langchain-daytona = { path = "../partners/daytona", editable = true }
+langchain-modal = { path = "../partners/modal", editable = true }
+langchain-runloop = { path = "../partners/runloop", editable = true }
 
 [tool.ty.environment]
-extra-paths = ["../deepagents"]
+python-version = "3.11"
+extra-paths = [
+    "../deepagents",
+    "../partners/daytona",
+    "../partners/modal",
+    "../partners/runloop",
+]
 
 [tool.ty.rules]
 # https://docs.astral.sh/ty/rules/
-
-[tool.ruff]
-line-length = 100
+division-by-zero = "error"
 
 [tool.ruff.format]
-docstring-code-format = true  # Formats code blocks in docstrings
+docstring-code-format = true
+docstring-code-line-length = 100
 
 [tool.ruff.lint]
+preview = true
 select = ["ALL"]
 ignore = [
     "C90",     # McCabe complexity
     "COM812",  # Messes with the formatter
     "CPY",     # No copyright
+    "FBT",     # Boolean positional arguments (too pedantic)
+    "FIX002",  # Line contains TODO
     "ISC001",  # Messes with the formatter
     "PERF203", # Rarely useful
-    "PLR09",   # Too many something (arg, statements, etc)
-    "SLF001",  # Private member access
-    "PLC0415", # Imports should be at the top. Not always desirable
     "PLC0414", # Inconsistent with how type checkers expect to be notified of intentional re-exports
+    "PLC0415", # Lazy imports are used extensively throughout the CLI for startup performance (deferred heavy imports)
+    "PLR09",   # Too many something (args, branches, returns, statements, etc)
+    "PLR1702", # Too many nested blocks
+    "SLF001",  # Private member access
+    "TD002",   # Missing author in TODO
+    "TD003",   # Missing issue link in TODO
 ]
-unfixable = ["B028"]
+unfixable = ["B028"] # People should intentionally tune the stacklevel
+extend-safe-fixes = ["PLR6201"]
 
 flake8-annotations.allow-star-arg-any = true
 flake8-annotations.mypy-init-return = true
@@ -142,58 +209,65 @@ convention = "google"
 ignore-var-parameters = true
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["ANN001", "ANN201", "D1", "PLR2004", "S", "SLF"]
-"scripts/**" = ["BLE001", "INP", "S", "T201"]
-"deepagents_cli/agent.py" = ["E501", "PLR0912", "PLR2004", "SIM108"]
-"deepagents_cli/app.py" = ["E501", "PLR0915", "SIM108", "TC001", "TC002", "TC003"]
-"deepagents_cli/cli.py" = ["E501", "EM101", "EM102", "PLR0912", "PLR0915", "T201", "TC002", "TC003", "TRY003"]
-"deepagents_cli/clipboard.py" = ["BLE001", "PTH123", "S112", "TRY300"]
-"deepagents_cli/config.py" = ["D107", "E402", "E501", "ERA001", "FBT001", "FBT002", "PLR0912", "PLR0915", "RET503"]
-"deepagents_cli/file_ops.py" = ["ANN401", "BLE001", "D102", "PLR0912", "PLR0915"]
-"deepagents_cli/image_utils.py" = ["BLE001", "PERF401", "PLR0911", "PTH108", "PTH110", "PTH123", "PTH202", "S110", "S603", "S607", "SIM105"]
-"deepagents_cli/input.py" = ["ANN001", "ANN201", "BLE001", "D107", "FBT001", "FBT002", "PLR0912", "PLR0915", "TC002"]
-"deepagents_cli/integrations/daytona.py" = ["FIX002", "TD002", "TD003"]
-"deepagents_cli/integrations/modal_integration.py" = ["BLE001", "EM101", "EM102", "PLR0912", "S602", "S603", "S604", "S607", "TC002", "TC003", "TRY003"]
-"deepagents_cli/integrations/runloop.py" = ["B904", "F401"]
-"deepagents_cli/integrations/sandbox_factory.py" = ["BLE001", "EM101", "EM102", "S110", "TC003", "TRY003"]
-"deepagents_cli/core/agents_api.py" = ["EM101", "EM102", "TC003", "TRY003"]
-"deepagents_cli/core/api_credentials.py" = ["EM101", "EM102", "S603", "S607", "TC002", "TC003", "TRY003"]
-"deepagents_cli/core/env_manager.py" = ["EM101", "EM102", "TC002", "TC003", "TRY003"]
-"deepagents_cli/core/sessions.py" = ["ANN401", "BLE001", "EM101", "EM102", "FBT001", "PLR0913", "TC002", "TC003", "TRY003", "UP006"]
-"deepagents_cli/core/ui_display_types.py" = ["A003", "FBT001"]
-"deepagents_cli/local_context.py" = ["ARG002", "BLE001", "E501", "EM101", "EM102", "PERF401", "PLR0911", "PLR0912", "PLR0915", "S603", "S607", "TC002", "TC003", "TRY300"]
-"deepagents_cli/project_utils.py" = ["ERA001"]
-"deepagents_cli/shell.py" = ["PERF401", "S602"]
-"deepagents_cli/skills/commands.py" = ["ANN401", "E501", "FBT001", "FBT002", "TRY300"]
-"deepagents_cli/skills/load.py" = ["TC003"]
-"deepagents_cli/textual_adapter.py" = ["E501"]
-"deepagents_cli/tools.py" = ["ANN201", "BLE001", "E501", "E722", "FBT001", "FBT002", "PLR2004", "S113"]
-"deepagents_cli/ui.py" = ["ANN401", "ARG002", "BLE001", "D102", "EM102", "FBT001", "PLR0911", "PLR0912", "PLR0915", "S110", "TC002", "TC003", "TRY003", "TRY300"]
-"deepagents_cli/textual_app/components/messages.py" = ["TC002"]
-"deepagents_cli/widgets/approval.py" = ["ARG002", "B007", "D107", "RUF001", "TC002", "TC003"]
-"deepagents_cli/widgets/diff.py" = ["PLR0912"]
-"deepagents_cli/widgets/messages.py" = ["TC002"]
-"deepagents_cli/widgets/status.py" = ["PLR2004"]
-"deepagents_cli/widgets/tool_renderers.py" = ["D102", "PLR2004"]
-"deepagents_cli/main.py" = ["T201"]
-"deepagents_cli/skills.py" = ["ANN401", "D102", "D107", "EM101", "EM102", "F821", "PLR0913", "S102", "TC003", "TRY003"]
-"deepagents_cli/textual_app/app.py" = ["A001", "A002", "ANN202", "ARG002", "BLE001", "D102", "E501", "EM101", "EM102", "ERA001", "FBT001", "PLR0912", "PLR0913", "PLR0915", "S311", "SIM102", "T201", "TC002", "TC003", "TRY003"]
-"deepagents_cli/textual_app/conversation_service.py" = ["ANN401", "EM101", "EM102", "PLR0913", "RUF012", "TC003", "TRY003"]
-"deepagents_cli/textual_app/history_tab.py" = ["A002", "ANN202", "BLE001", "EM101", "EM102", "PLR0912", "RUF012", "TC002", "TC003", "TRY003"]
-"deepagents_cli/textual_app/input_box.py" = ["ANN202", "BLE001", "EM102", "PLR0912", "PLR0915", "TC003", "TRY003"]
-"deepagents_cli/textual_app/markdown_with_code_actions.py" = ["ANN202", "BLE001", "D102", "E501", "EM102", "SLF001", "TC002", "TC003", "TRY003"]
-"deepagents_cli/textual_app/running_shell_widget.py" = ["ANN202", "D102", "TC003"]
-"deepagents_cli/utils.py" = ["ANN401", "EM101", "EM102", "PLR0912", "S604", "S607", "TC002", "TC003", "TRY003"]
-"examples/skills/arxiv-search/arxiv_search.py" = ["BLE001", "D103", "TRY300"]
-"examples/skills/skill-creator/scripts/init_skill.py" = ["ANN001", "ANN201", "BLE001", "D103", "D415", "PLR2004", "T201"]
-"examples/skills/skill-creator/scripts/quick_validate.py" = ["ANN001", "ANN201", "D415", "E501", "N806", "PLR0911", "PLR0912", "PLR2004", "T201"]
+"tests/**" = [
+    "ANN001",   # Missing type annotation for function argument — not needed in tests
+    "ANN201",   # Missing return type annotation — not needed in tests
+    "D1",       # Missing docstrings — not needed in tests
+    "DOC",      # Docstring conventions — not needed in tests
+    "F401",     # Imported but unused — test fixtures may appear unused
+    "PLC0415",  # Lazy imports — test organization patterns
+    "PLC1901",  # Comparison to empty string — fine in test assertions
+    "PLC2701",  # Private name import — tests need access to internals
+    "PLR2004",  # Magic value used in comparison — fine in test assertions
+    "PLR6201",  # Literal membership test — fine in tests
+    "PLR6301",  # Method could be a function — test class organization
+    "PLW0108",  # Lambda may be unnecessary — fine in test mocks
+    "RUF001",   # Ambiguous characters — fine in test strings
+    "S",        # Security warnings — not applicable to tests
+    "SLF",      # Private member access — tests need access to internals
+]
+"scripts/**" = [
+    "BLE001",   # Blind exception catch — resilience in standalone scripts
+    "INP",      # Missing `__init__.py` — scripts are standalone
+    "S",        # Security warnings — not applicable to scripts
+    "T201",     # `print` found — scripts use print for output
+]
+"examples/**" = [
+    "ANN001",   # Missing type annotation for function argument — examples prioritize clarity
+    "ANN201",   # Missing return type annotation — examples prioritize clarity
+    "BLE001",   # Blind exception catch — resilience in example scripts
+    "INP001",   # Missing `__init__.py` — examples are standalone
+    "N806",     # Variable in function should be lowercase — example naming conventions
+    "PLC0415",  # Lazy import — example organization patterns
+    "PLR2004",  # Magic value used in comparison — fine in examples
+    "T201",     # `print` found — examples use print for output
+    "TRY300",   # Consider moving to `else` block — examples prioritize readability
+]
+"deepagents_cli/built_in_skills/**/scripts/**" = [
+    "ANN001",   # Missing type annotation for function argument — standalone scripts
+    "ANN201",   # Missing return type annotation — standalone scripts
+    "BLE001",   # Blind exception catch — resilience in standalone scripts
+    "INP001",   # Missing `__init__.py` — scripts are standalone
+    "N806",     # Variable in function should be lowercase — script naming conventions
+    "PLR2004",  # Magic value used in comparison — fine in scripts
+    "T201",     # `print` found — scripts use print for output
+]
 
 [tool.coverage.run]
 omit = ["tests/*"]
 
 [tool.pytest.ini_options]
-timeout = 10  # Default timeout for all tests (can be overridden per-test)
+timeout = 30  # Default timeout for all tests (can be overridden per-test)
 
 addopts = "--strict-markers --strict-config --durations=5"
+markers = ["benchmark: marks tests as benchmarks (select with '-m benchmark')"]
+# pytest-benchmark warns once per xdist worker that benchmarks are disabled
+# under parallel execution. Both plugins are needed: xdist for `make test`,
+# benchmark for `make benchmark`. Suppress the noise here.
+# Use a message-match filter so the import of pytest_benchmark isn't required
+# when the plugin is not installed.
+filterwarnings = [
+    "ignore:.*pytest.benchmark.*:pytest.PytestConfigWarning",
+]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"

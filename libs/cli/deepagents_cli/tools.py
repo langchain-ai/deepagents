@@ -1,15 +1,35 @@
 """Custom tools for the CLI agent."""
 
-from typing import Any, Literal
+from __future__ import annotations
 
-import requests
-from markdownify import markdownify
-from tavily import TavilyClient
+from typing import TYPE_CHECKING, Any, Literal
 
-from deepagents_cli.config import settings
+if TYPE_CHECKING:
+    from tavily import TavilyClient
 
-# Initialize Tavily client if API key is available
-tavily_client = TavilyClient(api_key=settings.tavily_api_key) if settings.has_tavily else None
+_UNSET = object()
+_tavily_client: TavilyClient | object | None = _UNSET
+
+
+def _get_tavily_client() -> TavilyClient | None:
+    """Get or initialize the lazy Tavily client singleton.
+
+    Returns:
+        TavilyClient instance, or None if API key is not configured.
+    """
+    global _tavily_client  # noqa: PLW0603  # Module-level cache requires global statement
+    if _tavily_client is not _UNSET:
+        return _tavily_client  # type: ignore[return-value]  # narrowed by sentinel check
+
+    from deepagents_cli.config import settings
+
+    if settings.has_tavily:
+        from tavily import TavilyClient as _TavilyClient
+
+        _tavily_client = _TavilyClient(api_key=settings.tavily_api_key)
+    else:
+        _tavily_client = None
+    return _tavily_client
 
 
 def http_request(
@@ -33,8 +53,10 @@ def http_request(
     Returns:
         Dictionary with response data including status, headers, and content
     """
+    import requests
+
     try:
-        kwargs = {"url": url, "method": method.upper(), "timeout": timeout}
+        kwargs: dict[str, Any] = {}
 
         if headers:
             kwargs["headers"] = headers
@@ -46,15 +68,15 @@ def http_request(
             else:
                 kwargs["data"] = data
 
-        response = requests.request(**kwargs)
+        response = requests.request(method.upper(), url, timeout=timeout, **kwargs)
 
         try:
             content = response.json()
-        except:
+        except (ValueError, requests.exceptions.JSONDecodeError):
             content = response.text
 
         return {
-            "success": response.status_code < 400,
+            "success": response.status_code < 400,  # noqa: PLR2004  # HTTP status code threshold
             "status_code": response.status_code,
             "headers": dict(response.headers),
             "content": content,
@@ -77,17 +99,9 @@ def http_request(
             "content": f"Request error: {e!s}",
             "url": url,
         }
-    except Exception as e:
-        return {
-            "success": False,
-            "status_code": 0,
-            "headers": {},
-            "content": f"Error making request: {e!s}",
-            "url": url,
-        }
 
 
-def web_search(
+def web_search(  # noqa: ANN201  # Return type depends on dynamic tool configuration
     query: str,
     max_results: int = 5,
     topic: Literal["general", "news", "finance"] = "general",
@@ -120,20 +134,49 @@ def web_search(
     4. Cite sources by mentioning the page titles or URLs
     5. NEVER show the raw JSON to the user - always provide a formatted response
     """
-    if tavily_client is None:
+    try:
+        import requests
+        from tavily import (
+            BadRequestError,
+            InvalidAPIKeyError,
+            MissingAPIKeyError,
+            UsageLimitExceededError,
+        )
+        from tavily.errors import ForbiddenError, TimeoutError as TavilyTimeoutError
+    except ImportError as exc:
         return {
-            "error": "Tavily API key not configured. Please set TAVILY_API_KEY environment variable.",
+            "error": f"Required package not installed: {exc.name}. "
+            "Install with: pip install 'deepagents[cli]'",
+            "query": query,
+        }
+
+    client = _get_tavily_client()
+    if client is None:
+        return {
+            "error": "Tavily API key not configured. "
+            "Please set TAVILY_API_KEY environment variable.",
             "query": query,
         }
 
     try:
-        return tavily_client.search(
+        return client.search(
             query,
             max_results=max_results,
             include_raw_content=include_raw_content,
             topic=topic,
         )
-    except Exception as e:
+    except (
+        requests.exceptions.RequestException,
+        ValueError,
+        TypeError,
+        # Tavily-specific exceptions
+        BadRequestError,
+        ForbiddenError,
+        InvalidAPIKeyError,
+        MissingAPIKeyError,
+        TavilyTimeoutError,
+        UsageLimitExceededError,
+    ) as e:
         return {"error": f"Web search error: {e!s}", "query": query}
 
 
@@ -163,6 +206,16 @@ def fetch_url(url: str, timeout: int = 30) -> dict[str, Any]:
     4. NEVER show the raw markdown to the user unless specifically requested
     """
     try:
+        import requests
+        from markdownify import markdownify
+    except ImportError as exc:
+        return {
+            "error": f"Required package not installed: {exc.name}. "
+            "Install with: pip install 'deepagents[cli]'",
+            "url": url,
+        }
+
+    try:
         response = requests.get(
             url,
             timeout=timeout,
@@ -179,5 +232,5 @@ def fetch_url(url: str, timeout: int = 30) -> dict[str, Any]:
             "status_code": response.status_code,
             "content_length": len(markdown_content),
         }
-    except Exception as e:
+    except requests.exceptions.RequestException as e:
         return {"error": f"Fetch URL error: {e!s}", "url": url}

@@ -3,7 +3,13 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path  # noqa: TC003 - used at runtime in type hints
+import logging
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 class HistoryManager:
@@ -25,6 +31,7 @@ class HistoryManager:
         self._entries: list[str] = []
         self._current_index: int = -1
         self._temp_input: str = ""
+        self._query: str = ""
         self._load_history()
 
     def _load_history(self) -> None:
@@ -46,6 +53,11 @@ class HistoryManager:
                     entries.append(entry if isinstance(entry, str) else str(entry))
                 self._entries = entries[-self.max_entries :]
         except (OSError, UnicodeDecodeError):
+            logger.warning(
+                "Failed to load history from %s; starting with empty history",
+                self.history_file,
+                exc_info=True,
+            )
             self._entries = []
 
     def _append_to_file(self, text: str) -> None:
@@ -55,7 +67,11 @@ class HistoryManager:
             with self.history_file.open("a", encoding="utf-8") as f:
                 f.write(json.dumps(text) + "\n")
         except OSError:
-            pass
+            logger.warning(
+                "Failed to append history entry to %s",
+                self.history_file,
+                exc_info=True,
+            )
 
     def _compact_history(self) -> None:
         """Rewrite history file to remove old entries.
@@ -68,7 +84,11 @@ class HistoryManager:
                 for entry in self._entries:
                     f.write(json.dumps(entry) + "\n")
         except OSError:
-            pass
+            logger.warning(
+                "Failed to compact history file %s",
+                self.history_file,
+                exc_info=True,
+            )
 
     def add(self, text: str) -> None:
         """Add a command to history.
@@ -97,47 +117,57 @@ class HistoryManager:
 
         self.reset_navigation()
 
-    def get_previous(self, current_input: str, prefix: str = "") -> str | None:
-        """Get the previous history entry.
+    def get_previous(self, current_input: str, *, query: str = "") -> str | None:
+        """Get the previous history entry matching a substring query.
+
+        The query is captured on the first call of a navigation session
+        (when `_current_index == -1`) and reused for all subsequent calls until
+        `reset_navigation`. Passing a different value on later calls has
+        no effect.
 
         Args:
-            current_input: Current input text (saved on first navigation)
-            prefix: Optional prefix to filter entries
+            current_input: Current input text. Saved only on the first call of a
+                navigation session; ignored on subsequent calls.
+            query: Substring to match against history entries.
+                Captured once on the first call of a navigation session.
 
         Returns:
-            Previous matching entry or None
+            Previous matching entry or `None`.
         """
         if not self._entries:
             return None
 
-        # Save current input on first navigation
+        # Save current input and capture query on first navigation
         if self._current_index == -1:
             self._temp_input = current_input
             self._current_index = len(self._entries)
+            self._query = query.strip().lower()
 
         # Search backwards for matching entry
         for i in range(self._current_index - 1, -1, -1):
-            if self._entries[i].startswith(prefix):
+            if not self._query or self._query in self._entries[i].lower():
                 self._current_index = i
                 return self._entries[i]
 
         return None
 
-    def get_next(self, prefix: str = "") -> str | None:
-        """Get the next history entry.
+    def get_next(self) -> str | None:
+        """Get the next history entry matching the stored query.
 
-        Args:
-            prefix: Optional prefix to filter entries
+        Uses the query captured by the most recent `get_previous` call.
 
         Returns:
-            Next matching entry, original input at end, or None
+            The next matching entry, or the original input when past the newest
+                match.
+
+                `None` if not currently navigating history.
         """
         if self._current_index == -1:
             return None
 
         # Search forwards for matching entry
         for i in range(self._current_index + 1, len(self._entries)):
-            if self._entries[i].startswith(prefix):
+            if not self._query or self._query in self._entries[i].lower():
                 self._current_index = i
                 return self._entries[i]
 
@@ -146,7 +176,13 @@ class HistoryManager:
         self.reset_navigation()
         return result
 
+    @property
+    def in_history(self) -> bool:
+        """Whether currently navigating history entries."""
+        return self._current_index >= 0
+
     def reset_navigation(self) -> None:
         """Reset navigation state."""
         self._current_index = -1
         self._temp_input = ""
+        self._query = ""

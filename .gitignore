@@ -221,3 +221,5 @@ libs/cli/TEXTUAL_PROGRESS.md
 # macOS
 .DS_Store
 */tmp/.DS_Store
+
+CLAUDE.md

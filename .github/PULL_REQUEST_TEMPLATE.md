@@ -1,6 +1,12 @@
-(Replace this entire block of text)
+Fixes #
+
+<!-- Replace everything above this line with a 1-2 sentence description of your change. Keep the "Fixes #xx" keyword and update the issue number. -->
 
 Read the full contributing guidelines: https://docs.langchain.com/oss/python/contributing/overview
+
+> **All contributions must be in English.** See the [language policy](https://docs.langchain.com/oss/python/contributing/overview#language-policy).
+
+If you paste a large clearly AI generated description here your PR may be IGNORED or CLOSED!
 
 Thank you for contributing to Deep Agents! Follow these steps to have your pull request considered as ready for review.
 
@@ -10,7 +16,7 @@ Thank you for contributing to Deep Agents! Follow these steps to have your pull 
     - fix(sdk): resolve flag parsing error
     - feat(cli): add multi-tenant support
     - test(acp): update API usage tests
-  - Allowed TYPE and SCOPE values: https://github.com/langchain-ai/deepagents/blob/master/.github/workflows/pr_lint.yml#L15-L26
+  - Allowed TYPE and SCOPE values: https://github.com/langchain-ai/deepagents/blob/main/.github/workflows/pr_lint.yml#L15-L26
 
 2. PR description:
 
@@ -23,12 +29,15 @@ Thank you for contributing to Deep Agents! Follow these steps to have your pull 
 
   - We will not consider a PR unless these three are passing in CI.
 
+4. How did you verify your code works?
+
 Additional guidelines:
 
   - We ask that if you use generative AI for your contribution, you include a disclaimer.
   - PRs should not touch more than one package unless absolutely necessary.
   - Do not update the `uv.lock` files or add dependencies to `pyproject.toml` files (even optional ones) unless you have explicit permission to do so by a maintainer.
 
-## Twitter handle (optional)
-<!-- If you'd like a shoutout on release, add your Twitter/X handle below -->
+## Social handles (optional)
+<!-- If you'd like a shoutout on release, add your socials below -->
 Twitter: @
+LinkedIn: https://linkedin.com/in/

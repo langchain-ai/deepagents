@@ -18,8 +18,9 @@ if TYPE_CHECKING:
 class ToolRenderer:
     """Base renderer for tool approval widgets."""
 
+    @staticmethod
     def get_approval_widget(
-        self, tool_args: dict[str, Any]
+        tool_args: dict[str, Any],
     ) -> tuple[type[ToolApprovalWidget], dict[str, Any]]:
         """Get the approval widget class and data for this tool.
 
@@ -35,8 +36,9 @@ class ToolRenderer:
 class WriteFileRenderer(ToolRenderer):
     """Renderer for write_file tool - shows full file content."""
 
-    def get_approval_widget(
-        self, tool_args: dict[str, Any]
+    @staticmethod
+    def get_approval_widget(  # noqa: D102  # Protocol method — docstring on base class
+        tool_args: dict[str, Any],
     ) -> tuple[type[ToolApprovalWidget], dict[str, Any]]:
         # Extract file extension for syntax highlighting
         file_path = tool_args.get("file_path", "")
@@ -58,15 +60,16 @@ class WriteFileRenderer(ToolRenderer):
 class EditFileRenderer(ToolRenderer):
     """Renderer for edit_file tool - shows unified diff."""
 
-    def get_approval_widget(
-        self, tool_args: dict[str, Any]
+    @staticmethod
+    def get_approval_widget(  # noqa: D102  # Protocol method — docstring on base class
+        tool_args: dict[str, Any],
     ) -> tuple[type[ToolApprovalWidget], dict[str, Any]]:
         file_path = tool_args.get("file_path", "")
         old_string = tool_args.get("old_string", "")
         new_string = tool_args.get("new_string", "")
 
         # Generate unified diff
-        diff_lines = self._generate_diff(old_string, new_string)
+        diff_lines = EditFileRenderer._generate_diff(old_string, new_string)
 
         data = {
             "file_path": file_path,
@@ -76,8 +79,13 @@ class EditFileRenderer(ToolRenderer):
         }
         return EditFileApprovalWidget, data
 
-    def _generate_diff(self, old_string: str, new_string: str) -> list[str]:
-        """Generate unified diff lines from old and new strings."""
+    @staticmethod
+    def _generate_diff(old_string: str, new_string: str) -> list[str]:
+        """Generate unified diff lines from old and new strings.
+
+        Returns:
+            List of diff lines without the file headers.
+        """
         if not old_string and not new_string:
             return []
 
@@ -96,11 +104,11 @@ class EditFileRenderer(ToolRenderer):
 
         # Skip the first two header lines (--- and +++)
         diff_list = list(diff)
-        return diff_list[2:] if len(diff_list) > 2 else diff_list
+        return diff_list[2:] if len(diff_list) > 2 else diff_list  # noqa: PLR2004  # Column count threshold
 
 
 # Registry mapping tool names to renderers
-# Note: bash/shell use minimal approval (no renderer needed) - see ApprovalMenu._MINIMAL_TOOLS
+# Note: bash/shell use minimal approval (no renderer) - see ApprovalMenu._MINIMAL_TOOLS
 _RENDERER_REGISTRY: dict[str, type[ToolRenderer]] = {
     "write_file": WriteFileRenderer,
     "edit_file": EditFileRenderer,

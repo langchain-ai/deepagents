@@ -1,6 +1,6 @@
 """Utility functions for middleware."""
 
-from langchain_core.messages import SystemMessage
+from langchain_core.messages import ContentBlock, SystemMessage
 
 
 def append_to_system_message(
@@ -16,8 +16,8 @@ def append_to_system_message(
     Returns:
         New SystemMessage with the text appended.
     """
-    new_content: list[str | dict[str, str]] = list(system_message.content_blocks) if system_message else []
+    new_content: list[ContentBlock] = list(system_message.content_blocks) if system_message else []
     if new_content:
         text = f"\n\n{text}"
     new_content.append({"type": "text", "text": text})
-    return SystemMessage(content=new_content)
+    return SystemMessage(content_blocks=new_content)

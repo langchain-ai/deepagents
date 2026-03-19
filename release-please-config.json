@@ -1,8 +1,58 @@
 {
   "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
   "skip-github-release": true,
+  "draft-pull-request": true,
+  "changelog-sections": [
+    {
+      "type": "feat",
+      "section": "Features"
+    },
+    {
+      "type": "fix",
+      "section": "Bug Fixes"
+    },
+    {
+      "type": "perf",
+      "section": "Performance Improvements"
+    },
+    {
+      "type": "revert",
+      "section": "Reverted Changes"
+    },
+    {
+      "type": "docs",
+      "section": "Documentation",
+      "hidden": true
+    },
+    {
+      "type": "style",
+      "hidden": true
+    },
+    {
+      "type": "chore",
+      "hidden": true
+    },
+    {
+      "type": "refactor",
+      "hidden": true
+    },
+    {
+      "type": "test",
+      "hidden": true
+    },
+    {
+      "type": "ci",
+      "hidden": true
+    },
+    {
+      "type": "hotfix",
+      "hidden": true
+    }
+  ],
   "pull-request-title-pattern": "release(${component}): ${version}",
-  "pull-request-header": "",
+  "component-no-space": true,
+  "pull-request-header": "> [!CAUTION]\n> Merging this PR will automatically publish to **PyPI** and create a **GitHub release**.\n\nFor the full release process, see [`.github/RELEASING.md`](https://github.com/langchain-ai/deepagents/blob/main/.github/RELEASING.md).\n\n---\n\n_Everything below this line will be the GitHub release body._\n",
+  "pull-request-footer": "\n_Everything above this line will be the GitHub release body._\n\n---\n\n> [!NOTE]\n> A **New Contributors** section is appended to the GitHub release notes automatically at publish time (see [Release Pipeline](https://github.com/langchain-ai/deepagents/blob/main/.github/RELEASING.md#release-pipeline), step 2).",
   "packages": {
     "libs/cli": {
       "release-type": "python",
@@ -10,7 +60,10 @@
       "component": "deepagents-cli",
       "bump-minor-pre-major": true,
       "bump-patch-for-minor-pre-major": true,
-      "extra-files": ["pyproject.toml"],
+      "extra-files": [
+        "pyproject.toml",
+        "deepagents_cli/_version.py"
+      ],
       "changelog-path": "CHANGELOG.md"
     }
   },

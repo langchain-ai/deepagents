@@ -9,13 +9,27 @@ from unittest.mock import patch
 
 from deepagents.backends import CompositeBackend
 from deepagents.backends.filesystem import FilesystemBackend
+from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.language_models import LanguageModelInput
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
+from langchain_core.outputs import ChatResult
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool, tool
+from langgraph.checkpoint.memory import InMemorySaver
+from pydantic import Field
 
 from deepagents_cli.agent import create_cli_agent
+
+
+def _ls_entries(backend: CompositeBackend, path: str) -> list | None:
+    """Compat shim: PyPI SDK <0.5 returns raw list; >=0.5 returns LsResult.
+
+    TODO(remove): delete this helper and inline `backend.ls(path).entries`
+    once the CLI pins `deepagents>=0.5`.
+    """
+    ls_result = backend.ls(path)
+    return ls_result.entries if hasattr(ls_result, "entries") else ls_result
 
 
 @tool(description="Sample tool")
@@ -27,19 +41,37 @@ def sample_tool(sample_input: str) -> str:
 class FixedGenericFakeChatModel(GenericFakeChatModel):
     """Fixed version of GenericFakeChatModel that properly handles bind_tools."""
 
+    captured_calls: list[tuple[list[Any], Any]] = Field(default_factory=list)
+
     def bind_tools(
         self,
-        _tools: Sequence[dict[str, Any] | type | Callable | BaseTool],
+        tools: Sequence[dict[str, Any] | type | Callable | BaseTool],  # noqa: ARG002
         *,
-        _tool_choice: str | None = None,
-        **_kwargs: Any,
+        tool_choice: str | None = None,  # noqa: ARG002
+        **kwargs: Any,  # noqa: ARG002
     ) -> Runnable[LanguageModelInput, AIMessage]:
         """Override bind_tools to return self."""
         return self
 
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        """Override _generate to capture inputs and outputs."""
+        result = super()._generate(
+            messages, stop=stop, run_manager=run_manager, **kwargs
+        )
+        self.captured_calls.append((messages, result))
+        return result
+
 
 @contextmanager
-def mock_settings(tmp_path: Path, assistant_id: str = "test-agent") -> Generator[Path, None, None]:
+def mock_settings(
+    tmp_path: Path, assistant_id: str = "test-agent"
+) -> Generator[Path, None, None]:
     """Context manager for patching CLI settings with temporary directories.
 
     Args:
@@ -65,9 +97,9 @@ def mock_settings(tmp_path: Path, assistant_id: str = "test-agent") -> Generator
         mock_settings_obj.ensure_user_skills_dir.return_value = skills_dir
         mock_settings_obj.get_project_skills_dir.return_value = None
 
-        # Mock methods that get called during agent execution to return real Path objects
-        # This prevents MagicMock objects from being stored in state
-        # (which would fail serialization)
+        # Mock methods that get called during agent execution to return
+        # real Path objects. This prevents MagicMock objects from being
+        # stored in state (which would fail serialization)
         def get_user_agent_md_path(agent_id: str) -> Path:
             return tmp_path / "agents" / agent_id / "agent.md"
 
@@ -75,9 +107,14 @@ def mock_settings(tmp_path: Path, assistant_id: str = "test-agent") -> Generator
             return tmp_path / "agents" / agent_id
 
         mock_settings_obj.get_user_agent_md_path = get_user_agent_md_path
-        mock_settings_obj.get_project_agent_md_path.return_value = None
+        mock_settings_obj.get_project_agent_md_path.return_value = []
         mock_settings_obj.get_agent_dir = get_agent_dir
         mock_settings_obj.project_root = None
+
+        # Model identity settings (used in system prompt generation)
+        mock_settings_obj.model_name = None
+        mock_settings_obj.model_provider = None
+        mock_settings_obj.model_context_limit = None
 
         yield agent_dir
 
@@ -119,6 +156,7 @@ class TestDeepAgentsCLIEndToEnd:
                 model=model,
                 assistant_id="test-agent",
                 tools=[],
+                checkpointer=InMemorySaver(),
             )
 
             # Invoke the agent with a simple message
@@ -157,6 +195,7 @@ class TestDeepAgentsCLIEndToEnd:
                 model=model,
                 assistant_id="test-agent",
                 tools=[],
+                checkpointer=InMemorySaver(),
             )
 
             # Invoke the agent
@@ -176,8 +215,34 @@ class TestDeepAgentsCLIEndToEnd:
                 {"messages": input_messages},
                 {"configurable": {"thread_id": thread_id}},
             )
-            assert result["messages"][0].additional_kwargs["lc_source"] == "summarization"
-            assert backend.ls_info("/conversation_history/")
+            assert len(result["messages"]) == 8  # 7 inputs + response
+            assert result["messages"][-1].content == "response"
+
+            # two calls: one to summarize, one for response
+            assert len(model.captured_calls) == 2
+
+            # summarization call
+            summarization_input_messages, summarization_response = model.captured_calls[
+                0
+            ]
+            assert len(summarization_input_messages) == 1
+            assert "Messages to summarize:" in summarization_input_messages[0].content
+            assert (
+                summarization_response.generations[0].message.content
+                == "summary goes here"
+            )
+
+            # model call on reduced context
+            summarized_messages, agent_response = model.captured_calls[1]
+            assert len(summarized_messages) < len(input_messages)
+            assert isinstance(summarized_messages[0], SystemMessage)
+            summary_message = summarized_messages[1]
+            assert isinstance(summary_message, HumanMessage)
+            assert "summary goes here" in summary_message.content
+            assert agent_response.generations[0].message.content == "response"
+
+            # Verify conversation history was offloaded to backend
+            assert _ls_entries(backend, "/conversation_history/")
 
     def test_cli_agent_with_fake_llm_with_tools(self, tmp_path: Path) -> None:
         """Test CLI agent with tools using a fake LLM model.
@@ -213,6 +278,7 @@ class TestDeepAgentsCLIEndToEnd:
                 model=model,
                 assistant_id="test-agent",
                 tools=[sample_tool],
+                checkpointer=InMemorySaver(),
             )
 
             # Invoke the agent
@@ -269,6 +335,7 @@ class TestDeepAgentsCLIEndToEnd:
                 model=model,
                 assistant_id="test-agent",
                 tools=[],
+                checkpointer=InMemorySaver(),
             )
 
             # Invoke the agent
@@ -329,6 +396,7 @@ class TestDeepAgentsCLIEndToEnd:
                 model=model,
                 assistant_id="test-agent",
                 tools=[sample_tool],
+                checkpointer=InMemorySaver(),
             )
 
             # Invoke the agent
@@ -370,6 +438,7 @@ class TestDeepAgentsCLIEndToEnd:
                 model=model,
                 assistant_id="test-agent",
                 tools=[],
+                checkpointer=InMemorySaver(),
             )
 
             assert isinstance(backend, CompositeBackend)

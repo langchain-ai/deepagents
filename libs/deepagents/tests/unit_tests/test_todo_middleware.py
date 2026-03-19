@@ -90,7 +90,10 @@ class TestTodoMiddleware:
         assert len(tool_messages) == 2, f"Expected 2 error messages, got {len(tool_messages)}"
 
         # Verify exact error content and status for both tool messages
-        expected_error = "Error: The `write_todos` tool should never be called multiple times in parallel. Please call it only once per model invocation to update the todo list."
+        expected_error = (
+            "Error: The `write_todos` tool should never be called multiple times in parallel."
+            " Please call it only once per model invocation to update the todo list."
+        )
         for tool_msg in tool_messages:
             assert tool_msg.content == expected_error, f"Expected exact error message, got: {tool_msg.content}"
             assert tool_msg.status == "error", f"Tool message status should be 'error', got: {tool_msg.status}"

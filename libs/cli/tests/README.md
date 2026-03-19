@@ -1,4 +1,4 @@
-# DeepAgents CLI Tests
+# Deep Agents CLI Tests
 
 ## API Keys
 

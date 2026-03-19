@@ -1,5 +1,6 @@
 """End-to-end unit tests for deepagents with fake LLM models."""
 
+import base64
 from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 from typing import Any
@@ -23,7 +24,7 @@ from deepagents.backends.store import StoreBackend
 from deepagents.backends.utils import TOOL_RESULT_TOKEN_LIMIT
 from deepagents.graph import create_deep_agent
 from deepagents.middleware.filesystem import NUM_CHARS_PER_TOKEN
-from tests.utils import assert_all_deepagent_qualities
+from tests.utils import SampleMiddlewareWithTools, SampleMiddlewareWithToolsAndState, assert_all_deepagent_qualities
 
 
 class SystemMessageCapturingMiddleware(AgentMiddleware):
@@ -298,13 +299,12 @@ class TestDeepAgentEndToEnd:
         assert any("second call" in content for content in tool_contents)
 
     def test_deep_agent_with_string_model_name(self) -> None:
-        """Test that create_deep_agent handles string model names correctly.
+        """Test that create_deep_agent resolves string model names correctly.
 
         This test verifies that when a model name is passed as a string,
-        it is properly initialized using init_chat_model instead of
+        it is properly resolved to a chat model instead of
         causing an AttributeError when accessing the profile attribute.
         """
-        # Mock init_chat_model to return a fake model
         fake_model = FixedGenericFakeChatModel(
             messages=iter(
                 [
@@ -315,17 +315,11 @@ class TestDeepAgentEndToEnd:
             )
         )
 
-        with patch("deepagents.graph.init_chat_model", return_value=fake_model):
-            # This should not raise AttributeError: 'str' object has no attribute 'profile'
-            agent = create_deep_agent(model="claude-sonnet-4-5-20250929", tools=[sample_tool])
-
-            # Verify agent was created successfully
+        with patch("deepagents.graph.resolve_model", return_value=fake_model):
+            agent = create_deep_agent(model="claude-sonnet-4-6", tools=[sample_tool])
             assert agent is not None
 
-            # Invoke the agent to ensure it works
             result = agent.invoke({"messages": [HumanMessage(content="Test message")]})
-
-            # Verify the agent executed correctly
             assert "messages" in result
             assert len(result["messages"]) > 0
 
@@ -486,7 +480,7 @@ class TestDeepAgentEndToEnd:
         content = str(capturing_middleware.captured_system_messages[0].content)
         assert "You are a helpful assistant." in content
         assert "Always be polite." in content
-        assert "you have access to a number of standard tools" in content
+        assert "You are a Deep Agent" in content
 
     def test_deep_agent_with_system_message_string_content(self) -> None:
         """Test that create_deep_agent accepts a SystemMessage with string content."""
@@ -506,7 +500,7 @@ class TestDeepAgentEndToEnd:
 
         content = str(capturing_middleware.captured_system_messages[0].content)
         assert "You are a helpful research assistant." in content
-        assert "you have access to a number of standard tools" in content
+        assert "You are a Deep Agent" in content
 
     def test_deep_agent_two_turns_no_initial_files(self) -> None:
         """Test deepagent with two conversation turns without specifying files on invoke.
@@ -664,7 +658,6 @@ class TestDeepAgentEndToEnd:
             assert "AttributeError" not in glob_result
             assert "'list' object has no attribute 'items'" not in glob_result
 
-    @pytest.mark.asyncio
     async def test_deep_agent_two_turns_no_initial_files_async(self) -> None:
         """Async version: Test deepagent with two conversation turns without specifying files.
 
@@ -741,7 +734,6 @@ class TestDeepAgentEndToEnd:
         # Should either find files or return "No files found", not crash
         assert "AttributeError" not in glob_result
 
-    @pytest.mark.asyncio
     async def test_deep_agent_two_turns_state_backend_edge_case_async(self) -> None:
         """Async version: Test StateBackend with two turns to reproduce potential state corruption.
 
@@ -991,7 +983,6 @@ class TestDeepAgentEndToEnd:
         assert "Output was truncated due to size limits" in file_content
         assert "reformatting" in file_content.lower() or "reformat" in file_content.lower()
 
-    @pytest.mark.asyncio
     @pytest.mark.parametrize("backend_factory", BACKEND_FACTORIES)
     async def test_deep_agent_read_file_truncation_async(self, tmp_path: Path, backend_factory: Callable[[Path], BackendProtocol]) -> None:
         """Test that read_file truncates large files in async mode."""
@@ -1186,3 +1177,76 @@ class TestDeepAgentEndToEnd:
             f"Expected <= {max_reasonable_chars:,} chars (TOOL_RESULT_TOKEN_LIMIT * 4). "
             f"A single-line file should not cause token overflow."
         )
+
+    @pytest.mark.parametrize("backend_factory", BACKEND_FACTORIES)
+    def test_deep_agent_read_image_file(self, tmp_path: Path, backend_factory: Callable[[Path], BackendProtocol]) -> None:
+        """Test that reading an image returns a ToolMessage with content blocks."""
+        backend = backend_factory(tmp_path)
+        img_bytes = b"\x89PNG\r\n\x1a\n fake image data"
+
+        if isinstance(backend, FilesystemBackend):
+            (tmp_path / "photo.png").write_bytes(img_bytes)
+        else:
+            encoded = base64.b64encode(img_bytes).decode("ascii")
+            res = backend.write("/photo.png", encoded)
+            if isinstance(backend, StateBackend):
+                backend.runtime.state["files"].update(res.files_update)
+
+        fake_model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "read_file",
+                                "args": {"file_path": "/photo.png"},
+                                "id": "call_img",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Here is the image."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(model=fake_model, backend=backend)
+        result = agent.invoke({"messages": [HumanMessage(content="Read the image")]})
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert len(tool_messages) == 1
+        tm = tool_messages[0]
+        assert isinstance(tm.content, list)
+        assert len(tm.content) == 1
+        assert tm.content[0]["type"] == "image"
+        assert tm.content[0]["mime_type"] == "image/png"
+        assert "base64" in tm.content[0]
+
+
+class TestDeepAgentStructure:
+    """Test basic deep agent structure without making network calls."""
+
+    def test_base_deep_agent(self) -> None:
+        """Verifies that a basic deep agent can be created with default settings."""
+        agent = create_deep_agent()
+        assert_all_deepagent_qualities(agent)
+
+    def test_deep_agent_with_tool(self) -> None:
+        """Verifies that a deep agent can be created with tools and the tools are properly bound."""
+        agent = create_deep_agent(tools=[sample_tool])
+        assert_all_deepagent_qualities(agent)
+        assert "sample_tool" in agent.nodes["tools"].bound._tools_by_name
+
+    def test_deep_agent_with_middleware_with_tool(self) -> None:
+        """Verifies that middleware can inject tools into a deep agent."""
+        agent = create_deep_agent(middleware=[SampleMiddlewareWithTools()])
+        assert_all_deepagent_qualities(agent)
+        assert "sample_tool" in agent.nodes["tools"].bound._tools_by_name
+
+    def test_deep_agent_with_middleware_with_tool_and_state(self) -> None:
+        """Verifies that middleware can inject both tools and extended state channels."""
+        agent = create_deep_agent(middleware=[SampleMiddlewareWithToolsAndState()])
+        assert_all_deepagent_qualities(agent)
+        assert "sample_tool" in agent.nodes["tools"].bound._tools_by_name
+        assert "sample_input" in agent.stream_channels

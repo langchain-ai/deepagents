@@ -13,12 +13,18 @@ on:
         required: true
         type: string
         description: "Python version to use"
+      coverage:
+        required: false
+        type: boolean
+        default: true
+        description: "Collect coverage (disable to speed up non-primary matrix legs)"
 
 permissions:
   contents: read
 
 env:
   UV_NO_SYNC: "true"
+  UV_FROZEN: "true"
 
 jobs:
   build:
@@ -30,7 +36,7 @@ jobs:
     name: "Python ${{ inputs.python-version }}"
     steps:
       - name: "📋 Checkout Code"
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: "🐍 Set up Python ${{ inputs.python-version }} + UV"
         uses: "./.github/actions/uv_setup"
@@ -42,13 +48,18 @@ jobs:
 
       - name: "📦 Install Test Dependencies"
         shell: bash
-        run: uv sync --group test --locked
+        run: uv sync --group test
 
       - name: "🧪 Run Unit Tests"
         shell: bash
         env:
           RUN_SANDBOX_TESTS: "true"
-        run: make test
+        run: |
+          if [ "${{ inputs.coverage }}" = "false" ]; then
+            make test COV_ARGS= PYTEST_EXTRA=-q
+          else
+            make test PYTEST_EXTRA=-q
+          fi
 
       - name: "🧹 Verify Clean Working Directory"
         shell: bash

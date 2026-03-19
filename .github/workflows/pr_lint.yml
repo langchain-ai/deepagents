@@ -24,9 +24,10 @@
 #   * chore      — other changes that don't modify source or test files
 #   * revert     — reverts a previous commit
 #   * release    — prepare a new release
+#   * hotfix     — urgent fix that won't trigger a release
 #
 # Allowed Scope(s) (optional):
-#   deepagents, sdk, deepagents-cli, cli, harbor, acp, examples, infra, deps
+#   deepagents, sdk, deepagents-cli, cli, harbor, evals, acp, examples, infra, deps
 #
 # Multiple scopes can be used by separating them with a comma.
 #
@@ -55,6 +56,15 @@ jobs:
     name: "validate format"
     runs-on: ubuntu-latest
     steps:
+      - name: "🚫 Reject empty scope"
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          if [[ "$PR_TITLE" =~ ^[a-z]+\(\)[!]?: ]]; then
+            echo "::error::PR title has empty scope parentheses: '$PR_TITLE'"
+            echo "Either remove the parentheses or provide a scope (e.g., 'fix(cli): ...')."
+            exit 1
+          fi
       - name: "✅ Validate Conventional Commits Format"
         uses: amannn/action-semantic-pull-request@v6
         env:
@@ -73,16 +83,20 @@ jobs:
             chore
             revert
             release
+            hotfix
           scopes: |
             deepagents
             sdk
             deepagents-cli
             cli
             harbor
+            evals
             acp
             examples
             infra
             deps
+            daytona
+            quickjs
           requireScope: false
           disallowScopes: |
             release

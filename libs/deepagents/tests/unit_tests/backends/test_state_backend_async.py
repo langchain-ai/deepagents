@@ -1,10 +1,15 @@
 """Async tests for StateBackend."""
 
+from functools import partial
+
+import pytest
 from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
+from langgraph.types import Command
 
 from deepagents.backends.protocol import EditResult, WriteResult
 from deepagents.backends.state import StateBackend
+from deepagents.middleware.filesystem import FilesystemMiddleware
 
 
 def make_runtime(files=None):
@@ -34,8 +39,8 @@ async def test_awrite_aread_aedit_als_agrep_aglob_state_backend():
     rt.state["files"].update(res.files_update)
 
     # aread
-    content = await be.aread("/notes.txt")
-    assert "hello world" in content
+    read_result = await be.aread("/notes.txt")
+    assert "hello world" in read_result.file_data["content"]
 
     # aedit unique occurrence
     res2 = await be.aedit("/notes.txt", "hello", "hi", replace_all=False)
@@ -43,23 +48,24 @@ async def test_awrite_aread_aedit_als_agrep_aglob_state_backend():
     assert res2.error is None and res2.files_update is not None
     rt.state["files"].update(res2.files_update)
 
-    content2 = await be.aread("/notes.txt")
-    assert "hi world" in content2
+    read_result2 = await be.aread("/notes.txt")
+    assert "hi world" in read_result2.file_data["content"]
 
     # als_info should include the file
-    listing = await be.als_info("/")
+    listing = (await be.als("/")).entries
+    assert listing is not None
     assert any(fi["path"] == "/notes.txt" for fi in listing)
 
-    # agrep_raw
-    matches = await be.agrep_raw("hi", path="/")
-    assert isinstance(matches, list) and any(m["path"] == "/notes.txt" for m in matches)
+    # agrep
+    matches = (await be.agrep("hi", path="/")).matches
+    assert matches is not None and any(m["path"] == "/notes.txt" for m in matches)
 
-    # invalid regex yields string error
-    err = await be.agrep_raw("[", path="/")
-    assert isinstance(err, str)
+    # special characters are treated literally, not regex
+    result = await be.agrep("[", path="/")
+    assert result.matches is not None  # Returns empty list, not error
 
-    # aglob_info
-    infos = await be.aglob_info("*.txt", path="/")
+    # aglob
+    infos = (await be.aglob("*.txt", path="/")).matches
     assert any(i["path"] == "/notes.txt" for i in infos)
 
 
@@ -99,7 +105,8 @@ async def test_state_backend_als_nested_directories():
         assert res.error is None
         rt.state["files"].update(res.files_update)
 
-    root_listing = await be.als_info("/")
+    root_listing = (await be.als("/")).entries
+    assert root_listing is not None
     root_paths = [fi["path"] for fi in root_listing]
     assert "/config.json" in root_paths
     assert "/src/" in root_paths
@@ -107,20 +114,22 @@ async def test_state_backend_als_nested_directories():
     assert "/src/main.py" not in root_paths
     assert "/src/utils/helper.py" not in root_paths
 
-    src_listing = await be.als_info("/src/")
+    src_listing = (await be.als("/src/")).entries
+    assert src_listing is not None
     src_paths = [fi["path"] for fi in src_listing]
     assert "/src/main.py" in src_paths
     assert "/src/utils/" in src_paths
     assert "/src/utils/helper.py" not in src_paths
 
-    utils_listing = await be.als_info("/src/utils/")
+    utils_listing = (await be.als("/src/utils/")).entries
+    assert utils_listing is not None
     utils_paths = [fi["path"] for fi in utils_listing]
     assert "/src/utils/helper.py" in utils_paths
     assert "/src/utils/common.py" in utils_paths
     assert len(utils_paths) == 2
 
-    empty_listing = await be.als_info("/nonexistent/")
-    assert empty_listing == []
+    empty_listing = await be.als("/nonexistent/")
+    assert empty_listing.entries == []
 
 
 async def test_state_backend_als_trailing_slash():
@@ -138,12 +147,14 @@ async def test_state_backend_als_trailing_slash():
         assert res.error is None
         rt.state["files"].update(res.files_update)
 
-    listing_with_slash = await be.als_info("/")
+    listing_with_slash = (await be.als("/")).entries
+    assert listing_with_slash is not None
     assert len(listing_with_slash) == 2
     assert "/file.txt" in [fi["path"] for fi in listing_with_slash]
     assert "/dir/" in [fi["path"] for fi in listing_with_slash]
 
-    listing_from_dir = await be.als_info("/dir/")
+    listing_from_dir = (await be.als("/dir/")).entries
+    assert listing_from_dir is not None
     assert len(listing_from_dir) == 1
     assert listing_from_dir[0]["path"] == "/dir/nested.txt"
 
@@ -169,8 +180,8 @@ async def test_state_backend_aedit_replace_all():
     assert res3.occurrences == 2
     rt.state["files"].update(res3.files_update)
 
-    content = await be.aread("/test.txt")
-    assert "hi world hi universe" in content
+    read_result = await be.aread("/test.txt")
+    assert "hi world hi universe" in read_result.file_data["content"]
 
     # Now test replace_all=False with unique string (should succeed)
     res4 = await be.aedit("/test.txt", "world", "galaxy", replace_all=False)
@@ -178,8 +189,8 @@ async def test_state_backend_aedit_replace_all():
     assert res4.occurrences == 1
     rt.state["files"].update(res4.files_update)
 
-    content2 = await be.aread("/test.txt")
-    assert "hi galaxy hi universe" in content2
+    read_result2 = await be.aread("/test.txt")
+    assert "hi galaxy hi universe" in read_result2.file_data["content"]
 
 
 async def test_state_backend_aread_with_offset_and_limit():
@@ -194,12 +205,13 @@ async def test_state_backend_aread_with_offset_and_limit():
     rt.state["files"].update(res.files_update)
 
     # Read with offset
-    content_offset = await be.aread("/multi.txt", offset=2, limit=3)
-    assert "Line 3" in content_offset
-    assert "Line 4" in content_offset
-    assert "Line 5" in content_offset
-    assert "Line 1" not in content_offset
-    assert "Line 6" not in content_offset
+    result = await be.aread("/multi.txt", offset=2, limit=3)
+    content = result.file_data["content"]
+    assert "Line 3" in content
+    assert "Line 4" in content
+    assert "Line 5" in content
+    assert "Line 1" not in content
+    assert "Line 6" not in content
 
 
 async def test_state_backend_agrep_with_pattern_and_glob():
@@ -219,9 +231,9 @@ async def test_state_backend_agrep_with_pattern_and_glob():
         assert res.error is None
         rt.state["files"].update(res.files_update)
 
-    # agrep_raw with glob filter for .py files only
-    matches = await be.agrep_raw("import", path="/", glob="*.py")
-    assert isinstance(matches, list)
+    # agrep with glob filter for .py files only
+    matches = (await be.agrep("import", path="/", glob="*.py")).matches
+    assert matches is not None
     assert any(m["path"] == "/test.py" for m in matches)
     assert any(m["path"] == "/main.py" for m in matches)
     # test.txt should not be in matches even though it contains "import"
@@ -247,7 +259,7 @@ async def test_state_backend_aglob_recursive():
         rt.state["files"].update(res.files_update)
 
     # Recursive glob for all .py files
-    infos = await be.aglob_info("**/*.py", path="/")
+    infos = (await be.aglob("**/*.py", path="/")).matches
     py_files = [i["path"] for i in infos]
     assert "/src/main.py" in py_files
     assert "/src/utils/helper.py" in py_files
@@ -255,14 +267,14 @@ async def test_state_backend_aglob_recursive():
     assert "/readme.txt" not in py_files
 
 
-async def test_state_backend_intercept_large_tool_result_async():
+@pytest.mark.parametrize("file_format", ["v1", "v2"])
+async def test_state_backend_intercept_large_tool_result_async(file_format):
     """Test that StateBackend properly handles large tool result interception in async context."""
-    from langgraph.types import Command
-
-    from deepagents.middleware.filesystem import FilesystemMiddleware
-
     rt = make_runtime()
-    middleware = FilesystemMiddleware(backend=lambda r: StateBackend(r), tool_token_limit_before_evict=1000)
+    middleware = FilesystemMiddleware(
+        backend=partial(StateBackend, file_format=file_format),
+        tool_token_limit_before_evict=1000,
+    )
 
     large_content = "x" * 5000
     tool_message = ToolMessage(content=large_content, tool_call_id="test_123")
@@ -270,5 +282,138 @@ async def test_state_backend_intercept_large_tool_result_async():
 
     assert isinstance(result, Command)
     assert "/large_tool_results/test_123" in result.update["files"]
-    assert result.update["files"]["/large_tool_results/test_123"]["content"] == [large_content]
+    expected = [large_content] if file_format == "v1" else large_content
+    assert result.update["files"]["/large_tool_results/test_123"]["content"] == expected
     assert "Tool result too large" in result.update["messages"][0].content
+
+
+async def test_state_backend_agrep_exact_file_path() -> None:
+    """Test that async grep works with exact file paths (no trailing slash).
+
+    This reproduces the bug where validate_path adds a trailing slash to all paths,
+    causing exact file path matching to fail with startswith filter.
+
+    Bug: When grep is called with an exact file path like "/data/result_abc123",
+    validate_path adds a trailing slash making it "/data/result_abc123/",
+    which doesn't match the key in state (which has no trailing slash).
+    """
+    rt = make_runtime()
+    be = StateBackend(rt)
+
+    # Simulate an evicted large tool result (like what happens with large API responses)
+    evicted_path = "/large_tool_results/toolu_01ABC123XYZ"
+    content = """Task Results:
+Project Alpha - Status: Active
+Project Beta - Status: Pending
+Project Gamma - Status: Completed
+Total projects: 3
+"""
+
+    res = await be.awrite(evicted_path, content)
+    assert res.error is None
+    rt.state["files"].update(res.files_update)
+
+    # Test 1: Grep with parent directory path works (establishes baseline)
+    matches_parent = (await be.agrep("Project Beta", path="/large_tool_results/")).matches
+    assert matches_parent is not None
+    assert len(matches_parent) == 1
+    assert matches_parent[0]["path"] == evicted_path
+    assert "Project Beta" in matches_parent[0]["text"]
+
+    # Test 2: Grep with exact file path should also work (THIS IS THE BUG)
+    matches_exact = (await be.agrep("Project Beta", path=evicted_path)).matches
+    assert matches_exact is not None, "Expected list but got None"
+    assert len(matches_exact) == 1, f"Expected 1 match but got {len(matches_exact)} matches"
+    assert matches_exact[0]["path"] == evicted_path
+    assert "Project Beta" in matches_exact[0]["text"]
+
+    # Test 3: Verify glob also works with exact file paths
+    glob_matches = (await be.aglob("*", path=evicted_path)).matches
+    assert glob_matches is not None
+    assert len(glob_matches) == 1
+    assert glob_matches[0]["path"] == evicted_path
+
+
+async def test_state_backend_apath_edge_cases() -> None:
+    """Test edge cases in path handling for async grep and glob operations."""
+    rt = make_runtime()
+    be = StateBackend(rt)
+
+    # Create test files
+    files = {
+        "/file.txt": "root content",
+        "/dir/nested.txt": "nested content",
+        "/dir/subdir/deep.txt": "deep content",
+    }
+
+    for path, content in files.items():
+        res = await be.awrite(path, content)
+        assert res.error is None
+        rt.state["files"].update(res.files_update)
+
+    # Test 1: Grep with None path should default to root
+    matches = (await be.agrep("content", path=None)).matches
+    assert matches is not None
+    assert len(matches) == 3
+
+    # Test 2: Grep with trailing slash on directory
+    matches_slash = (await be.agrep("nested", path="/dir/")).matches
+    assert matches_slash is not None
+    assert len(matches_slash) == 1
+    assert matches_slash[0]["path"] == "/dir/nested.txt"
+
+    # Test 3: Grep with no trailing slash on directory
+    matches_no_slash = (await be.agrep("nested", path="/dir")).matches
+    assert matches_no_slash is not None
+    assert len(matches_no_slash) == 1
+    assert matches_no_slash[0]["path"] == "/dir/nested.txt"
+
+    # Test 4: Glob with exact file path
+    glob_exact = (await be.aglob("*.txt", path="/file.txt")).matches
+    assert glob_exact is not None
+    assert len(glob_exact) == 1
+    assert glob_exact[0]["path"] == "/file.txt"
+
+    # Test 5: Glob with directory and pattern
+    glob_dir = (await be.aglob("*.txt", path="/dir/")).matches
+    assert glob_dir is not None
+    assert len(glob_dir) == 1  # Only nested.txt, not deep.txt (non-recursive)
+    assert glob_dir[0]["path"] == "/dir/nested.txt"
+
+    # Test 6: Glob with recursive pattern
+    glob_recursive = (await be.aglob("**/*.txt", path="/dir/")).matches
+    assert glob_recursive is not None
+    assert len(glob_recursive) == 2  # Both nested.txt and deep.txt
+    paths = {g["path"] for g in glob_recursive}
+    assert "/dir/nested.txt" in paths
+    assert "/dir/subdir/deep.txt" in paths
+
+
+@pytest.mark.parametrize(
+    ("path", "expected_count", "expected_paths"),
+    [
+        ("/app/main.py/", 1, ["/app/main.py"]),  # Exact file with trailing slash
+        ("/app", 2, ["/app/main.py", "/app/utils.py"]),  # Directory without slash
+        ("/app/", 2, ["/app/main.py", "/app/utils.py"]),  # Directory with slash
+    ],
+)
+async def test_state_backend_agrep_with_path_variations(path: str, expected_count: int, expected_paths: list[str]) -> None:
+    """Test async grep with various path input formats."""
+    rt = make_runtime()
+    be = StateBackend(rt)
+
+    # Create nested structure
+    res1 = await be.awrite("/app/main.py", "import os\nprint('main')")
+    res2 = await be.awrite("/app/utils.py", "import sys\nprint('utils')")
+    res3 = await be.awrite("/tests/test_main.py", "import pytest")
+
+    for res in [res1, res2, res3]:
+        assert res.error is None
+        rt.state["files"].update(res.files_update)
+
+    # Test the path variation
+    matches = (await be.agrep("import", path=path)).matches
+    assert matches is not None
+    assert len(matches) == expected_count
+    match_paths = {m["path"] for m in matches}
+    assert match_paths == set(expected_paths)

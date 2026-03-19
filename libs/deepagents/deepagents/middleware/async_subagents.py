@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import TYPE_CHECKING, Annotated, Any, NotRequired, TypedDict
+from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired, TypedDict
 
 from langchain.agents.middleware.types import AgentMiddleware, AgentState, ContextT, ModelResponse, ResponseT
 from langchain.tools import ToolRuntime  # noqa: TC002
@@ -32,11 +32,12 @@ if TYPE_CHECKING:
     from langgraph_sdk.schema import Run
 
 
-class AsyncSubAgent(TypedDict):
-    """Specification for an async subagent running on a remote LangGraph server.
+class DeployedSubAgent(TypedDict):
+    """Specification for a subagent deployed to LangSmith via Agent Server.
 
-    Async subagents connect to LangGraph deployments via the LangGraph SDK.
-    They run as background jobs that the main agent can monitor and update.
+    Deployed subagents connect to remote LangGraph deployments using the
+    [LangSmith Agent Server](https://docs.langchain.com/langsmith/agent-server).
+    The deployment manages state persistence, job tracking, and execution.
 
     Authentication is handled via environment variables (`LANGGRAPH_API_KEY`,
     `LANGSMITH_API_KEY`, or `LANGCHAIN_API_KEY`), which the LangGraph SDK
@@ -44,7 +45,7 @@ class AsyncSubAgent(TypedDict):
     """
 
     name: str
-    """Unique identifier for the async subagent."""
+    """Unique identifier for the deployed subagent."""
 
     description: str
     """What this subagent does.
@@ -53,16 +54,30 @@ class AsyncSubAgent(TypedDict):
     """
 
     graph_id: str
-    """The graph name or assistant ID on the remote server."""
+    """The graph name or assistant ID on the remote deployment."""
 
     url: NotRequired[str]
     """URL of the LangGraph server (e.g., `"https://my-deployment.langsmith.dev"`).
 
-    Omit to use ASGI transport for local LangGraph servers.
+    Omit to use ASGI transport for local LangGraph servers (async-only).
     """
 
     headers: NotRequired[dict[str, str]]
     """Additional headers to include in requests to the remote server."""
+
+    execution_mode: NotRequired[Literal["background", "blocking"]]
+    """How to run the subagent.
+
+    - `"background"`: Launch and return job ID immediately, check later (default).
+      The deployment tracks state and the main agent can monitor progress.
+    - `"blocking"`: Wait for completion before returning.
+
+    Defaults to `"background"`.
+    """
+
+
+# Backwards compatibility alias
+AsyncSubAgent = DeployedSubAgent
 
 
 class AsyncSubAgentJob(TypedDict):
@@ -71,6 +86,15 @@ class AsyncSubAgentJob(TypedDict):
     job_id: str
     """Unique identifier for the job (same as `thread_id`)."""
 
+    status: str
+    """Current job status (e.g., `'running'`, `'success'`, `'error'`, `'cancelled'`).
+
+    Typed as `str` rather than a `Literal` because the LangGraph SDK's
+    `Run.status` is `str` — using a `Literal` here would require `cast` at every
+    SDK boundary.
+    """
+
+    # metadata fields
     agent_name: str
     """Name of the async subagent type that is running."""
 
@@ -80,13 +104,6 @@ class AsyncSubAgentJob(TypedDict):
     run_id: str
     """LangGraph run ID for the current execution on the thread."""
 
-    status: str
-    """Current job status (e.g., `'running'`, `'success'`, `'error'`, `'cancelled'`).
-
-    Typed as `str` rather than a `Literal` because the LangGraph SDK's
-    `Run.status` is `str` — using a `Literal` here would require `cast` at every
-    SDK boundary.
-    """
 
 
 def _jobs_reducer(

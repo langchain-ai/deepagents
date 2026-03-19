@@ -17,6 +17,8 @@ from tests.evals.utils import (
     tool_call,
 )
 
+pytestmark = [pytest.mark.eval_category("subagents")]
+
 
 @tool
 def get_weather_fake(location: str) -> str:  # noqa: ARG001
@@ -52,7 +54,11 @@ def test_task_calls_weather_subagent(model: BaseChatModel) -> None:
                 agent_steps=2,
                 tool_call_requests=1,
                 tool_calls=[
-                    tool_call(name="task", step=1, args_contains={"subagent_type": "weather_agent"})
+                    tool_call(
+                        name="task",
+                        step=1,
+                        args_contains={"subagent_type": "weather_agent"},
+                    )
                 ],
             )
             .success(final_text_contains("89"))
@@ -78,7 +84,9 @@ def test_task_calls_general_purpose_subagent(model: BaseChatModel) -> None:
                 tool_call_requests=1,
                 tool_calls=[
                     tool_call(
-                        name="task", step=1, args_contains={"subagent_type": "general-purpose"}
+                        name="task",
+                        step=1,
+                        args_contains={"subagent_type": "general-purpose"},
                     )
                 ],
             )

@@ -111,7 +111,9 @@ def _scan_downloaded_tasks(downloaded_tasks: list[DownloadedDatasetItem]) -> lis
             examples.append(example)
 
             solution_status = "with solution" if solution else "without solution"
-            print(f"Added task: {task_name} (ID: {task_id}, Example ID: {example_id}) [{solution_status}]")
+            print(
+                f"Added task: {task_name} (ID: {task_id}, Example ID: {example_id}) [{solution_status}]"
+            )
 
     return examples
 

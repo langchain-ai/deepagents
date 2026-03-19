@@ -7,6 +7,7 @@ from deepagents import create_deep_agent
 
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
+
 from tests.evals.utils import (
     TrajectoryScorer,
     file_contains,
@@ -16,6 +17,8 @@ from tests.evals.utils import (
     run_agent,
     tool_call,
 )
+
+pytestmark = [pytest.mark.eval_category("file_operations")]
 
 
 @pytest.mark.langsmith
@@ -370,7 +373,9 @@ def test_find_magic_phrase_deep_nesting(model: BaseChatModel) -> None:
 
 
 @pytest.mark.langsmith
-def test_identify_quote_author_from_directory_parallel_reads(model: BaseChatModel) -> None:
+def test_identify_quote_author_from_directory_parallel_reads(
+    model: BaseChatModel,
+) -> None:
     """Identifies which quote matches a target author by reading a directory efficiently."""
     agent = create_deep_agent(model=model)
     run_agent(
@@ -409,11 +414,31 @@ Clues: about programming readability; software craftsmanship.
             tool_call_requests=6,
             tool_calls=[
                 tool_call(name="ls", step=1, args_contains={"path": "/quotes"}),
-                tool_call(name="read_file", step=2, args_contains={"file_path": "/quotes/q1.txt"}),
-                tool_call(name="read_file", step=2, args_contains={"file_path": "/quotes/q2.txt"}),
-                tool_call(name="read_file", step=2, args_contains={"file_path": "/quotes/q3.txt"}),
-                tool_call(name="read_file", step=2, args_contains={"file_path": "/quotes/q4.txt"}),
-                tool_call(name="read_file", step=2, args_contains={"file_path": "/quotes/q5.txt"}),
+                tool_call(
+                    name="read_file",
+                    step=2,
+                    args_contains={"file_path": "/quotes/q1.txt"},
+                ),
+                tool_call(
+                    name="read_file",
+                    step=2,
+                    args_contains={"file_path": "/quotes/q2.txt"},
+                ),
+                tool_call(
+                    name="read_file",
+                    step=2,
+                    args_contains={"file_path": "/quotes/q3.txt"},
+                ),
+                tool_call(
+                    name="read_file",
+                    step=2,
+                    args_contains={"file_path": "/quotes/q4.txt"},
+                ),
+                tool_call(
+                    name="read_file",
+                    step=2,
+                    args_contains={"file_path": "/quotes/q5.txt"},
+                ),
             ],
         )
         .success(final_text_contains("/quotes/q3.txt")),
@@ -421,7 +446,9 @@ Clues: about programming readability; software craftsmanship.
 
 
 @pytest.mark.langsmith
-def test_identify_quote_author_from_directory_unprompted_efficiency(model: BaseChatModel) -> None:
+def test_identify_quote_author_from_directory_unprompted_efficiency(
+    model: BaseChatModel,
+) -> None:
     """Identifies which quote matches a target author without explicit efficiency instructions."""
     agent = create_deep_agent(model=model)
     run_agent(
@@ -458,11 +485,31 @@ Clues: about programming readability; software craftsmanship.
             tool_call_requests=6,
             tool_calls=[
                 tool_call(name="ls", step=1, args_contains={"path": "/quotes"}),
-                tool_call(name="read_file", step=2, args_contains={"file_path": "/quotes/q1.txt"}),
-                tool_call(name="read_file", step=2, args_contains={"file_path": "/quotes/q2.txt"}),
-                tool_call(name="read_file", step=2, args_contains={"file_path": "/quotes/q3.txt"}),
-                tool_call(name="read_file", step=2, args_contains={"file_path": "/quotes/q4.txt"}),
-                tool_call(name="read_file", step=2, args_contains={"file_path": "/quotes/q5.txt"}),
+                tool_call(
+                    name="read_file",
+                    step=2,
+                    args_contains={"file_path": "/quotes/q1.txt"},
+                ),
+                tool_call(
+                    name="read_file",
+                    step=2,
+                    args_contains={"file_path": "/quotes/q2.txt"},
+                ),
+                tool_call(
+                    name="read_file",
+                    step=2,
+                    args_contains={"file_path": "/quotes/q3.txt"},
+                ),
+                tool_call(
+                    name="read_file",
+                    step=2,
+                    args_contains={"file_path": "/quotes/q4.txt"},
+                ),
+                tool_call(
+                    name="read_file",
+                    step=2,
+                    args_contains={"file_path": "/quotes/q5.txt"},
+                ),
             ],
         )
         .success(final_text_contains("/quotes/q3.txt")),

@@ -21,16 +21,25 @@ _RESULTS: dict[str, int] = {
     "skipped": 0,
     "total": 0,
 }
+"""Aggregate pass/fail/skip/total counters across the entire session."""
 
 _DURATIONS_S: list[float] = []
+"""Wall-clock duration (seconds) of each test's `call` phase."""
 
 _EFFICIENCY_RESULTS: list[_evals_utils.EfficiencyResult] = []
+"""Per-test efficiency data (steps, tool calls) collected via the utils callback."""
+
+_NODEID_TO_CATEGORY: dict[str, str] = {}
+"""Mapping of pytest node ID to its `eval_category` mark value, built during collection."""
+
+_CATEGORY_RESULTS: dict[str, dict[str, int]] = {}
+"""Per-category pass/fail/total counters, keyed by category name."""
 
 
 def _micro_step_ratio() -> float | None:
     """Compute sum(actual_steps) / sum(expected_steps).
 
-    Returns ``None`` when no tests specified expected step counts.
+    Returns `None` when no tests specified expected step counts.
     """
     total_expected = 0
     total_actual = 0
@@ -46,7 +55,7 @@ def _micro_step_ratio() -> float | None:
 def _micro_tool_call_ratio() -> float | None:
     """Compute sum(actual_tool_calls) / sum(expected_tool_calls).
 
-    Returns ``None`` when no tests specified expected tool call counts.
+    Returns `None` when no tests specified expected tool call counts.
     """
     total_expected = 0
     total_actual = 0
@@ -60,14 +69,14 @@ def _micro_tool_call_ratio() -> float | None:
 
 
 def _solve_rate() -> float | None:
-    """Compute solve rate: sum of per-test expected_steps / duration_s for solved tests.
+    """Compute solve rate: mean of per-test `expected_steps / duration_s` for eligible tests.
 
     For each test that passed and has both `expected_steps` and `duration_s`,
-    the per-test contribution is ``expected_steps / duration_s``. Tests that
+    the per-test contribution is `expected_steps / duration_s`. Tests that
     did not pass contribute zero. The result is the mean across all eligible
     tests.
 
-    Returns ``None`` when no tests have the required data.
+    Returns `None` when no tests have the required data.
     """
     values: list[float] = []
     for r in _EFFICIENCY_RESULTS:
@@ -85,6 +94,16 @@ def _solve_rate() -> float | None:
 def pytest_configure(config: pytest.Config) -> None:
     _ = config
     _evals_utils._on_efficiency_result = _EFFICIENCY_RESULTS.append
+
+
+def pytest_collection_modifyitems(
+    config: pytest.Config,  # noqa: ARG001
+    items: list[pytest.Item],
+) -> None:
+    for item in items:
+        marker = item.get_closest_marker("eval_category")
+        if marker and marker.args:
+            _NODEID_TO_CATEGORY[item.nodeid] = str(marker.args[0])
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -111,6 +130,12 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
     if outcome in {"passed", "failed", "skipped"}:
         _RESULTS[outcome] += 1
 
+    category = _NODEID_TO_CATEGORY.get(report.nodeid)
+    if category and outcome in {"passed", "failed"}:
+        bucket = _CATEGORY_RESULTS.setdefault(category, {"passed": 0, "failed": 0, "total": 0})
+        bucket[outcome] += 1
+        bucket["total"] += 1
+
     if _EFFICIENCY_RESULTS and _EFFICIENCY_RESULTS[-1].duration_s is None:
         _EFFICIENCY_RESULTS[-1].duration_s = duration
         _EFFICIENCY_RESULTS[-1].passed = outcome == "passed"
@@ -127,6 +152,11 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     solve_rate = _solve_rate()
     median_duration_s = round(statistics.median(_DURATIONS_S), 4) if _DURATIONS_S else 0.0
 
+    category_scores: dict[str, float] = {}
+    for cat, counts in sorted(_CATEGORY_RESULTS.items()):
+        if counts["total"] > 0:
+            category_scores[cat] = round(counts["passed"] / counts["total"], 2)
+
     payload: dict[str, object] = {
         "created_at": datetime.now(UTC).replace(microsecond=0).isoformat(),
         "sdk_version": __version__,
@@ -135,6 +165,7 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         or str(get_default_model().model),
         **_RESULTS,
         "correctness": correctness,
+        "category_scores": category_scores,
         "step_ratio": step_ratio,
         "tool_call_ratio": tool_call_ratio,
         "solve_rate": solve_rate,
@@ -151,6 +182,13 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
             f"results: {payload['passed']} passed, {payload['failed']} failed, {payload['skipped']} skipped (total={payload['total']})"
         )
         terminal_reporter.write_line(f"correctness: {correctness:.2f}")
+        if category_scores:
+            terminal_reporter.write_sep("-", "per-category correctness")
+            for cat, score in sorted(category_scores.items()):
+                counts = _CATEGORY_RESULTS[cat]
+                terminal_reporter.write_line(
+                    f"  {cat}: {score:.2f} ({counts['passed']}/{counts['total']})"
+                )
         if step_ratio is not None:
             terminal_reporter.write_line(f"step_ratio: {step_ratio:.2f}")
         if tool_call_ratio is not None:

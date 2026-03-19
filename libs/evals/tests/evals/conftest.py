@@ -18,13 +18,18 @@ from deepagents.graph import get_default_model
 pytest_plugins = ["tests.evals.pytest_reporter"]
 
 
-def pytest_configure(config: pytest.Config) -> None:  # noqa: ARG001  # pytest hook signature
-    """Fail fast if LangSmith tracing is not enabled.
+def pytest_configure(config: pytest.Config) -> None:
+    """Register custom marks and fail fast if LangSmith tracing is not enabled.
 
     All eval tests require `@pytest.mark.langsmith` and
     `LANGSMITH_TRACING=true`. Detect this early so the entire suite is skipped
     with a clear message instead of failing one-by-one.
     """
+    config.addinivalue_line(
+        "markers",
+        "eval_category(name): tag an eval test with a category for grouping and reporting",
+    )
+
     tracing_enabled = any(
         os.environ.get(var, "").lower() == "true"
         for var in (
@@ -52,6 +57,40 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         default=None,
         help="Model to run evals against. If omitted, uses deepagents.graph.get_default_model().model.",
     )
+    parser.addoption(
+        "--eval-category",
+        action="append",
+        default=[],
+        help="Run only evals tagged with this category (repeatable). E.g. --eval-category memory --eval-category hitl",
+    )
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    categories = config.getoption("--eval-category")
+    if not categories:
+        return
+
+    known = {
+        m.args[0] for item in items if (m := item.get_closest_marker("eval_category")) and m.args
+    }
+    unknown = set(categories) - known
+    if unknown:
+        msg = (
+            f"Unknown --eval-category values: {sorted(unknown)}. "
+            f"Known categories in collected tests: {sorted(known)}"
+        )
+        pytest.exit(msg, returncode=1)
+
+    selected: list[pytest.Item] = []
+    deselected: list[pytest.Item] = []
+    for item in items:
+        marker = item.get_closest_marker("eval_category")
+        if marker and marker.args and marker.args[0] in categories:
+            selected.append(item)
+        else:
+            deselected.append(item)
+    items[:] = selected
+    config.hook.pytest_deselected(items=deselected)
 
 
 def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:

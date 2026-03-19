@@ -8,9 +8,9 @@ and project-level locations.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
-import shutil
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -30,10 +30,7 @@ class MCPToolInfo:
     """Metadata for a single MCP tool."""
 
     name: str
-    """Tool name (may include server name prefix)."""
-
     description: str
-    """Human-readable description of what the tool does."""
 
 
 @dataclass
@@ -41,13 +38,8 @@ class MCPServerInfo:
     """Metadata for a connected MCP server and its tools."""
 
     name: str
-    """Server name from the MCP configuration."""
-
     transport: str
-    """Transport type (`stdio`, `sse`, or `http`)."""
-
     tools: list[MCPToolInfo] = field(default_factory=list)
-    """Tools exposed by this server."""
 
 
 _SUPPORTED_REMOTE_TYPES = {"sse", "http"}
@@ -370,61 +362,6 @@ class MCPSessionManager:
         await self.exit_stack.aclose()
 
 
-def _check_stdio_server(server_name: str, server_config: dict[str, Any]) -> None:
-    """Verify that a stdio server's command exists on PATH.
-
-    Args:
-        server_name: Name of the server (for error messages).
-        server_config: Server configuration dictionary with `command` key.
-
-    Raises:
-        RuntimeError: If the command is missing from config or not found on PATH.
-    """
-    command = server_config.get("command")
-    if command is None:
-        msg = f"MCP server '{server_name}': missing 'command' in config."
-        raise RuntimeError(msg)
-    if shutil.which(command) is None:
-        msg = (
-            f"MCP server '{server_name}': command '{command}' not found on PATH. "
-            "Install it or check your MCP config."
-        )
-        raise RuntimeError(msg)
-
-
-async def _check_remote_server(server_name: str, server_config: dict[str, Any]) -> None:
-    """Check network connectivity to a remote MCP server URL.
-
-    Sends a lightweight HEAD request with a 2-second timeout to detect DNS
-    failures, refused connections, and network timeouts early, before the MCP
-    session handshake. HTTP error responses (4xx, 5xx) are not treated as
-    failures — only transport errors, invalid URLs, and OS-level socket
-    errors raise.
-
-    Args:
-        server_name: Name of the server (for error messages).
-        server_config: Server configuration dictionary with `url` key.
-
-    Raises:
-        RuntimeError: If the server URL is unreachable or invalid.
-    """
-    import httpx
-
-    url = server_config.get("url")
-    if url is None:
-        msg = f"MCP server '{server_name}': missing 'url' in config."
-        raise RuntimeError(msg)
-    try:
-        async with httpx.AsyncClient() as client:
-            await client.head(url, timeout=2)
-    except (httpx.TransportError, httpx.InvalidURL, OSError) as exc:
-        msg = (
-            f"MCP server '{server_name}': URL '{url}' is unreachable: {exc}. "
-            "Check that the URL is correct and the server is running."
-        )
-        raise RuntimeError(msg) from exc
-
-
 async def _load_tools_from_config(
     config: dict[str, Any],
 ) -> tuple[list[BaseTool], MCPSessionManager, list[MCPServerInfo]]:
@@ -449,24 +386,6 @@ async def _load_tools_from_config(
         StreamableHttpConnection,
     )
     from langchain_mcp_adapters.tools import load_mcp_tools
-
-    # Pre-flight health checks (best-effort early detection; the session setup
-    # below has its own error handling for TOCTOU races).
-    errors: list[str] = []
-    for server_name, server_config in config["mcpServers"].items():
-        server_type = _resolve_server_type(server_config)
-        try:
-            if server_type in _SUPPORTED_REMOTE_TYPES:
-                await _check_remote_server(server_name, server_config)
-            elif server_type == "stdio":
-                _check_stdio_server(server_name, server_config)
-        except RuntimeError as exc:
-            errors.append(str(exc))
-    if errors:
-        msg = "Pre-flight health check(s) failed:\n" + "\n".join(
-            f"  - {e}" for e in errors
-        )
-        raise RuntimeError(msg)
 
     # Create connections dict for MultiServerMCPClient
     # Convert Claude Desktop format to langchain-mcp-adapters format
@@ -513,23 +432,36 @@ async def _load_tools_from_config(
         all_tools: list[BaseTool] = []
         server_infos: list[MCPServerInfo] = []
         for server_name, server_config in config["mcpServers"].items():
-            session = await manager.exit_stack.enter_async_context(
-                client.session(server_name)
-            )
-            tools = await load_mcp_tools(
-                session, server_name=server_name, tool_name_prefix=True
-            )
-            all_tools.extend(tools)
-            server_infos.append(
-                MCPServerInfo(
-                    name=server_name,
-                    transport=_resolve_server_type(server_config),
-                    tools=[
-                        MCPToolInfo(name=t.name, description=t.description or "")
-                        for t in tools
-                    ],
+            try:
+                session = await asyncio.wait_for(
+                    manager.exit_stack.enter_async_context(client.session(server_name)),
+                    timeout=10.0,
                 )
-            )
+                tools = await asyncio.wait_for(
+                    load_mcp_tools(
+                        session, server_name=server_name, tool_name_prefix=True
+                    ),
+                    timeout=10.0,
+                )
+                all_tools.extend(tools)
+                server_infos.append(
+                    MCPServerInfo(
+                        name=server_name,
+                        transport=_resolve_server_type(server_config),
+                        tools=[
+                            MCPToolInfo(name=t.name, description=t.description)
+                            for t in tools
+                        ],
+                    )
+                )
+            except asyncio.TimeoutError as e:
+                logger.error("Timeout connecting to MCP server '%s'", server_name)
+                error_msg = f"Timeout connecting to MCP server '{server_name}' (10s limit)"
+                raise RuntimeError(error_msg) from e
+            except Exception as e:
+                logger.error("Failed to connect to MCP server '%s': %s", server_name, e)
+                error_msg = f"Failed to connect to MCP server '{server_name}': {e}"
+                raise RuntimeError(error_msg) from e
     except Exception as e:
         await manager.cleanup()
         error_msg = (

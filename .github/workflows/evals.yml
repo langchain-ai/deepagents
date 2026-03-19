@@ -122,6 +122,7 @@ jobs:
           echo "| \`models\` | \`${MODELS}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| \`models_override\` | \`${MODELS_OVERRIDE}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| **Resolved**¹ | \`${RESOLVED}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| \`eval_categories\` (list) | \`${EVAL_CATEGORIES}\` |" >> "$GITHUB_STEP_SUMMARY"
 
           # Build eval_categories as a bullet list
           if [ "${EVAL_CATEGORIES}" = "(all)" ]; then

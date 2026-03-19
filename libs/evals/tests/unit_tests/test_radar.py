@@ -8,7 +8,9 @@ from deepagents_evals.radar import (
     CATEGORY_LABELS,
     EVAL_CATEGORIES,
     ModelResult,
+    _safe_filename,
     _short_model_name,
+    generate_individual_radars,
     generate_radar,
     load_results_from_summary,
     toy_data,
@@ -94,6 +96,55 @@ def test_generate_radar_many_models_color_cycling():
     results = [ModelResult(model=f"model-{i}", scores={"a": 0.5, "b": 0.8}) for i in range(10)]
     fig = generate_radar(results, categories=["a", "b"])
     assert fig is not None
+
+
+# --- generate_individual_radars ---
+
+
+def test_generate_individual_radars_creates_per_model_files(tmp_path):
+    results = toy_data()
+    paths = generate_individual_radars(results, output_dir=tmp_path)
+    assert len(paths) == len(results)
+    for p in paths:
+        assert p.exists()
+        assert p.stat().st_size > 0
+        assert p.suffix == ".png"
+
+
+def test_generate_individual_radars_filenames_are_safe(tmp_path):
+    results = [
+        ModelResult(model="anthropic:claude-sonnet-4-6", scores={"a": 0.5, "b": 0.8, "c": 0.3}),
+        ModelResult(model="openai:gpt-4.1", scores={"a": 0.6, "b": 0.7, "c": 0.4}),
+    ]
+    paths = generate_individual_radars(results, output_dir=tmp_path, categories=["a", "b", "c"])
+    names = [p.stem for p in paths]
+    assert "anthropic-claude-sonnet-4-6" in names
+    assert "openai-gpt-4.1" in names
+
+
+def test_generate_individual_radars_single_model(tmp_path):
+    results = [ModelResult(model="test", scores={"a": 0.5, "b": 0.8, "c": 0.3})]
+    paths = generate_individual_radars(results, output_dir=tmp_path, categories=["a", "b", "c"])
+    assert len(paths) == 1
+
+
+# --- _safe_filename ---
+
+
+def test_safe_filename_replaces_colons():
+    assert _safe_filename("anthropic:claude-sonnet-4-6") == "anthropic-claude-sonnet-4-6"
+
+
+def test_safe_filename_replaces_slashes():
+    assert _safe_filename("org/model/v1") == "org-model-v1"
+
+
+def test_safe_filename_empty_string():
+    assert _safe_filename("") == "unknown"
+
+
+def test_safe_filename_only_special_chars():
+    assert _safe_filename(":::") == "unknown"
 
 
 # --- load_results_from_summary ---

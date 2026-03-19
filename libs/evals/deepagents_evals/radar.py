@@ -14,8 +14,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
-    from matplotlib.figure import Figure  # ty: ignore[unresolved-import]
-    from matplotlib.projections.polar import PolarAxes  # ty: ignore[unresolved-import]
+    from matplotlib.figure import Figure
+    from matplotlib.projections.polar import PolarAxes
 
 _CATEGORIES_JSON = Path(__file__).parent / "categories.json"
 try:
@@ -88,7 +88,7 @@ def generate_radar(
     Returns:
         The matplotlib `Figure` object.
     """
-    import matplotlib.pyplot as plt  # ty: ignore[unresolved-import]
+    import matplotlib.pyplot as plt
 
     cats = categories or EVAL_CATEGORIES
     n = len(cats)
@@ -154,6 +154,63 @@ def generate_radar(
         plt.close(fig)
 
     return fig
+
+
+def generate_individual_radars(
+    results: list[ModelResult],
+    *,
+    categories: list[str] | None = None,
+    output_dir: str | Path = "charts/individual",
+    title_prefix: str = "Eval Results",
+    figsize: tuple[float, float] = (10, 10),
+) -> list[Path]:
+    """Generate one radar chart per model.
+
+    Each chart is saved as `<sanitized_model_name>.png` inside `output_dir`.
+
+    Args:
+        results: One `ModelResult` per model.
+        categories: Category axes to include. Defaults to `EVAL_CATEGORIES`.
+        output_dir: Directory to write per-model PNGs.
+        title_prefix: Prefix for each chart title (model name is appended).
+        figsize: Figure size in inches.
+
+    Returns:
+        List of paths to the saved PNG files.
+    """
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+
+    paths: list[Path] = []
+    for result in results:
+        name = _short_model_name(result.model)
+        safe = _safe_filename(result.model)
+        dest = out / f"{safe}.png"
+        generate_radar(
+            [result],
+            categories=categories,
+            title=f"{title_prefix} — {name}",
+            output=dest,
+            figsize=figsize,
+        )
+        paths.append(dest)
+    return paths
+
+
+def _safe_filename(model: str) -> str:
+    """Convert a model identifier into a filesystem-safe filename stem.
+
+    Replaces colons, slashes, and spaces with hyphens, then strips leading/
+    trailing hyphens.
+
+    Args:
+        model: Full model identifier.
+
+    Returns:
+        Sanitized string safe for use as a filename (without extension).
+    """
+    safe = model.replace(":", "-").replace("/", "-").replace(" ", "-")
+    return safe.strip("-") or "unknown"
 
 
 def _short_model_name(model: str) -> str:

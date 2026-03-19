@@ -2,6 +2,9 @@
 
 Reimplements the essential tau2 airline domain (data models, database, tools) as
 self-contained code so the evals run without a cross-repo dependency.
+
+Based on τ-bench / τ²-bench by Sierra Research (MIT License).
+See LICENSE in this directory. Source: https://github.com/sierra-research/tau-bench
 """
 
 from __future__ import annotations

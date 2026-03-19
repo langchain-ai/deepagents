@@ -3,6 +3,9 @@
 Drives a back-and-forth conversation between a deepagents agent and an
 LLM-powered user simulator, collecting the full transcript and tool call
 log for later evaluation.
+
+Based on τ-bench / τ²-bench by Sierra Research (MIT License).
+See LICENSE in this directory. Source: https://github.com/sierra-research/tau-bench
 """
 
 from __future__ import annotations

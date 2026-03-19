@@ -4,6 +4,9 @@ Each test creates a fresh airline environment, runs a multi-turn conversation
 between a deepagents agent and an LLM user simulator, then evaluates the
 result using tau2's DB state + communicate info scoring.
 
+Based on τ-bench / τ²-bench by Sierra Research (MIT License).
+See LICENSE in this directory. Source: https://github.com/sierra-research/tau-bench
+
 Usage:
     uv run --group test pytest tests/evals/tau2_airline/ -v --model claude-sonnet-4-20250514
     uv run --group test pytest tests/evals/tau2_airline/ -k "task_2" --model claude-sonnet-4-20250514

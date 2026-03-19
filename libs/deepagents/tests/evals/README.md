@@ -53,6 +53,7 @@ scorer = (
 | `fixtures/` | Static test data |
 | `data/benchmark_samples/` | Curated case data for external benchmarks |
 | `data/bfcl_apis/` | Stateful Python API implementations for BFCL v3 tool-calling evals |
+| `tau2_airline/` | τ²-bench airline domain: task data, database state, policy, domain models, evaluation, and multi-turn runner (derived from [sierra-research/tau-bench](https://github.com/sierra-research/tau-bench), MIT License) |
 
 ### Test suites
 
@@ -71,6 +72,7 @@ scorer = (
 | `test_followup_quality.py` | Followup question relevance for underspecified requests (LLM judge) |
 | `test_external_benchmarks.py` | Curated hard cases from FRAMES (multi-hop retrieval), Nexus (nested function composition), and BFCL v3 (multi-turn stateful tool calling) |
 | `memory_agent_bench/test_memory_agent_bench.py` | MemoryAgentBench (ICLR 2026): long-context memory recall and QA over chunked context |
+| `tau2_airline/test_tau2_airline.py` | [τ²-bench](https://github.com/sierra-research/tau-bench) airline tasks: multi-turn agent-user conversations scored on DB state accuracy and communicate info |
 
 ## Writing a new eval
 

@@ -7,7 +7,7 @@ Usage:
     # From evals_summary.json (CI / post-run)
     python scripts/generate_radar.py --summary evals_summary.json -o charts/radar.png
 
-    # From per-category JSON (future, when reporter emits category scores)
+    # From per-category JSON (alternative format with "scores" key)
     python scripts/generate_radar.py --results category_results.json -o charts/radar.png
 """
 
@@ -77,7 +77,7 @@ def main() -> None:
         except FileNotFoundError:
             print(f"error: {args.summary} not found", file=sys.stderr)
             sys.exit(1)
-        except (json.JSONDecodeError, OSError) as exc:
+        except (json.JSONDecodeError, KeyError, OSError) as exc:
             print(f"error: could not load {args.summary}: {exc}", file=sys.stderr)
             sys.exit(1)
     elif args.results:

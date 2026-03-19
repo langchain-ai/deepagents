@@ -101,8 +101,14 @@ def test_generate_radar_many_models_color_cycling():
 
 def test_load_results_from_summary_happy_path(tmp_path):
     data = [
-        {"model": "anthropic:claude-sonnet-4-6", "correctness": 0.85},
-        {"model": "openai:gpt-4.1", "correctness": 0.72},
+        {
+            "model": "anthropic:claude-sonnet-4-6",
+            "category_scores": {"file_operations": 0.85, "memory": 0.90},
+        },
+        {
+            "model": "openai:gpt-4.1",
+            "category_scores": {"file_operations": 0.72, "memory": 0.80},
+        },
     ]
     path = tmp_path / "summary.json"
     path.write_text(json.dumps(data), encoding="utf-8")
@@ -110,21 +116,21 @@ def test_load_results_from_summary_happy_path(tmp_path):
     results = load_results_from_summary(path)
     assert len(results) == 2
     assert results[0].model == "anthropic:claude-sonnet-4-6"
-    assert results[0].scores == {"overall": 0.85}
-    assert results[1].scores == {"overall": 0.72}
+    assert results[0].scores == {"file_operations": 0.85, "memory": 0.90}
+    assert results[1].scores == {"file_operations": 0.72, "memory": 0.80}
 
 
-def test_load_results_from_summary_missing_correctness_defaults(tmp_path):
+def test_load_results_from_summary_missing_category_scores_raises(tmp_path):
     data = [{"model": "test-model"}]
     path = tmp_path / "summary.json"
     path.write_text(json.dumps(data), encoding="utf-8")
 
-    results = load_results_from_summary(path)
-    assert results[0].scores == {"overall": 0.0}
+    with pytest.raises(KeyError):
+        load_results_from_summary(path)
 
 
 def test_load_results_from_summary_missing_model_defaults(tmp_path):
-    data = [{"correctness": 0.9}]
+    data = [{"category_scores": {"memory": 0.9}}]
     path = tmp_path / "summary.json"
     path.write_text(json.dumps(data), encoding="utf-8")
 

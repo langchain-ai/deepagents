@@ -189,10 +189,9 @@ def _short_model_name(model: str) -> str:
 def load_results_from_summary(path: str | Path) -> list[ModelResult]:
     """Load model results from an `evals_summary.json` file.
 
-    The summary file is a JSON array of objects, each with a `model` key and
-    aggregate metrics. When `category_scores` is present in an entry, those
-    per-category scores are used directly. Otherwise falls back to the
-    aggregate `correctness` mapped to a single `overall` category.
+    The summary file is a JSON array of objects. Each object must have a
+    `model` key and a `category_scores` dict mapping category names to
+    `[0, 1]` correctness floats.
 
     Args:
         path: Path to `evals_summary.json`.
@@ -203,7 +202,8 @@ def load_results_from_summary(path: str | Path) -> list[ModelResult]:
     Raises:
         FileNotFoundError: If `path` does not exist.
         json.JSONDecodeError: If the file contains invalid JSON.
-        ValueError: If a score value (in `category_scores` or `correctness`) is not numeric.
+        ValueError: If a score value in `category_scores` is not numeric.
+        KeyError: If an entry is missing `category_scores`.
     """
     import json
 
@@ -211,11 +211,7 @@ def load_results_from_summary(path: str | Path) -> list[ModelResult]:
     results: list[ModelResult] = []
     for entry in data:
         model = str(entry.get("model", "unknown"))
-        cat_scores = entry.get("category_scores")
-        if isinstance(cat_scores, dict) and cat_scores:
-            scores = {k: float(v) for k, v in cat_scores.items()}
-        else:
-            scores = {"overall": float(entry.get("correctness", 0.0))}
+        scores = {k: float(v) for k, v in entry["category_scores"].items()}
         results.append(ModelResult(model=model, scores=scores))
     return results
 

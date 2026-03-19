@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from deepagents_evals.radar import CATEGORY_LABELS, EVAL_CATEGORIES
 
 # ---------------------------------------------------------------------------
@@ -79,7 +81,6 @@ def test_load_results_with_category_scores(tmp_path):
     data = [
         {
             "model": "test:model-a",
-            "correctness": 0.85,
             "category_scores": {"memory": 0.90, "hitl": 0.80},
         },
     ]
@@ -91,26 +92,26 @@ def test_load_results_with_category_scores(tmp_path):
     assert results[0].scores == {"memory": 0.90, "hitl": 0.80}
 
 
-def test_load_results_falls_back_to_overall(tmp_path):
+def test_load_results_missing_category_scores_raises(tmp_path):
     from deepagents_evals.radar import load_results_from_summary
 
     data = [{"model": "test:model-b", "correctness": 0.72}]
     path = tmp_path / "summary.json"
     path.write_text(json.dumps(data), encoding="utf-8")
 
-    results = load_results_from_summary(path)
-    assert results[0].scores == {"overall": 0.72}
+    with pytest.raises(KeyError):
+        load_results_from_summary(path)
 
 
-def test_load_results_empty_category_scores_falls_back(tmp_path):
+def test_load_results_empty_category_scores(tmp_path):
     from deepagents_evals.radar import load_results_from_summary
 
-    data = [{"model": "test:model-c", "correctness": 0.60, "category_scores": {}}]
+    data = [{"model": "test:model-c", "category_scores": {}}]
     path = tmp_path / "summary.json"
     path.write_text(json.dumps(data), encoding="utf-8")
 
     results = load_results_from_summary(path)
-    assert results[0].scores == {"overall": 0.60}
+    assert results[0].scores == {}
 
 
 # ---------------------------------------------------------------------------

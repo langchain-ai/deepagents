@@ -45,7 +45,7 @@ scorer = (
 | File | Purpose |
 |---|---|
 | `utils.py` | Core framework: `AgentTrajectory`, assertion classes, `TrajectoryScorer`, `run_agent` entry point |
-| `llm_judge.py` | LLM-as-judge `SuccessAssertion` — grades agent answers against human-readable criteria |
+| `llm_judge.py` | LLM-as-judge `SuccessAssertion` — wraps [openevals](https://github.com/langchain-ai/openevals) to grade agent answers against human-readable criteria |
 | `conftest.py` | pytest fixtures: `--model` CLI option, `model` / `model_name` fixtures, LangSmith metadata |
 | `external_benchmarks.py` | Runner logic for curated external benchmarks (FRAMES, Nexus, BFCL v3) with state-comparison scoring |
 | `memory_agent_bench/` | MemoryAgentBench (ICLR 2026) runner: configs, data loading, and evaluation utils |

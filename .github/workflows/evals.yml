@@ -225,6 +225,11 @@ jobs:
       - name: "🧾 Write summary"
         run: uv run --with tabulate python .github/scripts/aggregate_evals.py
 
+      - name: "📦 Install evals package"
+        if: hashFiles('evals_summary.json') != ''
+        working-directory: libs/evals
+        run: uv sync --extra charts
+
       - name: "📊 Generate radar chart"
         if: hashFiles('evals_summary.json') != ''
         working-directory: libs/evals

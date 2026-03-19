@@ -6,7 +6,6 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 from langchain.chat_models import init_chat_model
-from langchain_baseten import ChatBaseten
 
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
@@ -122,8 +121,4 @@ def langsmith_experiment_metadata(request: pytest.FixtureRequest) -> dict[str, A
 
 @pytest.fixture
 def model(model_name: str) -> BaseChatModel:
-    if model_name.startswith("baseten:"):
-        return ChatBaseten(
-            model=model_name.removeprefix("baseten:"),
-        )
     return init_chat_model(model_name)

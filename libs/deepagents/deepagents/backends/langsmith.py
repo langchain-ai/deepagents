@@ -69,8 +69,8 @@ class LangSmithSandbox(BaseSandbox):
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
         """Download multiple files from the LangSmith sandbox.
 
-        Leverages LangSmith's native file read API. Supports partial
-        success — individual downloads may fail without affecting others.
+        Supports partial success -- individual downloads may fail without
+        affecting others.
 
         Args:
             paths: List of file paths to download.
@@ -101,8 +101,8 @@ class LangSmithSandbox(BaseSandbox):
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
         """Upload multiple files to the LangSmith sandbox.
 
-        Leverages LangSmith's native file write API. Supports partial
-        success — individual uploads may fail without affecting others.
+        Supports partial success -- individual uploads may fail without
+        affecting others.
 
         Args:
             files: List of `(path, content)` tuples to upload.

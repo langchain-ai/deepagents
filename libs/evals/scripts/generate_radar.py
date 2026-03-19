@@ -102,6 +102,13 @@ def main() -> None:
     for r in results:
         all_cats.update(r.scores.keys())
 
+    min_axes = 3
+    if len(all_cats) < min_axes:
+        msg = f"skipped: radar chart needs >= {min_axes} categories, got {len(all_cats)}"
+        print(msg)
+        print(msg, file=sys.stderr)
+        sys.exit(0)
+
     # Preserve EVAL_CATEGORIES ordering for known categories, append unknown ones.
     ordered = [c for c in EVAL_CATEGORIES if c in all_cats]
     ordered.extend(sorted(all_cats - set(ordered)))
@@ -115,6 +122,9 @@ def main() -> None:
         )
     except OSError as exc:
         print(f"error: could not save chart to {args.output}: {exc}", file=sys.stderr)
+        sys.exit(1)
+    except Exception as exc:
+        print(f"error: chart generation failed: {exc}", file=sys.stderr)
         sys.exit(1)
     print(f"saved: {args.output}")
 

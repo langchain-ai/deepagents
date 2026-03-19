@@ -41,6 +41,7 @@ dependencies = [
     # Eval-specific dependencies
     "datasets>=3.0.0",
     "nltk>=3.9.0",
+    "openevals>=0.1.3",
     "tiktoken>=0.8.0",
 ]
 

@@ -18,6 +18,8 @@ Examples:
     ```
 """
 
+import asyncio
+import logging
 from collections import defaultdict
 from dataclasses import replace
 from typing import cast
@@ -39,6 +41,8 @@ from deepagents.backends.protocol import (
     execute_accepts_timeout,
 )
 from deepagents.backends.state import StateBackend
+
+logger = logging.getLogger(__name__)
 
 
 def _remap_grep_path(m: GrepMatch, route_prefix: str) -> GrepMatch:
@@ -340,18 +344,27 @@ class CompositeBackend(BackendProtocol):
         # Otherwise, search only the default backend
         if path is None or path == "/":
             all_matches: list[GrepMatch] = []
+            errors: list[str] = []
+
             default_result = self._coerce_grep_result(self.default.grep(pattern, path, glob))
             if default_result.error:
-                return default_result
-            all_matches.extend(default_result.matches or [])
+                logger.warning("Default backend grep failed: %s", default_result.error)
+                errors.append(f"Default: {default_result.error}")
+            else:
+                all_matches.extend(default_result.matches or [])
 
             for route_prefix, backend in self.routes.items():
                 grep_result = self._coerce_grep_result(backend.grep(pattern, "/", glob))
                 if grep_result.error:
-                    return grep_result
-                all_matches.extend(_remap_grep_path(m, route_prefix) for m in (grep_result.matches or []))
+                    logger.warning("Backend for route %s grep failed: %s", route_prefix, grep_result.error)
+                    errors.append(f"{route_prefix}: {grep_result.error}")
+                else:
+                    all_matches.extend(_remap_grep_path(m, route_prefix) for m in (grep_result.matches or []))
 
+            if not all_matches and errors:
+                return GrepResult(error=f"Grep failed on all backends: {'; '.join(errors)}")
             return GrepResult(matches=all_matches)
+
         # Path specified but doesn't match a route - search only default
         return self._coerce_grep_result(self.default.grep(pattern, path, glob))
 
@@ -378,21 +391,34 @@ class CompositeBackend(BackendProtocol):
                 return GrepResult(matches=[_remap_grep_path(m, route_prefix) for m in (grep_result.matches or [])])
 
         # If path is None or "/", search default and all routed backends and merge
-        # Otherwise, search only the default backend
         if path is None or path == "/":
-            all_matches: list[GrepMatch] = []
-            default_result = self._coerce_grep_result(await self.default.agrep(pattern, path, glob))
-            if default_result.error:
-                return default_result
-            all_matches.extend(default_result.matches or [])
-
+            tasks = [self.default.agrep(pattern, path, glob)]
+            prefixes = [None]
             for route_prefix, backend in self.routes.items():
-                grep_result = self._coerce_grep_result(await backend.agrep(pattern, "/", glob))
-                if grep_result.error:
-                    return grep_result
-                all_matches.extend(_remap_grep_path(m, route_prefix) for m in (grep_result.matches or []))
+                tasks.append(backend.agrep(pattern, "/", glob))
+                prefixes.append(route_prefix)
 
+            all_raw = await asyncio.gather(*tasks)
+
+            all_matches: list[GrepMatch] = []
+            errors: list[str] = []
+            for raw_res, prefix in zip(all_raw, prefixes, strict=True):
+                result = self._coerce_grep_result(raw_res)
+                if result.error:
+                    label = "Default" if prefix is None else prefix
+                    logger.warning("Backend %s agrep failed: %s", label, result.error)
+                    errors.append(f"{label}: {result.error}")
+                    continue
+
+                if prefix is None:
+                    all_matches.extend(result.matches or [])
+                else:
+                    all_matches.extend(_remap_grep_path(m, prefix) for m in (result.matches or []))
+
+            if not all_matches and errors:
+                return GrepResult(error=f"Grep failed on all backends: {'; '.join(errors)}")
             return GrepResult(matches=all_matches)
+
         # Path specified but doesn't match a route - search only default
         return self._coerce_grep_result(await self.default.agrep(pattern, path, glob))
 
@@ -444,15 +470,22 @@ class CompositeBackend(BackendProtocol):
             return GlobResult(matches=[_remap_file_info_path(fi, route_prefix) for fi in (matches or [])])
 
         # Path doesn't match any specific route - search default backend AND all routed backends
-        default_result = await self.default.aglob(pattern, path)
-        default_matches = default_result.matches if isinstance(default_result, GlobResult) else default_result
-        results.extend(default_matches or [])
+        tasks = [self.default.aglob(pattern, path)]
+        prefixes = [None]
 
         for route_prefix, backend in self.routes.items():
             route_pattern = _strip_route_from_pattern(pattern, route_prefix)
-            sub_result = await backend.aglob(route_pattern, "/")
-            sub_matches = sub_result.matches if isinstance(sub_result, GlobResult) else sub_result
-            results.extend(_remap_file_info_path(fi, route_prefix) for fi in (sub_matches or []))
+            tasks.append(backend.aglob(route_pattern, "/"))
+            prefixes.append(route_prefix)
+
+        all_results = await asyncio.gather(*tasks)
+
+        for glob_res, prefix in zip(all_results, prefixes, strict=True):
+            matches = glob_res.matches if isinstance(glob_res, GlobResult) else glob_res
+            if prefix is None:
+                results.extend(matches or [])
+            else:
+                results.extend(_remap_file_info_path(fi, prefix) for fi in (matches or []))
 
         # Deterministic ordering
         results.sort(key=lambda x: x.get("path", ""))
@@ -685,14 +718,22 @@ class CompositeBackend(BackendProtocol):
             backend, stripped_path = self._get_backend_and_key(path)
             backend_batches[backend].append((idx, stripped_path, content))
 
-        # Process each backend's batch
-        for backend, batch in backend_batches.items():
+        # Process each backend's batch in parallel
+        backends = list(backend_batches.keys())
+        tasks = []
+        for backend in backends:
+            batch = backend_batches[backend]
             # Extract data for backend call
-            indices, stripped_paths, contents = zip(*batch, strict=False)
+            _indices, stripped_paths, contents = zip(*batch, strict=False)
             batch_files = list(zip(stripped_paths, contents, strict=False))
+            tasks.append(backend.aupload_files(batch_files))
 
-            # Call backend once with all its files
-            batch_responses = await backend.aupload_files(batch_files)
+        all_responses = await asyncio.gather(*tasks)
+
+        for backend_idx, batch_responses in enumerate(all_responses):
+            backend = backends[backend_idx]
+            batch = backend_batches[backend]
+            indices, _stripped_paths, _contents = zip(*batch, strict=False)
 
             # Place responses at original indices with original paths
             for i, orig_idx in enumerate(indices):
@@ -754,13 +795,21 @@ class CompositeBackend(BackendProtocol):
             backend, stripped_path = self._get_backend_and_key(path)
             backend_batches[backend].append((idx, stripped_path))
 
-        # Process each backend's batch
-        for backend, batch in backend_batches.items():
+        # Process each backend's batch in parallel
+        backends = list(backend_batches.keys())
+        tasks = []
+        for backend in backends:
+            batch = backend_batches[backend]
             # Extract data for backend call
-            indices, stripped_paths = zip(*batch, strict=False)
+            _indices, stripped_paths = zip(*batch, strict=False)
+            tasks.append(backend.adownload_files(list(stripped_paths)))
 
-            # Call backend once with all its paths
-            batch_responses = await backend.adownload_files(list(stripped_paths))
+        all_responses = await asyncio.gather(*tasks)
+
+        for backend_idx, batch_responses in enumerate(all_responses):
+            backend = backends[backend_idx]
+            batch = backend_batches[backend]
+            indices, _stripped_paths = zip(*batch, strict=False)
 
             # Place responses at original indices with original paths
             for i, orig_idx in enumerate(indices):

@@ -1071,7 +1071,7 @@ def test_composite_grep_error_in_routed_backend_at_root() -> None:
 
     # When searching from root and a routed backend errors, return the error
     result = comp.grep("test", path="/")
-    assert result.error == "Backend error occurred"
+    assert result.error == "Grep failed on all backends: /errors/: Backend error occurred"
 
 
 def test_composite_grep_error_in_default_backend_at_root() -> None:
@@ -1090,7 +1090,7 @@ def test_composite_grep_error_in_default_backend_at_root() -> None:
 
     # When searching from root and default backend errors, return the error
     result = comp.grep("test", path="/")
-    assert result.error == "Default backend error"
+    assert result.error == "Grep failed on all backends: Default: Default backend error"
 
 
 def test_composite_grep_non_root_path_on_default_backend(tmp_path: Path) -> None:

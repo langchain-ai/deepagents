@@ -977,7 +977,7 @@ async def test_composite_agrep_error_in_routed_backend_at_root_async() -> None:
 
     # When searching from root and a routed backend errors, return the error
     result = await comp.agrep("test", path="/")
-    assert result.error == "Backend error occurred"
+    assert result.error == "Grep failed on all backends: /errors/: Backend error occurred"
 
 
 async def test_composite_agrep_error_in_default_backend_at_root_async() -> None:
@@ -996,7 +996,7 @@ async def test_composite_agrep_error_in_default_backend_at_root_async() -> None:
 
     # When searching from root and default backend errors, return the error
     result = await comp.agrep("test", path="/")
-    assert result.error == "Default backend error"
+    assert result.error == "Grep failed on all backends: Default: Default backend error"
 
 
 async def test_composite_agrep_non_root_path_on_default_backend_async(tmp_path: Path) -> None:

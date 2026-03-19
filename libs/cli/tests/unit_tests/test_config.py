@@ -201,6 +201,58 @@ class TestProjectAgentMdFinding:
         assert len(result) == 1
         assert result[0] == real_md
 
+    def test_ancestor_walk_from_cwd(self, tmp_path: Path) -> None:
+        """Test issue #1743: ancestor walk from cwd not implemented.
+
+        When cwd is a subdirectory like libs/cli/, no AGENTS.md between cwd
+        and project root is picked up. Only two fixed locations are checked.
+        """
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+
+        libs_dir = project_root / "libs"
+        libs_dir.mkdir()
+        cli_dir = libs_dir / "cli"
+        cli_dir.mkdir()
+
+        root_md = project_root / "AGENTS.md"
+        root_md.write_text("Root instructions")
+
+        subdir_md = cli_dir / "AGENTS.md"
+        subdir_md.write_text("CLI-specific instructions")
+
+        result = _find_project_agent_md(project_root, cwd=cli_dir)
+
+        assert subdir_md in result, (
+            "BUG: AGENTS.md in subdirectory should be discovered via ancestor walk. "
+            "Issue #1743: No ancestor walk from cwd to project root."
+        )
+
+    def test_subdir_auto_discovery(self, tmp_path: Path) -> None:
+        """Test issue #1743: subdir auto-discovery not implemented.
+
+        A libs/cli/AGENTS.md placed for package-specific guidance is never
+        loaded automatically.
+        """
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+
+        cli_dir = project_root / "libs" / "cli"
+        cli_dir.mkdir(parents=True)
+
+        root_md = project_root / "AGENTS.md"
+        root_md.write_text("Root instructions")
+
+        subdir_md = cli_dir / "AGENTS.md"
+        subdir_md.write_text("CLI-specific instructions")
+
+        result = _find_project_agent_md(project_root, cwd=cli_dir)
+
+        assert subdir_md in result, (
+            "BUG: AGENTS.md in subdirectory should be auto-discovered. "
+            "Issue #1743: No subdir auto-discovery."
+        )
+
 
 class TestSettingsGetProjectAgentMdPath:
     """Test Settings.get_project_agent_md_path() integration."""

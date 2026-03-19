@@ -73,10 +73,14 @@ class ProjectContext:
         return (self.user_cwd / candidate).resolve()
 
     def project_agent_md_paths(self) -> list[Path]:
-        """Return project-level `AGENTS.md` files for this context."""
+        """Return project-level `AGENTS.md` files with hierarchical discovery.
+
+        Supports ancestor walk from project_root to user_cwd and subdir
+        auto-discovery.
+        """
         if self.project_root is None:
             return []
-        return find_project_agent_md(self.project_root)
+        return find_project_agent_md(self.project_root, cwd=self.user_cwd)
 
     def project_skills_dir(self) -> Path | None:
         """Return the project `.deepagents/skills` directory, if any."""
@@ -156,33 +160,80 @@ def find_project_root(start_path: str | Path | None = None) -> Path | None:
     return None
 
 
-def find_project_agent_md(project_root: Path) -> list[Path]:
-    """Find project-specific AGENTS.md file(s).
+def find_project_agent_md(project_root: Path, cwd: Path | None = None) -> list[Path]:
+    """Find project-specific AGENTS.md file(s) with hierarchical discovery.
 
-    Checks two locations and returns ALL that exist:
-    1. project_root/.deepagents/AGENTS.md
-    2. project_root/AGENTS.md
+    Supports three discovery mechanisms:
+    1. Ancestor walk: Walk from project_root to cwd, collecting AGENTS.md files
+    2. Subdir auto-discovery: Scan subdirectories for AGENTS.md files
+    3. Traditional: Check .deepagents/AGENTS.md and AGENTS.md at each level
 
-    Both files will be loaded and combined if both exist.
+    Results are ordered so files closer to cwd/leaf come last (override earlier ones).
 
     Args:
         project_root: Path to the project root directory.
+        cwd: Current working directory for ancestor walk. Defaults to project_root.
+            When provided, performs ancestor walk from project_root to cwd.
 
     Returns:
-        Existing AGENTS.md paths.
+        Existing AGENTS.md paths in override order (root → leaf).
 
-            Empty if neither file exists, one entry if only one is present, or
-            two entries if both locations have the file.
+    Raises:
+        ValueError: If cwd is not a subdirectory of project_root.
     """
-    candidates = [
-        project_root / ".deepagents" / "AGENTS.md",
-        project_root / "AGENTS.md",
-    ]
+    if cwd is None:
+        cwd = project_root
+
+    # Validate cwd is under project_root
+    try:
+        cwd.relative_to(project_root)
+    except ValueError as e:
+        msg = f"cwd ({cwd}) must be under project_root ({project_root})"
+        raise ValueError(msg) from e
+
     paths: list[Path] = []
-    for candidate in candidates:
+    seen: set[Path] = set()
+
+    def add_if_exists(path: Path) -> None:
+        """Add AGENTS.md path if it exists and hasn't been seen."""
         try:
-            if candidate.exists():
-                paths.append(candidate)
+            if path.exists() and path not in seen:
+                seen.add(path)
+                paths.append(path)
         except OSError:
             pass
+
+    # Phase 1: Ancestor walk from project_root to cwd
+    # Walk down from project_root to cwd, collecting AGENTS.md at each level
+    current = project_root
+    while str(current) != str(cwd):
+        add_if_exists(current / ".deepagents" / "AGENTS.md")
+        add_if_exists(current / "AGENTS.md")
+
+        # Move closer to cwd
+        if str(current) == str(cwd):
+            break
+
+        # Find the next child towards cwd
+        cwd_parts = cwd.parts
+        current_parts = current.parts
+        if len(cwd_parts) > len(current_parts):
+            current /= cwd_parts[len(current_parts)]
+        else:
+            break
+
+    # Also add the final cwd level
+    add_if_exists(cwd / ".deepagents" / "AGENTS.md")
+    add_if_exists(cwd / "AGENTS.md")
+
+    # Phase 2: Subdir auto-discovery (bounded scan under cwd)
+    # Scan immediate subdirectories of cwd for AGENTS.md files
+    try:
+        for subdir in cwd.iterdir():
+            if subdir.is_dir() and not subdir.name.startswith("."):
+                add_if_exists(subdir / "AGENTS.md")
+                add_if_exists(subdir / ".deepagents" / "AGENTS.md")
+    except OSError:
+        pass
+
     return paths

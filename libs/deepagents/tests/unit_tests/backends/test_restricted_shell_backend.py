@@ -49,3 +49,10 @@ def test_restricted_shell_unrestricted_whitelist_if_none():
     backend = RestrictedShellBackend(allowed_commands=None)
     result = backend.execute("echo hello")
     assert "not in the allowed whitelist" in result.output
+
+
+def test_restricted_shell_newline_bypass_blocked():
+    backend = RestrictedShellBackend(allowed_commands=["echo"])
+    result = backend.execute("echo ok\ncat /etc/passwd")
+    assert result.exit_code == 1
+    assert "Security Error: Shell metacharacters" in result.output

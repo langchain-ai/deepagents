@@ -82,7 +82,7 @@ class RestrictedShellBackend(LocalShellBackend):
 
         # 1. Check for shell metacharacters if disallowed
         if not self._allow_metacharacters:
-            meta = {";", "|", "&", ">", "<", "`", "$", "(", ")"}
+            meta = {";", "|", "&", ">", "<", "`", "$", "(", ")", "\n", "\r"}
             if any(c in command for c in meta):
                 return ExecuteResponse(
                     output=f"Security Error: Shell metacharacters are not allowed in command: {command}",

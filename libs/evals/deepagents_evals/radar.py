@@ -7,6 +7,7 @@ encodes the score (0-1 correctness).
 
 from __future__ import annotations
 
+import json
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -16,39 +17,16 @@ if TYPE_CHECKING:
     from matplotlib.figure import Figure  # ty: ignore[unresolved-import]
     from matplotlib.projections.polar import PolarAxes  # ty: ignore[unresolved-import]
 
-EVAL_CATEGORIES: list[str] = [
-    "file_operations",
-    "skills",
-    "hitl",
-    "memory",
-    "summarization",
-    "subagents",
-    "system_prompt",
-    "tool_usage",
-    "followup_quality",
-    "external_benchmarks",
-    "tau2_airline",
-    "memory_agent_bench",
-]
+_CATEGORIES_JSON = Path(__file__).parent / "categories.json"
+_data = json.loads(_CATEGORIES_JSON.read_text(encoding="utf-8"))
+
+EVAL_CATEGORIES: list[str] = _data["categories"]
 """Canonical eval category names.
 
 Order determines axis placement on the radar chart (clockwise from top).
 """
 
-CATEGORY_LABELS: dict[str, str] = {
-    "file_operations": "File Ops",
-    "skills": "Skills",
-    "hitl": "HITL",
-    "memory": "Memory",
-    "summarization": "Summarization",
-    "subagents": "Subagents",
-    "system_prompt": "System Prompt",
-    "tool_usage": "Tool Usage",
-    "followup_quality": "Followup Quality",
-    "external_benchmarks": "External Benchmarks",
-    "tau2_airline": "Tau2 Airline",
-    "memory_agent_bench": "MemoryAgentBench",
-}
+CATEGORY_LABELS: dict[str, str] = _data["labels"]
 """Human-friendly display labels for radar chart axes, keyed by category name."""
 
 _COLORS: list[str] = [

@@ -102,6 +102,14 @@ def main() -> None:
     for r in results:
         all_cats.update(r.scores.keys())
 
+    min_axes = 3
+    if len(all_cats) < min_axes:
+        print(
+            f"skipped: radar chart needs >= {min_axes} categories, got {len(all_cats)}",
+            file=sys.stderr,
+        )
+        sys.exit(0)
+
     # Preserve EVAL_CATEGORIES ordering for known categories, append unknown ones.
     ordered = [c for c in EVAL_CATEGORIES if c in all_cats]
     ordered.extend(sorted(all_cats - set(ordered)))

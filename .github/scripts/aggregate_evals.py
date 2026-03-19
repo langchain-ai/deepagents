@@ -43,6 +43,40 @@ _HEADERS = [
 ]
 
 
+_CATEGORIES_JSON = Path(__file__).resolve().parents[2] / "libs" / "evals" / "deepagents_evals" / "categories.json"
+_CATEGORY_LABELS: dict[str, str] = json.loads(_CATEGORIES_JSON.read_text(encoding="utf-8"))["labels"]
+
+
+def _build_category_table(rows: list[dict[str, object]]) -> list[str]:
+    """Build a per-category scores table from report rows.
+
+    Returns an empty list when no category data is present.
+    """
+    # Collect all categories across all models.
+    all_cats: list[str] = []
+    seen: set[str] = set()
+    for r in rows:
+        for cat in (r.get("category_scores") or {}):
+            if cat not in seen:
+                all_cats.append(cat)
+                seen.add(cat)
+
+    if not all_cats:
+        return []
+
+    headers = ["model", *[_CATEGORY_LABELS.get(c, c) for c in all_cats]]
+    table_rows: list[list[object]] = []
+    for r in rows:
+        scores = r.get("category_scores") or {}
+        table_rows.append([
+            str(r.get("model", "")),
+            *[scores.get(c, "—") for c in all_cats],
+        ])
+
+    colalign = ("left", *("right" for _ in all_cats))
+    return [tabulate(table_rows, headers=headers, tablefmt="github", colalign=colalign)]
+
+
 def main() -> None:
     """Generate an aggregated report."""
     report_files = sorted(glob.glob("evals_artifacts/**/evals_report.json", recursive=True))
@@ -91,6 +125,14 @@ def main() -> None:
         )
     else:
         lines.append("_No eval artifacts found._")
+
+    # --- Table 3: per-category scores ---
+    cat_table = _build_category_table(rows)
+    if cat_table:
+        lines.append("")
+        lines.append("## Per-category correctness")
+        lines.append("")
+        lines.extend(cat_table)
 
     summary_file = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary_file:

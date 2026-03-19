@@ -239,7 +239,12 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: evals-summary
-          path: |
-            evals_summary.json
-            charts/radar.png
+          path: evals_summary.json
           if-no-files-found: warn
+
+      - name: "📤 Upload radar chart"
+        if: hashFiles('charts/radar.png') != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: radar-chart
+          path: charts/radar.png

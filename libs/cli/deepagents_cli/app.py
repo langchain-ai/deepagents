@@ -28,6 +28,12 @@ from textual.screen import ModalScreen
 from textual.style import Style as TStyle
 from textual.widgets import Static
 
+from deepagents_cli._cli_context import CLIContext
+from deepagents_cli._session_stats import (
+    SessionStats,
+    SpinnerStatus,
+    format_token_count,
+)
 from deepagents_cli.clipboard import copy_selection_to_clipboard
 from deepagents_cli.command_registry import (
     ALWAYS_IMMEDIATE,
@@ -46,19 +52,8 @@ from deepagents_cli.config import (
     newline_shortcut,
     settings,
 )
-from deepagents_cli.configurable_model import CLIContext
 from deepagents_cli.hooks import dispatch_hook
 from deepagents_cli.model_config import ModelSpec, save_recent_model
-from deepagents_cli.textual_adapter import (
-    SessionStats,
-    SpinnerStatus,
-    TextualUIAdapter,
-    _get_git_branch,
-    execute_task_textual,
-    format_token_count,
-)
-from deepagents_cli.widgets.approval import ApprovalMenu
-from deepagents_cli.widgets.ask_user import AskUserMenu
 from deepagents_cli.widgets.chat_input import ChatInput
 from deepagents_cli.widgets.loading import LoadingWidget
 from deepagents_cli.widgets.message_store import (
@@ -75,12 +70,7 @@ from deepagents_cli.widgets.messages import (
     ToolCallMessage,
     UserMessage,
 )
-from deepagents_cli.widgets.model_selector import ModelSelectorScreen
 from deepagents_cli.widgets.status import StatusBar
-from deepagents_cli.widgets.thread_selector import (
-    DeleteThreadConfirmScreen,
-    ThreadSelectorScreen,
-)
 from deepagents_cli.widgets.welcome import WelcomeBanner
 
 logger = logging.getLogger(__name__)
@@ -98,10 +88,13 @@ if TYPE_CHECKING:
     from textual.widget import Widget
     from textual.worker import Worker
 
-    from deepagents_cli.ask_user import AskUserWidgetResult, Question
+    from deepagents_cli._ask_user_types import AskUserWidgetResult, Question
     from deepagents_cli.mcp_tools import MCPServerInfo
     from deepagents_cli.remote_client import RemoteAgent
     from deepagents_cli.server import ServerProcess
+    from deepagents_cli.textual_adapter import TextualUIAdapter
+    from deepagents_cli.widgets.approval import ApprovalMenu
+    from deepagents_cli.widgets.ask_user import AskUserMenu
 
 # iTerm2 Cursor Guide Workaround
 # ===============================
@@ -740,6 +733,8 @@ class DeepAgentsApp(App):
             self._status_bar.set_auto_approve(enabled=True)
 
         # Set git branch in status bar
+        from deepagents_cli.textual_adapter import _get_git_branch
+
         self._status_bar.branch = _get_git_branch() or ""
 
         # Create session state
@@ -772,6 +767,13 @@ class DeepAgentsApp(App):
                 exclusive=True,
                 group="startup-update-check",
             )
+
+        # Prewarm deferred widget imports in a thread so first use is instant
+        self.run_worker(
+            asyncio.to_thread(self._prewarm_deferred_imports),
+            exclusive=True,
+            group="startup-import-prewarm",
+        )
 
         # Focus the input (autocomplete is now built into ChatInput)
         self._chat_input.focus_input()
@@ -816,6 +818,8 @@ class DeepAgentsApp(App):
 
     def _init_agent_adapter(self) -> None:
         """Create the UI adapter and kick off background cache prewarming."""
+        from deepagents_cli.textual_adapter import TextualUIAdapter
+
         self._ui_adapter = TextualUIAdapter(
             mount_message=self._mount_message,
             update_status=self._update_status,
@@ -974,6 +978,36 @@ class DeepAgentsApp(App):
                 w.remove()
             self._queued_widgets.clear()
         self._deferred_actions.clear()
+
+    @staticmethod
+    def _prewarm_deferred_imports() -> None:
+        """Background-load modules deferred from the startup path.
+
+        Populates `sys.modules` so the first user-triggered inline import
+        is a cheap dict lookup instead of a cold module load.
+        """
+        try:
+            # Heavy deps deferred from textual_adapter / tool_display —
+            # hit on first message send and first tool approval
+            from deepagents.backends import DEFAULT_EXECUTE_TIMEOUT  # noqa: F401
+            from langchain.agents.middleware.human_in_the_loop import (  # noqa: F401
+                ApproveDecision,
+            )
+            from langchain_core.messages import AIMessage  # noqa: F401
+            from langgraph.types import Command  # noqa: F401
+
+            # Widgets deferred from app.py module level
+            from deepagents_cli.widgets.approval import ApprovalMenu  # noqa: F401
+            from deepagents_cli.widgets.ask_user import AskUserMenu  # noqa: F401
+            from deepagents_cli.widgets.model_selector import (
+                ModelSelectorScreen,  # noqa: F401
+            )
+            from deepagents_cli.widgets.thread_selector import (  # noqa: F401
+                DeleteThreadConfirmScreen,
+                ThreadSelectorScreen,
+            )
+        except Exception:
+            logger.debug("Could not prewarm deferred imports", exc_info=True)
 
     async def _prewarm_threads_cache(self) -> None:  # noqa: PLR6301  # Worker hook kept as instance method
         """Prewarm thread selector cache without blocking app startup."""
@@ -1281,6 +1315,8 @@ class DeepAgentsApp(App):
                 await asyncio.sleep(0.1)
 
         # Create menu with unique ID to avoid conflicts
+        from deepagents_cli.widgets.approval import ApprovalMenu
+
         unique_id = f"approval-menu-{uuid.uuid4().hex[:8]}"
         menu = ApprovalMenu(action_requests, assistant_id, id=unique_id)
         menu.set_future(result_future)
@@ -1464,6 +1500,8 @@ class DeepAgentsApp(App):
                         )
                     break
                 await asyncio.sleep(0.1)
+
+        from deepagents_cli.widgets.ask_user import AskUserMenu
 
         unique_id = f"ask-user-menu-{uuid.uuid4().hex[:8]}"
         menu = AskUserMenu(questions, id=unique_id)
@@ -2351,6 +2389,8 @@ class DeepAgentsApp(App):
         # Caller ensures _ui_adapter is set (checked in _handle_user_message)
         if self._ui_adapter is None:
             return
+        from deepagents_cli.textual_adapter import execute_task_textual
+
         turn_stats: SessionStats | None = None
         try:
             turn_stats = await execute_task_textual(
@@ -3072,6 +3112,8 @@ class DeepAgentsApp(App):
         5. If approval menu is active, reject it
         6. If agent is running, interrupt it
         """
+        from deepagents_cli.widgets.thread_selector import ThreadSelectorScreen
+
         if (
             isinstance(self.screen, ThreadSelectorScreen)
             and self.screen.is_delete_confirmation_open
@@ -3117,6 +3159,11 @@ class DeepAgentsApp(App):
 
     def action_quit_app(self) -> None:
         """Handle quit action (Ctrl+D)."""
+        from deepagents_cli.widgets.thread_selector import (
+            DeleteThreadConfirmScreen,
+            ThreadSelectorScreen,
+        )
+
         if isinstance(self.screen, ThreadSelectorScreen):
             self.screen.action_delete_thread()
             return
@@ -3179,6 +3226,8 @@ class DeepAgentsApp(App):
         web search, URL fetch) run without prompting. Updates the status
         bar indicator and session state.
         """
+        from deepagents_cli.widgets.thread_selector import ThreadSelectorScreen
+
         if isinstance(self.screen, ThreadSelectorScreen):
             self.screen.action_focus_previous_filter()
             return
@@ -3352,6 +3401,8 @@ class DeepAgentsApp(App):
         """
         from functools import partial
 
+        from deepagents_cli.widgets.model_selector import ModelSelectorScreen
+
         def handle_result(result: tuple[str, str] | None) -> None:
             """Handle the model selector result."""
             if result is not None:
@@ -3406,6 +3457,7 @@ class DeepAgentsApp(App):
         from functools import partial
 
         from deepagents_cli.sessions import get_cached_threads, get_thread_limit
+        from deepagents_cli.widgets.thread_selector import ThreadSelectorScreen
 
         current = self._session_state.thread_id if self._session_state else None
         thread_limit = get_thread_limit()

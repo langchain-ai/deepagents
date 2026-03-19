@@ -8,8 +8,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
-from deepagents.backends.utils import perform_string_replacement
-
 from deepagents_cli.config import settings
 
 logger = logging.getLogger(__name__)
@@ -229,6 +227,8 @@ def build_approval_preview(
         old_string = str(args.get("old_string", ""))
         new_string = str(args.get("new_string", ""))
         replace_all = bool(args.get("replace_all"))
+        from deepagents.backends.utils import perform_string_replacement
+
         replacement = perform_string_replacement(
             before, old_string, new_string, replace_all
         )

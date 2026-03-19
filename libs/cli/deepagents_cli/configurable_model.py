@@ -16,28 +16,12 @@ from langchain.agents.middleware.types import (
     ModelRequest,
     ModelResponse,
 )
-from typing_extensions import TypedDict
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
 
 logger = logging.getLogger(__name__)
-
-
-class CLIContext(TypedDict, total=False):
-    """Runtime context passed via `context=` to the LangGraph graph.
-
-    Carries per-invocation overrides that `ConfigurableModelMiddleware`
-    reads from `request.runtime.context`.
-    """
-
-    model: str | None
-    """Model spec to swap at runtime (e.g. `'openai:gpt-4o'`)."""
-
-    model_params: dict[str, Any]
-    """Invocation params (e.g. `temperature`, `max_tokens`) to merge
-    into `model_settings`."""
 
 
 def _is_anthropic_model(model: object) -> bool:

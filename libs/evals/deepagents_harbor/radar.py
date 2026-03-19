@@ -27,6 +27,10 @@ EVAL_CATEGORIES: list[str] = [
     "subagents",
     "system_prompt",
     "tool_usage",
+    "followup_quality",
+    "external_benchmarks",
+    "tau2_airline",
+    "memory_agent_bench",
 ]
 
 # Display labels for chart axes (shorter, human-friendly).
@@ -39,6 +43,10 @@ CATEGORY_LABELS: dict[str, str] = {
     "subagents": "Subagents",
     "system_prompt": "System Prompt",
     "tool_usage": "Tool Usage",
+    "followup_quality": "Followup Quality",
+    "external_benchmarks": "External Benchmarks",
+    "tau2_airline": "Tau2 Airline",
+    "memory_agent_bench": "MemoryAgentBench",
 }
 
 # Visually distinct colors for up to 8 models.
@@ -180,9 +188,9 @@ def load_results_from_summary(path: str | Path) -> list[ModelResult]:
     """Load model results from an `evals_summary.json` file.
 
     The summary file is a JSON array of objects, each with a `model` key and
-    aggregate metrics. Since per-category scores aren't in the current report
-    format, this returns only the aggregate `correctness` mapped to a single
-    `overall` category.
+    aggregate metrics. When `category_scores` is present in an entry, those
+    per-category scores are used directly. Otherwise falls back to the
+    aggregate `correctness` mapped to a single `overall` category.
 
     Args:
         path: Path to `evals_summary.json`.
@@ -201,8 +209,12 @@ def load_results_from_summary(path: str | Path) -> list[ModelResult]:
     results: list[ModelResult] = []
     for entry in data:
         model = str(entry.get("model", "unknown"))
-        correctness = float(entry.get("correctness", 0.0))
-        results.append(ModelResult(model=model, scores={"overall": correctness}))
+        cat_scores = entry.get("category_scores")
+        if isinstance(cat_scores, dict) and cat_scores:
+            scores = {k: float(v) for k, v in cat_scores.items()}
+        else:
+            scores = {"overall": float(entry.get("correctness", 0.0))}
+        results.append(ModelResult(model=model, scores=scores))
     return results
 
 
@@ -224,6 +236,10 @@ def toy_data() -> list[ModelResult]:
                 "subagents": 0.78,
                 "system_prompt": 0.97,
                 "tool_usage": 0.85,
+                "followup_quality": 0.91,
+                "external_benchmarks": 0.76,
+                "tau2_airline": 0.70,
+                "memory_agent_bench": 0.82,
             },
         ),
         ModelResult(
@@ -237,6 +253,10 @@ def toy_data() -> list[ModelResult]:
                 "subagents": 0.75,
                 "system_prompt": 0.90,
                 "tool_usage": 0.88,
+                "followup_quality": 0.85,
+                "external_benchmarks": 0.72,
+                "tau2_airline": 0.65,
+                "memory_agent_bench": 0.78,
             },
         ),
         ModelResult(
@@ -250,6 +270,10 @@ def toy_data() -> list[ModelResult]:
                 "subagents": 0.70,
                 "system_prompt": 0.85,
                 "tool_usage": 0.82,
+                "followup_quality": 0.80,
+                "external_benchmarks": 0.68,
+                "tau2_airline": 0.60,
+                "memory_agent_bench": 0.75,
             },
         ),
         ModelResult(
@@ -263,6 +287,10 @@ def toy_data() -> list[ModelResult]:
                 "subagents": 0.85,
                 "system_prompt": 0.98,
                 "tool_usage": 0.91,
+                "followup_quality": 0.94,
+                "external_benchmarks": 0.81,
+                "tau2_airline": 0.75,
+                "memory_agent_bench": 0.88,
             },
         ),
     ]

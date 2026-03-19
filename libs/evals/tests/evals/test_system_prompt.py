@@ -7,11 +7,14 @@ from deepagents import create_deep_agent
 
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
+
 from tests.evals.utils import (
     TrajectoryScorer,
     final_text_contains,
     run_agent,
 )
+
+pytestmark = [pytest.mark.eval_category("system_prompt")]
 
 
 @pytest.mark.langsmith

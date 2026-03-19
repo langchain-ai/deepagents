@@ -26,6 +26,8 @@ from tests.evals.utils import (
     tool_call,
 )
 
+pytestmark = [pytest.mark.eval_category("tool_usage")]
+
 # ---------------------------------------------------------------------------
 # Mock tools — lightweight stubs that return a fixed string
 # ---------------------------------------------------------------------------
@@ -133,7 +135,8 @@ def test_direct_request_github_pr(model: BaseChatModel) -> None:
                 tool_call_requests=1,
                 tool_calls=[
                     tool_call(
-                        name="github_create_pr", args_contains={"repo": "langchain-ai/deepagents"}
+                        name="github_create_pr",
+                        args_contains={"repo": "langchain-ai/deepagents"},
                     )
                 ],
             )
@@ -211,7 +214,10 @@ def test_indirect_notify_team(model: BaseChatModel) -> None:
                 agent_steps=2,
                 tool_call_requests=1,
                 tool_calls=[
-                    tool_call(name="slack_post_channel", args_contains={"channel": "deployments"})
+                    tool_call(
+                        name="slack_post_channel",
+                        args_contains={"channel": "deployments"},
+                    )
                 ],
             )
             .success(
@@ -235,7 +241,10 @@ def test_indirect_email_report(model: BaseChatModel) -> None:
                 agent_steps=2,
                 tool_call_requests=1,
                 tool_calls=[
-                    tool_call(name="gmail_send_email", args_contains={"to": "manager@company.com"})
+                    tool_call(
+                        name="gmail_send_email",
+                        args_contains={"to": "manager@company.com"},
+                    )
                 ],
             )
             .success(
@@ -289,7 +298,10 @@ def test_chain_create_issue_then_notify(model: BaseChatModel) -> None:
             .expect(
                 tool_calls=[
                     tool_call(name="github_create_issue"),
-                    tool_call(name="slack_post_channel", args_contains={"channel": "incidents"}),
+                    tool_call(
+                        name="slack_post_channel",
+                        args_contains={"channel": "incidents"},
+                    ),
                 ],
             )
             .success(

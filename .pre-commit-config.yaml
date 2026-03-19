@@ -31,11 +31,11 @@ repos:
         entry: make -C libs/cli format lint
         files: ^libs/cli/
         pass_filenames: false
-      - id: harbor
-        name: format and lint harbor
+      - id: evals
+        name: format and lint evals
         language: system
-        entry: make -C libs/harbor format lint
-        files: ^libs/harbor/
+        entry: make -C libs/evals format lint
+        files: ^libs/evals/
         pass_filenames: false
       - id: acp
         name: format and lint acp
